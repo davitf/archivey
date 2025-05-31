@@ -12,13 +12,17 @@ import threading
 import zlib
 from typing import IO, Any, Iterable, Iterator, List, Optional, cast
 
-import rarfile
+try:
+    import rarfile
+except ImportError:
+    rarfile = None  # type: ignore[assignment]
 
 from archivey.base_reader import ArchiveReader
 from archivey.exceptions import (
     ArchiveCorruptedError,
     ArchiveEncryptedError,
     ArchiveError,
+    LibraryNotInstalledError,
 )
 from archivey.formats import ArchiveFormat
 from archivey.io_wrappers import ExceptionTranslatingIO
@@ -179,6 +183,11 @@ class BaseRarReader(ArchiveReader):
         self._members: Optional[list[ArchiveMember]] = None
         self._format_info: Optional[ArchiveInfo] = None
 
+        if rarfile is None:
+            raise LibraryNotInstalledError(
+                "rarfile library is not installed. Please install it to work with RAR archives."
+            )
+
         try:
             self._archive = rarfile.RarFile(archive_path, "r")
             if pwd:
@@ -304,7 +313,7 @@ class BaseRarReader(ArchiveReader):
             self._format_info = ArchiveInfo(
                 format=self.get_format(),
                 version=version,
-                is_solid=self._archive.is_solid(),
+                is_solid=getattr(self._archive, "is_solid", lambda: False)(), # rarfile < 4.1 doesn't have is_solid
                 comment=self._archive.comment,
                 extra={
                     # "is_multivolume": self._archive.is_multivolume(),

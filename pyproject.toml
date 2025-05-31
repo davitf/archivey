@@ -21,6 +21,7 @@ optional = [
     "py7zr>=0.22.0",
     "rarfile>=4.2",
     "zstandard>=0.23.0",
+    "pycryptodomex>=3.9.8", # For rarfile encryption
 ]
 
 [build-system]
@@ -33,6 +34,7 @@ dev = [
     "hatch>=1.14.1",
     "pytest>=8.3.5",
     "ruff>=0.11.11",
+    "tox>=4.0.0",
 ]
 
 [tool.pytest.ini_options]

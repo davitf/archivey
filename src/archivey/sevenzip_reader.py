@@ -3,14 +3,23 @@ import logging
 import lzma
 from typing import Iterator, List, cast
 
-import py7zr
-import py7zr.compressor
-import py7zr.exceptions
-import py7zr.helpers
-from py7zr.py7zr import ArchiveFile
+try:
+    import py7zr
+    import py7zr.compressor
+    import py7zr.exceptions
+    import py7zr.helpers
+    from py7zr.py7zr import ArchiveFile
+except ImportError:
+    py7zr = None  # type: ignore[assignment]
+    ArchiveFile = None # type: ignore[misc,assignment]
+
 
 from archivey.base_reader import ArchiveReader
-from archivey.exceptions import ArchiveCorruptedError, ArchiveEncryptedError
+from archivey.exceptions import (
+    ArchiveCorruptedError,
+    ArchiveEncryptedError,
+    LibraryNotInstalledError,
+)
 from archivey.formats import ArchiveFormat
 from archivey.types import (
     ArchiveInfo,
@@ -30,6 +39,12 @@ class SevenZipReader(ArchiveReader):
         self.archive_path = archive_path
         self._members: list[ArchiveMember] | None = None
         self._format_info: ArchiveInfo | None = None
+
+        if py7zr is None:
+            raise LibraryNotInstalledError(
+                "py7zr library is not installed. Please install it to work with 7-Zip archives."
+            )
+
         try:
             self._archive = py7zr.SevenZipFile(
                 archive_path, "r", password=bytes_to_str(pwd)

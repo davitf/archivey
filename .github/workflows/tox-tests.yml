@@ -1,0 +1,37 @@
+name: Run Tox Tests
+
+on:
+  push:
+    branches: [ main, master ] # Adjust if your main branch has a different name
+  pull_request:
+    branches: [ main, master ] # Adjust if your main branch has a different name
+
+jobs:
+  test:
+    name: Tox tests - Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"] # Add "3.13" and "3.14-beta" if available and stable with setup-python
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install tox
+        run: pip install tox
+
+      - name: Install unrar (for rarfile tests)
+        run: sudo apt-get update && sudo apt-get install -y unrar
+
+      - name: Run tox environment
+        # We select a representative tox environment that uses the current Python version
+        # and latest versions of rarfile and py7zr.
+        # You might want to run all environments or a different subset.
+        run: tox -e py${{ matrix.python-version }}-rarfilelatest-py7zrlatest

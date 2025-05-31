@@ -112,12 +112,26 @@ def detect_archive_format(filename: str) -> ArchiveFormat:
         and format_by_filename not in SINGLE_FILE_COMPRESSED_FORMATS
     ):
         format = COMPRESSION_FORMAT_TO_TAR_FORMAT[format_by_signature]
-    else:
-        format = format_by_signature
+    effective_format: ArchiveFormat
 
-    if format != format_by_filename:
+    if format_by_signature == ArchiveFormat.UNKNOWN:
+        effective_format = format_by_filename
+    elif format_by_signature in COMPRESSION_FORMAT_TO_TAR_FORMAT and \
+         format_by_filename == COMPRESSION_FORMAT_TO_TAR_FORMAT[format_by_signature]:
+        # e.g. signature is GZIP, filename is TAR_GZ. Prefer TAR_GZ.
+        effective_format = format_by_filename
+    else:
+        effective_format = format_by_signature
+
+    if effective_format != format_by_filename and \
+       format_by_signature != ArchiveFormat.UNKNOWN and \
+       format_by_filename != ArchiveFormat.UNKNOWN and \
+       effective_format != ArchiveFormat.UNKNOWN:
+        # Log only if there's a meaningful discrepancy where both detections yielded a result,
+        # and they differed, and the effective_format isn't simply a fallback to UNKNOWN.
         logger.warning(
-            f"{filename}: Format by signature ({format_by_signature}) and format by filename ({format_by_filename}) differ"
+            f"{filename}: Format by signature ({format_by_signature}) and "
+            f"format by filename ({format_by_filename}) differ. Effective format: {effective_format}"
         )
 
-    return format
+    return effective_format

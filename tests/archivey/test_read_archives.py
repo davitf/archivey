@@ -5,6 +5,7 @@ import pathlib
 import zlib
 from dataclasses import dataclass
 from datetime import datetime
+from unittest.mock import patch
 
 import pytest
 from sample_archives import (
@@ -16,7 +17,11 @@ from sample_archives import (
 )
 
 from archivey.archive_stream import ArchiveStream
-from archivey.exceptions import ArchiveCorruptedError, ArchiveEOFError
+from archivey.exceptions import (
+    ArchiveCorruptedError,
+    ArchiveEOFError,
+    LibraryNotInstalledError,
+)
 from archivey.types import ArchiveFormat, MemberType
 
 
@@ -358,3 +363,24 @@ def test_read_sevenzip_py7zr_archives(sample_archive: ArchiveInfo):
 )
 def test_read_single_file_compressed_archives(sample_archive: ArchiveInfo):
     check_read_archive(sample_archive)
+
+
+# Tests for LibraryNotInstalledError
+DUMMY_RAR_PATH = full_path_to_archive("dummy.rar")
+DUMMY_7Z_PATH = full_path_to_archive("dummy.7z")
+
+
+@patch('archivey.rar_reader.rarfile', None)
+def test_rarfile_not_installed_raises_exception():
+    """Test that LibraryNotInstalledError is raised for .rar when rarfile is not installed."""
+    with pytest.raises(LibraryNotInstalledError) as excinfo:
+        ArchiveStream(DUMMY_RAR_PATH)
+    assert str(excinfo.value) == "rarfile library is not installed. Please install it to work with RAR archives."
+
+
+@patch('archivey.sevenzip_reader.py7zr', None)
+def test_py7zr_not_installed_raises_exception():
+    """Test that LibraryNotInstalledError is raised for .7z when py7zr is not installed."""
+    with pytest.raises(LibraryNotInstalledError) as excinfo:
+        ArchiveStream(DUMMY_7Z_PATH)
+    assert str(excinfo.value) == "py7zr library is not installed. Please install it to work with 7-Zip archives."

@@ -39,3 +39,9 @@ class ArchiveNotSupportedError(ArchiveError):
     """Raised when the archive format is not supported."""
 
     pass
+
+
+class LibraryNotInstalledError(ArchiveError):
+    """Raised when a required library is not installed."""
+
+    pass
