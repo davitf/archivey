@@ -1,3 +1,4 @@
+from archivey.archive_path import ArchivePath
 from archivey.config import (
     ArchiveyConfig,
     default_config,
@@ -44,6 +45,7 @@ __all__ = [
     "ArchiveMember",
     "ArchiveInfo",
     "ArchiveFormat",
+    "ArchivePath",
     "detect_archive_format_by_signature",
     "MemberType",
     "CreateSystem",
