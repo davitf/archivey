@@ -1,5 +1,4 @@
 import os
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -46,11 +45,7 @@ def test_extractall(
     dest.mkdir()
 
     with open_archive(sample_archive_path) as archive:
-        print("Before extractall")
-        subprocess.run(["ls", "-lR", dest])
         archive.extractall(dest)
-        print("After extractall")
-        subprocess.run(["ls", "-lR", dest])
 
     for info in remove_duplicate_files(sample_archive.contents.files):
         path = dest / info.name.rstrip("/")

@@ -162,7 +162,6 @@ class StreamingFile(BasePy7zIOWriter):
         self._closed = False
 
     def write(self, b: Union[bytes, bytearray]) -> int:
-        # logger.info(f"Writing to streaming file {self._fname}: {len(b)} bytes")
         if not self._started:
             self._started = True
             self._files_queue.put((self._fname, self._reader))
@@ -172,7 +171,6 @@ class StreamingFile(BasePy7zIOWriter):
         return len(b)
 
     def close(self):
-        # logger.info(f"Closing streaming file {self._fname}")
         if not self._closed:
             self._data_queue.put(None)
             self._closed = True
@@ -183,7 +181,6 @@ class StreamingFactory(WriterFactory):
         self._queue = q
 
     def create(self, fname: str) -> Py7zIO:
-        # logger.info(f"Creating streaming file {fname}")
         return StreamingFile(fname, self._queue)
 
     def yield_files(self) -> Iterator[tuple[str, BinaryIO]]:
@@ -191,7 +188,6 @@ class StreamingFactory(WriterFactory):
             item = self._queue.get()
             if item is None:
                 break
-            # logger.info(f"Yielding streaming file {item}")
             yield item
 
     def finish(self):
@@ -435,7 +431,6 @@ class SevenZipReader(BaseArchiveReaderRandomAccess):
             An IO object for the member.
         """
 
-        # logger.info(f"Opening member {member_or_filename} with password {pwd}")
         if self._archive is None:
             raise ValueError("Archive is closed")
 
@@ -546,13 +541,8 @@ class SevenZipReader(BaseArchiveReaderRandomAccess):
                 assert self._archive is not None
                 self._archive.reset()
                 factory = StreamingFactory(q)
-                # print()
-                # print()
-                # logger.info(f"extracting {filenames_to_extract}")
 
                 self._archive.extract(targets=filenames_to_extract, factory=factory)
-                # logger.info(f"extracting {filenames_to_extract} done")
-                # print()
                 factory.finish()
             except Exception as e:
                 logger.error(
@@ -653,11 +643,9 @@ class SevenZipReader(BaseArchiveReaderRandomAccess):
         }
         factory = ExtractWriterFactory(path, pending_extractions_to_member)
 
-        logger.info(f"Extracting {paths_to_extract} to {path}")
         self._archive.extract(
             path, targets=paths_to_extract, recursive=False, factory=factory
         )
-        logger.info("Extraction done")
 
         for member in pending_extractions:
             outfile = factory.member_id_to_outfile.get(member.member_id)
@@ -683,37 +671,3 @@ class SevenZipReader(BaseArchiveReaderRandomAccess):
                 },
             )
         return self._format_info
-
-
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) != 2:
-        print("Usage: python -m archivey.sevenzip_reader <archive_path>")
-        sys.exit(1)
-
-    archive_path = sys.argv[1]
-    with SevenZipReader(archive_path) as archive:
-        for member in archive.get_members():
-            print(member)
-
-        print()
-        for member, stream in archive.iter_members_with_io():
-            assert isinstance(member.raw_info, ArchiveFile)
-            print(
-                member.member_id,
-                member.filename,
-                member.raw_info.filename,
-                stream.read() if stream is not None else "NO STREAM",
-            )
-
-        print()
-        for member in archive.get_members():
-            assert isinstance(member.raw_info, ArchiveFile)
-            stream = archive.open(member)
-            print(
-                member.member_id,
-                member.filename,
-                member.raw_info.filename,
-                stream.read() if stream is not None else "NO STREAM",
-            )

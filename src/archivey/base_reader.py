@@ -200,8 +200,6 @@ class ArchiveReader(abc.ABC):
             f"Member {member.filename} already registered with member_id {member.member_id}"
         )
 
-        logger.info(f"Registering member {member.filename} ({member.member_id})")
-
         members_with_filename = self._filename_to_members[member.filename]
         if member not in members_with_filename:
             members_with_filename.append(member)
@@ -350,7 +348,6 @@ class ArchiveReader(abc.ABC):
         extraction_helper: ExtractionHelper,
     ):
         for member, stream in self.iter_members_with_io(filter=filter_func, pwd=pwd):
-            logger.debug(f"Writing member {member.filename}")
             extraction_helper.extract_member(member, stream)
             if stream:
                 stream.close()

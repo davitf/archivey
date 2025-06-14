@@ -33,56 +33,6 @@ class ErrorIOStream(io.RawIOBase, BinaryIO):
         return False  # pragma: no cover - trivial
 
 
-# class StreamCheckingIO(io.RawIOBase, IO[bytes]):
-#     """A wrapper around an IO object that checks the CRC32 of the data read."""
-
-#     def __init__(self, inner: IO[bytes], crc32: int | None, size: int | None):
-#         super().__init__()
-#         self._inner = inner
-#         self._expected_crc32 = crc32
-#         self._current_crc32 = 0
-#         self._expected_size = size
-#         self._current_size = 0
-#         self._checked = False
-
-#     def read(self, size: int = -1) -> bytes: # type: ignore
-#         data = self._inner.read(size)
-#         logger.info(f"Reading {size} bytes from stream, got {len(data)} bytes")
-#         if len(data) > 0:
-#             self._current_crc32 = zlib.crc32(data, self._current_crc32)
-#             self._current_size += len(data)
-#             return data
-#         else:
-#             if not self._checked:
-#                 # Check the CRC32
-#                 if self._expected_size is not None and self._current_size != self._expected_size:
-#                     raise ArchiveCorruptedError(f"Size mismatch: expected {self._expected_size}, got {self._current_size}")
-#                 if self._expected_crc32 is not None and self._current_crc32 != self._expected_crc32:
-#                     raise ArchiveCorruptedError(f"CRC32 mismatch: expected {self._expected_crc32}, got {self._current_crc32}")
-#                 self._checked = True
-
-#             return b""
-
-
-#     def readable(self) -> bool: return self._inner.readable()  # pragma: no cover - trivial
-
-#     def writable(self) -> bool: return self._inner.writable()  # pragma: no cover - trivial
-
-#     def seekable(self) -> bool: return self._inner.seekable()  # pragma: no cover - trivial
-
-#     def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-#         # After seeking, it's no longer possible to compute the actual checksum, so skip checking it.
-#         self._expected_crc32 = None
-#         self._current_size = self.tell()
-#         return self._inner.seek(offset, whence)
-
-#     def tell(self) -> int: return self._inner.tell()  # pragma: no cover - trivial
-
-#     def close(self) -> None:
-#         self._inner.close()
-#         super().close()
-
-
 class ExceptionTranslatingIO(io.RawIOBase, BinaryIO):
     """A wrapper around an IO object that translates exceptions during operations.
 
@@ -113,7 +63,6 @@ class ExceptionTranslatingIO(io.RawIOBase, BinaryIO):
     def _translate_exception(self, e: Exception) -> None:
         translated = self._translate(e)
         if translated is not None:
-            logger.info(f"Translated exception: {repr(e)} -> {repr(translated)}")
             raise translated from e
 
         if not isinstance(e, ArchiveError):
@@ -279,7 +228,6 @@ class StatsIO(io.RawIOBase, BinaryIO):
         if isinstance(self._inner, io.BufferedIOBase):
             n = self._inner.readinto(b)
         else:
-            logger.info(f"Reading {len(b)} bytes into buffer")
             data = self._inner.read(len(b))
             assert len(data) <= len(b)
             b[: len(data)] = data
@@ -290,9 +238,6 @@ class StatsIO(io.RawIOBase, BinaryIO):
         return n
 
     def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-        print(
-            f"Seeking to {offset} whence={whence}, prev read range: {self.stats.read_ranges[-1]}"
-        )
         self.stats.seek_calls += 1
         newpos = self._inner.seek(offset, whence)
         self.stats.read_ranges.append([newpos, 0])

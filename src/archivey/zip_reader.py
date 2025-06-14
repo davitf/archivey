@@ -52,15 +52,11 @@ def get_zipinfo_timestamp(zip_info: zipfile.ZipInfo) -> datetime:
                     extra_modtime = datetime.fromtimestamp(
                         mod_time, tz=timezone.utc
                     ).replace(tzinfo=None)
-                    logger.debug(
-                        f"Modtime: main={main_modtime}, extra={extra_modtime} timestamp={mod_time}"
-                    )
                     return extra_modtime
 
         # Skip this field: 4 bytes header + data_size
         pos += 4 + ln
 
-    logger.info(f"Modtime: main={main_modtime}")
     return main_modtime
 
 

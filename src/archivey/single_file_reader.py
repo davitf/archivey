@@ -62,9 +62,6 @@ def read_gzip_metadata(
             extra_fields["mtime"] = datetime.fromtimestamp(
                 mtime_timestamp, tz=timezone.utc
             ).replace(tzinfo=None)
-            logger.info(
-                f"GZIP metadata: mtime_timestamp={mtime_timestamp}, mtime={extra_fields['mtime']}"
-            )
             if use_stored_metadata:
                 member.mtime = extra_fields["mtime"]
 
@@ -134,7 +131,6 @@ XZ_STREAM_HEADER_MAGIC = b"\xfd7zXZ\x00"
 
 
 def read_xz_metadata(path: str, member: ArchiveMember):
-    logger.info(f"Reading XZ metadata for {path}")
     with open(path, "rb") as f:
         f.seek(-12, 2)  # Footer is always 12 bytes
         footer = f.read(12)
@@ -146,9 +142,6 @@ def read_xz_metadata(path: str, member: ArchiveMember):
         # Backward Size (first 4 bytes) tells how far back the Index is, in 4-byte units minus 1
         backward_size_field = struct.unpack("<I", footer[4:8])[0]
         index_size = (backward_size_field + 1) * 4
-        logger.info(
-            f"XZ metadata: index_size={index_size}, backward_size_field={backward_size_field}"
-        )
 
         f.seek(-12 - index_size, 2)
         index_data = f.read(index_size)
@@ -175,9 +168,6 @@ def read_xz_metadata(path: str, member: ArchiveMember):
             total_uncompressed_size += uncompressed_size
 
         member.file_size = total_uncompressed_size
-        logger.debug(
-            f"XZ metadata: total_size={total_uncompressed_size}, num_blocks={number_of_blocks}, blocks={blocks}"
-        )
 
 
 class SingleFileReader(BaseArchiveReaderRandomAccess):
@@ -220,7 +210,6 @@ class SingleFileReader(BaseArchiveReaderRandomAccess):
 
         # Get file metadata
         mtime = datetime.fromtimestamp(os.path.getmtime(archive_path))
-        logger.info(f"Compressed file {archive_path} mtime: {mtime}")
 
         # Create a single member representing the decompressed file
         self.member = ArchiveMember(

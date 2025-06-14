@@ -105,7 +105,7 @@ class FolderReader(BaseArchiveReaderRandomAccess):
                 try:
                     stream = LazyOpenIO(self.open, member, seekable=True)
                 except (IOError, OSError) as e:
-                    logger.info(f"Error opening member {member.filename}: {e}")
+                    logger.warning("Error opening member %s: %s", member.filename, e)
                     archive_error = ArchiveIOError(
                         f"Error opening member {member.filename}: {e}",
                     )

@@ -707,35 +707,12 @@ def create_iso_archive_with_pycdlib(
         iso = pycdlib.pycdlib.PyCdlib()
         iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
 
-        # for file in contents.files:
-        #     abs_path = "/" + file.name
-        #     rock_ridge_name = os.path.basename(file.name)
-        #     print(f"Adding file {file.name} as {abs_path}")
-        #     if file.type == MemberType.FILE:
-        #         iso.add_file(
-        #             os.path.join(tempdir, file.name),
-        #             abs_path,
-        #             rr_name=rock_ridge_name,
-        #         )
-        #     elif file.type == MemberType.DIR:
-        #         iso.add_directory(
-        #             abs_path,
-        #             rr_name=rock_ridge_name,
-        #         )
-        #     elif file.type == MemberType.LINK and file.link_target:
-        #         iso.add_symlink(
-        #             abs_path,
-        #             rr_symlink_name=rock_ridge_name,
-        #             udf_target="/" + file.link_target,
-        #         )
-
         for root_dir, dirs, files in os.walk(tempdir):
             rel_root = os.path.relpath(root_dir, tempdir)
             if rel_root == ".":
                 rel_root = ""
 
             for d in dirs:
-                print(f"Adding directory {d} to {rel_root}")
                 iso_path = os.path.join("/", rel_root, d)
                 iso_path = iso_path.replace(os.sep, "/")
                 iso.add_directory(
@@ -743,8 +720,6 @@ def create_iso_archive_with_pycdlib(
                 )
 
             for f_name in files:
-                print(f"Adding file {f_name} to {rel_root}")
-
                 src_path = os.path.join(root_dir, f_name)
                 iso_path = os.path.join("/", rel_root, f_name)
                 iso_path = iso_path.replace(os.sep, "/")
@@ -800,7 +775,6 @@ GENERATION_METHODS_TO_GENERATOR = {
 
 
 def create_archive(archive_info: SampleArchive, base_dir: str) -> str:
-    print(archive_info)
     full_path = archive_info.get_archive_path(base_dir)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
@@ -876,7 +850,6 @@ if __name__ == "__main__":
     archives_to_generate = filter_archives(SAMPLE_ARCHIVES, args.patterns)
 
     if not archives_to_generate:
-        print("No matching archives found.")
         exit(1)
 
     logger.info(f"Generating {len(archives_to_generate)} archives:")

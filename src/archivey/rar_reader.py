@@ -180,8 +180,6 @@ def convert_crc_to_encrypted(
     # Compute HMAC-SHA256 of the CRC using the hash key
     digest = hmac.new(hash_key, raw_crc, hashlib.sha256).digest()
 
-    # logger.info(f"Digest: {password=} {salt=} crc={crc:08x} {raw_crc=} {digest.hex()}")
-
     # XOR the digest bytes into the CRC
     result = 0
     for i in struct.iter_unpack("<I", digest):
@@ -308,7 +306,6 @@ class BaseRarReader(BaseArchiveReaderRandomAccess):
                 else:
                     has_encrypted_crc = False
 
-                logger.info(f"{info.filename=} {info.file_redir=}")
                 member = ArchiveMember(
                     filename=info.filename or "",  # Will never actually be None
                     file_size=info.file_size,
@@ -505,9 +502,6 @@ class RarStreamMemberFile(io.RawIOBase, BinaryIO):
             self._remaining -= len(data)
             self._actual_crc = zlib.crc32(data, self._actual_crc)
 
-            logger.info(
-                f"Read {len(data)} bytes from {self._filename}, {self._remaining} remaining: {data} ; crc={self._actual_crc:08x}"
-            )
             if self._remaining == 0:
                 self._fully_read = True
                 self._check_crc()
@@ -597,9 +591,6 @@ class RarStreamReader(BaseRarReader):
             # Open an unrar process that outputs the contents of all files in the archive to stdout.
             password_args = ["-p" + bytes_to_str(pwd)] if pwd else ["-p-"]
             cmd = [unrar_path, "p", "-inul", *password_args, self.archive_path]
-            logger.info(
-                f"Opening RAR archive {self.archive_path} with command: {' '.join(cmd)}"
-            )
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -645,8 +636,6 @@ class RarStreamReader(BaseRarReader):
 
         proc, unrar_stream = self._open_unrar_stream(pwd)
         lock = threading.Lock()
-
-        logger.info("Iterating over %s members", len(self.get_members()))
 
         # TODO: apply filter, file type and password check to members before opening
         # the unrar stream, pass only the filtered members to unrar

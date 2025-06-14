@@ -83,9 +83,6 @@ def process_member(
         assert isinstance(member.mtime, datetime)
 
         try:
-            # if member.extra:
-            # print(f"{member.filename} {member.extra}")
-
             if verify:
                 if stream is None:
                     stream = stream_to_close = archive.open(member, pwd=pwd)
@@ -314,7 +311,6 @@ def main(argv: list[str] | None = None) -> None:
                         if members_if_available is not None
                         else None,
                     ):
-                        # print(member)
                         process_member(
                             member, archive, stream, verify=verify, pwd=args.password
                         )

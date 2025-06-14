@@ -139,10 +139,6 @@ def open_lzma_stream(path: str) -> BinaryIO:
 
 
 def _translate_python_xz_exception(e: Exception) -> Optional[ArchiveError]:
-    import logging
-
-    logger = logging.getLogger(__name__)
-    logger.info("TRANSLATING XZ EXCEPTION", exc_info=e)
     if isinstance(e, xz.XZError):
         return ArchiveCorruptedError(f"Error reading XZ archive: {repr(e)}")
     return None  # pragma: no cover -- all possible exceptions should have been handled
