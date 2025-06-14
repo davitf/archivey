@@ -283,7 +283,7 @@ class ArchiveReader(abc.ABC):
                     if member.is_file
                     else None
                 )
-                yield member, stream
+                yield filtered, stream
 
             finally:
                 if stream is not None:
@@ -337,7 +337,7 @@ class ArchiveReader(abc.ABC):
             if filtered_member is None:
                 continue
 
-            extraction_helper.extract_member(member, None)
+            extraction_helper.extract_member(filtered_member, None)
 
         # Extract regular files
         self._extract_pending_files(path, extraction_helper, pwd=pwd)

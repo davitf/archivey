@@ -460,6 +460,8 @@ def test_read_zip_and_7z_archives_with_password_in_constructor(
 def test_read_sevenzip_py7zr_archives(
     sample_archive: SampleArchive, sample_archive_path: str
 ):
+    if sample_archive.contents.header_password is not None:
+        pytest.skip("py7zr does not expose header password correctly")
     check_iter_members(sample_archive, archive_path=sample_archive_path)
 
 
