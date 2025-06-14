@@ -21,6 +21,21 @@ Or, if you don't want to add all dependencies to your project, add only the ones
 
 RAR support relies on the `unrar` tool, which you'll need to install separately.
 
+### Optional dependencies
+
+Archivey relies on a few extra Python packages (and sometimes external tools) to
+handle less common formats. Install them all with `archivey[optional]` or choose
+only the ones you need.
+
+| Format(s) | Python package | External tool | Notes |
+|-----------|----------------|---------------|-------|
+| ZIP | built‑in `zipfile` | – | AES encrypted ZIP files are not supported |
+| TAR, `*.tar.gz`, `*.tgz`, `*.tar.bz2`, `*.tar.xz`, … | built‑in `tarfile`<br>Optional: `rapidgzip`, `indexed_bzip2`, `python-xz` | – | Cannot handle encrypted tar archives |
+| RAR | `rarfile` | `unrar` | For archives with encrypted headers, `cryptography` is also required |
+| 7z | `py7zr` | – | Limited to compression methods supported by py7zr |
+| ISO | `pycdlib` | – | ISO encryption is not supported |
+| `*.gz`, `*.bz2`, `*.xz`, `*.zst`, `*.lz4` | `zstandard` (for `.zst`)<br>`lz4` (for `.lz4`) | – | Set `use_rapidgzip`, `use_indexed_bzip2` or `use_python_xz` in `ArchiveyConfig` for faster reading |
+
 ## Usage
 
 ### Streaming access
@@ -46,4 +61,23 @@ with open_archive("example.zip") as archive:
         stream = archive.open(member_to_read)
         data = stream.read()
 ```
+
+### Command-line usage
+
+Archivey also provides a small CLI. Pass one or more archives to list or
+extract their contents:
+
+```bash
+$ archivey example.zip other.tar.gz
+```
+
+Use `-x` to extract, `-t` to verify checksums or `-l` just to list. Extra options
+like `--use-rar-stream` map to :class:`ArchiveyConfig` flags.
+
+### Configuration
+
+`ArchiveyConfig` toggles optional backends such as `use_rar_stream` for the RAR
+stream reader or `use_rapidgzip`/`use_indexed_bzip2`/`use_python_xz` for faster
+compressed stream handling. You can pass a config instance to `open_archive` or
+set global defaults with `archivey.config.set_default_config`.
 
