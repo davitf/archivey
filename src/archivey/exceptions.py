@@ -1,14 +1,12 @@
 # Common exceptions for all archive types
-class ArchiveError(Exception):
+class ArchiveException(Exception):
     """Base exception for all archive-related errors."""
 
     pass
 
 
-class ArchiveFormatError(ArchiveError):
-    """Raised when an archive is not in the expected format."""
-
-    pass
+# Backwards compatibility
+ArchiveError = ArchiveException
 
 
 class ArchiveCorruptedError(ArchiveError):

@@ -11,11 +11,10 @@ from archivey.dependency_checker import (
     get_dependency_versions,
 )
 from archivey.exceptions import (
+    ArchiveException,
     ArchiveCorruptedError,
     ArchiveEncryptedError,
     ArchiveEOFError,
-    ArchiveError,
-    ArchiveFormatError,
     ArchiveMemberNotFoundError,
     ArchiveNotSupportedError,
 )
@@ -35,8 +34,7 @@ __all__ = [
     "open_archive",
     # "IsoReader",
     "FolderReader",
-    "ArchiveError",
-    "ArchiveFormatError",
+    "ArchiveException",
     "ArchiveCorruptedError",
     "ArchiveEncryptedError",
     "ArchiveEOFError",

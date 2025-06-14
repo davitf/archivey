@@ -39,6 +39,7 @@ from archivey.base_reader import BaseArchiveReaderRandomAccess
 from archivey.exceptions import (
     ArchiveCorruptedError,
     ArchiveEncryptedError,
+    ArchiveEOFError,
     ArchiveError,
     PackageNotInstalledError,
 )
@@ -501,7 +502,9 @@ class RarStreamMemberFile(io.RawIOBase, BinaryIO):
             to_read = self._remaining if n < 0 else min(self._remaining, n)
             data = self._stream.read(to_read)
             if not data:
-                raise EOFError(f"Unexpected EOF while reading {self._filename}")
+                raise ArchiveEOFError(
+                    f"Unexpected EOF while reading {self._filename}"
+                )
             self._remaining -= len(data)
             self._actual_crc = zlib.crc32(data, self._actual_crc)
 
@@ -548,7 +551,7 @@ class RarStreamMemberFile(io.RawIOBase, BinaryIO):
                 while self._remaining > 0:
                     chunk = self.read(min(65536, self._remaining))
                     if not chunk:
-                        raise EOFError(
+                        raise ArchiveEOFError(
                             f"Unexpected EOF while skipping {self._filename}"
                         )
 
@@ -606,7 +609,7 @@ class RarStreamReader(BaseRarReader):
                 bufsize=1024 * 1024,
             )
             if proc.stdout is None:
-                raise RuntimeError("Could not open unrar output stream")
+                raise ArchiveError("Could not open unrar output stream")
             stream = cast(BinaryIO, proc.stdout)
             return proc, stream
 

@@ -101,7 +101,7 @@ def _translate_bz2_exception(e: Exception) -> Optional[ArchiveError]:
     elif isinstance(e, EOFError):
         return ArchiveEOFError(f"BZ2 file is truncated: {repr(e)}")
     # elif isinstance(e, ValueError):
-    #     return ArchiveFormatError("No valid BZ2 stream found")
+    #     return ArchiveCorruptedError("No valid BZ2 stream found")
     return None  # pragma: no cover -- all possible exceptions should have been handled
 
 

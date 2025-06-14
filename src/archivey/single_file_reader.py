@@ -8,7 +8,7 @@ from typing import BinaryIO, List
 from archivey.base_reader import BaseArchiveReaderRandomAccess
 from archivey.compressed_streams import open_stream
 from archivey.exceptions import (
-    ArchiveFormatError,
+    ArchiveCorruptedError,
 )
 from archivey.types import (
     SINGLE_FILE_COMPRESSED_FORMATS,
@@ -53,7 +53,7 @@ def read_gzip_metadata(
         # Read the fixed 10-byte GZIP header
         header = f.read(10)
         if len(header) != 10 or header[:2] != b"\x1f\x8b":
-            raise ArchiveFormatError("Not a valid GZIP file")
+            raise ArchiveCorruptedError("Not a valid GZIP file")
 
         # Parse header fields
         id1, id2, cm, flg, mtime_timestamp, xfl, os = struct.unpack("<4BIBB", header)

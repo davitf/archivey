@@ -9,7 +9,7 @@ import pytest
 from archivey.config import ArchiveyConfig
 from archivey.core import open_archive
 from archivey.dependency_checker import get_dependency_versions
-from archivey.exceptions import ArchiveError, ArchiveMemberCannotBeOpenedError
+from archivey.exceptions import ArchiveException, ArchiveMemberCannotBeOpenedError
 from archivey.types import ArchiveMember, CreateSystem, MemberType
 from tests.archivey.sample_archives import (
     MARKER_MTIME_BASED_ON_ARCHIVE_NAME,
@@ -273,7 +273,7 @@ def check_iter_members(
                     with archive.open(member) as stream:
                         assert stream.read() == sample_file.contents
                 else:
-                    with pytest.raises((ValueError, ArchiveError)):
+                    with pytest.raises((ValueError, ArchiveException)):
                         stream = archive.open(member)
                         logger.info(
                             f"Unexpected open() success for {member=}; data={stream.read()}"
@@ -285,7 +285,7 @@ def check_iter_members(
                 with archive.open(filename) as stream:
                     assert stream.read() == sample_file.contents
             else:
-                with pytest.raises((ValueError, ArchiveError)):
+                with pytest.raises((ValueError, ArchiveException)):
                     archive.open(filename)
 
 

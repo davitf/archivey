@@ -55,7 +55,7 @@ def open_archive(
         reader: ArchiveReader
 
         if use_libarchive:
-            raise NotImplementedError("LibArchiveReader is not implemented")
+            raise ArchiveNotSupportedError("LibArchiveReader is not implemented")
 
         if format == ArchiveFormat.RAR:
             if use_rar_stream:
@@ -96,7 +96,7 @@ def open_archive(
             )
 
         elif format == ArchiveFormat.ISO:
-            raise NotImplementedError("ISO reader is not yet implemented")
+            raise ArchiveNotSupportedError("ISO reader is not yet implemented")
             # reader = IsoReader(archive_path, password=pwd)
 
         elif format == ArchiveFormat.FOLDER:
