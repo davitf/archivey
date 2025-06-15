@@ -9,6 +9,7 @@ else:
     from backports.strenum import StrEnum
 
 from dataclasses import dataclass, field
+import dataclasses
 from datetime import datetime
 from enum import IntEnum
 from typing import Any, Optional, Tuple
@@ -185,3 +186,7 @@ class ArchiveMember:
     @property
     def CRC(self) -> Optional[int]:
         return self.crc32
+
+    def replace(self, **kwargs: Any) -> "ArchiveMember":
+        """Return a new :class:`ArchiveMember` with updated fields."""
+        return dataclasses.replace(self, **kwargs)
