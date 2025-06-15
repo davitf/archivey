@@ -2,6 +2,7 @@ import os
 from typing import Any
 
 from archivey.base_reader import ArchiveReader, StreamingOnlyArchiveReaderWrapper
+from archivey.base_writer import ArchiveWriter
 from archivey.config import ArchiveyConfig, default_config, get_default_config
 from archivey.exceptions import ArchiveNotSupportedError
 from archivey.folder_reader import FolderReader
@@ -109,3 +110,25 @@ def open_archive(
             return StreamingOnlyArchiveReaderWrapper(reader)
 
         return reader
+
+
+def open_archive_writer(archive_path: str | bytes | os.PathLike) -> ArchiveWriter:
+    """Open an archive for writing based on its filename."""
+    archive_path = _normalize_archive_path(archive_path)
+    format = detect_archive_format(archive_path)
+
+    if format == ArchiveFormat.ZIP:
+        from archivey.zip_writer import ZipWriter
+
+        return ZipWriter(archive_path)
+    elif format in (
+        ArchiveFormat.TAR,
+        ArchiveFormat.TAR_GZ,
+        ArchiveFormat.TAR_BZ2,
+        ArchiveFormat.TAR_XZ,
+    ):
+        from archivey.tar_writer import TarWriter
+
+        return TarWriter(archive_path, format)
+
+    raise ArchiveNotSupportedError(f"Unsupported archive format: {format}")

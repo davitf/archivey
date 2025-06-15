@@ -47,3 +47,14 @@ with open_archive("example.zip") as archive:
         data = stream.read()
 ```
 
+### Writing archives
+```python
+from archivey import open_archive_writer, MemberType
+
+with open_archive_writer("example.zip") as writer:
+    with writer.open("file.txt") as f:
+        f.write(b"hello")
+    writer.add("folder/", MemberType.DIR)
+    writer.add("link.txt", MemberType.SYMLINK, link_target="file.txt")
+```
+

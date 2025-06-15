@@ -4,7 +4,7 @@ from archivey.config import (
     get_default_config,
     set_default_config,
 )
-from archivey.core import open_archive
+from archivey.core import open_archive, open_archive_writer
 from archivey.dependency_checker import (
     DependencyVersions,
     format_dependency_versions,
@@ -33,6 +33,7 @@ from archivey.types import (
 
 __all__ = [
     "open_archive",
+    "open_archive_writer",
     # "IsoReader",
     "FolderReader",
     "ArchiveError",
