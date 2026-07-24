@@ -11,7 +11,7 @@ Byte scan stays as a fallback. No public API; no format change; conservative dir
 
 | Path | Today | Frequency |
 | --- | --- | --- |
-| Valid multi-member gzip, read to EOF | full scan for a further `1f 8b 08` (short-circuits at first magic, ~16 MiB apart) | every such read |
+| Valid multi-member gzip, read to EOF | full scan for a further `1f 8b 08` (short-circuits at the first further magic — one extra serial pass to the second member's start) | every such read |
 | Truncated single-member, ISIZE mismatch | scans the **whole file** (no magic to find) before raising | every such raise |
 
 Both are on the accelerated seekable-gzip path — precisely where a user chose rapidgzip for
@@ -58,6 +58,16 @@ If (1) fails, the fallback is the current behavior and this change becomes a no-
 **sum of per-member ISIZE** (walk members, accept only when the sum matches `total % 2**32`).
 That walk needs the same member-boundary data this change exposes. Build the sum on top of this
 accessor rather than re-deriving boundaries with another scan.
+
+## Interaction with `gzip-truncation-backstop-any-seekable`
+
+This change also *removes an obstacle* for the any-seekable backstop. There, the non-empty
+soft-EOF path runs the multi-member scan while the accelerator is **still live** on a caller-owned
+source, so the scan would need a position-isolated `SharedSource` view (and possibly force the
+accelerator itself through a `fileno`-less view). Answering "≥2 members?" from the index needs
+**no** source re-read at all — so if this change lands first, the sibling change has no
+concurrent-scan consumer to isolate. The two are complementary; coordinate the shared spec MODIFY
+(below / sibling tasks §6.2).
 
 ## Testing
 

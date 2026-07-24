@@ -37,5 +37,11 @@
 - [ ] 4.1 `openspec validate --strict gzip-multimember-detect-via-index` green.
 - [ ] 4.2 Note the follow-on: the deferred per-member ISIZE **sum**
       (`rapidgzip-truncation-investigation`) should build on this index accessor.
-- [ ] 4.3 Sync the delta into main `seekable-decompressor-streams` when landing (coordinate with
-      `gzip-truncation-backstop-any-seekable`, which edits the same requirement).
+- [ ] 4.3 Do **not** accept / sync this delta until §1 confirms rapidgzip exposes gzip *member*
+      boundaries (else the "SHALL prefer the index" contract asserts a capability the code lacks —
+      keep the index-first wording in this change folder only until then).
+- [ ] 4.4 Sync into main `seekable-decompressor-streams` when landing. This and
+      `gzip-truncation-backstop-any-seekable` `MODIFY` the **same** requirement with divergent
+      full texts; OpenSpec `MODIFIED` replaces the whole requirement, so an independent sync
+      clobbers whichever lands second. Hand-author **one merged requirement text** covering both
+      the any-seekable scope and the index-based disambiguation.

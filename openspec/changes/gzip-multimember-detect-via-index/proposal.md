@@ -16,7 +16,9 @@ That scan runs on the two **hot** paths, not rare ones:
 
 - **Every valid multi-member gzip read to EOF.** ISIZE records only the *last* member's size,
   so `total % 2**32 != isize` is guaranteed for a valid ≥2-member file → mismatch → full scan
-  (short-circuits at the first magic, but that is ~16 MiB apart in compressed data on average).
+  (short-circuits at the first further magic, i.e. one extra serial pass to the start of the
+  second member — a fraction of the file for evenly-sized members, but unbounded in the worst
+  case of a large first member).
 - **Every truncated single-member raise.** There is no second magic to find, so the scan reads
   the **entire file** before concluding "no further member → raise `TruncatedError`."
 
@@ -44,6 +46,13 @@ index is authoritative exactly where we rely on it (maintainer-confirmed reasoni
 This change is **investigation + specs + implementation**: it must first confirm rapidgzip's
 index actually distinguishes gzip *member* boundaries from deflate *block* boundaries (see
 `design.md`); the swap lands once that holds.
+
+**The spec delta is contingent on that spike.** The MODIFY as written makes the index the
+*primary* mechanism ("SHALL prefer … the index"), but design open-question #1 may find rapidgzip
+only exposes deflate *block* offsets — in which case this change is a documented no-op and the
+byte scan stays. So the delta MUST NOT be accepted / synced into `openspec/specs/` until the
+spike confirms member boundaries are derivable; otherwise the contract would assert a capability
+the code never gains. Until then the index-first wording lives only in this change folder.
 
 ## Specs
 
