@@ -13,7 +13,7 @@ size, raises `TruncatedError` the same way a path source does today.
 | --- | --- |
 | `_verify_not_truncated` re-opens the path at EOF to read ISIZE | Capture ISIZE up front (already read by `_gzip_isize_from_source`; value currently discarded — keep it). **Preserve the tri-state** — see the ISIZE-capture note below |
 | `_begin_stdlib_fallback` builds `GzipDecompressorStream(self._source_path)` from offset 0 | Rewind an independent view of the source (`seek(0)`) and hand it to the same stdlib engine — fallback only runs **after** `old.close()`, so no cursor conflict with the (now-closed) accelerator |
-| multi-member magic scan opens a fresh handle | Scan an independent **`SharedSource` view** of the same source (see Obstacle 1) — its per-view position + shared lock make the scan safe even while the accelerator is still live — or, preferably, the sibling change `gzip-multimember-detect-via-index` removes this scan entirely |
+| multi-member magic scan opens a fresh handle | Scan an independent **`SharedSource` view** of the same source (see Obstacle 1) — its per-view position + shared lock make the scan safe even while the accelerator is still live. (The index-based alternative in `gzip-multimember-detect-via-index` was found infeasible — `FINDINGS.md` — so the scan stays.) |
 
 `_config_with_gzip_isize` already calls `_gzip_isize_from_source` for any seekable source but
 only stores `gzip_isize_backstop=True`. Plumbing the **int** (onto `StreamConfig` or the check
@@ -69,17 +69,30 @@ through it — see `known-issues.md` Bug 3 mitigation). Concretely:
 For a **path** source nothing changes — archivey owns the fd and can keep opening fresh
 independent handles (`SharedSource` for a path owns and closes its handle).
 
-**Open question — does the accelerator have to read through a view?** For the scan's view to
-coordinate with the accelerator, the accelerator must *also* read through a `SharedSource` view
-(sharing the same lock); a raw-handle accelerator plus a separate `SharedSource` do **not** share
-a lock. But feeding rapidgzip a Python view (a `SlicingStream`, no `fileno()`) forces it onto its
-Python-object read path, losing the `mmap`/parallel fast path it gets from a real fd and keeping
-it on the Bug-3-prone boundary (Obstacle 2). Two ways out, to decide during the spike: (i) accept
-the view for non-path sources (simplicity, at a perf/Bug-3 cost the caller opted into by passing a
-file object under `ON`); or (ii) prefer the sibling `gzip-multimember-detect-via-index` — its
-index answers "≥2 members?" with **no** source re-read, so no independent scan view is needed and
-the accelerator can read the source however it likes. (ii) makes the two changes complementary:
-the index removes the only consumer that needed a concurrent scan view.
+**Does the accelerator have to read through a view? — RESOLVED by the spike (`FINDINGS.md`).**
+For the scan's view to coordinate with the accelerator, the accelerator must *also* read through
+a `SharedSource` view (sharing the same lock); a raw-handle accelerator plus a separate
+`SharedSource` do **not** share a lock. The spike found this is already how archivey runs: the
+single-file reader wraps a seekable stream in `SharedSource` and hands the codec
+`self._shared.view(0)`, and rapidgzip's `_hasValidFileno` is **False** on that view (`SlicingStream.fileno()`
+raises), so rapidgzip is **already** on its Python read path for stream sources today — there is
+no `mmap`/fd fast path to forfeit (that path is reached only by *path* sources, where archivey
+passes the path string and rapidgzip opens its own fd). So option **(i)** — the accelerator and
+the scan each take a `SharedSource.view(0)` — costs nothing new for stream sources, and is the
+path to take.
+
+Two consequences the spike nailed down:
+- The earlier fallback "(ii) defer the scan to `gzip-multimember-detect-via-index`" is **dead**:
+  that sibling's index spike found rapidgzip 0.16.0 does **not** expose member boundaries, so it
+  cannot remove the scan. This change must keep the scan, on an independent view.
+- Even a *real-fileno* source is not safe to share raw: the spike showed the fd path moves the
+  caller's file position (rapidgzip `dup`s the description, shared offset), so a concurrent scan on
+  the same raw handle would clobber. Locked `SharedSource` views are required regardless.
+
+The one piece of new work is **layering**: the codec-level `_GzipTruncationCheckStream` currently
+receives only the single `view(0)` as its `source` and has no view factory. Give it a way to mint
+a second `view(0)` (pass the `SharedSource`, or a `Callable[[], BinaryIO]` view-factory, down to
+the check stream) so the scan gets its own position-isolated view.
 
 ## Obstacle 2 — rapidgzip Bug 3 (`terminate()` on a raising Python source)
 
@@ -92,22 +105,27 @@ seekable sources (`return stream` in `GzipCodec.open`), so the exposure exists t
 safety, not more. But generalizing the backstop means we deliberately drive more file-object
 traffic through the accelerator, so we should harden the boundary first.
 
-**Proposed mitigation (to validate): an exception-trapping source shim.** Wrap the caller source
-in an inner adapter whose `read`/`seek`/`readinto` **never raise into rapidgzip**: on an
-underlying error it stores the exception, returns a benign EOF-shaped result (`b""` / short) to
-the C++ layer, and the `_AcceleratorStream` outer wrapper checks for a stored exception after
-each accelerator call and re-raises it (translated). This converts a process-abort into a normal
-Python exception on the archivey side.
+**Mitigation — an exception-trapping source shim (spike-validated, `FINDINGS.md`).** Wrap the
+caller source in an inner adapter whose `read`/`seek`/`readinto` **never raise into rapidgzip**:
+on an underlying error it stores the exception, returns a benign EOF-shaped result (`b""` / `0`)
+to the C++ layer, and the `_AcceleratorStream` outer wrapper checks for a stored exception after
+each accelerator call and re-raises it (translated). The spike reproduced the exact documented
+abort (`std::invalid_argument: Cannot convert nullptr Python object …`, SIGABRT) by closing a
+source underneath a live accelerator, and confirmed the trap turns it into a **clean exit** with
+the `ValueError` captured for re-raise. So the shim works for the source-raises/closed trigger.
 
-Open questions this raises (measure before committing):
+Residual questions the spike answered or bounded (finish in the sweep before committing):
 
-- Does returning `b""` to rapidgzip on a trapped inner error reliably produce a clean stop
-  (soft-EOF), or can it still wedge a worker thread? Needs the same wall-clock-timeout sweep the
-  investigation used.
-- Is the trap needed at all for *seekable file* sources, or is Bug 3 specific to sources that
-  themselves raise (vs. plain truncated bytes, which do not raise — they just end)? If a
-  `BytesIO`/file of truncated bytes never raises, Bug 3 may not fire for the exact case this
-  change targets, and the trap becomes belt-and-suspenders rather than a prerequisite.
+- **Is the trap needed for the change's own target case?** The spike showed **no** — a truncated
+  single-member gzip of plain **non-raising** bytes soft-EOFs without any abort. Truncated bytes
+  just end; nothing raises into rapidgzip. So the trap is *hardening for hostile/racing sources*,
+  not a prerequisite for the backstop's own correctness.
+- **Does the trap cover every abort path?** It covers faults surfacing inside a wrapped Python
+  call (`readinto`/`seek`/`tell`). It does **not** obviously cover the separate finalizer-race
+  trigger `known-issues.md` notes ("path-source truncations/CRC mismatches can `std::terminate`
+  during worker finalization after a Python exception"). Bound that corner with the same
+  wall-clock-timeout sweep (`scripts/rapidgzip_truncation_sweep.py` shape) before calling the trap
+  complete.
 
 ## Open decision (for the maintainer)
 
@@ -121,16 +139,16 @@ Open questions this raises (measure before committing):
   file-object sources use rapidgzip at all (the maintainer's framing), with this backstop active
   whenever rapidgzip is chosen.
 
-Leaning **(b)** for the backstop itself, with the trap shim and/or (c) as a **follow-up** — but
-this is the maintainer's call and the reason this change ships as investigation + specs first.
-Note the honest caveat: (b) does **not** leave Bug-3 exposure *identical* to today. Today a bare
-non-path source hits `return stream` and the wrapper does none of `old.close()`, a rewind
-re-decode, or a scan; the backstop adds those extra crossings of the C++/Python boundary on
-file-object sources, each a place Bug 3 can fire (`known-issues.md`: it fires on `read()`,
-`close()`, and the finalize guard alike). So (b) trades *strictly more safety against truncation*
-for *bounded new Bug-3 surface* — a real, if small, widening, not a no-op. The spike (task 3.1)
-should measure whether truncated non-raising bytes actually trip Bug 3 before (b) is accepted as
-"safe enough for now".
+**Maintainer lean (2026-07): (a) trap-then-enable — "do the trap at once to be safe".** The
+spike makes this cheap: the trap is validated against the documented abort (`FINDINGS.md`), and
+landing it first removes the honest caveat that (b) carried — namely that the backstop adds extra
+C++/Python crossings on file-object sources (`old.close()`, the rewind re-decode, the scan), each
+a place Bug 3 can fire (`known-issues.md`: it fires on `read()`, `close()`, and the finalize
+guard alike). With the trap in place those crossings surface as translated errors instead of a
+process abort, so (a) enables the any-seekable backstop without widening the abort surface.
+Option (c) (a speed-vs-robustness config axis) remains a reasonable *later* refinement but is not
+required to land the backstop safely. Remaining gate before "done": the wall-clock-timeout sweep
+to bound the finalizer-race corner the read/seek trap may not cover (above).
 
 ## Testing
 

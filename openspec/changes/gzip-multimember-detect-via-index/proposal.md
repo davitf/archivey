@@ -1,5 +1,11 @@
 # Detect multi-member gzip via rapidgzip's index instead of a second full-file scan
 
+> **STATUS: BLOCKED — the enabling capability does not exist.** The spike (`FINDINGS.md`) found
+> that rapidgzip 0.16.0 exposes only random-access seek points, not gzip member boundaries, so
+> the index cannot answer "≥2 members?". This change is a documented no-op; the byte scan stays
+> and the delta spec must not be synced. Recommend closing/shelving (maintainer decision). The
+> rest of this proposal is preserved as the rationale that led to the spike.
+
 ## Why
 
 When the ISIZE backstop sees a length mismatch, `_GzipTruncationCheckStream` disambiguates

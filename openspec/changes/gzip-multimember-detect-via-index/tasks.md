@@ -1,17 +1,21 @@
 # Tasks — multi-member gzip detection via rapidgzip's index
 
-> Investigation + specs + implementation. Read `design.md` first (index authoritative only
-> because the check protects *valid* files; the open rapidgzip-API question gates implementation).
-> Run tooling through `uv`. Test in all three dependency configs before pushing.
+> **BLOCKED — spike resolved NO (see `FINDINGS.md`).** rapidgzip 0.16.0 does not expose gzip
+> member boundaries through its index; task 1.3's stop-condition is met. The implementation tasks
+> below are retained for the record but are **not** to be executed. Do not sync the delta spec.
+> Read `design.md` + `FINDINGS.md` first.
 
-## 1. Confirm rapidgzip exposes member boundaries
+## 1. Confirm rapidgzip exposes member boundaries — DONE (NO)
 
-- [ ] 1.1 Determine rapidgzip 0.16's index accessor (`block_offsets()` / `export_index()` / other)
-      and whether it distinguishes gzip **member/stream** starts from deflate **block** offsets.
-- [ ] 1.2 Confirm the index is fully populated after a sequential read to EOF and that querying it
-      forces no extra decode.
-- [ ] 1.3 If member boundaries are not derivable, STOP: record the finding, keep the byte scan,
-      and mark this change a no-op (document in `known-issues.md`).
+- [x] 1.1 `block_offsets()` / `available_block_offsets()` expose random-access **seek points**,
+      not gzip member starts: member boundaries never appear in the offsets at any
+      parallelization (serial gives only `{start, EOS}`). `export_index` serializes the same seek
+      index; no member/stream-count accessor exists. Evidence: `FINDINGS.md`.
+- [x] 1.2 The index is complete after a read to EOF (`block_offsets_complete() == True`), but
+      "complete" means the seek index — it carries no member-boundary data.
+- [x] 1.3 Member boundaries are **not derivable** → STOP. Byte scan stays; this change is a
+      documented no-op. Knock-on: the deferred per-member ISIZE **sum** is equally blocked (it
+      needed the same member data). Maintainer decision: close/shelve this change (see FINDINGS).
 
 ## 2. Implement the index query
 
