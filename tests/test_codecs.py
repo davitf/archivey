@@ -1079,8 +1079,8 @@ def _make_gzip_check_stream(inner, path):
     and scans the real gzip file at ``path`` via a fresh independent handle.
     """
     from archivey.internal.streams.codecs import (
-        _GzipTruncationCheckStream,
         _gzip_isize_and_length,
+        _GzipTruncationCheckStream,
     )
 
     source_len, isize = _gzip_isize_and_length(str(path))
