@@ -13,7 +13,7 @@ size, raises `TruncatedError` the same way a path source does today.
 | --- | --- |
 | `_verify_not_truncated` re-opens the path at EOF to read ISIZE | Capture ISIZE up front (already read by `_gzip_isize_from_source`; value currently discarded — keep it). **Preserve the tri-state** — see the ISIZE-capture note below |
 | `_begin_stdlib_fallback` builds `GzipDecompressorStream(self._source_path)` from offset 0 | Rewind an independent view of the source (`seek(0)`) and hand it to the same stdlib engine — fallback only runs **after** `old.close()`, so no cursor conflict with the (now-closed) accelerator |
-| multi-member magic scan opens a fresh handle | Scan an independent **`SharedSource` view** of the same source (see Obstacle 1) — its per-view position + shared lock make the scan safe even while the accelerator is still live. (The index-based alternative in `gzip-multimember-detect-via-index` was found infeasible — `FINDINGS.md` — so the scan stays.) |
+| multi-member magic scan opens a fresh handle | Scan an independent **`SharedSource` view** of the same source (see Obstacle 1) — its per-view position + shared lock make the scan safe even while the accelerator is still live. (The index-based alternative was found infeasible and its change closed — rapidgzip exposes no member boundaries; see `docs/internal/known-issues.md`.) |
 
 `_config_with_gzip_isize` already calls `_gzip_isize_from_source` for any seekable source but
 only stores `gzip_isize_backstop=True`. Plumbing the **int** (onto `StreamConfig` or the check
@@ -82,7 +82,7 @@ the scan each take a `SharedSource.view(0)` — costs nothing new for stream sou
 path to take.
 
 Two consequences the spike nailed down:
-- The earlier fallback "(ii) defer the scan to `gzip-multimember-detect-via-index`" is **dead**:
+- The earlier fallback "(ii) defer the scan to an index-based sibling change" is **dead**:
   that sibling's index spike found rapidgzip 0.16.0 does **not** expose member boundaries, so it
   cannot remove the scan. This change must keep the scan, on an independent view.
 - Even a *real-fileno* source is not safe to share raw: the spike showed the fd path moves the

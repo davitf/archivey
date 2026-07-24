@@ -67,8 +67,11 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ensure_binaryio,
     fix_stream_start_position,
+    is_seekable,
     source_byte_size,
 )
+from archivey.internal.streams.streamtools.shared import SharedSource
+from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.types import (
@@ -83,6 +86,8 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
+
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 
@@ -144,11 +149,16 @@ class _AcceleratorStream(DelegatingStream):
     around it — the guard must attach where the object is born.
     """
 
-    def __init__(self, inner: object) -> None:
+    def __init__(self, inner: object, *, trap: "_TrappingSource | None" = None) -> None:
         super().__init__(ensure_binaryio(inner))
         # The finalize callback must NOT reference self — a bound method would pin the wrapper
         # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
         self._finalize = weakref.finalize(self, self._close_inner, self._inner)
+        # Bug 3 containment: when rapidgzip reads a caller-owned Python source through a
+        # ``_TrappingSource``, a source-side fault is swallowed into ``trap`` (so it never
+        # crosses into rapidgzip's C++ and aborts the process) and re-raised here after each
+        # accelerator call, as a normal Python exception.
+        self._trap = trap
 
     @staticmethod
     def _close_inner(inner: BinaryIO) -> None:
@@ -159,12 +169,99 @@ class _AcceleratorStream(DelegatingStream):
         except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
             pass
 
+    def _reraise_trapped(self) -> None:
+        if self._trap is not None and self._trap.trapped is not None:
+            exc = self._trap.trapped
+            self._trap.trapped = None
+            raise exc
+
+    def read(self, n: int = -1, /) -> bytes:
+        data = super().read(n)
+        self._reraise_trapped()
+        return data
+
+    def readinto(self, b: "WriteableBuffer", /) -> int:
+        n = super().readinto(b)
+        self._reraise_trapped()
+        return n
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        result = super().seek(offset, whence)
+        self._reraise_trapped()
+        return result
+
     def close(self) -> None:
         if self.closed:
             return
         # Trigger the finalize guard (closes the raw object) once; it is then disarmed.
         self._finalize()
         super(DelegatingStream, self).close()
+
+
+class _TrappingSource(io.RawIOBase):
+    """Source shim that never lets a Python-side fault cross into rapidgzip's C++ layer.
+
+    rapidgzip aborts the whole process (SIGABRT, ``std::invalid_argument: Cannot convert
+    nullptr Python object``) when a callback into its Python source raises mid-decode — e.g.
+    the caller closed their own source underneath a live accelerator (``known-issues.md``
+    Bug 3). No Python ``try/except`` around the accelerator can contain that abort. This shim
+    wraps the source so every method **traps** rather than raises: it stores the first fault in
+    ``trapped`` and returns a benign EOF-shaped result to rapidgzip; :class:`_AcceleratorStream`
+    re-raises the stored fault after the accelerator call, turning the abort into a normal Python
+    exception. It deliberately exposes **no** ``fileno`` so rapidgzip stays on its Python read
+    path (a valid fileno would let it bypass this shim). Wraps only caller-owned sources; path
+    sources open their own fd and are immune, so they are never trapped.
+    """
+
+    def __init__(self, inner: BinaryIO) -> None:
+        super().__init__()
+        self._inner = inner
+        self.trapped: BaseException | None = None
+
+    def _store(self, exc: BaseException) -> None:
+        if self.trapped is None:
+            self.trapped = exc
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        try:
+            return bool(self._inner.seekable())
+        except BaseException as exc:  # noqa: BLE001 - trap so no fault reaches the C++ layer
+            self._store(exc)
+            return False
+
+    def read(self, size: int = -1, /) -> bytes:
+        try:
+            return self._inner.read(size)
+        except BaseException as exc:  # noqa: BLE001 - trap; re-raised by _AcceleratorStream
+            self._store(exc)
+            return b""
+
+    def readinto(self, buf: "WriteableBuffer", /) -> int:
+        mv = memoryview(buf).cast("B")
+        try:
+            data = self._inner.read(len(mv))
+        except BaseException as exc:  # noqa: BLE001 - trap; re-raised by _AcceleratorStream
+            self._store(exc)
+            return 0
+        mv[: len(data)] = data
+        return len(data)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        try:
+            return self._inner.seek(offset, whence)
+        except BaseException as exc:  # noqa: BLE001 - trap; re-raised by _AcceleratorStream
+            self._store(exc)
+            return 0
+
+    def tell(self) -> int:
+        try:
+            return self._inner.tell()
+        except BaseException as exc:  # noqa: BLE001 - trap; re-raised by _AcceleratorStream
+            self._store(exc)
+            return 0
 
 
 CodecSource = str | os.PathLike[str] | BinaryIO
@@ -310,40 +407,54 @@ def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO
     return VerifyingStream(stream, {}, expected_size=size)
 
 
-def _gzip_isize_from_source(source: CodecSource) -> int | None:
-    """Read the gzip ISIZE trailer (uncompressed size mod 2**32) when cheaply available.
+def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]:
+    """Capture ``(source_byte_length, ISIZE_trailer)`` for the truncation backstop in one pass.
 
-    Returns ``None`` for non-seekable sources, short files, or I/O errors. Multi-member
-    gzip's trailer is only the *last* member's size — callers that need a hard bound
-    should still prefer a container-declared size when available.
+    Preserves the **tri-state** the path-reopen backstop relied on, which a bare ``int | None``
+    would collapse:
+
+    - ``(length, isize)`` — a readable seekable source ≥ 18 bytes: compare ``isize``.
+    - ``(length, None)`` with ``length < 18`` — too short for a complete gzip member: the
+      backstop must **raise** on a non-empty soft EOF (an incomplete member).
+    - ``(None, None)`` — non-seekable / unreadable: the backstop cannot verify, so it must
+      **return** without raising (never invent a truncation it cannot prove).
+
+    ISIZE is uncompressed size mod 2**32 and covers only the *last* member of a multi-member
+    file; callers needing a hard bound still prefer a container-declared size. Restores the
+    source position for a caller-owned stream.
     """
     try:
         if isinstance(source, (str, os.PathLike)):
             with open(os.fspath(source), "rb") as f:
-                size = f.seek(0, io.SEEK_END)
-                if size < 18:
-                    return None
+                length = f.seek(0, io.SEEK_END)
+                if length < 18:
+                    return length, None
                 f.seek(-4, io.SEEK_END)
-                return int.from_bytes(f.read(4), "little")
+                return length, int.from_bytes(f.read(4), "little")
         seek = getattr(source, "seek", None)
         tell = getattr(source, "tell", None)
         read = getattr(source, "read", None)
         seekable = getattr(source, "seekable", None)
         if seek is None or tell is None or read is None:
-            return None
+            return None, None
         if seekable is not None and not seekable():
-            return None
+            return None, None
         pos = tell()
         try:
-            end = seek(0, io.SEEK_END)
-            if end < 18:
-                return None
+            length = seek(0, io.SEEK_END)
+            if length < 18:
+                return length, None
             seek(-4, io.SEEK_END)
-            return int.from_bytes(read(4), "little")
+            return length, int.from_bytes(read(4), "little")
         finally:
             seek(pos)
     except (OSError, io.UnsupportedOperation, ValueError, TypeError):
-        return None
+        return None, None
+
+
+def _gzip_isize_from_source(source: CodecSource) -> int | None:
+    """The gzip ISIZE trailer when cheaply readable, else ``None`` (see the tri-state helper)."""
+    return _gzip_isize_and_length(source)[1]
 
 
 def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> StreamConfig:
@@ -372,9 +483,50 @@ def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
 
 
 def _open_rapidgzip(source: CodecSource) -> BinaryIO:
-    """Open ``source`` through rapidgzip with the close-on-finalize guard."""
+    """Open ``source`` through rapidgzip with the close-on-finalize guard and (for a
+    caller-owned source) the Bug-3 trap.
+
+    A **path** source lets rapidgzip open its own fd — immune to Bug 3 — so it is passed
+    straight through. A caller-owned stream is wrapped in a :class:`_TrappingSource` so a
+    source-side fault becomes a re-raisable Python exception instead of a process abort.
+    """
     assert _rapidgzip is not None
-    return _AcceleratorStream(_rapidgzip.open(source, parallelization=0))
+    if isinstance(source, (str, os.PathLike)):
+        return _AcceleratorStream(_rapidgzip.open(source, parallelization=0))
+    trap = _TrappingSource(source)
+    return _AcceleratorStream(_rapidgzip.open(trap, parallelization=0), trap=trap)
+
+
+def _gzip_backstop_source(
+    source: CodecSource,
+) -> tuple[CodecSource, Callable[[], BinaryIO] | None]:
+    """Resolve ``(source to feed the accelerator, factory for independent views @ offset 0)``.
+
+    The truncation backstop's empty→stdlib fallback and its multi-member scan each need a
+    fresh, position-isolated seekable stream over the whole compressed source that never
+    disturbs the live accelerator's cursor. How that is obtained depends on the source:
+
+    - **path** — hand the accelerator the path (its own fd); the factory opens a fresh
+      independent OS handle per call.
+    - **locked ``SharedSource`` view** (the reader's seekable-stream path) — the accelerator
+      keeps reading that view; the factory mints a lock-sharing sibling view, so scan and
+      accelerator coordinate on one lock (a background rapidgzip worker reads the source).
+    - **raw seekable stream** given directly — wrap once in a private ``SharedSource`` so the
+      accelerator and the factory's views share one lock; caller-owned, so never closed.
+    - **non-seekable** — no factory (``None``); rapidgzip needs a seekable source anyway, so
+      this path is not reached for the backstop.
+    """
+    if isinstance(source, (str, os.PathLike)):
+        # os.fspath narrows to the concrete path for the reopen closure (the same tolerated
+        # ty fspath-overload idiom used elsewhere in this file for CodecSource paths).
+        path = os.fspath(source)
+        return source, (lambda: open(path, "rb"))
+    if isinstance(source, SlicingStream) and source.is_shared_view():
+        return source, source.independent_view
+    if is_seekable(source):
+        shared = SharedSource(source)
+        return shared.view(0), (lambda: shared.view(0))
+    return source, None
 
 
 def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
@@ -429,7 +581,7 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
 
 
 class _GzipTruncationCheckStream(DelegatingStream):
-    """Backstop truncation detection for the rapidgzip accelerator (path sources).
+    """Backstop truncation detection for the rapidgzip accelerator (any seekable source).
 
     Upstream rapidgzip treats many incomplete streams as soft EOF (by design): ``read()``
     may return empty or a short/full prefix with no exception. This wrapper:
@@ -443,14 +595,34 @@ class _GzipTruncationCheckStream(DelegatingStream):
        the gzip ISIZE trailer (single-member). Multi-member files keep the conservative
        “further ``1f 8b 08`` ⇒ do not raise” rule (per-member ISIZE sum is deferred).
 
+    ISIZE and the source length are **captured up front** (``isize`` / ``source_len``) so no
+    per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ raise on a
+    non-empty soft EOF (incomplete member); a value ⇒ compare; ``source_len is None``
+    (unreadable) ⇒ return without raising. ``reopen`` mints a fresh independent seekable stream
+    over the whole source at offset 0 for the multi-member scan (and, for a stream source, the
+    stdlib fallback), so neither disturbs the live accelerator's cursor — a path uses a fresh
+    fd, a stream a lock-sharing ``SharedSource`` sibling view. ``fallback_path`` (set only for a
+    path source) hands the stdlib engine the path so it owns/closes its own fd.
+
     A caller ``seek`` off the sequential frontier disarms both checks.
     """
 
-    def __init__(self, inner: BinaryIO, source_path: str) -> None:
+    def __init__(
+        self,
+        inner: BinaryIO,
+        *,
+        reopen: Callable[[], BinaryIO],
+        isize: int | None,
+        source_len: int | None,
+        fallback_path: str | None,
+    ) -> None:
         # readinto_passthrough=False routes readinto through this class's read(), so the
         # byte-total tracking and the EOF truncation check still run on readinto-driven reads.
         super().__init__(inner, readinto_passthrough=False)
-        self._source_path = source_path
+        self._reopen = reopen
+        self._isize = isize
+        self._source_len = source_len
+        self._fallback_path = fallback_path
         self._total = 0
         self._checked = False
         self._verify = True
@@ -501,7 +673,13 @@ class _GzipTruncationCheckStream(DelegatingStream):
         after the switch — disarm the ISIZE backstop so faults stay on its read path.
         """
         old = self._inner
-        self._inner = GzipDecompressorStream(self._source_path)
+        # Path source: hand the stdlib engine the path so it owns/closes its own fd. Stream
+        # source: a fresh independent view at offset 0 (non-owning; the SharedSource/caller
+        # owns the underlying handle). Either way, decode from the start.
+        fallback: CodecSource = (
+            self._fallback_path if self._fallback_path is not None else self._reopen()
+        )
+        self._inner = GzipDecompressorStream(fallback)
         self._verify = False
         try:
             old.close()
@@ -513,24 +691,21 @@ class _GzipTruncationCheckStream(DelegatingStream):
         return data
 
     def _verify_not_truncated(self) -> None:
-        try:
-            with open(self._source_path, "rb") as f:
-                size = f.seek(0, io.SEEK_END)
-                if size < 18:
-                    # Incomplete member (header-only / truncated before a full trailer).
-                    # Empty delivery is handled by the stdlib fallback; non-empty soft EOF
-                    # with a file this short is still truncation.
-                    raise TruncatedError(
-                        "gzip stream is truncated: compressed size is too small for a "
-                        "complete gzip member (the rapidgzip accelerator did not raise)"
-                    )
-                f.seek(-4, io.SEEK_END)
-                isize = int.from_bytes(f.read(4), "little")
-        except TruncatedError:
-            raise
-        except OSError:
+        if self._source_len is None:
+            # Source length unreadable (non-seekable / I/O error at capture): cannot verify,
+            # so never invent a truncation we can't prove.
             return
-        if self._total % (1 << 32) == isize:
+        if self._source_len < 18:
+            # Incomplete member (header-only / truncated before a full trailer). Empty
+            # delivery is handled by the stdlib fallback; non-empty soft EOF with a source
+            # this short is still truncation.
+            raise TruncatedError(
+                "gzip stream is truncated: compressed size is too small for a "
+                "complete gzip member (the rapidgzip accelerator did not raise)"
+            )
+        if self._isize is None:
+            return  # length known but ISIZE unread (should not happen for len >= 18)
+        if self._total % (1 << 32) == self._isize:
             return
         # Mismatch: truncation, unless this is a concatenated multi-member gzip (then the
         # trailer is only the last member's size). Conservative scan: any further gzip
@@ -543,8 +718,11 @@ class _GzipTruncationCheckStream(DelegatingStream):
         )
 
     def _has_additional_gzip_member(self) -> bool:
+        # A fresh independent view/handle at offset 0 — never seeks the live accelerator's
+        # source. For a stream this is a lock-sharing SharedSource sibling; for a path, a
+        # fresh fd. Closed via the context manager (a view close is a no-op mark).
         try:
-            with open(self._source_path, "rb") as f:
+            with self._reopen() as f:
                 return gzip_has_additional_member(f)
         except OSError:
             return True  # cannot rule out a second member -> do not raise
@@ -778,14 +956,30 @@ class GzipCodec(StreamCodec):
                     "The 'rapidgzip' package is required for gzip random access "
                     "(install the 'seekable' extra)."
                 )
-            stream = _open_rapidgzip(source)
             if config.expected_decompressed_size is not None:
-                return _wrap_accelerated_length(stream, config)
-            # Path-source truncation backstop: empty→stdlib fallback + single-member ISIZE
-            # (multi-member keeps conservative further-magic bailout; sum deferred).
-            if isinstance(source, (str, os.PathLike)):
-                return _GzipTruncationCheckStream(stream, os.fspath(source))
-            return stream
+                # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
+                return _wrap_accelerated_length(_open_rapidgzip(source), config)
+            # Truncation backstop for **any** seekable source (path or caller-owned stream):
+            # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
+            # independent view (multi-member keeps the conservative further-magic bailout; the
+            # per-member ISIZE sum is deferred). Capture the ISIZE tri-state up front so no
+            # per-read reopen is needed and `size < 18` truncation is preserved.
+            source_len, isize = _gzip_isize_and_length(source)
+            accel_source, reopen = _gzip_backstop_source(source)
+            stream = _open_rapidgzip(accel_source)
+            if reopen is None:
+                return stream  # non-seekable: rapidgzip needs a seekable source anyway
+            return _GzipTruncationCheckStream(
+                stream,
+                reopen=reopen,
+                isize=isize,
+                source_len=source_len,
+                fallback_path=(
+                    os.fspath(source)
+                    if isinstance(source, (str, os.PathLike))
+                    else None
+                ),
+            )
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
         # outcomes come from zlib's gzip window; multi-member chaining matches GzipFile
         # (NUL pad / trailing zeros / trailing junk). O(n) rewind with a warning.

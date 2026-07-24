@@ -73,7 +73,7 @@ Each case run in an isolated subprocess (Bug 3 aborts the process); exit 134 = S
 
 1. Fileno objection to `SharedSource` views: **dismissed** for stream sources (already the path).
 2. Multi-member scan: keep it, on an independent `SharedSource.view(0)` — it **cannot** be
-   deferred to `gzip-multimember-detect-via-index`, which the index spike found infeasible.
+   deferred to the index-based sibling change, which the index spike found infeasible (now closed).
 3. Bug-3 trap: **feasible and effective** for the source-raises/closed trigger; recommend
    landing it with the backstop (maintainer's lean), with the sweep to bound the finalizer-race
    corner before calling it complete.

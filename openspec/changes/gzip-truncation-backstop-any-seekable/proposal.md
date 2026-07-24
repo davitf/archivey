@@ -63,11 +63,15 @@ Two real obstacles remain — both already-solved patterns in this repo, capture
 - **No behavior change for path sources** — they already have the backstop; this generalizes the
   mechanism they use.
 
-This change is **investigation + specs + implementation**: the source-lifetime and Bug-3
-hardening (`design.md`) are prerequisites; the backstop generalization lands once they hold.
+This change is **investigation + specs + implementation** — now **implemented** (see `tasks.md`
+and `FINDINGS.md`): the source-lifetime + Bug-3 hardening prerequisites (`design.md`) were
+confirmed and the backstop generalized. Code in `internal/streams/codecs.py` (+ a
+`SharedSource` sibling-view helper); tests in `tests/test_accelerator_corruption.py` and
+`tests/test_accelerator_bug3_trap.py`.
 
 ## Specs
 
-Proposed delta in `specs/seekable-decompressor-streams/spec.md` (kept here until accepted).
-Sibling change `gzip-multimember-detect-via-index` modifies the same requirement — sequence /
-rebase the deltas when the second lands.
+Proposed delta in `specs/seekable-decompressor-streams/spec.md` (kept here until archived). The
+once-sibling `gzip-multimember-detect-via-index`, which would have modified the same requirement,
+was **closed as infeasible** (rapidgzip exposes no gzip member boundaries — see
+`docs/internal/known-issues.md`), so this is the only pending `MODIFY` of that requirement.

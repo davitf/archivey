@@ -1072,17 +1072,36 @@ def test_verify_wrong_width_digest_mismatches_not_raises() -> None:
 # --- gzip ISIZE truncation backstop -------------------------------------------------------
 
 
+def _make_gzip_check_stream(inner, path):
+    """Wire a ``_GzipTruncationCheckStream`` over a path source, mirroring ``GzipCodec.open``.
+
+    ``inner`` stands in for the accelerator's decompressed output; the backstop reads ISIZE
+    and scans the real gzip file at ``path`` via a fresh independent handle.
+    """
+    from archivey.internal.streams.codecs import (
+        _GzipTruncationCheckStream,
+        _gzip_isize_and_length,
+    )
+
+    source_len, isize = _gzip_isize_and_length(str(path))
+    return _GzipTruncationCheckStream(
+        inner,
+        reopen=lambda: open(str(path), "rb"),
+        isize=isize,
+        source_len=source_len,
+        fallback_path=str(path),
+    )
+
+
 def test_gzip_truncation_check_read0_mid_stream_is_not_eof(tmp_path) -> None:
     # read(0) is not EOF: mid-stream it must not run the ISIZE trailer comparison (which
     # would spuriously report truncation because the byte total is still partial).
-    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
-
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"
     path.write_bytes(gzip.compress(payload))
 
     # A plain BytesIO stands in for the accelerator's decompressed output.
-    stream = _GzipTruncationCheckStream(io.BytesIO(payload), str(path))
+    stream = _make_gzip_check_stream(io.BytesIO(payload), path)
     assert stream.read(5) == b"hello"
     assert stream.read(0) == b""  # must not raise TruncatedError
     assert stream.read(-1) == payload[5:]
@@ -1090,8 +1109,6 @@ def test_gzip_truncation_check_read0_mid_stream_is_not_eof(tmp_path) -> None:
 
 
 def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
-    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
-
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"
     path.write_bytes(gzip.compress(payload))
@@ -1099,12 +1116,12 @@ def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
     # Simulate an accelerator that silently stopped short of the real payload.
     # Completing read(-1) observes soft EOF and raises TruncatedError there
     # (ADR 0014 — not on a later empty read / close).
-    stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
+    stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
     with pytest.raises(TruncatedError):
         stream.read(-1)
 
     # Sized reads still deliver the recoverable prefix, then raise on the next empty.
-    stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
+    stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
     assert stream.read(32) == payload[:32]
     assert stream.read(100) == payload[32:64]  # short return at soft EOF
     with pytest.raises(TruncatedError):
@@ -1115,13 +1132,11 @@ def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
     # A seek that does not leave the sequential frontier (tell()-style seek(0, SEEK_CUR),
     # or a seek to the current offset) keeps the ISIZE check armed, so a short
     # accelerator output is still caught on the completing read.
-    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
-
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"
     path.write_bytes(gzip.compress(payload))
 
-    stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
+    stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
     stream.read(16)
     stream.seek(0, io.SEEK_CUR)  # no-op: must not disarm the check
     with pytest.raises(TruncatedError):
@@ -1129,13 +1144,11 @@ def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
 
 
 def test_gzip_truncation_check_real_seek_disables_verification(tmp_path) -> None:
-    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
-
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"
     path.write_bytes(gzip.compress(payload))
 
-    stream = _GzipTruncationCheckStream(io.BytesIO(payload[:64]), str(path))
+    stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
     stream.read(16)
     stream.seek(0)  # genuine random access: the sequential total is meaningless now
     stream.read(-1)
