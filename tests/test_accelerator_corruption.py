@@ -268,6 +268,87 @@ def test_rapidgzip_multimember_not_flagged(tmp_path: Path) -> None:
         assert s.read() == b"A" * 4000 + b"B" * 2500
 
 
+# --- rapidgzip truncation backstop on non-path (caller-owned) seekable sources ---------
+# The backstop was path-only; these assert parity for a caller-owned BinaryIO (BytesIO or a
+# real file object), where the accelerator + multi-member scan coordinate through a
+# SharedSource view and the caller's source is never closed (see OpenSpec
+# `gzip-truncation-backstop-any-seekable`).
+
+
+def test_rapidgzip_stream_truncation_is_reported() -> None:
+    pytest.importorskip("rapidgzip")
+    full = gzip.compress(b"the quick brown fox\n" * 800)
+    src = io.BytesIO(full[: max(18, len(full) // 2)])  # mid-body cut
+    with pytest.raises((TruncatedError, CorruptionError)):
+        with open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s:
+            s.read()
+
+
+def test_rapidgzip_stream_header_only_truncation_raises() -> None:
+    # A source too short for a complete member (< 18 bytes) must still raise — the up-front
+    # ISIZE capture preserves the too-short tri-state that a path source raised on.
+    pytest.importorskip("rapidgzip")
+    src = io.BytesIO(bytes.fromhex("1f8b08000000000000ff"))  # 10-byte header only
+    with pytest.raises((TruncatedError, CorruptionError)):
+        with open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s:
+            s.read()
+
+
+def test_rapidgzip_stream_empty_payload_still_ok() -> None:
+    pytest.importorskip("rapidgzip")
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(gzip.compress(b"")), config=_GZ_ON
+    ) as s:
+        assert s.read() == b""
+
+
+def test_rapidgzip_stream_multimember_not_flagged() -> None:
+    # A valid concatenated multi-member gzip from a stream must not be false-flagged: the
+    # multi-member scan runs on an independent SharedSource view of the same source.
+    pytest.importorskip("rapidgzip")
+    data = gzip.compress(b"A" * 4000) + gzip.compress(b"B" * 2500)
+    with open_codec_stream(Codec.GZIP, io.BytesIO(data), config=_GZ_ON) as s:
+        assert s.read() == b"A" * 4000 + b"B" * 2500
+
+
+def test_rapidgzip_stream_intact_roundtrip() -> None:
+    pytest.importorskip("rapidgzip")
+    payload = b"the quick brown fox " * 5000
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(gzip.compress(payload)), config=_GZ_ON
+    ) as s:
+        assert s.read() == payload
+
+
+def test_rapidgzip_stream_source_left_open_after_close() -> None:
+    # archivey must never close a caller-owned source. After the archivey stream closes, the
+    # caller's BytesIO stays open and re-readable (the SharedSource view is non-owning).
+    pytest.importorskip("rapidgzip")
+    payload = b"the quick brown fox " * 5000
+    src = io.BytesIO(gzip.compress(payload))
+    with open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s:
+        assert s.read() == payload
+    assert not src.closed
+    src.seek(0)
+    assert src.read(2) == b"\x1f\x8b"  # still a readable gzip source
+
+
+def test_rapidgzip_caller_file_object_truncation(tmp_path: Path) -> None:
+    # A real caller-opened file object (has a valid fileno) of a truncated gzip must raise,
+    # and archivey must leave the caller's file object open.
+    pytest.importorskip("rapidgzip")
+    full = gzip.compress(b"the quick brown fox\n" * 800)
+    p = _write(tmp_path, "trunc-fileobj.gz", full[: max(18, len(full) // 2)])
+    fh = open(p, "rb")
+    try:
+        with pytest.raises((TruncatedError, CorruptionError)):
+            with open_codec_stream(Codec.GZIP, fh, config=_GZ_ON) as s:
+                s.read()
+        assert not fh.closed  # caller still owns and can close it
+    finally:
+        fh.close()
+
+
 # --- bzip2 (via rapidgzip's bundled IndexedBzip2File) ----------------------------------
 
 

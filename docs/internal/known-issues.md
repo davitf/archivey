@@ -155,13 +155,28 @@ fallbacks raise a normal `ValueError`, which the reader boundary translates to
 
 ### Soft EOF on truncated gzip (by design — not a bug)
 
-**Status: upstream design / Archivey mitigated on path sources** (rapidgzip 0.16.0). The parallel
-reader often returns empty or a short/full prefix **without raising** on truncated
-input (`block_offsets_complete=True` is not trustworthy). Archivey backstops **path** gzip with
-empty→stdlib fallback plus a single-member ISIZE compare; multi-member ISIZE sum is deferred.
-Full write-up: [`rapidgzip-upstream-report.md`](rapidgzip-upstream-report.md). End-user note:
+**Status: upstream design / Archivey mitigated on any seekable source** (rapidgzip 0.16.0). The
+parallel reader often returns empty or a short/full prefix **without raising** on truncated
+input (`block_offsets_complete=True` is not trustworthy). Archivey backstops gzip on **any
+seekable source** (path or caller-owned `BinaryIO`) with empty→stdlib fallback plus a
+single-member ISIZE compare; multi-member ISIZE sum is deferred. Full write-up:
+[`rapidgzip-upstream-report.md`](rapidgzip-upstream-report.md). End-user note:
 [Gotchas](../gotchas.md#format-limitations). **Not filed upstream** (would be a feature request
 for an incompleteness flag, not a bug report).
+
+### rapidgzip's index does not expose gzip member boundaries (0.16.0)
+
+**Status: confirmed limitation — no action.** The multi-member disambiguation the ISIZE backstop
+uses (a byte scan for a further `1f 8b 08` header) cannot be replaced by rapidgzip's random-access
+index: `block_offsets()` / `available_block_offsets()` expose **seek points chosen for chunked
+random access**, not gzip *member* (stream) starts. Empirically (2- and 3-member files with
+distinct member sizes, read to EOF), member boundaries never appear in the offsets at any
+`parallelization` — serial (`parallelization=0`, archivey's mode) records only `{start, EOS}`,
+and parallel adds mid-member chunk points unrelated to member starts. There is no member/stream
+**count** accessor (`add_deflate_stream_crc32` / `set_deflate_stream_crc32s` are index-import
+inputs, not a decode-time enumeration). So the byte scan stays, and the deferred **per-member
+ISIZE sum** — which would need the same member data — cannot use the index either. (Closed the
+`gzip-multimember-detect-via-index` change proposal on this finding.)
 
 ### The canary
 

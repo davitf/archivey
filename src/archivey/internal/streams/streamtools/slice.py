@@ -208,6 +208,31 @@ class SlicingStream(ReadOnlyIOStream):
     def seekable(self) -> bool:
         return self._seekable
 
+    def is_shared_view(self) -> bool:
+        """Whether this is a locked ``SharedSource`` view (re-seek-before-read mode)."""
+        return self._seek_before_read
+
+    def independent_view(self) -> "SlicingStream":
+        """A fresh, position-isolated sibling over the same region, lock, and source.
+
+        Only valid on a locked ``SharedSource`` view: the sibling shares the underlying
+        handle + lock + bounds but keeps its own ``_pos``, so a second consumer (e.g. a
+        truncation scan running while the accelerator holds another view mid-stream) re-seeks
+        under the same lock and never clobbers this view's cursor. A single-consumer view has
+        no lock to coordinate on, so this raises there.
+        """
+        if not self._seek_before_read:
+            raise io.UnsupportedOperation(
+                "independent_view requires a locked SharedSource view"
+            )
+        return SlicingStream(
+            self._stream,
+            start=self._start,
+            length=self._length,
+            lock=self._io_guard,
+            check_open=self._check_open_fn,
+        )
+
     def close(self) -> None:
         # Non-owning by default: mark this view closed only. With ``own_source`` the view
         # owns a private underlying stream and closes it too.
