@@ -21,7 +21,8 @@ from the git tag). `publish.yml` fails if the tag and packaged version disagree.
       version (for `0.2.0`, that includes remaining pay-list items such as
       T2/T3/T7/D4; D2 `SECURITY.md` and DD4 rapidgzip characterization are done).
 - [ ] First public release only: cutover runbook complete (or consciously
-      releasing to TestPyPI from `archivey-2` while still pre-rename).
+      releasing to TestPyPI while finishing remaining cutover steps — see
+      `docs/internal/release-repo-cutover.md`; repo is already named `archivey`).
 
 ---
 

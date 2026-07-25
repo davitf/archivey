@@ -9,6 +9,10 @@ If you are on an older release, please try to reproduce against the latest
 before reporting. Older-version reports are still useful for impact assessment;
 fixes normally land on current `main` first.
 
+This policy applies to **this** repository (`davitf/archivey`, the v2 library).
+The previous implementation lives at [`davitf/archivey-old`](https://github.com/davitf/archivey-old)
+and is not covered here.
+
 ## Reporting a Vulnerability
 
 Please report security vulnerabilities **privately**. Do **not** open a public
@@ -16,9 +20,8 @@ GitHub issue for exploitable bugs, malicious archives, or proof-of-concept
 payloads.
 
 **Preferred path:** use
-[GitHub private vulnerability reporting](https://github.com/davitf/archivey-2/security/advisories/new)
-(Security → Advisories → Report a vulnerability) when enabled for this
-repository.
+[GitHub private vulnerability reporting](https://github.com/davitf/archivey/security/advisories/new)
+(Security → Advisories → Report a vulnerability).
 
 If that flow is unavailable, contact the maintainer privately via the contact
 information on the maintainer’s GitHub profile or the package metadata on PyPI.

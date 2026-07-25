@@ -1,8 +1,9 @@
 # Archivey v2 — Agent Guide
 
-This repo (`archivey-2`) is the clean-slate **v2** of the Archivey archive
+This repo (`archivey`) is the clean-slate **v2** of the Archivey archive
 library: read, stream, and safely extract ZIP / TAR / RAR / 7z / ISO / directory
-/ single-file-compressed archives behind one uniform interface.
+/ single-file-compressed archives behind one uniform interface. The previous
+v1 tree is [`davitf/archivey-old`](https://github.com/davitf/archivey-old).
 
 ## Where things live
 

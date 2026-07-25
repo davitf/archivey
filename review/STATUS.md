@@ -64,6 +64,5 @@ Archived OpenSpec this window: `unify-pass-driver`, `gzip-zlib-truncation-recove
 
 ## Notes
 
-- Enable GitHub **private vulnerability reporting** on the repo if not already on
-  (Settings → Code security → Private vulnerability reporting) so the
-  `SECURITY.md` Advisories link works end-to-end.
+- Private vulnerability reporting is **enabled** on `davitf/archivey`; see root
+  `SECURITY.md`.
