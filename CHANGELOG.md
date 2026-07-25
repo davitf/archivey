@@ -14,6 +14,12 @@ How to update this file for a release: see
 First public release will be **0.2.0**. Until then, notable work accumulates here;
 at cut time the checklist moves this section under a dated `## [0.2.0]` heading.
 
+This repository is the **v2** rewrite. The earlier v1 / alpha line (previously
+published from what is now
+[`davitf/archivey-old`](https://github.com/davitf/archivey-old)) is a separate
+codebase — not a SemVer predecessor of this tree. There is no compatibility
+promise with that line; treat `0.2.0` as the first release of this library.
+
 ### Added
 
 - Unified archive reading for ZIP, TAR, RAR, 7z, ISO, directory trees, and
@@ -33,12 +39,16 @@ at cut time the checklist moves this section under a dated `## [0.2.0]` heading.
 - Performance claims are **aspirational peer-ratio bands** with a published
   measured table in `docs/costs.md` / `VISION.md` (nightly realistic ratios;
   refresh at release time per the checklist).
+- GitHub repository renamed from `archivey-2` → `archivey` (canonical name);
+  the prior v1 repo was renamed to `archivey-old`.
 
 ### Security
 
 - Threat model and open residuals: `docs/internal/threat-model.md`.
-- Disclosure process: add `SECURITY.md` before the public “safe” claim
-  (debt-ledger D2 — still open at changelog creation).
+- Root [`SECURITY.md`](SECURITY.md) — private vulnerability reporting via
+  [GitHub Security Advisories](https://github.com/davitf/archivey/security/advisories/new),
+  scope, and guidance that optional `[seekable]` accelerators are not part of
+  the defended fuzz surface for hard-latency untrusted input.
 
 <!--
 After 0.2.0 is tagged, add:

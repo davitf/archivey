@@ -1,8 +1,14 @@
 # Release-repo cutover runbook
 
-Maintainer runbook for promoting this repository (`archivey-2`, the v2 clean-slate
-reimplementation) to the canonical **`archivey`** name for public release, while
-retiring the v1 repos. Delete this page once the cutover is complete.
+Maintainer runbook for promoting this repository (formerly `archivey-2`, the v2
+clean-slate reimplementation) to the canonical **`archivey`** name for public
+release, while retiring the v1 repos.
+
+**Status (2026-07-25):** rename is done — this repo is `davitf/archivey`; the
+prior v1 release repo is `davitf/archivey-old` (runbook step 1 originally said
+`archivey-v1`; the name used in practice is `archivey-old`). Remaining steps
+below are discovery metadata, Pages, PyPI Trusted Publishing, and local-clone
+remote tidy-up. Delete this page once the full cutover is complete.
 
 ## Why rename rather than push-into or delete
 
@@ -33,13 +39,13 @@ external footprint; its 76 PRs are the intentionally-private messy AI history.
 
 Do these in order — the `archivey` name must be free before this repo can take it.
 
-1. **Free the name.** Rename `davitf/archivey` → `davitf/archivey-v1`
+1. **Free the name.** Rename `davitf/archivey` → `davitf/archivey-old`
    (Settings → General → Repository name), then **Archive** it (Settings → Danger Zone).
    Do *not* delete — that destroys the 31 stars / 3 forks / alpha tags and frees the name
-   to strangers.
+   to strangers. *(Done 2026-07-25 as `archivey-old`.)*
 2. **Promote v2.** Rename `davitf/archivey-2` → `davitf/archivey`.
    ⚠️ The redirect from the *old* v1 `archivey` is disabled the moment the name is reused,
-   so old v1 deep-links now resolve to v2.
+   so old v1 deep-links now resolve to v2. *(Done 2026-07-25.)*
 3. **Re-apply discovery metadata** on the new `archivey`:
     - Description: `Python library for reading zip, tar, rar, 7z and other archives`
     - Topics: `python` `compression` `zip` `tar` `rar` `decompression` `archive` `7zip`

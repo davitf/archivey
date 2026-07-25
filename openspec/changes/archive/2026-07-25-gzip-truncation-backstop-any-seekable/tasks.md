@@ -71,7 +71,7 @@
 ## 6. OpenSpec
 
 - [x] 6.1 `openspec validate --strict gzip-truncation-backstop-any-seekable` green.
-- [ ] 6.2 Sync into main `seekable-decompressor-streams` when landing. The would-be conflicting
+- [x] 6.2 Sync into main `seekable-decompressor-streams` when landing. The would-be conflicting
       sibling `gzip-multimember-detect-via-index` was closed as infeasible (`docs/internal/known-issues.md`) and will
       **not** sync, so this is the only `MODIFY` of "Accelerator errors translate uniformly" — no
       merge coordination needed. (If that sibling is ever revived, hand-author one merged
