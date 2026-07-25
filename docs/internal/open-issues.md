@@ -167,7 +167,7 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 | Salvage / best-effort read mode | Founding use case; all-or-error today |
 | `pyppmd` exit-after-green abort | Partially mitigated (NUL cap + pack_size gate; Free-race residual / `--allow-exit-after-green`); see `known-issues.md` + exploration doc |
 | Accelerator hang sandbox | Threat-model O5; fuzz with accelerators off until then |
-| OSS-Fuzz + `SECURITY.md` | Before public “safe” marketing |
+| OSS-Fuzz onboarding | Before public “safe” marketing (`SECURITY.md` landed) |
 | Nested-archive helper / bounded recursion | O6 recipe → maybe a small helper later |
 | Free-threading support matrix | Document core vs ISO vs accelerators |
 | Public backend API / plugins | Home for exotic formats without libarchive-in-core |

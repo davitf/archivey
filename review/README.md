@@ -22,7 +22,7 @@ Round commissioned 2026-07-17 — the **non-security** pass toward the first pub
 
 | Dir | Review | Status |
 |-----|--------|--------|
-| `debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5) | Findings 2026-07-20; **refreshed 2026-07-25** post-#193/#196 — D1/D3/DD4/S2/S3/T1/Q1–Q5 done; remaining D2/D4/D7/T2/T3/T7 |
+| `debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5) | Findings 2026-07-20; **refreshed 2026-07-25** — D1/D2/D3/D7/DD4/S2/S3/T1/Q1–Q5 done; remaining D4/T2/T3/T7 |
 | `performance/` | The ≤1.3× stdlib perf budget — gate efficacy + traps | Listing L0–L3 + peers; residual **accepted aspirational** (#191); wall Q2 decided (#171); **Q4** open |
 
 **Live triage:** [`STATUS.md`](STATUS.md).

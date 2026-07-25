@@ -1,25 +1,20 @@
 # Debt ledger — SUMMARY (pre-`0.2.0`)
 
 > Commissioned 2026-07-20 (backlog Topics 4+5) against `main` @ `7bb862b`.
-> **Refreshed 2026-07-25** against `main` @ `3793646` (post-#193 / #196 / #194 / #191).
-> Analysis-only refresh: no product code changed in this pass.
+> **Refreshed 2026-07-25** against `main` @ `033a883`, then updated for **D2**
+> (`SECURITY.md`) + **D7** (archive `gzip-truncation-backstop-any-seekable`).
 > Theme files: [`structural.md`](structural.md),
 > [`drift-and-decisions.md`](drift-and-decisions.md), [`tests.md`](tests.md),
 > [`QUESTIONS.md`](QUESTIONS.md).
->
-> Supersedes conflicting ledger refreshes **#192** (this lineage, rebased) and
-> **#195** (stopped at `8cc3ea5`, still listed D1 as PAY).
 
 ## Headline
 
 Most of the original freeze-cost pay list is paid. **D1** (VISION bands, #191),
-**D3/Q5** (CHANGELOG + release checklist, #193), **S2+S3+T1** (#184, archived),
-**DD1** wall-drift (#171), and **DD4** rapidgzip truncation characterization +
-backstop (#194) then any-seekable + Bug-3 trap (#196, investigation archived)
-are done. What still freezes at release is mainly **`SECURITY.md` (D2)** plus
-test-net widenings (**T2/T3/T7**), the stale `open-issues.md` bucket (**D4**),
-and archiving/syncing the nearly-complete `gzip-truncation-backstop-any-seekable`
-change (**D7** remainder, 17/18).
+**D2** (`SECURITY.md`), **D3/Q5** (CHANGELOG + release checklist, #193),
+**S2+S3+T1** (#184, archived), **DD1** wall-drift (#171), **DD4** rapidgzip
+truncation (#194/#196), and **D7** (OpenSpec sync/archive of the any-seekable
+backstop) are done. What still freezes at release is mainly test-net
+widenings (**T2/T3/T7**) and the stale `open-issues.md` bucket (**D4**).
 
 **Freeze-rank legend** — F3: frozen at release. F2: compounds. F1: stable cost.
 
@@ -28,7 +23,7 @@ change (**D7** remainder, 17/18).
 | # | Item | Where | Freeze | Verdict |
 |---|------|-------|--------|---------|
 | **D1** | VISION ≤1.3× open/list vs measurements / Q1 bands | `VISION.md`; `docs/costs.md` | **F3** | **DONE** (#191) — aspirational peer bands + nightly measured table (Q2 (b)); L5 → `IDEAS.md` |
-| **D2** | No `SECURITY.md` / disclosure process | threat-model O5; PLAN | **F3** | **PAY** — still absent @ `3793646` |
+| **D2** | No `SECURITY.md` / disclosure process | threat-model O5; PLAN | **F3** | **DONE** — root `SECURITY.md` (rarfile/libarchive-style private disclosure + accelerator guidance) |
 | **DD1/DD3** | Wall enforcement + ZIP listing above band | `review/performance/` | **F3** | **DONE** — DD1 #171; DD3/Q2 (b) #191 |
 | **D3** | No `CHANGELOG` | `CHANGELOG.md`; release checklist | **F3** | **DONE** (#193) — Keep a Changelog + `docs/internal/release-checklist.md` (Q5) |
 | **DD6** | Salvage mode absent (founding use case) | PLAN / IDEAS / `--salvage` | **F3**→ok | **KEEP** — sequencing recorded; docs honest |
@@ -36,7 +31,7 @@ change (**D7** remainder, 17/18).
 | **T2** | Seek-interleaving property test only for XZ | `test_seekable_streams.py` | **F2** | **PAY** — parametrize over lzip/`.Z` |
 | **T3** | Benchmark gate missing RAR / encrypted / accelerator data | `test_benchmark_gate.py` | **F2** | **PAY** (perf P6 remainder) |
 | **D4** | `open-issues.md` bucket/ref drift (P1 still under candidates) | `docs/internal/open-issues.md` | **F2** | **PAY** — 15-min sweep |
-| **D7** | Completed OpenSpec changes unarchived / unsynced | see below | **F2** | **PARTIAL** — unify / gzip-zlib / rapidgzip **archived** 2026-07-24. Remaining: `gzip-truncation-backstop-any-seekable` **17/18** (task 6.2 sync) |
+| **D7** | Completed OpenSpec changes unarchived / unsynced | see below | **F2** | **DONE** — any-seekable synced into `seekable-decompressor-streams` + archived `2026-07-25-gzip-truncation-backstop-any-seekable/` |
 | **T7** | Corpus matrix thin spots | `sample_archives.py` | **F2** | **PAY** — half-day audit |
 | **T1** | Solid-RAR mutation net | `test_mutation_fuzz.py` | **F2** | **DONE** (#184) |
 | **S2/S3** | Pass-stream driver + link finalize | `_drive_pass_streams` / `_finalize_links` | **F2** | **DONE** (#184); archived |
@@ -51,13 +46,11 @@ change (**D7** remainder, 17/18).
 
 ## The remaining pre-0.2.0 pay list, in order
 
-1. **D2** — write `SECURITY.md`.
-2. **D7 remainder** — finish task 6.2 + archive `gzip-truncation-backstop-any-seekable`.
-3. **T2** — parametrize seek-interleaving over lzip/`.Z`.
-4. **D4** — `open-issues.md` P1 sweep (move to Closed; fix archive refs).
-5. **T3** — benchmark-gate RAR/encrypted/accelerator data cases.
-6. **T7** — corpus-matrix audit.
-7. **T4 (half)** — one `members_report_if_available` multithread barrier test.
+1. **T2** — parametrize seek-interleaving over lzip/`.Z`.
+2. **D4** — `open-issues.md` P1 sweep (move to Closed; fix archive refs).
+3. **T3** — benchmark-gate RAR/encrypted/accelerator data cases.
+4. **T7** — corpus-matrix audit.
+5. **T4 (half)** — one `members_report_if_available` multithread barrier test.
 
 ## Paid since the ledger was commissioned
 
@@ -71,6 +64,8 @@ change (**D7** remainder, 17/18).
 | **DD4** rapidgzip backstop (ADR-0014-safe) + any-seekable / Bug-3 | #194 / #196 → investigation archived |
 | **D3 / Q5** CHANGELOG + release checklist | #193 |
 | `pyppmd` quiesce-on-close + valgrind UAF gate (mitigation) | #188/#189 |
+| **D2** `SECURITY.md` + threat-model / checklist links | this change |
+| **D7** sync + archive `gzip-truncation-backstop-any-seekable` | this change |
 
 ## What is actually fine (don't re-review)
 
@@ -78,6 +73,4 @@ change (**D7** remainder, 17/18).
 - Module splits earning seams; public export tiering deliberate.
 - Docs↔spec↔code sync works through OpenSpec; VISION drift closed by #191.
 - Fuzz architecture coherent; T1 widened solid-RAR intake; T2/T7 remain.
-- `src/` has essentially zero comment-level debt.
-- Gzip truncation story (stdlib + accelerator) now has a coherent ADR-0014
-  read-surface contract; DD4 is no longer the under-characterized heuristic.
+- Disclosure path documented; OSS-Fuzz may still trail the first public tag.

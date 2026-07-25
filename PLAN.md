@@ -106,8 +106,9 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
    "unzip that can't be zip-slipped" demo — after the benchmark gate *and* after
    `cross-platform-name-safety` so `RENAME` exists); **packaging finalize**
    (extras→capability, PyPI metadata, drop `0.2.0.dev0`); **doc sweep + migration guide**
-   (`zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` → archivey); **`SECURITY.md` +
-   disclosure process** and an **explicit free-threading support statement** (the `3.13t`
+   (`zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` → archivey); **`SECURITY.md`**
+   (landed — disclosure via GitHub Advisories; see root `SECURITY.md`) **and** an
+   **explicit free-threading support statement** (the `3.13t`
    job runs core-only — document the matrix rather than leaving it implicit). Recurring
    cut steps (CHANGELOG, perf vs previous tag, tests, tag, publish):
    `docs/internal/release-checklist.md`. Tag `0.2.0` after this.
@@ -638,7 +639,7 @@ coverage **reported, not gated**); no committed generated binaries.
   archives asserting never-crash / never-hang / always a typed `ArchiveyError`);
   (b) Phase 6 entry gate — Atheris coverage-guided fuzzing of the native 7z/RAR
   header parsers, corpus-seeded, short nightly CI runs; (c) public release —
-  OSS-Fuzz onboarding + `SECURITY.md`.
+  OSS-Fuzz onboarding (`SECURITY.md` disclosure docs already landed).
 - **Benchmarks as a gate** (see `VISION.md` budget): open/list/read/extract vs stdlib,
   tracking **bytes-decompressed and seek counts** as well as wall time; stood up
   before any performance claim, gating like the type checkers thereafter.

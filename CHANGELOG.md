@@ -37,8 +37,10 @@ at cut time the checklist moves this section under a dated `## [0.2.0]` heading.
 ### Security
 
 - Threat model and open residuals: `docs/internal/threat-model.md`.
-- Disclosure process: add `SECURITY.md` before the public “safe” claim
-  (debt-ledger D2 — still open at changelog creation).
+- Root [`SECURITY.md`](SECURITY.md) — private vulnerability reporting (GitHub
+  Security Advisories preferred), scope, and guidance that optional
+  `[seekable]` accelerators are not part of the defended fuzz surface for
+  hard-latency untrusted input.
 
 <!--
 After 0.2.0 is tagged, add:

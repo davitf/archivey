@@ -115,11 +115,11 @@ stream on NTFS.
 **Implemented** as part of O3: `:` in names is rejected under `STRICT` and `STANDARD` on
 all platforms (it is never a portable filename character).
 
-### O5. Fuzzing — mutation + Hypothesis + Atheris gate landed; OSS-Fuzz / SECURITY.md later
+### O5. Fuzzing — mutation + Hypothesis + Atheris gate landed; OSS-Fuzz later
 
 The safety claims rest on curated tests plus three complementary fuzz layers. Remaining
-work before any public "safe" claim is release packaging (OSS-Fuzz + disclosure docs),
-not the in-tree gate:
+work before any public "safe" claim is release packaging (OSS-Fuzz onboarding);
+disclosure docs are in place (`SECURITY.md`). The in-tree gate:
 
 1. **Landed:** the corpus **mutation harness** (`tests/test_mutation_fuzz.py`) — every
    corpus archive is deterministically mutated (truncations, bit flips, zeroed blocks,
@@ -145,8 +145,11 @@ not the in-tree gate:
    nightly and not a full run on every `main` push. `atheris` lives in the PEP 735
    `fuzz` dependency group only — never a runtime extra. See
    `openspec/specs/testing-contract/spec.md`.
-4. **Still open (public release):** OSS-Fuzz onboarding; `SECURITY.md` with a disclosure
-   process. Accelerator hang sandbox (below) remains a separate follow-up.
+4. **Landed (disclosure):** root [`SECURITY.md`](../../SECURITY.md) — private
+   reporting via GitHub Security Advisories (preferred), scope, and caller guidance
+   (including accelerator-off for hard-latency untrusted input).
+5. **Still open (public release):** OSS-Fuzz onboarding. Accelerator hang sandbox
+   (below) remains a separate follow-up.
 
 **Accelerator hang (found by the mutation harness).** The optional `[seekable]`
 accelerators (`rapidgzip`, and its bundled bzip2 decoder) are third-party C++ that can
@@ -157,8 +160,8 @@ fuzzing that native code is deferred to a **resource-limited subprocess sandbox*
 (wall-clock + memory capped, killed on breach). Until then: the accelerators are an
 opt-in performance path, not part of the defended parsing surface for untrusted input —
 callers processing untrusted archives under a hard latency budget should leave them off
-(`AcceleratorMode.OFF`) or enforce their own timeout. Worth surfacing in the eventual
-`SECURITY.md`.
+(`AcceleratorMode.OFF`) or enforce their own timeout. Surfaced in
+[`SECURITY.md`](../../SECURITY.md).
 
 **pycdlib directory-cycle hang (found by the mutation harness).** `pycdlib` can **loop
 forever** in ``_walk_directories`` whenever corrupt directory records form a back-edge

@@ -1,20 +1,24 @@
 # Doc ↔ spec ↔ code drift + the deferred-decision register
 
 Original refs: `main` @ `7bb862b`. **Status refresh 2026-07-25** against
-`main` @ `3793646`.
+`main` @ `033a883`, then D2/D7 pay.
 
-Live OpenSpec: `gzip-truncation-backstop-any-seekable` **17/18**,
-`seekable-gzip-and-block-writing` 0/24. Archived this window:
+Live OpenSpec: `seekable-gzip-and-block-writing` 0/24. Archived this window:
 `2026-07-24-unify-pass-driver`, `2026-07-24-gzip-zlib-truncation-recovery`,
-`2026-07-24-rapidgzip-truncation-investigation`.
+`2026-07-24-rapidgzip-truncation-investigation`,
+`2026-07-25-gzip-truncation-backstop-any-seekable`.
 
 ## D1 — VISION ≤1.3× — **DONE (#191)**
 
 Aspirational peer-ratio bands + measured nightly table in `docs/costs.md`.
 
-## D2 — no SECURITY.md (PAY)
+## D2 — SECURITY.md — **DONE**
 
-Still absent. **PAY before 0.2.0**; OSS-Fuzz may trail.
+Root `SECURITY.md`: private report via GitHub Security Advisories (preferred),
+supported-versions note, archive-relevant scope, accelerator-off guidance for
+hard-latency untrusted input, pointers to safe-extraction + threat-model.
+Peer pattern: rarfile / libarchive short policy (py7zr often omits a root file;
+archivey’s own bar still required it). OSS-Fuzz may trail.
 
 ## D3 — no CHANGELOG — **DONE (#193)**
 
@@ -28,14 +32,14 @@ still says "apply it". **PAY** 15-min sweep.
 
 ## D5 / D6 — **DONE (2026-07-20)**
 
-## D7 — OpenSpec archive/sync hygiene — **PARTIAL**
+## D7 — OpenSpec archive/sync hygiene — **DONE**
 
 | Change | Status |
 |--------|--------|
 | `unify-pass-driver` | Archived 2026-07-24 |
 | `gzip-zlib-truncation-recovery` | Archived 2026-07-24 |
 | `rapidgzip-truncation-investigation` | Archived 2026-07-24 (DD4) |
-| `gzip-truncation-backstop-any-seekable` | **17/18** — finish task 6.2 sync, then archive |
+| `gzip-truncation-backstop-any-seekable` | Synced into `seekable-decompressor-streams`; archived 2026-07-25 |
 
 ## What is *not* drifting (fine)
 

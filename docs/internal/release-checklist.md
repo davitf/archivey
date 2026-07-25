@@ -18,8 +18,8 @@ from the git tag). `publish.yml` fails if the tag and packaged version disagree.
 - [ ] Default branch green (CI + recent nightly wall job not in unexplained fail).
 - [ ] No open “must land before this tag” items on `review/STATUS.md` /
       debt-ledger pay-list / in-flight OpenSpec changes you intended for this
-      version (for `0.2.0`, that includes D2 `SECURITY.md`, DD4 rapidgzip
-      characterization, and any other recorded pay-befores).
+      version (for `0.2.0`, that includes remaining pay-list items such as
+      T2/T3/T7/D4; D2 `SECURITY.md` and DD4 rapidgzip characterization are done).
 - [ ] First public release only: cutover runbook complete (or consciously
       releasing to TestPyPI from `archivey-2` while still pre-rename).
 
@@ -127,7 +127,7 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
 
 ## 4. Security and packaging
 
-- [ ] `SECURITY.md` present with a disclosure path (required before any public
+- [x] `SECURITY.md` present with a disclosure path (required before any public
       “safe extraction” marketing).
 - [ ] `pyproject.toml` metadata: name, description, classifiers, URLs, extras ↔
       capabilities (`packaging-and-extras` spec).
