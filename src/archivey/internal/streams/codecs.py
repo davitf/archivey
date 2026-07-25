@@ -170,6 +170,12 @@ class _AcceleratorStream(DelegatingStream):
             pass
 
     def _reraise_trapped(self) -> None:
+        # Surface a fault the source shim parked, after the accelerator call that observed
+        # it. Only read/readinto/seek re-check here: a fault seen solely through the shim's
+        # tell()/seekable() (e.g. during rapidgzip.open) stays in ``trapped`` until the first
+        # read/seek re-raises it — which always precedes any data reaching the caller. close()
+        # deliberately does not drain it; teardown runs through the finalize guard, and a
+        # caller that closes without reading wants no error.
         if self._trap is not None and self._trap.trapped is not None:
             exc = self._trap.trapped
             self._trap.trapped = None
@@ -208,9 +214,12 @@ class _TrappingSource(io.RawIOBase):
     wraps the source so every method **traps** rather than raises: it stores the first fault in
     ``trapped`` and returns a benign EOF-shaped result to rapidgzip; :class:`_AcceleratorStream`
     re-raises the stored fault after the accelerator call, turning the abort into a normal Python
-    exception. It deliberately exposes **no** ``fileno`` so rapidgzip stays on its Python read
-    path (a valid fileno would let it bypass this shim). Wraps only caller-owned sources; path
-    sources open their own fd and are immune, so they are never trapped.
+    exception. It traps ``BaseException`` (not just ``Exception``): even a ``KeyboardInterrupt`` /
+    ``SystemExit`` must never cross into C++, so a control-flow exception is **deferred** to the
+    next accelerator boundary and re-raised there — never swallowed. It deliberately exposes
+    **no** ``fileno`` so rapidgzip stays on its Python read path (a valid fileno would let it
+    bypass this shim). Wraps only caller-owned sources; path sources open their own fd and are
+    immune, so they are never trapped.
     """
 
     def __init__(self, inner: BinaryIO) -> None:
@@ -570,6 +579,11 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         # RuntimeError("Unknown exception") (the "Unexpected end of file …" detail only
         # reaches stderr), so the deflate-family path must translate it like its
         # indexed_bzip2 sibling rather than leak an untranslated RuntimeError.
+        # Known cross-platform wrinkle: because that detail is lost, a truncation caught here
+        # becomes CorruptionError, whereas the same truncated input on Linux keeps its detail
+        # and maps to TruncatedError above (or is caught by the ISIZE backstop). Recovering the
+        # distinction would need the dropped stderr detail, so callers must treat gzip
+        # truncation as either error type (the accelerator-corruption tests accept both).
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
     return None
 
