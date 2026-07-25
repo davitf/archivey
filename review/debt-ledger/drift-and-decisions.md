@@ -17,7 +17,7 @@ Aspirational peer-ratio bands + measured nightly table in `docs/costs.md`.
 Root `SECURITY.md`: private report via GitHub Security Advisories (preferred),
 supported-versions note, archive-relevant scope, accelerator-off guidance for
 hard-latency untrusted input, pointers to safe-extraction + threat-model.
-Peer pattern: rarfile / libarchive short policy (py7zr often omits a root file;
+Peer pattern: rarfile / libarchive short policy (py7zr has no `SECURITY.md`;
 archivey’s own bar still required it). OSS-Fuzz may trail.
 
 ## D3 — no CHANGELOG — **DONE (#193)**
