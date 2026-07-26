@@ -20,9 +20,10 @@ prints (shared-runner noise).
 > All three `repro.py` probes now report CAUGHT. **G1 is closed as Q2 option (a)**
 > — nightly wall-ratio drift vs previous JSON (`--wall-drift-baseline`), with
 > skip re-publish + ≥30d forced re-measure. Absolute ≤1.3× stays informational.
-> G6/G7 are partial — #139 added ZIP `open_list`/`extract` stdlib peers, and the
-> Q1 direction (2026-07-18) adds listing-ratio peers (`zipfile`/`tarfile` bands,
-> `py7zr`/`rarfile` parity) to the missing list.
+> G6/G7 are closed for the named coverage gaps — #139/#143 added ZIP/TAR/py7zr/
+> rarfile listing peers; T3 adds RAR solid/encrypted data cases (committed
+> fixtures + ``unrar``), WinZip AES + ZIP LZMA, and in-ZIP accelerated deflate
+> (forced ON/OFF). Absolute ≤1.3× stays informational.
 
 ## G1 — Wall budget: nightly relative drift (done — Q2 (a))
 
@@ -108,37 +109,39 @@ decode-once — `SUMMARY.md`), with the one exception documented in `hotspots.md
 
 - **Seek bounds are loose:** `baseline×2 + 8` lets an 8-member ZIP double its
   per-member seeks and still pass; fixtures are deterministic, so equality (or a
-  small +k) would hold and catch churn G4-style.
+  small +k) would hold and catch churn G4-style. *(Partially tightened to
+  `baseline+8` by #139; residual host jitter remains.)*
 - **`--update-baselines` is self-certifying:** a PR that regresses seeks can ship
   the regressed baseline in the same diff; nothing diffs baselines semantically.
-- **No RAR in the committed baseline** (`structural.json` has no `rar_*` cases —
-  the CI runner lacks the `rar` writer, so those harness cases never run in CI).
-  The RAR decode-once unit test runs on committed fixtures, but:
-- **The RAR byte axis cannot see solid rewind:** bytes are counted on the `unrar p`
-  pipe output, which emits only the requested member — an internal solid re-decode
-  by unrar is invisible by construction (documented in
-  `test_measurement.py:166-169`). Seeks don't help (no archivey-side source
-  seeks). RAR decode-once is therefore *asserted about the pipe protocol*, not
-  measured about work done.
+- **RAR data path is now in the committed baseline (T3):** `rar_solid_sequential`
+  / `rar_solid_random` use committed `basic_solid__.rar` at ci scale (gated on
+  RARLAB `unrar`); `rar_encrypted_read_all` covers `encryption__.rar`. Large
+  generated solid RAR remains realistic-scale-only when the `rar` writer exists.
+- **The RAR byte axis still cannot see solid rewind:** bytes are counted on the
+  `unrar p` pipe output, which emits only the requested member — an internal solid
+  re-decode by unrar is invisible by construction (documented in
+  `test_measurement.py`). Seeks don't help (no archivey-side source seeks). RAR
+  decode-once is therefore *asserted about the pipe protocol*, not measured about
+  work done. (P9 follow-up.)
 - **7z password confirmation decodes whole folders uncounted:**
   `_password_for_folder` runs `open_folder_pipeline` without `_track_decompressed`
-  (`sevenzip_reader.py:550-573`), so an encrypted-solid benchmark case would
-  under-report. No current case is encrypted — worth remembering when adding one.
+  (`sevenzip_reader.py`), so an encrypted-solid benchmark case would under-report.
+  T3 added ZIP AES / encrypted RAR instead of encrypted-solid 7z for that reason.
 
 ## G7 — Coverage: what has no benchmark at all
 
-Confirmed absent from `run_cases` (`harness.py:257-514`) and the committed baseline:
+Confirmed status after T3 (vs `run_cases` / committed `structural.json`):
 
 | Path | Status |
 |------|--------|
-| `open` / `list` vs stdlib peer | wall never compared (only `read_all` gets `stdlib_wall_s`) — how the 5–8× open+list miss stayed invisible |
-| `extract` vs stdlib peer | measured structurally, never against `zipfile.extractall`/`tarfile.extractall` — how the 2.4–3.7× extract miss stayed invisible |
-| RAR read via `unrar` pipe | no CI case (G6) |
-| ZIP AES / native-codec members (#106) | none |
-| Accelerated deflate/zlib *inside ZIP members* (#105) | none — accel cases are single-stream `.tar.gz`/`.tar.bz2` only; the per-member AUTO gate behaviour (`hotspots.md` H5) is untested by the harness |
+| `open` / `list` vs stdlib peer | **done** (#139/#143) — ZIP/TAR/py7zr/rarfile peers |
+| `extract` vs stdlib peer | **done** (#139) — ZIP extract peer |
+| RAR read via `unrar` pipe | **done** (T3) — solid + encrypted committed fixtures |
+| ZIP AES / native-codec members (#106) | **done** (T3) — `zip_aes_read_all`, `zip_lzma_read_all` |
+| Accelerated deflate/zlib *inside ZIP members* (#105) | **done** (T3) — `zip_read_all_accel_{off,on}` |
 | ISO | non-gating side script only (`tar_iso_lock_baseline.py`, documented choice) |
-| Encrypted / VerifyingStream-heavy paths | none |
+| Encrypted / VerifyingStream-heavy paths | **done** (T3) — ZIP AES + encrypted RAR |
 
-Suggested minimum additions before 0.2.0: stdlib peers for open+list and extract
-(both cheap), and one RAR read case gated on committed fixtures + `unrar`
-availability.
+Remaining out of scope / follow-up: ISO gating (deliberate), encrypted-solid 7z
+byte under-count (P9), absolute wall ≤1.3× on the PR path (deliberate; nightly
+drift only).

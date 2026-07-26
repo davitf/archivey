@@ -1,14 +1,14 @@
-# In-flight review status (2026-07-25)
+# In-flight review status (2026-07-26)
 
-Triage after D2 (`SECURITY.md`) + D7 (any-seekable OpenSpec archive) on top of
-`main` @ `033a883`, then T2 #199 + D4.
+Triage after T3 (bench-gate RAR / encrypted / accel) on top of
+`main` @ `75dbfad` (D4 / T2 / D2 / D7 already landed).
 
 ## At a glance
 
 | Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
 |--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20; **refreshed 2026-07-25**) | **DONE:** D1 #191, D2 #198, D3 #193, D4, D7 #198, T2 #199, DD4 #194/#196, S2/S3+T1 #184, Q1–Q5. **Open:** T3/T7, T4 half-test | no |
-| `performance/` | yes (#134 + follow-ups) | residual **accepted aspirational** (#191); wall Q2 decided (#171); **Q4 open** | no |
+| `debt-ledger/` | yes (2026-07-20; **refreshed 2026-07-25**) | **DONE:** D1 #191, D2 #198, D3 #193, D4, D7 #198, T2 #199, T3, DD4 #194/#196, S2/S3+T1 #184, Q1–Q5. **Open:** T7, T4 half-test | no |
+| `performance/` | yes (#134 + follow-ups) | residual **accepted aspirational** (#191); wall Q2 decided (#171); **P6 done** (= T3); **Q4 open** | no |
 
 Archived OpenSpec this window: `unify-pass-driver`, `gzip-zlib-truncation-recovery`,
 `rapidgzip-truncation-investigation` (2026-07-24),
@@ -20,7 +20,6 @@ Archived OpenSpec this window: `unify-pass-driver`, `gzip-zlib-truncation-recove
 
 | ID | Action |
 |----|--------|
-| **T3** | Bench-gate RAR / encrypted / accelerator data |
 | **T7** | Corpus-matrix audit |
 | **T4 half** | Multithread `members_report_if_available` test |
 
@@ -29,7 +28,7 @@ Archived OpenSpec this window: `unify-pass-driver`, `gzip-zlib-truncation-recove
 | ID | Action |
 |----|--------|
 | **P7 residual** | **Accepted** (#191) — nightly ratios in `docs/costs.md`; L5 → `IDEAS.md` |
-| **P6 remainder** | = debt-ledger T3 |
+| **P6 remainder** | **DONE** (= debt-ledger T3) |
 
 ---
 
@@ -46,9 +45,10 @@ Archived OpenSpec this window: `unify-pass-driver`, `gzip-zlib-truncation-recove
 
 | Item | Where |
 |------|-------|
+| T3 / P6 remainder bench-gate RAR / encrypted / in-ZIP accel | this change |
 | D2 `SECURITY.md` + D7 any-seekable OpenSpec archive | #198 |
 | T2 seek-interleaving XZ / lzip / `.Z` | #199 |
-| D4 `open-issues.md` P1 sweep | this change |
+| D4 `open-issues.md` P1 sweep | #200 |
 | D1 VISION/costs peer bands (Q2 (b)) | #191 |
 | D3 CHANGELOG + release checklist (Q5) | #193 |
 | DD4 rapidgzip backstop + any-seekable / Bug-3 | #194 / #196 |

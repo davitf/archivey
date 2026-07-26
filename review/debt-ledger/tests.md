@@ -17,9 +17,12 @@ outside mutation → **T7**.
 `test_seek_interleaving_matches_plaintext` parametrized over XZ / lzip / `.Z`
 (unix-compress; `ncompress` gated).
 
-## T3 — benchmark-gate RAR / encrypted / accelerator data (PAY)
+## T3 — benchmark-gate RAR / encrypted / accelerator data — **DONE**
 
-Still no hits in `test_benchmark_gate.py`. Perf P6 remainder. **Open.**
+Structural gate cases for RAR solid/encrypted (committed fixtures + `unrar`),
+WinZip AES ZIP (`[crypto]`), ZIP LZMA, and in-ZIP accelerated deflate
+(`[seekable]`). Omit cleanly when optional deps/binaries are absent. Perf P6
+remainder closed.
 
 ## T4 — free-threaded core-only; `*_if_available` untested under threads
 

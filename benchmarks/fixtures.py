@@ -6,20 +6,28 @@ Two scales:
 - ``realistic`` — multi-MiB corpora for wall-time ratios vs stdlib (VISION ≤1.3× surface).
 
 Large solid 7z/RAR archives are generated when py7zr / ``rar`` are available.
+WinZip AES ZIPs need the ``[crypto]`` extra to build (and to decrypt under archivey).
 """
 
 from __future__ import annotations
 
 import gzip
+import hashlib
+import hmac
 import io
 import os
 import shutil
+import struct
 import subprocess
 import tarfile
 import tempfile
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
+
+# Password for the generated WinZip AES fixture (must match harness open).
+ZIP_AES_PASSWORD = b"bench-secret"
 
 # ---------------------------------------------------------------------------
 # Scale profiles
@@ -67,6 +75,8 @@ class FixtureSet:
     root: Path
     scale: Scale
     zip_path: Path
+    zip_lzma_path: Path
+    zip_aes_path: Path | None
     tar_path: Path
     targz_path: Path
     tarbz2_path: Path
@@ -75,6 +85,7 @@ class FixtureSet:
     solid_rar: Path | None
     unpacked_solid_7z: int
     unpacked_solid_rar: int
+    unpacked_zip_aes: int
 
 
 def _payload(i: int, size: int) -> bytes:
@@ -94,6 +105,137 @@ def build_zip(path: Path, scale: Scale) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for i in range(scale.common_members):
             zf.writestr(f"f{i:04d}.bin", _payload(i, scale.common_member_size))
+
+
+def build_zip_lzma(path: Path, scale: Scale) -> None:
+    """ZIP with LZMA members — exercises the native ZIP codec path (#106)."""
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_LZMA) as zf:
+        # Fewer members than the deflate corpus: LZMA setup dominates at ci scale.
+        n = max(2, scale.common_members // 2)
+        for i in range(n):
+            zf.writestr(f"lzma{i:04d}.bin", _payload(i, scale.common_member_size))
+
+
+def _aes_ctr_le_encrypt(key: bytes, plaintext: bytes) -> bytes:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    out = bytearray(len(plaintext))
+    keystream = b""
+    pos = 0
+    counter = 1
+    for i, byte in enumerate(plaintext):
+        if pos >= len(keystream):
+            keystream = encryptor.update(counter.to_bytes(16, "little"))
+            pos = 0
+            counter += 1
+        out[i] = byte ^ keystream[pos]
+        pos += 1
+    return bytes(out)
+
+
+def build_zip_aes(
+    path: Path, scale: Scale, *, password: bytes = ZIP_AES_PASSWORD
+) -> int:
+    """Hand-build a multi-member WinZip AES-256 (AE-2) ZIP; return unpacked bytes.
+
+    Requires ``cryptography`` (the same ``[crypto]`` extra needed to decrypt). Returns
+    0 and leaves ``path`` absent when the extra is missing.
+    """
+    try:
+        from archivey.internal.zip_aes import (
+            WinZipAesInfo,
+            derive_winzip_aes_keys,
+        )
+    except ImportError:
+        return 0
+    try:
+        import cryptography  # noqa: F401
+    except ImportError:
+        return 0
+
+    # AE-2 / AES-256 / underlying method = deflate. A handful of members is enough to
+    # exercise per-member password confirm + HMAC VerifyingStream without dominating ci.
+    n = max(2, min(4, scale.common_members))
+    vendor_version, strength, method = 2, 3, 8
+    aes = WinZipAesInfo(vendor_version, strength, method)
+
+    locals_blob = bytearray()
+    central = bytearray()
+    total = 0
+    for i in range(n):
+        payload = _payload(i, scale.common_member_size)
+        total += len(payload)
+        name = f"aes{i:04d}.bin".encode()
+        compressed = zlib.compress(payload)[2:-4]  # raw deflate
+        salt = os.urandom(aes.salt_len)
+        enc_key, auth_key, pw_verify = derive_winzip_aes_keys(
+            password, salt=salt, key_len=aes.key_len
+        )
+        ciphertext = _aes_ctr_le_encrypt(enc_key, compressed)
+        mac = hmac.new(auth_key, ciphertext, hashlib.sha1).digest()[:10]
+        body = salt + pw_verify + ciphertext + mac
+        # AE-2: CRC in headers is zero; authenticity is the AES HMAC.
+        crc = 0
+        aes_extra = struct.pack("<H2sBH", vendor_version, b"AE", strength, method)
+        extra = struct.pack("<HH", 0x9901, len(aes_extra)) + aes_extra
+        flags = 0x1
+        offset = len(locals_blob)
+        local = struct.pack(
+            "<IHHHHHIIIHH",
+            0x04034B50,
+            51,
+            flags,
+            99,
+            0,
+            0,
+            crc,
+            len(body),
+            len(payload),
+            len(name),
+            len(extra),
+        )
+        locals_blob.extend(local)
+        locals_blob.extend(name)
+        locals_blob.extend(extra)
+        locals_blob.extend(body)
+        cd = struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            51,
+            51,
+            flags,
+            99,
+            0,
+            0,
+            crc,
+            len(body),
+            len(payload),
+            len(name),
+            len(extra),
+            0,
+            0,
+            0,
+            0,
+            offset,
+        )
+        central.extend(cd)
+        central.extend(name)
+        central.extend(extra)
+
+    eocd = struct.pack(
+        "<IHHHHIIH",
+        0x06054B50,
+        0,
+        0,
+        n,
+        n,
+        len(central),
+        len(locals_blob),
+        0,
+    )
+    path.write_bytes(bytes(locals_blob) + bytes(central) + eocd)
+    return total
 
 
 def build_tar(path: Path, scale: Scale, *, mode: str = "w") -> None:
@@ -182,12 +324,16 @@ def materialize_fixtures(
     root.mkdir(parents=True, exist_ok=True)
 
     zip_path = root / "common.zip"
+    zip_lzma_path = root / "common-lzma.zip"
+    zip_aes_path_candidate = root / "common-aes.zip"
     tar_path = root / "common.tar"
     targz_path = root / "common.tar.gz"
     tarbz2_path = root / "common.tar.bz2"
     gzip_path = root / "common.gz"
     if not zip_path.exists():
         build_zip(zip_path, scale_obj)
+    if not zip_lzma_path.exists():
+        build_zip_lzma(zip_lzma_path, scale_obj)
     if not tar_path.exists():
         build_tar(tar_path, scale_obj)
     if not targz_path.exists():
@@ -196,6 +342,21 @@ def materialize_fixtures(
         build_tar(tarbz2_path, scale_obj, mode="w:bz2")
     if not gzip_path.exists():
         build_gzip(gzip_path, scale_obj)
+
+    zip_aes_path: Path | None = None
+    unpacked_zip_aes = 0
+    if zip_aes_path_candidate.exists():
+        zip_aes_path = zip_aes_path_candidate
+        # Rebuild would need cryptography; reuse size from the same recipe.
+        n = max(2, min(4, scale_obj.common_members))
+        unpacked_zip_aes = sum(
+            len(_payload(i, scale_obj.common_member_size)) for i in range(n)
+        )
+    else:
+        built = build_zip_aes(zip_aes_path_candidate, scale_obj)
+        if built > 0 and zip_aes_path_candidate.exists():
+            zip_aes_path = zip_aes_path_candidate
+            unpacked_zip_aes = built
 
     solid_7z: Path | None = None
     unpacked_7z = 0
@@ -217,15 +378,17 @@ def materialize_fixtures(
         solid_rar = rar_path
         unpacked_rar = _unpacked_solid(scale_obj)
     else:
-        built = build_solid_rar(rar_path, scale_obj)
-        if built is not None:
+        built_rar = build_solid_rar(rar_path, scale_obj)
+        if built_rar is not None:
             solid_rar = rar_path
-            unpacked_rar = built
+            unpacked_rar = built_rar
 
     return FixtureSet(
         root=root,
         scale=scale_obj,
         zip_path=zip_path,
+        zip_lzma_path=zip_lzma_path,
+        zip_aes_path=zip_aes_path,
         tar_path=tar_path,
         targz_path=targz_path,
         tarbz2_path=tarbz2_path,
@@ -234,4 +397,5 @@ def materialize_fixtures(
         solid_rar=solid_rar,
         unpacked_solid_7z=unpacked_7z,
         unpacked_solid_rar=unpacked_rar,
+        unpacked_zip_aes=unpacked_zip_aes,
     )

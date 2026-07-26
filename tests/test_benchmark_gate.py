@@ -10,7 +10,10 @@ import pytest
 from benchmarks.fixtures import materialize_fixtures
 from benchmarks.harness import (
     STRUCTURAL_BASELINE,
+    _crypto_available,
+    _rapidgzip_available,
     _structural_checks,
+    _unrar_available,
     load_json,
     run_cases,
 )
@@ -25,15 +28,29 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()
     results = run_cases(fixtures, work)
-    # Ensure the solid sequential case ran when 7z is available.
-    sequential = [r for r in results if r.case == "sevenzip_solid_sequential"]
-    assert sequential, "expected sevenzip_solid_sequential case"
-    assert sequential[0].bytes_decompressed <= (sequential[0].unpacked_bytes or 0) * 2
+    by_case = {r.case: r for r in results}
 
-    random = [r for r in results if r.case == "sevenzip_solid_random"]
-    assert random
+    # Ensure the solid sequential case ran when 7z is available.
+    sequential = by_case.get("sevenzip_solid_sequential")
+    assert sequential is not None, "expected sevenzip_solid_sequential case"
+    assert sequential.bytes_decompressed <= (sequential.unpacked_bytes or 0) * 2
+
+    random = by_case.get("sevenzip_solid_random")
+    assert random is not None
     # Random opens re-decode; recorded, not failed — but must be visible.
-    assert random[0].bytes_decompressed >= sequential[0].bytes_decompressed
+    assert random.bytes_decompressed >= sequential.bytes_decompressed
+
+    # T3 / perf P6: RAR data, encrypted, and in-ZIP accelerator cases when deps exist.
+    if _unrar_available():
+        assert "rar_solid_sequential" in by_case
+        assert "rar_solid_random" in by_case
+        assert "rar_encrypted_read_all" in by_case
+    if _crypto_available() and fixtures.zip_aes_path is not None:
+        assert "zip_aes_read_all" in by_case
+    assert "zip_lzma_read_all" in by_case
+    assert "zip_read_all_accel_off" in by_case
+    if _rapidgzip_available():
+        assert "zip_read_all_accel_on" in by_case
 
     failures = _structural_checks(results, load_json(STRUCTURAL_BASELINE))
     assert not failures, "structural gate failures:\n" + "\n".join(failures)
@@ -42,7 +59,19 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
 def test_structural_baseline_committed() -> None:
     assert STRUCTURAL_BASELINE.is_file()
     data = json.loads(STRUCTURAL_BASELINE.read_text())
-    assert "sevenzip_solid_sequential" in data["cases"]
+    cases = data["cases"]
+    assert "sevenzip_solid_sequential" in cases
+    # P6 remainder / T3 coverage must stay in the committed ci baseline.
+    for name in (
+        "rar_solid_sequential",
+        "rar_solid_random",
+        "rar_encrypted_read_all",
+        "zip_aes_read_all",
+        "zip_lzma_read_all",
+        "zip_read_all_accel_off",
+        "zip_read_all_accel_on",
+    ):
+        assert name in cases, f"missing structural baseline case {name}"
 
 
 def test_format_text_report_table() -> None:

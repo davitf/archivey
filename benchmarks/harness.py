@@ -21,11 +21,13 @@ Modes:
   artifact (preserving ``measured_at``); a full re-measure is forced at least
   every ~30 days. VISION absolute bands stay informational prints.
 
-Formats covered here: ZIP, TAR, gzip, tar.gz/tar.bz2 (+ accelerators), solid 7z
-(and solid RAR when the ``rar`` writer is available to build fixtures). Listing
-wall peers: ``zipfile`` / ``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands). ISO and
-directory backends are instrumented for measurement but deliberately out of
-scope for this harness — see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
+Formats covered here: ZIP (deflate / LZMA / WinZip AES), TAR, gzip,
+tar.gz/tar.bz2 (+ accelerators), in-ZIP accelerated deflate, solid 7z, and RAR
+data paths on committed fixtures when RARLAB ``unrar`` is present (large solid
+RAR when the ``rar`` writer can build one). Listing wall peers: ``zipfile`` /
+``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands). ISO and directory backends are
+instrumented for measurement but deliberately out of scope for this harness —
+see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
 """
 
 from __future__ import annotations
@@ -44,14 +46,23 @@ from typing import Any, Callable
 
 from archivey import MemberStreams, open_archive
 from archivey.config import AcceleratorMode, ArchiveyConfig
+from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
-from benchmarks.fixtures import FixtureSet, materialize_fixtures
+from benchmarks.fixtures import ZIP_AES_PASSWORD, FixtureSet, materialize_fixtures
 from benchmarks.wall_baseline import (
     measurement_provenance,
     overlapping_wall_ratio_count,
     wall_ratio_map,
 )
+
+# Unpacked sizes for the committed solid RAR fixture used at ci scale.
+_RAR_BASIC_UNPACKED = {
+    "file1.txt": 13,
+    "empty_file.txt": 0,
+    "subdir/file2.txt": 16,
+    "implicit_subdir/file3.txt": 12,
+}
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINES_DIR = Path(__file__).resolve().parent / "baselines"
@@ -133,9 +144,12 @@ def _op_read_all(
     *,
     config: ArchiveyConfig | None = None,
     member_streams: MemberStreams = MemberStreams(0),
+    password: bytes | str | None = None,
 ) -> tuple[int, int, int]:
     with enable_measurement():
-        with open_archive(path, config=config, member_streams=member_streams) as reader:
+        with open_archive(
+            path, config=config, member_streams=member_streams, password=password
+        ) as reader:
             base = _as_base(reader)
             unpacked = 0
             for member, stream in reader.stream_members():
@@ -165,17 +179,22 @@ def _op_read_all_unmeasured(
     *,
     config: ArchiveyConfig | None = None,
     member_streams: MemberStreams = MemberStreams(0),
+    password: bytes | str | None = None,
 ) -> None:
     """Read every member without measurement wrappers — fair wall-time peer."""
-    with open_archive(path, config=config, member_streams=member_streams) as reader:
+    with open_archive(
+        path, config=config, member_streams=member_streams, password=password
+    ) as reader:
         for _member, stream in reader.stream_members():
             if stream is not None:
                 stream.read()
 
 
-def _op_random_read_all(path: Path) -> tuple[int, int]:
+def _op_random_read_all(
+    path: Path, *, password: bytes | str | None = None
+) -> tuple[int, int]:
     with enable_measurement():
-        with open_archive(path) as reader:
+        with open_archive(path, password=password) as reader:
             base = _as_base(reader)
             names = [m.name for m in reader.members() if m.is_file]
             for name in reversed(names):
@@ -335,6 +354,26 @@ def _rapidgzip_available() -> bool:
         return False
 
 
+def _unrar_available() -> bool:
+    """True when RARLAB ``unrar`` is on PATH (needed for RAR *data* cases)."""
+    try:
+        from archivey.internal.backends.rar_unrar import find_rarlab_unrar
+
+        find_rarlab_unrar()
+        return True
+    except PackageNotInstalledError:
+        return False
+
+
+def _crypto_available() -> bool:
+    try:
+        from archivey.internal.streams.crypto import _crypto_available as _avail
+
+        return bool(_avail())
+    except ImportError:
+        return False
+
+
 def run_cases(
     fixtures: FixtureSet,
     work: Path,
@@ -472,6 +511,83 @@ def run_cases(
             wall_ratio=(wall / std_wall) if std_wall > 0 else None,
         )
     )
+
+    # --- ZIP LZMA (native codec path; stdlib zipfile writes, archivey lzma reads) ---
+    _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        lambda: _op_read_all(fixtures.zip_lzma_path)
+    )
+    results.append(
+        CaseResult(
+            "zip_lzma_read_all",
+            "zip",
+            "read_all",
+            _m_wall,
+            bdec,
+            seeks,
+            unpacked_bytes=unpacked,
+            notes="native ZIP LZMA codec; no stdlib peer (zipfile writes only)",
+        )
+    )
+
+    # --- ZIP WinZip AES (VerifyingStream + [crypto]; skip when extra absent) ---
+    if fixtures.zip_aes_path is not None and _crypto_available():
+        aes_path = fixtures.zip_aes_path
+        _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+            lambda: _op_read_all(aes_path, password=ZIP_AES_PASSWORD)
+        )
+        results.append(
+            CaseResult(
+                "zip_aes_read_all",
+                "zip",
+                "read_all",
+                _m_wall,
+                bdec,
+                seeks,
+                unpacked_bytes=unpacked,
+                notes="WinZip AES-256 AE-2; requires [crypto]",
+            )
+        )
+
+    # --- In-ZIP accelerated deflate (forced ON/OFF; mirrors tar.gz accelerator cases) ---
+    # AUTO would decline below RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE; ON exercises the
+    # per-member rapidgzip path that G7 noted was missing from the harness.
+    has_accel = _rapidgzip_available()
+    cfg_zip_off = _accel_config(enabled=False)
+    _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        lambda: _op_read_all(fixtures.zip_path, config=cfg_zip_off)
+    )
+    results.append(
+        CaseResult(
+            "zip_read_all_accel_off",
+            "zip",
+            "read_all",
+            _m_wall,
+            bdec,
+            seeks,
+            unpacked_bytes=unpacked,
+            notes="stdlib deflate codec; accelerators forced OFF",
+        )
+    )
+    if has_accel:
+        cfg_zip_on = _accel_config(enabled=True)
+        seekable = MemberStreams.SEEKABLE
+        _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+            lambda: _op_read_all(
+                fixtures.zip_path, config=cfg_zip_on, member_streams=seekable
+            )
+        )
+        results.append(
+            CaseResult(
+                "zip_read_all_accel_on",
+                "zip",
+                "read_all",
+                _m_wall,
+                bdec,
+                seeks,
+                unpacked_bytes=unpacked,
+                notes="rapidgzip accelerator ON for in-ZIP deflate ([seekable])",
+            )
+        )
 
     # --- TAR (plain / uncompressed — harness peer is tarfile r:) ---
     _m_wall, (bdec, seeks) = timed_with_optional_warmup(
@@ -757,10 +873,33 @@ def run_cases(
                 )
             )
 
-    # --- Solid RAR (data path; needs rar writer fixture) ---
-    if fixtures.solid_rar is not None:
+    # --- Solid RAR data path ---
+    # At ci scale always prefer the committed basic_solid fixture so the structural
+    # baseline is stable whether or not the ``rar`` writer is installed (CI has
+    # ``unrar`` only). Realistic scale may use a generated large solid RAR when the
+    # writer built one. Both paths require RARLAB ``unrar`` for member data.
+    rar_data_path: Path | None = None
+    rar_unpacked = 0
+    rar_fixture_note = ""
+    committed_solid = ROOT / "tests" / "fixtures" / "rar" / "basic_solid__.rar"
+    use_generated = (
+        fixtures.scale.name != "ci"
+        and fixtures.solid_rar is not None
+        and _unrar_available()
+    )
+    if use_generated:
+        rar_data_path = fixtures.solid_rar
+        rar_unpacked = fixtures.unpacked_solid_rar
+        rar_fixture_note = "generated solid fixture"
+    elif committed_solid.is_file() and _unrar_available():
+        rar_data_path = committed_solid
+        rar_unpacked = sum(_RAR_BASIC_UNPACKED.values())
+        rar_fixture_note = "committed basic_solid__.rar"
+
+    if rar_data_path is not None:
+        rar_path = rar_data_path
         wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
-            lambda: _op_read_all(fixtures.solid_rar)  # type: ignore[arg-type]
+            lambda p=rar_path: _op_read_all(p)
         )
         results.append(
             CaseResult(
@@ -770,12 +909,15 @@ def run_cases(
                 wall,
                 bdec,
                 seeks,
-                unpacked_bytes=fixtures.unpacked_solid_rar,
-                notes="solid invariant: bytes_decompressed <= unpacked * factor",
+                unpacked_bytes=rar_unpacked,
+                notes=(
+                    f"solid invariant: bytes_decompressed <= unpacked * factor "
+                    f"({rar_fixture_note})"
+                ),
             )
         )
         wall, (bdec, seeks) = timed_with_optional_warmup(
-            lambda: _op_random_read_all(fixtures.solid_rar)  # type: ignore[arg-type]
+            lambda p=rar_path: _op_random_read_all(p)
         )
         results.append(
             CaseResult(
@@ -785,8 +927,31 @@ def run_cases(
                 wall,
                 bdec,
                 seeks,
-                unpacked_bytes=fixtures.unpacked_solid_rar,
-                notes="re-decode recorded; gated vs baseline×SOLID_RANDOM_BYTES_FACTOR",
+                unpacked_bytes=rar_unpacked,
+                notes=(
+                    "re-decode recorded; gated vs baseline×SOLID_RANDOM_BYTES_FACTOR "
+                    f"({rar_fixture_note}; unrar pipe counts output only)"
+                ),
+            )
+        )
+
+    # --- Encrypted RAR (committed fixture; password + unrar data path) ---
+    enc_rar = ROOT / "tests" / "fixtures" / "rar" / "encryption__.rar"
+    if enc_rar.is_file() and _unrar_available():
+        enc_path = enc_rar
+        wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+            lambda p=enc_path: _op_read_all(p, password="password")
+        )
+        results.append(
+            CaseResult(
+                "rar_encrypted_read_all",
+                "rar",
+                "read_all",
+                wall,
+                bdec,
+                seeks,
+                unpacked_bytes=unpacked,
+                notes="committed encryption__.rar; requires RARLAB unrar",
             )
         )
 
@@ -831,7 +996,7 @@ def _structural_checks(
             # read; over-decode catches decode-twice-deliver-once (each open still
             # increments the shared ByteCounter even when only the second handle
             # is delivered to the caller).
-            if r.format in ("zip", "tar", "gzip", "tar.gz", "tar.bz2"):
+            if r.format in ("zip", "tar", "gzip", "tar.gz", "tar.bz2", "rar"):
                 if r.bytes_decompressed < r.unpacked_bytes:
                     failures.append(
                         f"{r.case}: bytes_decompressed={r.bytes_decompressed} "

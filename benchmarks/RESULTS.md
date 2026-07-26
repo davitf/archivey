@@ -120,7 +120,8 @@ accel_off (indexing / thread-pool startup dominates).
 | ZIP/TAR/gzip `bytes == unpacked` | tautological at member-output layer — under-decode guard only |
 | solid 7z sequential | decode-once (also pinned in `test_measurement.py`) |
 | solid 7z random `read()` | ~32.5× re-decode (n=64) — recorded, not gated |
-| solid RAR decode-once | unit-tested against committed fixtures (`unrar` only) |
+| solid RAR decode-once | structural gate on committed `basic_solid__.rar` + unit test (`unrar` only) |
+| encrypted RAR / ZIP AES / ZIP LZMA / in-ZIP accel | structural gate cases (T3); skip when `unrar` / `[crypto]` / `[seekable]` absent |
 
 ISO / directory: measurement is wired; harness cases are out of scope (ISO
 lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).

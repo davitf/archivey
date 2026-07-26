@@ -5,7 +5,7 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
 
 - **Topics 4 + 5** (test-strategy, structural-cleanliness) — in flight as
   `debt-ledger/` (findings 2026-07-20; **refreshed 2026-07-25** — D1/D2/D3/D7/
-  DD4/S2/S3/T1 paid; remaining D4/T2/T3/T7; see `STATUS.md`).
+  DD4/S2/S3/T1/T2/T3/D4 paid; remaining T7 + T4 half; see `STATUS.md`).
 - **Topic 6** (decode-engine performance) — a later *performance* round, once the
   `stream-layering` wrapper work has landed; mostly independent of it.
   *(stream-layering fusion landed in #137 — Topic 6 is unblocked on that axis.

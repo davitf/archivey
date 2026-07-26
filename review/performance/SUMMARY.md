@@ -47,7 +47,7 @@ bounded.
 | P3 | **blocker** | Selective solid-7z extraction decodes ~whole folder for one early member (31× needed bytes); CLI `extract archive.7z <name>` hits it | `sevenzip_reader.py:283-323`, `extraction.py:340` | **fixed by #136** — verified 31.0× → 1.00× |
 | P4 | high | Non-solid re-decompression is invisible to the gate: decode-twice-deliver-once ZIP regression passes (byte axis counts delivered output; seek slack ×2+8 absorbs churn; wall ungated) | `gate-efficacy.md` G4, `repro.py` probe 3 | **fixed by #139** — over-decode ×1.1 bound + seek slack baseline+8; probe CAUGHT |
 | P5 | high | A full 2× solid re-decode passes the gate (`SOLID_DECODE_FACTOR = 2.0`, non-strict bound) — VISION says a re-read must fail | `harness.py:51,526-532`, `repro.py` probe 2 | **fixed by #139** — factor 1.25; probe CAUGHT |
-| P6 | med | Harness has no stdlib peer for open/list/extract (why P2's extract miss went unnoticed); no RAR case in committed baseline; ZIP-AES / native-codec / in-ZIP-accelerated paths unbenchmarked | `gate-efficacy.md` G6/G7 | **partial** — #139 adds ZIP open_list/extract peers; `py7zr`/`rarfile` listing peers + RAR/encrypted/accel still missing |
+| P6 | med | Harness has no stdlib peer for open/list/extract (why P2's extract miss went unnoticed); no RAR case in committed baseline; ZIP-AES / native-codec / in-ZIP-accelerated paths unbenchmarked | `gate-efficacy.md` G6/G7 | **done** — ZIP peers #139; py7zr/rarfile + TAR peers #143; RAR solid/encrypted + ZIP AES/LZMA + in-ZIP accel structural cases (T3) |
 | P7 | med | Per-`open()` 5–8× zipfile (detection + member-model build ~0.3 ms/archive) — the founding million-archive sweep pays minutes | `hotspots.md` H3 | **partial** — #136 caches extension map; model-build toward 2–3× **actionable** (Q1) |
 | P8 | low | rapidgzip AUTO threshold (1 MiB) conservative: seek workloads win ~1.5× well below it; provenance script never measured compressed sizes near 1 MiB | `hotspots.md` H5 | **follow-up** (future) |
 | P9 | low | Measurement blind spots: 7z password-confirm folder decode uncounted; RAR byte axis (unrar pipe output) cannot see solid rewind | `gate-efficacy.md` G6 | **follow-up** (future) |
@@ -117,7 +117,7 @@ parses as a *non-empty* plausible header.
 | P2 | **partial** — large-member ZIP read in budget; many-small / open+list improved (ZIP many-small ~3.7× after L2; 7z open+list ~2.0× after L1) but not yet inside Q1 bands; extract realistic in ~2× band |
 | P3 | **fixed** (#136) |
 | P4 / P5 | **fixed** (#139) |
-| P6 | **partial** — ZIP peers in #139; **py7zr/rarfile + TAR open_list peers added** (#143); RAR/encrypted/accel data cases still missing |
+| P6 | **done** — ZIP peers #139; py7zr/rarfile + TAR open_list #143; RAR/encrypted/accel data cases (T3) |
 | P7 | **partial** — #143 model-build fast paths + #146 L1/L2/L3 listing fixes (`listing-attribution.md`); ZIP open+list still above 2–3×; 7z closer to native band |
 | P8 / P9 | **follow-up** (future / archive-copy) |
 | Q1 | **direction recorded** (#140) — listing peers + ZIP model-build (#143) + L1/L2/L3 from attribution worklist (#146); residual band miss remains |
