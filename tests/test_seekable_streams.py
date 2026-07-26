@@ -9,6 +9,8 @@ import importlib.util
 import io
 import lzma
 import zlib
+from collections.abc import Callable
+from typing import Any, BinaryIO
 
 import pytest
 
@@ -16,6 +18,7 @@ from archivey.exceptions import PackageNotInstalledError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.lzip import LzipDecompressorStream, _read_index_backwards
+from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream, _read_xz_index_backwards
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.streams_util import (
@@ -24,6 +27,7 @@ from tests.streams_util import (
     make_multi_member_lzip,
     make_multi_stream_xz,
     make_multiblock_xz,
+    make_unix_compress,
     xz_cli_available,
 )
 
@@ -540,11 +544,73 @@ def test_accelerator_mode_auto_resolution() -> None:
 
 # --- F5: randomized seek interleaving --------------------------------------------------
 
+
 hypothesis = pytest.importorskip("hypothesis")
 from hypothesis import given  # noqa: E402
 from hypothesis import strategies as st  # noqa: E402
 
 
+def _seek_interleaving_ops(stream: Any, plaintext: bytes, ops: list[str]) -> None:
+    """Drive a random size-probe / seek / read schedule against ``stream``."""
+    for op in ops:
+        if op == "size":
+            size = stream.try_get_size()
+            assert size is None or size == len(plaintext)
+        elif op == "seek_end":
+            assert stream.seek(0, io.SEEK_END) == len(plaintext)
+        elif op == "seek0":
+            assert stream.seek(0) == 0
+        elif op == "read_all":
+            stream.seek(0)
+            assert stream.read() == plaintext
+        elif op == "seek_mid":
+            mid = len(plaintext) // 2
+            assert stream.seek(mid) == mid
+            n = min(32, len(plaintext) - mid)
+            assert stream.read(n) == plaintext[mid : mid + n]
+        elif op == "read_chunk":
+            pos = stream.tell()
+            if pos >= len(plaintext):
+                stream.seek(0)
+                pos = 0
+            n = min(64, len(plaintext) - pos)
+            assert stream.read(n) == plaintext[pos : pos + n]
+
+
+def _compress_xz_parts(parts: list[bytes]) -> bytes:
+    return make_multi_stream_xz(parts)
+
+
+def _compress_lzip_parts(parts: list[bytes]) -> bytes:
+    return make_multi_member_lzip(parts)
+
+
+def _compress_unix_parts(parts: list[bytes]) -> bytes:
+    # .Z is a single LZW stream (CLEAR seek points inside); join parts first.
+    return make_unix_compress(b"".join(parts))
+
+
+_SEEK_INTERLEAVE_CASES = [
+    pytest.param(
+        _compress_xz_parts,
+        XzDecompressorStream,
+        id="xz",
+    ),
+    pytest.param(
+        _compress_lzip_parts,
+        LzipDecompressorStream,
+        id="lzip",
+    ),
+    pytest.param(
+        _compress_unix_parts,
+        UnixCompressDecompressorStream,
+        id="unix_compress",
+        marks=requires("ncompress"),
+    ),
+]
+
+
+@pytest.mark.parametrize("compress_parts,stream_cls", _SEEK_INTERLEAVE_CASES)
 @given(
     parts=st.lists(
         st.binary(min_size=16, max_size=400),
@@ -559,37 +625,20 @@ from hypothesis import strategies as st  # noqa: E402
         max_size=12,
     ),
 )
-def test_xz_seek_interleaving_matches_plaintext(
-    parts: list[bytes], ops: list[str]
+def test_seek_interleaving_matches_plaintext(
+    compress_parts: Callable[[list[bytes]], bytes],
+    stream_cls: Callable[..., BinaryIO],
+    parts: list[bytes],
+    ops: list[str],
 ) -> None:
     """Random size-probe / seek / read order must match plaintext; no raw asserts (F5).
 
-    Includes mid-seeks after only a partial forward read: stateful resume must force a
-    complete from-origin index so later streams are not silently truncated.
+    Covers XZ (multi-stream index), lzip (trailer-scan members), and unix-compress
+    (CLEAR seek points). Includes mid-seeks after only a partial forward read: stateful
+    resume must force a complete from-origin index so later streams are not silently
+    truncated.
     """
     plaintext = b"".join(parts)
-    compressed = make_multi_stream_xz(parts)
-    with XzDecompressorStream(io.BytesIO(compressed), seekable=True) as stream:
-        for op in ops:
-            if op == "size":
-                size = stream.try_get_size()
-                assert size is None or size == len(plaintext)
-            elif op == "seek_end":
-                assert stream.seek(0, io.SEEK_END) == len(plaintext)
-            elif op == "seek0":
-                assert stream.seek(0) == 0
-            elif op == "read_all":
-                stream.seek(0)
-                assert stream.read() == plaintext
-            elif op == "seek_mid":
-                mid = len(plaintext) // 2
-                assert stream.seek(mid) == mid
-                n = min(32, len(plaintext) - mid)
-                assert stream.read(n) == plaintext[mid : mid + n]
-            elif op == "read_chunk":
-                pos = stream.tell()
-                if pos >= len(plaintext):
-                    stream.seek(0)
-                    pos = 0
-                n = min(64, len(plaintext) - pos)
-                assert stream.read(n) == plaintext[pos : pos + n]
+    compressed = compress_parts(parts)
+    with stream_cls(io.BytesIO(compressed), seekable=True) as stream:
+        _seek_interleaving_ops(stream, plaintext, ops)

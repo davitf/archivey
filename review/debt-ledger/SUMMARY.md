@@ -14,7 +14,7 @@ Most of the original freeze-cost pay list is paid. **D1** (VISION bands, #191),
 **S2+S3+T1** (#184, archived), **DD1** wall-drift (#171), **DD4** rapidgzip
 truncation (#194/#196), and **D7** (OpenSpec sync/archive of the any-seekable
 backstop) are done. What still freezes at release is mainly test-net
-widenings (**T2/T3/T7**) and the stale `open-issues.md` bucket (**D4**).
+widenings (**T3/T7**) and the stale `open-issues.md` bucket (**D4**).
 
 **Freeze-rank legend** — F3: frozen at release. F2: compounds. F1: stable cost.
 
@@ -28,7 +28,7 @@ widenings (**T2/T3/T7**) and the stale `open-issues.md` bucket (**D4**).
 | **D3** | No `CHANGELOG` | `CHANGELOG.md`; release checklist | **F3** | **DONE** (#193) — Keep a Changelog + `docs/internal/release-checklist.md` (Q5) |
 | **DD6** | Salvage mode absent (founding use case) | PLAN / IDEAS / `--salvage` | **F3**→ok | **KEEP** — sequencing recorded; docs honest |
 | **DD4** | rapidgzip ISIZE backstop under-characterized | was `rapidgzip-truncation-investigation` | **F2** | **DONE** (#194 characterize+impl ADR-0014-safe; #196 any-seekable + Bug-3 trap). Change archived `2026-07-24-rapidgzip-truncation-investigation/` |
-| **T2** | Seek-interleaving property test only for XZ | `test_seekable_streams.py` | **F2** | **PAY** — parametrize over lzip/`.Z` |
+| **T2** | Seek-interleaving property test only for XZ | `test_seekable_streams.py` | **F2** | **DONE** — parametrized over XZ / lzip / `.Z` |
 | **T3** | Benchmark gate missing RAR / encrypted / accelerator data | `test_benchmark_gate.py` | **F2** | **PAY** (perf P6 remainder) |
 | **D4** | `open-issues.md` bucket/ref drift (P1 still under candidates) | `docs/internal/open-issues.md` | **F2** | **PAY** — 15-min sweep |
 | **D7** | Completed OpenSpec changes unarchived / unsynced | see below | **F2** | **DONE** — any-seekable synced into `seekable-decompressor-streams` + archived `2026-07-25-gzip-truncation-backstop-any-seekable/` |
@@ -46,11 +46,10 @@ widenings (**T2/T3/T7**) and the stale `open-issues.md` bucket (**D4**).
 
 ## The remaining pre-0.2.0 pay list, in order
 
-1. **T2** — parametrize seek-interleaving over lzip/`.Z`.
-2. **D4** — `open-issues.md` P1 sweep (move to Closed; fix archive refs).
-3. **T3** — benchmark-gate RAR/encrypted/accelerator data cases.
-4. **T7** — corpus-matrix audit.
-5. **T4 (half)** — one `members_report_if_available` multithread barrier test.
+1. **D4** — `open-issues.md` P1 sweep (move to Closed; fix archive refs).
+2. **T3** — benchmark-gate RAR/encrypted/accelerator data cases.
+3. **T7** — corpus-matrix audit.
+4. **T4 (half)** — one `members_report_if_available` multithread barrier test.
 
 ## Paid since the ledger was commissioned
 
@@ -64,8 +63,9 @@ widenings (**T2/T3/T7**) and the stale `open-issues.md` bucket (**D4**).
 | **DD4** rapidgzip backstop (ADR-0014-safe) + any-seekable / Bug-3 | #194 / #196 → investigation archived |
 | **D3 / Q5** CHANGELOG + release checklist | #193 |
 | `pyppmd` quiesce-on-close + valgrind UAF gate (mitigation) | #188/#189 |
-| **D2** `SECURITY.md` + threat-model / checklist links | this change |
-| **D7** sync + archive `gzip-truncation-backstop-any-seekable` | this change |
+| **D2** `SECURITY.md` + threat-model / checklist links | #198 |
+| **D7** sync + archive `gzip-truncation-backstop-any-seekable` | #198 |
+| **T2** seek-interleaving XZ / lzip / `.Z` | this change |
 
 ## What is actually fine (don't re-review)
 

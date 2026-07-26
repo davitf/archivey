@@ -12,10 +12,10 @@ Original refs: `main` @ `7bb862b`. **Status refresh 2026-07-25** @ `3793646`.
 Static solid RAR4/RAR5 under mutation. Encrypted-header / multi-volume still
 outside mutation → **T7**.
 
-## T2 — seek-interleaving stops at XZ (PAY)
+## T2 — seek-interleaving stops at XZ — **DONE**
 
-Still only `test_xz_seek_interleaving_matches_plaintext`. Parametrize over
-lzip / `.Z`. **Open.**
+`test_seek_interleaving_matches_plaintext` parametrized over XZ / lzip / `.Z`
+(unix-compress; `ncompress` gated).
 
 ## T3 — benchmark-gate RAR / encrypted / accelerator data (PAY)
 
