@@ -8,11 +8,12 @@
 > everything else either ships as a fix or stays here until it does.
 >
 > Snapshot: 2026-07-18 against `main` @ `93dc28e`. Merged since the first triage:
-> [#127](https://github.com/davitf/archivey-2/pull/127) (crypto F1–F5),
-> [#128](https://github.com/davitf/archivey-2/pull/128) (stream-decoder F1–F6),
-> [#124](https://github.com/davitf/archivey-2/pull/124) /
-> [#130](https://github.com/davitf/archivey-2/pull/130) (PPMd bound decode),
-> [#120](https://github.com/davitf/archivey-2/pull/120) (CLI). This triage PR is #129.
+> [#127](https://github.com/davitf/archivey/pull/127) (crypto F1–F5),
+> [#128](https://github.com/davitf/archivey/pull/128) (stream-decoder F1–F6),
+> [#124](https://github.com/davitf/archivey/pull/124) /
+> [#130](https://github.com/davitf/archivey/pull/130) (PPMd bound decode),
+> [#120](https://github.com/davitf/archivey/pull/120) (CLI). This triage PR is #129.
+> **D4 refresh 2026-07-25:** P1 (TAR EOF Option F) moved to Closed; archive path fixed.
 
 ## How to use this list
 
@@ -30,29 +31,6 @@ same change when relevant.
 ---
 
 ## Product — candidates to fix
-
-### P1. TAR end-of-archive strictness — DECIDED + IMPLEMENTED (Option F)
-
-- **Status:** decided and implemented in OpenSpec change
-  [`decide-strict-archive-eof-default`](../../openspec/changes/decide-strict-archive-eof-default/)
-  — **Option F**. `config.py` default stays `False`.
-- **Decision:** split the EOF diagnostic on `ArchiveEofContext.observed_kind` (the signal the
-  check already computes) instead of on one bool. `observed_kind="nonzero"` (a stray non-null
-  block where a trailer/header was expected — which a conformant tar never produces) raises
-  `CorruptionError` **by default**, catching the *detectable* slice of stdlib's "corrupt
-  non-first header = clean EOF." The ambiguous `absent`/`short` residual (complete-trailer-less
-  vs. truncated-at-boundary) warns by default and escalates to `TruncatedError` only under
-  `strict_archive_eof=True`. Terminal escalation flows through the `partial-members-and-errors`
-  report model (#157): `members()` / `scan_members()` complete-or-raise; `members_report()`
-  returns the recovered prefix + `error`; `__iter__` yields the prefix then raises. RA
-  `extract_all` **fails closed** (extract-prep materializes before any write); streaming writes
-  salvageable members then raises.
-- **Why Option F:** honors Phase 5 warn-by-default for trailer-less / `cat`-joined tars (those
-  are `absent`) while still hard-failing the corruption we *can* detect, without a native TAR
-  walker and without breaking the common corpus. The `absent`/`short` residual is the piece
-  that is genuinely undecidable until P3.
-- **Refs:** change `design.md` (option survey + `observed_kind` analysis);
-  `review/deep-unknown-unknowns.md` W1; `config.py`; `format-tar`.
 
 ### P2. Multi-volume / split ZIP (`.z01`…`.zip`)
 
@@ -73,7 +51,7 @@ same change when relevant.
   offset, close the streaming final-header gap, and improve salvage/precision on detectable
   cases. The `absent`/`short` residual remains intrinsically ambiguous even with a native
   walker (byte-identical trailer-less-complete vs. truncated-at-boundary).
-- **Larger than P1;** P1 is the cheap honesty upgrade, this is the structural one.
+- **Larger than closed P1** (Option F EOF honesty); this is the structural follow-on.
 - **Refs:** `known-issues.md`; `IDEAS.md` (implied by native-first); W1 longer-term.
 
 ### P4. ZIP UTF-8 general-purpose bit 11 “lie”
@@ -180,6 +158,7 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 
 | Item | Closed by |
 | --- | --- |
+| **P1** TAR EOF Option F (`observed_kind` split; `strict_archive_eof` default stays `False`) | #149 / #162 — archived `openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/` |
 | Crypto F1–F5 (HASHMAC, 7z no-anchor diagnostic, NumCycles clamp, unrar stdin password, `compare_digest`) | #127 |
 | Stream-decoder F1–F6 (seek-point collision, rapidgzip size/verify, feed budgets, `readall` pending_error, …) | #128 |
 | PPMd `max_length` / after-eof / version pin product work | #124 / #130 (residual abort → Irreducible) |
@@ -192,9 +171,6 @@ help; they do not disappear. Covered in [Gotchas](../gotchas.md).
 
 ## Suggested first cuts
 
-1. **TAR EOF strictness (P1):** decided (Option F) in
-   `openspec/changes/decide-strict-archive-eof-default/` — apply it; `config.py` default
-   stays `False`, do not flip ad hoc.
-2. **Why Archivey page** (next narrative doc): hardenings / why not wrap / why “large.”
-3. Optional polish: `usage.md` duplicate-name / hardlink pointers; fuller nested-archive
+1. **Why Archivey page** (next narrative doc): hardenings / why not wrap / why “large.”
+2. Optional polish: `usage.md` duplicate-name / hardlink pointers; fuller nested-archive
    recipe; one line in `safe-extraction.md` on symlink-hostile FS.

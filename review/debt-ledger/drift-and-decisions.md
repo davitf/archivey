@@ -24,11 +24,11 @@ archivey’s own bar still required it). OSS-Fuzz may trail.
 
 `CHANGELOG.md` + `docs/internal/release-checklist.md` (Q5).
 
-## D4 — `open-issues.md` stale (PAY)
+## D4 — `open-issues.md` stale — **DONE**
 
-P1 (Option F) still under "candidates to fix" with dead
-`openspec/changes/decide-strict-archive-eof-default/` ref; suggested-first-cuts
-still says "apply it". **PAY** 15-min sweep.
+P1 (TAR EOF Option F) moved to Closed with archived path
+`openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/`;
+suggested-first-cuts no longer says “apply it.”
 
 ## D5 / D6 — **DONE (2026-07-20)**
 
