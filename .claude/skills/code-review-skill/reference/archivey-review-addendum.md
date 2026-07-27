@@ -40,6 +40,20 @@ often has **not** read the diff; design for that reader first, then the implemen
 
 Do **not** lead with a long findings dump. Put dense detail only in block 2.
 
+**Brevity fence (do not let skim-friendly layout shrink the review):** short form
+applies **only** to how blocks 1 and 3 are *presented*. It must **not** reduce:
+
+- review depth (still run full pass 1 + pass 2 / §8–§9; same tracing and checklists),
+- finding discipline (still over-report on existence; still severity × confidence),
+- **block 2** length or specificity (full locations, why, fix direction, triggers /
+  repro notes — never collapse a real finding into a briefing one-liner and stop),
+- real pause-and-ask items in block 3 (omit filler questions, not genuine decisions;
+  when unsure whether something needs a human call, **include it** and label
+  confidence).
+
+If block 1 is short because the analysis was thin, that is a failed review — not
+compliance with this shape.
+
 #### 1. Maintainer briefing (read this first)
 
 Audience: you, the maintainer, skimming without the code open.
@@ -66,6 +80,10 @@ If there are **zero** findings worth action, say so here and keep blocks 2–3 m
 Audience: the person who will fix or reply. This block must be **safe to paste** into a
 PR comment, chat, or issue with little or no editing.
 
+This is where review quality lives in the write-up. Prefer being thorough here over
+keeping the whole reply short. A long block 2 with traced findings is correct; a short
+block 2 that drops evidence to match the briefing is not.
+
 - Start with a one-line context header (PR / branch / scope) so the paste stands alone.
 - Then the **full findings**, ranked by severity then confidence (§0 axes below).
 - Each finding is self-contained: severity, confidence, location (`file:line`), what’s
@@ -90,7 +108,9 @@ blocks 1–2 or the diff**:
 - Your **recommendation** if you have one (optional; label it as such).
 
 Skip routine “please add a test for X” fixes — those belong in block 2. If nothing needs
-a decision, write `None.` Do not invent soft questions to fill the section.
+a decision, write `None.` Do not invent soft filler questions — but **do not drop** a
+real decision gap to keep this section empty; when unsure, include it (see brevity
+fence above).
 
 Same three blocks apply when reviewing an OpenSpec proposal (§9); “what this change is”
 summarizes the proposal’s intent, and block 2 is the handoff for whoever will revise the

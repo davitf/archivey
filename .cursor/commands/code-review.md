@@ -49,6 +49,11 @@ Combine the priorities above with that skill’s process:
 Emit **exactly three sections**, in order — addendum **§0 (Output shape)**. The
 maintainer often has not read the diff; do not dump a long findings list first.
 
+**Brevity fence:** short form applies only to blocks 1 and 3 *presentation*. Do not
+shrink review depth (full §8/§9 passes), finding discipline, block 2 specificity, or
+real pause-and-ask items. A thin block 2 that matches a short briefing is a failed
+review, not compliance.
+
 ### 1. Maintainer briefing (read this first)
 
 Short and scannable (about half a screen unless the change is huge):
@@ -62,7 +67,8 @@ Short and scannable (about half a screen unless the change is huge):
 
 ### 2. Implementor handoff (copy-paste ready)
 
-Paste-safe block for the implementor. Self-contained (no “see above”):
+Paste-safe block for the implementor. Self-contained (no “see above”). Prefer
+thoroughness here over keeping the whole reply short:
 
 - One-line context header, then **full findings** ranked by severity × confidence
   (`CONFIRMED` / `PLAUSIBLE` / `DISPROVEN→reclassified`)
@@ -80,6 +86,7 @@ contract, path/bomb safety, silent solid re-decode, unjustified debt, etc.).
 Numbered list of items that need a **human call** only. Each item must be decidable
 without reading blocks 1–2 or the diff: the decision, why it needs you, options +
 consequences when useful, optional recommendation. Routine fixes stay in block 2. If
-nothing needs a decision: `None.`
+nothing needs a decision: `None.` Do not invent filler questions; when unsure whether
+something needs a human call, include it.
 
 Skip formatting/lint nits that `ruff` / type-checkers already own.

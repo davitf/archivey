@@ -87,6 +87,9 @@ local *why* for non-obvious choices; bugs / safety / tests.
 2. **Implementor handoff** — paste-ready full findings (severity × confidence, `file:line`)
 3. **Maintainer decisions** — only human calls; each decidable without the diff; or `None.`
 
+Brevity fence: short form is blocks 1/3 presentation only — do not shrink pass depth or
+block 2 specificity; keep real pause-and-ask items.
+
 ---
 
 ## Severity Labels

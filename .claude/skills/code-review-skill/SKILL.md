@@ -42,9 +42,10 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 > `/code-review-skill` **report findings**; they do **not** modify code unless you
 > explicitly ask. Emit the addendum **§0 output shape**: (1) maintainer briefing,
 > (2) copy-paste implementor handoff with findings ranked by **severity × confidence**,
-> (3) maintainer decisions. Output is markdown prose, not a host-specific findings tool.
-> This holds however the skill is invoked (Cursor command or `Skill`). Reviewing an
-> OpenSpec proposal rather than code? Use
+> (3) maintainer decisions. **Brevity is presentation-only** for blocks 1 and 3 — do not
+> shrink pass depth or block 2 specificity (see §0 brevity fence). Output is markdown
+> prose, not a host-specific findings tool. This holds however the skill is invoked
+> (Cursor command or `Skill`). Reviewing an OpenSpec proposal rather than code? Use
 > [addendum §9](reference/archivey-review-addendum.md) (values-first), not the code-first
 > order — same three-block output.
 
