@@ -33,6 +33,69 @@ Output stays **markdown prose** (portable across Cursor / Claude Code / others).
 route findings through a host-specific findings tool — the two-axis + reclassification
 model below is richer than those schemas, and prose is the source of truth.
 
+### Output shape — three blocks (required)
+
+Write the review as **exactly three top-level sections**, in this order. The maintainer
+often has **not** read the diff; design for that reader first, then the implementor.
+
+Do **not** lead with a long findings dump. Put dense detail only in block 2.
+
+#### 1. Maintainer briefing (read this first)
+
+Audience: you, the maintainer, skimming without the code open.
+
+Keep this short and scannable (aim for roughly half a screen unless the change is huge):
+
+- **What this change is** — 2–4 sentences: intent, main files/areas touched, and the
+  behaviour delta in plain language. Assume no prior familiarity with the PR or the
+  OpenSpec change name.
+- **Snapshot** — size (approx. lines / “small|medium|large”), gates if known
+  (ruff / pyrefly / ty / pytest), and **Verdict**: ✅ Approve / 💬 Comment /
+  🔄 Request Changes.
+- **Main points** — a short ranked bullet list of the things that actually matter
+  (blockers and important items only; fold nits out). One line each: severity +
+  one-sentence gist. No `file:line` essays here.
+- **What’s fine** (optional, 1–3 bullets) — load-bearing things that looked correct, so
+  the briefing isn’t only negatives.
+
+If there are **zero** findings worth action, say so here and keep blocks 2–3 minimal
+(“none” / empty decision list).
+
+#### 2. Implementor handoff (copy-paste ready)
+
+Audience: the person who will fix or reply. This block must be **safe to paste** into a
+PR comment, chat, or issue with little or no editing.
+
+- Start with a one-line context header (PR / branch / scope) so the paste stands alone.
+- Then the **full findings**, ranked by severity then confidence (§0 axes below).
+- Each finding is self-contained: severity, confidence, location (`file:line`), what’s
+  wrong, why it matters, concrete fix direction, and a trigger / repro note when
+  possible (`CONFIRMED` + trigger ⇒ red–green candidate, §4).
+- Include 🟢 nits / 💡 suggestions here (not in the briefing), still ranked.
+- End with the same **Verdict** line so a pasted comment doesn’t depend on block 1.
+
+No “as above” / “see briefing” cross-references that break when pasted alone.
+
+#### 3. Maintainer decisions (your attention)
+
+Audience: you again — only items that need a **human call**, not implementor busywork.
+
+A concise numbered list. For each item give **enough context to decide without reading
+blocks 1–2 or the diff**:
+
+- The decision in one line (what to choose between, or yes/no).
+- **Why it needs you** — conflict with VISION/spec/docs, product trade-off, pause-and-ask
+  discrepancy, or an under-specified contract (§9 decision gaps).
+- **Options** (when useful) — A / B / … with a one-line consequence each.
+- Your **recommendation** if you have one (optional; label it as such).
+
+Skip routine “please add a test for X” fixes — those belong in block 2. If nothing needs
+a decision, write `None.` Do not invent soft questions to fill the section.
+
+Same three blocks apply when reviewing an OpenSpec proposal (§9); “what this change is”
+summarizes the proposal’s intent, and block 2 is the handoff for whoever will revise the
+proposal / implement later.
+
 ### Two axes: severity ≠ confidence
 
 Rate every finding on two independent axes so the maintainer can read
@@ -77,7 +140,7 @@ result, crash, or contract violation:
 - Can't build one → the finding still stands, tagged `PLAUSIBLE` / needs-repro. A missing
   repro lowers confidence, never existence.
 
-### Keep it scannable
+### Keep findings disciplined (inside block 2)
 
 Over-reporting fails only when it is *unlabeled*. Hold the noise down by discipline, not
 suppression:
@@ -86,6 +149,8 @@ suppression:
 - **Rank** by severity, then confidence within a tier.
 - Every finding carries: severity, confidence tag, location (`file:line`), why it
   matters, a fix direction, and (where possible) a trigger.
+- Briefing (block 1) stays thin; detail lives in the handoff (block 2); decisions
+  (block 3) stay only what needs you.
 
 ---
 
@@ -384,8 +449,9 @@ Now open the narrative and contracts:
    / invents undecided behavior / breaks format parity.”
 4. Gates relevant to the change (targeted pytest; three configs before push when
    behavior depends on extras/versions).
-5. Write feedback with skill severity labels; put maintainer decisions in questions,
-   not silent resolutions.
+5. Write feedback in the **three-block output shape (§0)** — briefing, implementor
+   handoff, maintainer decisions — with skill severity labels; put pause-and-ask items
+   in block 3, not silent resolutions.
 
 | Pass | Job | Pass if… |
 |------|-----|----------|
@@ -466,11 +532,13 @@ Go looking, don't wait for gaps to surface during implementation.
   or assumed? Flag the untested ones and the cheapest way to test them.
 
 These are findings too (§0): a decision gap that could send implementation down the wrong
-path is 🟡+ and belongs in **maintainer questions** (pause-and-ask), never a silent
-assumption baked into the review.
+path is 🟡+ and belongs in **block 3 (Maintainer decisions)** — pause-and-ask, never a
+silent assumption baked into the review. Detail for whoever revises the proposal goes in
+block 2.
 
 Rank the same way (§0/§7): a proposal that undercuts a load-bearing VISION claim (§1) is
-🔴; a decision gap or thin scenario is 🟡; wording nits are 🟢.
+🔴; a decision gap or thin scenario is 🟡; wording nits are 🟢. Emit the same
+three-block output shape (§0).
 
 ---
 

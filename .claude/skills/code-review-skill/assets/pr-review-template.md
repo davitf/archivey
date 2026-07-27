@@ -1,83 +1,84 @@
 # PR Review Template
 
 Copy and use this template for code reviews in this repo.
+Matches [addendum §0 output shape](../reference/archivey-review-addendum.md).
 
 ---
 
-## Summary
+## 1. Maintainer briefing (read this first)
 
-[Brief overview of what was reviewed — 1-2 sentences]
+**What this change is**
 
-**PR Size:** [Small/Medium/Large] (~X lines)
-**Review Time:** [X minutes]
+[2–4 sentences: intent, areas touched, behaviour delta — readable without the diff]
 
-## Strengths
+**Snapshot**
 
-- [What was done well]
-- [Good patterns or approaches used]
-- [Improvements from previous code]
+- **PR size:** [Small/Medium/Large] (~X lines)
+- **Gates:** [ruff / pyrefly / ty / pytest — if known]
+- **Verdict:** [✅ Approve / 💬 Comment / 🔄 Request Changes]
 
-## Architecture & Performance
+**Main points**
 
-**Architecture Assessment**
-- [ ] Separation of concerns — responsibilities clearly divided?
-- [ ] Fits existing reader/backend patterns?
-- [ ] Dependency direction toward stable abstractions?
-- [ ] Public API / exception contract preserved or intentionally changed?
+- 🔴/🟡 [one-sentence gist]
+- …
 
-> See [Architecture Review Guide](../reference/architecture-review-guide.md).
+**What’s fine** (optional)
 
-**Performance Assessment**
-- [ ] Algorithm / member-loop complexity acceptable?
-- [ ] Memory — streaming vs full buffers; unbounded growth?
-- [ ] I/O — avoid silent re-decompression / redundant reads?
+- [Load-bearing thing that looked correct]
 
-> See [Performance Review Guide](../reference/performance-review-guide.md).
+---
 
-## Required Changes
+## 2. Implementor handoff (copy-paste ready)
 
-🔴 **[blocking]** [Issue description]
-> [Code location or example]
-> [Suggested fix or explanation]
+**Context:** [PR # / branch / scope — so this paste stands alone]
 
-## Important Suggestions
+### Required changes
 
-🟡 **[important]** [Issue description]
-> [Why this matters]
-> [Suggested approach]
+🔴 **[blocking]** `CONFIRMED|PLAUSIBLE` — [Title]
 
-## Minor Suggestions
+**Location:** `path/to/file.py:123`
 
-🟢 **[nit]** [Minor improvement suggestion]
+[What’s wrong and why it matters]
 
-💡 **[suggestion]** [Alternative approach to consider]
+**Suggested fix:** [concrete direction]
 
-## Learning Notes
+**Trigger:** [input/state → failure], or needs-repro
 
-📚 [Educational context]
+### Important suggestions
 
-## Security Considerations
+🟡 **[important]** `CONFIRMED|PLAUSIBLE` — [Title]
 
-- [ ] No hardcoded secrets
-- [ ] Extract path / symlink safety considered
-- [ ] Hostile size / bomb risks considered
-- [ ] Subprocess usage is safe (no shell interpolation)
-- [ ] Passwords / key material not leaked in logs/errors
-- [ ] Dependency / extra changes justified for zero-dep core
+**Location:** `path/to/file.py:123`
 
-> See [Security Review Guide](../reference/security-review-guide.md).
+[Why this matters]
 
-## Test Coverage
+**Consider:**
+- Option A: [description]
+- Option B: [description]
 
-- [ ] Unit / behavior tests added or updated
-- [ ] Edge, truncated, and error cases covered
-- [ ] Format fixtures / corpus used where appropriate
+### Minor / suggestions
 
-## Verdict
+🟢 **[nit]** [Suggestion — not blocking]
 
-**[ ] ✅ Approve** — Ready to merge
-**[ ] 💬 Comment** — Minor suggestions, can merge
-**[ ] 🔄 Request Changes** — Must address blocking issues
+💡 **[suggestion]** [Alternative approach]
+
+📚 **[learning]** [Educational note — no action needed]
+
+🎉 **[praise]** [Specific strength worth keeping]
+
+**Verdict:** [✅ Approve / 💬 Comment / 🔄 Request Changes]
+
+---
+
+## 3. Maintainer decisions (your attention)
+
+Numbered items that need a **human call** only. Each must be decidable without reading
+the briefing, handoff, or diff. If none: `None.`
+
+1. **[Decision]** — [yes/no or A vs B]
+   - **Why you:** [spec/VISION conflict, product trade-off, pause-and-ask, …]
+   - **Options:** A — [consequence]; B — [consequence]
+   - **Recommendation (optional):** […]
 
 ---
 
@@ -85,21 +86,25 @@ Copy and use this template for code reviews in this repo.
 
 ### Blocking Issue
 ```
-🔴 **[blocking]** [Title]
-
-[Description of the issue]
+🔴 **[blocking]** `CONFIRMED` — [Title]
 
 **Location:** `path/to/file.py:123`
+
+[Description of the issue]
 
 **Suggested fix:**
 \`\`\`python
 # suggested code
 \`\`\`
+
+**Trigger:** [input/state → failure]
 ```
 
 ### Important Suggestion
 ```
-🟡 **[important]** [Title]
+🟡 **[important]** `PLAUSIBLE` — [Title]
+
+**Location:** `path/to/file.py:123`
 
 [Why this is important]
 
@@ -127,4 +132,12 @@ Not blocking, but consider [improvement].
 📚 **[learning]** [Educational note]
 
 For context, [X] works this way because [Y]. No action needed — just sharing.
+```
+
+### Maintainer decision
+```
+1. **[Decision title]** — choose A or B
+   - **Why you:** [conflict / trade-off]
+   - **Options:** A — [consequence]; B — [consequence]
+   - **Recommendation (optional):** [A because …]
 ```
