@@ -58,8 +58,9 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
     if missing_rar and (_running_in_ci() or _unrar_available()):
         pytest.fail(
             "RAR data cases missing from structural run: "
-            f"{missing_rar}. Install RARLAB unrar "
-            "(ci.yml / benchmark-wall.yml must apt-get install unrar)."
+            f"{missing_rar}. Install RARLAB unrar on PATH "
+            "(ci.yml matrix installs apt/brew-cask/choco unrar; "
+            "benchmark jobs apt-get install unrar on Linux)."
         )
 
     if _crypto_available() and fixtures.zip_aes_path is not None:

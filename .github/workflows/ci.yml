@@ -147,9 +147,26 @@ jobs:
           uv sync --python ${{ matrix.python-version }}
           --group dev --extra all --resolution lowest-direct
 
-      - name: Install unrar (Linux only, for RAR data tests)
+      # RAR *data* tests (and the structural gate's rar_* cases) need RARLAB unrar.
+      # Listing works without it; with CI=true the gate fail-closes if data cases omit.
+      - name: Install unrar (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y unrar || true
+        run: sudo apt-get update && sudo apt-get install -y unrar
+      - name: Install unrar (macOS)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
+        run: brew install --cask rar
+      - name: Install unrar (Windows)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
+        run: choco install unrar -y
+      - name: Verify RARLAB unrar on PATH
+        if: matrix.install == 'all' || matrix.install == 'all-lowest'
+        shell: bash
+        run: |
+          command -v unrar
+          unrar 2>&1 | head -n 3 || true
+          # archivey's finder requires the RARLAB banner (not unrar-free / unar / 7z).
+          uv run --python ${{ matrix.python-version }} --no-sync python -c \
+            "from archivey.internal.backends.rar_unrar import find_rarlab_unrar; print(find_rarlab_unrar())"
 
       - name: Assert synced venv Python matches matrix
         # Catch regressions where `.python-version` silently overrides the matrix again.
