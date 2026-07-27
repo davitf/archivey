@@ -6,8 +6,22 @@ set -euo pipefail
 # Official uv installer lands here; keep it first for non-login shells.
 export PATH="${HOME}/.local/bin:${PATH}"
 
-sudo apt-get update
-sudo apt-get install -y unrar
+# Cloud VMs sometimes boot with a skewed clock; apt then rejects Release files as
+# "not valid yet". Prefer correcting the clock from an HTTP Date header; if that
+# fails, still allow a generous future skew so package installs can proceed.
+if date_hdr="$(
+  curl -fsSI --max-time 10 https://archive.ubuntu.com/ubuntu/ \
+    | awk -F': ' 'tolower($1) == "date" { print $2; exit }'
+)"; then
+  sudo date -s "${date_hdr}" >/dev/null 2>&1 || true
+fi
+
+# unrar: RAR member-data tests (multiverse). p7zip-full: encrypted ZIP fixture builds.
+sudo apt-get \
+  -o Acquire::Max-FutureTime=604800 \
+  -o Acquire::Check-Valid-Until=false \
+  update
+sudo apt-get install -y unrar p7zip-full
 
 npm install -g --prefix "${HOME}/.local" @fission-ai/openspec
 
