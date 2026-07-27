@@ -38,14 +38,16 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 > wires `/code-review` to this skill + addendum (findings-first defaults + archivey
 > process). Invoking `/code-review-skill` also loads this skill directly.
 >
-> **Repo default — findings first, no edits:** in archivey, `/code-review` and
+> **Repo default — three-block report, no edits:** in archivey, `/code-review` and
 > `/code-review-skill` **report findings**; they do **not** modify code unless you
-> explicitly ask. Lead with findings ranked by **severity × confidence** (see
-> [addendum §0](reference/archivey-review-addendum.md)); output is markdown prose, not a
-> host-specific findings tool. This holds however the skill is invoked (Cursor command or
-> `Skill`). Reviewing an OpenSpec proposal rather than code? Use
+> explicitly ask. Emit the addendum **§0 output shape**: (1) maintainer briefing,
+> (2) copy-paste implementor handoff with findings ranked by **severity × confidence**,
+> (3) maintainer decisions. **Brevity is presentation-only** for blocks 1 and 3 — do not
+> shrink pass depth or block 2 specificity (see §0 brevity fence). Output is markdown
+> prose, not a host-specific findings tool. This holds however the skill is invoked
+> (Cursor command or `Skill`). Reviewing an OpenSpec proposal rather than code? Use
 > [addendum §9](reference/archivey-review-addendum.md) (values-first), not the code-first
-> order.
+> order — same three-block output.
 
 ## When to Use This Skill
 
@@ -139,7 +141,8 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
    designs yet)
 
 Then run Phases 2–3 as **pass 1 (code alone)**. Open the PR narrative, OpenSpec
-change, and contracts as **pass 2** per addendum §8 before writing the verdict.
+change, and contracts as **pass 2** per addendum §8 before writing the
+**three-block §0 report**.
 
 > For large diffs, pipe the diff through [`scripts/pr-analyzer.py`](scripts/pr-analyzer.py) (`git diff main...HEAD | python scripts/pr-analyzer.py`) to triage complexity and get a suggested review approach before reading.
 
@@ -164,6 +167,13 @@ For each file, check:
 - **Reuse** - Before accepting new code, search for existing utilities/helpers that could replace it. Check adjacent files and shared modules for similar patterns. See [Universal Quality Guide](reference/code-quality-universal.md) for anti-patterns like parameter sprawl, leaky abstractions, nested conditionals, stringly-typed code, TOCTOU, and no-op updates.
 
 ### Phase 4: Summary & Decision (2-3 minutes)
+
+> **Archivey override:** Do **not** emit a free-form “summary then findings” write-up.
+> Use the addendum’s **§0 three-block output**: (1) Maintainer briefing, (2) Implementor
+> handoff (copy-paste ready), (3) Maintainer decisions. Verdict lives in blocks 1 and 2.
+> Honor the §0 **brevity fence** — short blocks 1/3 must not thin the review or block 2.
+
+For non-archivey use of this skill:
 
 1. Summarize key concerns
 2. Highlight what you liked

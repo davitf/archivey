@@ -77,6 +77,18 @@ local *why* for non-obvious choices; bugs / safety / tests.
 - [ ] Contract fit: OpenSpec / VISION / threat model / addendum (§1, §3, §5)
 - [ ] Spec ↔ code ↔ docs: match, intentional revision, or pause-and-ask
 - [ ] Concerns that only dissolve after external prose → usually 🟡 doc debt in the code
+- [ ] Write the **§0 three-block report**: briefing → implementor handoff → decisions
+
+---
+
+## Output shape (addendum §0)
+
+1. **Maintainer briefing** — what the change is, snapshot + verdict, main 🔴/🟡 points
+2. **Implementor handoff** — paste-ready full findings (severity × confidence, `file:line`)
+3. **Maintainer decisions** — only human calls; each decidable without the diff; or `None.`
+
+Brevity fence: short form is blocks 1/3 presentation only — do not shrink pass depth or
+block 2 specificity; keep real pause-and-ask items.
 
 ---
 
