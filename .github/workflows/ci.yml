@@ -149,15 +149,48 @@ jobs:
 
       # RAR *data* tests (and the structural gate's rar_* cases) need RARLAB unrar.
       # Listing works without it; with CI=true the gate fail-closes if data cases omit.
+      # Install *unrar only* — the ``rar`` writer enables corpus RAR builds whose
+      # digest expectations are Linux-fixture-oriented; keep writer off the PATH here.
       - name: Install unrar (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar
       - name: Install unrar (macOS)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
-        run: brew install --cask rar
+        run: |
+          brew install --cask rar
+          # Cask ships both rar + unrar; drop the writer so corpus builders skip.
+          rm -f "$(brew --prefix)/bin/rar"
+          command -v unrar
+          command -v rar && exit 1 || true
       - name: Install unrar (Windows)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
-        run: choco install unrar -y
+        shell: pwsh
+        run: |
+          # Official x64 UnRAR (not chocolatey's x86 package + ShimGen shim — shims
+          # have broken solid ``unrar p`` pipes on this matrix).
+          $dest = Join-Path $env:RUNNER_TEMP 'rarlab-unrar'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $sfx = Join-Path $dest 'unrarw64.exe'
+          Invoke-WebRequest -Uri 'https://www.rarlab.com/rar/unrarw64.exe' -OutFile $sfx
+          Push-Location $dest
+          # RARLAB SFX: /s silent, /d<path> extract destination.
+          $p = Start-Process -FilePath $sfx -ArgumentList "/s","/d$dest" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne $null) {
+            Write-Host "SFX exit $($p.ExitCode); trying cwd extract"
+            Start-Process -FilePath $sfx -ArgumentList '/s' -Wait -NoNewWindow
+          }
+          Pop-Location
+          $real = Get-ChildItem -Path $dest -Recurse -Filter 'UnRAR.exe' |
+            Select-Object -First 1
+          if (-not $real) {
+            Get-ChildItem -Path $dest -Recurse | Format-Table FullName
+            throw 'UnRAR.exe not found after extracting unrarw64.exe'
+          }
+          $dir = $real.DirectoryName
+          # shutil.which('unrar') looks for unrar.exe on Windows.
+          Copy-Item $real.FullName (Join-Path $dir 'unrar.exe') -Force
+          echo $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $dir 'unrar.exe') 2>&1 | Select-Object -First 2
       - name: Verify RARLAB unrar on PATH
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
         shell: bash
