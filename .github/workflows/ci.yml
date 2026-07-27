@@ -174,11 +174,7 @@ jobs:
           Invoke-WebRequest -Uri 'https://www.rarlab.com/rar/unrarw64.exe' -OutFile $sfx
           Push-Location $dest
           # RARLAB SFX: /s silent, /d<path> extract destination.
-          $p = Start-Process -FilePath $sfx -ArgumentList "/s","/d$dest" -Wait -PassThru -NoNewWindow
-          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne $null) {
-            Write-Host "SFX exit $($p.ExitCode); trying cwd extract"
-            Start-Process -FilePath $sfx -ArgumentList '/s' -Wait -NoNewWindow
-          }
+          Start-Process -FilePath $sfx -ArgumentList "/s","/d$dest" -Wait -NoNewWindow
           Pop-Location
           $real = Get-ChildItem -Path $dest -Recurse -Filter 'UnRAR.exe' |
             Select-Object -First 1
@@ -186,11 +182,10 @@ jobs:
             Get-ChildItem -Path $dest -Recurse | Format-Table FullName
             throw 'UnRAR.exe not found after extracting unrarw64.exe'
           }
-          $dir = $real.DirectoryName
-          # shutil.which('unrar') looks for unrar.exe on Windows.
-          Copy-Item $real.FullName (Join-Path $dir 'unrar.exe') -Force
-          echo $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & (Join-Path $dir 'unrar.exe') 2>&1 | Select-Object -First 2
+          # Windows is case-insensitive: shutil.which('unrar') finds UnRAR.exe.
+          # Do not Copy-Item to unrar.exe — that overwrites the file with itself.
+          echo $real.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $real.FullName 2>&1 | Select-Object -First 2
       - name: Verify RARLAB unrar on PATH
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
         shell: bash
