@@ -45,7 +45,7 @@ Archived OpenSpec this window: `unify-pass-driver`, `gzip-zlib-truncation-recove
 
 | Item | Where |
 |------|-------|
-| T3 / P6 remainder bench-gate RAR / encrypted / in-ZIP accel | this change |
+| T3 / P6 remainder bench-gate RAR / encrypted / in-ZIP accel | this change (+ CI `unrar` on structural gate) |
 | D2 `SECURITY.md` + D7 any-seekable OpenSpec archive | #198 |
 | T2 seek-interleaving XZ / lzip / `.Z` | #199 |
 | D4 `open-issues.md` P1 sweep | #200 |

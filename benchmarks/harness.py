@@ -56,14 +56,6 @@ from benchmarks.wall_baseline import (
     wall_ratio_map,
 )
 
-# Unpacked sizes for the committed solid RAR fixture used at ci scale.
-_RAR_BASIC_UNPACKED = {
-    "file1.txt": 13,
-    "empty_file.txt": 0,
-    "subdir/file2.txt": 16,
-    "implicit_subdir/file3.txt": 12,
-}
-
 ROOT = Path(__file__).resolve().parents[1]
 BASELINES_DIR = Path(__file__).resolve().parent / "baselines"
 STRUCTURAL_BASELINE = BASELINES_DIR / "structural.json"
@@ -80,9 +72,10 @@ NONSOLID_DECODE_FACTOR = 1.1
 # Random-access solid cost is inherent, but bound it against the committed
 # baseline so a folder-cache regression cannot silently double the work (G5).
 SOLID_RANDOM_BYTES_FACTOR = 1.5
-# Seek-count slack against the committed ci baseline. Was baseline×2+8, which
-# absorbed a full ZIP decode-twice seek doubling (28→52). Fixtures are
-# deterministic; baseline+8 still covers observed host jitter (e.g. gzip 1→3).
+# Seek-count slack against the committed ci baseline (two-sided: baseline±slack).
+# Was baseline×2+8 (upper-only), which absorbed a full ZIP decode-twice seek doubling
+# (28→52) and could not catch silent non-engagement of paths that seek *more*
+# (in-ZIP accel ON 44 → OFF 28). Fixtures are deterministic; ±8 covers host jitter.
 SEEK_BASELINE_SLACK = 8
 # Wall-time sanity ceiling for --mode full. Absolute VISION ≤1.3× / ~2× bands stay
 # informational (shared-runner noise); nightly enforces *drift* vs the previous
@@ -875,11 +868,10 @@ def run_cases(
 
     # --- Solid RAR data path ---
     # At ci scale always prefer the committed basic_solid fixture so the structural
-    # baseline is stable whether or not the ``rar`` writer is installed (CI has
-    # ``unrar`` only). Realistic scale may use a generated large solid RAR when the
-    # writer built one. Both paths require RARLAB ``unrar`` for member data.
+    # baseline is stable whether or not the ``rar`` writer is installed. Both the
+    # PR structural gate and the nightly wall job install RARLAB ``unrar``. Realistic
+    # scale may use a generated large solid RAR when the writer built one.
     rar_data_path: Path | None = None
-    rar_unpacked = 0
     rar_fixture_note = ""
     committed_solid = ROOT / "tests" / "fixtures" / "rar" / "basic_solid__.rar"
     use_generated = (
@@ -889,11 +881,9 @@ def run_cases(
     )
     if use_generated:
         rar_data_path = fixtures.solid_rar
-        rar_unpacked = fixtures.unpacked_solid_rar
         rar_fixture_note = "generated solid fixture"
     elif committed_solid.is_file() and _unrar_available():
         rar_data_path = committed_solid
-        rar_unpacked = sum(_RAR_BASIC_UNPACKED.values())
         rar_fixture_note = "committed basic_solid__.rar"
 
     if rar_data_path is not None:
@@ -909,7 +899,7 @@ def run_cases(
                 wall,
                 bdec,
                 seeks,
-                unpacked_bytes=rar_unpacked,
+                unpacked_bytes=unpacked,
                 notes=(
                     f"solid invariant: bytes_decompressed <= unpacked * factor "
                     f"({rar_fixture_note})"
@@ -927,10 +917,10 @@ def run_cases(
                 wall,
                 bdec,
                 seeks,
-                unpacked_bytes=rar_unpacked,
+                unpacked_bytes=unpacked,
                 notes=(
-                    "re-decode recorded; gated vs baseline×SOLID_RANDOM_BYTES_FACTOR "
-                    f"({rar_fixture_note}; unrar pipe counts output only)"
+                    "smoke + seek baseline; byte re-decode not observable via unrar "
+                    f"pipe output (P9) ({rar_fixture_note})"
                 ),
             )
         )
@@ -1009,16 +999,40 @@ def _structural_checks(
                         f"> unpacked×{NONSOLID_DECODE_FACTOR}={over_limit} "
                         f"(non-solid re-decode?)"
                     )
-        # Seek counts: ≤ recorded baseline + slack. Missing baseline = skip.
-        # Only meaningful against the same fixture scale as the committed baseline (ci).
+        # Seek counts: two-sided vs committed baseline ± slack. Upper bound catches
+        # silent re-open churn; lower bound catches paths that characteristically
+        # seek *more* silently falling back (e.g. in-ZIP accel ON → OFF).
+        # Missing baseline = skip. Only meaningful against the ci-scale baseline.
         if check_seek_baselines:
             ref = cases.get(r.case)
             if ref is not None and "source_seek_count" in ref:
-                limit = int(ref["source_seek_count"]) + SEEK_BASELINE_SLACK
-                if r.source_seek_count > limit:
+                baseline_seeks = int(ref["source_seek_count"])
+                upper = baseline_seeks + SEEK_BASELINE_SLACK
+                lower = max(0, baseline_seeks - SEEK_BASELINE_SLACK)
+                if r.source_seek_count > upper:
                     failures.append(
-                        f"{r.case}: source_seek_count={r.source_seek_count} > bound {limit}"
+                        f"{r.case}: source_seek_count={r.source_seek_count} > bound {upper}"
                     )
+                elif r.source_seek_count < lower:
+                    failures.append(
+                        f"{r.case}: source_seek_count={r.source_seek_count} "
+                        f"< bound {lower} (below baseline−{SEEK_BASELINE_SLACK})"
+                    )
+
+    # In-ZIP accelerator engagement: ON must seek more than OFF on the same
+    # fixture. An upper-only seek bound cannot catch silent non-engagement
+    # (ON regressing to stdlib keeps seeks≈28 inside OFF's upper slack).
+    if check_seek_baselines:
+        by_case = {r.case: r for r in results}
+        accel_off = by_case.get("zip_read_all_accel_off")
+        accel_on = by_case.get("zip_read_all_accel_on")
+        if accel_off is not None and accel_on is not None:
+            if accel_on.source_seek_count <= accel_off.source_seek_count:
+                failures.append(
+                    f"zip_read_all_accel_on: source_seek_count="
+                    f"{accel_on.source_seek_count} <= accel_off "
+                    f"{accel_off.source_seek_count} (accelerator not engaged?)"
+                )
     return failures
 
 

@@ -107,10 +107,11 @@ decode-once — `SUMMARY.md`), with the one exception documented in `hotspots.md
 
 ## G6 — Baseline meaningfulness and measurement blind spots
 
-- **Seek bounds are loose:** `baseline×2 + 8` lets an 8-member ZIP double its
-  per-member seeks and still pass; fixtures are deterministic, so equality (or a
-  small +k) would hold and catch churn G4-style. *(Partially tightened to
-  `baseline+8` by #139; residual host jitter remains.)*
+- **Seek bounds are two-sided:** committed baseline ± `SEEK_BASELINE_SLACK` (8).
+  Upper bound catches silent re-open churn; lower bound catches paths that
+  characteristically seek more silently falling back (in-ZIP accel ON→OFF).
+  Additionally `zip_read_all_accel_on` must seek strictly more than
+  `zip_read_all_accel_off` on the same fixture.
 - **`--update-baselines` is self-certifying:** a PR that regresses seeks can ship
   the regressed baseline in the same diff; nothing diffs baselines semantically.
 - **RAR data path is now in the committed baseline (T3):** `rar_solid_sequential`

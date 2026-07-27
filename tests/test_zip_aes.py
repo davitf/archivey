@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import io
 import os
 import struct
 import subprocess
 import zipfile
-import zlib
 from pathlib import Path
 
 import pytest
@@ -20,34 +17,13 @@ from archivey.exceptions import (
     EncryptionError,
     PackageNotInstalledError,
 )
-from archivey.internal.zip_aes import (
-    WinZipAesInfo,
-    derive_winzip_aes_keys,
-    parse_winzip_aes_extra,
-)
+from archivey.internal.zip_aes import parse_winzip_aes_extra
 from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires, requires_binary
+from tests.zip_aes_fixture import build_aes_zip
 
 _PASSWORD = b"secret"
 _PAYLOAD = b"winzip-aes-payload\n" * 40
-
-
-def _aes_ctr_le_encrypt(key: bytes, plaintext: bytes) -> bytes:
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
-    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
-    out = bytearray(len(plaintext))
-    counter = 1
-    keystream = b""
-    pos = 0
-    for i, byte in enumerate(plaintext):
-        if pos >= len(keystream):
-            keystream = encryptor.update(counter.to_bytes(16, "little"))
-            pos = 0
-            counter += 1
-        out[i] = byte ^ keystream[pos]
-        pos += 1
-    return bytes(out)
 
 
 def _build_aes_zip(
@@ -60,68 +36,15 @@ def _build_aes_zip(
     name: bytes = b"secret.txt",
     tamper_hmac: bool = False,
 ) -> bytes:
-    """Hand-build a single-entry WinZip AES ZIP (AE-1 or AE-2)."""
-    aes = WinZipAesInfo(vendor_version, strength, method)
-    if method == 0:
-        compressed = payload
-    elif method == 8:
-        compressed = zlib.compress(payload)[2:-4]  # raw deflate
-    else:
-        raise ValueError(f"unsupported test method {method}")
-
-    salt = os.urandom(aes.salt_len)
-    enc_key, auth_key, pw_verify = derive_winzip_aes_keys(
-        password, salt=salt, key_len=aes.key_len
+    """Single-entry wrapper around the shared AES ZIP builder."""
+    return build_aes_zip(
+        [(name, payload)],
+        password=password,
+        vendor_version=vendor_version,
+        strength=strength,
+        method=method,
+        tamper_hmac=tamper_hmac,
     )
-    ciphertext = _aes_ctr_le_encrypt(enc_key, compressed)
-    mac = bytearray(hmac.new(auth_key, ciphertext, hashlib.sha1).digest()[:10])
-    if tamper_hmac:
-        mac[0] ^= 0xFF
-    body = salt + pw_verify + ciphertext + bytes(mac)
-
-    crc = 0 if vendor_version == 2 else (zlib.crc32(payload) & 0xFFFFFFFF)
-    aes_extra = struct.pack("<H2sBH", vendor_version, b"AE", strength, method)
-    extra = struct.pack("<HH", 0x9901, len(aes_extra)) + aes_extra
-
-    flags = 0x1  # encrypted
-    local = struct.pack(
-        "<IHHHHHIIIHH",
-        0x04034B50,
-        51,  # version needed (AES)
-        flags,
-        99,
-        0,
-        0,
-        crc,
-        len(body),
-        len(payload),
-        len(name),
-        len(extra),
-    )
-    local += name + extra + body
-    cd = struct.pack(
-        "<IHHHHHHIIIHHHHHII",
-        0x02014B50,
-        51,
-        51,
-        flags,
-        99,
-        0,
-        0,
-        crc,
-        len(body),
-        len(payload),
-        len(name),
-        len(extra),
-        0,
-        0,
-        0,
-        0,
-        0,
-    )
-    cd += name + extra
-    eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(cd), len(local), 0)
-    return local + cd + eocd
 
 
 def _7z_aes_zip(tmp_path: Path, *, strength: str = "AES256") -> tuple[Path, bytes]:

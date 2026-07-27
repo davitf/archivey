@@ -254,6 +254,11 @@ jobs:
         run: uv python install 3.11
       - name: Sync (dev + all extras)
         run: uv sync --group dev --extra all
+      # RAR *data* structural cases (rar_solid_*, rar_encrypted_*) need RARLAB unrar.
+      # Listing (rar_open_list) works without it — do not drop this step or T3 silently
+      # omits the data-path half of the gate (pytest fail-closes when CI=true).
+      - name: Install unrar (RAR data structural cases)
+        run: sudo apt-get update && sudo apt-get install -y unrar
       - name: Structural benchmark gate
         run: >
           uv run --no-sync python -m benchmarks.harness
