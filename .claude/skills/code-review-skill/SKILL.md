@@ -171,6 +171,7 @@ For each file, check:
 > **Archivey override:** Do **not** emit a free-form “summary then findings” write-up.
 > Use the addendum’s **§0 three-block output**: (1) Maintainer briefing, (2) Implementor
 > handoff (copy-paste ready), (3) Maintainer decisions. Verdict lives in blocks 1 and 2.
+> Honor the §0 **brevity fence** — short blocks 1/3 must not thin the review or block 2.
 
 For non-archivey use of this skill:
 

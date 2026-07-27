@@ -3,6 +3,9 @@
 Copy and use this template for code reviews in this repo.
 Matches [addendum §0 output shape](../reference/archivey-review-addendum.md).
 
+Brevity fence: keep blocks 1 and 3 skim-friendly; put full evidence and fix direction in
+block 2. Do not drop real pause-and-ask items to leave section 3 empty.
+
 ---
 
 ## 1. Maintainer briefing (read this first)
