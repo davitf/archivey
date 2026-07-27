@@ -54,15 +54,17 @@ Non-obvious gotchas:
 
 - The startup update script is committed at `.cursor/install.sh` (wired via
   `.cursor/environment.json`). It bootstraps `uv` if missing (JIT Cloud images may
-  not ship it), installs `unrar`, the `openspec` CLI, runs
+  not ship it), installs `unrar` + `p7zip-full`, the `openspec` CLI, runs
   `uv sync --group dev --extra all`, and `./scripts/install-git-hooks.sh`, so the
-  format-on-commit hook is present without a manual step.
+  format-on-commit hook is present without a manual step. It also best-effort
+  corrects a skewed VM clock (and relaxes apt Release-date checks) so
+  `apt-get update` does not fail with "Release file … is not valid yet".
 - **`unrar`** (system binary, from the `multiverse` apt component) backs RAR *data*
   tests; without it they skip cleanly rather than fail.
 - **`7z`** (system binary, from `p7zip-full`) is required by tests that build encrypted
   ZIP fixtures by shelling out to it (`tests/test_password.py`, the encrypted corpus
-  entries in `tests/test_corpus_sweep.py`); they skip cleanly when it is absent, but
-  install `p7zip-full` to run them.
+  entries in `tests/test_corpus_sweep.py`); they skip cleanly when it is absent.
+  The Cloud install script installs `p7zip-full` automatically.
 - **`openspec` CLI** lives at `~/.local/bin` (on `PATH`). `CLAUDE.md`'s
   `npm install -g @fission-ai/openspec` fails with `EACCES` here because the global npm
   prefix is not user-writable — the update script instead installs it into a writable,
