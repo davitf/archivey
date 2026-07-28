@@ -54,6 +54,8 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
 
     # T3 / perf P6: RAR data cases. Soft locally without unrar; fail-closed in CI
     # (and whenever unrar is present) so a missing binary cannot silently omit them.
+    # Reached only when py7zr is present (importorskip above); the CI matrix
+    # co-installs unrar on those same legs (--group dev + workflow apt/brew/choco).
     missing_rar = [name for name in _RAR_DATA_CASES if name not in by_case]
     if missing_rar and (_running_in_ci() or _unrar_available()):
         pytest.fail(
@@ -97,8 +99,13 @@ def test_structural_baseline_committed() -> None:
         assert name in cases, f"missing structural baseline case {name}"
 
 
-def test_seek_baseline_is_two_sided() -> None:
-    """Lower seek bound catches silent non-engagement (accel ON → OFF seeks)."""
+def test_accel_engagement_is_relative_not_absolute() -> None:
+    """Accel ON engagement uses ON > OFF; absolute ±slack does not apply to *_accel_on.
+
+    rapidgzip seek counts can drift across versions (all vs all-lowest), so the
+    absolute two-sided bound would be a false-failure risk. Non-engagement is
+    caught by the relative check instead.
+    """
     baseline = {
         "cases": {
             "zip_read_all_accel_on": {
@@ -133,10 +140,22 @@ def test_seek_baseline_is_two_sided() -> None:
         unpacked_bytes=32768,
     )
     failures = _structural_checks([fake_off, fake_on], baseline)
-    assert any("zip_read_all_accel_on" in f for f in failures)
-    assert any(
-        "below baseline" in f or "accelerator not engaged" in f for f in failures
+    assert any("accelerator not engaged" in f for f in failures)
+    # Absolute lower bound must not fire on *_accel_on (engagement check only).
+    assert not any("below baseline" in f for f in failures)
+
+    # Version-drift-shaped seeks still pass absolute checks when ON > OFF.
+    drifted_on = CaseResult(
+        case="zip_read_all_accel_on",
+        format="zip",
+        operation="read_all",
+        wall_s=0.0,
+        bytes_decompressed=32768,
+        source_seek_count=60,  # well above baseline+8
+        unpacked_bytes=32768,
     )
+    failures = _structural_checks([fake_off, drifted_on], baseline)
+    assert failures == []
 
 
 def test_format_text_report_table() -> None:

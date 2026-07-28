@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import importlib.util
 import json
 import shutil
 import sys
@@ -359,12 +360,8 @@ def _unrar_available() -> bool:
 
 
 def _crypto_available() -> bool:
-    try:
-        from archivey.internal.streams.crypto import _crypto_available as _avail
-
-        return bool(_avail())
-    except ImportError:
-        return False
+    """True when the ``cryptography`` package is importable (``[crypto]`` extra)."""
+    return importlib.util.find_spec("cryptography") is not None
 
 
 def run_cases(
@@ -888,7 +885,7 @@ def run_cases(
 
     if rar_data_path is not None:
         rar_path = rar_data_path
-        wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        wall, (bdec, seeks, rar_unpacked) = timed_with_optional_warmup(
             lambda p=rar_path: _op_read_all(p)
         )
         results.append(
@@ -899,7 +896,7 @@ def run_cases(
                 wall,
                 bdec,
                 seeks,
-                unpacked_bytes=unpacked,
+                unpacked_bytes=rar_unpacked,
                 notes=(
                     f"solid invariant: bytes_decompressed <= unpacked * factor "
                     f"({rar_fixture_note})"
@@ -917,7 +914,8 @@ def run_cases(
                 wall,
                 bdec,
                 seeks,
-                unpacked_bytes=unpacked,
+                # Same fixture as sequential; random op does not return unpacked.
+                unpacked_bytes=rar_unpacked,
                 notes=(
                     "smoke + seek baseline; byte re-decode not observable via unrar "
                     f"pipe output (P9) ({rar_fixture_note})"
@@ -1001,9 +999,13 @@ def _structural_checks(
                     )
         # Seek counts: two-sided vs committed baseline ± slack. Upper bound catches
         # silent re-open churn; lower bound catches paths that characteristically
-        # seek *more* silently falling back (e.g. in-ZIP accel ON → OFF).
-        # Missing baseline = skip. Only meaningful against the ci-scale baseline.
-        if check_seek_baselines:
+        # seek *more* silently falling back. Missing baseline = skip. Only
+        # meaningful against the ci-scale baseline.
+        #
+        # Accelerator ON cases are exempt: their seek counts come from rapidgzip
+        # index builds and can drift across rapidgzip versions (all vs all-lowest).
+        # Engagement is gated by the relative ON > OFF check below instead.
+        if check_seek_baselines and not r.case.endswith("_accel_on"):
             ref = cases.get(r.case)
             if ref is not None and "source_seek_count" in ref:
                 baseline_seeks = int(ref["source_seek_count"])
@@ -1020,8 +1022,8 @@ def _structural_checks(
                     )
 
     # In-ZIP accelerator engagement: ON must seek more than OFF on the same
-    # fixture. An upper-only seek bound cannot catch silent non-engagement
-    # (ON regressing to stdlib keeps seeks≈28 inside OFF's upper slack).
+    # fixture. Version-independent signal that rapidgzip actually engaged
+    # (ON regressing to stdlib keeps seeks≈accel_off).
     if check_seek_baselines:
         by_case = {r.case: r for r in results}
         accel_off = by_case.get("zip_read_all_accel_off")

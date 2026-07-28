@@ -44,7 +44,7 @@
       "bytes_decompressed": 32768,
       "source_seek_count": 44,
       "unpacked_bytes": 32768,
-      "notes": "rapidgzip accelerator ON for in-ZIP deflate ([seekable])"
+      "notes": "rapidgzip accelerator ON for in-ZIP deflate ([seekable]); absolute seek bound exempt — gated by ON>OFF engagement"
     },
     "tar_open_list": {
       "bytes_decompressed": 0,
