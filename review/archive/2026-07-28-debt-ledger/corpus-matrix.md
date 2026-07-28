@@ -64,14 +64,14 @@ contract directly — `open_archive` without a password raises `EncryptionError`
 than yielding a plausible empty listing (`test_corpus_sweep.py`, `entry.encrypt_header`
 branch), which is O8's residual failure mode expressed as a corpus assertion.
 
-## Finding 2 — 11 of 71 rows never run in CI, and only 8 of them deliberately
+## Finding 2 — 11 of 71 rows never ran in CI, and only 8 of them deliberately
 
 This is the audit's real result, and it is not visible from the matrix alone.
 
 | Gate | Rows | Deliberate? |
 |---|---:|---|
 | `rar` **writer** binary | 8 | **Yes** — `ci.yml` installs `unrar` only and explicitly removes the writer on macOS ("keep writer off the PATH here"), because corpus RAR digest expectations are Linux-fixture-oriented |
-| `7z` **CLI** (encrypted-ZIP builder) | 3 | **No** — no workflow installs it |
+| `7z` **CLI** (encrypted-ZIP builder) | 3 | **Was not** — no workflow installed it. **Closed 2026-07-29**: `ci.yml` now installs `p7zip-full` on the Linux `all` / `all-lowest` legs |
 
 The RAR half is a recorded decision, and RAR keeps real CI coverage through the
 committed fixtures in `tests/fixtures/rar/` (which is what this change extended).
@@ -84,9 +84,30 @@ runner image happens to ship, and differs across the Linux/macOS/Windows legs. T
 coverage is not absent, it is **unpinned**, which is worse: it can disappear on a
 runner-image bump with no test turning red.
 
-Not fixed here — it is a CI-workflow change, and pinning it properly means deciding
-between installing `p7zip` on every leg or teaching the builder to write encrypted ZIPs
-in-process. Recorded as a residual below rather than silently carried.
+**Closed in the follow-up (2026-07-29).** `ci.yml` installs `p7zip-full` on the Linux
+`all` / `all-lowest` legs, plus a `command -v 7z` verify step so the coverage fails
+loudly instead of silently skipping if the package ever stops providing that name
+(`p7zip-full` is transitional on Ubuntu 24.04 → `7zip`, but still ships `/usr/bin/7z`,
+which is the name `_zip_build_encrypted` invokes). No test changes were needed: the
+three rows pass as written, and sweep + mutation go from 304 passed / 55 skipped to
+**319 / 40** with `7z` present.
+
+**Linux only, deliberately.** The other two candidates were rejected:
+
+- *macOS / Windows legs* — Homebrew's `p7zip` formula is deprecated in favour of
+  `sevenzip` (which ships `7zz`, not `7z`), and Windows needs its own path handling. The
+  cost is real and the signal is not: these rows exercise ZipCrypto/AES **reading**,
+  which is pure Python, over flat files with no symlinks or mode bits — none of the
+  path/symlink/junction surface those legs exist for. Linux pins the coverage; the
+  other legs would be near-duplicates.
+- *Teaching the builder to write encrypted ZIPs in-process* (generalising
+  `tests/zipcrypto.py`, which already writes single-entry ZipCrypto members, to
+  multi-member with mixed per-member passwords) — this would drop the binary dependency
+  everywhere including for local contributors, but it costs the **independent-oracle**
+  property: today 7z writes the fixtures and archivey reads them, so the rows cross-check
+  two implementations. Building them with our own writer risks writer and reader sharing
+  the same wrong assumption. Keep the CLI for the corpus; `zipcrypto.py` stays for the
+  targeted cases that need a hand-built archive.
 
 Note that ZIP *AES* decryption itself is separately covered by `tests/test_zip_aes.py`
 and the structural bench gate (T3), both using in-process fixtures — so this gap is
@@ -122,8 +143,9 @@ than a shared shape. Recorded as a residual.
 
 ## Residual gaps (recorded, not paid)
 
-1. **Encrypted-ZIP corpus rows are unpinned in CI** (Finding 2). Fix is a workflow
-   decision: install `p7zip` on every leg, or write encrypted ZIPs in-process.
+1. ~~**Encrypted-ZIP corpus rows are unpinned in CI**~~ — **closed 2026-07-29**;
+   `p7zip-full` on the Linux legs + a verify step (Finding 2). The 8 `rar`-writer rows
+   remain skipped by design, so 8 of 71 rows still do not run in CI.
 2. **`encrypted-multi` is ZIP-only.** For `7z` the builder rejects it outright
    (`_7z_build`: py7zr takes one archive password); for `rar` the builder *does*
    support per-member password groups since v7, but the row would only ever run where

@@ -20,10 +20,11 @@
 freezes at release any more; everything remaining is an explicit KEEP with a
 recorded justification, so the ledger closes.
 
-One audit finding is handed onward rather than fixed here: **11 of 71 corpus rows
-never run in CI**, and only 8 of them by decision — the 3 encrypted-ZIP rows need an
-ambient `7z` CLI no workflow installs, making that coverage unpinned. It is a CI
-workflow call, recorded as residual 1 in [`corpus-matrix.md`](corpus-matrix.md).
+One audit finding was handed onward rather than fixed in the T7 change: **11 of 71
+corpus rows never ran in CI**, and only 8 of them by decision — the 3 encrypted-ZIP rows
+needed an ambient `7z` CLI no workflow installed, making that coverage unpinned.
+**Closed 2026-07-29** by installing `p7zip-full` on the Linux legs (residual 1 in
+[`corpus-matrix.md`](corpus-matrix.md)); the 8 `rar`-writer rows stay skipped by design.
 
 **Freeze-rank legend** — F3: frozen at release. F2: compounds. F1: stable cost.
 
