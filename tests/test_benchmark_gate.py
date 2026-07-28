@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,24 @@ import pytest
 from benchmarks.fixtures import materialize_fixtures
 from benchmarks.harness import (
     STRUCTURAL_BASELINE,
+    CaseResult,
+    _crypto_available,
+    _rapidgzip_available,
     _structural_checks,
+    _unrar_available,
     load_json,
     run_cases,
 )
+
+_RAR_DATA_CASES = (
+    "rar_solid_sequential",
+    "rar_solid_random",
+    "rar_encrypted_read_all",
+)
+
+
+def _running_in_ci() -> bool:
+    return os.environ.get("CI", "").lower() in ("1", "true", "yes")
 
 
 @pytest.mark.timeout(120)
@@ -25,15 +40,42 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()
     results = run_cases(fixtures, work)
-    # Ensure the solid sequential case ran when 7z is available.
-    sequential = [r for r in results if r.case == "sevenzip_solid_sequential"]
-    assert sequential, "expected sevenzip_solid_sequential case"
-    assert sequential[0].bytes_decompressed <= (sequential[0].unpacked_bytes or 0) * 2
+    by_case = {r.case: r for r in results}
 
-    random = [r for r in results if r.case == "sevenzip_solid_random"]
-    assert random
+    # Ensure the solid sequential case ran when 7z is available.
+    sequential = by_case.get("sevenzip_solid_sequential")
+    assert sequential is not None, "expected sevenzip_solid_sequential case"
+    assert sequential.bytes_decompressed <= (sequential.unpacked_bytes or 0) * 2
+
+    random = by_case.get("sevenzip_solid_random")
+    assert random is not None
     # Random opens re-decode; recorded, not failed — but must be visible.
-    assert random[0].bytes_decompressed >= sequential[0].bytes_decompressed
+    assert random.bytes_decompressed >= sequential.bytes_decompressed
+
+    # T3 / perf P6: RAR data cases. Soft locally without unrar; fail-closed in CI
+    # (and whenever unrar is present) so a missing binary cannot silently omit them.
+    # Reached only when py7zr is present (importorskip above); the CI matrix
+    # co-installs unrar on those same legs (--group dev + workflow apt/brew/choco).
+    missing_rar = [name for name in _RAR_DATA_CASES if name not in by_case]
+    if missing_rar and (_running_in_ci() or _unrar_available()):
+        pytest.fail(
+            "RAR data cases missing from structural run: "
+            f"{missing_rar}. Install RARLAB unrar on PATH "
+            "(ci.yml matrix installs apt/brew-cask/choco unrar; "
+            "benchmark jobs apt-get install unrar on Linux)."
+        )
+
+    if _crypto_available() and fixtures.zip_aes_path is not None:
+        assert "zip_aes_read_all" in by_case
+    assert "zip_lzma_read_all" in by_case
+    assert "zip_read_all_accel_off" in by_case
+    if _rapidgzip_available():
+        assert "zip_read_all_accel_on" in by_case
+        # Engagement signal: ON seeks more than OFF on the same deflate ZIP.
+        assert (
+            by_case["zip_read_all_accel_on"].source_seek_count
+            > by_case["zip_read_all_accel_off"].source_seek_count
+        )
 
     failures = _structural_checks(results, load_json(STRUCTURAL_BASELINE))
     assert not failures, "structural gate failures:\n" + "\n".join(failures)
@@ -42,7 +84,78 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
 def test_structural_baseline_committed() -> None:
     assert STRUCTURAL_BASELINE.is_file()
     data = json.loads(STRUCTURAL_BASELINE.read_text())
-    assert "sevenzip_solid_sequential" in data["cases"]
+    cases = data["cases"]
+    assert "sevenzip_solid_sequential" in cases
+    # P6 remainder / T3 coverage must stay in the committed ci baseline.
+    for name in (
+        "rar_solid_sequential",
+        "rar_solid_random",
+        "rar_encrypted_read_all",
+        "zip_aes_read_all",
+        "zip_lzma_read_all",
+        "zip_read_all_accel_off",
+        "zip_read_all_accel_on",
+    ):
+        assert name in cases, f"missing structural baseline case {name}"
+
+
+def test_accel_engagement_is_relative_not_absolute() -> None:
+    """Accel ON engagement uses ON > OFF; absolute ±slack does not apply to *_accel_on.
+
+    rapidgzip seek counts can drift across versions (all vs all-lowest), so the
+    absolute two-sided bound would be a false-failure risk. Non-engagement is
+    caught by the relative check instead.
+    """
+    baseline = {
+        "cases": {
+            "zip_read_all_accel_on": {
+                "bytes_decompressed": 32768,
+                "source_seek_count": 44,
+                "unpacked_bytes": 32768,
+            },
+            "zip_read_all_accel_off": {
+                "bytes_decompressed": 32768,
+                "source_seek_count": 28,
+                "unpacked_bytes": 32768,
+            },
+        }
+    }
+    # Silent non-engagement: ON case reports OFF-like seeks.
+    fake_on = CaseResult(
+        case="zip_read_all_accel_on",
+        format="zip",
+        operation="read_all",
+        wall_s=0.0,
+        bytes_decompressed=32768,
+        source_seek_count=28,
+        unpacked_bytes=32768,
+    )
+    fake_off = CaseResult(
+        case="zip_read_all_accel_off",
+        format="zip",
+        operation="read_all",
+        wall_s=0.0,
+        bytes_decompressed=32768,
+        source_seek_count=28,
+        unpacked_bytes=32768,
+    )
+    failures = _structural_checks([fake_off, fake_on], baseline)
+    assert any("accelerator not engaged" in f for f in failures)
+    # Absolute lower bound must not fire on *_accel_on (engagement check only).
+    assert not any("below baseline" in f for f in failures)
+
+    # Version-drift-shaped seeks still pass absolute checks when ON > OFF.
+    drifted_on = CaseResult(
+        case="zip_read_all_accel_on",
+        format="zip",
+        operation="read_all",
+        wall_s=0.0,
+        bytes_decompressed=32768,
+        source_seek_count=60,  # well above baseline+8
+        unpacked_bytes=32768,
+    )
+    failures = _structural_checks([fake_off, drifted_on], baseline)
+    assert failures == []
 
 
 def test_format_text_report_table() -> None:

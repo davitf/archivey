@@ -27,13 +27,33 @@ import gzip, io, os, rapidgzip
 full = gzip.compress(os.urandom(20_000_000))
 
 class Src(io.RawIOBase):
-    def __init__(self, data): self._b = io.BytesIO(data)
+    def __init__(self, data):
+        self._b = io.BytesIO(data)
+        self._served = 0
+        self.fail_after = None  # raise after this many compressed bytes (trapped path)
+        self._dead = False
     def readable(self): return True
     def seekable(self): return True
     def seek(self, o, w=0): return self._b.seek(o, w)
     def tell(self): return self._b.tell()
-    def readinto(self, buf): return self._b.readinto(buf)
-    def kill(self): self._b.close()   # close the underlying source underneath the accelerator
+    def readinto(self, buf):
+        if self._dead:
+            raise ValueError("I/O operation on closed file")
+        # Deterministic mid-decode fault: do not rely on "close then hope the next
+        # stream.read() still needs the source". rapidgzip may already hold a decoded
+        # window large enough that one subsequent read() never touches the source
+        # (observed as RAISED None on macOS / Python 3.14 CI).
+        if self.fail_after is not None and self._served >= self.fail_after:
+            self._dead = True
+            self._b.close()
+            raise ValueError("I/O operation on closed file")
+        n = self._b.readinto(buf)
+        if n:
+            self._served += n
+        return n
+    def kill(self):
+        self._dead = True
+        self._b.close()   # close the underlying source underneath the accelerator
 """
 
 _UNTRAPPED = _SETUP + textwrap.dedent(
@@ -58,9 +78,10 @@ _TRAPPED = _SETUP + textwrap.dedent(
     """
     from archivey.internal.streams.codecs import _open_rapidgzip
     src = Src(full)
+    # Fault on the next source pull after ~64 KiB compressed — well after open/header,
+    # well before the 20 MiB payload is exhausted, so decode must observe it.
+    src.fail_after = 64 * 1024
     stream = _open_rapidgzip(src)                 # archivey: _TrappingSource + _AcceleratorStream
-    stream.read(1024)
-    src.kill()
     raised = None
     try:
         stream.read()

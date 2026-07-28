@@ -21,17 +21,20 @@ Modes:
   artifact (preserving ``measured_at``); a full re-measure is forced at least
   every ~30 days. VISION absolute bands stay informational prints.
 
-Formats covered here: ZIP, TAR, gzip, tar.gz/tar.bz2 (+ accelerators), solid 7z
-(and solid RAR when the ``rar`` writer is available to build fixtures). Listing
-wall peers: ``zipfile`` / ``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands). ISO and
-directory backends are instrumented for measurement but deliberately out of
-scope for this harness — see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
+Formats covered here: ZIP (deflate / LZMA / WinZip AES), TAR, gzip,
+tar.gz/tar.bz2 (+ accelerators), in-ZIP accelerated deflate, solid 7z, and RAR
+data paths on committed fixtures when RARLAB ``unrar`` is present (large solid
+RAR when the ``rar`` writer can build one). Listing wall peers: ``zipfile`` /
+``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands). ISO and directory backends are
+instrumented for measurement but deliberately out of scope for this harness —
+see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
 """
 
 from __future__ import annotations
 
 import argparse
 import gzip
+import importlib.util
 import json
 import shutil
 import sys
@@ -44,9 +47,10 @@ from typing import Any, Callable
 
 from archivey import MemberStreams, open_archive
 from archivey.config import AcceleratorMode, ArchiveyConfig
+from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
-from benchmarks.fixtures import FixtureSet, materialize_fixtures
+from benchmarks.fixtures import ZIP_AES_PASSWORD, FixtureSet, materialize_fixtures
 from benchmarks.wall_baseline import (
     measurement_provenance,
     overlapping_wall_ratio_count,
@@ -69,9 +73,10 @@ NONSOLID_DECODE_FACTOR = 1.1
 # Random-access solid cost is inherent, but bound it against the committed
 # baseline so a folder-cache regression cannot silently double the work (G5).
 SOLID_RANDOM_BYTES_FACTOR = 1.5
-# Seek-count slack against the committed ci baseline. Was baseline×2+8, which
-# absorbed a full ZIP decode-twice seek doubling (28→52). Fixtures are
-# deterministic; baseline+8 still covers observed host jitter (e.g. gzip 1→3).
+# Seek-count slack against the committed ci baseline (two-sided: baseline±slack).
+# Was baseline×2+8 (upper-only), which absorbed a full ZIP decode-twice seek doubling
+# (28→52) and could not catch silent non-engagement of paths that seek *more*
+# (in-ZIP accel ON 44 → OFF 28). Fixtures are deterministic; ±8 covers host jitter.
 SEEK_BASELINE_SLACK = 8
 # Wall-time sanity ceiling for --mode full. Absolute VISION ≤1.3× / ~2× bands stay
 # informational (shared-runner noise); nightly enforces *drift* vs the previous
@@ -133,9 +138,12 @@ def _op_read_all(
     *,
     config: ArchiveyConfig | None = None,
     member_streams: MemberStreams = MemberStreams(0),
+    password: bytes | str | None = None,
 ) -> tuple[int, int, int]:
     with enable_measurement():
-        with open_archive(path, config=config, member_streams=member_streams) as reader:
+        with open_archive(
+            path, config=config, member_streams=member_streams, password=password
+        ) as reader:
             base = _as_base(reader)
             unpacked = 0
             for member, stream in reader.stream_members():
@@ -165,17 +173,22 @@ def _op_read_all_unmeasured(
     *,
     config: ArchiveyConfig | None = None,
     member_streams: MemberStreams = MemberStreams(0),
+    password: bytes | str | None = None,
 ) -> None:
     """Read every member without measurement wrappers — fair wall-time peer."""
-    with open_archive(path, config=config, member_streams=member_streams) as reader:
+    with open_archive(
+        path, config=config, member_streams=member_streams, password=password
+    ) as reader:
         for _member, stream in reader.stream_members():
             if stream is not None:
                 stream.read()
 
 
-def _op_random_read_all(path: Path) -> tuple[int, int]:
+def _op_random_read_all(
+    path: Path, *, password: bytes | str | None = None
+) -> tuple[int, int]:
     with enable_measurement():
-        with open_archive(path) as reader:
+        with open_archive(path, password=password) as reader:
             base = _as_base(reader)
             names = [m.name for m in reader.members() if m.is_file]
             for name in reversed(names):
@@ -335,6 +348,22 @@ def _rapidgzip_available() -> bool:
         return False
 
 
+def _unrar_available() -> bool:
+    """True when RARLAB ``unrar`` is on PATH (needed for RAR *data* cases)."""
+    try:
+        from archivey.internal.backends.rar_unrar import find_rarlab_unrar
+
+        find_rarlab_unrar()
+        return True
+    except PackageNotInstalledError:
+        return False
+
+
+def _crypto_available() -> bool:
+    """True when the ``cryptography`` package is importable (``[crypto]`` extra)."""
+    return importlib.util.find_spec("cryptography") is not None
+
+
 def run_cases(
     fixtures: FixtureSet,
     work: Path,
@@ -472,6 +501,83 @@ def run_cases(
             wall_ratio=(wall / std_wall) if std_wall > 0 else None,
         )
     )
+
+    # --- ZIP LZMA (native codec path; stdlib zipfile writes, archivey lzma reads) ---
+    _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        lambda: _op_read_all(fixtures.zip_lzma_path)
+    )
+    results.append(
+        CaseResult(
+            "zip_lzma_read_all",
+            "zip",
+            "read_all",
+            _m_wall,
+            bdec,
+            seeks,
+            unpacked_bytes=unpacked,
+            notes="native ZIP LZMA codec; no stdlib peer (zipfile writes only)",
+        )
+    )
+
+    # --- ZIP WinZip AES (VerifyingStream + [crypto]; skip when extra absent) ---
+    if fixtures.zip_aes_path is not None and _crypto_available():
+        aes_path = fixtures.zip_aes_path
+        _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+            lambda: _op_read_all(aes_path, password=ZIP_AES_PASSWORD)
+        )
+        results.append(
+            CaseResult(
+                "zip_aes_read_all",
+                "zip",
+                "read_all",
+                _m_wall,
+                bdec,
+                seeks,
+                unpacked_bytes=unpacked,
+                notes="WinZip AES-256 AE-2; requires [crypto]",
+            )
+        )
+
+    # --- In-ZIP accelerated deflate (forced ON/OFF; mirrors tar.gz accelerator cases) ---
+    # AUTO would decline below RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE; ON exercises the
+    # per-member rapidgzip path that G7 noted was missing from the harness.
+    has_accel = _rapidgzip_available()
+    cfg_zip_off = _accel_config(enabled=False)
+    _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        lambda: _op_read_all(fixtures.zip_path, config=cfg_zip_off)
+    )
+    results.append(
+        CaseResult(
+            "zip_read_all_accel_off",
+            "zip",
+            "read_all",
+            _m_wall,
+            bdec,
+            seeks,
+            unpacked_bytes=unpacked,
+            notes="stdlib deflate codec; accelerators forced OFF",
+        )
+    )
+    if has_accel:
+        cfg_zip_on = _accel_config(enabled=True)
+        seekable = MemberStreams.SEEKABLE
+        _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+            lambda: _op_read_all(
+                fixtures.zip_path, config=cfg_zip_on, member_streams=seekable
+            )
+        )
+        results.append(
+            CaseResult(
+                "zip_read_all_accel_on",
+                "zip",
+                "read_all",
+                _m_wall,
+                bdec,
+                seeks,
+                unpacked_bytes=unpacked,
+                notes="rapidgzip accelerator ON for in-ZIP deflate ([seekable])",
+            )
+        )
 
     # --- TAR (plain / uncompressed — harness peer is tarfile r:) ---
     _m_wall, (bdec, seeks) = timed_with_optional_warmup(
@@ -757,10 +863,30 @@ def run_cases(
                 )
             )
 
-    # --- Solid RAR (data path; needs rar writer fixture) ---
-    if fixtures.solid_rar is not None:
-        wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
-            lambda: _op_read_all(fixtures.solid_rar)  # type: ignore[arg-type]
+    # --- Solid RAR data path ---
+    # At ci scale always prefer the committed basic_solid fixture so the structural
+    # baseline is stable whether or not the ``rar`` writer is installed. Both the
+    # PR structural gate and the nightly wall job install RARLAB ``unrar``. Realistic
+    # scale may use a generated large solid RAR when the writer built one.
+    rar_data_path: Path | None = None
+    rar_fixture_note = ""
+    committed_solid = ROOT / "tests" / "fixtures" / "rar" / "basic_solid__.rar"
+    use_generated = (
+        fixtures.scale.name != "ci"
+        and fixtures.solid_rar is not None
+        and _unrar_available()
+    )
+    if use_generated:
+        rar_data_path = fixtures.solid_rar
+        rar_fixture_note = "generated solid fixture"
+    elif committed_solid.is_file() and _unrar_available():
+        rar_data_path = committed_solid
+        rar_fixture_note = "committed basic_solid__.rar"
+
+    if rar_data_path is not None:
+        rar_path = rar_data_path
+        wall, (bdec, seeks, rar_unpacked) = timed_with_optional_warmup(
+            lambda p=rar_path: _op_read_all(p)
         )
         results.append(
             CaseResult(
@@ -770,12 +896,15 @@ def run_cases(
                 wall,
                 bdec,
                 seeks,
-                unpacked_bytes=fixtures.unpacked_solid_rar,
-                notes="solid invariant: bytes_decompressed <= unpacked * factor",
+                unpacked_bytes=rar_unpacked,
+                notes=(
+                    f"solid invariant: bytes_decompressed <= unpacked * factor "
+                    f"({rar_fixture_note})"
+                ),
             )
         )
         wall, (bdec, seeks) = timed_with_optional_warmup(
-            lambda: _op_random_read_all(fixtures.solid_rar)  # type: ignore[arg-type]
+            lambda p=rar_path: _op_random_read_all(p)
         )
         results.append(
             CaseResult(
@@ -785,8 +914,32 @@ def run_cases(
                 wall,
                 bdec,
                 seeks,
-                unpacked_bytes=fixtures.unpacked_solid_rar,
-                notes="re-decode recorded; gated vs baseline×SOLID_RANDOM_BYTES_FACTOR",
+                # Same fixture as sequential; random op does not return unpacked.
+                unpacked_bytes=rar_unpacked,
+                notes=(
+                    "smoke + seek baseline; byte re-decode not observable via unrar "
+                    f"pipe output (P9) ({rar_fixture_note})"
+                ),
+            )
+        )
+
+    # --- Encrypted RAR (committed fixture; password + unrar data path) ---
+    enc_rar = ROOT / "tests" / "fixtures" / "rar" / "encryption__.rar"
+    if enc_rar.is_file() and _unrar_available():
+        enc_path = enc_rar
+        wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+            lambda p=enc_path: _op_read_all(p, password="password")
+        )
+        results.append(
+            CaseResult(
+                "rar_encrypted_read_all",
+                "rar",
+                "read_all",
+                wall,
+                bdec,
+                seeks,
+                unpacked_bytes=unpacked,
+                notes="committed encryption__.rar; requires RARLAB unrar",
             )
         )
 
@@ -831,7 +984,7 @@ def _structural_checks(
             # read; over-decode catches decode-twice-deliver-once (each open still
             # increments the shared ByteCounter even when only the second handle
             # is delivered to the caller).
-            if r.format in ("zip", "tar", "gzip", "tar.gz", "tar.bz2"):
+            if r.format in ("zip", "tar", "gzip", "tar.gz", "tar.bz2", "rar"):
                 if r.bytes_decompressed < r.unpacked_bytes:
                     failures.append(
                         f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
@@ -844,16 +997,44 @@ def _structural_checks(
                         f"> unpacked×{NONSOLID_DECODE_FACTOR}={over_limit} "
                         f"(non-solid re-decode?)"
                     )
-        # Seek counts: ≤ recorded baseline + slack. Missing baseline = skip.
-        # Only meaningful against the same fixture scale as the committed baseline (ci).
-        if check_seek_baselines:
+        # Seek counts: two-sided vs committed baseline ± slack. Upper bound catches
+        # silent re-open churn; lower bound catches paths that characteristically
+        # seek *more* silently falling back. Missing baseline = skip. Only
+        # meaningful against the ci-scale baseline.
+        #
+        # Accelerator ON cases are exempt: their seek counts come from rapidgzip
+        # index builds and can drift across rapidgzip versions (all vs all-lowest).
+        # Engagement is gated by the relative ON > OFF check below instead.
+        if check_seek_baselines and not r.case.endswith("_accel_on"):
             ref = cases.get(r.case)
             if ref is not None and "source_seek_count" in ref:
-                limit = int(ref["source_seek_count"]) + SEEK_BASELINE_SLACK
-                if r.source_seek_count > limit:
+                baseline_seeks = int(ref["source_seek_count"])
+                upper = baseline_seeks + SEEK_BASELINE_SLACK
+                lower = max(0, baseline_seeks - SEEK_BASELINE_SLACK)
+                if r.source_seek_count > upper:
                     failures.append(
-                        f"{r.case}: source_seek_count={r.source_seek_count} > bound {limit}"
+                        f"{r.case}: source_seek_count={r.source_seek_count} > bound {upper}"
                     )
+                elif r.source_seek_count < lower:
+                    failures.append(
+                        f"{r.case}: source_seek_count={r.source_seek_count} "
+                        f"< bound {lower} (below baseline−{SEEK_BASELINE_SLACK})"
+                    )
+
+    # In-ZIP accelerator engagement: ON must seek more than OFF on the same
+    # fixture. Version-independent signal that rapidgzip actually engaged
+    # (ON regressing to stdlib keeps seeks≈accel_off).
+    if check_seek_baselines:
+        by_case = {r.case: r for r in results}
+        accel_off = by_case.get("zip_read_all_accel_off")
+        accel_on = by_case.get("zip_read_all_accel_on")
+        if accel_off is not None and accel_on is not None:
+            if accel_on.source_seek_count <= accel_off.source_seek_count:
+                failures.append(
+                    f"zip_read_all_accel_on: source_seek_count="
+                    f"{accel_on.source_seek_count} <= accel_off "
+                    f"{accel_off.source_seek_count} (accelerator not engaged?)"
+                )
     return failures
 
 
