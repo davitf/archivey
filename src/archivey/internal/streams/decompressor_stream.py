@@ -158,7 +158,7 @@ class BaseDecoder:
 # (``io.DEFAULT_BUFFER_SIZE`` = 8 KiB). That feed forces ~17 Python trips through
 # the decode loop for a typical 256 KiB ZIP member while ``zipfile`` decompresses
 # each member in one C call — the dominant residual ZIP read-all gap after the
-# stream-layering work in #136/#137 (see ``review/performance/residual-gap.md``).
+# stream-layering work in #136/#137 (see ``review/archive/2026-07-28-performance/residual-gap.md``).
 # 64 KiB reaches the measured plateau for those members; ``max_length`` still
 # bounds peak *output* buffer on ``read(n)`` (the #128 / F3a contract), and ZIP
 # members are additionally capped by their ``SlicingStream`` compressed extent.

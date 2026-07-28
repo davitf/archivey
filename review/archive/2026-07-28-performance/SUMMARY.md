@@ -121,8 +121,12 @@ parses as a *non-empty* plausible header.
 | P7 | **partial** — #143 model-build fast paths + #146 L1/L2/L3 listing fixes (`listing-attribution.md`); ZIP open+list still above 2–3×; 7z closer to native band |
 | P8 / P9 | **follow-up** (future / archive-copy) |
 | Q1 | **direction recorded** (#140) — listing peers + ZIP model-build (#143) + L1/L2/L3 from attribution worklist (#146); residual band miss remains |
-| Q2 / Q4 | **need decision** |
+| Q2 | **decided** (2026-07-20) — nightly drift gate, option (a) |
+| Q4 | **decided** (2026-07-28) — leave verification unconditional; no skip knob |
 | Q3 / Q5 / Q6 | **resolved** |
+
+**All questions are now decided and every finding is fixed, accepted, or recorded as a
+tracked follow-up (P8/P9, L4/L5) — this review archives with the T7 change.**
 
 ## What is actually fine
 

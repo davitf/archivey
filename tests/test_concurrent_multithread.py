@@ -511,3 +511,125 @@ def test_foreign_thread_open_rejected_during_extract_all(tmp_path: Path) -> None
         thread.join(timeout=30)
         assert not thread.is_alive()
         assert outcome == ["rejected"]
+
+
+# --- members_report_if_available under threads (debt-ledger T4) -------------------------
+
+
+@pytest.mark.concurrent_reader
+def test_members_report_if_available_during_concurrent_materialization(
+    tmp_path: Path,
+) -> None:
+    """Foreign-thread peeks that straddle a live materialization are all-or-nothing.
+
+    ``members_report_if_available()`` reads the published snapshot without joining the
+    materialization election, so it is the one accessor that can observe the cache slot
+    mid-scan. It must return ``None`` or a *complete* report — never the scan's partial
+    working list — and it must never itself start a scan.
+
+    The scan is held open until every probe has recorded an observation, so the
+    mid-materialization window is deterministic rather than a timing race.
+    """
+    path = _make_tar(tmp_path / "a.tar", n=8)  # no upfront index: None until published
+    reader = open_archive(path, member_streams=MemberStreams.CONCURRENT)
+    original_iter = reader._iter_members
+    scan_calls = {"n": 0}
+    scan_started = threading.Event()
+    scan_released = threading.Event()
+    probes_recorded = threading.Barrier(5)  # 4 probes + the scanning thread
+
+    def held_iter():
+        scan_calls["n"] += 1
+        for i, member in enumerate(original_iter()):
+            if i == 4:
+                # Hold with half the members already registered, so a partial
+                # publication would have something visible to leak.
+                scan_started.set()
+                probes_recorded.wait(timeout=30)
+            yield member
+
+    reader._iter_members = held_iter  # type: ignore[method-assign]
+
+    observations: list[object] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def probe() -> None:
+        try:
+            assert scan_started.wait(timeout=30)
+            during = reader.members_report_if_available()
+            with lock:
+                observations.append(during)
+            probes_recorded.wait(timeout=30)
+            # And again once materialization has finished, to catch a torn publication.
+            assert scan_released.wait(timeout=30)
+            after = reader.members_report_if_available()
+            with lock:
+                observations.append(after)
+        except BaseException as exc:  # noqa: BLE001 - collect and re-raise below
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=probe) for _ in range(4)]
+    for t in threads:
+        t.start()
+    members = reader.members()
+    scan_released.set()
+    for t in threads:
+        t.join(timeout=30)
+        assert not t.is_alive()
+    reader.close()
+
+    if errors:
+        raise errors[0]
+    assert len(members) == 8
+    # Every peek is None or the whole list; a partial snapshot would fail here.
+    for report in observations:
+        if report is not None:
+            assert report.error is None
+            assert len(report) == 8
+    # 4 mid-scan peeks (nothing published yet) + 4 post-materialization peeks, so the
+    # window was really exercised in both directions; and peeking never drove a scan.
+    assert observations.count(None) == 4
+    assert len(observations) == 8
+    assert scan_calls["n"] == 1
+
+
+@pytest.mark.concurrent_reader
+def test_members_report_if_available_concurrent_on_upfront_index(
+    tmp_path: Path,
+) -> None:
+    """The ``_MEMBER_LIST_UPFRONT`` branch builds a fresh report per call: concurrent
+    callers must each get a complete, equal list (it reads backend index state that a
+    materializing thread is touching at the same time)."""
+    path = _make_zip(tmp_path / "a.zip", n=16)
+    with open_archive(path, member_streams=MemberStreams.CONCURRENT) as reader:
+        barrier = threading.Barrier(9)  # 8 probes + the materializing thread
+        results: list[list[str]] = []
+        errors: list[BaseException] = []
+        lock = threading.Lock()
+
+        def probe() -> None:
+            try:
+                barrier.wait(timeout=10)
+                report = reader.members_report_if_available()
+                assert report is not None  # ZIP has an upfront central directory
+                with lock:
+                    results.append([m.name for m in report])
+            except BaseException as exc:  # noqa: BLE001
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=probe) for _ in range(8)]
+        for t in threads:
+            t.start()
+        barrier.wait(timeout=10)
+        expected = [m.name for m in reader.members()]
+        for t in threads:
+            t.join(timeout=30)
+            assert not t.is_alive()
+
+        if errors:
+            raise errors[0]
+        assert len(results) == 8
+        assert all(names == expected for names in results)

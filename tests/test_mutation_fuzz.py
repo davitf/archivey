@@ -81,6 +81,7 @@ from tests.sample_archives import (
     CORPUS,
     FORMAT_KEYS,
     CorpusEntry,
+    F,
     corpus_archive_path,
 )
 from tests.test_corpus_sweep import _skip_unless_runnable
@@ -128,9 +129,13 @@ _PARAMS = [
     if _FUZZ_KIND is None or _FUZZ_KIND in kind
 ]
 
-# Static solid RAR fixtures (declarative CORPUS builders do not emit ``-s``).
-# Wave-1: the two basic solid archives; symlink/file-version solids are optional later.
-_SOLID_RAR_SOURCES: tuple[tuple[CorpusEntry, Path], ...] = (
+# Static RAR fixtures: RAR shapes the declarative CORPUS cannot reach, because its
+# builder emits neither ``-s`` (solid) nor ``-hp`` (header encryption) nor ``-v``
+# (volumes) — and because the ``rar`` writer is deliberately off CI's PATH, so every
+# declarative ``rar`` row skips there (audit: the T7 ``corpus-matrix.md`` under
+# ``review/archive/2026-07-28-debt-ledger/``). These are committed bytes, so they
+# mutate wherever ``unrar`` exists, which CI does install.
+_STATIC_RAR_SOURCES: tuple[tuple[CorpusEntry, Path], ...] = (
     (
         CorpusEntry("basic-solid-rar5", (), ("rar",), requires_binaries=("unrar",)),
         _RAR_FIXTURES / "basic_solid__.rar",
@@ -139,18 +144,49 @@ _SOLID_RAR_SOURCES: tuple[tuple[CorpusEntry, Path], ...] = (
         CorpusEntry("basic-solid-rar4", (), ("rar",), requires_binaries=("unrar",)),
         _RAR_FIXTURES / "basic_solid__rar4.rar",
     ),
+    # Encrypted headers: mutations land in ciphertext the parser must decrypt before it
+    # can read any name, so a corrupt block must still fail typed rather than crash the
+    # native RAR3/RAR5 header decryptor. The member carries the fixture password so
+    # ``_exercise`` gets past the header at all.
+    (
+        CorpusEntry(
+            "encrypted-header-rar5",
+            (F("x", b"", password="header_password"),),
+            ("rar",),
+            requires_binaries=("unrar",),
+            encrypt_header=True,
+        ),
+        _RAR_FIXTURES / "encrypted_header__.rar",
+    ),
+    (
+        CorpusEntry(
+            "encrypted-header-rar4",
+            (F("x", b"", password="header_password"),),
+            ("rar",),
+            requires_binaries=("unrar",),
+            encrypt_header=True,
+        ),
+        _RAR_FIXTURES / "encrypted_header__rar4.rar",
+    ),
+    # First volume of a RAR5 set, mutated as a lone stream: this exercises the
+    # volume-flagged header path under corruption. It is NOT multi-volume *joining*
+    # coverage — the siblings are not offered to the reader here (see the audit doc).
+    (
+        CorpusEntry("volume-first-rar5", (), ("rar",), requires_binaries=("unrar",)),
+        _RAR_FIXTURES / "tinyvol.part1.rar",
+    ),
 )
 
-_SOLID_RAR_PARAMS = [
+_STATIC_RAR_PARAMS = [
     pytest.param(entry, path, kind, id=f"{entry.id}-rar-{kind}")
-    for entry, path in _SOLID_RAR_SOURCES
+    for entry, path in _STATIC_RAR_SOURCES
     for kind in MUTATION_KINDS
     if _FUZZ_KIND is None or _FUZZ_KIND in kind
 ]
 
 
-def _skip_unless_solid_rar_runnable() -> None:
-    """Skip solid-RAR mutation when the reader or ``unrar`` decompressor is absent."""
+def _skip_unless_static_rar_runnable() -> None:
+    """Skip static-RAR mutation when the reader or ``unrar`` decompressor is absent."""
     availability = format_availability(ArchiveFormat.RAR)
     if availability.support is FormatSupport.NONE:
         pytest.skip(
@@ -523,12 +559,13 @@ def test_mutations_fail_typed_or_succeed(
 
 
 @pytest.mark.timeout(_FUZZ_TIMEOUT)
-@pytest.mark.parametrize(("entry", "path", "kind"), _SOLID_RAR_PARAMS)
-def test_solid_rar_mutations_fail_typed_or_succeed(
+@pytest.mark.parametrize(("entry", "path", "kind"), _STATIC_RAR_PARAMS)
+def test_static_rar_mutations_fail_typed_or_succeed(
     entry: CorpusEntry, path: Path, kind: str, tmp_path: Path
 ) -> None:
-    """Solid RAR4/RAR5 demux under the same mutation invariant as declarative CORPUS."""
-    _skip_unless_solid_rar_runnable()
+    """Solid / header-encrypted / volume RAR4/RAR5 under the declarative mutation
+    invariant: any corruption fails typed or succeeds, never raw or hanging."""
+    _skip_unless_static_rar_runnable()
     data = path.read_bytes()
     key = "rar"
     seed = mutation_seed(entry, key)

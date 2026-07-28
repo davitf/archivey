@@ -6,8 +6,10 @@ Decisions this review cannot make unilaterally (per the pause-and-ask rule).
 > successful JSON (option (a)); absolute VISION bands stay informational.
 > Q3, Q5, Q6 **resolved** (#136 / #139). Q1 has a **maintainer direction** (#140)
 > — listing peers (#143) + L1/L2/L3 listing fixes (#146) landed; ZIP open+list
-> still above the 2–3× band. **Still need a decision:** Q4 (verify-skip knob;
-> perf case ~nil post-#137). See `../STATUS.md`.
+> still above the 2–3× band.
+>
+> **Status (2026-07-28): no open questions.** Q4 decided — leave verification
+> unconditional (no skip knob). This review is ready to archive.
 
 ## Q1 — What does "≤1.3× on common paths" cover, exactly? — DIRECTION RECORDED
 
@@ -90,7 +92,19 @@ future corpus, that corpus isn't in the tree.
 added `NONSOLID_DECODE_FACTOR = 1.1` (G4) and ci-scale solid-random
 baseline×1.5 (Q6/G5).
 
-## Q4 — Should container-digest verification be skippable? — OPEN (lean leave-as-is)
+## Q4 — Should container-digest verification be skippable? — **DECIDED: leave as-is (2026-07-28)**
+
+**Decision: no knob.** Verification stays unconditional. The perf case that motivated
+the question is gone (see the post-#137 evidence below: the wrapper layer is fused into
+`ArchiveStream` and the digest measures at parity with `zipfile`'s own CRC), `zipfile`
+cannot skip either so parity is defensible, and adding a `verify_member_digests` knob
+would put a "reads can silently return unverified bytes" mode in the public API right
+before it freezes — against VISION's honest-cost framing for a benefit measured at ~nil.
+
+If it is ever revisited for **API** reasons rather than perf, the design note below
+still applies: the fused verifier bounds `read(-1)` to the declared size, which disables
+the `readall()` fast path, so a "verify off" mode must not accidentally change chunking
+behaviour.
 
 `VerifyingStream` wraps every ZIP/7z/RAR member read; the digest itself is cheap
 (CRC32/C) but the wrapper layer costs on hot paths, and some callers (e.g. a
@@ -109,7 +123,8 @@ fused verifier bounds `read(-1)` to the declared size, which *disables* the
 "verify off" mode doesn't accidentally have different chunking behaviour.
 
 **Triage note:** unless someone wants the knob for API reasons, treat as
-“leave as-is” and close when archiving this review.
+“leave as-is” and close when archiving this review. — *Done: that is the 2026-07-28
+decision recorded above.*
 
 ## Q5 — H1 fix shape: lazy solid positioning vs extraction early-exit? — RESOLVED (#136)
 

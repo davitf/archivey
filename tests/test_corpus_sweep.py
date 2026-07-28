@@ -258,9 +258,17 @@ def test_corpus_conformance(entry: CorpusEntry, key: str, tmp_path: Path) -> Non
 
     _check_extraction(tmp_path, source, entry, key)
 
-    # Encrypted entries must be unreadable without their password (open still works:
-    # ZIP encryption is per-member), raising EncryptionError — never wrong data.
-    if entry.passwords:
+    # Encrypted entries must be unreadable without their password, raising
+    # EncryptionError — never wrong data, and never a silently empty listing.
+    if entry.encrypt_header:
+        # Header encryption moves the failure to open time: the names are ciphertext,
+        # so there is nothing to list without the password (7z O8: a wrong password
+        # must not decode to a plausible empty archive).
+        with pytest.raises(EncryptionError):
+            open_archive(source).close()
+    elif entry.passwords:
+        # Member-only encryption (ZIP/7z/RAR without -mhe): open and listing still
+        # work, and the failure lands on the member read.
         with open_archive(source) as ar:
             encrypted = next(m for m in entry.members if m.password)
             with pytest.raises(EncryptionError):

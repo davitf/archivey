@@ -3,9 +3,9 @@
 Non-security review topics worth doing, but *after* the remaining in-flight
 round (`debt-ledger`, `performance`). They differ in character and timing:
 
-- **Topics 4 + 5** (test-strategy, structural-cleanliness) — in flight as
-  `debt-ledger/` (findings 2026-07-20; **refreshed 2026-07-25** — D1/D2/D3/D7/
-  DD4/S2/S3/T1/T2/T3/D4 paid; remaining T7 + T4 half; see `STATUS.md`).
+- **Topics 4 + 5** (test-strategy, structural-cleanliness) — **done**, archived as
+  `archive/2026-07-28-debt-ledger/` (whole pay list paid; T7 + T4 half closed it on
+  2026-07-28; remaining items are explicit KEEPs).
 - **Topic 6** (decode-engine performance) — a later *performance* round, once the
   `stream-layering` wrapper work has landed; mostly independent of it.
   *(stream-layering fusion landed in #137 — Topic 6 is unblocked on that axis.
@@ -35,7 +35,8 @@ review directories for these.
 | CLI **Q4** `--raw` / TTY-only quoting remainder | cli-product Q4 | debt-ledger DD8 (additive; recommended style already applied) |
 | `SlicingStream.readinto` (**Q4**) + optional `VerifyingStream` delete | stream-layering | Topic 6 adjacency above |
 
-Live triage of remaining *in-flight* reviews is in [`STATUS.md`](STATUS.md).
+No reviews are in flight as of 2026-07-28; [`STATUS.md`](STATUS.md) records what
+closed the round and what comes next (the release bundle, then Topics 6 and 7).
 
 When commissioned, each gets its own top-level directory with a `brief.md` and
 archives when addressed (see `README.md`).

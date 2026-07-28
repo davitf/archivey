@@ -3,19 +3,27 @@
 > Commissioned 2026-07-20 (backlog Topics 4+5) against `main` @ `7bb862b`.
 > **Refreshed 2026-07-25** against `main` @ `033a883`, then updated for **D2**
 > (`SECURITY.md`) + **D7** (archive `gzip-truncation-backstop-any-seekable`),
-> **T2** (#199), and **D4**.
+> **T2** (#199), and **D4**. **Closed 2026-07-28** against `main` @ `41977c2`
+> with **T7** + the **T4** half-test.
 > Theme files: [`structural.md`](structural.md),
 > [`drift-and-decisions.md`](drift-and-decisions.md), [`tests.md`](tests.md),
-> [`QUESTIONS.md`](QUESTIONS.md).
+> [`corpus-matrix.md`](corpus-matrix.md) (T7 audit), [`QUESTIONS.md`](QUESTIONS.md).
 
 ## Headline
 
-Most of the original freeze-cost pay list is paid. **D1** (VISION bands, #191),
-**D2** (`SECURITY.md`), **D3/Q5** (CHANGELOG + release checklist, #193),
-**S2+S3+T1** (#184, archived), **DD1** wall-drift (#171), **DD4** rapidgzip
-truncation (#194/#196), **D7** (OpenSpec sync/archive of the any-seekable
-backstop), **T2** (#199), and **D4** (`open-issues.md` P1) are done. What still
-freezes at release is mainly the corpus-matrix audit (**T7**) and the T4 half-test.
+**The pay list is paid.** **D1** (VISION bands, #191), **D2** (`SECURITY.md`),
+**D3/Q5** (CHANGELOG + release checklist, #193), **S2+S3+T1** (#184, archived),
+**DD1** wall-drift (#171), **DD4** rapidgzip truncation (#194/#196), **D7**
+(OpenSpec sync/archive of the any-seekable backstop), **T2** (#199), **D4**
+(`open-issues.md` P1), **T3** (bench-gate data cases, #201), and now **T7**
+(corpus-matrix audit) + the **T4** half-test are all done. Nothing on this ledger
+freezes at release any more; everything remaining is an explicit KEEP with a
+recorded justification, so the ledger closes.
+
+One audit finding is handed onward rather than fixed here: **11 of 71 corpus rows
+never run in CI**, and only 8 of them by decision — the 3 encrypted-ZIP rows need an
+ambient `7z` CLI no workflow installs, making that coverage unpinned. It is a CI
+workflow call, recorded as residual 1 in [`corpus-matrix.md`](corpus-matrix.md).
 
 **Freeze-rank legend** — F3: frozen at release. F2: compounds. F1: stable cost.
 
@@ -33,11 +41,11 @@ freezes at release is mainly the corpus-matrix audit (**T7**) and the T4 half-te
 | **T3** | Benchmark gate missing RAR / encrypted / accelerator data | `test_benchmark_gate.py` | **F2** | **DONE** — RAR solid/encrypted + ZIP AES/LZMA + in-ZIP accel cases in structural gate/baseline |
 | **D4** | `open-issues.md` bucket/ref drift (P1 still under candidates) | `docs/internal/open-issues.md` | **F2** | **DONE** — P1 → Closed; archive path + first-cuts fixed |
 | **D7** | Completed OpenSpec changes unarchived / unsynced | see below | **F2** | **DONE** — any-seekable synced into `seekable-decompressor-streams` + archived `2026-07-25-gzip-truncation-backstop-any-seekable/` |
-| **T7** | Corpus matrix thin spots | `sample_archives.py` | **F2** | **PAY** — half-day audit |
+| **T7** | Corpus matrix thin spots | `sample_archives.py` | **F2** | **DONE** — audit + extensions in [`corpus-matrix.md`](corpus-matrix.md); 4 residuals recorded |
 | **T1** | Solid-RAR mutation net | `test_mutation_fuzz.py` | **F2** | **DONE** (#184) |
 | **S2/S3** | Pass-stream driver + link finalize | `_drive_pass_streams` / `_finalize_links` | **F2** | **DONE** (#184); archived |
 | **D5/D6** | stop-on-failure + cli-product archives | archives | **F2** | **DONE** (2026-07-20) |
-| **T4** | Free-threaded core-only; no multithread `members_report_if_available` | CI / tests | **F2** | **KEEP scope** / **PAY one test** |
+| **T4** | Free-threaded core-only; no multithread `members_report_if_available` | CI / tests | **F2** | **KEEP scope** / test **DONE** — mutant-verified all-or-nothing peek + upfront-index barrier |
 | **DD7/DD8** | CLI `--json` / `--raw` remainder | IDEAS | **F2** | **KEEP** |
 | **DD9–DD12** | Threat-model / C3 / api-coherence Q5 / C4 | registers | **F1-F2** | **KEEP** |
 | **T5/T6** | Fault-injection leftovers; no stateful concurrency stress | tests.md | **F1** | **KEEP** |
@@ -45,10 +53,14 @@ freezes at release is mainly the corpus-matrix audit (**T7**) and the T4 half-te
 | **S1/S4/…** | Error boundary; ReaderState; module seams; `VerifyingStream` parked | structural.md | — | **fine** |
 | **N1** | `pyppmd` teardown UAF / exit-after-green residual | `known-issues.md`; #188/#189 | **F1** | **KEEP** — mitigated in-tree; upstream unfixed; CI soft-pass until hot-race clear |
 
-## The remaining pre-0.2.0 pay list, in order
+## The remaining pre-0.2.0 pay list
 
-1. **T7** — corpus-matrix audit.
-2. **T4 (half)** — one `members_report_if_available` multithread barrier test.
+**Empty.** T7 and the T4 half-test were the last two; both landed 2026-07-28.
+
+What is left for `0.2.0` is not on this ledger — it is the **release bundle**
+(`PLAN.md` item 6): packaging finalize (`version` is still `0.2.0.dev0`), the explicit
+free-threading support statement, and the migration guide + doc sweep. Those are
+release work, not debt.
 
 ## Paid since the ledger was commissioned
 
@@ -66,13 +78,15 @@ freezes at release is mainly the corpus-matrix audit (**T7**) and the T4 half-te
 | **D7** sync + archive `gzip-truncation-backstop-any-seekable` | #198 |
 | **T2** seek-interleaving XZ / lzip / `.Z` | #199 |
 | **D4** `open-issues.md` P1 sweep | #200 |
-| **T3 / P6 remainder** bench-gate RAR / encrypted / in-ZIP accel | this change |
+| **T3 / P6 remainder** bench-gate RAR / encrypted / in-ZIP accel | #201 |
+| **T7** corpus-matrix audit + extensions; **T4** half-test | this change |
 
 ## What is actually fine (don't re-review)
 
 - **S1** held; **S2/S3** paid; **S4/ReaderState** rebuilt cleanly.
 - Module splits earning seams; public export tiering deliberate.
 - Docs↔spec↔code sync works through OpenSpec; VISION drift closed by #191.
-- Fuzz architecture coherent; T1 widened solid-RAR intake; T2/T3 done; T7 remain.
+- Fuzz architecture coherent; T1 widened solid-RAR intake; T2/T3/T7 done — the static
+  RAR intake now also carries encrypted-header and volume fixtures.
 - Disclosure path documented; OSS-Fuzz may still trail the first public tag.
 - `open-issues.md` P1 Closed; remaining product candidates start at P2.
