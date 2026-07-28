@@ -381,12 +381,15 @@ For commissioned deep reviews (not ordinary PR review), inherit
 7. **Archive lifecycle** — only move a review to `review/archive/` when every
    actionable item is fixed or consciously deferred (`STATUS.md` / `backlog.md`).
 
-In-flight themes to know (see `STATUS.md` for live items):
+Review themes to know. **All are archived** as of 2026-07-28 — nothing is in flight, so
+findings in these areas are re-reviews: check the archive tables first (`STATUS.md`
+records what closed the round and what comes next).
 
 | Review | Lens |
 |--------|------|
 | `api-coherence/` | Uniform interface, surface size, CLI-as-consumer gaps |
 | `performance/` | ≤1.3× budget, gate efficacy, solid/listing hotspots |
+| `debt-ledger/` | Freeze-cost debt; corpus matrix (`corpus-matrix.md`) |
 | `stream-layering/` | Wrapper correctness + collapse (largely done) |
 | `cli-product/` | CLI UX / grammar / exit codes (product, not correctness) |
 | Archived security round | Hostile input, crypto, RAR, stream decoder |

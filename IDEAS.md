@@ -304,7 +304,7 @@
   additive. Parked as debt-ledger DD8.
 - **Lazy `ArchiveMember` derivation (perf L5)** — only named lever to bring
   ZIP open+list from ~4.4× (nightly realistic, 2026-07-23) into the aspirational
-  2–3× peer band (`review/performance/listing-attribution.md`). Touches equality
+  2–3× peer band (`review/archive/2026-07-28-performance/listing-attribution.md`). Touches equality
   / accounting / listing contract → needs its own OpenSpec. **Deferred past
   0.2.0** when deciding debt-ledger Q2 (2026-07-20): bands are aspirational;
   measured ratios are good enough for everyday use. Same story for 7z listing

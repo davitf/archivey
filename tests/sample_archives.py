@@ -40,7 +40,9 @@ from tests.conftest import ARCHIVEY_TEST_CACHE
 
 # Bump when any builder's output changes, so cached archives regenerate.
 # v7: RAR builder encrypts per-member password groups (-pPWD).
-GENERATOR_VERSION = 7
+# v8: 7z builder honors ``encrypt_header``; ISO builder emits Rock Ridge symlinks and
+#     gained the Joliet-only ``iso-joliet`` variant.
+GENERATOR_VERSION = 8
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +120,9 @@ class CorpusEntry:
     archive_comment: str | None = None
     # Extra tools/packages the *builder* needs beyond the format's own reader deps.
     requires_binaries: tuple[str, ...] = ()
+    # Encrypt the archive's own header/metadata, not just member data. Listing then
+    # needs the password too, so ``open_archive`` itself fails without it (7z ``-mhe``).
+    encrypt_header: bool = False
     notes: str = ""
 
     def with_formats(self, *formats: str) -> CorpusEntry:
@@ -150,6 +155,9 @@ FORMAT_KEYS: dict[str, ArchiveFormat] = {
     "tar.br": ArchiveFormat(ContainerFormat.TAR, StreamFormat.BROTLI),
     "dir": ArchiveFormat.DIRECTORY,
     "iso": ArchiveFormat.ISO,
+    # Same format, second builder variant (as gz-meta is to gz): Joliet names with no
+    # Rock Ridge, so the reader's Joliet fallback branch is exercised.
+    "iso-joliet": ArchiveFormat.ISO,
     "gz": ArchiveFormat.GZ,
     "gz-meta": ArchiveFormat.GZ,
     "bz2": ArchiveFormat.BZ2,
@@ -305,7 +313,9 @@ _ENC_MULTI = (
 _SINGLE_CONTENT = b"This is a single test file for compression.\n"
 
 CORPUS: tuple[CorpusEntry, ...] = (
-    CorpusEntry("basic", _BASIC, ("zip", *_ALL_TAR, "dir", "iso", "7z", "rar")),
+    CorpusEntry(
+        "basic", _BASIC, ("zip", *_ALL_TAR, "dir", "iso", "iso-joliet", "7z", "rar")
+    ),
     CorpusEntry(
         "comments",
         (
@@ -315,8 +325,14 @@ CORPUS: tuple[CorpusEntry, ...] = (
         ("zip", "rar"),
         archive_comment="This is a\nmulti-line comment",
     ),
-    CorpusEntry("encoding", _ENCODING, ("zip", "tar", "tar.gz", "dir", "7z", "rar")),
-    CorpusEntry("symlinks", _SYMLINKS, ("zip", "tar", "tar.gz", "dir", "7z", "rar")),
+    # ISO joins encoding/symlinks: Joliet carries the non-ASCII names, Rock Ridge the
+    # symlinks — both reader paths that `basic` alone never reached (T7).
+    CorpusEntry(
+        "encoding", _ENCODING, ("zip", "tar", "tar.gz", "dir", "iso", "7z", "rar")
+    ),
+    CorpusEntry(
+        "symlinks", _SYMLINKS, ("zip", "tar", "tar.gz", "dir", "iso", "7z", "rar")
+    ),
     CorpusEntry("symlink-loop", _SYMLINK_LOOP, ("zip", "tar")),
     CorpusEntry("hardlinks", _HARDLINKS, ("tar", "tar.gz", "rar")),
     CorpusEntry("hardlinks-duplicate", _HARDLINKS_DUP, ("tar",)),
@@ -335,6 +351,11 @@ CORPUS: tuple[CorpusEntry, ...] = (
         "encrypted-mixed", _ENC_MIXED, ("zip", "7z", "rar"), requires_binaries=("7z",)
     ),
     CorpusEntry("encrypted-multi", _ENC_MULTI, ("zip",), requires_binaries=("7z",)),
+    # Header-encrypted 7z (``-mhe=on``): the member *names* are encrypted too, so the
+    # native header parser must decrypt before it can list at all. Reaches the
+    # kEncodedHeader path that threat-model O8 hardened; py7zr writes it in-process,
+    # so unlike the encrypted-ZIP rows this one needs no external binary.
+    CorpusEntry("encrypted-header", _ENC_SINGLE, ("7z",), encrypt_header=True),
     # Single-file compressors: exactly one member whose name is inferred from the
     # archive filename (see format-single-file-compressors); gz-meta stores FNAME+mtime.
     CorpusEntry("single-file", (F("payload.txt", _SINGLE_CONTENT),), _SINGLE_FILE),
@@ -491,11 +512,20 @@ def _dir_build(entry: CorpusEntry, path: Path) -> None:
                 os.chmod(target, m.mode)
 
 
-def _iso_build(entry: CorpusEntry, path: Path) -> None:
+def _iso_build(entry: CorpusEntry, path: Path, *, rock_ridge: bool = True) -> None:
+    """Build an ISO. With ``rock_ridge`` off the image carries Joliet names only, which
+    is the reader's second name-source branch (``iso_reader`` picks RR, then Joliet)."""
     import pycdlib
 
     iso = pycdlib.PyCdlib()
-    iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+    if rock_ridge:
+        iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+    else:
+        iso.new(interchange_level=3, joliet=3)
+
+    def _rr(name: str) -> dict[str, str]:
+        return {"rr_name": name} if rock_ridge else {}
+
     made_dirs: set[str] = set()
 
     def _ensure_dirs(rel: str) -> None:
@@ -506,7 +536,7 @@ def _iso_build(entry: CorpusEntry, path: Path) -> None:
                 made_dirs.add(joined)
                 iso_path = "/" + "/".join(p.upper()[:8] for p in joined.split("/"))
                 iso.add_directory(
-                    iso_path, rr_name=parts[i - 1], joliet_path="/" + joined
+                    iso_path, **_rr(parts[i - 1]), joliet_path="/" + joined
                 )
 
     counter = 0
@@ -518,8 +548,18 @@ def _iso_build(entry: CorpusEntry, path: Path) -> None:
                 made_dirs.add(rel)
                 iso_path = "/" + "/".join(p.upper()[:8] for p in rel.split("/"))
                 iso.add_directory(
-                    iso_path, rr_name=rel.split("/")[-1], joliet_path="/" + rel
+                    iso_path, **_rr(rel.split("/")[-1]), joliet_path="/" + rel
                 )
+        elif m.type is MemberType.SYMLINK:
+            if not rock_ridge:
+                # Joliet has no symlink record; a shape with links needs the RR build.
+                raise ValueError("ISO symlinks require the Rock Ridge builder")
+            # Rock Ridge SL: the ISO-9660 entry is a zero-length file; the link only
+            # exists in the RR extension, so no Joliet path (Joliet has no symlinks).
+            counter += 1
+            iso_dir = "/".join(p.upper()[:8] for p in rel.split("/")[:-1])
+            iso_path = ("/" + iso_dir + "/" if iso_dir else "/") + f"L{counter}.;1"
+            iso.add_symlink(iso_path, rel.split("/")[-1], m.link_target)
         else:
             counter += 1
             iso_dir = "/".join(p.upper()[:8] for p in rel.split("/")[:-1])
@@ -528,7 +568,7 @@ def _iso_build(entry: CorpusEntry, path: Path) -> None:
                 io.BytesIO(m.contents),
                 len(m.contents),
                 iso_path,
-                rr_name=rel.split("/")[-1],
+                **_rr(rel.split("/")[-1]),
                 joliet_path="/" + rel,
             )
     out = io.BytesIO()
@@ -548,7 +588,9 @@ def _7z_build(entry: CorpusEntry, path: Path) -> None:
         tmp = Path(td)
         _dir_build(entry, tmp)
         password = entry.passwords[0] if entry.passwords else None
-        with py7zr.SevenZipFile(path, "w", password=password) as zf:
+        with py7zr.SevenZipFile(
+            path, "w", password=password, header_encryption=entry.encrypt_header
+        ) as zf:
             for item in sorted(tmp.rglob("*")):
                 zf.write(item, arcname=item.relative_to(tmp).as_posix())
 
@@ -601,6 +643,8 @@ def build_archive(entry: CorpusEntry, key: str, path: Path) -> None:
         _dir_build(entry, path)
     elif key == "iso":
         _iso_build(entry, path)
+    elif key == "iso-joliet":
+        _iso_build(entry, path, rock_ridge=False)
     elif key == "7z":
         _7z_build(entry, path)
     elif key == "rar":
@@ -627,6 +671,7 @@ BUILDER_PACKAGES: dict[str, tuple[str, ...]] = {
     "tar.br": ("brotli",),
     "br": ("brotli",),
     "iso": ("pycdlib",),
+    "iso-joliet": ("pycdlib",),
     "7z": ("py7zr",),
 }
 BUILDER_BINARIES: dict[str, tuple[str, ...]] = {
@@ -645,8 +690,12 @@ def _cache_key(entry: CorpusEntry, key: str) -> str:
 
 
 def _filename(entry: CorpusEntry, key: str) -> str:
+    # Builder-variant keys share the base format's extension so detection sees a
+    # normal archive name (gz-meta -> .gz, iso-joliet -> .iso).
     if key == "gz-meta":
         return f"{entry.id}.gz"
+    if key == "iso-joliet":
+        return f"{entry.id}.iso"
     return f"{entry.id}.{key}"
 
 

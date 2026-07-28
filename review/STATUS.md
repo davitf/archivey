@@ -1,66 +1,42 @@
-# In-flight review status (2026-07-26)
+# In-flight review status (2026-07-28)
 
-Triage after T3 (bench-gate RAR / encrypted / accel) on top of
-`main` @ `75dbfad` (D4 / T2 / D2 / D7 already landed).
+**No reviews are in flight.** `debt-ledger/` and `performance/` were archived on
+2026-07-28 after the last two ledger items (**T7** corpus-matrix audit, **T4**
+half-test) landed and **performance Q4** was decided. This file stays as the entry
+point for the next round.
 
-## At a glance
+## What closed the round
 
-| Review | Findings delivered? | Code/docs follow-ups | Ready to archive? |
-|--------|---------------------|----------------------|-------------------|
-| `debt-ledger/` | yes (2026-07-20; **refreshed 2026-07-25**) | **DONE:** D1 #191, D2 #198, D3 #193, D4, D7 #198, T2 #199, T3, DD4 #194/#196, S2/S3+T1 #184, Q1–Q5. **Open:** T7, T4 half-test | no |
-| `performance/` | yes (#134 + follow-ups) | residual **accepted aspirational** (#191); wall Q2 decided (#171); **P6 done** (= T3); **Q4 open** | no |
+| Review | Archived as | Closing work |
+|--------|-------------|--------------|
+| `debt-ledger/` | `archive/2026-07-28-debt-ledger/` | T7 audit ([`corpus-matrix.md`](archive/2026-07-28-debt-ledger/corpus-matrix.md)) + T4 `members_report_if_available` multithread tests |
+| `performance/` | `archive/2026-07-28-performance/` | Q4 decided: verification stays unconditional, no skip knob |
 
-Archived OpenSpec this window: `unify-pass-driver`, `gzip-zlib-truncation-recovery`,
-`rapidgzip-truncation-investigation` (2026-07-24),
-`gzip-truncation-backstop-any-seekable` (2026-07-25).
+Every other item on both reviews is fixed, accepted (bands aspirational, #191), or an
+explicit KEEP with a recorded justification — see each review's `SUMMARY.md`.
 
----
+## What is next (not review work)
 
-## 1. Actionable right now
+Ranked, from `backlog.md` and `PLAN.md`:
 
-| ID | Action |
-|----|--------|
-| **T7** | Corpus-matrix audit |
-| **T4 half** | Multithread `members_report_if_available` test |
+1. **Release bundle** (`PLAN.md` item 6) — the actual critical path to `0.2.0`, and
+   the one thing no review ever tracked: packaging finalize (`version` is still
+   `0.2.0.dev0`), the **explicit free-threading support statement** (today it lives
+   only in `docs/internal/threat-model.md` C4 and `AGENTS.md`, nothing user-facing),
+   and the **migration guide** (`zipfile`/`tarfile`/`shutil.unpack_archive`/`patool`
+   → archivey) + doc sweep.
+2. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
+3. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
+   library, and items 1–2 are exactly the gaps it would otherwise re-find.
 
-### From `performance/`
+## Carried forward from the archived reviews
 
-| ID | Action |
-|----|--------|
-| **P7 residual** | **Accepted** (#191) — nightly ratios in `docs/costs.md`; L5 → `IDEAS.md` |
-| **P6 remainder** | **DONE** (= debt-ledger T3) |
-
----
-
-## 2. Decisions
-
-| Q | Status |
-|---|--------|
-| debt-ledger **Q1–Q5** | **decided + done** |
-| performance **Q4** | **open** — lean leave-as-is |
-
----
-
-## Already addressed (selected)
-
-| Item | Where |
-|------|-------|
-| T3 / P6 remainder bench-gate RAR / encrypted / in-ZIP accel | this change (+ CI `unrar` on structural gate) |
-| D2 `SECURITY.md` + D7 any-seekable OpenSpec archive | #198 |
-| T2 seek-interleaving XZ / lzip / `.Z` | #199 |
-| D4 `open-issues.md` P1 sweep | #200 |
-| D1 VISION/costs peer bands (Q2 (b)) | #191 |
-| D3 CHANGELOG + release checklist (Q5) | #193 |
-| DD4 rapidgzip backstop + any-seekable / Bug-3 | #194 / #196 |
-| Unify pass driver + solid-RAR mutation (S2/S3/T1) | #184 |
-| Stdlib gzip truncation + ADR 0014 | #183 / #186 |
-| Nightly wall-ratio drift (Q1) | #171 |
-| `pyppmd` quiesce-on-close + valgrind UAF gate | #188/#189 |
-| OpenSpec `stop-on-failure-not-policy` | #165 → archived |
-| Listing L0–L3 + peers; perf P3–P5 | #143/#146/#148/#136/#139 |
-| api-coherence / stream-layering / cli-product | #137/#154–#160/#163/#165 |
-
----
+| Item | Where it lives now |
+|------|--------------------|
+| Corpus rows unpinned in CI (ambient `7z` CLI) | `archive/2026-07-28-debt-ledger/corpus-matrix.md` residual 1 — a CI-workflow call |
+| DD5–DD12, T5/T6, N1 (`pyppmd`), DD6 salvage | `archive/2026-07-28-debt-ledger/` — explicit KEEPs |
+| P8/P9, L4/L5 listing/accelerator follow-ups | `archive/2026-07-28-performance/` |
+| CLI `--json` / `--raw` | `IDEAS.md` (DD7/DD8) |
 
 ## Notes
 

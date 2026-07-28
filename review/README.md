@@ -17,18 +17,17 @@ completed changes out of `changes/`.
 
 ## In flight
 
-Round commissioned 2026-07-17 — the **non-security** pass toward the first public
-`0.2.0`. `cli-product/` archived 2026-07-20 (parked leftovers recorded). Remaining:
+**Nothing.** The round commissioned 2026-07-17 — the **non-security** pass toward the
+first public `0.2.0` — closed on 2026-07-28 when `debt-ledger/` and `performance/`
+were archived. Every finding is fixed, accepted, or recorded as an explicit deferral.
 
-| Dir | Review | Status |
-|-----|--------|--------|
-| `debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5) | Findings 2026-07-20; **refreshed 2026-07-25** — D1/D2/D3/D7/DD4/S2/S3/T1/Q1–Q5 done; remaining D4/T2/T3/T7 |
-| `performance/` | The ≤1.3× stdlib perf budget — gate efficacy + traps | Listing L0–L3 + peers; residual **accepted aspirational** (#191); wall Q2 decided (#171); **Q4** open |
+`backlog.md` holds what is left: Topic 6 (decode-engine perf, + parked stream-layering
+Q4), Topic 7 (outside-in adoption capstone — the **capstone**, meaningful only once
+everything else is addressed), and the parked-from-archive table.
 
-**Live triage:** [`STATUS.md`](STATUS.md).
-
-`backlog.md` still holds Topic 6 (decode-engine perf, + parked stream-layering
-Q4), Topic 7 (outside-in adoption capstone), and the parked-from-archive table.
+Note that an empty `review/` does **not** mean `0.2.0` is ready: the release bundle
+(`PLAN.md` item 6 — packaging finalize, the free-threading support statement, the
+migration guide) was never a review item and is still outstanding.
 
 ## Archive (complete & addressed)
 
@@ -42,6 +41,8 @@ Q4), Topic 7 (outside-in adoption capstone), and the parked-from-archive table.
 | `archive/2026-07-19-stream-layering/` | Stream wrapper stack correctness + verify fusion | F1/F2/D1/D2 done (#137); Q4 parked → Topic 6. |
 | `archive/2026-07-19-api-coherence/` | Public API & member-model coherence | Q1–Q7 decided + implemented (#153–#157); digest fill done (#160); Q5 → `IDEAS.md`; D1 → `cli-product/`. |
 | `archive/2026-07-20-cli-product/` | The CLI as a **product** (UX / grammar / exit codes / output) | P1–P3/P5–P14/D1 done (#144 + #163/#165); **P4/`--json`** → `IDEAS.md` / DD7; **Q4/`--raw`** → DD8. |
+| `archive/2026-07-28-debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5) | Whole pay list paid: D1–D7, DD1/DD4, S2/S3, T1/T2/T3/T7, T4 half-test, Q1–Q5. Remaining items are explicit KEEPs. T7 audit: [`corpus-matrix.md`](archive/2026-07-28-debt-ledger/corpus-matrix.md). |
+| `archive/2026-07-28-performance/` | The ≤1.3× stdlib perf budget — gate efficacy + traps | P1/P3/P4/P5/P6 fixed; P2/P7 partial with bands **accepted aspirational** (#191); Q1–Q6 all decided (Q4 → no verify-skip knob, 2026-07-28); P8/P9 + L4/L5 → tracked follow-ups. |
 
 ## Conventions every brief inherits
 
