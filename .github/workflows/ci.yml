@@ -200,9 +200,9 @@ jobs:
       # (stdlib ``zipfile`` cannot write encryption). Without this the rows skip, and
       # before this step nothing installed it — so whether they ran depended on the
       # runner image and could vanish on an image bump with no test turning red.
-      # Linux only, deliberately: the rows exercise ZipCrypto/AES *reading* (pure
-      # Python) over flat files, so they engage none of the path/symlink surface the
-      # macOS and Windows legs exist for. See the T7 audit, residual 1, in
+      # Linux only, deliberately: the rows exercise ZipCrypto *reading* (pure Python)
+      # over flat files, so they engage none of the path/symlink surface the macOS and
+      # Windows legs exist for. See the T7 audit, residual 1, in
       # ``review/archive/2026-07-28-debt-ledger/corpus-matrix.md``.
       # ``p7zip-full`` is transitional on Ubuntu 24.04 (-> ``7zip``) but still provides
       # ``/usr/bin/7z``, which is the name the builder invokes.
