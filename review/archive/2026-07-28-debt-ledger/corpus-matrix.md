@@ -13,11 +13,12 @@ added here buys coverage in both nets at once — that leverage is why T7 is wor
 
 ## The matrix after this change
 
-**20 shapes / 71 rows.** Rows per format:
+**20 shapes / 74 rows.** Rows per format:
 
 | Format | Rows | Format | Rows |
 |---|---:|---|---:|
 | `zip` | 13 | `dir` | 4 |
+| `zip-aes` | 3 | | |
 | `tar` | 10 | `iso` | 3 |
 | `7z` | 8 | `tar.zst` | 2 |
 | `rar` | 8 | `iso-joliet` | 1 |
@@ -41,8 +42,8 @@ Shape → formats:
 | `duplicates` | `zip`, `tar` |
 | `large` | `zip`, `tar.gz`, `tar.zst`, `7z`, `rar` |
 | `adversarial` / `adversarial-tar` | `zip` / `tar`, `tar.gz` |
-| `encrypted` / `encrypted-mixed` | `zip`, `7z`, `rar` |
-| `encrypted-multi` | `zip` |
+| `encrypted` / `encrypted-mixed` | `zip`, **`zip-aes`**, `7z`, `rar` |
+| `encrypted-multi` | `zip`, **`zip-aes`** |
 | **`encrypted-header`** | **`7z`** |
 | `single-file` / `single-file-meta` | 8 codecs / `gz-meta` |
 
@@ -65,6 +66,9 @@ than yielding a plausible empty listing (`test_corpus_sweep.py`, `entry.encrypt_
 branch), which is O8's residual failure mode expressed as a corpus assertion.
 
 ## Finding 2 — 11 of 71 rows never ran in CI, and only 8 of them deliberately
+
+> Counts are as of the audit (71 rows). The `zip-aes` rows added when closing residual
+> 5 bring the corpus to 74; the CI-skipped set is unchanged at the 8 `rar`-writer rows.
 
 This is the audit's real result, and it is not visible from the matrix alone.
 
@@ -116,13 +120,18 @@ Worth stating explicitly, because the repo has three encrypted-ZIP builders and 
 
 | Builder | Cipher emitted | Consumers | In sweep? | In mutation? |
 |---|---|---|---|---|
-| `_zip_build_encrypted` (7z CLI) | **ZipCrypto** (PKWARE; 7-Zip's ZIP default — verified STORED + encrypted flag, no `0x9901` field) | corpus `encrypted*` rows | yes | yes |
+| `_zip_build_encrypted` (7z CLI), `zip` key | **ZipCrypto** (PKWARE; 7-Zip's ZIP default — verified STORED + encrypted flag, no `0x9901` field) | corpus `encrypted*` rows | yes | yes |
+| `_zip_build_encrypted` with `-mem=AES256`, `zip-aes` key | **WinZip AES** (AE-2 / AES-256, verified via the `0x9901` field) | corpus `encrypted*` rows | yes | yes |
 | `tests/zipcrypto.py` | ZipCrypto, single-entry | `test_cli.py`, `test_zip_multipassword.py` (the 1-in-256 check-byte hazard) | no | no |
 | `tests/zip_aes_fixture.py` | **WinZip AES** (method 99, AE-1/AE-2) | `test_zip_aes.py`, `benchmarks/fixtures.py` (structural gate) | no | no |
 
-So AES support is well covered by targeted tests and the bench gate, but **no corpus row
-is AES** — WinZip AES members never go through the sweep's cross-format conformance
-assertions or through mutation fuzz. Recorded as residual 5.
+AES support was well covered by targeted tests and the bench gate, but originally **no
+corpus row was AES** — WinZip AES members reached neither the sweep's cross-format
+conformance assertions nor mutation fuzz. **Closed 2026-07-29** with the `zip-aes`
+builder-variant key (`7z a -tzip -mem=AES256`), added to all three encrypted shapes so
+single-password, mixed plain/encrypted, and multi-password AES all sweep and mutate.
+Verified the rows really carry AE-2/AES-256 members rather than silently falling back
+to ZipCrypto.
 
 ## Finding 3 — ISO exercised only one of the reader's three name sources
 
@@ -156,7 +165,7 @@ than a shared shape. Recorded as a residual.
 
 1. ~~**Encrypted-ZIP corpus rows are unpinned in CI**~~ — **closed 2026-07-29**;
    `p7zip-full` on the Linux legs + a verify step (Finding 2). The 8 `rar`-writer rows
-   remain skipped by design, so 8 of 71 rows still do not run in CI.
+   remain skipped by design, so 8 of the now-74 rows still do not run in CI.
 2. **`encrypted-multi` is ZIP-only.** For `7z` the builder rejects it outright
    (`_7z_build`: py7zr takes one archive password); for `rar` the builder *does*
    support per-member password groups since v7, but the row would only ever run where
@@ -165,12 +174,9 @@ than a shared shape. Recorded as a residual.
    expectations for the `8.3` mangled names.
 4. **RAR multi-volume joining** is in `test_volumes.py` only, never under mutation —
    mutating a volume *set* needs a multi-path harness the mutation net does not have.
-5. **No corpus row uses WinZip AES.** The 7z CLI writes ZipCrypto by default, so the
-   `encrypted*` rows are all ZipCrypto and AES reaches neither the sweep nor mutation
-   fuzz. Cheap to close now that `7z` is installed on CI: `7z a -tzip -mem=AES256`
-   emits method 99 and archivey reads it (verified), so an AES row fits the
-   builder-variant pattern (`zip-aes`, as `iso-joliet` is to `iso`) — it would need the
-   `[crypto]` extra as a builder/reader gate.
+5. ~~**No corpus row uses WinZip AES.**~~ — **closed 2026-07-29** by the `zip-aes`
+   variant key on all three encrypted shapes, gated on the `[crypto]` extra via the new
+   `READER_PACKAGES` table so the rows skip (not fail) in the core-only leg.
 
 ## Verification
 
