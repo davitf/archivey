@@ -16,8 +16,9 @@ separates, cleanly and durably:
 4. **History and evidence** — investigations, superseded prose, review and change logs.
 
 Deliverable: an audit assigning **every** prose file to an audience and a target home,
-a proposed structure, the decisions the maintainer must make, and a migration plan that
-does not break published links.
+a proposed structure, the decisions the maintainer must make, and a migration plan.
+**Propose the right structure, not the cheapest migration** — nothing has been released,
+so URL churn is free right now (see Hard constraints).
 
 This review is **analysis-first**: propose and get decisions before moving anything
 (see Process below).
@@ -26,11 +27,13 @@ This review is **analysis-first**: propose and get decisions before moving anyth
 
 `0.2.0` is close, and two things are about to freeze:
 
-- **Published URLs.** The docs site is live, and `0.2.0.dev0` is on TestPyPI with a
-  README pointing at specific `davitf.github.io/archivey/<page>/` URLs. **PyPI release
-  metadata is immutable** — the README of a published release can never be edited. Every
-  URL shipped in a release must keep resolving, forever. Reorganise before more releases
-  ship more URLs, not after.
+- **The free window closes at the `0.2.0` tag.** PyPI release metadata is **immutable**:
+  the README of a published release can never be edited, so every URL it points at must
+  keep resolving forever. That constraint does not bind *yet* — nothing is on real PyPI
+  and only `0.2.0.dev0` reached TestPyPI, which is a scratch index nobody depends on. So
+  today the docs tree can be rearranged freely; from the tag onward it cannot. **This
+  review should land before `0.2.0`**, or the project inherits permanent redirect debt
+  for a structure it had already decided was wrong.
 - **First impressions.** The PyPI page and the docs site are the front door for the
   adoption question Topic 7 (`backlog.md`) will judge. Structure is cheap to change now.
 
@@ -66,8 +69,9 @@ The headline number: **the published site is roughly 82% non-user content** (6,7
   `internal/rapidgzip-upstream-report`, `decisions/0014-*`). Published-but-unlisted is
   already-existing drift, and the `--strict` build does not fail on it.
 - **Four root tombstone stubs** (`ARCHITECTURE.md`, `ASYNC.md`, `COMPARISON.md`,
-  `SPEC.md`) are 5–7 line "moved to…" pointers. They are precedent for a redirect
-  pattern, and also clutter — decide which.
+  `SPEC.md`) are 5–7 line "moved to…" pointers left by an earlier move. With URL churn
+  free, they are pure clutter rather than a pattern to copy — deleting them is the
+  default; keep only any that a live external link depends on.
 - **The repo root mixes every audience**: `README` (user), `CONTRIBUTING`/`AGENTS`/
   `CLAUDE` (contributor), `VISION`/`PLAN`/`IDEAS` (product direction),
   `CHANGELOG`/`SECURITY` (release), plus the four tombstones.
@@ -111,7 +115,8 @@ arbitrarily.
   differently) — this is where drift hides.
 - Check the user guide for **gaps** as well as excess: what would an adopting engineer
   look for and not find? (Coordinate with, do not pre-empt, Topic 7.)
-- Propose the migration mechanics, including the redirect strategy (below).
+- Propose the migration mechanics. No redirect strategy is needed while the free window
+  is open (see Hard constraints) — spend that budget on getting the structure right.
 - Propose the guardrail that keeps the structure from re-rotting.
 
 ## Out of scope
@@ -149,11 +154,22 @@ Everything else — accuracy against the code, gaps, examples, tone, length — 
 
 ## Hard constraints
 
-- **Published URLs must not 404.** Any page reachable today at
-  `https://davitf.github.io/archivey/<path>/` that moves needs a redirect left behind
-  (`mkdocs-redirects` is the usual mechanism, and would be a new docs-group dependency —
-  evaluate it). URLs shipped in a *released* README (`0.2.0.dev0` onward) can never be
-  fixed at the source and must be treated as permanent.
+- **URL churn is free until the `0.2.0` tag — do not design around it.** An earlier
+  version of this brief made "published URLs must not 404" a hard constraint. That was
+  wrong, and dangerously so: it would push the review toward keeping pages published
+  where they are (tidying `docs/internal/` in place rather than unpublishing it) purely
+  to avoid 404s on a site with no release behind it. Nothing is on real PyPI; TestPyPI is
+  a scratch index. **Propose the structure you would choose on a blank page.**
+  - Consequence: **no `mkdocs-redirects` dependency** is needed, and adding one is now
+    out of scope. If — and only if — the migration slips past the `0.2.0` tag, redirects
+    become mandatory and that dependency comes back on the table.
+  - The constraint that *does* bind, and binds from the tag onward: whatever URLs the
+    README carries on release day are frozen forever. So the last step before tagging is
+    to confirm README / PyPI metadata point at the final structure.
+- **Internal consistency still applies.** Moving a page means updating everything that
+  references it *in the same change*: the README (which now uses absolute docs-site
+  URLs), `mkdocs.yml` nav, `IDEAS.md`, and code comments such as
+  `internal/streams/decompressor_stream.py`. "No external users" is not "no callers".
 - **`mkdocs build --strict` must stay green**, and CI's docs job must keep passing.
 - The `review/` and `openspec/` lifecycles are working and deliberate — propose changes
   to them only with a specific reason, not for symmetry.
@@ -226,8 +242,9 @@ Recommended four phases, with a decision gate between the first two.
 2. **Decide.** Maintainer answers `QUESTIONS.md`: the taxonomy, what the site publishes,
    what is deleted vs archived, the dual-audience cases, `AGENTS`/`CLAUDE`. These are
    product/ownership calls, not reviewer calls.
-3. **Execute** as one or more OpenSpec changes, kept **mechanical**: `git mv` + redirects
-   + nav + link fixes, no content edits, so the diff is verifiable by inspection. Split
+3. **Execute** as one or more OpenSpec changes, kept **mechanical**: `git mv` + nav +
+   internal link fixes, no content edits and no redirects, so the diff is verifiable by
+   inspection. Split
    by quadrant if it gets large — a reviewable series beats one 200-file commit.
 4. **Guardrail.** Make the structure self-enforcing, or it re-rots within two months:
    a nav-completeness check (fail on published-but-unlisted, which would have caught the
