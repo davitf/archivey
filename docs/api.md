@@ -87,3 +87,4 @@ spec for lifecycle, retention, and policy.
 ::: archivey.ResourceLimitError
 ::: archivey.DiagnosticRaisedError
 ::: archivey.ArchiveyUsageError
+::: archivey.ConcurrentAccessError

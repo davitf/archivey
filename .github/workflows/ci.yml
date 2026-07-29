@@ -276,10 +276,18 @@ jobs:
           uv run --python ${{ matrix.python-version }} --no-sync
           pytest tests/test_property_safety.py -q
 
-  # Free-threaded correctness for the declared MemberStreams.CONCURRENT seam (core backends).
-  # Optional extras are not claimed covered here — skips do not count as free-threaded support.
+  # Free-threaded correctness. Two stages: the zero-dep core, then the subset of extras
+  # that actually keep the GIL disabled. An extra whose C extension has not declared
+  # free-thread support makes CPython silently *re-enable* the GIL on import, which would
+  # turn this whole job into a GIL-ed run pretending to be a free-threaded one — so the
+  # extras stage asserts the GIL is still off before it runs anything.
+  # Deliberately excluded (measured 2026-07-29, CPython 3.13.7t):
+  #   pyppmd / inflate64 / brotli / rapidgzip -> import re-enables the GIL
+  #   cryptography ([crypto], and so [7z]/[rar]) -> cffi does not support free-threaded
+  #     3.13 at all ("Upgrade to free-threaded 3.14 or newer"), so it cannot be installed
+  # Revisit both lists on 3.14t. See docs/support-matrix.md.
   free-threaded-concurrency:
-    name: free-threaded-concurrency / py3.13t / concurrent_reader
+    name: free-threaded-concurrency / py3.13t / core + GIL-safe extras
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -295,12 +303,31 @@ jobs:
         run: uv sync --python 3.13t --no-dev
       - name: Assert zero-dependency core
         run: uv run --python 3.13t --no-sync python tests/check_zero_dep_core.py
-      - name: Run concurrent_reader tests
-        # Override addopts so we do not need pytest-cov in the core-only ephemeral env.
+      # The whole suite, not just the concurrent_reader subset: single-threaded
+      # free-threaded breakage (dict/list races in shared state, C-API assumptions) shows
+      # up here, and the marked subset is only ~46 of ~2000 tests.
+      # Override addopts so we do not need pytest-cov in the core-only ephemeral env.
+      - name: Run full suite (core-only)
         run: >
           uv run --python 3.13t --no-sync
           --with pytest --with pytest-timeout
-          pytest -m concurrent_reader -q --timeout=60 -o addopts=
+          pytest tests/ -q --timeout=120 -o addopts=
+
+      - name: Sync GIL-safe extras
+        run: uv sync --python 3.13t --no-dev --extra iso --extra zstd --extra lz4 --extra cli
+      - name: Assert the GIL is still disabled with those extras
+        # Fail loudly if a future release of one of these starts re-enabling the GIL:
+        # the job would otherwise keep passing while testing nothing free-threaded.
+        run: >
+          uv run --python 3.13t --no-sync python -W ignore -c
+          "import sys, pycdlib, lz4.frame, tqdm, backports.zstd;
+          assert not sys._is_gil_enabled(), 'an extra re-enabled the GIL';
+          print('GIL still disabled with iso/zstd/lz4/cli')"
+      - name: Run full suite + concurrent_reader (GIL-safe extras)
+        run: >
+          uv run --python 3.13t --no-sync
+          --with pytest --with pytest-timeout
+          pytest tests/ -q --timeout=120 -o addopts=
 
   # Blocking gate = **structural only** (seek baselines + solid decode-once).
   # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
