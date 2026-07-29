@@ -35,8 +35,10 @@ review directories for these.
 | CLI **Q4** `--raw` / TTY-only quoting remainder | cli-product Q4 | debt-ledger DD8 (additive; recommended style already applied) |
 | `SlicingStream.readinto` (**Q4**) + optional `VerifyingStream` delete | stream-layering | Topic 6 adjacency above |
 
-No reviews are in flight as of 2026-07-28; [`STATUS.md`](STATUS.md) records what
-closed the round and what comes next (the release bundle, then Topics 6 and 7).
+The **docs full review** is in flight as of 2026-07-29 ([`docs/brief.md`](docs/brief.md)) —
+an information-architecture pass separating user / contributor / design-record / history,
+commissioned ahead of Topic 7 because it decides where docs *live*, not whether they
+persuade. [`STATUS.md`](STATUS.md) records the current ordering.
 
 When commissioned, each gets its own top-level directory with a `brief.md` and
 archives when addressed (see `README.md`).

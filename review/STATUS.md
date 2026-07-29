@@ -1,9 +1,14 @@
-# In-flight review status (2026-07-28)
+# In-flight review status (2026-07-29)
 
-**No reviews are in flight.** `debt-ledger/` and `performance/` were archived on
-2026-07-28 after the last two ledger items (**T7** corpus-matrix audit, **T4**
-half-test) landed and **performance Q4** was decided. This file stays as the entry
-point for the next round.
+## In flight
+
+| Review | State |
+|---|---|
+| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail); phase 1 not started. |
+
+`debt-ledger/` and `performance/` were archived on 2026-07-28 after the last two ledger
+items (**T7** corpus-matrix audit, **T4** half-test) landed and **performance Q4** was
+decided.
 
 ## What closed the round
 
@@ -15,19 +20,23 @@ point for the next round.
 Every other item on both reviews is fixed, accepted (bands aspirational, #191), or an
 explicit KEEP with a recorded justification — see each review's `SUMMARY.md`.
 
-## What is next (not review work)
+## What is next
 
 Ranked, from `backlog.md` and `PLAN.md`:
 
-1. **Release bundle** (`PLAN.md` item 6) — the actual critical path to `0.2.0`, and
-   the one thing no review ever tracked: packaging finalize (`version` is still
-   `0.2.0.dev0`), the **explicit free-threading support statement** (today it lives
-   only in `docs/internal/threat-model.md` C4 and `AGENTS.md`, nothing user-facing),
-   and the **migration guide** (`zipfile`/`tarfile`/`shutil.unpack_archive`/`patool`
-   → archivey) + doc sweep.
-2. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
-3. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
-   library, and items 1–2 are exactly the gaps it would otherwise re-find.
+1. **Release bundle** (`PLAN.md` item 6) — the critical path to `0.2.0`. Landed since:
+   the free-threading support statement and migration guide (`docs/support-matrix.md`,
+   `docs/migrating.md`, #206) and the PyPI metadata (#207). **Remaining:** drop the
+   `0.2.0.dev0` suffix when cutting the tag, and the repo-cutover leftovers
+   (`docs/internal/release-repo-cutover.md`: discovery metadata, Pages settings).
+2. **Docs full review** (in flight above) — the doc sweep, scoped as an information
+   architecture problem rather than a content edit. Best done **before** more releases
+   ship more permanent URLs.
+3. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
+4. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
+   library, and items 1–3 are exactly the gaps it would otherwise re-find. The docs
+   review deliberately hands persuasion/adoption findings to it rather than acting on
+   them.
 
 ## Carried forward from the archived reviews
 
