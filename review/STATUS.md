@@ -32,10 +32,14 @@ Ranked, from `backlog.md` and `PLAN.md`:
 2. **Docs full review** (in flight above) — the doc sweep, scoped as an information
    architecture problem rather than a content edit. Best done **before** more releases
    ship more permanent URLs.
-3. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
-4. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
-   library, and items 1–3 are exactly the gaps it would otherwise re-find. The docs
-   review deliberately hands persuasion/adoption findings to it rather than acting on
+3. **Topic 8** — documentation *content* (accuracy vs the code, then gaps, then
+   quality). Separate from the IA review by design: that one decides where pages live,
+   this one whether they are right. Starts from the `observations.md` the IA audit
+   produces as a byproduct.
+4. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
+5. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
+   library, and items 1–4 are exactly the gaps it would otherwise re-find. The docs
+   reviews deliberately hand persuasion/adoption findings to it rather than acting on
    them.
 
 ## Carried forward from the archived reviews

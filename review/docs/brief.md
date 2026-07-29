@@ -117,10 +117,35 @@ arbitrarily.
 ## Out of scope
 
 - Rewriting page *content* for quality/tone. Note it, do not do it — that is a separate
-  pass, and mixing a content rewrite into a file-move review makes both unreviewable.
+  pass (Topic 8, below), and mixing a content rewrite into a file-move review makes both
+  unreviewable: a `git mv`-only diff can be verified by inspection, a move-plus-rewrite
+  diff cannot.
+  **But do capture what you notice.** The audit reads every file anyway, so record
+  content observations in an `observations.md` for the content pass to start from —
+  inaccuracies, duplication, pages that are really three pages, pages nobody should
+  read. Recording them is free; acting on them is out of scope.
 - Re-litigating decided ADRs or spec contracts.
 - Topic 7 (outside-in adoption) — that judges whether the docs *persuade*; this one
   decides where they *live*. Findings that belong to Topic 7 should be handed to it.
+
+## Sequencing: the content pass comes after, with two exceptions
+
+Content review is **Topic 8** in `backlog.md` and runs after this one. The reasons are
+practical, not aesthetic: polishing prose that is about to be merged or deleted is wasted
+work, and a reviewer cannot judge whether a page is *complete* until it is clear what that
+page is now responsible for.
+
+Two kinds of content decision are genuinely structural and must be made **here**, not
+deferred — deferring them would make the migration wrong rather than merely unpolished:
+
+- **Merge / split / delete.** "These two pages say the same thing differently" and "this
+  page is really three pages" are filing decisions. A page slated for deletion should not
+  be moved first.
+- **Dual-audience splits.** If `threat-model.md` or `known-issues.md` needs to become a
+  user-facing page plus an internal register, that is a content operation that determines
+  where each half lives.
+
+Everything else — accuracy against the code, gaps, examples, tone, length — waits.
 
 ## Hard constraints
 
