@@ -20,6 +20,11 @@ cffi rejects free-threaded 3.13 ("upgrade to free-threaded 3.14 or newer"). The
 recommended install is therefore uninstallable on a runtime the project tests in CI, and
 nothing in the extras table says so.
 
+Verified on **3.14t**, `cryptography` installs, decrypts and leaves the GIL disabled — so
+this is a 3.13t-only packaging gap, already fixed upstream, not a property of the library.
+That is why `[free-threaded]` carries `cryptography` behind a `python_version >= '3.14'`
+marker rather than omitting it outright.
+
 `0.2.0` is the first public release, so the extras table has no users yet. Removing or
 renaming an extra is breaking **after** the tag and free **before** it. This is the only
 window.
@@ -32,7 +37,7 @@ Collapse 11 extras to **4**, chosen so each answers a question a user actually a
 | --- | --- | --- |
 | `[recommended]` | `pyppmd`, `inflate64`, `brotli`, `lz4`, `pybcj`, `backports.zstd` (<3.14), `cryptography`, `pycdlib`, `tqdm` | "give me everything that works everywhere" |
 | `[seekable]` | `rapidgzip` | "I want gz/bz2 random access and speed" — kept separate because it is a heavy native build, re-enables the GIL on free-threaded builds, and carries the accelerator process-abort known issue |
-| `[free-threaded]` | `pycdlib`, `lz4`, `tqdm`, `backports.zstd` (<3.14) | "I am on a free-threaded build" — the measured subset that keeps the GIL **disabled** |
+| `[free-threaded]` | `pycdlib`, `lz4`, `tqdm`, `backports.zstd` (<3.14), `cryptography` (>=3.14) | "I am on a free-threaded build" — the measured subset that keeps the GIL **disabled**. Version-conditional: `cryptography` is unusable on 3.13t and fine on 3.14t |
 | `[all]` | `[recommended]` + `[seekable]` | "everything" |
 
 **Removed:** `[7z]`, `[rar]`, `[crypto]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`,

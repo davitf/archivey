@@ -35,9 +35,11 @@ is measured, not guessed (each package verified to leave `sys._is_gil_enabled()`
 after import), and CI already installs exactly this set on 3.13t and asserts the GIL stays
 disabled — so the extra cannot silently rot.
 
-**The risk, recorded rather than hidden:** an extra named for a *runtime property* is a
-moving target. When `cryptography`/`pyppmd`/`rapidgzip` gain free-threaded support, the
-set grows and eventually `free-threaded` collapses into `recommended`. It could also be
+**The risk, now confirmed with data rather than predicted:** an extra named for a
+*runtime property* is a moving target. Measured on 3.14t, `cryptography` **joins** the
+GIL-safe set while `pyppmd`, `inflate64`, `brotli` and `rapidgzip` still re-enable the
+GIL. So the set is already version-dependent, which is why the extra uses environment
+markers, and it will keep widening until it eventually collapses into `recommended`. It could also be
 misread as "this makes archivey free-threaded" (it does not; it avoids dependencies that
 switch the GIL back on). Mitigations: the spec states both facts, and the extra is
 documented as "the subset that currently keeps the GIL disabled — expected to widen".
@@ -45,6 +47,37 @@ documented as "the subset that currently keeps the GIL disabled — expected to 
 The alternative — document the pip line in prose instead of shipping an extra — was
 rejected because a prose install line rots silently, while an extra is exercised by CI on
 every run.
+
+## Should the crypto library change? (asked 2026-07-29 — no)
+
+`internal/streams/crypto.py` is a one-method `CryptoBackend` ABC
+(`aes_cbc_decrypt_stage`), and `zip_aes.py` adds AES-ECB for the CTR keystream. Every
+other primitive — PBKDF2, SHA-1/256, HMAC — is stdlib `hashlib`. So **AES block
+operations are the only third-party crypto need**, and swapping backends is genuinely
+cheap, exactly as the encapsulation intended.
+
+Measured, since the question was whether a free-thread-safe alternative exists:
+
+| Library | 3.13t | 3.14t |
+| --- | --- | --- |
+| `cryptography` | **cannot install** (cffi rejects FT 3.13) | installs, AES-CBC works, **GIL stays disabled** |
+| `pycryptodome` 3.23 | installs, AES-CBC + AES-ECB work, **GIL stays disabled** | not tested |
+
+So yes, a free-thread-safe alternative exists today. **Do not switch anyway**, and do not
+add a second backend:
+
+- The gap is **one pre-release runtime**, and it is already closed upstream on 3.14t —
+  which is the first free-threaded build with real support behind it. Trading a widely
+  audited, ecosystem-default security library for a workaround to a transient packaging
+  hole in an experimental interpreter is a bad exchange.
+- A second crypto backend is not free even when the plug point is: it doubles the
+  security surface to audit, adds divergence risk in padding and error paths (precisely
+  where crypto bugs live), and turns "which backend am I on?" into a support question
+  that affects observable behaviour.
+
+Keep the abstraction, though: it is what makes this a paragraph rather than a project, and
+it means the decision is cheap to revisit if `cryptography` ever becomes a problem for a
+reason that is not self-resolving.
 
 ## Alternatives considered
 

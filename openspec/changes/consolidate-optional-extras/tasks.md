@@ -1,6 +1,7 @@
 ## 1. Packaging
 
-- [ ] 1.1 Rewrite `[project.optional-dependencies]` to the four extras
+- [ ] 1.1 Rewrite `[project.optional-dependencies]` to the four extras, with
+      `cryptography; python_version >= "3.14"` inside `[free-threaded]`
       (`recommended`, `seekable`, `free-threaded`, `all`); delete `7z`, `rar`, `crypto`,
       `iso`, `zstd`, `lz4`, `cli`, `recommended-lite`.
 - [ ] 1.2 Drop the stale `[rar]` TODO; BLAKE2sp is native
@@ -35,7 +36,8 @@
 
 ## 5. Verification
 
-- [ ] 5.1 `pip install archivey[free-threaded]` resolves on 3.13t and the GIL stays
+- [ ] 5.1 `pip install archivey[free-threaded]` resolves on 3.13t **and** 3.14t (with
+      `cryptography` only on the latter) and the GIL stays
       disabled (already asserted by CI; confirm locally too).
 - [ ] 5.2 Three-config suite green (`[all]`, `[all-lowest]`, core-only).
 - [ ] 5.3 `mkdocs build --strict` clean.

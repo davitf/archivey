@@ -12,7 +12,7 @@ codecs, encryption, ISO, seeking accelerators, and the CLI.
 | *(none)* | stdlib only + native parsers | ZIP, TAR + stdlib compressed TAR variants including `.tar.Z`, GZ, BZ2, XZ, Z (unix-compress), directory, 7z read for common codecs (including LZMA2+BCJ), RAR metadata/listing; RAR data still needs RARLAB `unrar` |
 | `[recommended]` | `pyppmd`, `inflate64`, `brotli`, `lz4`, `pybcj`, `backports.zstd` on Python <3.14, `cryptography`, `pycdlib`, `tqdm` | Every format and codec that installs everywhere: PPMd, Deflate64, Zstd, Brotli, LZ4, LZMA1+BCJ, AES/crypto (7z, RAR headers, WinZip AES ZIP), ISO, CLI progress |
 | `[seekable]` | `rapidgzip` | Faster gzip/bzip2 decompression and random access via rapidgzip / bundled `IndexedBzip2File` |
-| `[free-threaded]` | `pycdlib`, `lz4`, `tqdm`, `backports.zstd` on Python <3.14 | The subset that keeps the GIL **disabled** on free-threaded builds |
+| `[free-threaded]` | `pycdlib`, `lz4`, `tqdm`, `backports.zstd` on Python <3.14, `cryptography` on Python >=3.14 | The subset that keeps the GIL **disabled** on free-threaded builds |
 | `[all]` | `[recommended]` + `[seekable]` | Everything |
 
 The system SHALL make `[recommended]` the sensible all-useful install and `[seekable]`
@@ -35,6 +35,13 @@ be removed; fewer names is the durable choice.)
 `PackageNotInstalledError` install hints MUST name the extra that provides the missing
 package (`[recommended]`, or `[seekable]` for rapidgzip) and MUST NOT name a format,
 since member codecs are shared across containers.
+
+AES block operations are the only third-party crypto dependency (`CryptoBackend` in
+`internal/streams/crypto.py`; PBKDF2/SHA/HMAC are stdlib). The system SHALL ship exactly
+one crypto backend, `cryptography`. Alternate AES providers MUST NOT be added merely to
+work around a runtime where `cryptography` cannot yet install, since that doubles the
+security surface for a transient gap; the backend abstraction is retained so the choice
+stays cheap to revisit.
 
 The system SHALL treat `[free-threaded]` as a **measured, moving** set: membership is
 determined by whether importing the package leaves the GIL disabled on a free-threaded
@@ -72,7 +79,8 @@ NOT list `uncompresspy` in any user-facing extra or the `dev` group.
 | `pip install archivey[recommended]` | Every format/codec/crypto/ISO/CLI capability that installs everywhere; no rapidgzip |
 | `pip install archivey[seekable]` after `[recommended]` | Adds gz/bz2 random access and speed |
 | `pip install archivey[recommended]` on free-threaded 3.13 | **Fails** — `cryptography` -> `cffi` does not support free-threaded 3.13; documented, not worked around |
-| `pip install archivey[free-threaded]` on free-threaded 3.13 | Resolves; importing every included package leaves the GIL disabled |
+| `pip install archivey[free-threaded]` on free-threaded 3.13 | Resolves without `cryptography`; importing every included package leaves the GIL disabled |
+| `pip install archivey[free-threaded]` on free-threaded 3.14 | Resolves **with** `cryptography` (cffi supports 3.14t); GIL still disabled |
 | `pip install archivey[all]` | `[recommended]` + `[seekable]` |
 | ZIP member needs Deflate64 with no extras | `PackageNotInstalledError` naming `archivey[recommended]`, never a format-named extra |
 | `pip install archivey[7z]` | Fails: the extra no longer exists |
