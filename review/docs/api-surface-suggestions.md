@@ -159,5 +159,19 @@ outcome — but it should become an ADR, because this is the second time it has 
 independently flagged (api-coherence, then the code-derived pass), and an unrecorded
 decision will be re-derived a third time.
 
-Both want an OpenSpec change before implementation, per `CONTRIBUTING.md`. Happy to draft
-either once you pick a direction.
+## Decided 2026-07-29 — both drafted as OpenSpec changes
+
+- **A1** -> `openspec/changes/consolidate-optional-extras/`. Direction chosen: **fewer**,
+  not aliases — 11 extras collapse to 4 (`recommended`, `seekable`, `free-threaded`,
+  `all`). The alias option in this file was *rejected* on the "an extra can never be
+  removed" argument: it adds permanent names and keeps the format names that caused the
+  confusion.
+- **C1** -> `openspec/changes/member-stream-capability-booleans/`. Two booleans, as
+  recommended.
+
+One measured fact reframed A1's `cryptography` question after this file was written:
+**`pip install archivey[recommended]` already fails on free-threaded 3.13**
+(`recommended` -> `7z` -> `cryptography` -> `cffi`, which rejects FT 3.13). So
+`cryptography` is not "simple" in the way that matters, it is *already* in the
+recommended bundle, and that is precisely why a separate `[free-threaded]` extra earns
+its place.
