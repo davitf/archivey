@@ -144,6 +144,9 @@ class CorpusEntry:
 # Corpus format key -> the ArchiveFormat the sweep gates availability on.
 FORMAT_KEYS: dict[str, ArchiveFormat] = {
     "zip": ArchiveFormat.ZIP,
+    # Builder variant: same ZIP reader, WinZip AES members instead of the 7z CLI's
+    # default ZipCrypto (see READER_PACKAGES — decryption needs the [crypto] extra).
+    "zip-aes": ArchiveFormat.ZIP,
     "tar": ArchiveFormat.TAR,
     "tar.gz": ArchiveFormat.TAR_GZ,
     "tar.bz2": ArchiveFormat.TAR_BZ2,
@@ -344,13 +347,24 @@ CORPUS: tuple[CorpusEntry, ...] = (
     CorpusEntry("adversarial", _ADVERSARIAL_COMMON, ("zip",)),
     CorpusEntry("adversarial-tar", _ADVERSARIAL_TAR, ("tar", "tar.gz")),
     # Encrypted ZIPs are built with the 7z CLI (stdlib zipfile cannot write encryption).
+    # ``zip`` is ZipCrypto (7-Zip's ZIP default); ``zip-aes`` is the same shape written
+    # with -mem=AES256, so WinZip AES members reach the sweep and mutation fuzz too
+    # (T7 residual 5 — previously AES was only in targeted tests + the bench gate).
     CorpusEntry(
-        "encrypted", _ENC_SINGLE, ("zip", "7z", "rar"), requires_binaries=("7z",)
+        "encrypted",
+        _ENC_SINGLE,
+        ("zip", "zip-aes", "7z", "rar"),
+        requires_binaries=("7z",),
     ),
     CorpusEntry(
-        "encrypted-mixed", _ENC_MIXED, ("zip", "7z", "rar"), requires_binaries=("7z",)
+        "encrypted-mixed",
+        _ENC_MIXED,
+        ("zip", "zip-aes", "7z", "rar"),
+        requires_binaries=("7z",),
     ),
-    CorpusEntry("encrypted-multi", _ENC_MULTI, ("zip",), requires_binaries=("7z",)),
+    CorpusEntry(
+        "encrypted-multi", _ENC_MULTI, ("zip", "zip-aes"), requires_binaries=("7z",)
+    ),
     # Header-encrypted 7z (``-mhe=on``): the member *names* are encrypted too, so the
     # native header parser must decrypt before it can list at all. Reaches the
     # kEncodedHeader path that threat-model O8 hardened; py7zr writes it in-process,
@@ -439,9 +453,9 @@ def _compress(data: bytes, key: str) -> bytes:
     raise ValueError(f"no compressor for {key!r}")
 
 
-def _zip_build(entry: CorpusEntry, path: Path) -> None:
+def _zip_build(entry: CorpusEntry, path: Path, *, aes: bool = False) -> None:
     if entry.passwords:
-        _zip_build_encrypted(entry, path)
+        _zip_build_encrypted(entry, path, aes=aes)
         return
     with zipfile.ZipFile(path, "w") as zf:
         if entry.archive_comment:
@@ -470,8 +484,12 @@ def _zip_build(entry: CorpusEntry, path: Path) -> None:
                 zf.writestr(zi, m.contents)
 
 
-def _zip_build_encrypted(entry: CorpusEntry, path: Path) -> None:
-    """Encrypted ZIP via the 7z CLI (one invocation per password group; plain last)."""
+def _zip_build_encrypted(entry: CorpusEntry, path: Path, *, aes: bool = False) -> None:
+    """Encrypted ZIP via the 7z CLI (one invocation per password group; plain last).
+
+    7-Zip's ZIP default is legacy **ZipCrypto**; ``aes=True`` adds ``-mem=AES256`` for
+    **WinZip AES** (method 99, AE-2) instead, which the reader decrypts via ``[crypto]``.
+    """
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         groups: dict[str | None, list[Member]] = {}
@@ -485,6 +503,8 @@ def _zip_build_encrypted(entry: CorpusEntry, path: Path) -> None:
                 p.write_bytes(m.contents)
                 names.append(m.name)
             cmd = ["7z", "a", "-tzip", str(path), *names, "-y"]
+            if aes:
+                cmd.append("-mem=AES256")
             if password is not None:
                 cmd.append(f"-p{password}")
             subprocess.run(cmd, cwd=tmp, check=True, capture_output=True)
@@ -639,6 +659,8 @@ def build_archive(entry: CorpusEntry, key: str, path: Path) -> None:
     """Build ``entry`` as format ``key`` at ``path`` (a file, or a directory for dir)."""
     if key == "zip":
         _zip_build(entry, path)
+    elif key == "zip-aes":
+        _zip_build(entry, path, aes=True)
     elif key == "dir":
         _dir_build(entry, path)
     elif key == "iso":
@@ -678,6 +700,13 @@ BUILDER_BINARIES: dict[str, tuple[str, ...]] = {
     "rar": ("rar",),
 }
 
+# Optional packages the *reader* needs for a format key, beyond what the registry's
+# format availability reports. ZIP itself is core, but WinZip AES member decryption
+# needs the ``[crypto]`` extra — without it the rows must skip, not fail.
+READER_PACKAGES: dict[str, tuple[str, ...]] = {
+    "zip-aes": ("cryptography",),
+}
+
 
 # ---------------------------------------------------------------------------
 # Generation cache (content-keyed, atomic, parallel-safe)
@@ -696,6 +725,8 @@ def _filename(entry: CorpusEntry, key: str) -> str:
         return f"{entry.id}.gz"
     if key == "iso-joliet":
         return f"{entry.id}.iso"
+    if key == "zip-aes":
+        return f"{entry.id}.zip"
     return f"{entry.id}.{key}"
 
 

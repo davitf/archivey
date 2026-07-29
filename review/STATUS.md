@@ -33,7 +33,7 @@ Ranked, from `backlog.md` and `PLAN.md`:
 
 | Item | Where it lives now |
 |------|--------------------|
-| Corpus rows unpinned in CI (ambient `7z` CLI) | `archive/2026-07-28-debt-ledger/corpus-matrix.md` residual 1 — a CI-workflow call |
+| ~~Corpus rows unpinned in CI (ambient `7z` CLI)~~ | **Closed 2026-07-29** — `p7zip-full` on the Linux CI legs; see `archive/2026-07-28-debt-ledger/corpus-matrix.md` residual 1 |
 | DD5–DD12, T5/T6, N1 (`pyppmd`), DD6 salvage | `archive/2026-07-28-debt-ledger/` — explicit KEEPs |
 | P8/P9, L4/L5 listing/accelerator follow-ups | `archive/2026-07-28-performance/` |
 | CLI `--json` / `--raw` | `IDEAS.md` (DD7/DD8) |

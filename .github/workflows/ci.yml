@@ -196,6 +196,27 @@ jobs:
           uv run --python ${{ matrix.python-version }} --no-sync python -c \
             "from archivey.internal.backends.rar_unrar import find_rarlab_unrar; print(find_rarlab_unrar())"
 
+      # The encrypted-ZIP corpus rows shell out to ``7z`` to build their fixtures
+      # (stdlib ``zipfile`` cannot write encryption). Without this the rows skip, and
+      # before this step nothing installed it — so whether they ran depended on the
+      # runner image and could vanish on an image bump with no test turning red.
+      # Linux only, deliberately: the rows exercise ZipCrypto *reading* (pure Python)
+      # over flat files, so they engage none of the path/symlink surface the macOS and
+      # Windows legs exist for. See the T7 audit, residual 1, in
+      # ``review/archive/2026-07-28-debt-ledger/corpus-matrix.md``.
+      # ``p7zip-full`` is transitional on Ubuntu 24.04 (-> ``7zip``) but still provides
+      # ``/usr/bin/7z``, which is the name the builder invokes.
+      - name: Install p7zip (encrypted-ZIP corpus builder, Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y p7zip-full
+      - name: Verify 7z on PATH (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        run: |
+          command -v 7z
+          # Fail loudly if the package ever stops providing the ``7z`` name: a silent
+          # skip is exactly the unpinned-coverage failure this step exists to remove.
+          7z i | head -n 3
+
       - name: Assert synced venv Python matches matrix
         # Catch regressions where `.python-version` silently overrides the matrix again.
         run: >

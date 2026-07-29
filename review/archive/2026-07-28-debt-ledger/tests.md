@@ -45,7 +45,8 @@ extensions, the deliberate exclusions, and four recorded residuals. Closed: ISO 
 corpus-dead); header-encrypted 7z as a new shape in **both** sweep and mutation;
 encrypted-header + volume RAR fixtures into the static mutation intake.
 
-Audit finding worth carrying forward: **11 of 71 rows never run in CI**, and only the
-8 `rar`-writer rows are a deliberate decision — the 3 encrypted-ZIP rows depend on an
-ambient `7z` CLI that no workflow installs, so that coverage is *unpinned* rather than
-absent. Recorded as residual 1 in the audit doc; it is a CI-workflow call.
+Audit finding: **11 of 71 rows never ran in CI**, and only the 8 `rar`-writer rows were
+a deliberate decision — the 3 encrypted-ZIP rows depended on an ambient `7z` CLI that no
+workflow installed, so that coverage was *unpinned* rather than absent. **Closed
+2026-07-29**: `ci.yml` installs `p7zip-full` on the Linux legs (residual 1 in the audit
+doc). The `rar`-writer rows remain skipped by design.

@@ -13,11 +13,12 @@ added here buys coverage in both nets at once — that leverage is why T7 is wor
 
 ## The matrix after this change
 
-**20 shapes / 71 rows.** Rows per format:
+**20 shapes / 74 rows.** Rows per format:
 
 | Format | Rows | Format | Rows |
 |---|---:|---|---:|
 | `zip` | 13 | `dir` | 4 |
+| `zip-aes` | 3 | | |
 | `tar` | 10 | `iso` | 3 |
 | `7z` | 8 | `tar.zst` | 2 |
 | `rar` | 8 | `iso-joliet` | 1 |
@@ -41,8 +42,8 @@ Shape → formats:
 | `duplicates` | `zip`, `tar` |
 | `large` | `zip`, `tar.gz`, `tar.zst`, `7z`, `rar` |
 | `adversarial` / `adversarial-tar` | `zip` / `tar`, `tar.gz` |
-| `encrypted` / `encrypted-mixed` | `zip`, `7z`, `rar` |
-| `encrypted-multi` | `zip` |
+| `encrypted` / `encrypted-mixed` | `zip`, **`zip-aes`**, `7z`, `rar` |
+| `encrypted-multi` | `zip`, **`zip-aes`** |
 | **`encrypted-header`** | **`7z`** |
 | `single-file` / `single-file-meta` | 8 codecs / `gz-meta` |
 
@@ -64,33 +65,73 @@ contract directly — `open_archive` without a password raises `EncryptionError`
 than yielding a plausible empty listing (`test_corpus_sweep.py`, `entry.encrypt_header`
 branch), which is O8's residual failure mode expressed as a corpus assertion.
 
-## Finding 2 — 11 of 71 rows never run in CI, and only 8 of them deliberately
+## Finding 2 — 11 of 71 rows never ran in CI, and only 8 of them deliberately
+
+> Counts are as of the audit (71 rows). The `zip-aes` rows added when closing residual
+> 5 bring the corpus to 74; the CI-skipped set is unchanged at the 8 `rar`-writer rows.
 
 This is the audit's real result, and it is not visible from the matrix alone.
 
 | Gate | Rows | Deliberate? |
 |---|---:|---|
 | `rar` **writer** binary | 8 | **Yes** — `ci.yml` installs `unrar` only and explicitly removes the writer on macOS ("keep writer off the PATH here"), because corpus RAR digest expectations are Linux-fixture-oriented |
-| `7z` **CLI** (encrypted-ZIP builder) | 3 | **No** — no workflow installs it |
+| `7z` **CLI** (encrypted-ZIP builder) | 3 | **Was not** — no workflow installed it. **Closed 2026-07-29**: `ci.yml` now installs `p7zip-full` on the Linux `all` / `all-lowest` legs |
 
 The RAR half is a recorded decision, and RAR keeps real CI coverage through the
 committed fixtures in `tests/fixtures/rar/` (which is what this change extended).
 
 The `7z`-CLI half is not a decision anyone made. `encrypted`, `encrypted-mixed`, and
 `encrypted-multi` build their **ZIP** rows by shelling out to `7z` (stdlib `zipfile`
-cannot write encryption), and no workflow installs it — so whether ZipCrypto/AES ZIP
+cannot write encryption), and no workflow installs it — so whether encrypted-ZIP
 listing and per-member password behaviour is swept at all depends on whatever the
 runner image happens to ship, and differs across the Linux/macOS/Windows legs. The
 coverage is not absent, it is **unpinned**, which is worse: it can disappear on a
 runner-image bump with no test turning red.
 
-Not fixed here — it is a CI-workflow change, and pinning it properly means deciding
-between installing `p7zip` on every leg or teaching the builder to write encrypted ZIPs
-in-process. Recorded as a residual below rather than silently carried.
+**Closed in the follow-up (2026-07-29).** `ci.yml` installs `p7zip-full` on the Linux
+`all` / `all-lowest` legs, plus a `command -v 7z` verify step so the coverage fails
+loudly instead of silently skipping if the package ever stops providing that name
+(`p7zip-full` is transitional on Ubuntu 24.04 → `7zip`, but still ships `/usr/bin/7z`,
+which is the name `_zip_build_encrypted` invokes). No test changes were needed: the
+three rows pass as written, and sweep + mutation go from 304 passed / 55 skipped to
+**319 / 40** with `7z` present.
 
-Note that ZIP *AES* decryption itself is separately covered by `tests/test_zip_aes.py`
-and the structural bench gate (T3), both using in-process fixtures — so this gap is
-about the corpus sweep's cross-format assertions, not about AES support being untested.
+**Linux only, deliberately.** The other two candidates were rejected:
+
+- *macOS / Windows legs* — Homebrew's `p7zip` formula is deprecated in favour of
+  `sevenzip` (which ships `7zz`, not `7z`), and Windows needs its own path handling. The
+  cost is real and the signal is not: these rows exercise ZipCrypto/AES **reading**,
+  which is pure Python, over flat files with no symlinks or mode bits — none of the
+  path/symlink/junction surface those legs exist for. Linux pins the coverage; the
+  other legs would be near-duplicates.
+- *Teaching the builder to write encrypted ZIPs in-process* (generalising
+  `tests/zipcrypto.py`, which already writes single-entry ZipCrypto members, to
+  multi-member with mixed per-member passwords) — this would drop the binary dependency
+  everywhere including for local contributors, but it costs the **independent-oracle**
+  property: today 7z writes the fixtures and archivey reads them, so the rows cross-check
+  two implementations. Building them with our own writer risks writer and reader sharing
+  the same wrong assumption. Keep the CLI for the corpus; `zipcrypto.py` stays for the
+  targeted cases that need a hand-built archive.
+
+### Which cipher each encrypted-ZIP builder actually emits
+
+Worth stating explicitly, because the repo has three encrypted-ZIP builders and they are
+**complementary, not redundant** — they write different ciphers for different consumers:
+
+| Builder | Cipher emitted | Consumers | In sweep? | In mutation? |
+|---|---|---|---|---|
+| `_zip_build_encrypted` (7z CLI), `zip` key | **ZipCrypto** (PKWARE; 7-Zip's ZIP default — verified STORED + encrypted flag, no `0x9901` field) | corpus `encrypted*` rows | yes | yes |
+| `_zip_build_encrypted` with `-mem=AES256`, `zip-aes` key | **WinZip AES** (AE-2 / AES-256, verified via the `0x9901` field) | corpus `encrypted*` rows | yes | yes |
+| `tests/zipcrypto.py` | ZipCrypto, single-entry | `test_cli.py`, `test_zip_multipassword.py` (the 1-in-256 check-byte hazard) | no | no |
+| `tests/zip_aes_fixture.py` | **WinZip AES** (method 99, AE-1/AE-2) | `test_zip_aes.py`, `benchmarks/fixtures.py` (structural gate) | no | no |
+
+AES support was well covered by targeted tests and the bench gate, but originally **no
+corpus row was AES** — WinZip AES members reached neither the sweep's cross-format
+conformance assertions nor mutation fuzz. **Closed 2026-07-29** with the `zip-aes`
+builder-variant key (`7z a -tzip -mem=AES256`), added to all three encrypted shapes so
+single-password, mixed plain/encrypted, and multi-password AES all sweep and mutate.
+Verified the rows really carry AE-2/AES-256 members rather than silently falling back
+to ZipCrypto.
 
 ## Finding 3 — ISO exercised only one of the reader's three name sources
 
@@ -122,8 +163,9 @@ than a shared shape. Recorded as a residual.
 
 ## Residual gaps (recorded, not paid)
 
-1. **Encrypted-ZIP corpus rows are unpinned in CI** (Finding 2). Fix is a workflow
-   decision: install `p7zip` on every leg, or write encrypted ZIPs in-process.
+1. ~~**Encrypted-ZIP corpus rows are unpinned in CI**~~ — **closed 2026-07-29**;
+   `p7zip-full` on the Linux legs + a verify step (Finding 2). The 8 `rar`-writer rows
+   remain skipped by design, so 8 of the now-74 rows still do not run in CI.
 2. **`encrypted-multi` is ZIP-only.** For `7z` the builder rejects it outright
    (`_7z_build`: py7zr takes one archive password); for `rar` the builder *does*
    support per-member password groups since v7, but the row would only ever run where
@@ -132,6 +174,9 @@ than a shared shape. Recorded as a residual.
    expectations for the `8.3` mangled names.
 4. **RAR multi-volume joining** is in `test_volumes.py` only, never under mutation —
    mutating a volume *set* needs a multi-path harness the mutation net does not have.
+5. ~~**No corpus row uses WinZip AES.**~~ — **closed 2026-07-29** by the `zip-aes`
+   variant key on all three encrypted shapes, gated on the `[crypto]` extra via the new
+   `READER_PACKAGES` table so the rows skip (not fail) in the core-only leg.
 
 ## Verification
 

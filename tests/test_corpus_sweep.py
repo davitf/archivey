@@ -38,6 +38,7 @@ from tests.sample_archives import (
     BUILDER_PACKAGES,
     CORPUS,
     FORMAT_KEYS,
+    READER_PACKAGES,
     CorpusEntry,
     Member,
     corpus_archive_path,
@@ -60,6 +61,16 @@ _MODE_FORMATS = {
 # listing check differs (see format-single-file-compressors).
 _SINGLE_FILE_KEYS = {"gz", "gz-meta", "bz2", "xz", "zst", "lz4", "lz", "zz", "br"}
 
+# Builder-variant keys write the same container a different way, so the reader contract
+# they must satisfy is the base format's. The per-format assertions below key off this,
+# not the raw key — otherwise a variant silently takes every "not that format" branch.
+_BASE_KEY = {"gz-meta": "gz", "iso-joliet": "iso", "zip-aes": "zip"}
+
+
+def _base(key: str) -> str:
+    return _BASE_KEY.get(key, key)
+
+
 _PARAMS = [
     pytest.param(entry, key, id=f"{entry.id}-{key}")
     for entry in CORPUS
@@ -73,6 +84,9 @@ def _skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
         pytest.skip(
             f"format {key!r} not readable here: {availability.missing or 'no backend'}"
         )
+    for package in READER_PACKAGES.get(key, ()):
+        if importlib.util.find_spec(package) is None:
+            pytest.skip(f"reader needs package {package!r}")
     for package in BUILDER_PACKAGES.get(key, ()):
         if package == "_zstd_backend":
             if not _has_zstd_backend():
@@ -116,13 +130,13 @@ def _check_listing(ar, entry: CorpusEntry, key: str) -> None:
             assert act.type is exp.type, f"type of {name!r}"
             if exp.type is MemberType.FILE and not exp.password:
                 assert act.size == len(exp.contents), f"size of {name!r}"
-            if exp.link_target is not None and key != "iso":
+            if exp.link_target is not None and _base(key) != "iso":
                 assert act.link_target == exp.link_target, f"link_target of {name!r}"
-            if exp.mode is not None and key in _MODE_FORMATS:
+            if exp.mode is not None and _base(key) in _MODE_FORMATS:
                 assert act.mode == exp.mode, f"mode of {name!r}"
             if exp.uid is not None and key.startswith("tar"):
                 assert act.uid == exp.uid, f"uid of {name!r}"
-            if exp.comment is not None and key == "zip":
+            if exp.comment is not None and _base(key) == "zip":
                 assert act.comment == exp.comment, f"comment of {name!r}"
             _assert_stored_digest_parity(act, key)
 
@@ -134,7 +148,7 @@ def _check_listing(ar, entry: CorpusEntry, key: str) -> None:
                 f"unexpected non-directory member {name!r}"
             )
 
-    if entry.archive_comment is not None and key == "zip":
+    if entry.archive_comment is not None and _base(key) == "zip":
         assert ar.info.comment == entry.archive_comment
 
 
@@ -146,7 +160,7 @@ def _assert_stored_digest_parity(member, key: str) -> None:
         HashAlgorithm.BLAKE2SP,
         HashAlgorithm.ADLER32,
     }
-    if key == "zip":
+    if _base(key) == "zip":
         if member.type in (MemberType.FILE, MemberType.SYMLINK):
             # AE-2 (WinZip AES) stores CRC as 0 and relies on the HMAC — no crc32 digest.
             if member.extra.get("zip.aes_vendor_version") == 2:
@@ -160,7 +174,7 @@ def _assert_stored_digest_parity(member, key: str) -> None:
                 f"zip {member.name!r} unexpected crc32"
             )
         return
-    if key == "7z":
+    if _base(key) == "7z":
         if member.type is MemberType.FILE:
             assert HashAlgorithm.CRC32 in keys, f"7z {member.name!r} missing crc32"
         elif member.type is MemberType.DIRECTORY:
@@ -169,7 +183,7 @@ def _assert_stored_digest_parity(member, key: str) -> None:
             )
         # SYMLINK may carry a CRC of the stored link payload; do not require or forbid.
         return
-    if key == "rar":
+    if _base(key) == "rar":
         if member.type is MemberType.FILE:
             # RAR5 may store Blake2sp instead of (or in addition to) CRC32.
             assert digest_keys, f"rar FILE {member.name!r} missing stored digest"
