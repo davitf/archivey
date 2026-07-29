@@ -20,8 +20,13 @@
 
 ## 3. Docs and decision record
 
-- [ ] 3.1 `docs/usage.md`, `docs/costs.md`, `docs/support-matrix.md` (8 refs) — the
-      support-matrix concurrency example is the load-bearing one.
+- [ ] 3.1 Published user pages — measured **24 refs**, not the 8 first estimated:
+      `support-matrix.md` (5), `costs.md` (5), `philosophy.md` (4), `usage.md` (3),
+      `formats.md` (3), `gotchas.md` (2), `migrating.md` (1), `api.md` (1). The
+      support-matrix concurrency example is the load-bearing one; `philosophy.md:52-53`
+      is a two-row "how do I ask for it" table that is the change in miniature.
+      `api.md:22` is the `::: archivey.MemberStreams` mkdocstrings entry — it **stays**
+      (the enum remains exported for `CostReceipt` and diagnostics).
 - [ ] 3.2 Amend ADR 0003 with the new spelling; note ADR 0004's reasoning applies.
 - [ ] 3.3 Check `docs/migrating.md`'s "one live member stream by default" note still
       reads correctly.

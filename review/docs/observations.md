@@ -222,3 +222,32 @@ question, not one this review takes.
 **Sequencing note, not a finding:** if the extras change ships before the docs
 migration, `install.md` should be written against the new extras rather than
 migrated and then rewritten.
+
+---
+
+## O-14 — Three published pages attribute BLAKE2sp to an extra; it is native and zero-dep
+
+Added 2026-07-29 during maintainer review of this audit, so numbered after the fact.
+
+`src/archivey/internal/hashing/blake2sp.py` implements BLAKE2sp on stdlib
+`hashlib` — no third-party package, no extra. Three published lines disagree:
+
+| Line | Says | Correct? |
+|---|---|---|
+| `docs/acknowledgements.md:64` | `[rar]` / `[crypto]` → cryptography "(Blake2sp backend still TBD)" | ❌ nothing is TBD; it shipped natively |
+| `docs/formats.md:16` | RAR needs "`[rar]` for header crypto / Blake2sp" | ❌ conflates the two; only header crypto needs the extra |
+| `docs/formats.md:101` | "`[rar]` / `[crypto]`: header-encrypted RAR5 **and Blake2sp verification**" | ❌ same conflation |
+
+A user reading any of these installs an extra they do not need, or concludes RAR5
+hash verification is unavailable to them when it is always available.
+
+This is the published twin of `code-self-documentation.md` B1, which found the same
+stale claim in `pyproject.toml:69-74`. B1 was scoped to the packaging comment; the
+docs copies were not noticed by either pass. `consolidate-optional-extras` task 1.2
+already deletes the `pyproject.toml` half, so **the two halves should be fixed in
+the same change** rather than leaving the published pages behind — see that change's
+task 4.4.
+
+**Worth noting for Topic 8's framing:** this is a factual error on a user page that
+a structural audit reading every file for *filing* did not catch. It is evidence
+that the content pass has to be its own deliberate read, not a byproduct.

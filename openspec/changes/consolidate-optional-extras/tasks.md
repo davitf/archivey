@@ -33,6 +33,21 @@
 - [ ] 4.2 `docs/support-matrix.md`: point the free-threaded section at
       `[free-threaded]`, keeping the measured GIL table.
 - [ ] 4.3 `docs/usage.md` install block; README install line if affected.
+- [ ] 4.4 `docs/acknowledgements.md:57-73` — the extras→packages table is a full
+      restatement of the old scheme (8 rows, plus a line calling `[recommended]` /
+      `[recommended-lite]` / `[all]` "convenience aliases"). Rewrite it for the four
+      extras. Same edit drops "(Blake2sp backend still TBD)" — the published twin of
+      the `pyproject.toml` TODO that task 1.2 removes. Fix the same conflation at
+      `docs/formats.md:16,101`, which credit the `[rar]` extra with Blake2sp
+      verification; it is native and needs no extra
+      (`review/docs/observations.md` O-14).
+- [ ] 4.5 **Decide, don't grep, for the ADRs.** Task 2.3's "none may survive" sweep
+      hits four decision records that state consequences in terms of extras being
+      deleted: `0001` ("Optional `[7z]` covers…"), `0002` (`[crypto]` / `[rar]`),
+      `0008` (`[seekable]` — survives), `0009` (`[zstd]`). ADRs are dated records, so
+      the choice is amend-in-place vs. leave-and-supersede. `member-stream-capability-booleans`
+      task 3.2 amends ADR 0003 in place, so precedent says amend — but make it the
+      explicit call rather than a side effect of a grep.
 
 ## 5. Verification
 

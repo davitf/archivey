@@ -225,7 +225,7 @@ get their own commits.
 | 2 | `git mv docs/internal → dev-docs`, `docs/grab-bag → dev-docs/history` | Pure rename + `mkdocs.yml` nav deletions | `git log --follow`; `mkdocs build --strict` |
 | 3 | Repoint inbound links | ~35 edits: 9 in `docs/**`, 8 code comments, 2 runtime error strings, `CONTRIBUTING`/`CHANGELOG`/`VISION`/`PLAN`/`IDEAS`/`CLAUDE`/`SECURITY`, `openspec/project.md` | `grep -r 'docs/internal\|grab-bag'` returns only archived material |
 | 4 | OpenSpec delta: `documentation` + `packaging-and-extras` | Spec change, **gated on Q1** | `openspec validate --strict` |
-| 5 | Split `usage.md` → 4 pages | Content move, no rewrite | Diff shows moved blocks only |
+| 5 | Split `usage.md` → 4 pages | Content move, no rewrite; **also needs a `documentation` delta** (below) | Diff shows moved blocks only; `openspec validate --strict` |
 | 6 | Split ADR 0014 | Content move | Same |
 | 7 | Split `threat-model.md` | Content move | Same |
 | 8 | Shrink `gotchas.md` to an index | Content **deletion** + links | Each removed bullet has a surviving home |
@@ -233,6 +233,24 @@ get their own commits.
 
 Commits 5–8 are the only ones that touch prose, and each is a single page. Commits
 1–3 are the bulk of the file churn and are `git mv`-only.
+
+**Correction (2026-07-29, maintainer review): commit 5 needs a spec delta too.**
+The audit gated the `documentation` delta on Q1 alone, but `usage.md` is named
+verbatim in a *second, unrelated* requirement:
+
+- `openspec/specs/documentation/spec.md:98` — "Document complete-or-raise listing
+  vs MemberListReport": *"The end-user guide (`docs/usage.md` and related Gotchas /
+  API notes) SHALL document the dual listing contract…"*. Splitting `usage.md`
+  four ways leaves that requirement pointing at a deleted file. Under the split the
+  contract lands in `reading.md`; the delta must say so.
+- The site-IA requirement (`spec.md:81-83`) also enumerates the user narrative as
+  "philosophy, **basic usage**, gotchas, access costs/pitfalls, formats/extras, safe
+  extraction, API reference". "Basic usage" ceases to be a page. The Q1 delta was
+  scoped to the internal/grab-bag clause of that same requirement — it must cover
+  the enumeration as well, or the spec will describe a nav that no longer exists.
+
+Both are in one file and one change, so the cost is wording, not sequencing. The
+point is that commit 5 is **not** delta-free, which is how it reads above.
 
 **Before the `0.2.0` tag:** re-check the 5 absolute `davitf.github.io` URLs in
 `README.md` against the final nav. That is the one thing that freezes forever.
