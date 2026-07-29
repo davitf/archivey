@@ -4,7 +4,7 @@
 
 | Review | State |
 |---|---|
-| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 commissioned** to a fresh agent; prompt recorded at [`docs/phase-1-prompt.md`](docs/phase-1-prompt.md). Bias control pass **delivered** (#208, `docs/independent/`): headline is a proportional disagreement — safe extraction is 6.3% of our guide vs ~25% proposed. Code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). |
+| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 (audit) delivered** — [`SUMMARY.md`](docs/SUMMARY.md), [`inventory.md`](docs/inventory.md) (all 549 prose files assigned), [`QUESTIONS.md`](docs/QUESTIONS.md), [`observations.md`](docs/observations.md); prompt recorded at [`docs/phase-1-prompt.md`](docs/phase-1-prompt.md). Headline: the site is 73% maintainer material, and `safe-extraction.md` is its thinnest page. **Now at phase 2 (decide)** — Q1 is blocking because unpublishing `docs/internal/` conflicts with `openspec/specs/documentation`. Bias control pass delivered earlier (#208, `docs/independent/`); code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). |
 
 `debt-ledger/` and `performance/` were archived on 2026-07-28 after the last two ledger
 items (**T7** corpus-matrix audit, **T4** half-test) landed and **performance Q4** was
