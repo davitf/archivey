@@ -160,6 +160,20 @@ Everything else — accuracy against the code, gaps, examples, tone, length — 
 - `openspec/specs/` is authoritative. Where prose and spec disagree, **pause and ask**
   (`CLAUDE.md`) rather than editing either to match.
 
+## Bias control: the independent code-derived outline
+
+Everything above anchors you. Before phase 1 publishes, a separate agent derives a
+documentation outline from **`src/` and `tests/` only** — no `docs/`, no `review/`, not
+even this brief — and argues adversarially that the current structure is wrong. See
+[`independent-brief.md`](independent-brief.md).
+
+Its output is an **input to be diffed, not a proposal to adopt**. Triage it three ways:
+we have it (weak signal); we lack it (the blind spot this is for); we deliberately don't
+(record *why* — that rationale currently exists only in the maintainer's head).
+
+Weight its **disagreements** heavily and its agreements lightly: isolating context removes
+anchoring but not shared model priors, so convergence proves less than it appears to.
+
 ## Suggested process
 
 A docs reorg differs from other reviews: it produces a **migration**, not just findings.
