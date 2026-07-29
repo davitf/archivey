@@ -160,6 +160,46 @@ Everything else — accuracy against the code, gaps, examples, tone, length — 
 - `openspec/specs/` is authoritative. Where prose and spec disagree, **pause and ask**
   (`CLAUDE.md`) rather than editing either to match.
 
+## Bias control: the independent code-derived outline — **delivered**
+
+> **Result (2026-07-29, #208).** The pass ran and its output is in
+> [`independent/`](independent/). It produced the strongest signal the exercise could
+> have produced: a **quantified proportional disagreement**, arrived at without ever
+> seeing our docs.
+>
+> | Topic | Our guide | Its proposal |
+> |---|---:|---:|
+> | Safe extraction | **6.3%** (93 lines) | **~25%** |
+> | Access modes / streaming / cost | **10.4%** (154 lines) | **~20%** |
+> | Per-format notes | 12.1% | ~12% (agreement — ignore) |
+> | `usage.md` (our largest page, 18.2%) | — | argues *against* a generic page |
+>
+> Its closing line — "if the real guide buries safe extraction and access modes behind a
+> generic 'Usage' page, that is the failure mode this outline is arguing against" —
+> describes our actual structure, which it could not see. Treat that as the finding, not
+> as flattery: the guide under-weights the two pages that carry the safety and cost
+> claims `VISION.md` is built on.
+>
+> **This is a phase-1 finding, not a Topic 8 one.** "Safe extraction should be ~4× its
+> current size and `usage.md` should be split" is a page-shape decision, which the
+> Sequencing section below already reserves to this review.
+>
+> Also delivered: `must-explain.md` (29 cited behaviours not inferable from signatures),
+> `rationale-gaps.md` (32 places where the code shows *what* but not *why*), plus the
+> API surface and two sample pages. Two caveats when using them:
+>
+> - **It could not see intent, and it over-reports because of it.** Verified example:
+>   it flagged the ISO `pycdlib` monkeypatch as "surprising if documented nowhere", but
+>   `iso_reader.py:20-30` documents it thoroughly — what is missing is only the
+>   *user-facing* surfacing. Check each item against the code before acting.
+> - **Agreements are weak evidence** (shared model priors), as this brief predicted.
+>   The `formats` match at ~12% proves little. The disagreements above are the payload.
+>
+> Code-shaped findings are filtered into
+> [`code-self-documentation.md`](code-self-documentation.md) rather than actioned from
+> the raw output — see that file for why pointing an agent at these artifacts to "fix
+> the code" would re-litigate settled design.
+
 ## Bias control: the independent code-derived outline
 
 Everything above anchors you. Before phase 1 publishes, a separate agent derives a
