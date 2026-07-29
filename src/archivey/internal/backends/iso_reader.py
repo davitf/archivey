@@ -528,7 +528,7 @@ class IsoReadBackend(ReadBackend):
     # absolute offsets (volume descriptors at 32 KiB), so even a forward-only pass
     # needs a seekable source.
     OPTIONAL_DEPENDENCY = "pycdlib"
-    INSTALL_HINT = "pip install archivey[iso]"
+    INSTALL_HINT = "pip install archivey[recommended]"
 
     def open_read(
         self,

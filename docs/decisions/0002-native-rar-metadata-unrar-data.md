@@ -14,7 +14,8 @@ decompressor is out of scope.
 
 Parse RAR3/RAR5 **metadata natively** (list without `unrar`). Decompress member **data**
 via the RARLAB `unrar` binary (process boundary). Decrypt encrypted headers natively via
-`[crypto]` / `[rar]`. Keep `rarfile` as a test oracle only.
+`cryptography` (the `[recommended]` extra; recorded as `[crypto]` / `[rar]`, consolidated
+before `0.2.0`). Keep `rarfile` as a test oracle only.
 
 ## Consequences
 

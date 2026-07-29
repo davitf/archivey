@@ -64,30 +64,41 @@ free-thread support, importing it makes CPython **silently re-enable the GIL** �
 program keeps working, but you are no longer running free-threaded. Measured on CPython
 3.13.7t:
 
-| Extra | Package | Free-threaded on 3.13t? |
+**`pip install archivey[free-threaded]`** is the install line for these builds: it is
+exactly the measured subset that leaves the GIL disabled. Measured on CPython 3.13.7t:
+
+| Package | In `[free-threaded]`? | Free-threaded on 3.13t? |
 | --- | --- | --- |
-| `[iso]` | `pycdlib` | Yes — covered by CI |
-| `[zstd]` | `backports.zstd` | Yes — covered by CI |
-| `[lz4]` | `lz4` | Yes — covered by CI |
-| `[cli]` | `tqdm` | Yes — covered by CI |
-| `[seekable]` | `rapidgzip` | **No** — import re-enables the GIL |
-| `[7z]` | `pyppmd`, `inflate64`, `brotli` | **No** — import re-enables the GIL |
-| `[crypto]`, `[rar]`, `[7z]` | `cryptography` | **Cannot install** — its `cffi` dependency rejects free-threaded 3.13 outright ("upgrade to free-threaded 3.14 or newer") |
+| `pycdlib` (ISO) | Yes | Yes — covered by CI |
+| `backports.zstd` | Yes | Yes — covered by CI |
+| `lz4` | Yes | Yes — covered by CI |
+| `tqdm` (CLI progress) | Yes | Yes — covered by CI |
+| `cryptography` | 3.14+ only | **Cannot install on 3.13t** — its `cffi` dependency rejects free-threaded 3.13 outright ("upgrade to free-threaded 3.14 or newer"). Installs on 3.14t and keeps the GIL disabled |
+| `rapidgzip` (`[seekable]`) | No | **No** — import re-enables the GIL |
+| `pyppmd`, `inflate64`, `brotli` | No | **No** — import re-enables the GIL |
 
 So on a free-threaded build today you can use the core formats plus ISO, zstd and lz4 and
-stay genuinely GIL-free. Pull in the 7z codecs, RAR/ZIP encryption, or the seek
-accelerator and you are back to a GIL-ed interpreter (or, for `cryptography`, cannot
-install at all).
+stay genuinely GIL-free. Pull in the 7z codecs or the seek accelerator and you are back to
+a GIL-ed interpreter.
+
+Two consequences worth stating plainly:
+
+- **`pip install archivey[recommended]` fails on free-threaded 3.13**, because it contains
+  `cryptography`. That is the wheel ecosystem, not Archivey — use `[free-threaded]` there,
+  or move to 3.14t where `[recommended]` installs.
+- `[free-threaded]` is a **moving set**, not a guarantee about Archivey's own code. It is
+  expected to widen as more wheels declare support, and may eventually stop being a
+  separate extra at all.
 
 None of this is Archivey's own code — it is the state of the wider wheel ecosystem on
 3.13t, and it should improve on 3.14t. The CI job asserts the GIL is *still* disabled
-after importing the four safe extras, so if one of them regresses the job fails rather
-than quietly testing a GIL-ed interpreter.
+after installing `[free-threaded]`, so if one of its packages regresses the job fails
+rather than quietly testing a GIL-ed interpreter.
 
 ### What is *not* claimed
 
 - **macOS and Windows free-threaded builds.** The job is Linux-only.
-- **The extras in the "No" rows above.** They are not tested under free-threading, and
+- **The packages in the "No" rows above.** They are not tested under free-threading, and
   since importing them re-enables the GIL, "free-threaded support" is not a meaningful
   question for them yet.
 - **Everything except member streams.** Iteration, materialization, extraction,

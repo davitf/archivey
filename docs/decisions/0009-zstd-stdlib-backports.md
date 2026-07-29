@@ -11,8 +11,9 @@ added `compression.zstd`; `backports.zstd` mirrors that API on older Pythons.
 
 ## Decision
 
-Use stdlib `compression.zstd` on 3.14+; `[zstd]` installs `backports.zstd` on earlier
-versions. Do not pin `zstandard` or `pyzstd` in user-facing extras.
+Use stdlib `compression.zstd` on 3.14+; `backports.zstd` on earlier versions, shipped in
+`[recommended]` (recorded as a dedicated `[zstd]` extra, consolidated before `0.2.0`). Do
+not pin `zstandard` or `pyzstd` in user-facing extras.
 
 ## Consequences
 

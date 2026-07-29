@@ -49,8 +49,16 @@ Issues = "https://github.com/davitf/archivey/issues"
 [project.scripts]
 archivey = "archivey.cli.main:main"
 
+# Four extras, each answering a question a user asks about their own environment
+# ("will it just work?", "do I need fast seeking?", "am I on free-threaded Python?",
+# "give me everything") rather than naming an internal dependency group. The previous
+# format-named table ([7z], [rar], [crypto], [iso], [zstd], [lz4], [cli],
+# [recommended-lite]) was capability-scoped in fact — [7z] was a codec bundle shared with
+# ZIP and TAR, [rar] was byte-identical to [crypto] — so install hints named the wrong
+# thing. Removed names must NOT come back as aliases: an extra, once published, can never
+# be removed. See openspec/specs/packaging-and-extras/spec.md.
 [project.optional-dependencies]
-7z = [
+recommended = [
     # >=1.3.1: 1.1.x/1.2.0 return silently wrong bytes on chunked bounded PPMd
     # decodes (premature eof mid-stream); 1.3.1 fixes that but needs bounded
     # max_length to avoid native heap corruption — archivey always bounds.
@@ -61,55 +69,53 @@ archivey = "archivey.cli.main:main"
     # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
     "brotli>=1.2.0",
     "lz4>=4.4.5",
+    # AES block operations only (7z, RAR headers, WinZip AES ZIP); PBKDF2/SHA/HMAC are
+    # stdlib. RAR5 BLAKE2sp is native on hashlib (internal/hashing/blake2sp.py) and needs
+    # no package at all.
     "cryptography>=45.0.0",
     # LZMA1+BCJ: liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
     # (common from the 7-Zip CLI). Stage BCJ via pybcj instead; LZMA2+BCJ stays stdlib.
     "pybcj>=1.0.6",
-]
-rar = [
-    "cryptography>=45.0.0",
-    # TODO(phase-7): the spec's [rar] bundle also pulls a Blake2sp backend for
-    # RAR5 checksum verification. No standalone package decided yet (stdlib hashlib
-    # has blake2b/blake2s but not the parallel blake2sp); resolve when format-rar lands.
-]
-crypto = [
-    "cryptography>=45.0.0",
-]
-iso = [
     "pycdlib>=1.16.0",
-]
-zstd = [
-    "backports.zstd>=1.0.0; python_version < '3.14'",
-]
-lz4 = [
-    "lz4>=4.4.5",
-]
-cli = [
     "tqdm>=4.67.0",
 ]
 # rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
 # separate indexed_bzip2 package is deliberately NOT a dependency: loading both libraries into
 # one process corrupts the heap and aborts on macOS (overlapping statically-linked C++ symbols).
 # >=0.16.0 is the floor known to expose IndexedBzip2File. See docs/internal/known-issues.md.
+#
+# Kept OUT of [recommended] on purpose: it is a heavy native build that can fail to compile,
+# importing it re-enables the GIL on free-threaded builds, and it carries the accelerator
+# close-before-finalize hazard in known-issues.md.
 seekable = [
     "rapidgzip>=0.16.0",
 ]
-recommended-lite = [
-    "archivey[7z,rar,iso,zstd,lz4,cli]",
+# The measured subset that leaves sys._is_gil_enabled() False after import on a
+# free-threaded build — NOT a claim that archivey is only free-thread-safe with it.
+# Membership is a property of the ecosystem, not of archivey, so it is expected to widen
+# and may eventually collapse into [recommended]. CI installs exactly this set on 3.13t
+# and asserts the GIL is still off, so it cannot rot silently.
+#
+# cryptography is version-conditional: its cffi dependency refuses to build on
+# free-threaded 3.13 ("Upgrade to free-threaded 3.14 or newer") and works on 3.14t with
+# the GIL still disabled. That gap is also why `pip install archivey[recommended]` fails
+# on 3.13t — documented in docs/support-matrix.md, not worked around.
+free-threaded = [
+    "pycdlib>=1.16.0",
+    "lz4>=4.4.5",
+    "tqdm>=4.67.0",
+    "backports.zstd>=1.0.0; python_version < '3.14'",
+    "cryptography>=45.0.0; python_version >= '3.14'",
 ]
-recommended = [
-    "archivey[recommended-lite,seekable]",
-]
-# [all] is the "everything" alias. It currently equals [recommended]: after the
-# compression-library evaluation (docs/internal/library-analysis.md) the two dead alternative
-# backends that used to live here were dropped — python-xz (v2 reads XZ with its own
-# native xz.py over stdlib lzma; archivey-dev#214 — never imported) and pyzstd (the zstd
-# decode decision is stdlib compression.zstd / backports.zstd, not pyzstd; it was only a
-# test-fixture generator and is now in the dev group). A future alternative/secondary
-# backend would be re-added here behind its own extra. tests/test_extras_imported.py guards
-# against a dead dependency slipping back into any user-facing extra.
+# The conventional "everything" name. Unlike before, it is now a strict superset of
+# [recommended] rather than an alias for it. After the compression-library evaluation
+# (docs/internal/library-analysis.md) two dead backends were dropped from the extras —
+# python-xz (v2 reads XZ with its own native xz.py over stdlib lzma; archivey-dev#214 —
+# never imported) and pyzstd (the zstd decode decision is stdlib compression.zstd /
+# backports.zstd; it was only a test-fixture generator and is now in the dev group).
+# tests/test_extras_imported.py guards against a dead dependency slipping back in.
 all = [
-    "archivey[recommended]",
+    "archivey[recommended,seekable]",
 ]
 
 [dependency-groups]

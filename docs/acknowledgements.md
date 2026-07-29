@@ -60,16 +60,16 @@ Bare `pip install archivey` has **no** third-party runtime deps. Named extras pu
 
 | Extra | Packages |
 | --- | --- |
-| `[7z]` | [pyppmd](https://github.com/miurahr/pyppmd), [inflate64](https://github.com/miurahr/inflate64), [brotli](https://github.com/google/brotli), [lz4](https://github.com/python-lz4/python-lz4), [cryptography](https://github.com/pyca/cryptography), [pybcj](https://github.com/miurahr/pybcj), [backports.zstd](https://github.com/Rogdham/backports.zstd) (Python before 3.14) |
-| `[rar]` / `[crypto]` | [cryptography](https://github.com/pyca/cryptography) (Blake2sp backend still TBD) |
-| `[iso]` | [pycdlib](https://github.com/clalancette/pycdlib) |
-| `[zstd]` | [backports.zstd](https://github.com/Rogdham/backports.zstd) on Python before 3.14; 3.14+ uses stdlib `compression.zstd` |
-| `[lz4]` | [lz4](https://github.com/python-lz4/python-lz4) |
-| `[cli]` | [tqdm](https://github.com/tqdm/tqdm) |
+| `[recommended]` | [pyppmd](https://github.com/miurahr/pyppmd), [inflate64](https://github.com/miurahr/inflate64), [brotli](https://github.com/google/brotli), [lz4](https://github.com/python-lz4/python-lz4), [pybcj](https://github.com/miurahr/pybcj), [backports.zstd](https://github.com/Rogdham/backports.zstd) (Python before 3.14; 3.14+ uses stdlib `compression.zstd`), [cryptography](https://github.com/pyca/cryptography), [pycdlib](https://github.com/clalancette/pycdlib), [tqdm](https://github.com/tqdm/tqdm) |
 | `[seekable]` | [rapidgzip](https://github.com/mxmlnkn/rapidgzip) |
+| `[free-threaded]` | the subset of `[recommended]` that keeps the GIL disabled — `pycdlib`, `lz4`, `tqdm`, `backports.zstd`, and `cryptography` on 3.14+ only. See [Platforms and threading](support-matrix.md#free-threaded-python-313t-and-later) |
+| `[all]` | `[recommended]` + `[seekable]` |
 
-`[recommended]` / `[recommended-lite]` / `[all]` are convenience aliases over the table
-above (`[all]` currently equals `[recommended]`).
+There is no extra per format: member codecs are shared across containers, so
+`[recommended]` is one broad bundle rather than a set of names a caller has to reason
+about. RAR member *data* additionally needs the RARLAB `unrar` binary, which no extra can
+supply. RAR5 BLAKE2sp verification needs no package at all — it is implemented natively on
+stdlib `hashlib`.
 
 **Stdlib** (always): [`zipfile`](https://docs.python.org/3/library/zipfile.html),
 [`tarfile`](https://docs.python.org/3/library/tarfile.html),

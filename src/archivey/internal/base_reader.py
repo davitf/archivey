@@ -148,7 +148,7 @@ class ReadBackend(ABC):
     # derives availability centrally from whether it imports. ``None`` for core backends.
     OPTIONAL_DEPENDENCY: str | None = None
     # Human-readable install hint surfaced when the dependency is absent
-    # (e.g. "pip install archivey[iso]").
+    # (e.g. "pip install archivey[recommended]").
     INSTALL_HINT: str | None = None
 
     @abstractmethod

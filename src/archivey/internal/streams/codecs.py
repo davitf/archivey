@@ -1389,7 +1389,7 @@ class ZstdCodec(StreamCodec):
     stream_format = StreamFormat.ZSTD
     magic = (MagicSignature(0, b"\x28\xb5\x2f\xfd", ArchiveFormat.ZST),)
     requirement = MissingComponent(
-        "backports.zstd", "pip install archivey[zstd]", ("zstd",)
+        "backports.zstd", "pip install archivey[recommended]", ("zstd",)
     )
 
     def _backend_present(self) -> bool:
@@ -1421,7 +1421,7 @@ class Lz4Codec(StreamCodec):
     codec = Codec.LZ4
     stream_format = StreamFormat.LZ4
     magic = (MagicSignature(0, b"\x04\x22\x4d\x18", ArchiveFormat.LZ4),)
-    requirement = MissingComponent("lz4", "pip install archivey[lz4]", ("lz4",))
+    requirement = MissingComponent("lz4", "pip install archivey[recommended]", ("lz4",))
 
     def _backend_present(self) -> bool:
         return _lz4_frame is not None
@@ -1452,7 +1452,9 @@ class BrotliCodec(StreamCodec):
     codec = Codec.BROTLI
     stream_format = StreamFormat.BROTLI
     # Brotli has no signature; the detector recognizes it by decoding a bounded prefix.
-    requirement = MissingComponent("brotli", "pip install archivey[7z]", ("brotli",))
+    requirement = MissingComponent(
+        "brotli", "pip install archivey[recommended]", ("brotli",)
+    )
 
     def _backend_present(self) -> bool:
         return _brotli is not None
@@ -1520,7 +1522,9 @@ def _parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
 
 class PpmdCodec(StreamCodec):
     codec = Codec.PPMD
-    requirement = MissingComponent("pyppmd", "pip install archivey[7z]", ("ppmd",))
+    requirement = MissingComponent(
+        "pyppmd", "pip install archivey[recommended]", ("ppmd",)
+    )
 
     def _backend_present(self) -> bool:
         return _pyppmd is not None
@@ -1576,7 +1580,7 @@ class PpmdCodec(StreamCodec):
 class Deflate64Codec(StreamCodec):
     codec = Codec.DEFLATE64
     requirement = MissingComponent(
-        "inflate64", "pip install archivey[7z]", ("deflate64",)
+        "inflate64", "pip install archivey[recommended]", ("deflate64",)
     )
 
     def _backend_present(self) -> bool:

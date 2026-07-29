@@ -58,7 +58,7 @@ class _OptionalPresentBackend(ReadBackend):
 class _OptionalMissingBackend(ReadBackend):
     FORMATS = (ArchiveFormat.ISO,)
     OPTIONAL_DEPENDENCY = "a_package_that_does_not_exist_xyz"
-    INSTALL_HINT = "pip install archivey[iso]"
+    INSTALL_HINT = "pip install archivey[recommended]"
 
     def open_read(
         self, source, streaming, password, encoding, archive_name
@@ -91,7 +91,7 @@ def test_optional_missing_backend_is_known_but_unavailable(
     assert avail.support is FormatSupport.NONE
     assert len(avail.missing) == 1
     assert avail.missing[0].name == "a_package_that_does_not_exist_xyz"
-    assert "archivey[iso]" in avail.missing[0].install_hint
+    assert "archivey[recommended]" in avail.missing[0].install_hint
 
 
 def test_optional_present_backend_is_full(registry: BackendRegistry) -> None:
@@ -119,7 +119,7 @@ def test_reader_for_missing_dependency_raises_with_hint(
         registry.reader_for_format(ArchiveFormat.ISO)
     msg = str(excinfo.value)
     assert "a_package_that_does_not_exist_xyz" in msg
-    assert "archivey[iso]" in msg
+    assert "archivey[recommended]" in msg
 
 
 def test_reader_for_unknown_format_raises(registry: BackendRegistry) -> None:
@@ -262,7 +262,7 @@ def test_iso_none_without_pycdlib(monkeypatch: pytest.MonkeyPatch) -> None:
     avail = format_availability(ArchiveFormat.ISO)
     assert avail.support is FormatSupport.NONE
     assert any(m.name == "pycdlib" for m in avail.missing)
-    assert any("archivey[iso]" in m.install_hint for m in avail.missing)
+    assert any("archivey[recommended]" in m.install_hint for m in avail.missing)
 
     # NONE is excluded from the supported list but still known.
     assert ArchiveFormat.ISO not in list_supported_formats()

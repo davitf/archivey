@@ -192,8 +192,8 @@ class MissingComponent:
     registry ↔ codecs import cycle.
     """
 
-    name: str  # e.g. "pycdlib", "[7z]", "unrar"
-    install_hint: str  # e.g. "pip install archivey[iso]"
+    name: str  # e.g. "pycdlib", "brotli", "unrar"
+    install_hint: str  # e.g. "pip install archivey[recommended]"
     unlocks: tuple[
         str, ...
     ] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
