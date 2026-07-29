@@ -87,6 +87,15 @@ reopening.
 
 ---
 
+## Expanded elsewhere
+
+A1 and C1 turned out to be bigger than message edits — both are public-surface shape
+questions with a `0.2.0` deadline. Options, recommendations and costs are in
+[`api-surface-suggestions.md`](api-surface-suggestions.md). Headline: the extras are
+already **not** one-per-format (`7z` is a codec bundle; `rar` is byte-identical to
+`crypto` and cannot express its real `unrar` binary requirement), and both ADR 0003 and
+ADR 0004 point *toward* aligning the capability vocabulary rather than against it.
+
 ## Suggested handling
 
 - **A1 + B1**: one small change, no decisions needed beyond A1's wording. Both are
