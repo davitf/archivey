@@ -5,8 +5,8 @@
 every file anyway, so recording these is free. Topic 8 should start here rather
 than from zero.
 
-Cited against `main` @ `ce674bf`. Where a claim depends on something not verified,
-it says so.
+Cited against `4f154b9` (`main` @ `ce674bf` plus this review's prompt commits).
+Where a claim depends on something not verified, it says so.
 
 ---
 

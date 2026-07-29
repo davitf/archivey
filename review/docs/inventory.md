@@ -3,11 +3,15 @@
 Phase 1 of the docs IA review (`brief.md`). **Analysis only — nothing has moved.**
 This table is the worklist the migration (phase 3) is executed from.
 
-Measured against `main` @ `ce674bf` (docs tree is byte-identical to the brief's
-`403e7ff` baseline — verified with `git diff --name-only 403e7ff HEAD -- docs/`,
-which returns nothing). Line counts are `wc -l`.
+Measured at `4f154b9` — `main` @ `ce674bf` plus the two review-branch commits that
+recorded this review's prompt. The `docs/` tree is byte-identical to the brief's
+`403e7ff` baseline (verified: `git diff --name-only 403e7ff HEAD -- docs/` returns
+nothing), so every line count below is directly comparable to the brief. Line
+counts are `wc -l`.
 
-**Census: 549 tracked `*.md` files.**
+**Census: 549 tracked `*.md` files** (548 at `main` @ `ce674bf`, plus
+`review/docs/phase-1-prompt.md`). This review's own six output files are *not* in
+the census; they appear as `NEW` rows in §6.
 
 | Area | Files | Handling below |
 |---|---:|---|

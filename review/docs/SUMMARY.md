@@ -1,9 +1,10 @@
 # Documentation IA review — phase 1 (audit)
 
 Brief: [`brief.md`](brief.md). Commissioning prompt: [`phase-1-prompt.md`](phase-1-prompt.md).
-Measured against `main` @ `ce674bf` (the `docs/` tree is byte-identical to the
-brief's `403e7ff` baseline). **Analysis only — no file has moved and no page's
-content has been edited.**
+Measured at `4f154b9` (`main` @ `ce674bf` plus this review's two prompt commits).
+The `docs/` tree is byte-identical to the brief's `403e7ff` baseline, so every
+figure here is directly comparable to it. **Analysis only — no file has moved and
+no page's content has been edited.**
 
 | Deliverable | What it is |
 |---|---|
