@@ -1,6 +1,9 @@
 # Target tree, nav, and the rule that keeps it
 
-Companion to [`inventory.md`](inventory.md). Phase 1 — proposal only.
+Companion to [`inventory.md`](inventory.md). **Q1 and Q2 are decided** — the site
+unpublishes maintainer material and keeps the ADR log ([`DECISIONS.md`](DECISIONS.md)
+D1/D2), so the tree below is the agreed target, not a proposal. Q3–Q9 still affect
+individual pages, marked where they do.
 
 ## The decision rule
 
@@ -22,14 +25,16 @@ That is a one-line CI check (`every docs/**/*.md appears in mkdocs.yml nav`) wit
 no exception list. The alternative — keeping maintainer material under `docs/` and
 excluding it via `exclude_docs` — needs a second list that must stay in sync with
 the first, which is precisely the drift that produced six published-but-unlisted
-pages. See Q1 for the cheaper alternative and its cost.
+pages. The cheaper `exclude_docs` alternative was weighed and rejected in Q1.
 
-**Refinement — `docs/decisions/` stays published.** Strictly it is "Maintainer +
-current", so the pure hypothesis would unpublish it. Recommend keeping it: an ADR
-answers "why did you write your own 7z parser instead of wrapping `py7zr`?", which
-is an *adoption* question, and Topic 7 will judge whether the docs answer it. The
-ADRs are 21–105-line curated records with a maintained index — a different object
-from a 695-line investigation. This is a named exception, not a hole in the rule.
+**Refinement — `docs/decisions/` stays published** (decided, D2). Strictly it is
+"Maintainer + current", so the pure hypothesis would unpublish it. An ADR answers
+"why did you write your own 7z parser instead of wrapping `py7zr`?", which is an
+*adoption* question, and Topic 7 will judge whether the docs answer it. The ADRs
+are 21–105-line curated records with a maintained index — a different object from
+a 695-line investigation. `docs/how-it-works.md` (new, D2) covers the other half of
+"curated implementation detail for curious users". Both are named exceptions, not
+holes in the rule.
 
 **Clarification — `.claude/` and `.cursor/` are configuration.** They are Markdown
 addressed by tools at literal paths. Filing them as "contributor docs" invites a
@@ -54,6 +59,20 @@ If it is a *review*, it belongs to the `review/` lifecycle. If it is a *proposed
 behaviour change*, it belongs to `openspec/changes/`. Neither is affected by this
 review.
 
+### And the linking rule that goes with it (D3)
+
+A published page **must not link into unpublished docs**. In order:
+
+1. **Prefer no link.** If a published page needs a fact, the fact belongs on a
+   published page — a link into maintainer material usually means it is filed in
+   the wrong place.
+2. **If the extra context is genuinely worth keeping**, link the file on GitHub:
+   `https://github.com/davitf/archivey/blob/main/dev-docs/<file>.md` — the pattern
+   `README.md:20-22` already uses.
+3. **Never** a bare repo path in prose standing in for a link.
+
+Nine such links exist today; [`DECISIONS.md`](DECISIONS.md) D3 resolves each one.
+
 ## Proposed tree
 
 ```
@@ -77,7 +96,8 @@ docs/                        ── PUBLISHED. User + current, and nothing else.
   errors-and-diagnostics.md  NEW ← usage.md error section + diagnostics
   migrating.md
   support-matrix.md
-  cli.md                     NEW ← usage.md (56 lines today, no nav entry)
+  cli.md                     NEW ← usage.md (49 lines today, no nav entry)
+  how-it-works.md            NEW — curated behind-the-scenes overview (D2)
   api.md
   acknowledgements.md
   decisions/                 15 ADRs (0014 split — Q4)
@@ -126,6 +146,7 @@ nav:
   - Migrating from zipfile/tarfile: migrating.md
   - Platforms and threading: support-matrix.md
   - Philosophy: philosophy.md
+  - How it works: how-it-works.md
   - API reference: api.md
   - Acknowledgements: acknowledgements.md
   - Decisions:
@@ -155,10 +176,13 @@ determines whether this review is worth doing twice." Three checks, cheapest fir
    `ce674bf` while listing `decisions/0014-*` and five `internal/*` pages). The
    check is: parse that INFO line, exit non-zero if non-empty. This is what would
    have caught all six.
-2. **Link checking**, two halves: internal relative links (`mkdocs --strict`
-   covers cross-references but not arbitrary relative paths), and the **absolute**
-   `davitf.github.io` URLs in `README.md`, which nothing checks today and which
-   freeze at the tag.
+2. **Link checking**, three halves now that D3 is decided: internal relative links
+   (`mkdocs --strict` covers cross-references but not arbitrary relative paths);
+   the **absolute** `davitf.github.io` URLs in `README.md`, which nothing checks
+   today and which freeze at the tag; and the **`github.com/davitf/archivey/blob/main/`
+   URLs that D3 introduces into `docs/**`** — those point at files this migration
+   is itself moving, so they are exactly the class that rots silently. D3 raises
+   this guardrail from precautionary to load-bearing.
 3. **The placement rule** (above) in `CONTRIBUTING.md`, next to the existing
    "Working with the specs" section.
 

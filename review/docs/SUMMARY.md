@@ -11,6 +11,7 @@ no page's content has been edited.**
 | **`SUMMARY.md`** | this file — headline, tree, findings, what is fine |
 | [`inventory.md`](inventory.md) | all 549 prose files → audience, current home, target home, rationale. The migration worklist. |
 | [`QUESTIONS.md`](QUESTIONS.md) | the nine decisions that are yours, with a recommendation each |
+| [`DECISIONS.md`](DECISIONS.md) | **the answers so far** — Q1/Q2 decided, plus the new D3 linking rule |
 | [`target-tree.md`](target-tree.md) | the tree, the nav, the "where does a new doc go?" rule, the guardrails |
 | [`page-shape.md`](page-shape.md) | the merge/split/delete decisions the brief reserves to this phase |
 | [`observations.md`](observations.md) | 13 content problems recorded for Topic 8, not acted on |
@@ -34,18 +35,32 @@ So the site is not merely mis-filed. **It is loudest where a maintainer needs it
 and quietest where a user's mistake is unrecoverable.** Both halves are fixable
 now, and the fix is mostly `git mv` plus four page splits.
 
-### One thing must be decided before anything moves
+### Decided (2026-07-29) — the tree is unblocked
 
-Unpublishing `docs/internal/` and `docs/grab-bag/` **contradicts
+The blocking question was that unpublishing `docs/internal/` **contradicts
 `openspec/specs/documentation/spec.md`**, which requires the MkDocs site to present
-them as "clearly secondary" — i.e. present. Two specs also name
-`docs/internal/library-analysis.md` verbatim. Per `CLAUDE.md`, this is paused and
-surfaced rather than resolved: **[`QUESTIONS.md` Q1](QUESTIONS.md)**. Nothing else
-in this review depends on which way it goes except the tree itself.
+internal/grab-bag as "clearly secondary" — i.e. present. Per `CLAUDE.md` that was
+paused and surfaced rather than resolved. The maintainer has now answered
+([`DECISIONS.md`](DECISIONS.md)):
+
+- **D1 — unpublish.** The site becomes user-facing only. The spec deltas
+  (`documentation`, and both specs naming `docs/internal/library-analysis.md`
+  verbatim) are now required phase-3 work.
+- **D2 — curated depth stays published.** `docs/decisions/` keeps its slot, and a
+  new `docs/how-it-works.md` gives curious users a behind-the-scenes overview
+  instead of a valgrind transcript. That page has no predecessor — writing it is
+  Topic 8; phase 3 creates the slot.
+- **D3 — a new rule.** Published pages **must not link into unpublished docs**.
+  Where the extra context is worth keeping, the link becomes an absolute
+  `github.com/davitf/archivey/blob/main/…` URL. Of the nine such links today, 4 are
+  removed, 5 become GitHub URLs, and `index.md`'s "For contributors" block is
+  rewritten.
+
+**Q3–Q9 remain open** — all page-level, none blocking the tree.
 
 ---
 
-## Proposed tree
+## Target tree
 
 Full version with nav and rationale in [`target-tree.md`](target-tree.md).
 
@@ -56,8 +71,8 @@ README  CHANGELOG  SECURITY  CONTRIBUTING  AGENTS  VISION  PLAN  IDEAS
 docs/           ── PUBLISHED. User + current, and nothing else. ──
   index · install* · reading* · philosophy · gotchas(index) · safe-extraction(3×)
   access-and-cost · formats · errors-and-diagnostics* · migrating
-  support-matrix · cli* · api · acknowledgements · decisions/
-                                                      (* new, split out of usage.md)
+  support-matrix · cli* · how-it-works† · api · acknowledgements · decisions/
+                            (* new, split out of usage.md   † new, D2)
 
 dev-docs/       ── NOT published. Maintainer + current. ──
   index · threat-model(register) · open-issues · known-issues · library-analysis
@@ -79,7 +94,7 @@ pages drifted out of the nav while the strict build stayed green.
 
 | # | Finding | Severity | Where | Status |
 |---|---|---|---|---|
-| **F1** | The site is 73% maintainer material (82% excluding ADRs). A user searching "PPMd" lands in a 695-line upstream investigation. | **High** | `docs/internal/` 3,731 L, `docs/grab-bag/` 3,068 L | Proposed: unpublish → `dev-docs/`. **Blocked on Q1** (spec conflict) |
+| **F1** | The site is 73% maintainer material (82% excluding ADRs). A user searching "PPMd" lands in a 695-line upstream investigation. | **High** | `docs/internal/` 3,731 L, `docs/grab-bag/` 3,068 L | **Decided (D1): unpublish → `dev-docs/`.** Spec deltas to `documentation` + `packaging-and-extras` are phase-3 work |
 | **F2** | `safe-extraction.md` is 93 lines (6.3%) — the thinnest page on the site — for `VISION.md` claim #1 and an 809-line spec. The material to triple it already exists, filed in four other places. | **High** | `docs/safe-extraction.md` | Proposed: absorb `gotchas.md` §Extraction (24 L), `threat-model.md` lines 26–58 (33 L), `SECURITY.md` lines 68–89 (22 L). [`page-shape.md`](page-shape.md) §1 |
 | **F3** | `usage.md` (270 L, 18.2%) is five pages. The CLI — a 272-line spec, its own archived product review, "a wedge" in VISION — is 49 lines at its bottom with **no nav entry**. | **High** | `docs/usage.md` | Proposed: split into `install` / `reading` / `errors-and-diagnostics` / `cli`. [`page-shape.md`](page-shape.md) §2 |
 | **F4** | The same facts are written 3–4× across `gotchas`/`costs`/`formats`/`internal`, **and have already drifted**: the rapidgzip gzip-truncation caveat exists four times, two of them narrower than the authoritative spec. | **High** | `formats.md:132`, `open-issues.md:132` vs `seekable-decompressor-streams/spec.md:125` | Recorded [`observations.md`](observations.md) O-2 (fix = Topic 8); the *structural* fix is Q3 |
@@ -159,8 +174,8 @@ Named explicitly so the migration does not sweep them up for symmetry.
 
 ## Next
 
-1. Answer [`QUESTIONS.md`](QUESTIONS.md). **Q1 is blocking**; Q5, Q6 and Q8 can be
-   answered and executed independently while it is open.
+1. Answer the rest of [`QUESTIONS.md`](QUESTIONS.md) — Q3–Q9. None blocks the tree
+   now that Q1 is decided; Q5, Q6 and Q8 are independent one-commit calls.
 2. Phase 3: execute as OpenSpec changes, kept mechanical — the nine-commit
    sequence is in [`inventory.md`](inventory.md) §Migration mechanics. Commits 1–3
    are `git mv` + link repoints; only commits 5–8 touch prose, one page each.

@@ -79,7 +79,7 @@ changes are **page shape**, not home (see [`page-shape.md`](page-shape.md)).
 
 | File | Lines | % of guide | Audience | Proposed home | Rationale |
 |---|---:|---:|---|---|---|
-| `docs/index.md` | 50 | 3.4% | User | **KEEP**, edit nav list | Its "For contributors" block (lines 44–50) links `internal/` and `grab-bag/`; those become repo-path mentions, not site links. |
+| `docs/index.md` | 50 | 3.4% | User | **KEEP**, edit nav list | Its "For contributors" block (lines 44–50) links `internal/` and `grab-bag/`; under D3 that block is rewritten as a short pointer to the repo. |
 | `docs/philosophy.md` | 79 | 5.3% | User | **KEEP** | Working page. The end-user distill of `VISION.md`; the split is deliberate and holds. |
 | `docs/usage.md` | 270 | 18.2% | User | **SPLIT → 4 pages** | Largest page in the guide, covering install, open/list/read, streaming, dedupe, duplicates, passwords, errors, *and* the CLI. Split into `install.md`, `reading.md`, `errors-and-diagnostics.md`, `cli.md`. See `page-shape.md` §2. |
 | `docs/migrating.md` | 174 | 11.7% | User | **KEEP** | Working page, landed recently (#206). Adoption-critical. |
@@ -89,7 +89,7 @@ changes are **page shape**, not home (see [`page-shape.md`](page-shape.md)).
 | `docs/safe-extraction.md` | 93 | 6.3% | User | **KEEP**, grow ~3× | **The headline finding.** Carries VISION load-bearing claim #1 in the thinnest page of the guide. Absorbs the extraction half of `gotchas.md`, the user half of `threat-model.md`, and `SECURITY.md`'s caller-hardening notes. See `page-shape.md` §1. |
 | `docs/support-matrix.md` | 140 | 9.4% | User | **KEEP** | Working page (#206). Precise about what CI does and does not prove. |
 | `docs/api.md` | 90 | 6.1% | User | **KEEP** | mkdocstrings stubs; required by `documentation` spec. |
-| `docs/acknowledgements.md` | 96 | 6.5% | User | **KEEP** | Licensing/provenance — a Topic 7 adoption signal. Its 3 links into `internal/` become repo-path mentions. |
+| `docs/acknowledgements.md` | 96 | 6.5% | User | **KEEP** | Licensing/provenance — a Topic 7 adoption signal. Its 3 links into `internal/` become absolute GitHub URLs (D3). |
 | *(new)* `docs/install.md` | — | — | User | **NEW** (from `usage.md`) | Install + the format × extra × external-tool table. The independent pass's #1 gap: users install the bare core, try RAR/ISO, conclude it is broken. |
 | *(new)* `docs/reading.md` | — | — | User | **NEW** (from `usage.md`) | Open / list / read / stream / detect / passwords / dedupe / duplicates. |
 | *(new)* `docs/errors-and-diagnostics.md` | — | — | User | **NEW** (from `usage.md` + `api.md`) | The two-root exception tree, `DiagnosticCode`, policy, limits. Today the exception table sits mid-`usage.md`. |
@@ -120,7 +120,7 @@ contradicts `openspec/specs/documentation/spec.md` — see Q1 before executing.*
 |---|---:|---|---|---|
 | `internal/index.md` | 15 | Contrib | `dev-docs/index.md` | Becomes the maintainer-docs index. |
 | `internal/threat-model.md` | 320 | **Both** | **SPLIT** → `dev-docs/threat-model.md` + user prose into `docs/safe-extraction.md` | The clearest dual-audience case. "What is already enforced" (lines 26–58) is the honest security-posture statement an evaluating user wants; the O1–O8 / C1–C4 gap register is maintainer triage. See Q7. |
-| `internal/known-issues.md` | 709 | **Both** (95/5) | `dev-docs/known-issues.md` | Valgrind traces, CI bandages, bisect recipes, upstream fingerprints. The ~5% users need is *already* summarised in `gotchas.md` + `costs.md`; those two links become repo-path mentions. See Q7. |
+| `internal/known-issues.md` | 709 | **Both** (95/5) | `dev-docs/known-issues.md` | Valgrind traces, CI bandages, bisect recipes, upstream fingerprints. The ~5% users need is *already* summarised in `gotchas.md` + `costs.md`; those two links become absolute GitHub URLs (D3). See Q7. |
 | `internal/open-issues.md` | 176 | Contrib | `dev-docs/open-issues.md` | Says "**Not user-facing**" in its own first line (line 3) yet is in the published nav today. Self-answering. |
 | `internal/library-analysis.md` | 362 | Contrib | `dev-docs/library-analysis.md` | **Named verbatim by two specs** (`documentation/spec.md:65,77`; `packaging-and-extras/spec.md:141`). Moving it requires spec deltas — see Q1. |
 | `internal/release-checklist.md` | 215 | Contrib | `dev-docs/release-checklist.md` | Runbook. Publishing a maintainer runbook on the user site has no reader. |

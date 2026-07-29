@@ -4,12 +4,21 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-**Q1 is blocking** — it contradicts an authoritative spec, and Q2–Q4, Q7 and Q9 all
-depend on its answer.
+> **Q1 and Q2 are answered** (2026-07-29) — see [`DECISIONS.md`](DECISIONS.md).
+> The site is unpublishing `docs/internal/`; `docs/decisions/` stays; and a **new
+> rule D3** applies: published pages must not link into unpublished docs, and where
+> the context is worth keeping the link becomes an absolute GitHub URL. Q3–Q9 below
+> are still open.
 
 ---
 
-## Q1 — Does the published site stop carrying maintainer material? *(blocking)*
+## Q1 — Does the published site stop carrying maintainer material? ✅ **ANSWERED: option A**
+
+> *"we can unpublish. let's leave the published docs user-facing only"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D1. The spec deltas below are now
+required work, not a hypothetical cost. The rest of this section is kept as the
+reasoning behind the decision.
 
 The brief's hypothesis is that the site should be the "User + current" quadrant
 only, which means unpublishing `docs/internal/` (12 files, 3,731 lines) and
@@ -66,7 +75,16 @@ only the tree in [`target-tree.md`](target-tree.md) is affected.
 
 ---
 
-## Q2 — Does `docs/decisions/` stay published?
+## Q2 — Does `docs/decisions/` stay published? ✅ **ANSWERED: yes**
+
+> *"optionally with some curated higher-level implementation details for curious
+> users to know what's going on behind the scenes and the major decisions"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D2, which also proposes a new
+`docs/how-it-works.md` for the "behind the scenes" half — there is no such page
+today. The reasoning below stands.
+
+
 
 Strictly, ADRs are "Maintainer + current", so the pure hypothesis unpublishes them
 along with everything else in Q1.
@@ -80,7 +98,7 @@ them ten times.
 
 If they are unpublished, **10 working links** from four user pages
 (`acknowledgements.md` ×4, `migrating.md` ×3, `support-matrix.md` ×2, `usage.md`
-×1) become repo-path mentions — worse for the reader, and a Topic 7 regression.
+×1) would have to leave the site — worse for the reader, and a Topic 7 regression.
 
 ---
 
@@ -216,7 +234,8 @@ for untrusted input under a latency budget; `import archivey` patches pycdlib
 process-globally; bare-`.gz` truncation detection is best-effort.
 
 **Recommendation:** move the whole file to `dev-docs/known-issues.md` and convert
-the two user-page links (`gotchas.md:144`, `costs.md:143`) to repo-path mentions.
+the two user-page links (`gotchas.md:144`, `costs.md:143`) to absolute GitHub URLs
+per D3.
 No user loses anything. Also fix its index description
 ([`observations.md`](observations.md) O-8) and the two runtime error strings that
 cite its path (O-12).

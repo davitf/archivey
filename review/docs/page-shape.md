@@ -152,7 +152,7 @@ close a source under a live accelerator stream, turn accelerators off for untrus
 input under a latency budget, `import archivey` patches pycdlib process-globally,
 bare-`.gz` truncation detection is best-effort — are **already** summarised in
 `gotchas.md` and `costs.md` with a link back. Unpublishing the register and turning
-those links into repo-path mentions loses a user nothing.
+those links into absolute GitHub URLs (D3) loses a user nothing.
 
 ## Handed to Topic 8, not done here
 
