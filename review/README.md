@@ -17,9 +17,13 @@ completed changes out of `changes/`.
 
 ## In flight
 
-**Nothing.** The round commissioned 2026-07-17 — the **non-security** pass toward the
-first public `0.2.0` — closed on 2026-07-28 when `debt-ledger/` and `performance/`
-were archived. Every finding is fixed, accepted, or recorded as an explicit deferral.
+| Dir | Review | Status |
+|-----|--------|--------|
+| `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; analysis phase not started |
+
+The round commissioned 2026-07-17 — the **non-security** pass toward the first public
+`0.2.0` — closed on 2026-07-28 when `debt-ledger/` and `performance/` were archived.
+Every finding there is fixed, accepted, or recorded as an explicit deferral.
 
 `backlog.md` holds what is left: Topic 6 (decode-engine perf, + parked stream-layering
 Q4), Topic 7 (outside-in adoption capstone — the **capstone**, meaningful only once

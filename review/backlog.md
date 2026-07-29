@@ -20,6 +20,11 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
 - **Topic 7** (outside-in adoption / confidence) — a **capstone**, meaningful only
   *after everything else is fully addressed*; it judges the finished library, not a
   work in progress.
+- **Topic 8** (documentation *content*) — accuracy / gaps / quality of the prose, after
+  the in-flight docs IA review has settled where each page lives.
+
+**Topic numbers are IDs, not an order.** Current intended sequence: the docs IA review
+(in flight) → **Topic 8** → **Topic 6** → **Topic 7** last. See [`STATUS.md`](STATUS.md).
 
 ## Parked from archived deep reviews (2026-07)
 
@@ -35,8 +40,10 @@ review directories for these.
 | CLI **Q4** `--raw` / TTY-only quoting remainder | cli-product Q4 | debt-ledger DD8 (additive; recommended style already applied) |
 | `SlicingStream.readinto` (**Q4**) + optional `VerifyingStream` delete | stream-layering | Topic 6 adjacency above |
 
-No reviews are in flight as of 2026-07-28; [`STATUS.md`](STATUS.md) records what
-closed the round and what comes next (the release bundle, then Topics 6 and 7).
+The **docs full review** is in flight as of 2026-07-29 ([`docs/brief.md`](docs/brief.md)) —
+an information-architecture pass separating user / contributor / design-record / history,
+commissioned ahead of Topic 7 because it decides where docs *live*, not whether they
+persuade. [`STATUS.md`](STATUS.md) records the current ordering.
 
 When commissioned, each gets its own top-level directory with a `brief.md` and
 archives when addressed (see `README.md`).
@@ -151,6 +158,41 @@ fully addressed. Two framings, usable together:
 
 This is judgement + gap analysis, not a bug hunt — closer to a product/positioning audit
 grounded in the code and docs. It likely produces roadmap items, not fixes.
+
+## Topic 8 — Documentation *content* (after the IA pass)
+
+**Why separate from the docs IA review** (`docs/brief.md`, in flight): that one decides
+where prose *lives*; this one judges whether the prose is *right*. Keeping them apart is
+a reviewability argument, not a tidiness one — a `git mv`-only migration diff can be
+checked by inspection, a move-plus-rewrite diff cannot. It is also cheaper: polishing a
+page that is about to be merged or deleted is wasted work, and "is this page complete?"
+is unanswerable until the page's scope is settled.
+
+**Head start:** the IA audit reads every file anyway and records what it notices in
+`review/docs/observations.md` without acting on it. Start there rather than from zero.
+
+Three distinct passes hide under "content review". They have different value and are
+worth ranking rather than bundling:
+
+1. **Accuracy vs the code (highest value).** Does each page still describe what the code
+   does? The surface has churned hard — native 7z/RAR, the CLI, verify fusion, extraction
+   policies, diagnostics. Past debt-ledger passes found docstring/spec mismatches; the
+   user guide has never had a systematic pass. Mechanically checkable in places: every
+   code block in `docs/` should run, and several would make good doctests.
+2. **Gaps.** What does an adopting engineer look for and not find? Overlaps Topic 7 —
+   coordinate: Topic 7 judges whether the docs *persuade*, this asks whether they
+   *answer*. If Topic 7 has already run, take its gap list as input.
+3. **Quality: tone, length, examples, structure within a page.** Lowest value per hour
+   and the easiest to bikeshed. Do it last, and only where a page is load-bearing
+   (`index`, `usage`, `formats`, `safe-extraction`).
+
+**Sequencing.** After the IA migration lands, before Topic 7 ideally — so the capstone
+judges docs that are both correctly filed and correct. If time forces a choice, do (1)
+alone: an inaccurate doc is a bug, an unpolished one is not.
+
+**Guardrail to consider while doing it:** executable examples (doctest or a tested
+snippets file) turn accuracy from a recurring manual review into a CI failure. That is
+the difference between doing this pass once and doing it every release.
 
 ## Not a review — a feature gap to track separately
 
