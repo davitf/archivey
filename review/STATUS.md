@@ -4,7 +4,7 @@
 
 | Review | State |
 |---|---|
-| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail); phase 1 not started. Bias control: [`independent-brief.md`](docs/independent-brief.md) commissions a code-only outline to run **first**. |
+| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail); phase 1 not started. Bias control pass **delivered** (#208, `docs/independent/`): headline is a proportional disagreement — safe extraction is 6.3% of our guide vs ~25% proposed. Code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). |
 
 `debt-ledger/` and `performance/` were archived on 2026-07-28 after the last two ledger
 items (**T7** corpus-matrix audit, **T4** half-test) landed and **performance Q4** was
