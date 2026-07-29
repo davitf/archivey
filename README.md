@@ -7,12 +7,16 @@ This is the **v2** clean-slate implementation. The previous (v1) codebase is arc
 
 ## Documentation
 
-- **User guide** (MkDocs): [Philosophy](docs/philosophy.md) · [Usage](docs/usage.md) · [Migrating](docs/migrating.md) · [Costs & pitfalls](docs/costs.md) · [Formats](docs/formats.md) · [Safe extraction](docs/safe-extraction.md) · [Platforms & threading](docs/support-matrix.md) · [API](docs/api.md) · [Acknowledgements](docs/acknowledgements.md)
-- **[VISION.md](VISION.md)** — full maintainer vision and trade-off priorities
-- **[Decision log](docs/decisions/index.md)** — why key design choices were made
-- **[Threat model](docs/internal/threat-model.md)** — trust boundaries and open gaps
-- **[Security policy](SECURITY.md)** — private vulnerability reporting
-- **[PLAN.md](PLAN.md)** — phased roadmap · **[IDEAS.md](IDEAS.md)** — backlog
-- Authoritative contracts: `openspec/specs/`
-- **[CHANGELOG.md](CHANGELOG.md)** — notable changes · **[Release checklist](docs/internal/release-checklist.md)** — how to cut a version
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** — coding / testing standards
+**<https://davitf.github.io/archivey/>**
+
+[Usage](https://davitf.github.io/archivey/usage/) ·
+[Migrating from zipfile/tarfile](https://davitf.github.io/archivey/migrating/) ·
+[Formats and extras](https://davitf.github.io/archivey/formats/) ·
+[Safe extraction](https://davitf.github.io/archivey/safe-extraction/) ·
+[API reference](https://davitf.github.io/archivey/api/)
+
+## Contributing and security
+
+- **[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)** — coding / testing standards
+- **[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md)** — priorities and trade-offs; authoritative contracts live in `openspec/specs/`
+- **[SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md)** — private vulnerability reporting
