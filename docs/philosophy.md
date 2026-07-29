@@ -75,5 +75,5 @@ harness if you want numbers on your machine.
 
 - Not an everything-tool (no in-place modify, no async in v1)
 - Not a backup engine by itself
-- Not a compatibility shim for `zipfile` / `tarfile` / `py7zr` APIs — one clean API,
-  migration guides later
+- Not a compatibility shim for `zipfile` / `tarfile` / `py7zr` APIs — one clean API, with
+  a [migration guide](migrating.md) rather than a drop-in replacement

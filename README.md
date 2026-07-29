@@ -7,7 +7,7 @@ This is the **v2** clean-slate implementation. The previous (v1) codebase is arc
 
 ## Documentation
 
-- **User guide** (MkDocs): [Philosophy](docs/philosophy.md) · [Usage](docs/usage.md) · [Costs & pitfalls](docs/costs.md) · [Formats](docs/formats.md) · [Safe extraction](docs/safe-extraction.md) · [API](docs/api.md) · [Acknowledgements](docs/acknowledgements.md)
+- **User guide** (MkDocs): [Philosophy](docs/philosophy.md) · [Usage](docs/usage.md) · [Migrating](docs/migrating.md) · [Costs & pitfalls](docs/costs.md) · [Formats](docs/formats.md) · [Safe extraction](docs/safe-extraction.md) · [Platforms & threading](docs/support-matrix.md) · [API](docs/api.md) · [Acknowledgements](docs/acknowledgements.md)
 - **[VISION.md](VISION.md)** — full maintainer vision and trade-off priorities
 - **[Decision log](docs/decisions/index.md)** — why key design choices were made
 - **[Threat model](docs/internal/threat-model.md)** — trust boundaries and open gaps

@@ -6,10 +6,12 @@ nav:
   - Home: index.md
   - Philosophy: philosophy.md
   - Basic usage: usage.md
+  - Migrating from zipfile/tarfile: migrating.md
   - Gotchas: gotchas.md
   - Access costs and pitfalls: costs.md
   - Formats and extras: formats.md
   - Safe extraction: safe-extraction.md
+  - Platforms and threading: support-matrix.md
   - API reference: api.md
   - Acknowledgements: acknowledgements.md
   - Decisions:
