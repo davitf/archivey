@@ -50,14 +50,14 @@ Two recurring notes:
 | xz | native `xz.py` over stdlib `lzma` | core | **yes** (block index) | yes (CRC) | yes |
 | lzip | native `lzip.py` over stdlib `lzma` | core | **yes** (trailer scan) | yes (CRC) | yes |
 | LZMA1/LZMA2 (raw) | stdlib `lzma` `FORMAT_RAW` | core | n/a (container-owned) | yes | yes |
-| Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters; LZMA1+BCJ stages BCJ via `pybcj` | core (LZMA2+BCJ); `[7z]` (`pybcj`) for LZMA1+BCJ | n/a (filter stage) | yes | yes |
+| Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters; LZMA1+BCJ stages BCJ via `pybcj` | core (LZMA2+BCJ); `[recommended]` (`pybcj`) for LZMA1+BCJ | n/a (filter stage) | yes | yes |
 | raw Deflate / zlib | stdlib `zlib` | core | no (rewind) | yes | yes |
-| zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[zstd]` on <3.14; core on 3.14+ | no (rewind) | yes (frame checksum) | **yes** |
-| lz4 | `lz4` | `[lz4]` | no (rewind) | yes | yes |
-| brotli | `brotli` | `[7z]` | no (rewind) | yes | partial² |
+| zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[recommended]` on <3.14; core on 3.14+ | no (rewind) | yes (frame checksum) | **yes** |
+| lz4 | `lz4` | `[recommended]` | no (rewind) | yes | yes |
+| brotli | `brotli` | `[recommended]` | no (rewind) | yes | partial² |
 | unix-compress (`.Z`) | native `unix_compress.py` (LZW) | core | **yes** (CLEAR seek points) | yes | best-effort³ |
-| Deflate64 | `inflate64` | `[7z]` | no | yes | yes |
-| PPMd (var.H) | `pyppmd` | `[7z]` | no | yes | yes |
+| Deflate64 | `inflate64` | `[recommended]` | no | yes | yes |
+| PPMd (var.H) | `pyppmd` | `[recommended]` | no | yes | yes |
 
 ¹ gzip truncation (stdlib / accelerator-off path): bounded `read(n)` returns the recoverable
 prefix, then `TruncatedError` on the next empty `read`; `read()` / `readall` raises and returns
@@ -144,7 +144,7 @@ Why, against the alternatives:
   remains relevant only if/when the *Seekable Zstd* container is supported.
 
 **Status / packaging:** the decode backend is stdlib `compression.zstd` (3.14+) /
-`backports.zstd` (3.11–3.13). The `[zstd]` extra pins `backports.zstd` on older
+`backports.zstd` (3.11–3.13). The `[recommended]` extra pins `backports.zstd` on older
 Pythons only; `_ZstdReopenStream` has been removed. `pyzstd` was previously pinned in
 `[all]` purely as a test-fixture generator and is now removed (the active test suite
 generates zstd fixtures with `backports.zstd`; only the (since-retired) frozen `tests/_dev_oracle`
@@ -286,7 +286,7 @@ properties. Delta and BCJ-over-**LZMA2** compose into one stdlib filter chain (z
 **LZMA1+BCJ** is different: combining them in one liblzma `FORMAT_RAW` chain can silently
 truncate the final BCJ look-ahead bytes when LZMA1 lacks an EOS marker (common from the
 7-Zip CLI; see BPO-21872 / xz-devel). Archivey stages LZMA1 via stdlib and BCJ via
-`pybcj` (import name `bcj`) under the `[7z]` extra — the same approach py7zr uses.
+`pybcj` (import name `bcj`) under the `[recommended]` extra — the same approach py7zr uses.
 BCJ2 remains unsupported.
 
 ### raw Deflate / zlib — stdlib `zlib`, accelerated by `rapidgzip`
@@ -311,7 +311,7 @@ Python.
 Google's `brotli` package, used via its incremental `Decompressor` (it exposes no file-like
 `open()`, so Archivey wraps it in `BrotliDecompressorStream`). Brotli has no magic and no
 length/CRC trailer, so it is detected by trial-decoding a bounded prefix, and truncation is
-caught only by "never finished at EOF". Pulled by the `[7z]` bundle (7z can use Brotli) and used
+caught only by "never finished at EOF". Pulled by the `[recommended]` extra (7z can use Brotli) and used
 for standalone `.br`. The `brotlicffi` fork is an alternative for PyPy but adds nothing on
 CPython.
 
@@ -328,11 +328,11 @@ Truncation is best-effort via nonzero leftover bits after the last complete code
 ### Deflate64 — `inflate64`
 
 Deflate64 (a.k.a. Enhanced Deflate, used by some ZIP/7z members) via `inflate64`. The de-facto
-Python implementation (same author as `pyppmd`/`py7zr`); no real alternative. `[7z]` bundle.
+Python implementation (same author as `pyppmd`/`py7zr`); no real alternative. `[recommended]` extra.
 
 ### PPMd (var.H) — `pyppmd`
 
-PPMd variant H (7z) via `pyppmd`. The only maintained Python PPMd binding. `[7z]` bundle.
+PPMd variant H (7z) via `pyppmd`. The only maintained Python PPMd binding. `[recommended]` extra.
 (Concrete construction lands with the native 7z reader in Phase 6; the backend selection and
 missing-dependency gating are already wired.)
 

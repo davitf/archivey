@@ -19,7 +19,7 @@ Package map:
   lazy open, nested collapse, fused digest verify, lease/finalizer.
 - :mod:`.verify` — ``MemberVerifier`` (+ standalone ``VerifyingStream`` for codec
   length backstops).
-- :mod:`.crypto` — AES decrypt stage (``[crypto]``) + 7z-local KDF helpers.
+- :mod:`.crypto` — AES decrypt stage (``[recommended]``) + 7z-local KDF helpers.
 - :mod:`.counting` — measurement wrappers (bytes / seeks).
 - :mod:`.peekable` — non-seekable detection peek/replay (used by ``open_archive``).
 """

@@ -224,8 +224,9 @@ defense today:
    folder's `kCRC` digest when the writer stored one
    (`sevenzip_pipeline.py`). Reference 7-Zip writes it → detection is
    deterministic (2⁻³²) for those archives. **py7zr does not**
-   (`digest_defined: False` on the encoded-header folder), and our own `[7z-write]`
-   output goes through py7zr, so archives *we* write share the gap.
+   (`digest_defined: False` on the encoded-header folder), and the only 7z archives
+   *we* produce are test fixtures written through py7zr (7z writing is not shipped),
+   so those share the gap.
 2. **Structural parse failure** of the garbage — which usually works, but not
    always.
 

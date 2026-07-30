@@ -8,6 +8,7 @@ Stage 4 with the real ISO backend.
 
 from __future__ import annotations
 
+import importlib.util
 import zipfile
 from pathlib import Path
 from typing import Mapping
@@ -145,7 +146,7 @@ def test_magic_and_extension_tables_aggregate(registry: BackendRegistry) -> None
 def test_zip_partial_when_optional_codecs_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # ZIP can store deflate64 (inflate64 / [7z]) and zstd ([zstd]); with those absent it
+    # ZIP can store deflate64 (inflate64) and zstd, both in [recommended]; with those absent it
     # still opens and lists common (stored/deflate) members -> PARTIAL.
     monkeypatch.setattr(codecs_module, "_inflate64", None)
     monkeypatch.setattr(codecs_module, "_zstd", None)
@@ -304,3 +305,34 @@ def test_compressed_tar_full_when_stream_codec_present(
 ) -> None:
     monkeypatch.setattr(codecs_module, "_zstd", object())
     assert format_availability(ArchiveFormat.TAR_ZST).support is FormatSupport.FULL
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("pycdlib") is None,
+    reason=(
+        "with pycdlib genuinely absent the registry gate rejects ISO before dispatch "
+        "reaches the backend (that path is test_iso_none_without_pycdlib); this test "
+        "needs the gate to pass so the reader's own raise runs"
+    ),
+)
+def test_iso_reader_missing_pycdlib_hint_matches_availability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reader's own raise must advise the same extra the registry reports.
+
+    Patching only ``iso_reader.pycdlib`` (not the registry's ``_optional``) lets dispatch
+    reach the backend, which is the path that used to name a deleted ``[iso]`` extra while
+    ``format_availability`` already said ``[recommended]``.
+    """
+    import io
+
+    from archivey.exceptions import PackageNotInstalledError
+    from archivey.internal.backends import iso_reader
+
+    monkeypatch.setattr(iso_reader, "pycdlib", None)
+    with pytest.raises(PackageNotInstalledError) as excinfo:
+        open_archive(io.BytesIO(b"not an iso"), format=ArchiveFormat.ISO)
+    message = str(excinfo.value)
+    assert "pycdlib" in message
+    assert "archivey[recommended]" in message
+    assert iso_reader.IsoReadBackend.INSTALL_HINT in message

@@ -198,6 +198,21 @@ class MissingComponent:
         str, ...
     ] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
 
+    def message(self, purpose: str, *, note: str = "") -> str:
+        """Text for the ``PackageNotInstalledError`` raised when this component is absent.
+
+        Every raise site builds its message here so the advice a caller gets when a
+        *read* fails cannot drift from the ``install_hint`` that listing and
+        :class:`~archivey.FormatAvailability` report. The two used to be independent
+        strings, and the extras consolidation updated the hints while every ``raise``
+        kept advertising extras that no longer exist.
+
+        ``note`` appends a sentence for cases where the bare hint would mislead (e.g.
+        a backport that is pointless on a Python version shipping the module).
+        """
+        text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
+        return f"{text} {note}" if note else text
+
 
 class MagicSignature(NamedTuple):
     """Exact magic-byte match declared by a backend/codec descriptor (not end-user API).

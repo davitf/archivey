@@ -103,3 +103,69 @@ window at all.
 
 `openspec/project.md` is cross-cutting context rather than an authoritative spec, so it
 **was** updated here.
+
+## 7. Review round (PR #212)
+
+- [x] 7.1 **The install hints were only half-migrated, and the half that was missed is
+      the user-visible one.** `MissingComponent.install_hint` / `INSTALL_HINT` were
+      updated, so listing and `format_availability()` looked correct — but every
+      `raise PackageNotInstalledError(...)` carried its *own* hardcoded copy of the hint
+      and still advertised deleted extras. A caller hitting the original bug (a ZIP with
+      a Deflate64 or PPMd member) was told to `pip install archivey[7z]`, which after
+      this change fails outright. Same for `[crypto]` (AES in `crypto.py` and both
+      `zip_aes.py` sites), `[iso]` (the ISO reader — whose own backend constant already
+      said `[recommended]`), `[lz4]`, `[zstd]`, and `[7z]` for pybcj.
+- [x] 7.2 Fixed at the root rather than string-by-string: `MissingComponent.message()`
+      now formats the error text, and every raise site builds its message from the same
+      declared requirement it reports through. Codecs get `StreamCodec._missing()`;
+      crypto, pybcj and pycdlib get a module-level `MissingComponent`; the ISO backend's
+      `OPTIONAL_DEPENDENCY` / `INSTALL_HINT` are derived from that same object, so the
+      two channels are now the same object rather than two strings that agree by luck.
+      The four rapidgzip raises (correct already, but a third copy of the hint) route
+      through `_RAPIDGZIP_REQUIREMENT`.
+- [x] 7.3 The zstd message keeps its extra sentence — the backport is a no-op on 3.14+,
+      where the stdlib module is used — via a `note=` argument rather than a bespoke
+      string, so the hint part still comes from the requirement.
+- [x] 7.4 Red-green regression tests. `test_absent_codec_backend_hint_is_installable`
+      forces each backend global to `None` so the raise is exercised **in every
+      dependency leg**, including the one where the package is installed — which is
+      exactly where this rotted unnoticed. Plus the ISO reader raise (patching only
+      `iso_reader.pycdlib`, so dispatch reaches the backend instead of stopping at the
+      registry gate), the pybcj raise, and the crypto wrapper. Verified failing against
+      the pre-fix tree: 7 of the 8 new tests fail, and the one that passes is the
+      requirement-hint channel — the half that was already correct.
+- [x] 7.5 `test_no_source_file_advertises_a_deleted_extra` greps `src/` for the deleted
+      names. The behaviour tests only cover raises a test happens to reach; this fails on
+      any new hardcoded hint anywhere, which is the failure mode that produced 7.1.
+- [x] 7.6 Delta amended: the requirement that hints name a real extra already existed and
+      the code simply violated it, so nothing needed loosening. Added the missing
+      normative bit — both channels MUST derive from one declared requirement per package
+      — plus a scenario row asserting they produce the same string.
+- [x] 7.7 **Task 2.3's "tree-wide grep clean" claim was wrong.** Swept the survivors
+      outside `docs/grab-bag/`: 8 prose sites in `src/` (CLI, ISO, crypto, backends and
+      streams module docstrings), `docs/internal/library-analysis.md` (11 — linked from
+      the published `formats.md` as codec rationale), `docs/internal/known-issues.md`,
+      `docs/internal/threat-model.md`, `PLAN.md` (7, including the extras roster in the
+      Phase 1 task list), `IDEAS.md`, and 8 test comments. `docs/grab-bag/`,
+      `review/archive/**` and the ADR parentheticals stay as historical record.
+- [x] 7.8 Three-config suite re-run green (`[all]`, `[all-lowest]`, core-only);
+      `ruff`, `pyrefly`, `ty`, `mkdocs build --strict`, `openspec validate --all` clean.
+
+## 8. Open for the maintainer — where the remaining stale prose lives
+
+§6's nine-spec question is unchanged and still needs a call. The review raised a second,
+narrower one: whether `docs/internal/*` and `PLAN.md` belonged in this PR at all, since
+task 2.3 only ever exempted `docs/grab-bag/`.
+
+Resolved as **A (do it here)** rather than surfaced, because unlike §6 it is not a
+judgement call about scope boundaries: `library-analysis.md` is linked from the published
+`formats.md` as the codec rationale, and `PLAN.md` enumerated the *old eleven extras* as
+the packaging to build — wrong instructions for the next agent that reads it. Both are
+prose edits with no spec or behaviour implication. Say if you would rather these had been
+split out.
+- [x] 7.9 **`uv.lock` carried an unrelated dependency refresh** — 30 package versions had
+      been bumped alongside the structural extras change, including `ty` 0.0.60 → 0.0.65,
+      which flags five pre-existing `os.fspath` overload diagnostics in
+      `decompressor_stream.py` and would have failed CI's type-check job for reasons
+      unrelated to this change. Relocked from the base lockfile: the diff is now the
+      extras restructure only, with zero version bumps.

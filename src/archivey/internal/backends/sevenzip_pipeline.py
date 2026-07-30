@@ -62,6 +62,13 @@ from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stre
 from archivey.internal.streams.crypto import SevenZipKeyCache, open_aes_decrypt_stream
 from archivey.internal.streams.decompress import BcjFilterStream
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
+from archivey.types import MissingComponent
+
+# pybcj only stages BCJ for LZMA1 folders; LZMA2+BCJ folds the filter into the liblzma
+# chain and needs nothing installed.
+_PYBCJ_REQUIREMENT = MissingComponent(
+    "pybcj", "pip install archivey[recommended]", ("bcj",)
+)
 
 # stdlib exposes no public decoder for a raw LZMA1/LZMA2 property blob → filter dict;
 # py7zr relies on the same private `lzma._decode_filter_properties`. Bind once at import.
@@ -254,8 +261,7 @@ def _require_pybcj() -> None:
         import bcj  # noqa: F401
     except ImportError as exc:
         raise PackageNotInstalledError(
-            "The 'pybcj' package is required for LZMA1+BCJ 7z folders "
-            "(install the '7z' extra)."
+            _PYBCJ_REQUIREMENT.message("LZMA1+BCJ 7z folders")
         ) from exc
 
 

@@ -1,4 +1,4 @@
-"""ISO 9660 backend on the v2 ABC, backed by the optional ``pycdlib`` library (``[iso]``).
+"""ISO 9660 backend on the v2 ABC, backed by the optional ``pycdlib`` library (``[recommended]``).
 
 Image layout (what ``pycdlib`` addresses)::
 
@@ -73,11 +73,16 @@ from archivey.types import (
     MagicSignature,
     MemberStreams,
     MemberType,
+    MissingComponent,
+)
+
+_PYCDLIB_REQUIREMENT = MissingComponent(
+    "pycdlib", "pip install archivey[recommended]", ("iso",)
 )
 
 
-# pycdlib is an optional *runtime* dependency ([iso] extra): absent in the zero-dep core /
-# core-only install. Resolve it dynamically (like the codec layer's optional packages) so the
+# pycdlib is an optional *runtime* dependency ([recommended] extra): absent in the zero-dep
+# core / core-only install. Resolve it dynamically (like the codec layer's optional packages) so the
 # module still imports there and absence becomes a clean PackageNotInstalledError. (Typing
 # uses the TYPE_CHECKING import above; the dev group carries pycdlib so the checkers resolve it.)
 def _optional(name: str) -> ModuleType | None:
@@ -276,8 +281,7 @@ class IsoReader(BaseArchiveReader):
         )
         if pycdlib is None:
             raise PackageNotInstalledError(
-                "The 'pycdlib' package is required to read ISO images "
-                "(install the 'iso' extra).",
+                _PYCDLIB_REQUIREMENT.message("reading ISO images"),
                 archive_name=archive_name,
             )
 
@@ -515,7 +519,7 @@ class IsoReader(BaseArchiveReader):
 
 
 class IsoReadBackend(ReadBackend):
-    """Backend factory for ISO 9660 images (requires the ``[iso]`` extra → ``pycdlib``)."""
+    """Backend factory for ISO 9660 images (requires the ``[recommended]`` extra → ``pycdlib``)."""
 
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.ISO,)
     EXTENSIONS: Mapping[str, ArchiveFormat] = {".iso": ArchiveFormat.ISO}
@@ -527,8 +531,10 @@ class IsoReadBackend(ReadBackend):
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: pycdlib addresses the image by
     # absolute offsets (volume descriptors at 32 KiB), so even a forward-only pass
     # needs a seekable source.
-    OPTIONAL_DEPENDENCY = "pycdlib"
-    INSTALL_HINT = "pip install archivey[recommended]"
+    # Same requirement the reader raises from, so the hint reported by listing /
+    # format_availability and the one in the open() failure cannot diverge.
+    OPTIONAL_DEPENDENCY = _PYCDLIB_REQUIREMENT.name
+    INSTALL_HINT = _PYCDLIB_REQUIREMENT.install_hint
 
     def open_read(
         self,

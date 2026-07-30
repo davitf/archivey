@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import importlib.util
 import io
+import re
 import zlib
 from pathlib import Path
 
@@ -24,11 +25,13 @@ from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
+from archivey.internal.streams import codecs as codecs_module
 from archivey.internal.streams import crypto
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
     codec_for_stream_format,
+    codec_requirement,
     open_codec_stream,
     resolve_codec,
 )
@@ -158,7 +161,7 @@ def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     reason="cryptography is not installed (core-only leg); the present-path cannot run",
 )
 def test_crypto_reachable_only_through_wrapper() -> None:
-    """With [crypto] present, the backend is reached via the wrapper (not a direct import)."""
+    """With cryptography present, the backend is reached via the wrapper (not a direct import)."""
     backend = crypto.get_crypto_backend()
     assert backend.name == crypto.CRYPTO_PACKAGE
     stage = backend.aes_cbc_decrypt_stage(
@@ -1389,3 +1392,82 @@ def test_verify_fused_archive_stream_slurp_raises() -> None:
     with pytest.raises(CorruptionError, match="crc32"):
         stream.read()
     stream.close()
+
+
+# --- install hints name a real extra ----------------------------------------------------
+
+# The extras that exist after the 11 → 4 consolidation. Anything else in a hint is a name
+# a user cannot install: `pip install archivey[7z]` now fails outright.
+_REAL_EXTRAS = frozenset({"recommended", "seekable", "free-threaded", "all"})
+_EXTRA_IN_HINT = re.compile(r"archivey\[([a-z0-9,\-.]+)\]")
+
+
+def _assert_hint_is_installable(message: str) -> None:
+    named = {
+        extra for match in _EXTRA_IN_HINT.findall(message) for extra in match.split(",")
+    }
+    assert named, f"no install hint in {message!r}"
+    assert named <= _REAL_EXTRAS, f"{message!r} names extras that no longer exist"
+
+
+@pytest.mark.parametrize(
+    ("codec", "absent_global"),
+    [
+        (Codec.PPMD, "_pyppmd"),
+        (Codec.DEFLATE64, "_inflate64"),
+        (Codec.BROTLI, "_brotli"),
+        (Codec.LZ4, "_lz4_frame"),
+        (Codec.ZSTD, "_zstd"),
+    ],
+)
+def test_absent_codec_backend_hint_is_installable(
+    codec: Codec, absent_global: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read that fails for a missing package must advise an extra that exists.
+
+    Forcing the module global to ``None`` exercises the raise in every dependency leg,
+    including the one where the package *is* installed — which is where the hint used to
+    rot unnoticed, because ``format_availability`` reported the updated string while
+    ``open()`` still advertised a deleted extra.
+    """
+    monkeypatch.setattr(codecs_module, absent_global, None, raising=True)
+    with pytest.raises(PackageNotInstalledError) as ei:
+        open_codec_stream(codec, io.BytesIO(b""))
+    _assert_hint_is_installable(str(ei.value))
+
+
+def test_absent_crypto_hint_is_installable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(crypto, "_crypto_available", lambda: False)
+    with pytest.raises(PackageNotInstalledError) as ei:
+        crypto.get_crypto_backend()
+    _assert_hint_is_installable(str(ei.value))
+
+
+def test_codec_requirement_hints_are_installable() -> None:
+    """Every declared requirement — the channel listing/availability reports from."""
+    for codec in Codec:
+        requirement = codec_requirement(codec)
+        if requirement is not None:
+            _assert_hint_is_installable(requirement.install_hint)
+
+
+def test_no_source_file_advertises_a_deleted_extra() -> None:
+    """Guard the *other* copies: hardcoded strings anywhere under ``src/``.
+
+    The consolidation updated the ``MissingComponent`` hints but not the independent
+    strings inside each ``raise``, so listing looked fixed while reads still lied. This
+    fails on any new hardcoded hint, not only the ones a test happens to reach.
+    """
+    deleted = re.compile(
+        r"archivey\[(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)\]|'(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)' extra"
+    )
+    src = Path(__file__).resolve().parent.parent / "src"
+    offenders = [
+        f"{path.relative_to(src)}:{lineno}: {line.strip()}"
+        for path in sorted(src.rglob("*.py"))
+        for lineno, line in enumerate(path.read_text().splitlines(), 1)
+        if deleted.search(line)
+    ]
+    assert not offenders, "source names extras that no longer exist:\n" + "\n".join(
+        offenders
+    )

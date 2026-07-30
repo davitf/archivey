@@ -165,7 +165,7 @@ def test_aes_multi_password_selects_winner() -> None:
 def _minimal_aes_zip_bytes() -> bytes:
     """A tiny method-99 ZIP with a valid 0x9901 extra (no cryptography needed to build).
 
-    The ciphertext body is garbage — only used to exercise the ``[crypto]``-absent path,
+    The ciphertext body is garbage — only used to exercise the cryptography-absent path,
     which fails before decryption.
     """
     name = b"x.txt"
