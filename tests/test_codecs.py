@@ -1465,7 +1465,9 @@ def test_no_source_file_advertises_a_deleted_extra() -> None:
     offenders = [
         f"{path.relative_to(src)}:{lineno}: {line.strip()}"
         for path in sorted(src.rglob("*.py"))
-        for lineno, line in enumerate(path.read_text().splitlines(), 1)
+        # Explicit utf-8: the default encoding is cp1252 on Windows, which chokes on the
+        # non-ASCII bytes in several source files.
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
         if deleted.search(line)
     ]
     assert not offenders, "source names extras that no longer exist:\n" + "\n".join(

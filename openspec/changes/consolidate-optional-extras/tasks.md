@@ -163,9 +163,19 @@ judgement call about scope boundaries: `library-analysis.md` is linked from the 
 the packaging to build — wrong instructions for the next agent that reads it. Both are
 prose edits with no spec or behaviour implication. Say if you would rather these had been
 split out.
-- [x] 7.9 **`uv.lock` carried an unrelated dependency refresh** — 30 package versions had
-      been bumped alongside the structural extras change, including `ty` 0.0.60 → 0.0.65,
-      which flags five pre-existing `os.fspath` overload diagnostics in
-      `decompressor_stream.py` and would have failed CI's type-check job for reasons
-      unrelated to this change. Relocked from the base lockfile: the diff is now the
-      extras restructure only, with zero version bumps.
+- [x] 7.9 **`uv.lock` was inconsistent with `pyproject.toml`, so CI re-resolved and
+      silently upgraded the tooling.** The committed lock still pinned `ruff` 0.15.22 /
+      `ty` 0.0.60, but it no longer matched the rewritten extras table, so CI's
+      `uv sync` ignored it and resolved fresh — landing on `ruff` 0.16.0, whose new
+      default rules flag **365** pre-existing findings across files this change never
+      touches (SIM117 and friends), and `ty` 0.0.65, which flags five pre-existing
+      `os.fspath` overload diagnostics in `decompressor_stream.py`. Both failures were
+      entirely unrelated to this change. Regenerated the lock so it matches the new
+      pyproject *and* keeps the base pins (`uv lock --check` passes, `ruff` 0.15.22,
+      `ty` 0.0.60); upgrading either tool and clearing its new findings is its own
+      change. Note for the next person: `uv sync --resolution lowest-direct` rewrites
+      `uv.lock`, so the minimum-versions leg must be run with the lock restored
+      afterwards or CI inherits whatever it resolved.
+- [x] 7.10 **Windows leg:** `test_no_source_file_advertises_a_deleted_extra` read source
+      files with the platform default encoding, which is cp1252 on Windows and fails on
+      the non-ASCII bytes several modules contain. Reads as UTF-8 explicitly.
