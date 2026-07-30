@@ -18,13 +18,11 @@ use, free-threaded correctness, and pass ownership.
 | `packaging-and-extras` | Free-threaded CI / supported-capability documentation |
 | `format-tar` / `format-iso` / `format-zip` | Per-backend handle-lock compliance |
 | `testing-contract` | Multi-thread / `3.13t` coverage expectations |
-
 ## Requirements
-
 ### Requirement: Multiple concurrently-open member streams
 
 Every **random-access** reader (`streaming=False`) opened with
-`MemberStreams.CONCURRENT` SHALL support any number of member streams from that
+`concurrent_members=True` SHALL support any number of member streams from that
 reader held open simultaneously and read interleaved without corrupting one
 another. Without that flag the single-live-stream default in `archive-reading`
 applies. Access cost never determines legality: declared capabilities are
@@ -36,8 +34,8 @@ or `scan_members()` and the reader has published its member list/name index,
 concurrent calls from multiple threads to `open(member_or_name)` SHALL be
 supported. Streams from different opens SHALL have independent logical
 positions/state: workers MAY concurrently call `read`, `readinto`, and `close`
-on **different** stream objects, plus `seek`/`tell` under
-`MemberStreams.SEEKABLE` where that stream supports positioning. Non-seekable
+on **different** stream objects, plus `seek`/`tell` when
+`seekable_members=True` was declared and that stream supports positioning. Non-seekable
 streams retain normal `BinaryIO` behavior (`seekable()` false;
 unsupported positioning → `io.UnsupportedOperation`). Simultaneous operations on
 the **same** stream object require caller synchronization (ordinary file
@@ -150,7 +148,7 @@ release.
 
 ### Requirement: Coordinated first-touch materialization
 
-A reader opened with `MemberStreams.CONCURRENT` SHALL coordinate concurrent
+A reader opened with `concurrent_members=True` SHALL coordinate concurrent
 first-touch operations on a not-yet-materialized member list by blocking all but
 one caller until the immutable snapshot is published, rather than rejecting the
 overlap. Materialization SHALL run exactly once. Non-concurrent and uncontended
@@ -167,7 +165,7 @@ callbacks still run with no reader-state lock held).
 
 ### Requirement: Draining reader close
 
-Under `MemberStreams.CONCURRENT`, `reader.close()` SHALL wait for in-flight
+Under declared concurrency, `reader.close()` SHALL wait for in-flight
 worker `open()`/`read()` calls to return and then transition the reader to
 closed, rather than raising because workers are active. Escaped open member
 streams SHALL remain governed by the lifecycle-lease contract in
@@ -295,3 +293,4 @@ prevent final teardown from racing each call.
 | Teardown raises on explicit/final-stream close | Closer irrevocably closed; error once; `TEARDOWN_COMPLETE`; no retry |
 | Inner-close + teardown both fail on final member close | Lease/state released once; `ExceptionGroup` of both |
 | Idle leased stream after `reader.close()` | Later stream I/O via lease-bound worker entry until stream close |
+

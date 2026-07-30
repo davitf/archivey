@@ -3,7 +3,7 @@
 ## Purpose
 
 ISO 9660 disc images are read through the unified `ArchiveReader` API using
-`pycdlib` from the optional `[iso]` extra. The backend selects the richest
+`pycdlib` from the optional `[recommended]` extra. The backend selects the richest
 available filename/metadata namespace and reports that choice so callers can
 reason about fidelity.
 
@@ -15,7 +15,7 @@ reason about fidelity.
 | `access-mode-and-cost` | Indexed/direct cost model and seekability requirements |
 | `format-detection` | ISO magic at `CD001` offset and extended peek window |
 | `reader-concurrency` | `MemberStreams.CONCURRENT`, operation ownership, lock boundaries |
-| `packaging-and-extras` | Optional `[iso]` dependency availability |
+| `packaging-and-extras` | Optional `pycdlib` (`[recommended]`) availability |
 
 ## Requirements
 

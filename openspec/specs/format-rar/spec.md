@@ -19,7 +19,7 @@ implementation.
 | `archive-reading` | Read API, multi-source input, passwords, link following, bounded storage |
 | `access-mode-and-cost` | Seek requirement, cost receipt, solid access semantics |
 | `compressed-streams` | Pass-through stored reads and checksum verification |
-| `packaging-and-extras` | RARLAB `unrar`, `[rar]`, `[crypto]` availability |
+| `packaging-and-extras` | RARLAB `unrar` binary and `[recommended]` availability |
 | `testing-contract` | Native parser coverage and `rarfile` oracle checks |
 
 ## Requirements
