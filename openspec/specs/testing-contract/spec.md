@@ -19,9 +19,7 @@ reader stress.
 | `format-7z` | Native 7z corpus and oracle validation |
 | `format-rar` | Native RAR corpus, `unrar`, encrypted headers, Blake2sp validation |
 | `packaging-and-extras` | Optional dependency and oracle availability rules |
-
 ## Requirements
-
 ### Requirement: Equivalence matrix across formats
 
 The system SHALL produce equivalent `ArchiveMember` objects from ZIP, TAR, 7z, RAR,
@@ -228,15 +226,16 @@ no special-case exclusions for the retired tree.
 
 The test suite SHALL cover the declared-capability gate uniformly for every
 implemented format, including directory. A reader opened without
-`MemberStreams.CONCURRENT` MUST raise `ConcurrentAccessError` on a second
+`concurrent_members=True` MUST raise `ConcurrentAccessError` on a second
 overlapping `open()` while the first stream stays readable; sequential
 `open -> read -> close -> open next` MUST succeed without any declaration. The
-error message MUST include the recorded `open_archive()` call site.
+error message MUST include the recorded `open_archive()` call site and MUST name
+`concurrent_members=True` as the parameter that would have allowed the operation.
 
-Without `MemberStreams.SEEKABLE`, member streams from random `open()` and
+Without `seekable_members=True`, member streams from random `open()` and
 `stream_members()` MUST report `seekable() is False` and raise
 `io.UnsupportedOperation` from `seek()` on every format, including real directory
-files. With `MemberStreams.SEEKABLE`, positioning MUST work where the backend
+files. With `seekable_members=True`, positioning MUST work where the backend
 provides it. `extract_all()`, including hardlink recovery and symlink-target reads,
 MUST succeed on readers with no declared capabilities. `ArchiveyUsageError` and
 `ConcurrentAccessError` MUST NOT be `ArchiveyError` subclasses. Accelerator/index
@@ -372,8 +371,8 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 ### Requirement: Concurrent member-stream correctness and free-threaded stress
 
 The test suite SHALL exercise the supported post-materialization concurrency
-contract from `reader-concurrency` for readers declared with
-`MemberStreams.CONCURRENT`. Coverage MUST include representative backend shapes:
+contract from `reader-concurrency` for readers opened with
+`concurrent_members=True`. Coverage MUST include representative backend shapes:
 directory independent handles, ZIP library-coordinated handles, Archivey
 `SharedSource` views for single-file and native 7z/RAR as available, and
 Archivey-locked library handles for random-access TAR and ISO.
@@ -441,7 +440,6 @@ The asserted matrix SHALL match the documented policy:
 | A backend stops populating a documented digest | Sweep fails |
 | A backend populates a digest the format does not store | Sweep fails |
 | Multi-member lzip combined `crc32` matches `crc32` of full decompressed concat | Sweep or focused unit test passes |
-
 
 ### Requirement: BLAKE2sp verification is tested with KATs and a RAR5 oracle
 

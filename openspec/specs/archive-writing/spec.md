@@ -14,7 +14,7 @@ buffering the whole archive.
 | `archive-reading` | `ArchiveReader.stream_members()` source shape for conversion |
 | `archive-data-model` | `ArchiveMember`, `CompressionAlgorithm`, metadata fields |
 | `backend-registry` | Missing writer backend / codec error and install-hint behavior |
-| `packaging-and-extras` | `[7z-write]`, `[zstd]`, and other optional write dependencies |
+| `packaging-and-extras` | `[recommended]` and other optional write dependencies |
 | `logging` | Warnings for skipped members and contradictory compression settings |
 | `safe-extraction` | Shared member-filter transform semantics |
 

@@ -16,13 +16,11 @@ forward-only streams free of seek machinery.
 | `access-mode-and-cost` | Declared capabilities vs access modes |
 | `diagnostics` | Rewind and seek-index diagnostic policy/retention |
 | `error-handling` | Codec exception translation and `DiagnosticRaisedError` |
-
 ## Requirements
-
 ### Requirement: Seek machinery is demand-driven
 
 The system SHALL construct seek support only when seekability is declared:
-`MemberStreams.SEEKABLE` on `open_archive()` or `seekable=True` on the
+`seekable_members=True` on `open_archive()` or `seekable=True` on the
 single-stream API. Undeclared streams SHALL NOT parse XZ footers, scan lzip
 trailers, instantiate rapidgzip accelerators, retain rewind buffers, or retain
 seek-point tables; they are forward-only.
@@ -258,3 +256,4 @@ Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
 | Truncated `.Z` with only zero leftover bits | Yields fewer bytes; no `TruncatedError` (undetectable) |
 | Header flag byte has reserved bits `0x60` set | `UnsupportedFeatureError` |
 | Corrupt LZW codes | `CorruptionError` |
+

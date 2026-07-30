@@ -19,7 +19,7 @@ readers. It follows the `archivey-dev` `sevenzip-native-reader` exploration.
 | `archive-reading` | `open_archive`, multi-source input, passwords, bounded storage, `stream_members` |
 | `access-mode-and-cost` | Seek requirement, cost receipt, solid access semantics |
 | `compressed-streams` | Decoder composition, CRC verification, optional codec backends |
-| `packaging-and-extras` | `[7z]`, `[crypto]` extras |
+| `packaging-and-extras` | `[recommended]` extra |
 | `testing-contract` | Native parser coverage and `py7zr` oracle checks |
 
 ## Requirements

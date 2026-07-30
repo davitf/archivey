@@ -1,19 +1,4 @@
-# Command-Line Interface
-
-## Purpose
-
-Shell interface for inspecting, verifying, and extracting archives with fnmatch filters and optional I/O instrumentation; CLI-only deps stay out of core.
-
-## Related specs
-
-| Spec | Relationship |
-| --- | --- |
-| `archive-reading` | Listing, member filtering, digest verification reads |
-| `safe-extraction` | Default safe extraction policy used by `extract` |
-| `packaging-and-extras` | `[recommended]` extra supplies `tqdm`; core remains importable without it |
-| `access-mode-and-cost` | Optional I/O instrumentation/cost reporting |
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: archivey command with list, test, and extract subcommands
 
@@ -29,9 +14,9 @@ be added later and take precedence over same-named files; the `list <path>`
 escape hatch is permanent. Verbs MUST NOT be selectable via a
 dash-prefixed option form (e.g. `-x` SHALL NOT mean `extract`); options always
 take a dash, verbs never do. Progress output SHALL use
-`tqdm` from `[cli]` when available; core MUST NOT depend on `tqdm`. The console
+`tqdm` from `[recommended]` when available; core MUST NOT depend on `tqdm`. The console
 script and `python -m archivey` MUST be importable/runnable without installing
-`[cli]` (progress suppressed if `tqdm` is absent).
+`[recommended]` (progress suppressed if `tqdm` is absent).
 
 Supported verbs in this capability:
 
@@ -159,114 +144,6 @@ other processed statuses are omitted from that line).
 | `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
-| `[cli]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
+| `[recommended]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
 | `--track-io` supplied | Reports decode/seek accounting (bytes decompressed, compressed bytes consumed, source seeks) via the measurement hook; no `builtins` patching |
 | `archivey -x <archive>` (dash-prefixed verb) | Usage error — verbs are bare words (`x`), not options; `-x` is not a mode selector |
-
-### Requirement: info and detect summarize archive identity
-
-The system SHALL provide `archivey info` (alias `detect`) that reports detected
-and/or opened format identity for a path without listing every member. It SHALL
-be suitable for answering "what does archivey think this file is?" including
-failure cases with a typed/clear error. After a successful open, `info` SHALL
-print an `access:` line summarizing the archive's `CostReceipt` (listing /
-member-access / stream axes) in human prose. With `-v` / `--verbose`, it SHALL
-also print the raw cost axes (`listing`, `access_cost`, `stream`,
-`solid_blocks`).
-
-#### Scenario: info vs list
-
-| Case | Expected |
-| --- | --- |
-| `archivey info <archive>` / `archivey detect <archive>` | Prints format/identity summary including `access:`; does not dump full member listing |
-| `archivey info -v <indexed-zip>` | Includes `access: random (indexed)` and raw cost axes |
-| Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
-| `archivey list <archive>` | Member listing; not a substitute for info's format summary |
-
-### Requirement: version reports package identity and optional format matrix
-
-`--version` SHALL print `archivey <version>` and exit. With `-v` / `--verbose`,
-it SHALL also print a `formats:` matrix from the registry availability API
-(`list_known_formats` / `format_availability`), including missing-component
-install hints when support is not full.
-
-#### Scenario: version
-
-| Case | Expected |
-| --- | --- |
-| `archivey --version` | One line: `archivey <version>`; exit `0` |
-| `archivey --version -v` / `archivey -v --version` | Version line plus `formats:` availability matrix |
-
-### Requirement: salvage flag reserved without behavior
-
-The system SHALL accept `--salvage` on `list`, `test`, and `extract` (and on
-future `hash` / `convert` when those verbs exist) but MUST NOT implement salvage
-semantics in this change. Passing `--salvage` SHALL fail fast with a clear
-not-implemented message so callers cannot assume best-effort reads.
-
-#### Scenario: salvage reserved
-
-| Case | Expected |
-| --- | --- |
-| `archivey list <archive> --salvage` | Non-zero exit; message indicates salvage is not implemented |
-| `archivey extract <archive> --salvage` | Same |
-
-### Requirement: reserved verbs do not collide with future write/hash UX
-
-The system SHALL NOT reuse a verb letter that commonly means create/compress for
-integrity checking (in particular `c` MUST NOT mean "check"; leave it for a
-future `create`). Help text MAY mention `hash`, `create`, `convert`, and `cat`
-as forthcoming without implementing them. `cat` SHALL be reserved now so a later
-member-to-stdout verb does not silently change the meaning of
-`archivey cat` for a same-named archive file.
-
-#### Scenario: flag hygiene
-
-| Case | Expected |
-| --- | --- |
-| `t` | Means `test` (integrity), not create |
-| Unknown verb `hash` / `create` / `convert` / `cat` before implementation | Usage error naming the verb as unavailable (not a silent fallthrough to `list`) |
-
-### Requirement: exit codes are argparse-aligned with a policy-refusal code
-
-The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
-verb/flag or bad arguments — the argparse default). Operational failures
-(unreadable, unsupported, or corrupt archive; read/integrity failure; member
-extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set;
-an early abort under `--stop-on-error` on a member **failure**, or any
-always-stop / hoist failure) SHALL exit `1`. When `extract` **completes**
-(under CONTINUE or STOP) with one or more members `BLOCKED` by safety policy
-and no member `FAILED`, the system SHALL exit `3` (refused by safety policy —
-safe members are on disk). Because `OnError.STOP` / `--stop-on-error` never
-halts on a policy block, a STOP+policy abort cannot occur; exit `3` MUST NOT
-be used for an aborted STOP-path failure. Exit codes `≥4` SHALL remain
-reserved. Documentation SHALL direct callers to treat any nonzero code other
-than `2` as a failure and MUST NOT assume `1` is the only failure code.
-
-#### Scenario: exit codes
-
-| Case | Expected |
-| --- | --- |
-| `archivey list <valid-archive>` | Exit `0` |
-| `archivey --badflag` / unknown verb | Exit `2` (usage) |
-| `archivey list <corrupt-or-unreadable>` | Exit `1` |
-| `archivey list <archive-with-recoverable-prefix-and-terminal-error>` | Exit `1` (after printing recovered members) |
-| `archivey test <archive-with-failing-member>` | Exit `1` |
-| `archivey test <indexed-archive>` when the member stream aborts early | Summary includes `K not tested` for the untested remainder; exit `1` |
-| `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
-| `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
-| `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
-| `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
-
-### Requirement: stdin archives are reserved, not supported in v1
-
-The system SHALL treat `-` as a reserved token meaning "read archive from stdin"
-and SHALL fail fast with a clear "not supported yet" message rather than opening a
-filesystem entry literally named `-`.
-
-#### Scenario: stdin reserved
-
-| Case | Expected |
-| --- | --- |
-| `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
-| `archivey extract -` | Same |
