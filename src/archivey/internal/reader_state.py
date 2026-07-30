@@ -282,8 +282,8 @@ class ReaderState:
                 raise ConcurrentAccessError(
                     "A member stream is already open on this reader. Close it before "
                     "opening another, or reopen the archive with "
-                    f"member_streams=MemberStreams.CONCURRENT "
-                    f"(this archive was opened without MemberStreams.CONCURRENT at {loc})."
+                    "concurrent_members=True "
+                    f"(this archive was opened without concurrent_members at {loc})."
                 )
             self._live_streams.add(id(stream))
             self._lease_count += 1

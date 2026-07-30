@@ -16,7 +16,6 @@ from archivey import (
     ArchiveyError,
     ArchiveyUsageError,
     ConcurrentAccessError,
-    MemberStreams,
     open_archive,
 )
 from archivey.internal.password import _PasswordCandidates
@@ -49,7 +48,7 @@ def test_open_during_stream_members_raises(tmp_path: Path) -> None:
 
 def test_members_then_open_ok(tmp_path: Path) -> None:
     root = _dir_with_files(tmp_path)
-    with open_archive(root, member_streams=MemberStreams.CONCURRENT) as reader:
+    with open_archive(root, concurrent_members=True) as reader:
         names = {m.name for m in reader.members()}
         assert names == {"a.txt", "b.txt"}
         s1 = reader.open("a.txt")
@@ -63,8 +62,8 @@ def test_members_then_open_ok(tmp_path: Path) -> None:
 # --- iterate-then-open regression (random-mode __iter__ holds no pass across consumption) ---
 
 
-@pytest.mark.parametrize("streams", [MemberStreams(0), MemberStreams.CONCURRENT])
-def test_iterate_and_open_inside_loop(tmp_path: Path, streams: MemberStreams) -> None:
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_iterate_and_open_inside_loop(tmp_path: Path, concurrent: bool) -> None:
     """`for m in reader: reader.open(m)` must work on default and CONCURRENT readers.
 
     Random-mode iteration only walks the published snapshot, so it must not hold a
@@ -72,7 +71,7 @@ def test_iterate_and_open_inside_loop(tmp_path: Path, streams: MemberStreams) ->
     """
     root = _dir_with_files(tmp_path)
     got: dict[str, bytes] = {}
-    with open_archive(root, member_streams=streams) as reader:
+    with open_archive(root, concurrent_members=concurrent) as reader:
         for member in reader:
             if member.is_file:
                 with reader.open(member) as stream:
@@ -274,9 +273,7 @@ def test_reader_reentry_from_diagnostic_callback_raises_not_deadlocks(
         reader.members()  # re-enter the reader that is mid-materialization
 
     config = ArchiveyConfig(on_diagnostic=on_diagnostic)
-    with open_archive(
-        path, member_streams=MemberStreams.CONCURRENT, config=config
-    ) as opened:
+    with open_archive(path, concurrent_members=True, config=config) as opened:
         reader = opened
         with pytest.raises(ArchiveyUsageError, match="re-entered"):
             reader.members()
@@ -298,9 +295,7 @@ def test_close_from_diagnostic_callback_raises_not_deadlocks(tmp_path: Path) -> 
         reader.close()
 
     config = ArchiveyConfig(on_diagnostic=on_diagnostic)
-    reader_cm = open_archive(
-        path, member_streams=MemberStreams.CONCURRENT, config=config
-    )
+    reader_cm = open_archive(path, concurrent_members=True, config=config)
     try:
         reader = reader_cm
         with pytest.raises(ArchiveyUsageError, match="from inside one of its own"):

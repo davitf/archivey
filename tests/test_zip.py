@@ -18,7 +18,6 @@ from archivey import (
     ArchiveyConfig,
     CompressionAlgorithm,
     DiagnosticCode,
-    MemberStreams,
     MemberType,
     open_archive,
 )
@@ -444,7 +443,7 @@ def test_read_roundtrip_from_stream_source(simple_zip: Path) -> None:
 
 def test_concurrent_open_members_interleaved_path_source(simple_zip: Path) -> None:
     # Path source: stdlib zipfile's _SharedFile already coordinates; lock the contract in.
-    with open_archive(simple_zip, member_streams=MemberStreams.CONCURRENT) as ar:
+    with open_archive(simple_zip, concurrent_members=True) as ar:
         s1 = ar.open("hello.txt")
         s2 = ar.open("dir/nested.txt")
         assert s1.read(5) == b"hello"
@@ -460,7 +459,7 @@ def test_concurrent_open_members_interleaved_stream_source(simple_zip: Path) -> 
     # source (_SharedFile keeps a per-open position under ZipFile's lock), so archivey
     # adds no wrap; this test locks the concurrent-open contract in for that leg too.
     data = simple_zip.read_bytes()
-    with open_archive(io.BytesIO(data), member_streams=MemberStreams.CONCURRENT) as ar:
+    with open_archive(io.BytesIO(data), concurrent_members=True) as ar:
         s1 = ar.open("hello.txt")
         s2 = ar.open("dir/nested.txt")
         assert s1.read(5) == b"hello"
@@ -772,7 +771,7 @@ def test_nested_archive_source_size_is_cheap(tmp_path: Path) -> None:
         info.size = len(inner_bytes)
         t.addfile(info, io.BytesIO(inner_bytes))
 
-    with open_archive(outer, member_streams=MemberStreams.SEEKABLE) as outer_ar:
+    with open_archive(outer, seekable_members=True) as outer_ar:
         inner_stream = outer_ar.open("inner.zip")
         with open_archive(inner_stream, format=ArchiveFormat.ZIP) as inner_ar:
             assert inner_ar.compressed_source_size == len(inner_bytes)

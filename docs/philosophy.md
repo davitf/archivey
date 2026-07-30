@@ -37,8 +37,8 @@ decode the same block repeatedly; concurrent member streams need real coordinati
 Archivey’s defaults are the **cheap, honest path**:
 
 - forward-only member streams, one live stream at a time
-- no seek indexes or accelerators until you ask (`MemberStreams.SEEKABLE`)
-- no concurrent opens until you ask (`MemberStreams.CONCURRENT`)
+- no seek indexes or accelerators until you ask (`seekable_members=True`)
+- no concurrent opens until you ask (`concurrent_members=True`)
 - random-access open fails fast on a non-seekable source (no silent buffering)
 
 When you need more, you **declare** it. Escape hatches are explicit, not ambient. See
@@ -49,8 +49,8 @@ When you need more, you **declare** it. Escape hatches are explicit, not ambient
 | Need | How |
 | --- | --- |
 | Pipes / sockets | `open_archive(..., streaming=True)` |
-| Seek inside a member | `member_streams=MemberStreams.SEEKABLE` |
-| Many open members / workers | `member_streams=MemberStreams.CONCURRENT` |
+| Seek inside a member | `seekable_members=True` |
+| Many open members / workers | `concurrent_members=True` |
 | Trusted / unlimited extract | `ExtractionPolicy.TRUSTED`, `ExtractionLimits.UNLIMITED` |
 | Tune accelerators / EOF / listing caps | `ArchiveyConfig` (`listing_limits`, …) |
 

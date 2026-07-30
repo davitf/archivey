@@ -25,7 +25,6 @@ from archivey import (
     EncryptionError,
     ExtractionStatus,
     FormatSupport,
-    MemberStreams,
     MemberType,
     OnError,
     format_availability,
@@ -314,7 +313,7 @@ def _check_single_file(entry: CorpusEntry, key: str, source: Path) -> None:
             assert HashAlgorithm.BLAKE2SP not in member.hashes
             assert HashAlgorithm.ADLER32 not in member.hashes
     if key == "lz":
-        with open_archive(source, member_streams=MemberStreams.SEEKABLE) as ar:
+        with open_archive(source, seekable_members=True) as ar:
             member = ar.members()[0]
             assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(
                 zlib.crc32(payload.contents)

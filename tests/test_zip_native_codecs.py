@@ -23,7 +23,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.streams import codecs as codecs_module
-from archivey.types import CompressionAlgorithm, MemberStreams
+from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 
 _PAYLOAD = (b"zip-native-codec-payload\n" * 80) + bytes(range(256))
@@ -223,7 +223,7 @@ def test_zip_concurrent_codec_path_interleaved(tmp_path: Path) -> None:
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("a.txt", b"aaaa" * 1000, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("b.txt", b"bbbb" * 1000, compress_type=zipfile.ZIP_DEFLATED)
-    with open_archive(archive, member_streams=MemberStreams.CONCURRENT) as ar:
+    with open_archive(archive, concurrent_members=True) as ar:
         s1 = ar.open("a.txt")
         s2 = ar.open("b.txt")
         assert s1.read(4) == b"aaaa"

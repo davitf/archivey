@@ -22,14 +22,13 @@ from typing import Callable
 
 import pytest
 
-from archivey import MemberStreams, open_archive
+from archivey import open_archive
 from tests.conftest import requires
 
 CONTENT = b"The quick brown fox jumps over.\n"  # 32 bytes; < one ISO sector
 MEMBER = "data.txt"
 
 # Seek tests declare SEEKABLE; other contract tests use the default forward-only streams.
-_SEEKABLE = MemberStreams.SEEKABLE
 
 # A builder makes a small archive holding one ``MEMBER`` with ``CONTENT`` and returns the
 # (source, member-name) pair to open. Source may be a path or directory.
@@ -183,7 +182,7 @@ def test_seekable_flag_enables_forward_and_backward_seek(
     # With the capability the stream reports seekable and seeking actually works both
     # ways (backward seeks may re-decode from the start; the caller accepted that cost).
     source, name = member
-    with open_archive(source, member_streams=_SEEKABLE) as ar, ar.open(name) as f:
+    with open_archive(source, seekable_members=True) as ar, ar.open(name) as f:
         assert f.seekable() is True
         assert f.read() == CONTENT
         f.seek(0)  # backward to the start
@@ -195,7 +194,7 @@ def test_seekable_flag_enables_forward_and_backward_seek(
 
 def test_seek_past_end_then_read_returns_empty(member: tuple[Path, str]) -> None:
     source, name = member
-    with open_archive(source, member_streams=_SEEKABLE) as ar, ar.open(name) as f:
+    with open_archive(source, seekable_members=True) as ar, ar.open(name) as f:
         if not f.seekable():
             pytest.skip("member stream is not seekable")
         f.seek(len(CONTENT) + 100)
@@ -205,7 +204,7 @@ def test_seek_past_end_then_read_returns_empty(member: tuple[Path, str]) -> None
 
 def test_seek_to_start_rereads(member: tuple[Path, str]) -> None:
     source, name = member
-    with open_archive(source, member_streams=_SEEKABLE) as ar, ar.open(name) as f:
+    with open_archive(source, seekable_members=True) as ar, ar.open(name) as f:
         if not f.seekable():
             pytest.skip("member stream is not seekable")
         assert f.read(5) == CONTENT[:5]

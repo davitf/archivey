@@ -13,16 +13,18 @@ if TYPE_CHECKING:
 
 
 class MemberStreams(Flag):
-    """Opt-in member-stream capabilities for :func:`archivey.open_archive`.
+    """The member-stream capabilities a reader was opened with.
+
+    Callers declare these as booleans —
+    ``open_archive(..., seekable_members=True, concurrent_members=True)``. This flag set
+    is the *reported* form: it is what :class:`~archivey.CostReceipt` and the diagnostics
+    carry, and what internal plumbing passes around. There is no need to construct one to
+    open an archive.
 
     Default (no bits set — ``MemberStreams(0)``) is the cheap contract:
 
     - at most one live member stream at a time
     - streams are forward-only (``seek()`` raises)
-
-    Combine flags with ``|``::
-
-        MemberStreams.CONCURRENT | MemberStreams.SEEKABLE
 
     ``CONCURRENT``
         Multiple overlapping ``open()`` calls are allowed. First-touch member

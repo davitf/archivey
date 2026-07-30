@@ -75,12 +75,12 @@ for name in wanted_names:
 ```
 
 `AccessCost.SOLID` and `solid_block_count` tell you when this matters.
-`MemberStreams.CONCURRENT` does **not** remove solid open-order cost — it only makes
+`concurrent_members=True` does **not** remove solid open-order cost — it only makes
 overlapping streams correct.
 
 ## Seeking inside compressed members
 
-Without `MemberStreams.SEEKABLE`, member streams report `seekable() is False` and
+Without `seekable_members=True`, member streams report `seekable() is False` and
 `seek()` raises `io.UnsupportedOperation`. That is intentional: seek indexes and
 accelerators are not built until you ask.
 
@@ -105,7 +105,7 @@ Default: at most one live member stream. A second overlapping `open()` raises
 `ConcurrentAccessError` (a usage error — not an `ArchiveyError`).
 
 ```python
-open_archive(src, member_streams=MemberStreams.CONCURRENT)
+open_archive(src, concurrent_members=True)
 ```
 
 After members are materialized, workers may `open()` different members concurrently.
@@ -148,7 +148,7 @@ defects can abort the process rather than raise. Details:
 | --- | --- |
 | Hash / process every member | `stream_members()` or `__iter__` |
 | Solid archive, many named opens | Reorder to archive order, or one streaming pass |
-| Need `seek()` on a member | `MemberStreams.SEEKABLE` (+ `[seekable]` for gz/bz2/zlib/deflate) |
-| Thread pool of member readers | `MemberStreams.CONCURRENT` after `members()` |
+| Need `seek()` on a member | `seekable_members=True` (+ `[seekable]` for gz/bz2/zlib/deflate) |
+| Thread pool of member readers | `concurrent_members=True` after `members()` |
 | stdin / socket | `streaming=True` |
 | “Just unzip it safely” | `archivey.extract(src, dest)` |
