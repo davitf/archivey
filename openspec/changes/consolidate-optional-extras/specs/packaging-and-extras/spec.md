@@ -36,6 +36,12 @@ be removed; fewer names is the durable choice.)
 package (`[recommended]`, or `[seekable]` for rapidgzip) and MUST NOT name a format,
 since member codecs are shared across containers.
 
+A missing package is reported through two channels — the hint on `MissingComponent` (what
+listing and `format_availability()` surface) and the message of the
+`PackageNotInstalledError` raised when a read actually needs it. Both MUST derive from a
+single declared requirement per package, so a packaging change cannot leave one channel
+naming an extra that no longer exists while the other is correct.
+
 AES block operations are the only third-party crypto dependency (`CryptoBackend` in
 `internal/streams/crypto.py`; PBKDF2/SHA/HMAC are stdlib). The system SHALL ship exactly
 one crypto backend, `cryptography`. Alternate AES providers MUST NOT be added merely to
@@ -83,4 +89,5 @@ NOT list `uncompresspy` in any user-facing extra or the `dev` group.
 | `pip install archivey[free-threaded]` on free-threaded 3.14 | Resolves **with** `cryptography` (cffi supports 3.14t); GIL still disabled |
 | `pip install archivey[all]` | `[recommended]` + `[seekable]` |
 | ZIP member needs Deflate64 with no extras | `PackageNotInstalledError` naming `archivey[recommended]`, never a format-named extra |
+| Any optional package absent, compared across both channels | The hint in the raised error and the one reported by `format_availability()` are the same string |
 | `pip install archivey[7z]` | Fails: the extra no longer exists |

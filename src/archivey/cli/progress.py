@@ -1,4 +1,4 @@
-"""Lazy tqdm progress helper (optional ``[cli]`` extra)."""
+"""Lazy tqdm progress helper (tqdm ships in the ``[recommended]`` extra)."""
 
 from __future__ import annotations
 

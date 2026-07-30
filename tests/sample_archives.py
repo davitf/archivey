@@ -145,7 +145,7 @@ class CorpusEntry:
 FORMAT_KEYS: dict[str, ArchiveFormat] = {
     "zip": ArchiveFormat.ZIP,
     # Builder variant: same ZIP reader, WinZip AES members instead of the 7z CLI's
-    # default ZipCrypto (see READER_PACKAGES — decryption needs the [crypto] extra).
+    # default ZipCrypto (see READER_PACKAGES — decryption needs cryptography, [recommended]).
     "zip-aes": ArchiveFormat.ZIP,
     "tar": ArchiveFormat.TAR,
     "tar.gz": ArchiveFormat.TAR_GZ,
@@ -488,7 +488,7 @@ def _zip_build_encrypted(entry: CorpusEntry, path: Path, *, aes: bool = False) -
     """Encrypted ZIP via the 7z CLI (one invocation per password group; plain last).
 
     7-Zip's ZIP default is legacy **ZipCrypto**; ``aes=True`` adds ``-mem=AES256`` for
-    **WinZip AES** (method 99, AE-2) instead, which the reader decrypts via ``[crypto]``.
+    **WinZip AES** (method 99, AE-2) instead, which the reader decrypts via ``[recommended]``.
     """
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -702,7 +702,7 @@ BUILDER_BINARIES: dict[str, tuple[str, ...]] = {
 
 # Optional packages the *reader* needs for a format key, beyond what the registry's
 # format availability reports. ZIP itself is core, but WinZip AES member decryption
-# needs the ``[crypto]`` extra — without it the rows must skip, not fail.
+# needs cryptography (``[recommended]``) — without it the rows must skip, not fail.
 READER_PACKAGES: dict[str, tuple[str, ...]] = {
     "zip-aes": ("cryptography",),
 }

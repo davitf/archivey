@@ -33,7 +33,7 @@
 - **libarchive backend** — `python-libarchive-c` as an **alternative / additional**
   backend for several formats (zip/tar/7z/iso/cpio/…), in the `[all]`/alternative tier
   behind a `[libarchive]` extra. Caveats: native C dependency (the packaging-finicky
-  axis `[recommended-lite]` exists to avoid), stream-oriented (weak random access,
+  axis `[recommended]` deliberately keeps out — see `[seekable]`), stream-oriented (weak random access,
   historically no solid-RAR support).
 
 - **Synthetic single-stream RAR → libarchive** — generalize rarfile's "hack": build a

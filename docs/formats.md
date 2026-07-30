@@ -12,15 +12,18 @@ most often surprise callers. Authoritative detail lives in `openspec/specs/forma
 | `.tar.gz` / `.bz2` / `.xz` | yes | — | needs decompression | solid | Prefer `stream_members()` |
 | Directory | yes | — | indexed | direct | Same stream-capability defaults as archives |
 | Single-file gz/bz2/xz | yes | — | one member | seek with `SEEKABLE` | See single-file section |
-| 7z | yes (common codecs) | `[7z]` for PPMd/Deflate64/zstd/brotli/AES | indexed | solid folders | Native reader; BCJ2 unsupported |
-| RAR | yes (metadata) | `unrar` for data; `[rar]` for header crypto / Blake2sp | native metadata | solid when solid | No write |
-| ISO | no | `[iso]` (`pycdlib`) | indexed | direct | Seekable source required |
-| `.zst` / `.tar.zst` | 3.14+ core; else `[zstd]` | `[zstd]` → `backports.zstd` | — | rewind seek unless indexed later | |
-| `.lz4` / `.tar.lz4` | no | `[lz4]` | — | rewind seek | |
+| 7z | yes (common codecs) | `[recommended]` for PPMd/Deflate64/zstd/brotli/AES | indexed | solid folders | Native reader; BCJ2 unsupported |
+| RAR | yes (metadata) | **`unrar` binary for data**; `[recommended]` for header crypto | native metadata | solid when solid | No write |
+| ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
+| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | — | rewind seek unless indexed later | |
+| `.lz4` / `.tar.lz4` | no | `[recommended]` | — | rewind seek | |
 | `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
-Recommended installs: `archivey[recommended]` or `archivey[recommended-lite]` (no
-`rapidgzip`). Full codec rationale: [library analysis](internal/library-analysis.md).
+**RAR member data needs the RARLAB `unrar` binary on `PATH`.** No pip extra can supply it —
+listing and metadata work without it, reading bytes does not.
+
+Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
+rapidgzip accelerator. Full codec rationale: [library analysis](internal/library-analysis.md).
 Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledgements.md).
 
 ## ZIP
@@ -28,9 +31,10 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - Stdlib ``zipfile`` for **central-directory parsing / listing**; member **data** decodes
   through archivey's shared codec layer (seekable source only, even with
   ``streaming=True``).
-- Extended ZIP codecs when their extras are installed: Deflate64 and PPMd via ``[7z]``
-  (``inflate64`` / ``pyppmd`` — same packages as the 7z optional codecs), Zstd via
-  ``[zstd]`` (or stdlib on 3.14+). A missing backend raises ``PackageNotInstalledError``.
+- Extended ZIP codecs with ``[recommended]`` installed: Deflate64 and PPMd
+  (``inflate64`` / ``pyppmd`` — the same packages the 7z reader uses, which is why no
+  extra is named after a format) and Zstd (``backports.zstd``, or stdlib on 3.14+). A
+  missing backend raises ``PackageNotInstalledError``.
 - Multi-volume / split ZIP (``.z01``…``.zip``) is detected and rejected with
   ``UnsupportedFeatureError`` — rejoin first.
 - Unsupported compression methods: listing succeeds; reading raises
@@ -45,8 +49,8 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   `open_archive` is authoritative — it is used verbatim and disables the sniff.
 - ZipCrypto multi-password confirmation can be expensive on **STORED** members — see
   [costs](costs.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
-  `[crypto]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
-  (integrity is the HMAC). Absent `[crypto]`, an AES member raises
+  `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
+  (integrity is the HMAC). Without it, an AES member raises
   `PackageNotInstalledError` but is still listed as encrypted.
 
 ## TAR (and compressed TAR)
@@ -80,7 +84,7 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 
 - **Native** header parse + stdlib codecs for the common set (LZMA/LZMA2/BCJ/Delta/
   Deflate/BZip2/stored). No `py7zr` on the read path.
-- `[7z]` adds PPMd, Deflate64, Zstd, Brotli, and AES (via crypto).
+- `[recommended]` adds PPMd, Deflate64, Zstd, Brotli, and AES.
 - **BCJ2** is detected and rejected (`UnsupportedFeatureError`) — never garbage output.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
@@ -98,9 +102,10 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
 - Member **data**: RARLAB `unrar` on `PATH` (not `unrar-free` / `unar`). Passwords are
   passed as bare `-p` with the secret on stdin (not in argv).
-- `[rar]` / `[crypto]`: header-encrypted RAR5 and Blake2sp verification. RAR5 members
-  with the HASHMAC flag verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a
-  password is available; tweaked values are not exposed as plain `member.hashes`.
+- `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —
+  it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
+  verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;
+  tweaked values are not exposed as plain `member.hashes`.
 - **File-version history (`-ver`):** revision rows appear in `members()` as names like
   `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
   `is_current=True`. Default extract **skips** non-current rows.
@@ -110,7 +115,7 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 
 ## ISO 9660
 
-- Needs `[iso]` (`pycdlib`) and a seekable source.
+- Needs `[recommended]` (`pycdlib`) and a seekable source.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Raw `.bin` Mode 1 sector images may be stripped to 2048-byte payloads; unsupported

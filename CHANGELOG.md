@@ -28,8 +28,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
   overwrite controls; CLI (`archivey list|test|extract`) as a safer unzip demo.
 - Native 7z and RAR metadata readers (stdlib codecs for common 7z filters;
   external `unrar` for RAR member data).
-- Optional extras: `[seekable]` (rapidgzip), `[crypto]`, `[7z]` (PPMd / Deflate64),
-  and related packaging matrix — see `docs/formats.md`.
+- Four optional extras — `[recommended]` (every format and codec that installs
+  everywhere), `[seekable]` (rapidgzip), `[free-threaded]` (the measured GIL-safe
+  subset), and `[all]`. There is deliberately no extra per format: member codecs are
+  shared across containers. See `docs/formats.md`.
 - Declarative corpus + mutation / Hypothesis / Atheris testing contract;
   three-configuration CI (`[all]`, `[all-lowest]`, `[core-only]`).
 - Benchmark harness: PR structural gate + change-guarded nightly wall-ratio drift.

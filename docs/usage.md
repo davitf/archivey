@@ -3,10 +3,16 @@
 ## Install
 
 ```bash
-pip install archivey                  # zero-dep core: ZIP, TAR, gz/bz2/xz, directory, …
-pip install archivey[recommended]     # formats + codecs + seek accelerators + CLI deps
-pip install archivey[recommended-lite]  # same without rapidgzip (when it won’t build)
+pip install archivey                 # zero-dep core: ZIP, TAR, gz/bz2/xz, directory, …
+pip install archivey[recommended]    # every format and codec that installs everywhere
+pip install archivey[seekable]       # + rapidgzip: gz/bz2 random access and speed
+pip install archivey[all]            # both of the above
 ```
+
+There are four extras and no per-format ones — member codecs are shared across
+containers, so a format name would be the wrong thing to install. On a free-threaded
+build use `archivey[free-threaded]`; see
+[Platforms and threading](support-matrix.md#free-threaded-python-313t-and-later).
 
 RAR **member data** also needs the system `unrar` binary on `PATH` (listing works without
 it). See [Formats and extras](formats.md).
@@ -214,7 +220,7 @@ real `ArchiveyError`: `UnsupportedOperationError`.) See
 ## Command-line interface
 
 The `archivey` command ships with the base package (`pip install archivey`). Progress bars
-need the optional `[cli]` extra (`tqdm`); without it the command still runs.
+need `tqdm`, which comes with `[recommended]`; without it the command still runs.
 
 ```bash
 archivey photos.zip                 # same as: archivey list photos.zip

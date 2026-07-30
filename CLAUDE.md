@@ -87,12 +87,12 @@ Notes:
 
 7z and RAR are read with **native** parsers, not `py7zr` / `rarfile`:
 - 7z: native header parse + stdlib `lzma`/`bz2`/`zlib` for the common codecs
-  (core, zero-dep). PPMd/Deflate64 via the `[7z]` extra; AES decryption via
-  `[crypto]`; BCJ2 is detected and rejected. `py7zr` is a **dev oracle** only
+  (core, zero-dep). PPMd/Deflate64 and AES decryption via the `[recommended]` extra;
+  BCJ2 is detected and rejected. `py7zr` is a **dev oracle** only
   (7z writing is not shipped; no `[7z-write]` extra).
 - RAR: native RAR3/RAR5 metadata parser (drops `rarfile`); the external `unrar`
   binary remains the decompressor for member data. Encrypted headers are decrypted
-  natively via `[crypto]`. `rarfile` is a test oracle only.
+  natively via `cryptography` (`[recommended]`). `rarfile` is a test oracle only.
 
 See `openspec/specs/format-7z/spec.md`, `format-rar/spec.md`,
 `packaging-and-extras/spec.md`, and `testing-contract/spec.md`.

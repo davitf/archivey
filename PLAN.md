@@ -93,7 +93,7 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
    missing), unifies verification/error-translation, and is the stepping-stone toward a
    native ZIP parser. `zip-native-codec-streams` deliberately kept **encrypted** members
    on the `zipfile` path; **`zip-aes-decryption`** then closed the real compat gap —
-   WinZip AES (method 99 / `0x9901`) via AE-1/AE-2 decryption (`[crypto]` AES-CTR +
+   WinZip AES (method 99 / `0x9901`) via AE-1/AE-2 decryption (`[recommended]` AES-CTR +
    PBKDF2 + HMAC-SHA1) on the raw-data path. Both **in `0.2.0`** (widen ZIP compatibility
    beyond stdlib).
 5. **`rar-file-version-members`** (✓ archived 2026-07-15) — landed **in `0.2.0` because it
@@ -225,8 +225,9 @@ All codec/detection-dependent formats stay unwired until Phases 2–3.
 ### Tasks
 1. **`pyproject.toml`** (clean slate): `hatchling`; `[project]` `archivey`,
    `0.2.0.dev0`, Python `>=3.11`; extras exactly per `packaging-and-extras/spec.md`
-   (`[7z]`, `[rar]`, `[crypto]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`,
-   `[seekable]`, `[recommended-lite]`, `[recommended]`, `[all]`; no `[7z-write]` until writing ships); `dev`
+   (`[recommended]`, `[seekable]`, `[free-threaded]`, `[all]` — the format-named
+   extras were consolidated into these four before `0.2.0`; no 7z-writing extra until
+   writing ships); `dev`
    `[dependency-groups]` for tooling + oracles (`py7zr`, `rarfile`); `pyrefly` + `ty`
    (strict, both kept clean — no mypy), `ruff`, `coverage` (report only, no gate).
 2. **Package layout:** `src/archivey/` with `internal/`, `formats/`, the public
@@ -497,13 +498,13 @@ the parallel-extraction entry in `IDEAS.md`.
 1. **Native 7z** header parse (packed streams, folders/coder chains, substreams,
    files info) + decode via stdlib `lzma`(raw)/`bz2`/`zlib` + STORED; true pull
    streaming for `stream_members()`, decode-from-folder-start for random `open()`;
-   PPMd/Deflate64 via `[7z]`, AES via `[crypto]`; **BCJ2 and unknown method IDs
+   PPMd/Deflate64 and AES via `[recommended]`; **BCJ2 and unknown method IDs
    rejected explicitly** (never silent fallback). 7z **writing** is deferred (no
-   `[7z-write]` extra in the current release); `py7zr` remains a **dev oracle** only;
+   7z-writing extra in the current release); `py7zr` remains a **dev oracle** only;
    reads import no third-party lib.
 2. **Native RAR** RAR4/RAR5 metadata parse (listing without `unrar`); member data
    via a single `unrar p -inul` pipe demultiplexed by header sizes with incremental
-   CRC32; header-encrypted RAR5 decrypted via `[crypto]`; multi-volume joining.
+   CRC32; header-encrypted RAR5 decrypted via `[recommended]`; multi-volume joining.
 
 ### Tests added
 `format-7z` + `format-rar` scenarios; `testing-contract` oracle cross-validation
@@ -522,14 +523,14 @@ output matches oracles across the corpus; solid `stream_members()` uses one
 ## Phase 7 — CLI (was Phase 9)
 
 **Goal:** the `archivey` command (`list`/`test`/`extract`, pattern filtering)
-behind `[cli]`.
+behind `[recommended]` (tqdm; the command itself is stdlib-only).
 
 **Entry criteria:** Phase 6 green. Pulled forward deliberately: the CLI doubles as
 the maintainer's inspection tool against real-world archives (it served that role in
 DEV) and is the ten-second demo of safe extraction (`VISION.md`).
 
 ### Tests added & acceptance
-All of `cli` (incl. *CLI installed without the `[cli]` extra*).
+All of `cli` (incl. *CLI installed without the `[recommended]` extra* — no tqdm).
 **Gates:** Pyrefly + ty + ruff clean.
 
 ---

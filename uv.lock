@@ -2,7 +2,8 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
-    "python_full_version >= '3.13'",
+    "python_full_version >= '3.14'",
+    "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
     "python_full_version < '3.12'",
 ]
@@ -13,15 +14,6 @@ version = "0.2.0.dev0"
 source = { editable = "." }
 
 [package.optional-dependencies]
-7z = [
-    { name = "backports-zstd", marker = "python_full_version < '3.14'" },
-    { name = "brotli" },
-    { name = "cryptography" },
-    { name = "inflate64" },
-    { name = "lz4" },
-    { name = "pybcj" },
-    { name = "pyppmd" },
-]
 all = [
     { name = "backports-zstd", marker = "python_full_version < '3.14'" },
     { name = "brotli" },
@@ -34,34 +26,14 @@ all = [
     { name = "rapidgzip" },
     { name = "tqdm" },
 ]
-cli = [
-    { name = "tqdm" },
-]
-crypto = [
-    { name = "cryptography" },
-]
-iso = [
-    { name = "pycdlib" },
-]
-lz4 = [
+free-threaded = [
+    { name = "backports-zstd", marker = "python_full_version < '3.14'" },
+    { name = "cryptography", marker = "python_full_version >= '3.14'" },
     { name = "lz4" },
-]
-rar = [
-    { name = "cryptography" },
+    { name = "pycdlib" },
+    { name = "tqdm" },
 ]
 recommended = [
-    { name = "backports-zstd", marker = "python_full_version < '3.14'" },
-    { name = "brotli" },
-    { name = "cryptography" },
-    { name = "inflate64" },
-    { name = "lz4" },
-    { name = "pybcj" },
-    { name = "pycdlib" },
-    { name = "pyppmd" },
-    { name = "rapidgzip" },
-    { name = "tqdm" },
-]
-recommended-lite = [
     { name = "backports-zstd", marker = "python_full_version < '3.14'" },
     { name = "brotli" },
     { name = "cryptography" },
@@ -74,9 +46,6 @@ recommended-lite = [
 ]
 seekable = [
     { name = "rapidgzip" },
-]
-zstd = [
-    { name = "backports-zstd", marker = "python_full_version < '3.14'" },
 ]
 
 [package.dev-dependencies]
@@ -117,25 +86,24 @@ fuzz = [
 
 [package.metadata]
 requires-dist = [
-    { name = "archivey", extras = ["7z", "rar", "iso", "zstd", "lz4", "cli"], marker = "extra == 'recommended-lite'" },
-    { name = "archivey", extras = ["recommended"], marker = "extra == 'all'" },
-    { name = "archivey", extras = ["recommended-lite", "seekable"], marker = "extra == 'recommended'" },
-    { name = "backports-zstd", marker = "python_full_version < '3.14' and extra == '7z'", specifier = ">=1.0.0" },
-    { name = "backports-zstd", marker = "python_full_version < '3.14' and extra == 'zstd'", specifier = ">=1.0.0" },
-    { name = "brotli", marker = "extra == '7z'", specifier = ">=1.2.0" },
-    { name = "cryptography", marker = "extra == '7z'", specifier = ">=45.0.0" },
-    { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=45.0.0" },
-    { name = "cryptography", marker = "extra == 'rar'", specifier = ">=45.0.0" },
-    { name = "inflate64", marker = "extra == '7z'", specifier = ">=1.0.0" },
-    { name = "lz4", marker = "extra == '7z'", specifier = ">=4.4.5" },
-    { name = "lz4", marker = "extra == 'lz4'", specifier = ">=4.4.5" },
-    { name = "pybcj", marker = "extra == '7z'", specifier = ">=1.0.6" },
-    { name = "pycdlib", marker = "extra == 'iso'", specifier = ">=1.16.0" },
-    { name = "pyppmd", marker = "extra == '7z'", specifier = ">=1.3.1" },
+    { name = "archivey", extras = ["recommended", "seekable"], marker = "extra == 'all'" },
+    { name = "backports-zstd", marker = "python_full_version < '3.14' and extra == 'free-threaded'", specifier = ">=1.0.0" },
+    { name = "backports-zstd", marker = "python_full_version < '3.14' and extra == 'recommended'", specifier = ">=1.0.0" },
+    { name = "brotli", marker = "extra == 'recommended'", specifier = ">=1.2.0" },
+    { name = "cryptography", marker = "python_full_version >= '3.14' and extra == 'free-threaded'", specifier = ">=45.0.0" },
+    { name = "cryptography", marker = "extra == 'recommended'", specifier = ">=45.0.0" },
+    { name = "inflate64", marker = "extra == 'recommended'", specifier = ">=1.0.0" },
+    { name = "lz4", marker = "extra == 'free-threaded'", specifier = ">=4.4.5" },
+    { name = "lz4", marker = "extra == 'recommended'", specifier = ">=4.4.5" },
+    { name = "pybcj", marker = "extra == 'recommended'", specifier = ">=1.0.6" },
+    { name = "pycdlib", marker = "extra == 'free-threaded'", specifier = ">=1.16.0" },
+    { name = "pycdlib", marker = "extra == 'recommended'", specifier = ">=1.16.0" },
+    { name = "pyppmd", marker = "extra == 'recommended'", specifier = ">=1.3.1" },
     { name = "rapidgzip", marker = "extra == 'seekable'", specifier = ">=0.16.0" },
-    { name = "tqdm", marker = "extra == 'cli'", specifier = ">=4.67.0" },
+    { name = "tqdm", marker = "extra == 'free-threaded'", specifier = ">=4.67.0" },
+    { name = "tqdm", marker = "extra == 'recommended'", specifier = ">=4.67.0" },
 ]
-provides-extras = ["7z", "rar", "crypto", "iso", "zstd", "lz4", "cli", "seekable", "recommended-lite", "recommended", "all"]
+provides-extras = ["recommended", "seekable", "free-threaded", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -192,7 +160,8 @@ name = "atheris"
 version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.13'",
+    "python_full_version >= '3.14'",
+    "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*'",
 ]
 wheels = [

@@ -1,1 +1,1 @@
-"""Command-line interface for archivey (stdlib argparse; tqdm optional via ``[cli]``)."""
+"""Command-line interface for archivey (stdlib argparse; tqdm optional via ``[recommended]``)."""

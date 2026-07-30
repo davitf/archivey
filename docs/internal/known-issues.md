@@ -301,10 +301,10 @@ With the current `unpack_size`/`max_length` bound (see below), the same Linux
 `warmup_codecs` soak was **0/80** crashes on 1.3.1 — so bounding decode is an effective
 mitigation even on the crashy wheel.
 
-**Version floor decision:** the `[7z]` extra now requires **`pyppmd>=1.3.1`**. Pinning
+**Version floor decision:** the `[recommended]` extra now requires **`pyppmd>=1.3.1`**. Pinning
 older is worse on every axis: 1.1.x/1.2.0 silently return *wrong bytes* on chunked
 bounded decodes (quiet data corruption beats a crash only if you never notice it),
-`py7zr` ≥1.1 hard-requires `pyppmd>=1.3.1` (dependency conflict with the `[7z-write]`
+`py7zr` ≥1.1 hard-requires `pyppmd>=1.3.1` (dependency conflict with a would-be 7z-writing
 extra and the test oracle), and 1.3.1 is the first line with CPython 3.14 wheels. With
 the floor raised, the 1.1.x premature-eof recovery pumps were removed from
 `PpmdDecoder.flush` — it now injects at most the one documented extra NUL and reports

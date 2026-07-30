@@ -32,8 +32,8 @@ Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
 
 **ZIP**
 * **GAP** ZIPX XZ (method 95) — no codec path yet.
-* ZIPX PPMd / Zstd decode via the shared codec layer when `[7z]` / `[zstd]` are
-  installed; WinZip AES (method 99) decrypts via `[crypto]`.
+* ZIPX PPMd / Zstd decode via the shared codec layer when `[recommended]` is
+  installed; WinZip AES (method 99) decrypts via the same extra.
 * **GAP** ZIP members whose payload exceeds the declared size (libarchive
   fixtures) — size/CRC checks reject them.
 * **GAP** assorted ZIP edge cases (extra padding, UTF-8 path presentation,
@@ -207,7 +207,7 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         "HARNESS: libarchive lists no members for this bare lzip fixture",
     ),
     # --- ZIP ---
-    # ZIPX PPMd8 / Zstd / WinZip AES now decode via the shared codec / [crypto] paths;
+    # ZIPX PPMd8 / Zstd / WinZip AES now decode via the shared codec / cryptography paths;
     # they are no longer xfailed (AES fixtures use passwords from `_PASSWORDS`).
     "test_read_format_zip_xz_multi.zipx": (
         True,

@@ -1,4 +1,4 @@
-"""AES decrypt stage via the ``[crypto]`` extra (``cryptography`` package).
+"""AES decrypt stage via the ``[recommended]`` extra (``cryptography`` package).
 
 Format parsers must not import ``cryptography`` directly — only this module does
 (the backend stays swappable). AES is a *pipeline stage* ahead of a decompressor
@@ -26,9 +26,14 @@ from typing import BinaryIO, Protocol
 
 from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
+from archivey.types import MissingComponent
 
-# The package name surfaced to users (matches the [crypto] extra).
+# The package name surfaced to users, and the single install hint every AES raise site
+# (here and in zip_aes) formats its message from.
 CRYPTO_PACKAGE = "cryptography"
+CRYPTO_REQUIREMENT = MissingComponent(
+    CRYPTO_PACKAGE, "pip install archivey[recommended]", ("aes",)
+)
 
 # 7-Zip's own decoder clamp (7zAes.cpp ``k_NumCyclesPower_Supported_MAX``): accept
 # ``NumCyclesPower <= 24`` or the ``0x3F`` no-hash sentinel; reject 25–62.
@@ -126,10 +131,7 @@ def get_crypto_backend() -> CryptoBackend:
     rather than importing any crypto library themselves.
     """
     if not _crypto_available():
-        raise PackageNotInstalledError(
-            f"The {CRYPTO_PACKAGE!r} package is required for AES decryption "
-            f"(install the 'crypto' extra)."
-        )
+        raise PackageNotInstalledError(CRYPTO_REQUIREMENT.message("AES decryption"))
     return _CryptographyBackend()
 
 

@@ -1202,3 +1202,21 @@ def test_lz4_without_lz4_package_raises(monkeypatch: pytest.MonkeyPatch) -> None
         reader._open_folder_pipeline(  # noqa: SLF001 - focused reader unit test
             io.BytesIO(b""), _folder(b"\x04\xf7\x11\x04"), password=None
         )
+
+
+def test_missing_pybcj_hint_names_a_real_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LZMA1+BCJ without pybcj must advise an extra that can actually be installed.
+
+    ``sys.modules[name] = None`` makes the guarded ``import bcj`` raise ImportError, so
+    this runs in every dependency leg including the one where pybcj is present.
+    """
+    import sys
+
+    from archivey.internal.backends import sevenzip_pipeline
+
+    monkeypatch.setitem(sys.modules, "bcj", None)
+    with pytest.raises(PackageNotInstalledError) as excinfo:
+        sevenzip_pipeline._require_pybcj()
+    message = str(excinfo.value)
+    assert "pybcj" in message
+    assert "archivey[recommended]" in message

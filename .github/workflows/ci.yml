@@ -281,10 +281,11 @@ jobs:
   # free-thread support makes CPython silently *re-enable* the GIL on import, which would
   # turn this whole job into a GIL-ed run pretending to be a free-threaded one — so the
   # extras stage asserts the GIL is still off before it runs anything.
-  # Deliberately excluded (measured 2026-07-29, CPython 3.13.7t):
+  # Deliberately excluded from [free-threaded] (measured 2026-07-29, CPython 3.13.7t):
   #   pyppmd / inflate64 / brotli / rapidgzip -> import re-enables the GIL
-  #   cryptography ([crypto], and so [7z]/[rar]) -> cffi does not support free-threaded
-  #     3.13 at all ("Upgrade to free-threaded 3.14 or newer"), so it cannot be installed
+  #   cryptography -> cffi does not support free-threaded 3.13 at all ("Upgrade to
+  #     free-threaded 3.14 or newer"), so it cannot be installed. It IS in the extra
+  #     behind a python_version >= '3.14' marker, where it keeps the GIL disabled.
   # Revisit both lists on 3.14t. See docs/support-matrix.md.
   free-threaded-concurrency:
     name: free-threaded-concurrency / py3.13t / core + GIL-safe extras
@@ -314,15 +315,19 @@ jobs:
           pytest tests/ -q --timeout=120 -o addopts=
 
       - name: Sync GIL-safe extras
-        run: uv sync --python 3.13t --no-dev --extra iso --extra zstd --extra lz4 --extra cli
+        # [free-threaded] IS this list, so the job now installs the documented extra
+        # rather than a hand-maintained copy of it that could drift from the packaging.
+        run: uv sync --python 3.13t --no-dev --extra free-threaded
       - name: Assert the GIL is still disabled with those extras
         # Fail loudly if a future release of one of these starts re-enabling the GIL:
         # the job would otherwise keep passing while testing nothing free-threaded.
+        # cryptography is deliberately absent here: its cffi dependency does not build on
+        # free-threaded 3.13, so [free-threaded] gates it behind python_version >= '3.14'.
         run: >
           uv run --python 3.13t --no-sync python -W ignore -c
           "import sys, pycdlib, lz4.frame, tqdm, backports.zstd;
           assert not sys._is_gil_enabled(), 'an extra re-enabled the GIL';
-          print('GIL still disabled with iso/zstd/lz4/cli')"
+          print('GIL still disabled with [free-threaded]')"
       - name: Run full suite + concurrent_reader (GIL-safe extras)
         run: >
           uv run --python 3.13t --no-sync

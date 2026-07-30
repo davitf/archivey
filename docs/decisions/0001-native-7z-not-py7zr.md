@@ -21,5 +21,7 @@ explicitly rather than falling back to another reader.
 ## Consequences
 
 - 7z **reading** is part of the zero-dep core for common codecs.
-- Optional `[7z]` covers PPMd / Deflate64 / Zstd / Brotli / AES.
+- Optional `[recommended]` covers PPMd / Deflate64 / Zstd / Brotli / AES. (Recorded as
+  `[7z]`; the format-named extras were consolidated into four capability extras
+  before `0.2.0`.)
 - Longer implementation road than a wrapper; memory-safety and streaming control improve.

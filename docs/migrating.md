@@ -48,7 +48,7 @@ What changes:
   `ExtractionStatus.BLOCKED`. See [Safe extraction](safe-extraction.md).
 - **Passwords are an open-time argument**, not per-call `pwd=`:
   `open_archive("secret.zip", password="hunter2")`. Archivey also reads **WinZip AES**
-  members (with the `[crypto]` extra), which `zipfile` cannot decrypt at all.
+  members (with the `[recommended]` extra), which `zipfile` cannot decrypt at all.
 - **Duplicate names are visible.** `namelist()` returns duplicates with no way to tell
   which one wins; Archivey marks the live entry with `member.is_current`. See
   [duplicate names](usage.md#duplicate-names-and-is_current).
@@ -126,7 +126,7 @@ archivey.extract("archive.7z", dest)
 What changes:
 
 - **No external binary for 7z**, and no CLI output parsing. Archivey has a native 7z
-  reader (common codecs in the core; PPMd/Deflate64 via `[7z]`, AES via `[crypto]`).
+  reader (common codecs in the core; PPMd/Deflate64 and AES via `[recommended]`).
 - **RAR still needs `unrar`** for member *data* — metadata and listing are native. That is
   a licensing constraint, not an oversight ([decision 0002](decisions/0002-native-rar-metadata-unrar-data.md)).
 - **Errors are exceptions, not exit codes**, and hostile archives can't reach a shell:

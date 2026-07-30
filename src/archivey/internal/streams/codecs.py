@@ -126,6 +126,13 @@ _rapidgzip = _optional("rapidgzip")
 # library in the process, which is safe on every platform. See docs/internal/known-issues.md.
 _rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
 
+# The DEFLATE-family codecs are stdlib-backed, so they declare no ``requirement`` — rapidgzip
+# is an *accelerator* they only demand when random access was explicitly requested. It still
+# needs one install hint, shared with the rewind diagnostic that suggests the same package.
+_RAPIDGZIP_REQUIREMENT = MissingComponent(
+    "rapidgzip", "pip install archivey[seekable]", ("random-access",)
+)
+
 
 class _AcceleratorStream(DelegatingStream):
     """Wrap a threaded accelerator (``rapidgzip``) so its underlying object is always *closed*
@@ -912,6 +919,17 @@ class StreamCodec:
         """Whether the optional backing package is importable (optional codecs override)."""
         return True
 
+    def _missing(self, purpose: str, *, note: str = "") -> PackageNotInstalledError:
+        """The error to raise from ``open()`` when this codec's backend is absent.
+
+        Built from the declared ``requirement`` so the install advice matches what
+        ``format_availability()`` reports for the same codec.
+        """
+        assert self.requirement is not None, (
+            f"{type(self).__name__} raises PackageNotInstalledError but declares no requirement"
+        )
+        return PackageNotInstalledError(self.requirement.message(purpose, note=note))
+
     @property
     def probes_content(self) -> bool:
         """Whether this codec overrides the no-op base content probe (the detector uses it)."""
@@ -967,8 +985,7 @@ class GzipCodec(StreamCodec):
         if _rapidgzip_enabled(config, available=_rapidgzip is not None):
             if _rapidgzip is None:
                 raise PackageNotInstalledError(
-                    "The 'rapidgzip' package is required for gzip random access "
-                    "(install the 'seekable' extra)."
+                    _RAPIDGZIP_REQUIREMENT.message("gzip random access")
                 )
             if config.expected_decompressed_size is not None:
                 # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
@@ -1079,8 +1096,7 @@ class Bzip2Codec(StreamCodec):
         ):
             if _rapidgzip_bzip2 is None:
                 raise PackageNotInstalledError(
-                    "The 'rapidgzip' package is required for bzip2 random access "
-                    "(install the 'seekable' extra)."
+                    _RAPIDGZIP_REQUIREMENT.message("bzip2 random access")
                 )
             # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
@@ -1326,8 +1342,7 @@ class DeflateCodec(_ZlibErrorCodec):
         if _rapidgzip_enabled(config, available=_rapidgzip is not None):
             if _rapidgzip is None:
                 raise PackageNotInstalledError(
-                    "The 'rapidgzip' package is required for deflate random access "
-                    "(install the 'seekable' extra)."
+                    _RAPIDGZIP_REQUIREMENT.message("deflate random access")
                 )
             # rapidgzip auto-detects raw DEFLATE; pass the source unwrapped. Callers MUST
             # bound the input (container SlicingStream / exact file) — rapidgzip over-reads
@@ -1360,8 +1375,7 @@ class ZlibCodec(_ZlibErrorCodec):
         if _rapidgzip_enabled(config, available=_rapidgzip is not None):
             if _rapidgzip is None:
                 raise PackageNotInstalledError(
-                    "The 'rapidgzip' package is required for zlib random access "
-                    "(install the 'seekable' extra)."
+                    _RAPIDGZIP_REQUIREMENT.message("zlib random access")
                 )
             # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
             return _wrap_accelerated_length(_open_rapidgzip(source), config)
@@ -1389,7 +1403,7 @@ class ZstdCodec(StreamCodec):
     stream_format = StreamFormat.ZSTD
     magic = (MagicSignature(0, b"\x28\xb5\x2f\xfd", ArchiveFormat.ZST),)
     requirement = MissingComponent(
-        "backports.zstd", "pip install archivey[zstd]", ("zstd",)
+        "backports.zstd", "pip install archivey[recommended]", ("zstd",)
     )
 
     def _backend_present(self) -> bool:
@@ -1399,10 +1413,11 @@ class ZstdCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if _zstd is None:
-            raise PackageNotInstalledError(
-                "The zstd backend is not available: install backports.zstd via the "
-                "'zstd' extra (Python < 3.14) or use Python 3.14+ with stdlib "
-                "compression.zstd."
+            # The backport is only relevant below 3.14; on 3.14+ the stdlib module is used,
+            # so the bare hint alone would send such a caller installing a no-op.
+            raise self._missing(
+                "zstd streams",
+                note="On Python 3.14+ the stdlib compression.zstd module is used instead.",
             )
         return _zstd.open(source, "rb")
 
@@ -1421,7 +1436,7 @@ class Lz4Codec(StreamCodec):
     codec = Codec.LZ4
     stream_format = StreamFormat.LZ4
     magic = (MagicSignature(0, b"\x04\x22\x4d\x18", ArchiveFormat.LZ4),)
-    requirement = MissingComponent("lz4", "pip install archivey[lz4]", ("lz4",))
+    requirement = MissingComponent("lz4", "pip install archivey[recommended]", ("lz4",))
 
     def _backend_present(self) -> bool:
         return _lz4_frame is not None
@@ -1430,9 +1445,7 @@ class Lz4Codec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if _lz4_frame is None:
-            raise PackageNotInstalledError(
-                "The 'lz4' package is required for lz4 streams (install the 'lz4' extra)."
-            )
+            raise self._missing("lz4 streams")
         # lz4's frame reader seeks by re-decompressing from the start (the outer ArchiveStream
         # warns on a rewind — see rewind_warning).
         return ensure_binaryio(_lz4_frame.open(source, "rb"))
@@ -1452,7 +1465,9 @@ class BrotliCodec(StreamCodec):
     codec = Codec.BROTLI
     stream_format = StreamFormat.BROTLI
     # Brotli has no signature; the detector recognizes it by decoding a bounded prefix.
-    requirement = MissingComponent("brotli", "pip install archivey[7z]", ("brotli",))
+    requirement = MissingComponent(
+        "brotli", "pip install archivey[recommended]", ("brotli",)
+    )
 
     def _backend_present(self) -> bool:
         return _brotli is not None
@@ -1461,9 +1476,7 @@ class BrotliCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if _brotli is None:
-            raise PackageNotInstalledError(
-                "The 'brotli' package is required for Brotli streams (install the '7z' extra)."
-            )
+            raise self._missing("Brotli streams")
         # Brotli has no random-access index; a backward seek re-decodes from the start (the
         # outer ArchiveStream warns — see rewind_warning).
         return BrotliDecompressorStream(source)
@@ -1520,7 +1533,9 @@ def _parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
 
 class PpmdCodec(StreamCodec):
     codec = Codec.PPMD
-    requirement = MissingComponent("pyppmd", "pip install archivey[7z]", ("ppmd",))
+    requirement = MissingComponent(
+        "pyppmd", "pip install archivey[recommended]", ("ppmd",)
+    )
 
     def _backend_present(self) -> bool:
         return _pyppmd is not None
@@ -1529,9 +1544,7 @@ class PpmdCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if _pyppmd is None:
-            raise PackageNotInstalledError(
-                "The 'pyppmd' package is required for PPMd streams (install the '7z' extra)."
-            )
+            raise self._missing("PPMd streams")
         # ZIP method 98 supplies order/mem/restore directly (PPMd8). 7z supplies a
         # var.H properties blob (PPMd7). Prefer an explicit ``pack_size``; fall back to
         # the sized source length (``SlicingStream`` / path size) filled into
@@ -1576,7 +1589,7 @@ class PpmdCodec(StreamCodec):
 class Deflate64Codec(StreamCodec):
     codec = Codec.DEFLATE64
     requirement = MissingComponent(
-        "inflate64", "pip install archivey[7z]", ("deflate64",)
+        "inflate64", "pip install archivey[recommended]", ("deflate64",)
     )
 
     def _backend_present(self) -> bool:
@@ -1586,10 +1599,7 @@ class Deflate64Codec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if _inflate64 is None:
-            raise PackageNotInstalledError(
-                "The 'inflate64' package is required for Deflate64 streams "
-                "(install the '7z' extra)."
-            )
+            raise self._missing("Deflate64 streams")
         return Deflate64DecompressorStream(source)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:

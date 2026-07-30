@@ -23,7 +23,7 @@ from archivey.exceptions import (
     EncryptionError,
     PackageNotInstalledError,
 )
-from archivey.internal.streams.crypto import CRYPTO_PACKAGE, _crypto_available
+from archivey.internal.streams.crypto import CRYPTO_REQUIREMENT, _crypto_available
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, read_exact
 
 # WinZip AES extra-field header id.
@@ -100,8 +100,7 @@ class _AesCtrLe:
 
         if not _crypto_available():
             raise PackageNotInstalledError(
-                f"The {CRYPTO_PACKAGE!r} package is required for WinZip AES decryption "
-                f"(install the 'crypto' extra)."
+                CRYPTO_REQUIREMENT.message("WinZip AES decryption")
             )
         self._encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
         self._counter = 1
@@ -216,12 +215,12 @@ def open_winzip_aes_member(
 
     ``raw`` is the full member payload (salt + verify + ciphertext + HMAC) of length
     ``compress_size``. Raises ``EncryptionError`` on a wrong password (fast-fail on the
-    2-byte verification value) and ``PackageNotInstalledError`` when ``[crypto]`` is absent.
+    2-byte verification value) and ``PackageNotInstalledError`` when ``cryptography``
+    (the ``[recommended]`` extra) is absent.
     """
     if not _crypto_available():
         raise PackageNotInstalledError(
-            f"The {CRYPTO_PACKAGE!r} package is required for WinZip AES decryption "
-            f"(install the 'crypto' extra)."
+            CRYPTO_REQUIREMENT.message("WinZip AES decryption")
         )
     salt_len = aes.salt_len
     overhead = salt_len + 2 + _HMAC_LEN

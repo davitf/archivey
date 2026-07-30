@@ -8,7 +8,7 @@ Module map:
 
 - :mod:`.zip_reader` — ZIP (stdlib central directory; codecs/crypto for member data)
 - :mod:`.tar_reader` — TAR / compressed TAR (stdlib ``tarfile``)
-- :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[iso]``)
+- :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /

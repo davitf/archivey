@@ -8,6 +8,7 @@ Stage 4 with the real ISO backend.
 
 from __future__ import annotations
 
+import importlib.util
 import zipfile
 from pathlib import Path
 from typing import Mapping
@@ -58,7 +59,7 @@ class _OptionalPresentBackend(ReadBackend):
 class _OptionalMissingBackend(ReadBackend):
     FORMATS = (ArchiveFormat.ISO,)
     OPTIONAL_DEPENDENCY = "a_package_that_does_not_exist_xyz"
-    INSTALL_HINT = "pip install archivey[iso]"
+    INSTALL_HINT = "pip install archivey[recommended]"
 
     def open_read(
         self, source, streaming, password, encoding, archive_name
@@ -91,7 +92,7 @@ def test_optional_missing_backend_is_known_but_unavailable(
     assert avail.support is FormatSupport.NONE
     assert len(avail.missing) == 1
     assert avail.missing[0].name == "a_package_that_does_not_exist_xyz"
-    assert "archivey[iso]" in avail.missing[0].install_hint
+    assert "archivey[recommended]" in avail.missing[0].install_hint
 
 
 def test_optional_present_backend_is_full(registry: BackendRegistry) -> None:
@@ -119,7 +120,7 @@ def test_reader_for_missing_dependency_raises_with_hint(
         registry.reader_for_format(ArchiveFormat.ISO)
     msg = str(excinfo.value)
     assert "a_package_that_does_not_exist_xyz" in msg
-    assert "archivey[iso]" in msg
+    assert "archivey[recommended]" in msg
 
 
 def test_reader_for_unknown_format_raises(registry: BackendRegistry) -> None:
@@ -145,7 +146,7 @@ def test_magic_and_extension_tables_aggregate(registry: BackendRegistry) -> None
 def test_zip_partial_when_optional_codecs_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # ZIP can store deflate64 (inflate64 / [7z]) and zstd ([zstd]); with those absent it
+    # ZIP can store deflate64 (inflate64) and zstd, both in [recommended]; with those absent it
     # still opens and lists common (stored/deflate) members -> PARTIAL.
     monkeypatch.setattr(codecs_module, "_inflate64", None)
     monkeypatch.setattr(codecs_module, "_zstd", None)
@@ -262,7 +263,7 @@ def test_iso_none_without_pycdlib(monkeypatch: pytest.MonkeyPatch) -> None:
     avail = format_availability(ArchiveFormat.ISO)
     assert avail.support is FormatSupport.NONE
     assert any(m.name == "pycdlib" for m in avail.missing)
-    assert any("archivey[iso]" in m.install_hint for m in avail.missing)
+    assert any("archivey[recommended]" in m.install_hint for m in avail.missing)
 
     # NONE is excluded from the supported list but still known.
     assert ArchiveFormat.ISO not in list_supported_formats()
@@ -304,3 +305,34 @@ def test_compressed_tar_full_when_stream_codec_present(
 ) -> None:
     monkeypatch.setattr(codecs_module, "_zstd", object())
     assert format_availability(ArchiveFormat.TAR_ZST).support is FormatSupport.FULL
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("pycdlib") is None,
+    reason=(
+        "with pycdlib genuinely absent the registry gate rejects ISO before dispatch "
+        "reaches the backend (that path is test_iso_none_without_pycdlib); this test "
+        "needs the gate to pass so the reader's own raise runs"
+    ),
+)
+def test_iso_reader_missing_pycdlib_hint_matches_availability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reader's own raise must advise the same extra the registry reports.
+
+    Patching only ``iso_reader.pycdlib`` (not the registry's ``_optional``) lets dispatch
+    reach the backend, which is the path that used to name a deleted ``[iso]`` extra while
+    ``format_availability`` already said ``[recommended]``.
+    """
+    import io
+
+    from archivey.exceptions import PackageNotInstalledError
+    from archivey.internal.backends import iso_reader
+
+    monkeypatch.setattr(iso_reader, "pycdlib", None)
+    with pytest.raises(PackageNotInstalledError) as excinfo:
+        open_archive(io.BytesIO(b"not an iso"), format=ArchiveFormat.ISO)
+    message = str(excinfo.value)
+    assert "pycdlib" in message
+    assert "archivey[recommended]" in message
+    assert iso_reader.IsoReadBackend.INSTALL_HINT in message

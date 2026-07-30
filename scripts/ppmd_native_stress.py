@@ -454,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         import pyppmd  # noqa: F401
     except ImportError:
         _safe_print(
-            "pyppmd not installed; cannot stress PPMd. Install archivey[7z].",
+            "pyppmd not installed; cannot stress PPMd. Install archivey[recommended].",
             file=sys.stderr,
         )
         return 2
