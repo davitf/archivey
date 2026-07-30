@@ -14,18 +14,27 @@ on TAR/7z. Cost receipts alone are too passive (warnings deferred).
 
 ## Decision
 
-Default `member_streams=MemberStreams(0)`:
+Both capabilities are off by default:
 
 - streams report `seekable() is False`; `seek()` → `io.UnsupportedOperation`
 - at most one live member stream; a second overlapping `open()` → `ConcurrentAccessError`
 
-Opt in with `MemberStreams.SEEKABLE` and/or `MemberStreams.CONCURRENT` at
-`open_archive()`. Same rule for `open_stream(..., seekable=False)`. Seek indexes /
-accelerators are **demand-driven**. Uniform across every format, including directory.
+Opt in with `open_archive(..., seekable_members=True, concurrent_members=True)`. Same
+rule for `open_stream(..., seekable=False)`. Seek indexes / accelerators are
+**demand-driven**. Uniform across every format, including directory.
+
+**Amended before `0.2.0`:** the opt-in was originally spelled
+`member_streams=MemberStreams.SEEKABLE | MemberStreams.CONCURRENT`. The decision above
+is unchanged — same defaults, same errors, same semantics — but the two entry points now
+share one vocabulary (`seekable` means the same thing in `open_archive` and
+`open_stream`) instead of splitting a flag enum against a bool. This is what ADR 0004
+already chose in the analogous case: prefer a bool when the mode count is small, and
+these are two specific traps rather than an open-ended set. `MemberStreams` remains
+exported and is still the declared-capability value on `CostReceipt` and in diagnostics.
 
 ## Consequences
 
 - Default path: no shared-handle locks, no seek tables, no accelerators.
 - Strict default is reversible pre-1.0; permissive-then-gate would be a breaking change.
 - Solid **open-order** cost remains the caller’s algorithm (`AccessCost` /
-  `stream_members()`), not something `CONCURRENT` erases.
+  `stream_members()`), not something `concurrent_members=True` erases.

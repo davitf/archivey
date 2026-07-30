@@ -579,8 +579,9 @@ class BaseArchiveReader(ArchiveReader):
         ``zipfile``) are not required to route through an archivey ``SharedSource`` view,
         but archivey-owned reader state still MUST NOT hold unsynchronized per-open scratch.
 
-        Concurrent ``open`` is supported when the reader was opened with
-        ``MemberStreams.CONCURRENT``: first-touch materialization is coordinated
+        Concurrent ``open`` is supported when the reader declared concurrency
+        (``MemberStreams.CONCURRENT``, from ``open_archive(concurrent_members=True)``):
+        first-touch materialization is coordinated
         (wait/share), and after the snapshot is published workers may fan out. Forward-only
         / streaming passes remain single-owner. See ``docs/grab-bag/parallel-reader.md``.
         """
@@ -1438,10 +1439,10 @@ class BaseArchiveReader(ArchiveReader):
     def open(self, member: str | ArchiveMember) -> ArchiveStream:
         """Open member for reading. Follows symlinks.
 
-        Without ``MemberStreams.CONCURRENT``, at most one member stream may be live.
-        With it, concurrent first-touch materialization is coordinated and concurrent
-        ``open`` is supported (see :class:`~archivey.types.MemberStreams`).
-        Positioning requires ``MemberStreams.SEEKABLE``.
+        Without ``open_archive(concurrent_members=True)``, at most one member stream may
+        be live. With it, concurrent first-touch materialization is coordinated and
+        concurrent ``open`` is supported. Positioning requires
+        ``open_archive(seekable_members=True)``.
         """
         # Two independent gates: the access mode (streaming=True forbids random access)
         # and the backend capability (_SUPPORTS_RANDOM_ACCESS, used by the Phase-3
@@ -1623,7 +1624,7 @@ class BaseArchiveReader(ArchiveReader):
     def close(self) -> None:
         """Close the reader.
 
-        Idempotent. Under ``MemberStreams.CONCURRENT``, blocks until in-flight worker
+        Idempotent. With declared concurrency, blocks until in-flight worker
         ``open()`` / ``read()`` / ``get()`` / ``members()`` calls return, then marks the
         reader closed. Escaped open member streams keep their lifecycle leases and remain
         readable until they are closed. A worker that never returns is a caller bug (same

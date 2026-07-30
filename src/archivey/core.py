@@ -98,7 +98,8 @@ def open_archive(
     *,
     format: ArchiveFormat | None = None,
     streaming: bool = False,
-    member_streams: MemberStreams = MemberStreams(0),
+    seekable_members: bool = False,
+    concurrent_members: bool = False,
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
@@ -109,20 +110,22 @@ def open_archive(
     time on a non-seekable source. ``streaming=True`` promises forward-only, single-pass
     access (works on any source, but disables random-access methods).
 
-    ``member_streams`` declares stream capabilities beyond the default forward-only,
-    single-live-stream contract:
+    Member streams are forward-only and single-live by default. Two keyword flags opt
+    into more, each unlocking one specific trap:
 
-    - ``MemberStreams.CONCURRENT`` — multiple member streams may be open at once
+    - ``seekable_members=True`` — ``seek()`` on a member stream works where the backend
+      can provide positioning. Without it, ``seek()`` raises
+      ``io.UnsupportedOperation``.
+    - ``concurrent_members=True`` — multiple member streams may be open at once
       (coordinated first-touch materialization, then worker fan-out; draining close).
-    - ``MemberStreams.SEEKABLE`` — member streams are seekable where the backend can
-      provide positioning.
+      Without it, a second overlapping ``open()`` raises ``ConcurrentAccessError``.
 
-    Without those flags, a second overlapping ``open()`` raises
-    ``ConcurrentAccessError``, and ``seek()`` raises ``io.UnsupportedOperation``.
-    Declared concurrency does **not** gate solid open-order cost — see ``AccessCost`` /
-    ``stream_members()``.
+    ``open_stream`` uses the same vocabulary for the single-stream case
+    (``open_stream(..., seekable=True)``); concurrency is meaningless there, so it has
+    no counterpart. Declared concurrency does **not** gate solid open-order cost — see
+    ``AccessCost`` / ``stream_members()``.
 
-    ``streaming=True`` combined with ``MemberStreams.CONCURRENT`` is rejected
+    ``streaming=True`` combined with ``concurrent_members=True`` is rejected
     (``ArchiveyUsageError``): a forward-only pass cannot fan out.
 
     ``config`` supplies library tuning knobs (accelerator modes, TAR end-of-archive
@@ -165,12 +168,20 @@ def open_archive(
 
     open_site = capture_open_site()
 
-    if streaming and MemberStreams.CONCURRENT in member_streams:
+    if streaming and concurrent_members:
         raise ArchiveyUsageError(
             "open_archive(streaming=True) cannot be combined with "
-            "MemberStreams.CONCURRENT: a forward-only pass has one progressive decoder "
+            "concurrent_members=True: a forward-only pass has one progressive decoder "
             "and cannot fan out concurrent member streams."
         )
+
+    # The public surface is two booleans; everything below the entry point keeps
+    # working in MemberStreams flags, which is also what CostReceipt reports.
+    member_streams = MemberStreams(0)
+    if seekable_members:
+        member_streams |= MemberStreams.SEEKABLE
+    if concurrent_members:
+        member_streams |= MemberStreams.CONCURRENT
 
     passwords = _PasswordCandidates.from_input(password)
 
@@ -285,9 +296,10 @@ def open_stream(
     """Open a single-file compressed stream and return a decompressing stream.
 
     This is the compressed-streams entry point for a bare ``.gz`` / ``.bz2`` / ``.xz`` /
-    … payload (no archive container). Concurrency is not a concept here — the call
-    returns exactly one stream — so seekability is a boolean, not
-    :class:`~archivey.MemberStreams` flags.
+    … payload (no archive container). ``seekable`` is the same capability
+    :func:`open_archive` spells ``seekable_members``; concurrency is not a concept here
+    — the call returns exactly one stream — so there is no counterpart to
+    ``concurrent_members``.
 
     ``seekable=False`` (the default) returns a forward-only stream: ``seekable()`` is
     ``False``, ``seek()`` raises ``io.UnsupportedOperation``, and no seek index or

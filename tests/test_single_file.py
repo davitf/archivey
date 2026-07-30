@@ -24,7 +24,6 @@ from archivey import (
     AcceleratorMode,
     ArchiveFormat,
     ArchiveyConfig,
-    MemberStreams,
     MemberType,
     open_archive,
 )
@@ -211,7 +210,7 @@ def test_xz_size_from_header(tmp_path: Path) -> None:
     with lzma.open(path, "wb") as f:
         f.write(b"x" * 1234)
     # Cheap size from the XZ index requires declared seek demand.
-    with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
+    with open_archive(path, seekable_members=True) as ar:
         assert ar.members()[0].size == 1234
     with open_archive(path) as ar:
         assert ar.members()[0].size is None
@@ -220,7 +219,7 @@ def test_xz_size_from_header(tmp_path: Path) -> None:
 def test_lzip_size_from_trailer(tmp_path: Path) -> None:
     path = tmp_path / "data.lz"
     path.write_bytes(make_lzip_member(b"y" * 777))
-    with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
+    with open_archive(path, seekable_members=True) as ar:
         assert ar.members()[0].size == 777
     with open_archive(path) as ar:
         assert ar.members()[0].size is None
@@ -279,7 +278,7 @@ def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:
     payload = b"lzip-crc-payload" * 3
     path = tmp_path / "data.lz"
     path.write_bytes(make_lzip_member(payload))
-    with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
+    with open_archive(path, seekable_members=True) as ar:
         member = ar.members()[0]
         assert member.size == len(payload)
         assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
@@ -304,7 +303,7 @@ def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
     with patch.object(
         lzip_mod, "_read_index_backwards", wraps=lzip_mod._read_index_backwards
     ) as scanned:
-        with open_archive(path, member_streams=MemberStreams.SEEKABLE) as ar:
+        with open_archive(path, seekable_members=True) as ar:
             member = ar.members()[0]
             assert scanned.call_count == 1, (
                 "size + CRC must share one backward index scan"
@@ -602,7 +601,8 @@ def test_concurrent_open_same_member_interleaved() -> None:
     payload = b"abcdefghijklmnopqrstuvwxyz" * 40
     with open_archive(
         io.BytesIO(gzip.compress(payload)),
-        member_streams=MemberStreams.CONCURRENT | MemberStreams.SEEKABLE,
+        concurrent_members=True,
+        seekable_members=True,
     ) as ar:
         (member,) = ar.members()
         s1 = ar.open(member)
@@ -621,9 +621,7 @@ def test_reentrant_open_after_first_read(tmp_path: Path) -> None:
     path = tmp_path / "data.txt.gz"
     payload = b"reentrant payload " * 50
     path.write_bytes(gzip.compress(payload))
-    with open_archive(
-        path, member_streams=MemberStreams.CONCURRENT | MemberStreams.SEEKABLE
-    ) as ar:
+    with open_archive(path, concurrent_members=True, seekable_members=True) as ar:
         (member,) = ar.members()
         first = ar.open(member)
         assert first.read(8) == payload[:8]

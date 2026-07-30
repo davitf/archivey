@@ -1,36 +1,46 @@
 ## MODIFIED Requirements
 
-### Requirement: Member stream capabilities are declared with booleans
+### Requirement: Declared capabilities compose with the two access modes
 
-The system SHALL let callers declare member-stream capabilities at `open_archive` with
-two keyword-only booleans, `seekable_members` and `concurrent_members`, both defaulting
-to `False`. The system SHALL NOT expose a flag-enum parameter for this purpose.
+`streaming` SHALL remain the only access-mode choice. `seekable_members` /
+`concurrent_members` SHALL declare stream capabilities **within** a mode (not a third
+mode; no `ArchiveyConfig` equivalent). Ownership, leases, materialization, and
+free-threaded rules for declared concurrency live in `reader-concurrency`; this
+requirement only states how the capabilities compose with `streaming`.
 
-`open_stream` SHALL keep its `seekable: bool` parameter, and the two entry points SHALL
-use the same `seekable` vocabulary for the same concept. Concurrency has no meaning for a
-single standalone stream, so `open_stream` MUST NOT gain a concurrency parameter.
+| Mode | Capability composition |
+| --- | --- |
+| `streaming=False` | `concurrent_members` and/or `seekable_members` MAY be declared; concurrent-open semantics are `reader-concurrency`. Without `concurrent_members`, one live member stream (`archive-reading`). |
+| `streaming=True` | Random `open`/`read` still unavailable. Single progressive pass is exclusive. **`concurrent_members=True` incompatible** → `ArchiveyUsageError` at open. `seekable_members=True` alone MAY be declared. |
 
-Defaults and behaviour are unchanged by the spelling: with neither declared, member
-streams report `seekable() is False`, `seek()` raises `io.UnsupportedOperation`, and at
-most one member stream may be live — a second overlapping `open()` raises
-`ConcurrentAccessError`. Declaring `concurrent_members=True` together with
-`streaming=True` MUST be rejected at open with `ArchiveyUsageError`.
+Random-access `stream_members()` remains exclusive even when random `open()` is
+otherwise available (simultaneous streams use materialize + random `open()` under
+`concurrent_members=True` — see `reader-concurrency`). Detected pass/open/close overlap →
+later op `ArchiveyUsageError`; active pass stays usable. Ops after `reader.close()` →
+`ArchiveyUsageError` (idempotent `close`).
 
-The `MemberStreams` flag type SHALL remain publicly exported and SHALL remain the value
-reported for declared capabilities on `CostReceipt` and in diagnostics. It is no longer
-an input to `open_archive`.
+Defaults and behaviour are unchanged by the spelling: this requirement previously
+described the same composition in terms of a `member_streams` flag enum.
 
-Declaring `concurrent_members=True` MUST NOT change solid open-order cost; that remains
-the caller's algorithm via `AccessCost` / `stream_members()`.
-
-#### Scenario: declaring capabilities
+#### Scenario: mode × capability matrix
 
 | Case | Expected |
 | --- | --- |
-| `open_archive(p)` | Forward-only streams; one live at a time; `seek()` raises `io.UnsupportedOperation` |
-| `open_archive(p, seekable_members=True)` | Member streams seekable; still one live at a time |
-| `open_archive(p, concurrent_members=True)` | Overlapping opens allowed after materialization; streams not seekable |
-| `open_archive(p, seekable_members=True, concurrent_members=True)` | Both capabilities |
-| `open_archive(p, streaming=True, concurrent_members=True)` | `ArchiveyUsageError` at open |
-| `open_archive(p, member_streams=...)` | `TypeError` — the parameter no longer exists |
-| `reader.cost` after declaring | Declared capabilities reported as a `MemberStreams` value |
+| `streaming=True` + `concurrent_members=True` | `ArchiveyUsageError` at open; no reader |
+| RA + `concurrent_members=True` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
+| Active pass + conflicting pass/open/close | Later → `ArchiveyUsageError`; original pass usable |
+| RA `stream_members` active + `open()` | `ArchiveyUsageError` |
+| `extract_all` drives child `stream_members` | Permitted composition; unrelated public pass rejected |
+
+### Requirement: Concurrent-stream cost is informational
+
+`access_cost` / `solid_block_count` describe work (including under a declared
+simultaneous schedule). They SHALL NOT permit or deny capabilities —
+`concurrent_members` is the only gate (`reader-concurrency`). Solid open-*order* cost
+is reported here and steered toward `stream_members()`, not gated.
+
+#### Scenario: cost vs capability
+
+| Case | Expected |
+| --- | --- |
+| `concurrent_members=True` on `DIRECT` and `SOLID` readers, multiple streams | Both supported and byte-correct; only reported/repeated work differs |

@@ -15,8 +15,8 @@ tables in [Safe extraction](safe-extraction.md); per-format matrices in
 Member streams are forward-only unless you ask. Seeking inside a compressed member
 is never free.
 
-- Without `MemberStreams.SEEKABLE`, `seek()` raises — that is intentional.
-- With `SEEKABLE` but no index or accelerator, a backward seek **re-decompresses
+- Without `seekable_members=True`, `seek()` raises — that is intentional.
+- With `seekable_members=True` but no index or accelerator, a backward seek **re-decompresses
   from the start** (`STREAM_REWIND_REDECOMPRESSES`).
 - Under `use_rapidgzip=AUTO`, rapidgzip is used only when seekability is declared
   and the known compressed input is large enough (about 1 MiB). Smaller members
@@ -31,7 +31,7 @@ opening members out of order can decode the same block repeatedly.
 
 - Prefer one forward pass: `stream_members()` (or iterate in archive order).
 - Named `open()` of a mid-block member may restart the solid block.
-- `MemberStreams.CONCURRENT` makes overlapping streams *correct*; it does **not**
+- `concurrent_members=True` makes overlapping streams *correct*; it does **not**
   remove solid open-order cost.
 
 See [Access costs — solid archives](costs.md#solid-archives-prefer-one-forward-pass).

@@ -45,7 +45,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from archivey import MemberStreams, open_archive
+from archivey import open_archive
 from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.base_reader import BaseArchiveReader
@@ -125,7 +125,7 @@ def _op_open_list(path: Path) -> tuple[int, int]:
 def _accel_config(*, enabled: bool) -> ArchiveyConfig:
     """Force rapidgzip / indexed-bzip2 (via rapidgzip's IndexedBzip2File) on or off.
 
-    ``ON`` engages the accelerator even without ``MemberStreams.SEEKABLE`` (AUTO would
+    ``ON`` engages the accelerator even without ``seekable_members=True`` (AUTO would
     not). The bzip2 accelerator is rapidgzip's bundled decoder, not the separate
     ``indexed_bzip2`` package — see codecs.py.
     """
@@ -137,12 +137,12 @@ def _op_read_all(
     path: Path,
     *,
     config: ArchiveyConfig | None = None,
-    member_streams: MemberStreams = MemberStreams(0),
+    seekable_members: bool = False,
     password: bytes | str | None = None,
 ) -> tuple[int, int, int]:
     with enable_measurement():
         with open_archive(
-            path, config=config, member_streams=member_streams, password=password
+            path, config=config, seekable_members=seekable_members, password=password
         ) as reader:
             base = _as_base(reader)
             unpacked = 0
@@ -172,12 +172,12 @@ def _op_read_all_unmeasured(
     path: Path,
     *,
     config: ArchiveyConfig | None = None,
-    member_streams: MemberStreams = MemberStreams(0),
+    seekable_members: bool = False,
     password: bytes | str | None = None,
 ) -> None:
     """Read every member without measurement wrappers — fair wall-time peer."""
     with open_archive(
-        path, config=config, member_streams=member_streams, password=password
+        path, config=config, seekable_members=seekable_members, password=password
     ) as reader:
         for _member, stream in reader.stream_members():
             if stream is not None:
@@ -386,10 +386,12 @@ def run_cases(
         path: Path,
         *,
         config: ArchiveyConfig | None = None,
-        member_streams: MemberStreams = MemberStreams(0),
+        seekable_members: bool = False,
     ) -> tuple[float, float]:
         def ay() -> None:
-            _op_read_all_unmeasured(path, config=config, member_streams=member_streams)
+            _op_read_all_unmeasured(
+                path, config=config, seekable_members=seekable_members
+            )
 
         if warmup:
             ay_wall, _ignored, std_wall = _interleaved_pair_times(
@@ -560,10 +562,9 @@ def run_cases(
     )
     if has_accel:
         cfg_zip_on = _accel_config(enabled=True)
-        seekable = MemberStreams.SEEKABLE
         _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
             lambda: _op_read_all(
-                fixtures.zip_path, config=cfg_zip_on, member_streams=seekable
+                fixtures.zip_path, config=cfg_zip_on, seekable_members=True
             )
         )
         results.append(
@@ -701,17 +702,16 @@ def run_cases(
             )
             continue
         cfg_on = _accel_config(enabled=True)
-        # SEEKABLE so AUTO would also engage; ON engages either way. Matches the
-        # intended accelerator use case (indexed / parallel decode).
-        seekable = MemberStreams.SEEKABLE
+        # seekable_members so AUTO would also engage; ON engages either way. Matches
+        # the intended accelerator use case (indexed / parallel decode).
         _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
-            lambda p=path, c=cfg_on: _op_read_all(p, config=c, member_streams=seekable)
+            lambda p=path, c=cfg_on: _op_read_all(p, config=c, seekable_members=True)
         )
         wall_on, std_wall_on = pair_wall(
             lambda p=path, s=std_fn: s(p),
             path,
             config=cfg_on,
-            member_streams=seekable,
+            seekable_members=True,
         )
         speedup = (wall_off / wall_on) if wall_on > 0 else None
         speedup_note = f"; vs accel_off {speedup:.2f}×" if speedup is not None else ""

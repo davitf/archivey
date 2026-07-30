@@ -163,7 +163,7 @@ class ArchiveyUsageError(Exception):
 
 
 class ConcurrentAccessError(ArchiveyUsageError):
-    """A second overlapping member stream was opened without ``MemberStreams.CONCURRENT``.
+    """A second overlapping member stream was opened without ``concurrent_members=True``.
 
     The message includes the ``open_archive()`` call site so the error points at where
     the capability should have been declared.

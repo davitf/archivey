@@ -60,11 +60,10 @@ By default streams are **forward-only** and only **one** may be live. Need seeki
 overlapping opens? Declare capabilities:
 
 ```python
-from archivey import MemberStreams
-
 with archivey.open_archive(
     "data.zip",
-    member_streams=MemberStreams.SEEKABLE | MemberStreams.CONCURRENT,
+    seekable_members=True,
+    concurrent_members=True,
 ) as reader:
     ...
 ```
@@ -204,7 +203,7 @@ React to specific cases with the subtypes:
 | `ResourceLimitError` | a listing/extraction safety limit (member count, size) was exceeded |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
-overlapping stream without `MemberStreams.CONCURRENT`, using a closed reader, and similar
+overlapping stream without `concurrent_members=True`, using a closed reader, and similar
 misuse raise [`ArchiveyUsageError`][archivey.ArchiveyUsageError] (e.g.
 `ConcurrentAccessError`), which is **not** an `ArchiveyError` — so a blanket
 `except ArchiveyError` never silently swallows a bug. (When an *archive* genuinely can't

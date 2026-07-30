@@ -12,7 +12,6 @@ from archivey import (
     ArchiveyError,
     ArchiveyUsageError,
     ConcurrentAccessError,
-    MemberStreams,
     open_archive,
 )
 
@@ -30,10 +29,9 @@ def test_second_overlapping_open_raises_concurrent_access_error(tmp_path: Path) 
     with open_archive(root) as reader:
         s1 = reader.open("a.txt")
         with pytest.raises(
-            ConcurrentAccessError, match="MemberStreams.CONCURRENT"
+            ConcurrentAccessError, match="concurrent_members=True"
         ) as ei:
             reader.open("b.txt")
-        assert "concurrent-member-streams" not in str(ei.value).lower() or True
         # Breadcrumb points at this test file.
         assert "test_member_streams.py" in str(ei.value)
         assert s1.read() == b"aaa"
@@ -62,7 +60,7 @@ def test_usage_error_is_not_archivey_error(tmp_path: Path) -> None:
 
 def test_concurrent_flag_allows_overlapping_opens(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
-    with open_archive(root, member_streams=MemberStreams.CONCURRENT) as reader:
+    with open_archive(root, concurrent_members=True) as reader:
         s1 = reader.open("a.txt")
         s2 = reader.open("b.txt")
         assert s1.read() == b"aaa"
@@ -84,7 +82,7 @@ def test_default_streams_are_not_seekable(tmp_path: Path) -> None:
 
 def test_seekable_flag_restores_positioning(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
-    with open_archive(root, member_streams=MemberStreams.SEEKABLE) as reader:
+    with open_archive(root, seekable_members=True) as reader:
         with reader.open("a.txt") as s:
             assert s.seekable() is True
             assert s.read(1) == b"a"
@@ -92,10 +90,21 @@ def test_seekable_flag_restores_positioning(tmp_path: Path) -> None:
             assert s.read() == b"aaa"
 
 
+def test_member_streams_kwarg_is_gone(tmp_path: Path) -> None:
+    """The flag-enum parameter was removed, not deprecated — passing it must fail.
+
+    Python rejects unknown kwargs on its own; this locks the removal so a well-meant
+    "accept both spellings" patch has to delete a test rather than slip through.
+    """
+    root = _two_file_dir(tmp_path)
+    with pytest.raises(TypeError, match="member_streams"):
+        open_archive(root, member_streams="anything")  # type: ignore[call-arg]
+
+
 def test_streaming_plus_concurrent_rejected(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
     with pytest.raises(ArchiveyUsageError, match="streaming=True"):
-        open_archive(root, streaming=True, member_streams=MemberStreams.CONCURRENT)
+        open_archive(root, streaming=True, concurrent_members=True)
 
 
 def test_extract_needs_no_capability(tmp_path: Path) -> None:

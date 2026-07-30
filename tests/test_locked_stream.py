@@ -66,7 +66,7 @@ def test_locked_stream_interleaved_reads() -> None:
 def test_tar_iso_concurrent_open_uses_lock(tmp_path) -> None:
     import tarfile
 
-    from archivey import MemberStreams, open_archive
+    from archivey import open_archive
 
     path = tmp_path / "a.tar"
     with tarfile.open(path, "w") as t:
@@ -75,9 +75,7 @@ def test_tar_iso_concurrent_open_uses_lock(tmp_path) -> None:
             info.size = len(data)
             t.addfile(info, io.BytesIO(data))
 
-    with open_archive(
-        path, member_streams=MemberStreams.CONCURRENT | MemberStreams.SEEKABLE
-    ) as ar:
+    with open_archive(path, concurrent_members=True, seekable_members=True) as ar:
         s1 = ar.open("a.txt")
         s2 = ar.open("b.txt")
         assert s1.read(2) == b"aa"

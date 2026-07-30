@@ -56,7 +56,7 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   prefer a single forward pass.
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
   pass.
-- `MemberStreams.CONCURRENT` uses a per-reader shared-handle lock (same shape as ISO).
+- `concurrent_members=True` uses a per-reader shared-handle lock (same shape as ISO).
 - **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
   corrupt member header *after the first* as a clean end of archive — no exception is
   raised; iteration just stops early. Archivey backstops this with its end-of-archive
@@ -137,7 +137,7 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   fail via `VerifyingStream` when the decoded payload is short or wrong. See
   [Gotchas — format limitations](gotchas.md#format-limitations).
 - `.lz` surfaces a whole-member CRC-32 the same way **size** is exposed: only when
-  `MemberStreams.SEEKABLE` is declared on a path source (seekable lzip backend). For
+  `seekable_members=True` is declared on a path source (seekable lzip backend). For
   multi-member lzip the value is derived by combining per-trailer CRCs with each
   member's uncompressed size so it equals `crc32` of the concatenated payloads.
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
@@ -166,7 +166,7 @@ a full `read()` still verifies through the normal path.
 | 7z | FILE | `crc32` |
 | RAR5 | FILE with CRC32 and/or Blake2sp | `crc32` and/or `blake2sp` |
 | single-file `.gz` | single member, seekable/path | `crc32` |
-| single-file `.lz` | seekable path + `MemberStreams.SEEKABLE` (one or many members; multi-member value is combined) | `crc32` |
+| single-file `.lz` | seekable path + `seekable_members=True` (one or many members; multi-member value is combined) | `crc32` |
 | `.bz2` / `.xz` / zlib / brotli / `.Z`, TAR, directory | — | none |
 
 See [usage](usage.md#cheap-dedupe-with-stored-hashes) for the cheap→computed fallback recipe.

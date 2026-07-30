@@ -41,14 +41,14 @@ narrow on purpose.
 
 ### What is claimed
 
-On a reader opened with `MemberStreams.CONCURRENT`, after member materialization, it is
+On a reader opened with `concurrent_members=True`, after member materialization, it is
 safe for multiple threads to call `open()` and to work on **different** member streams
 concurrently:
 
 ```python
-from archivey import MemberStreams, open_archive
+from archivey import open_archive
 
-with open_archive("photos.zip", member_streams=MemberStreams.CONCURRENT) as reader:
+with open_archive("photos.zip", concurrent_members=True) as reader:
     members = reader.members()          # materialize once, on one thread
     # Now: fan out. Each thread opens and reads its own member.
 ```
@@ -98,7 +98,7 @@ than quietly testing a GIL-ed interpreter.
 
 ### The default is fail-fast, not racy
 
-If you do not declare `MemberStreams.CONCURRENT`, the reader allows **one live member
+If you do not pass `concurrent_members=True`, the reader allows **one live member
 stream**. A second overlapping `open()` raises
 [`ConcurrentAccessError`][archivey.ConcurrentAccessError] rather than quietly returning
 interleaved bytes:
@@ -130,7 +130,7 @@ as instantaneous under concurrency.
 
 | Operation | Safe from multiple threads? |
 | --- | --- |
-| `open()` + reading **different** member streams | Yes, with `MemberStreams.CONCURRENT`, after materialization |
+| `open()` + reading **different** member streams | Yes, with `concurrent_members=True`, after materialization |
 | Reading the **same** member stream object | No — one owner per stream |
 | `members()` / `__iter__` / `scan_members()` | No — single-owner; materialize once, then share the result |
 | `extract_all()` / `stream_members()` | No — single-owner passes |

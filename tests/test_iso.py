@@ -13,7 +13,6 @@ from archivey import (
     ArchiveFormat,
     CompressionAlgorithm,
     CompressionMethod,
-    MemberStreams,
     MemberType,
     detect_format,
     format_availability,
@@ -180,7 +179,7 @@ def test_read_empty_member(rock_ridge_iso: Path) -> None:
 def test_seek_within_opened_member(rock_ridge_iso: Path) -> None:
     # The opened member stream is seekable (PyCdlibIO via _PyCdlibStream/DelegatingStream)
     # once SEEKABLE is declared.
-    with open_archive(rock_ridge_iso, member_streams=MemberStreams.SEEKABLE) as ar:
+    with open_archive(rock_ridge_iso, seekable_members=True) as ar:
         with ar.open("file.txt") as f:
             assert f.read(5) == b"hello"
             f.seek(0)
