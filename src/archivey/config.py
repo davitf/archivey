@@ -20,7 +20,8 @@ class AcceleratorMode(Enum):
       package is absent: the caller asked for it explicitly).
     - ``OFF`` — never use it; the stream stays sequential-only.
     - ``AUTO`` — use it only when seekability was declared
-      (``MemberStreams.SEEKABLE`` / seek demand). Without declared seek demand, AUTO
+      (``seekable_members=True`` on ``open_archive``, ``seekable=True`` on
+      ``open_stream``, or internal seek demand). Without declared seek demand, AUTO
       leaves the cheaper sequential backend in place (no index/accelerator work). When
       AUTO would enable the accelerator but its package is absent, fall back to
       sequential silently (it is an enhancement, not a requirement). For the

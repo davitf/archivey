@@ -40,9 +40,15 @@ after the tag and free before it.
 
 - `member_streams=` is **removed**, not deprecated. Nothing external depends on it, and
   carrying both spellings would double exactly the surface this change exists to halve.
-- `MemberStreams` **stays exported**. It remains meaningful as the declared-capability
-  value on `CostReceipt` and in diagnostics, and removing a public name buys nothing.
-  Internal plumbing may keep using the flags; only the public entry point changes.
+- `MemberStreams` **stays exported**. It is the internal representation the two booleans
+  map to at the entry point, and the type of the capabilities a reader reports for
+  introspection; removing a public name buys nothing and would be breaking after the tag.
+  Internal plumbing keeps using the flags; only the public entry point changes.
+  (An earlier draft of this proposal claimed the flags are carried on `CostReceipt` and
+  in diagnostics. **They are not** — `CostReceipt` has `listing_cost` / `access_cost` /
+  `stream_capability` / `solid_block_count` / `notes`, and no diagnostic carries a
+  `MemberStreams`. The claim was never true and is corrected here rather than
+  implemented.)
 - The existing rejection of `streaming=True` combined with concurrency keeps its
   behaviour, now phrased against `concurrent_members=True`.
 

@@ -84,7 +84,7 @@ Without `seekable_members=True`, member streams report `seekable() is False` and
 `seek()` raises `io.UnsupportedOperation`. That is intentional: seek indexes and
 accelerators are not built until you ask.
 
-With `SEEKABLE`:
+With `seekable_members=True`:
 
 - XZ / lzip can seek via native indexes
 - gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed
@@ -111,7 +111,7 @@ open_archive(src, concurrent_members=True)
 After members are materialized, workers may `open()` different members concurrently.
 Same-stream access still needs caller synchronization. Reader-wide passes
 (`__iter__` / `stream_members` / `extract_all`) remain single-owner.
-`streaming=True` cannot combine with `CONCURRENT`.
+`streaming=True` cannot combine with `concurrent_members=True`.
 
 ## Non-seekable sources
 

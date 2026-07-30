@@ -16,7 +16,7 @@ Member streams are forward-only unless you ask. Seeking inside a compressed memb
 is never free.
 
 - Without `seekable_members=True`, `seek()` raises — that is intentional.
-- With `SEEKABLE` but no index or accelerator, a backward seek **re-decompresses
+- With `seekable_members=True` but no index or accelerator, a backward seek **re-decompresses
   from the start** (`STREAM_REWIND_REDECOMPRESSES`).
 - Under `use_rapidgzip=AUTO`, rapidgzip is used only when seekability is declared
   and the known compressed input is large enough (about 1 MiB). Smaller members

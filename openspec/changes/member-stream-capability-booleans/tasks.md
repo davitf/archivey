@@ -82,7 +82,65 @@ requirement header, and the requirement that actually defines this surface lives
       both the old parameter and the old flag in its `ConcurrentAccessError` wording.
 - [x] 5.4 `openspec validate --strict` passes.
 
-`reader-concurrency:15` has one descriptive cross-reference row ("Declares
-`member_streams`, default single-live-stream gate"). Left alone: it is a pointer to
-`archive-reading` rather than a normative statement, and `openspec sync` will not touch
-it. Worth a one-word fix whenever that spec is next edited for its own reasons.
+## 6. Review round (PR #213)
+
+- [x] 6.1 **The `CostReceipt` / diagnostics claim was false.** The proposal asserted that
+      `MemberStreams` "remains the declared-capability value on `CostReceipt` and in
+      diagnostics", and that was carried into the class docstring and into the
+      `archive-reading` delta as a `SHALL`. `CostReceipt` has `listing_cost` /
+      `access_cost` / `stream_capability` / `solid_block_count` / `notes`; no diagnostic
+      carries a `MemberStreams`. The claim was never true — it was invented in the
+      proposal and never checked. Corrected in all three places, and the delta now says
+      explicitly that nothing requires it to appear there. The honest reason it stays
+      exported is that it is the internal representation the booleans map to; concrete
+      readers expose `reader.member_streams`, but that property is **not** on the
+      `ArchiveReader` ABC, so it is runtime-reachable and not part of the typed contract.
+      Whether to change that is left open — see §7.
+- [x] 6.2 **Sibling specs prescribed the old input.** Three specs beyond the original
+      three carried normative "on `open_archive()`" / "opened with `MemberStreams.…`"
+      text that would have survived `openspec archive` as contradictory `SHALL`s:
+      `seekable-decompressor-streams`, `reader-concurrency`, `testing-contract`. Deltas
+      added for all three. The delta bodies were **extracted programmatically from the
+      live specs** and then substituted, rather than retyped, so a transcription slip
+      cannot corrupt a requirement on sync.
+      Where the flag names denote the reader's *capability state* rather than the call
+      that produced it, they are deliberately kept — `reader-concurrency` is the
+      implementer contract and the flags are the internal representation. A comment in
+      that delta records the distinction so a later pass does not "finish" the rename.
+- [x] 6.3 Non-requirement prose (`reader-concurrency` Purpose, two Related-specs rows)
+      edited directly in the main specs. Deltas only carry `### Requirement:` blocks, so
+      `openspec sync` would never have applied these.
+- [x] 6.4 `ConcurrentAccessError`'s **class docstring** still taught
+      `MemberStreams.CONCURRENT` while the raised message said `concurrent_members=True`.
+      It is the mkdocstrings surface, so the two disagreed exactly where a user looks.
+- [x] 6.5 Half-updated published prose: `docs/gotchas.md:19` ("With `SEEKABLE`…") and
+      `docs/costs.md:87,114`, each sitting next to a line already converted.
+      (`costs.md:43`'s `SEEKABLE` is `StreamCapability.SEEKABLE`, a different enum —
+      correctly left alone.)
+- [x] 6.6 Near-public docstrings still teaching flag declaration: `AcceleratorMode`
+      (`config.py`), and `BaseArchiveReader.open` / `.close`, which are what `help()` on
+      a live reader shows. `_open_member` / `_wrap_member_stream` keep the flag names —
+      private, and there they genuinely mean the internal gate.
+- [x] 6.7 Deleted the always-true assertion
+      (`assert "concurrent-member-streams" not in str(...) or True`) in a test this
+      change already touched.
+- [x] 6.8 Added `test_member_streams_kwarg_is_gone` — the delta has a
+      `member_streams=… → TypeError` scenario with no test behind it. Python enforces it
+      anyway; the test exists so a well-meant "accept both spellings" patch has to delete
+      a test rather than slip through.
+
+## 7. Open for the maintainer — what is `MemberStreams` publicly for?
+
+Now that it is not an input, its only public presence is `__all__` + the
+`::: archivey.MemberStreams` block in `docs/api.md`, and `reader.member_streams` exists
+only on the concrete base class. Options:
+
+| | Approach | Note |
+|---|---|---|
+| **A** | Leave as-is; docs now describe it honestly as the internal/reported form | Zero cost. The export is decorative for anyone holding an `ArchiveReader`-typed handle |
+| **B** *(recommended)* | Promote `member_streams` onto the `ArchiveReader` ABC | ~4 lines, purely additive, gives the export a real job ("what did I open this with?") |
+| **C** | Put declared capabilities on `CostReceipt` | What the false claim described. A real API expansion, outside this change's no-behaviour-change scope |
+
+**Recommendation: B, as a follow-up rather than here** — adding a property to the ABC
+later is non-breaking, so it carries no `0.2.0` deadline, whereas *removing* the export
+would be breaking. Keep it exported either way.

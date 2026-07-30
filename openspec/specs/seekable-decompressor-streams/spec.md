@@ -12,7 +12,7 @@ forward-only streams free of seek machinery.
 | Spec | Relationship |
 | --- | --- |
 | `compressed-streams` | Public `open_stream(..., seekable=...)` and codec backend dispatch |
-| `archive-reading` | `MemberStreams.SEEKABLE` on archive member streams |
+| `archive-reading` | `seekable_members=True` on archive member streams |
 | `access-mode-and-cost` | Declared capabilities vs access modes |
 | `diagnostics` | Rewind and seek-index diagnostic policy/retention |
 | `error-handling` | Codec exception translation and `DiagnosticRaisedError` |

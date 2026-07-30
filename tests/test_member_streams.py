@@ -32,7 +32,6 @@ def test_second_overlapping_open_raises_concurrent_access_error(tmp_path: Path) 
             ConcurrentAccessError, match="concurrent_members=True"
         ) as ei:
             reader.open("b.txt")
-        assert "concurrent-member-streams" not in str(ei.value).lower() or True
         # Breadcrumb points at this test file.
         assert "test_member_streams.py" in str(ei.value)
         assert s1.read() == b"aaa"
@@ -89,6 +88,17 @@ def test_seekable_flag_restores_positioning(tmp_path: Path) -> None:
             assert s.read(1) == b"a"
             s.seek(0)
             assert s.read() == b"aaa"
+
+
+def test_member_streams_kwarg_is_gone(tmp_path: Path) -> None:
+    """The flag-enum parameter was removed, not deprecated — passing it must fail.
+
+    Python rejects unknown kwargs on its own; this locks the removal so a well-meant
+    "accept both spellings" patch has to delete a test rather than slip through.
+    """
+    root = _two_file_dir(tmp_path)
+    with pytest.raises(TypeError, match="member_streams"):
+        open_archive(root, member_streams="anything")  # type: ignore[call-arg]
 
 
 def test_streaming_plus_concurrent_rejected(tmp_path: Path) -> None:

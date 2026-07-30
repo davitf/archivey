@@ -16,10 +16,14 @@ class MemberStreams(Flag):
     """The member-stream capabilities a reader was opened with.
 
     Callers declare these as booleans —
-    ``open_archive(..., seekable_members=True, concurrent_members=True)``. This flag set
-    is the *reported* form: it is what :class:`~archivey.CostReceipt` and the diagnostics
-    carry, and what internal plumbing passes around. There is no need to construct one to
-    open an archive.
+    ``open_archive(..., seekable_members=True, concurrent_members=True)`` — so there is
+    no need to construct a ``MemberStreams`` value to open an archive. This flag set is
+    the internal representation those booleans map to at the entry point, and what every
+    backend receives. It is **not** carried on :class:`~archivey.CostReceipt` or in
+    diagnostics. Concrete readers expose the value they were opened with as
+    ``reader.member_streams``; that property is not on the
+    :class:`~archivey.ArchiveReader` ABC, so it is reachable at runtime but not part of
+    the typed public contract.
 
     Default (no bits set — ``MemberStreams(0)``) is the cheap contract:
 
