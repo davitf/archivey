@@ -890,34 +890,39 @@ def run_cases(
             ),
         )
 
-    # --- RAR open_list vs rarfile (committed fixture for a stable peer; independent
-    # of the optional ``rar`` writer used for solid data-path cases below) ---
-    rar_list_path = ROOT / "tests" / "fixtures" / "rar" / "basic_solid__.rar"
-    if rar_list_path.is_file():
+    # --- RAR open_list vs rarfile ---
+    # Small committed fixture keeps a stable peer when ``rar`` is absent; many-member
+    # store corpora (when built) are the listing-cost regression signal.
+    def _append_rar_open_list(
+        case: str,
+        path: Path,
+        *,
+        notes: str,
+    ) -> None:
         _m_wall, (bdec, seeks) = timed_with_optional_warmup(
-            lambda: _op_open_list(rar_list_path)
+            lambda p=path: _op_open_list(p)
         )
 
-        def _ay_rar_open_list() -> None:
-            with open_archive(rar_list_path) as reader:
+        def _ay() -> None:
+            with open_archive(path) as reader:
                 _ = reader.info
                 list(reader.members())
 
         if _rarfile_available():
             if warmup:
                 wall, _ignored, std_wall = _interleaved_pair_times(
-                    _ay_rar_open_list,
-                    lambda: _rarfile_open_list(rar_list_path),
+                    _ay,
+                    lambda p=path: _rarfile_open_list(p),
                     rounds=7,
                 )
             else:
-                wall, _ = timed_with_optional_warmup(_ay_rar_open_list)
+                wall, _ = timed_with_optional_warmup(_ay)
                 std_wall, _ = timed_with_optional_warmup(
-                    lambda: _rarfile_open_list(rar_list_path)
+                    lambda p=path: _rarfile_open_list(p)
                 )
             results.append(
                 CaseResult(
-                    "rar_open_list",
+                    case,
                     "rar",
                     "open_list",
                     wall,
@@ -925,22 +930,52 @@ def run_cases(
                     seeks,
                     stdlib_wall_s=std_wall,
                     wall_ratio=(wall / std_wall) if std_wall > 0 else None,
-                    notes="vs rarfile.infolist; Q1 native listing target ≈parity",
+                    notes=notes,
                 )
             )
         else:
-            wall, _ = timed_with_optional_warmup(_ay_rar_open_list)
+            wall, _ = timed_with_optional_warmup(_ay)
             results.append(
                 CaseResult(
-                    "rar_open_list",
+                    case,
                     "rar",
                     "open_list",
                     wall,
                     bdec,
                     seeks,
-                    notes="skipped peer: rarfile not installed",
+                    notes=f"{notes}; skipped peer: rarfile not installed",
                 )
             )
+
+    rar_list_path = ROOT / "tests" / "fixtures" / "rar" / "basic_solid__.rar"
+    if rar_list_path.is_file():
+        _append_rar_open_list(
+            "rar_open_list",
+            rar_list_path,
+            notes="vs rarfile.infolist; Q1 native listing target ≈parity",
+        )
+
+    if fixtures.many_rar is not None:
+        n = fixtures.scale.list_members
+        _append_rar_open_list(
+            "rar_many_open_list",
+            fixtures.many_rar,
+            notes=(
+                f"vs rarfile.infolist; {n} tiny store members (solid); "
+                "listing-cost regression guard"
+            ),
+        )
+
+    if fixtures.nonsolid_rar is not None:
+        n = fixtures.scale.nonsolid_list_members
+        _append_rar_open_list(
+            "rar_nonsolid_open_list",
+            fixtures.nonsolid_rar,
+            notes=(
+                f"vs rarfile.infolist; {n} store members (-s-); "
+                "negative control (nonsolid listing)"
+            ),
+        )
 
     # --- Solid RAR data path ---
     # At ci scale always prefer the committed basic_solid fixture so the structural
@@ -1294,8 +1329,8 @@ def format_text_report(payload: dict[str, Any]) -> str:
                 f"- gzip size: {_fmt_bytes(detail.get('gzip_size'))}",
                 f"- solid members: {detail.get('solid_members', '?')} × "
                 f"{_fmt_bytes(detail.get('solid_member_size'))}",
-                f"- 7z list members: {detail.get('list_members', '?')} solid COPY / "
-                f"{detail.get('nonsolid_list_members', '?')} nonsolid",
+                f"- 7z/RAR list members: {detail.get('list_members', '?')} solid "
+                f"tiny / {detail.get('nonsolid_list_members', '?')} nonsolid",
             ]
         )
 

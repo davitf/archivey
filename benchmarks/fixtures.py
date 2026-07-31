@@ -88,6 +88,8 @@ class FixtureSet:
     many_7z: Path | None
     nonsolid_7z: Path | None
     solid_rar: Path | None
+    many_rar: Path | None
+    nonsolid_rar: Path | None
     unpacked_solid_7z: int
     unpacked_solid_rar: int
     unpacked_zip_aes: int
@@ -253,6 +255,53 @@ def build_solid_rar(path: Path, scale: Scale) -> int | None:
     return total if path.exists() else None
 
 
+def build_many_member_rar(path: Path, scale: Scale) -> bool:
+    """Solid store RAR with many tiny members — listing cost dominates.
+
+    Uses ``rar a -m0 -s`` (RAR5 store, solid). Soft-fails when the ``rar`` writer
+    is missing so CI without RARLAB tools still runs other structural cases.
+    """
+    if shutil.which("rar") is None:
+        return False
+    src = path.parent / f"{path.stem}-src"
+    if src.exists():
+        shutil.rmtree(src)
+    src.mkdir(parents=True)
+    for i in range(scale.list_members):
+        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+    cmd = ["rar", "a", "-m0", "-s", "-ep1", "-idq", str(path), str(src / "*")]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        if path.exists():
+            path.unlink()
+        return False
+    return path.exists()
+
+
+def build_nonsolid_rar(path: Path, scale: Scale) -> bool:
+    """Non-solid store RAR (``rar -m0 -s-``); listing negative control vs solid many.
+
+    Soft-fails when ``rar`` is unavailable.
+    """
+    if shutil.which("rar") is None:
+        return False
+    src = path.parent / f"{path.stem}-src"
+    if src.exists():
+        shutil.rmtree(src)
+    src.mkdir(parents=True)
+    for i in range(scale.nonsolid_list_members):
+        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+    cmd = ["rar", "a", "-m0", "-s-", "-ep1", "-idq", str(path), str(src / "*")]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        if path.exists():
+            path.unlink()
+        return False
+    return path.exists()
+
+
 def _unpacked_solid(scale: Scale) -> int:
     return sum(
         len(_payload(i, scale.solid_member_size)) for i in range(scale.solid_members)
@@ -338,6 +387,8 @@ def materialize_fixtures(
             nonsolid_7z = nonsolid_path
 
     solid_rar: Path | None = None
+    many_rar: Path | None = None
+    nonsolid_rar: Path | None = None
     unpacked_rar = 0
     rar_path = root / "solid-large.rar"
     if rar_path.exists():
@@ -348,6 +399,12 @@ def materialize_fixtures(
         if built_rar is not None:
             solid_rar = rar_path
             unpacked_rar = built_rar
+    many_rar_path = root / "many-list.rar"
+    if many_rar_path.exists() or build_many_member_rar(many_rar_path, scale_obj):
+        many_rar = many_rar_path
+    nonsolid_rar_path = root / "nonsolid-list.rar"
+    if nonsolid_rar_path.exists() or build_nonsolid_rar(nonsolid_rar_path, scale_obj):
+        nonsolid_rar = nonsolid_rar_path
 
     return FixtureSet(
         root=root,
@@ -363,6 +420,8 @@ def materialize_fixtures(
         many_7z=many_7z,
         nonsolid_7z=nonsolid_7z,
         solid_rar=solid_rar,
+        many_rar=many_rar,
+        nonsolid_rar=nonsolid_rar,
         unpacked_solid_7z=unpacked_7z,
         unpacked_solid_rar=unpacked_rar,
         unpacked_zip_aes=unpacked_zip_aes,

@@ -756,6 +756,20 @@ def test_rar5_header_size_vint_is_bounded() -> None:
     assert time.perf_counter() - start < 1.0
 
 
+def test_load_vint_single_and_multi_byte() -> None:
+    """RAR5 vint decode: single-byte hot path and multi-byte continuation agree."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.rar_parser import _load_vint
+
+    assert _load_vint(b"\x00", 0) == (0, 1)
+    assert _load_vint(b"\x7f", 0) == (127, 1)
+    assert _load_vint(bytes([0x80 | 1, 0x02]), 0) == (1 + (2 << 7), 2)
+    with pytest.raises(CorruptionError):
+        _load_vint(b"", 0)
+    with pytest.raises(CorruptionError):
+        _load_vint(b"\x80" * 11, 0)
+
+
 def test_unrar_member_include_switch_rejects_wildcards() -> None:
     """A member name containing an unrar wildcard (``*``/``?``) cannot be addressed to
     one member (no escape exists), so the unrar path refuses it with a typed error;

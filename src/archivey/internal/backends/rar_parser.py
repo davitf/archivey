@@ -173,7 +173,7 @@ _TRY_ENCODINGS = ("utf8", "utf-16le", "windows-1252")
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class RarEncryptionInfo:
     algo: int
     flags: int
@@ -183,7 +183,7 @@ class RarEncryptionInfo:
     check_value: bytes | None
 
 
-@dataclass
+@dataclass(slots=True)
 class RarMemberInfo:
     filename: str
     orig_filename: bytes | None
@@ -228,7 +228,7 @@ class RarMemberInfo:
         return self.file_version is not None and self.file_version != 0
 
 
-@dataclass
+@dataclass(slots=True)
 class RarArchive:
     version: int  # 4 = RAR3-on-disk family (1.5/2/3); 5 = RAR5 (not "RAR 4.x")
     is_solid: bool
@@ -460,8 +460,20 @@ def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> Non
 
 
 def _load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
-    limit = min(pos + 11, len(buf))
-    res = ofs = 0
+    # Hot path: most RAR5 vints are a single byte (< 0x80). Avoid the multi-byte
+    # loop and ``min()`` on every call (listing many-member archives).
+    length = len(buf)
+    if pos >= length:
+        raise CorruptionError("Invalid RAR5 variable-length integer")
+    b = buf[pos]
+    if b < 0x80:
+        return b, pos + 1
+    limit = pos + 11
+    if limit > length:
+        limit = length
+    res = b & 0x7F
+    ofs = 7
+    pos += 1
     while pos < limit:
         b = buf[pos]
         res += (b & 0x7F) << ofs
@@ -844,7 +856,7 @@ def _fix_rar3_astral_truncation(unicode_name: str, std_name: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class _Rar3EncState:
     password: str | bytes
     last_salt: bytes | None = None
@@ -1242,7 +1254,7 @@ def _parse_rar3_xtime(
         return basetime, pos
 
 
-@dataclass
+@dataclass(slots=True)
 class _Rar5HdrEnc:
     algo: int
     flags: int
