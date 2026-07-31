@@ -50,7 +50,19 @@ The bare `openspec` package on npm is an unrelated empty stub — install the
 openspec list                 # in-flight changes + task progress
 openspec validate --all       # validate all specs and changes
 openspec validate --strict <item-name>
+openspec archive <change> --yes   # apply the deltas to openspec/specs/
 ```
+
+**Archiving is a separate step from merging**, and forgetting it is the most common
+failure mode here: a merged-but-unarchived change leaves the authoritative specs
+describing something that no longer ships. Once a change's tasks are all done and its
+PR has merged, archive it and commit the resulting `openspec/specs/` diff. CI enforces
+this on `main` (`scripts/check_openspec_archived.py`).
+
+Note `openspec validate --strict` does **not** check that a `MODIFIED` header names a
+requirement that actually exists in the parent spec, so a mis-targeted delta can
+validate green and silently do nothing on archive. For a non-trivial delta, verify with
+a dry-run archive (apply on a scratch tree, diff `openspec/specs/`, then reset).
 
 Default change schema is **`library`** (proposal → compact specs + design →
 tasks). Specs stay dense (signatures/matrices); `design.md` holds investigations
