@@ -192,7 +192,10 @@ def build_solid_7z(path: Path, scale: Scale) -> int:
     return total
 
 
-_LIST_MEMBER_SIZE = 16
+# Payload size for the tiny-member listing corpora. Public because
+# ``scripts/gen_rar_fixtures.py`` builds the committed RAR listing fixtures from the
+# same recipe — ``SCALES`` and this constant are the single source of truth.
+LIST_MEMBER_SIZE = 16
 
 
 def build_many_member_7z(path: Path, scale: Scale) -> None:
@@ -205,7 +208,7 @@ def build_many_member_7z(path: Path, scale: Scale) -> None:
 
     with py7zr.SevenZipFile(path, "w", filters=[{"id": py7zr.FILTER_COPY}]) as archive:
         for i in range(scale.list_members):
-            archive.writestr(f"f{i:05d}.txt", f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+            archive.writestr(f"f{i:05d}.txt", f"payload-{i}\n"[:LIST_MEMBER_SIZE])
 
 
 def build_nonsolid_7z(path: Path, scale: Scale) -> bool:
@@ -222,7 +225,7 @@ def build_nonsolid_7z(path: Path, scale: Scale) -> bool:
         shutil.rmtree(src)
     src.mkdir(parents=True)
     for i in range(scale.nonsolid_list_members):
-        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:LIST_MEMBER_SIZE])
     # -mx=0 store; -ms=off forces one folder per file.
     cmd = ["7z", "a", "-t7z", "-ms=off", "-mx=0", str(path), str(src / "*")]
     try:
@@ -267,7 +270,7 @@ def _build_store_rar(path: Path, count: int, *, solid: bool) -> bool:
         shutil.rmtree(src)
     src.mkdir(parents=True)
     for i in range(count):
-        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:LIST_MEMBER_SIZE])
     solid_flag = "-s" if solid else "-s-"
     cmd = ["rar", "a", "-m0", solid_flag, "-ep1", "-idq", str(path), str(src / "*")]
     try:

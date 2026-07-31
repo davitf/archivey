@@ -50,7 +50,12 @@ from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
-from benchmarks.fixtures import ZIP_AES_PASSWORD, FixtureSet, materialize_fixtures
+from benchmarks.fixtures import (
+    SCALES,
+    ZIP_AES_PASSWORD,
+    FixtureSet,
+    materialize_fixtures,
+)
 from benchmarks.wall_baseline import (
     measurement_provenance,
     overlapping_wall_ratio_count,
@@ -964,7 +969,7 @@ def run_cases(
         n = (
             fixtures.scale.list_members
             if fixtures.many_rar is not None
-            else 1_000  # committed ci fixture
+            else SCALES["ci"].list_members  # committed fixture is built at ci scale
         )
         _append_rar_open_list(
             "rar_many_open_list",
@@ -985,7 +990,7 @@ def run_cases(
         n = (
             fixtures.scale.nonsolid_list_members
             if fixtures.nonsolid_rar is not None
-            else 256  # committed ci fixture
+            else SCALES["ci"].nonsolid_list_members  # committed fixture is ci scale
         )
         _append_rar_open_list(
             "rar_nonsolid_open_list",
