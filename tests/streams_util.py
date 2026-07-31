@@ -36,6 +36,50 @@ class NonSeekableBytesIO(io.RawIOBase):
         return self._inner.tell()
 
 
+class ShortReadBytesIO(io.RawIOBase):
+    """A seekable ``BytesIO`` whose ``read``/``readinto`` never return more than ``max_chunk``.
+
+    ``io.RawIOBase.read(n)`` is documented to return *up to* ``n`` bytes, and real sources
+    do: sockets, FUSE mounts, and user-written wrappers hand back short chunks mid-stream
+    with no EOF in sight. :class:`NonSeekableBytesIO` and :class:`CountingBytesIO` both
+    delegate to ``BytesIO``, which always returns the full count, so neither exercises
+    that — which is how short-returning sources stayed invisible until they were reported
+    as corrupt archives (see ``test_short_read_sources.py``).
+
+    ``max_chunk=1`` is the worst legal case, and the one that catches a parser reading a
+    fixed-size header with a single ``read(n)`` and treating the short return as EOF.
+    """
+
+    def __init__(self, data: bytes, max_chunk: int = 1) -> None:
+        super().__init__()
+        self._inner = io.BytesIO(data)
+        self._max_chunk = max_chunk
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes:
+        # read(-1) means "everything up to EOF"; it has no legal short form.
+        if n is None or n < 0:
+            return self._inner.read()
+        return self._inner.read(min(n, self._max_chunk))
+
+    def readinto(self, b) -> int:  # type: ignore[override]  # test double; broad buffer type
+        mv = memoryview(b).cast("B")
+        data = self.read(len(mv))
+        mv[: len(data)] = data
+        return len(data)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return self._inner.seek(offset, whence)
+
+    def tell(self, /) -> int:
+        return self._inner.tell()
+
+
 class CountingBytesIO(io.RawIOBase):
     """A seekable ``BytesIO`` that counts ``read`` calls and bytes read.
 

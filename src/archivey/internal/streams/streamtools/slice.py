@@ -37,6 +37,9 @@ class SlicingStream(ReadOnlyIOStream):
       - ``length`` caps the slice (default: to the end of the underlying stream).
       - Seeking is relative to the start of the slice.
 
+    ``read`` is **full-count**: ``read(n)`` returns ``n`` bytes unless the slice (or the
+    underlying stream) ends first, gathering across short underlying returns.
+
     Non-seekable underlying stream:
       - ``start`` must be ``None`` (the slice begins at the current position).
       - ``length`` caps how many bytes may be read; seeking is unsupported.
@@ -137,12 +140,15 @@ class SlicingStream(ReadOnlyIOStream):
 
     def read(self, n: int = -1, /) -> bytes:
         self._check_open()
-        # Bounded ``read()`` / ``read(-1)`` means drain the remaining slice. Short
-        # underlying reads must be retried (via ``read_exact``) until the bound is
-        # filled or EOF; a single ``read(remaining)`` may legally return a partial
-        # chunk. Unbounded slices still pass ``read(-1)`` through unchanged.
-        drain_bounded = n < 0 and self._length is not None
-        n = self._compute_bytes_to_read(n)
+        # A known byte count — an explicit ``read(n)``, or ``read(-1)`` on a bounded slice,
+        # which means "drain the remaining slice" — is gathered with ``read_exact``: a
+        # single underlying ``read(count)`` may legally return a partial chunk, and a view
+        # that passed that through would report a healthy source as truncated (its
+        # consumers are header parsers and member streams, both of which are full-count by
+        # contract). Only ``read(-1)`` on an *unbounded* slice has no count to fill, so it
+        # passes through unchanged.
+        unbounded_drain = n < 0 and self._length is None
+        n = self._compute_bytes_to_read(n)  # stays negative for an unbounded drain
         if n == 0:
             return b""
         with self._io_guard:
@@ -154,7 +160,7 @@ class SlicingStream(ReadOnlyIOStream):
                 assert self._start is not None  # re-seek views are always seekable
                 self._stream.seek(self._start + self._pos)
             data = (
-                read_exact(self._stream, n) if drain_bounded else self._stream.read(n)
+                self._stream.read(n) if unbounded_drain else read_exact(self._stream, n)
             )
             self._pos += len(data)
             return data

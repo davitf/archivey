@@ -18,7 +18,7 @@ from archivey.internal.streams.streamtools import (
     SlicingStream,
     fix_stream_start_position,
 )
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
 
 DATA = b"0123456789abcdefghijklmnopqrstuvwxyz"
 
@@ -128,6 +128,20 @@ class TestSlicingStream:
         sliced = SlicingStream(NonSeekableBytesIO(DATA), length=10)
         with pytest.raises(io.UnsupportedOperation, match="seek on non-seekable"):
             sliced.seek(5)
+
+    def test_sized_read_gathers_across_short_reads(self) -> None:
+        """``read(n)`` must return ``n`` bytes even when the underlying drips them out.
+
+        A view is what container backends hand their header parsers and expose as member
+        streams, and both are full-count by contract; passing a short underlying return
+        through made a healthy source look truncated.
+        """
+        sliced = SlicingStream(ShortReadBytesIO(DATA), start=5, length=10)
+        assert sliced.read(7) == DATA[5:12]
+        assert sliced.tell() == 7
+        # The bound still clamps: only the remaining 3 bytes come back, then EOF.
+        assert sliced.read(7) == DATA[12:15]
+        assert sliced.read(7) == b""
 
     def test_bounded_read_all_gathers_across_short_reads(self) -> None:
         """``read()`` on a bounded slice must gather across short sized reads.

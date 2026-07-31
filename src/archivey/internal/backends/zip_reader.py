@@ -759,7 +759,7 @@ class ZipReader(BaseArchiveReader):
             saved = fp.tell()
             try:
                 fp.seek(info.header_offset)
-                fheader = fp.read(30)
+                fheader = read_exact(fp, 30)
                 if len(fheader) != 30 or fheader[:4] != b"PK\x03\x04":
                     raise zipfile.BadZipFile("Bad magic number for file header")
                 name_len, extra_len = struct.unpack_from("<HH", fheader, 26)
@@ -780,12 +780,12 @@ class ZipReader(BaseArchiveReader):
             saved = fp.tell()
             try:
                 fp.seek(info.header_offset)
-                fheader = fp.read(30)
+                fheader = read_exact(fp, 30)
                 if len(fheader) != 30 or fheader[:4] != b"PK\x03\x04":
                     raise zipfile.BadZipFile("Bad magic number for file header")
                 name_len, extra_len = struct.unpack_from("<HH", fheader, 26)
-                fp.read(name_len + extra_len)
-                header = fp.read(12)
+                read_exact(fp, name_len + extra_len)
+                header = read_exact(fp, 12)
                 if len(header) != 12:
                     raise zipfile.BadZipFile("Truncated ZipCrypto header")
                 return header
@@ -909,7 +909,7 @@ class ZipReader(BaseArchiveReader):
             saved = fp.tell()
             try:
                 fp.seek(info.header_offset)
-                fheader = fp.read(30)
+                fheader = read_exact(fp, 30)
                 if len(fheader) != 30 or fheader[:4] != b"PK\x03\x04":
                     raise zipfile.BadZipFile("Bad magic number for file header")
                 name_len, extra_len = struct.unpack_from("<HH", fheader, 26)
@@ -922,7 +922,7 @@ class ZipReader(BaseArchiveReader):
                     )
                 # General-purpose flag bit 11: UTF-8 filename (APPNOTE).
                 gp_flags = struct.unpack_from("<H", fheader, 6)[0]
-                local_name = fp.read(name_len)
+                local_name = read_exact(fp, name_len)
                 if len(local_name) != name_len:
                     raise zipfile.BadZipFile("Truncated file header")
                 if gp_flags & 0x800:
