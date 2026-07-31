@@ -102,14 +102,13 @@ dependencies only and SHALL NOT be required at runtime. Oracle-backed tests SHAL
 skip, not fail, when the oracle library or CLI is unavailable.
 
 The 7z corpus MUST cover core codecs supported without extras (LZMA1, LZMA2, simple
-BCJ filters, Delta, BZip2, Deflate, STORED), optional PPMd / Deflate64 under `[7z]`,
-and AES-encrypted archives under `[crypto]`. Unsupported codecs such as BCJ2 and
+BCJ filters, Delta, BZip2, Deflate, STORED), optional PPMd / Deflate64 and
+AES-encrypted archives under `[recommended]`. Unsupported codecs such as BCJ2 and
 unrecognized method IDs MUST raise the documented unsupported-codec error rather
 than returning bytes that diverge from the oracle.
 
 The RAR corpus MUST cover RAR4 and RAR5, solid and nonsolid, stored M0, symlinks,
-hardlinks/`FILE_COPY`, multi-volume sets, header-encrypted RAR5 (under `[rar]`/
-`[crypto]`), Blake2sp-only members, and at least one RAR5 `-ver` file-version
+hardlinks/`FILE_COPY`, multi-volume sets, header-encrypted RAR5 (under `[recommended]`), Blake2sp-only members, and at least one RAR5 `-ver` file-version
 archive. After the native RAR reader registers, RAR corpus entries MUST run (not
 skip solely for “reader not implemented”).
 
@@ -465,7 +464,7 @@ The corpus SHALL include WinZip AES ZIP entries covering AE-1 and AE-2, key stre
 128 and 256, over STORED and DEFLATE members, cross-validated against an oracle (`7z`/
 `py7zr`) for decrypted bytes; oracle-backed cases SHALL skip when the tool/library is
 unavailable. Dedicated tests SHALL assert wrong-password (`EncryptionError`, no bytes),
-tampered-HMAC (`CorruptionError`), AE-2 absent-`crc32`, and missing-`[crypto]`
+tampered-HMAC (`CorruptionError`), AE-2 absent-`crc32`, and missing-`cryptography`
 (`PackageNotInstalledError`, still reported encrypted).
 
 #### Scenario: AES ZIP coverage
@@ -476,7 +475,7 @@ tampered-HMAC (`CorruptionError`), AE-2 absent-`crc32`, and missing-`[crypto]`
 | Wrong password | `EncryptionError`, no bytes |
 | Tampered ciphertext | `CorruptionError` at terminal read |
 | AE-2 member | No `crc32` surfaced (parity sweep expects its absence) |
-| `[crypto]` not installed | `PackageNotInstalledError`; member still identified as encrypted |
+| `cryptography` (`[recommended]`) not installed | `PackageNotInstalledError`; member still identified as encrypted |
 
 ### Requirement: Performance budget is measured and gated
 

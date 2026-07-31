@@ -16,9 +16,7 @@ selection.
 | `archive-reading` | `open_archive()` calls detection then registry selection |
 | `error-handling` | `FormatDetectionError`, `UnsupportedFormatError`, `PackageNotInstalledError` |
 | `packaging-and-extras` | Extras that satisfy optional dependencies |
-
 ## Requirements
-
 ### Requirement: Backends self-register at import time
 
 The system SHALL register all known core and optional backends when `archivey`
@@ -166,7 +164,7 @@ command from the same metadata exposed by `format_availability()`.
 
 | Case | Expected |
 | --- | --- |
-| ISO magic source opened without `pycdlib` | `UnsupportedFormatError` names `pycdlib` and `pip install archivey[iso]`; no `ImportError` |
+| ISO magic source opened without `pycdlib` | `UnsupportedFormatError` names `pycdlib` and `pip install archivey[recommended]`; no `ImportError` |
 | `list_supported_formats()` without `pycdlib` | ISO absent; native 7z/RAR and satisfied formats present |
 
 ### Requirement: Codec availability and install hints come from descriptors
@@ -229,9 +227,10 @@ Support SHALL be computed across the format backend and codecs/tools:
 
 | Case | Expected |
 | --- | --- |
-| 7z availability without `[7z]` or `[crypto]` | PARTIAL; missing names `[7z]` and `[crypto]`; LZMA2/bzip2/copy members still read |
-| ZSTD availability before Python 3.14 without zstd backend | NONE with `[zstd]` / `pip install archivey[zstd]` hint |
+| 7z availability without the optional 7z packages | PARTIAL; missing names each absent package and `[recommended]`; LZMA2/bzip2/copy members still read |
+| ZSTD availability before Python 3.14 without zstd backend | NONE with `backports.zstd` / `pip install archivey[recommended]` hint |
 | GZIP availability | FULL; no missing components |
-| 7z with `[7z]` and `[crypto]` installed | FULL even though BCJ2 still raises `UnsupportedFeatureError` |
+| 7z with the optional 7z packages installed | FULL even though BCJ2 still raises `UnsupportedFeatureError` |
 | ZIP with every optional member codec installed | PARTIAL with empty missing list until Phase 6 |
 | ZIP missing deflate64 and/or zstd packages | PARTIAL; missing names absent codec packages; stored/deflate members still list/read |
+

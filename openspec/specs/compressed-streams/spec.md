@@ -17,9 +17,7 @@ byte accounting are implemented once.
 | `error-handling` | Typed exception hierarchy and cause preservation |
 | `diagnostics` | Digest, rewind, and seek-index diagnostic policy/retention |
 | `backend-registry` | Codec availability and install hints for format support |
-
 ## Requirements
-
 ### Requirement: Format parsers use the shared decompressor-stream layer
 
 The system SHALL expose codec decompression through one pull-based
@@ -85,13 +83,13 @@ The system SHALL decompress supported codecs through these default backends:
 | Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `lzma` raw filters | core |
 | raw Deflate | stdlib `zlib` (`-15`) | core |
 | Copy/STORED | pass-through | core |
-| zstd | stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14) | optional `[zstd]` before 3.14; core on 3.14+ |
-| lz4 | `lz4` | optional `[lz4]` |
-| Brotli | `brotli` | optional `[7z]` |
+| zstd | stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14) | optional `[recommended]` before 3.14; core on 3.14+ |
+| lz4 | `lz4` | optional `[recommended]` |
+| Brotli | `brotli` | optional `[recommended]` |
 | unix-compress `.Z` | native LZW `DecompressorStream` | core |
-| PPMd var.H | `pyppmd` | optional `[7z]` |
-| Deflate64 | `inflate64` | optional `[7z]` |
-| AES-256 decrypt stage | wrapped crypto backend | optional `[crypto]` |
+| PPMd var.H | `pyppmd` | optional `[recommended]` |
+| Deflate64 | `inflate64` | optional `[recommended]` |
+| AES-256 decrypt stage | wrapped crypto backend | optional `[recommended]` |
 
 LZMA Alone SHALL be a distinct stream-codec descriptor from raw LZMA1/LZMA2
 (`FORMAT_RAW` + properties). Alone is standalone (`StreamFormat.LZMA_ALONE`);
@@ -111,7 +109,7 @@ raw LZMA1/LZMA2 remain container-only.
 
 ### Requirement: AES decryption is one wrapped pipeline stage
 
-The system SHALL use `cryptography` from `[crypto]` through an internal wrapper
+The system SHALL use `cryptography` from `[recommended]` through an internal wrapper
 only. AES decryption SHALL be a stream stage composed before decompression, such
 as AES then LZMA2 for an encrypted 7z folder. Format parsers MUST use the wrapper
 instead of importing `cryptography` directly.
@@ -120,7 +118,7 @@ instead of importing `cryptography` directly.
 
 | Case | Expected |
 | --- | --- |
-| AES-encrypted 7z folder over LZMA2 with `[crypto]` installed | Pipeline applies AES decrypt stage, then LZMA2 |
+| AES-encrypted 7z folder over LZMA2 with `cryptography` installed | Pipeline applies AES decrypt stage, then LZMA2 |
 | Any format parser needs AES | Uses internal crypto abstraction |
 
 ### Requirement: Missing optional backends raise PackageNotInstalledError
@@ -134,7 +132,7 @@ optional component.
 | Case | Expected |
 | --- | --- |
 | PPMd stream without `pyppmd` | `PackageNotInstalledError` naming `pyppmd` |
-| AES stream without `[crypto]` | `PackageNotInstalledError` naming the crypto backend |
+| AES stream without `cryptography` | `PackageNotInstalledError` naming the crypto backend |
 
 ### Requirement: Returned streams translate decompression errors
 
@@ -395,3 +393,4 @@ streams share that outer source, the count is cumulative across the archive.
 | `.gz` read incrementally from non-seekable source | Count increases monotonically and is readable mid-stream |
 | Uncompressed container or directory | `compressed_bytes_consumed is None` |
 | Count is observed repeatedly during extraction | Decompressed output is byte-for-byte unchanged |
+
