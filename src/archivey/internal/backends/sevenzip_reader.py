@@ -27,7 +27,6 @@ import stat
 import zlib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 
@@ -43,12 +42,11 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.sevenzip_methods import METHOD_AES
+from archivey.internal.backends.sevenzip_methods import is_aes
 from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
     PlainHeader,
     SevenZipArchive,
-    SevenZipCoder,
     SevenZipFileRecord,
     SevenZipFolder,
     compression_method_for_coder,
@@ -97,6 +95,7 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveMember,
     CompressionAlgorithm,
+    CompressionMethod,
     CreateSystem,
     HashAlgorithm,
     MagicSignature,
@@ -208,7 +207,7 @@ class SevenZipReader(BaseArchiveReader):
         self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         self._volume_count = getattr(source, "volume_count", 1)
         self._archive = self._load_archive()
-        self._folder_pack_starts = self._folder_pack_start_indices(self._archive)
+        self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
 
@@ -275,6 +274,18 @@ class SevenZipReader(BaseArchiveReader):
                 ) from exc
             raise EncryptionError("Password(s) rejected for the 7z header") from exc
 
+    def _init_folder_caches(self, archive: SevenZipArchive) -> None:
+        """Derive per-folder indexes used by listing and open.
+
+        Kept as one helper so unit tests that construct a reader via
+        ``object.__new__`` can populate the same derived state ``__init__`` does
+        without hand-maintaining each cache field.
+        """
+        self._folder_pack_starts = self._folder_pack_start_indices(archive)
+        # Public CompressionMethod tuples are identical for every member in a
+        # folder — build once (solid many-member listing hot path).
+        self._folder_compression = self._build_folder_compression(archive)
+
     @staticmethod
     def _folder_pack_start_indices(archive: SevenZipArchive) -> list[int]:
         starts: list[int] = []
@@ -283,6 +294,25 @@ class SevenZipReader(BaseArchiveReader):
             starts.append(index)
             index += len(folder.packed_indices)
         return starts
+
+    @staticmethod
+    def _build_folder_compression(
+        archive: SevenZipArchive,
+    ) -> list[tuple[CompressionMethod, ...]]:
+        """One public compression-chain tuple per folder (shared by its members)."""
+        out: list[tuple[CompressionMethod, ...]] = []
+        for folder in archive.folders:
+            methods: list[CompressionMethod] = []
+            for coder in folder.coders:
+                # Skip AES before lookup: METHOD_AES.algorithm is UNKNOWN, so the
+                # filter below would drop it too, but only after a registry hit.
+                if is_aes(coder.method):
+                    continue
+                method = compression_method_for_coder(coder)
+                if method.algo is not CompressionAlgorithm.UNKNOWN:
+                    methods.append(method)
+            out.append(tuple(methods))
+        return out
 
     def _build_members(self) -> list[ArchiveMember]:
         # is_current is stamped by BaseArchiveReader's shared last-entry-wins pass.
@@ -350,14 +380,9 @@ class SevenZipReader(BaseArchiveReader):
             backslash_is_separator=True,
         )
         raw_name = record.filename.encode("utf-16le", errors="surrogateescape")
-        compression = tuple(
-            method
-            for method in (
-                compression_method_for_coder(coder)
-                for coder in self._folder_coders(record)
-                if coder.method != METHOD_AES.method_id
-            )
-            if method.algo is not CompressionAlgorithm.UNKNOWN
+        folder_index = record.folder_index
+        compression = (
+            self._folder_compression[folder_index] if folder_index is not None else ()
         )
         hashes: dict[HashAlgorithm, bytes] = {}
         if record.crc32 is not None:
@@ -365,20 +390,28 @@ class SevenZipReader(BaseArchiveReader):
         attrs = record.attributes
         unix_mode = (attrs >> 16) if attrs is not None and attrs >> 16 else None
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
-        extra: dict[str, object] = {}
-        if record.folder_index is not None:
-            extra["7z.folder_index"] = record.folder_index
-        if record.file_in_folder is not None:
-            extra["7z.file_in_folder"] = record.file_in_folder
+        # Folder/substream indices live on ``_raw``; skip the unused public extra
+        # bag so listing-limit accounting does not walk a per-member dict.
         ts_issues: list[_TimestampIssue] = []
-        timestamps: dict[str, datetime | None] = {}
-        for field, value in (
-            ("modified", record.last_write_time),
-            ("accessed", record.last_access_time),
-            ("created", record.creation_time),
-        ):
-            timestamps[field], issue = _filetime_to_datetime(
-                value, presented_name, field=field
+        modified = accessed = created = None
+        # Hot-path shortcut only: filetime_to_datetime also treats 0/None as unset.
+        # Keep these guards equivalent to that helper so ZIP (unconditional call)
+        # and 7z cannot diverge if the shared 0-handling rule ever changes.
+        if record.last_write_time:
+            modified, issue = _filetime_to_datetime(
+                record.last_write_time, presented_name, field="modified"
+            )
+            if issue is not None:
+                ts_issues.append(issue)
+        if record.last_access_time:
+            accessed, issue = _filetime_to_datetime(
+                record.last_access_time, presented_name, field="accessed"
+            )
+            if issue is not None:
+                ts_issues.append(issue)
+        if record.creation_time:
+            created, issue = _filetime_to_datetime(
+                record.creation_time, presented_name, field="created"
             )
             if issue is not None:
                 ts_issues.append(issue)
@@ -388,9 +421,9 @@ class SevenZipReader(BaseArchiveReader):
             raw_name=raw_name,
             size=record.uncompressed_size,
             compressed_size=record.compressed_size,
-            modified=timestamps["modified"],
-            accessed=timestamps["accessed"],
-            created=timestamps["created"],
+            modified=modified,
+            accessed=accessed,
+            created=created,
             mode=mode,
             compression=compression,
             is_encrypted=record.is_encrypted,
@@ -399,8 +432,7 @@ class SevenZipReader(BaseArchiveReader):
             else CreateSystem.WINDOWS_NTFS,
             windows_attrs=attrs & 0xFFFF if attrs is not None else None,
             hashes=hashes,
-            extra=extra,
-            _raw=_MemberRaw(record, record.folder_index, record.file_in_folder),
+            _raw=_MemberRaw(record, folder_index, record.file_in_folder),
         )
         emit_member_name_normalized(
             self._diagnostics_collector,
@@ -431,8 +463,8 @@ class SevenZipReader(BaseArchiveReader):
         if (
             record.is_encrypted
             and record.crc32 is None
-            and record.folder_index is not None
-            and not self._archive.folders[record.folder_index].digest_defined
+            and folder_index is not None
+            and not self._archive.folders[folder_index].digest_defined
         ):
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.DIGEST_UNVERIFIABLE,
@@ -470,11 +502,6 @@ class SevenZipReader(BaseArchiveReader):
         if record.is_directory:
             return MemberType.DIRECTORY
         return MemberType.FILE
-
-    def _folder_coders(self, record: SevenZipFileRecord) -> tuple[SevenZipCoder, ...]:
-        if record.folder_index is None:
-            return ()
-        return tuple(self._archive.folders[record.folder_index].coders)
 
     def _folder_pack_view(self, folder_index: int) -> BinaryIO:
         folder = self._archive.folders[folder_index]

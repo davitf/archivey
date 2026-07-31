@@ -151,6 +151,16 @@ def is_bcj(method_id: bytes) -> bool:
     return entry is not None and entry.pybcj_attr is not None
 
 
+def is_aes(method_id: bytes) -> bool:
+    """True when ``method_id`` is 7z AES (primary id or any registered alias).
+
+    Prefer this over ``lookup(...).kind is MethodKind.AES`` on listing hot paths:
+    one id compare plus an empty-tuple check today, while still staying correct if
+    AES ever gains aliases the way BCJ already does.
+    """
+    return method_id == METHOD_AES.method_id or method_id in METHOD_AES.aliases
+
+
 def is_lzma_family(method_id: bytes) -> bool:
     entry = lookup(method_id)
     return entry is not None and entry.kind is MethodKind.LZMA_FAMILY

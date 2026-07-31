@@ -42,8 +42,8 @@ from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, UnsupportedFeatureError
 from archivey.internal.backends.sevenzip_methods import (
-    METHOD_AES,
     METHOD_COPY,
+    is_aes,
     lookup,
 )
 from archivey.internal.streams.streamtools import read_exact
@@ -91,7 +91,7 @@ class _Property(IntEnum):
     DUMMY = 0x19
 
 
-@dataclass
+@dataclass(slots=True)
 class SevenZipCoder:
     method: bytes
     num_in_streams: int
@@ -99,7 +99,7 @@ class SevenZipCoder:
     properties: bytes | None
 
 
-@dataclass
+@dataclass(slots=True)
 class SevenZipFolder:
     coders: list[SevenZipCoder]
     bind_pairs: list[tuple[int, int]]
@@ -109,7 +109,7 @@ class SevenZipFolder:
     digest_defined: bool
 
 
-@dataclass
+@dataclass(slots=True)
 class SevenZipFileRecord:
     filename: str
     emptystream: bool
@@ -126,13 +126,9 @@ class SevenZipFileRecord:
     crc32: int | None
     compressed_size: int | None
     is_encrypted: bool
-    is_solid: bool
-    # Filled with raw on-disk method **bytes** here; the reader rebuilds public
-    # ``CompressionMethod`` tuples for ArchiveMember.compression.
-    compression_methods: tuple[bytes | CompressionMethod, ...]
 
 
-@dataclass
+@dataclass(slots=True)
 class SevenZipArchive:
     major_version: int
     minor_version: int
@@ -150,7 +146,7 @@ class SevenZipArchive:
     has_encrypted_folders: bool
 
 
-@dataclass
+@dataclass(slots=True)
 class _StreamsInfo:
     pack_pos: int = 0
     pack_sizes: list[int] | None = None
@@ -161,7 +157,7 @@ class _StreamsInfo:
     digests: list[int | None] | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class SignatureInfo:
     """Result of reading the 32-byte signature + locating the next-header bytes."""
 
@@ -170,14 +166,14 @@ class SignatureInfo:
     header_data: bytes  # empty when nextHeaderSize == 0
 
 
-@dataclass
+@dataclass(slots=True)
 class EncodedHeader:
     """ENCODED_HEADER streams info; packed data still lives on the archive file."""
 
     streams: _StreamsInfo
 
 
-@dataclass
+@dataclass(slots=True)
 class PlainHeader:
     streams: _StreamsInfo
     files: list[SevenZipFileRecord]
@@ -187,7 +183,7 @@ class PlainHeader:
 HeaderBlock = EncodedHeader | PlainHeader
 
 
-@dataclass
+@dataclass(slots=True)
 class _FileProps:
     filename: str = ""
     emptystream: bool = False
@@ -528,8 +524,11 @@ def folder_is_encrypted(folder: SevenZipFolder) -> bool:
 
     Lives here (not in ``sevenzip_methods``) so it can be typed against the folder
     dataclass: the registry module is a pure leaf and must not import these types.
+
+    Uses :func:`is_aes` (id + aliases) rather than ``lookup()`` — listing hot path
+    in ``_map_files_to_folders`` for solid archives with many members.
     """
-    return any(lookup(coder.method) is METHOD_AES for coder in folder.coders)
+    return any(is_aes(coder.method) for coder in folder.coders)
 
 
 def compression_method_for_coder(coder: SevenZipCoder) -> CompressionMethod:
@@ -1005,8 +1004,6 @@ def _file_record_from_props(props: _FileProps) -> SevenZipFileRecord:
         crc32=None,
         compressed_size=None,
         is_encrypted=False,
-        is_solid=False,
-        compression_methods=(),
     )
 
 
@@ -1023,6 +1020,11 @@ def _map_files_to_folders(
     folder_index = 0
     file_in_folder = 0
     substream_index = 0
+    # Folder-level fields are identical for every substream in a solid folder —
+    # compute once when entering the folder (listing hot path for many-member 7z).
+    folder_encrypted = False
+    folder_compressed: int | None = None
+    folder_bound = -1
 
     for file_record in files:
         if file_record.emptystream:
@@ -1032,17 +1034,20 @@ def _map_files_to_folders(
         if substream_index >= len(unpack_sizes):
             raise CorruptionError("7z file table references a missing substream")
 
-        folder = folders[folder_index]
+        if folder_index != folder_bound:
+            folder = folders[folder_index]
+            folder_encrypted = folder_is_encrypted(folder)
+            folder_compressed = folder_compressed_sizes[folder_index]
+            folder_bound = folder_index
+
         file_record.folder_index = folder_index
         file_record.file_in_folder = file_in_folder
         file_record.uncompressed_size = unpack_sizes[substream_index]
         file_record.crc32 = (
             digests[substream_index] if substream_index < len(digests) else None
         )
-        file_record.compressed_size = folder_compressed_sizes[folder_index]
-        file_record.is_encrypted = folder_is_encrypted(folder)
-        file_record.is_solid = num_unpackstreams_folders[folder_index] > 1
-        file_record.compression_methods = tuple(coder.method for coder in folder.coders)
+        file_record.compressed_size = folder_compressed
+        file_record.is_encrypted = folder_encrypted
 
         file_in_folder += 1
         substream_index += 1

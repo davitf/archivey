@@ -38,6 +38,9 @@ class Scale:
     gzip_size: int
     solid_members: int
     solid_member_size: int
+    # Tiny-payload listing corpora (header/member-build cost, not codec cost).
+    list_members: int
+    nonsolid_list_members: int
 
 
 SCALES: dict[str, Scale] = {
@@ -49,6 +52,8 @@ SCALES: dict[str, Scale] = {
         gzip_size=64 * 1024,
         solid_members=32,
         solid_member_size=64 * 1024,
+        list_members=1_000,
+        nonsolid_list_members=256,
     ),
     # ~16 MiB ZIP/TAR, 32 MiB gzip, ~16 MiB solid — wall-time vs stdlib.
     "realistic": Scale(
@@ -58,6 +63,8 @@ SCALES: dict[str, Scale] = {
         gzip_size=32 * 1024 * 1024,
         solid_members=64,
         solid_member_size=256 * 1024,
+        list_members=10_000,
+        nonsolid_list_members=1_000,
     ),
 }
 
@@ -78,6 +85,8 @@ class FixtureSet:
     tarbz2_path: Path
     gzip_path: Path
     solid_7z: Path | None
+    many_7z: Path | None
+    nonsolid_7z: Path | None
     solid_rar: Path | None
     unpacked_solid_7z: int
     unpacked_solid_rar: int
@@ -181,6 +190,48 @@ def build_solid_7z(path: Path, scale: Scale) -> int:
     return total
 
 
+_LIST_MEMBER_SIZE = 16
+
+
+def build_many_member_7z(path: Path, scale: Scale) -> None:
+    """Solid COPY 7z with many tiny members — listing cost dominates.
+
+    py7zr always packs FILTER_COPY members into one solid folder, which is exactly
+    the shape where per-folder listing caches amortize.
+    """
+    import py7zr
+
+    with py7zr.SevenZipFile(path, "w", filters=[{"id": py7zr.FILTER_COPY}]) as archive:
+        for i in range(scale.list_members):
+            archive.writestr(f"f{i:05d}.txt", f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+
+
+def build_nonsolid_7z(path: Path, scale: Scale) -> bool:
+    """Non-solid 7z (one folder per file) via ``7z -ms=off``; False if unavailable.
+
+    py7zr cannot emit this shape. Used as a listing negative control: the
+    per-folder cache misses every member, so wall time should not improve vs
+    a naive loop — and must not regress from extra per-miss work.
+    """
+    if shutil.which("7z") is None:
+        return False
+    src = path.parent / f"{path.stem}-src"
+    if src.exists():
+        shutil.rmtree(src)
+    src.mkdir(parents=True)
+    for i in range(scale.nonsolid_list_members):
+        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+    # -mx=0 store; -ms=off forces one folder per file.
+    cmd = ["7z", "a", "-t7z", "-ms=off", "-mx=0", str(path), str(src / "*")]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        if path.exists():
+            path.unlink()
+        return False
+    return path.exists()
+
+
 def build_solid_rar(path: Path, scale: Scale) -> int | None:
     """Build a solid RAR via the ``rar`` binary; return unpacked bytes or None if unavailable."""
     if shutil.which("rar") is None:
@@ -266,6 +317,8 @@ def materialize_fixtures(
             unpacked_zip_aes = built
 
     solid_7z: Path | None = None
+    many_7z: Path | None = None
+    nonsolid_7z: Path | None = None
     unpacked_7z = 0
     try:
         import py7zr  # noqa: F401
@@ -277,6 +330,12 @@ def materialize_fixtures(
             unpacked_7z = build_solid_7z(solid_7z, scale_obj)
         else:
             unpacked_7z = _unpacked_solid(scale_obj)
+        many_7z = root / "many-list.7z"
+        if not many_7z.exists():
+            build_many_member_7z(many_7z, scale_obj)
+        nonsolid_path = root / "nonsolid-list.7z"
+        if nonsolid_path.exists() or build_nonsolid_7z(nonsolid_path, scale_obj):
+            nonsolid_7z = nonsolid_path
 
     solid_rar: Path | None = None
     unpacked_rar = 0
@@ -301,6 +360,8 @@ def materialize_fixtures(
         tarbz2_path=tarbz2_path,
         gzip_path=gzip_path,
         solid_7z=solid_7z,
+        many_7z=many_7z,
+        nonsolid_7z=nonsolid_7z,
         solid_rar=solid_rar,
         unpacked_solid_7z=unpacked_7z,
         unpacked_solid_rar=unpacked_rar,
