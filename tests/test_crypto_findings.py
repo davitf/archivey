@@ -337,6 +337,9 @@ def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
         is_header_encrypted=False,
         has_encrypted_folders=True,
     )
+    reader._folder_compression = SevenZipReader._build_folder_compression(  # noqa: SLF001
+        reader._archive  # noqa: SLF001
+    )
     record = SevenZipFileRecord(
         filename="store.txt",
         emptystream=False,
