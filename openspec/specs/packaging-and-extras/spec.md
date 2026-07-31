@@ -31,8 +31,8 @@ codecs (LZMA/LZMA2/BCJ/Delta/Deflate/BZip2/STORED) with CRC32 verification.
 The system SHALL parse RAR metadata/listing natively in core with CRC32
 verification. Reading RAR member data additionally requires the external `unrar`
 system binary at runtime; no pip extra supplies that binary. RAR members that carry
-only Blake2sp hashes still read without `[rar]`, but the Blake2sp integrity check is
-skipped with a diagnostic/warning.
+only Blake2sp hashes are verified in core: BLAKE2sp is computed natively on stdlib
+`hashlib` and needs no third-party package.
 
 The build SHALL use `hatchling` and the distribution name `archivey`.
 
@@ -115,7 +115,7 @@ RAR5 BLAKE2sp verification is implemented **natively on stdlib `hashlib`**
 Blake2sp backend.
 
 The system SHALL keep `py7zr` and `rarfile` as **dev-only** test oracles. 7z writing is
-not shipped in the current release (no `[7z-write]` extra); when writing lands in a later
+not shipped in the current release (no 7z-writing extra); when writing lands in a later
 phase it MAY reintroduce a dedicated write extra. BCJ2-filtered 7z members MUST remain
 unsupported by every extra. No user-facing extra SHALL pull an alternate RAR decompressor
 library or tool wrapper, and no extra can supply the RARLAB `unrar` binary.
@@ -164,7 +164,7 @@ absent from every user-facing extra.
 The per-codec library choice and rationale SHALL be recorded in
 `docs/internal/library-analysis.md`. A guard test or check script SHALL prevent dead or
 test-only dependencies from returning to user-facing extras. A dependency pinned
-ahead of its implementation phase, such as `[cli]`, is permitted only
+ahead of its implementation phase, such as `tqdm` for the CLI, is permitted only
 through an explicit documented allowlist in that guard.
 
 #### Scenario: dependency-audit matrix
@@ -174,8 +174,8 @@ through an explicit documented allowlist in that guard.
 | User-facing extra audited against `src/` imports | Every pinned package is reachable from runtime code or explicitly allowlisted |
 | Library imported only by tests (`rarfile`, oracle `py7zr`, `ncompress`, fixture-only `pyzstd`) | Declared in `dev`; absent from runtime extras |
 | `atheris` | Declared in `fuzz` group; absent from runtime extras and `[all]` |
-| `pip install archivey[zstd]` on Python 3.11-3.13 | Installs `backports.zstd`; does not pull `zstandard` |
-| `pip install archivey[zstd]` on Python 3.14+ | No third-party zstd package required; stdlib `compression.zstd` provides the backend |
+| `pip install archivey[recommended]` on Python 3.11-3.13 | Installs `backports.zstd`; does not pull `zstandard` |
+| `pip install archivey[recommended]` on Python 3.14+ | No third-party zstd package required; stdlib `compression.zstd` provides the backend |
 | Extra lists a library no `src/` module imports and not allowlisted | Packaging audit fails |
 
 ### Requirement: CI-only fuzz dependency group
@@ -183,7 +183,7 @@ through an explicit documented allowlist in that guard.
 The system SHALL provide a PEP 735 dependency group named `fuzz` that installs
 `atheris` (and any harness-only helpers it needs) for coverage-guided fuzz CI.
 The `fuzz` group is **not** a user-facing runtime extra: it MUST NOT appear in
-`[all]`, `[recommended]`, `[recommended-lite]`, or any format/codec/CLI extra,
+`[all]`, `[recommended]`, `[seekable]`, or `[free-threaded]`,
 and MUST NOT be required to import or use `archivey` at runtime.
 
 #### Scenario: fuzz packaging matrix
@@ -262,8 +262,8 @@ public extraction types and `extract()` live on the public surface.
 ### Requirement: archivey console entry points ship with the base package
 
 The system SHALL install an `archivey` console script and support
-`python -m archivey` from a base (no-extra) install. The `[cli]` extra SHALL
-continue to pull `tqdm` for progress output only; absence of `[cli]` MUST NOT
+`python -m archivey` from a base (no-extra) install. The `[recommended]` extra SHALL
+continue to pull `tqdm` for progress output only; its absence MUST NOT
 remove the command entry points.
 
 #### Scenario: entry points vs progress extra
@@ -271,6 +271,6 @@ remove the command entry points.
 | Case | Expected |
 | --- | --- |
 | `pip install archivey` then `archivey --version` / `python -m archivey --version` | Command runs; version prints |
-| `[cli]` / `tqdm` not installed | Command runs; progress bars suppressed |
-| `pip install archivey[cli]` | Progress available when the CLI would show a bar |
+| `tqdm` not installed | Command runs; progress bars suppressed |
+| `pip install archivey[recommended]` | Progress available when the CLI would show a bar |
 

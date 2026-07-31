@@ -66,6 +66,26 @@ jobs:
         # --python overrides repo `.python-version` (3.11) so docs actually run on 3.12.
         run: uv run --python 3.12 --group docs mkdocs build --strict
 
+  # The specs under `openspec/specs/` are the authority, but a change only reaches them
+  # when someone runs `openspec archive` — a step that happens after the PR merges, and
+  # was missed three times in a row (#212, #213, #214), each time leaving the authority
+  # describing an API or a set of extras that no longer shipped.
+  #
+  # Push-only by design. The implementing PR is *meant* to tick its last task while the
+  # change is still unarchived, so running this on `pull_request` would fail the very
+  # workflow it protects. On main there is no such excuse: anything finished here should
+  # already be applied.
+  openspec:
+    name: OpenSpec changes archived
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      # Stdlib-only script, so no uv sync — the runner's python3 is enough.
+      - name: Assert no finished change is left unarchived
+        run: python3 scripts/check_openspec_archived.py
+
   test:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     runs-on: ${{ matrix.os }}

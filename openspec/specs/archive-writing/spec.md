@@ -17,9 +17,7 @@ buffering the whole archive.
 | `packaging-and-extras` | `[recommended]` and other optional write dependencies |
 | `logging` | Warnings for skipped members and contradictory compression settings |
 | `safe-extraction` | Shared member-filter transform semantics |
-
 ## Requirements
-
 ### Requirement: Creating an archive for writing
 
 The system SHALL expose `archivey.create()` returning an `ArchiveWriter`:
@@ -223,9 +221,10 @@ format default. With `algo=None`, the backend SHALL choose an available algorith
 
 | Case | Expected |
 | --- | --- |
-| Explicit `ZSTD` without `[zstd]` | `PackageNotInstalledError`; no archive written; no fallback codec |
+| Explicit `ZSTD` without the zstd backend | `PackageNotInstalledError`; no archive written; no fallback codec |
 | `algo=None`, `level=MAX` for ZIP | Backend selects an appropriate available ZIP algorithm at maximum effort |
 | `compression=None` or omitted | Treated as backend auto algorithm at default effort |
 | `CompressionSpec.DEFLATE` | Entries use DEFLATE level 6 |
 | Explicit `LZMA2` with `level=STORE` | Entry written uncompressed and warning emitted |
 | Numeric level outside algorithm range | `ValueError`; no silent clamp |
+

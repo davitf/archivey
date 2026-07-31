@@ -16,9 +16,7 @@ be seekable, and streaming write uses data descriptors.
 | `diagnostics` | Timestamp and symlink-target diagnostic values / policy |
 | `backend-registry` | `format_availability(ZIP)` FULL/PARTIAL from optional member codecs |
 | `compressed-streams` | ZIP member-data decode path (method id → `StreamCodec`) |
-
 ## Requirements
-
 ### Requirement: Report ZIP format properties
 
 The ZIP backend SHALL expose these properties for every opened ZIP archive:
@@ -36,8 +34,8 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 member map without extra archive I/O. Unencrypted ZIP member data SHALL decode
 through the shared `compressed-streams` codec layer (bounded local-header parse
 + slice + method-id dispatch), including extended codecs when their backends are
-installed: Deflate64 (method 9, via `[7z]`/`inflate64`), ZSTD (method 93), PPMD
-(method 98, ZIP PPMd8 framing via `[7z]`/`pyppmd`). A missing optional backend
+installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93), PPMD
+(method 98, ZIP PPMd8 framing via `[recommended]`/`pyppmd`). A missing optional backend
 SHALL raise `PackageNotInstalledError`. An unknown/unsupported method id SHALL
 raise `UnsupportedFeatureError`. `format_availability(ZIP)` SHALL report FULL
 when every optional ZIP member codec is installed, else PARTIAL with the missing
@@ -101,7 +99,7 @@ A wrong password SHALL fail fast on the 2-byte verification value with
 at the terminal read (`CorruptionError`). AE-2 members SHALL surface no
 `crc32` (the ZIP CRC is 0; integrity is the HMAC) and run no CRC check; AE-1
 members SHALL surface and verify `crc32` in addition to the HMAC. AES
-decryption requires `[crypto]`; when it is absent an AE member SHALL raise
+decryption requires `cryptography` (`[recommended]`); when it is absent an AE member SHALL raise
 `PackageNotInstalledError` (detection still identifies the member as
 AES-encrypted). Traditional ZipCrypto behavior is unchanged.
 
@@ -109,12 +107,12 @@ AES-encrypted). Traditional ZipCrypto behavior is unchanged.
 
 | Case | Expected |
 | --- | --- |
-| AE-1 or AE-2 member, 128/192/256, correct password, `[crypto]` present | Decrypts, decompresses via codec layer, HMAC verified at EOF |
+| AE-1 or AE-2 member, 128/192/256, correct password, `cryptography` present | Decrypts, decompresses via codec layer, HMAC verified at EOF |
 | Wrong password | `EncryptionError` on the 2-byte verification value; no bytes |
 | Tampered ciphertext, correct password | HMAC mismatch → `CorruptionError` at terminal read |
 | AE-2 member | `crc32` absent; no CRC check; HMAC is the integrity signal |
 | AE-1 member | `crc32` present and verified alongside the HMAC |
-| AES member without `[crypto]` installed | `PackageNotInstalledError`; still reported as encrypted |
+| AES member without `cryptography` installed | `PackageNotInstalledError`; still reported as encrypted |
 | Traditional ZipCrypto member | Unchanged (existing weak-check confirmation path) |
 
 ### Requirement: Reject non-seekable ZIP read sources
@@ -274,3 +272,4 @@ bare `UnicodeDecodeError`; the fallback encoding (cp437 by default) decodes ever
 - **WHEN** bit 11 is set, **or** the caller passed an explicit `encoding=`
 - **THEN** the name is decoded as UTF-8 (flag) or with the caller's `encoding` respectively,
   with no sniff and no override diagnostic
+

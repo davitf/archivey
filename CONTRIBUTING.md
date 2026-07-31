@@ -13,6 +13,13 @@ the *design* lives elsewhere and is authoritative:
   deltas); see `openspec/schemas/library/README.md` and `openspec/config.yaml`.
 - `CLAUDE.md` — orientation for AI agents working in this repo.
 
+**Merging a change does not apply it.** A proposal's deltas reach the authoritative
+specs only when someone runs `openspec archive <change> --yes` and commits the
+resulting `openspec/specs/` updates — normally a small follow-up PR after the
+implementation merges. Skipping it leaves the authority describing something that no
+longer ships, which happened three times running; CI now fails on `main` if a change
+is complete but unarchived (`scripts/check_openspec_archived.py`).
+
 ## Getting started
 
 Python **3.11+**. Tooling runs through [`uv`](https://docs.astral.sh/uv/):

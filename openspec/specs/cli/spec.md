@@ -12,9 +12,7 @@ Shell interface for inspecting, verifying, and extracting archives with fnmatch 
 | `safe-extraction` | Default safe extraction policy used by `extract` |
 | `packaging-and-extras` | `[recommended]` extra supplies `tqdm`; core remains importable without it |
 | `access-mode-and-cost` | Optional I/O instrumentation/cost reporting |
-
 ## Requirements
-
 ### Requirement: archivey command with list, test, and extract subcommands
 
 The system SHALL provide an `archivey` command whose verbs are **subcommands**:
@@ -29,9 +27,9 @@ be added later and take precedence over same-named files; the `list <path>`
 escape hatch is permanent. Verbs MUST NOT be selectable via a
 dash-prefixed option form (e.g. `-x` SHALL NOT mean `extract`); options always
 take a dash, verbs never do. Progress output SHALL use
-`tqdm` from `[cli]` when available; core MUST NOT depend on `tqdm`. The console
+`tqdm` from `[recommended]` when available; core MUST NOT depend on `tqdm`. The console
 script and `python -m archivey` MUST be importable/runnable without installing
-`[cli]` (progress suppressed if `tqdm` is absent).
+`[recommended]` (progress suppressed if `tqdm` is absent).
 
 Supported verbs in this capability:
 
@@ -159,7 +157,7 @@ other processed statuses are omitted from that line).
 | `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
-| `[cli]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
+| `[recommended]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
 | `--track-io` supplied | Reports decode/seek accounting (bytes decompressed, compressed bytes consumed, source seeks) via the measurement hook; no `builtins` patching |
 | `archivey -x <archive>` (dash-prefixed verb) | Usage error — verbs are bare words (`x`), not options; `-x` is not a mode selector |
 
@@ -270,3 +268,4 @@ filesystem entry literally named `-`.
 | --- | --- |
 | `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
 | `archivey extract -` | Same |
+
