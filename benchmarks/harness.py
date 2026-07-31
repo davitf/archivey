@@ -693,6 +693,12 @@ def run_cases(
             )
         )
         if not has_accel:
+            # unpacked_bytes stays None: nothing was decoded, so the case must not be
+            # measured against the read_all under-decode rule. Carrying the real size
+            # here made a missing extra surface as
+            # ``bytes_decompressed=0 < unpacked=...`` — a codec-shaped failure for a
+            # packaging-shaped cause. The row is still emitted (not omitted) so the
+            # report shows *why* the accelerator case is absent.
             results.append(
                 CaseResult(
                     f"{label}_read_all_accel_on",
@@ -701,7 +707,6 @@ def run_cases(
                     0.0,
                     0,
                     0,
-                    unpacked_bytes=unpacked,
                     notes="skipped: rapidgzip not installed ([seekable] extra)",
                 )
             )

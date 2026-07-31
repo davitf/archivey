@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks import harness
 from benchmarks.fixtures import materialize_fixtures
 from benchmarks.harness import (
     STRUCTURAL_BASELINE,
@@ -24,6 +25,12 @@ _RAR_DATA_CASES = (
     "rar_solid_sequential",
     "rar_solid_random",
     "rar_encrypted_read_all",
+)
+
+_ACCEL_ON_CASES = (
+    "zip_read_all_accel_on",
+    "targz_read_all_accel_on",
+    "tarbz2_read_all_accel_on",
 )
 
 
@@ -80,8 +87,24 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
         assert "zip_aes_read_all" in by_case
     assert "zip_lzma_read_all" in by_case
     assert "zip_read_all_accel_off" in by_case
+
+    # Accelerator ON cases: soft locally without rapidgzip, fail-closed in CI (and
+    # whenever it is installed) so a resolution change to the ``[seekable]`` extra
+    # cannot silently drop accelerator coverage. A skipped case is *present but
+    # unmeasured* (unpacked_bytes is None), so presence alone is not enough.
+    unmeasured_accel = [
+        name
+        for name in _ACCEL_ON_CASES
+        if name not in by_case or by_case[name].unpacked_bytes is None
+    ]
+    if unmeasured_accel and (_running_in_ci() or _rapidgzip_available()):
+        pytest.fail(
+            "accelerator ON cases did not run: "
+            f"{unmeasured_accel}. Install the '[seekable]' extra (rapidgzip>=0.16.0); "
+            "the CI matrix gets it via --extra all."
+        )
+
     if _rapidgzip_available():
-        assert "zip_read_all_accel_on" in by_case
         # Engagement signal: ON seeks more than OFF on the same deflate ZIP.
         assert (
             by_case["zip_read_all_accel_on"].source_seek_count
@@ -90,6 +113,39 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
 
     failures = _structural_checks(results, load_json(STRUCTURAL_BASELINE))
     assert not failures, "structural gate failures:\n" + "\n".join(failures)
+
+
+@pytest.mark.timeout(120)
+def test_accel_on_skip_is_not_reported_as_under_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing ``[seekable]`` extra must not look like a codec short read.
+
+    The accel-ON cases are skipped when rapidgzip is absent. The skip placeholder
+    used to carry the real ``unpacked_bytes`` alongside ``bytes_decompressed=0``, so
+    the read_all under-decode rule reported
+    ``targz_read_all_accel_on: bytes_decompressed=0 < unpacked=32768`` — a fabricated
+    defect pointing at the codec instead of at the missing extra, and expensive to
+    diagnose because ``_structural_checks`` failures do not carry the case notes.
+    """
+    monkeypatch.setattr(harness, "_rapidgzip_available", lambda: False)
+    fixtures = materialize_fixtures(tmp_path / "fixtures")
+    work = tmp_path / "work"
+    work.mkdir()
+    results = run_cases(fixtures, work)
+
+    failures = _structural_checks(results, load_json(STRUCTURAL_BASELINE))
+    assert not [f for f in failures if "accel_on" in f], (
+        "skipped accel-ON cases must not produce structural failures:\n"
+        + "\n".join(failures)
+    )
+
+    # The skip must still be *visible* — a silently absent row is how coverage
+    # evaporates unnoticed (see the fail-closed guard in the structural gate).
+    by_case = {r.case: r for r in results}
+    skipped = by_case["targz_read_all_accel_on"]
+    assert skipped.unpacked_bytes is None, "a skipped case measured nothing"
+    assert "rapidgzip not installed" in skipped.notes
 
 
 def test_structural_baseline_committed() -> None:
