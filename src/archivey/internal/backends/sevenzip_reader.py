@@ -42,7 +42,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.sevenzip_methods import METHOD_AES
+from archivey.internal.backends.sevenzip_methods import is_aes
 from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
     PlainHeader,
@@ -207,10 +207,7 @@ class SevenZipReader(BaseArchiveReader):
         self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         self._volume_count = getattr(source, "volume_count", 1)
         self._archive = self._load_archive()
-        self._folder_pack_starts = self._folder_pack_start_indices(self._archive)
-        # Public CompressionMethod tuples are identical for every member in a
-        # folder — build once (solid many-member listing hot path).
-        self._folder_compression = self._build_folder_compression(self._archive)
+        self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
 
@@ -277,6 +274,18 @@ class SevenZipReader(BaseArchiveReader):
                 ) from exc
             raise EncryptionError("Password(s) rejected for the 7z header") from exc
 
+    def _init_folder_caches(self, archive: SevenZipArchive) -> None:
+        """Derive per-folder indexes used by listing and open.
+
+        Kept as one helper so unit tests that construct a reader via
+        ``object.__new__`` can populate the same derived state ``__init__`` does
+        without hand-maintaining each cache field.
+        """
+        self._folder_pack_starts = self._folder_pack_start_indices(archive)
+        # Public CompressionMethod tuples are identical for every member in a
+        # folder — build once (solid many-member listing hot path).
+        self._folder_compression = self._build_folder_compression(archive)
+
     @staticmethod
     def _folder_pack_start_indices(archive: SevenZipArchive) -> list[int]:
         starts: list[int] = []
@@ -291,12 +300,13 @@ class SevenZipReader(BaseArchiveReader):
         archive: SevenZipArchive,
     ) -> list[tuple[CompressionMethod, ...]]:
         """One public compression-chain tuple per folder (shared by its members)."""
-        aes_id = METHOD_AES.method_id
         out: list[tuple[CompressionMethod, ...]] = []
         for folder in archive.folders:
             methods: list[CompressionMethod] = []
             for coder in folder.coders:
-                if coder.method == aes_id:
+                # Skip AES before lookup: METHOD_AES.algorithm is UNKNOWN, so the
+                # filter below would drop it too, but only after a registry hit.
+                if is_aes(coder.method):
                     continue
                 method = compression_method_for_coder(coder)
                 if method.algo is not CompressionAlgorithm.UNKNOWN:
@@ -384,7 +394,9 @@ class SevenZipReader(BaseArchiveReader):
         # bag so listing-limit accounting does not walk a per-member dict.
         ts_issues: list[_TimestampIssue] = []
         modified = accessed = created = None
-        # Only convert defined FILETIMEs (common archives store mtime alone).
+        # Hot-path shortcut only: filetime_to_datetime also treats 0/None as unset.
+        # Keep these guards equivalent to that helper so ZIP (unconditional call)
+        # and 7z cannot diverge if the shared 0-handling rule ever changes.
         if record.last_write_time:
             modified, issue = _filetime_to_datetime(
                 record.last_write_time, presented_name, field="modified"

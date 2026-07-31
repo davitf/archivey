@@ -47,6 +47,12 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
     assert sequential is not None, "expected sevenzip_solid_sequential case"
     assert sequential.bytes_decompressed <= (sequential.unpacked_bytes or 0) * 2
 
+    # Many-member COPY listing is the regression guard for per-folder caches.
+    assert "sevenzip_many_open_list" in by_case
+    # Non-solid listing needs the 7z CLI (-ms=off); soft-skip when absent.
+    if fixtures.nonsolid_7z is not None:
+        assert "sevenzip_nonsolid_open_list" in by_case
+
     random = by_case.get("sevenzip_solid_random")
     assert random is not None
     # Random opens re-decode; recorded, not failed — but must be visible.

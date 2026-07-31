@@ -42,8 +42,8 @@ from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, UnsupportedFeatureError
 from archivey.internal.backends.sevenzip_methods import (
-    METHOD_AES,
     METHOD_COPY,
+    is_aes,
     lookup,
 )
 from archivey.internal.streams.streamtools import read_exact
@@ -126,10 +126,6 @@ class SevenZipFileRecord:
     crc32: int | None
     compressed_size: int | None
     is_encrypted: bool
-    is_solid: bool
-    # Filled with raw on-disk method **bytes** here; the reader rebuilds public
-    # ``CompressionMethod`` tuples for ArchiveMember.compression.
-    compression_methods: tuple[bytes | CompressionMethod, ...]
 
 
 @dataclass(slots=True)
@@ -529,11 +525,10 @@ def folder_is_encrypted(folder: SevenZipFolder) -> bool:
     Lives here (not in ``sevenzip_methods``) so it can be typed against the folder
     dataclass: the registry module is a pure leaf and must not import these types.
 
-    Compare method ids directly (hot path in ``_map_files_to_folders`` for solid
-    archives with many members); avoid a ``lookup()`` per coder per file.
+    Uses :func:`is_aes` (id + aliases) rather than ``lookup()`` — listing hot path
+    in ``_map_files_to_folders`` for solid archives with many members.
     """
-    aes_id = METHOD_AES.method_id
-    return any(coder.method == aes_id for coder in folder.coders)
+    return any(is_aes(coder.method) for coder in folder.coders)
 
 
 def compression_method_for_coder(coder: SevenZipCoder) -> CompressionMethod:
@@ -1009,8 +1004,6 @@ def _file_record_from_props(props: _FileProps) -> SevenZipFileRecord:
         crc32=None,
         compressed_size=None,
         is_encrypted=False,
-        is_solid=False,
-        compression_methods=(),
     )
 
 
@@ -1030,8 +1023,6 @@ def _map_files_to_folders(
     # Folder-level fields are identical for every substream in a solid folder —
     # compute once when entering the folder (listing hot path for many-member 7z).
     folder_encrypted = False
-    folder_methods: tuple[bytes, ...] = ()
-    folder_solid = False
     folder_compressed: int | None = None
     folder_bound = -1
 
@@ -1046,8 +1037,6 @@ def _map_files_to_folders(
         if folder_index != folder_bound:
             folder = folders[folder_index]
             folder_encrypted = folder_is_encrypted(folder)
-            folder_methods = tuple(coder.method for coder in folder.coders)
-            folder_solid = num_unpackstreams_folders[folder_index] > 1
             folder_compressed = folder_compressed_sizes[folder_index]
             folder_bound = folder_index
 
@@ -1059,8 +1048,6 @@ def _map_files_to_folders(
         )
         file_record.compressed_size = folder_compressed
         file_record.is_encrypted = folder_encrypted
-        file_record.is_solid = folder_solid
-        file_record.compression_methods = folder_methods
 
         file_in_folder += 1
         substream_index += 1

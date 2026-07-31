@@ -811,6 +811,85 @@ def run_cases(
             )
         )
 
+    def _append_7z_open_list(
+        case: str,
+        path: Path,
+        *,
+        notes: str,
+    ) -> None:
+        _m_wall, (bdec, seeks) = timed_with_optional_warmup(
+            lambda p=path: _op_open_list(p)
+        )
+
+        def _ay() -> None:
+            with open_archive(path) as reader:
+                _ = reader.info
+                list(reader.members())
+
+        if _py7zr_available():
+            if warmup:
+                wall, _ignored, std_wall = _interleaved_pair_times(
+                    _ay,
+                    lambda p=path: _py7zr_open_list(p),
+                    rounds=7,
+                )
+            else:
+                wall, _ = timed_with_optional_warmup(_ay)
+                std_wall, _ = timed_with_optional_warmup(
+                    lambda p=path: _py7zr_open_list(p)
+                )
+            results.append(
+                CaseResult(
+                    case,
+                    "7z",
+                    "open_list",
+                    wall,
+                    bdec,
+                    seeks,
+                    stdlib_wall_s=std_wall,
+                    wall_ratio=(wall / std_wall) if std_wall > 0 else None,
+                    notes=notes,
+                )
+            )
+        else:
+            wall, _ = timed_with_optional_warmup(_ay)
+            results.append(
+                CaseResult(
+                    case,
+                    "7z",
+                    "open_list",
+                    wall,
+                    bdec,
+                    seeks,
+                    notes=f"{notes}; skipped peer: py7zr not installed",
+                )
+            )
+
+    # Many-member solid COPY listing — regression guard for per-folder caches.
+    # The LZMA2 solid fixture above is too few members for this signal to clear noise.
+    if fixtures.many_7z is not None:
+        n = fixtures.scale.list_members
+        _append_7z_open_list(
+            "sevenzip_many_open_list",
+            fixtures.many_7z,
+            notes=(
+                f"vs py7zr.list; {n} tiny COPY members (solid); "
+                "listing-cost regression guard"
+            ),
+        )
+
+    # Non-solid listing negative control (7z -ms=off): cache misses every member.
+    if fixtures.nonsolid_7z is not None:
+        n = fixtures.scale.nonsolid_list_members
+        _append_7z_open_list(
+            "sevenzip_nonsolid_open_list",
+            fixtures.nonsolid_7z,
+            notes=(
+                f"vs py7zr.list; {n} store members (-ms=off); "
+                "negative control (no per-folder amortize)"
+            ),
+        )
+
     # --- RAR open_list vs rarfile (committed fixture for a stable peer; independent
     # of the optional ``rar`` writer used for solid data-path cases below) ---
     rar_list_path = ROOT / "tests" / "fixtures" / "rar" / "basic_solid__.rar"
@@ -1215,6 +1294,8 @@ def format_text_report(payload: dict[str, Any]) -> str:
                 f"- gzip size: {_fmt_bytes(detail.get('gzip_size'))}",
                 f"- solid members: {detail.get('solid_members', '?')} × "
                 f"{_fmt_bytes(detail.get('solid_member_size'))}",
+                f"- 7z list members: {detail.get('list_members', '?')} solid COPY / "
+                f"{detail.get('nonsolid_list_members', '?')} nonsolid",
             ]
         )
 
@@ -1388,6 +1469,8 @@ def main(argv: list[str] | None = None) -> int:
             "gzip_size": fixtures.scale.gzip_size,
             "solid_members": fixtures.scale.solid_members,
             "solid_member_size": fixtures.scale.solid_member_size,
+            "list_members": fixtures.scale.list_members,
+            "nonsolid_list_members": fixtures.scale.nonsolid_list_members,
         },
         "fixture_root": str(fixtures.root),
         "warmup": warmup,

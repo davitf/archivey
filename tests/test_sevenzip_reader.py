@@ -1194,6 +1194,92 @@ def test_decode_utf16_names_bulk() -> None:
         _decode_utf16_names(blob[1:], expected_count=3)
 
 
+def test_is_aes_matches_primary_id_and_aliases() -> None:
+    from archivey.internal.backends.sevenzip_methods import METHOD_AES, is_aes
+
+    assert is_aes(METHOD_AES.method_id)
+    assert not is_aes(b"\x00")
+    # AES has no aliases today; the helper still checks ``aliases`` so a future
+    # short/long id pair (as BCJ already uses) cannot silently break encryption
+    # detection that switched off ``lookup()``.
+    assert METHOD_AES.aliases == ()
+
+
+def test_map_files_to_folders_solid_and_nonsolid() -> None:
+    """Per-folder cache must assign indices correctly for both folder shapes."""
+    from archivey.internal.backends.sevenzip_parser import (
+        SevenZipCoder,
+        SevenZipFileRecord,
+        SevenZipFolder,
+        _map_files_to_folders,
+    )
+
+    def _record() -> SevenZipFileRecord:
+        return SevenZipFileRecord(
+            filename="x",
+            emptystream=False,
+            is_anti=False,
+            is_directory=False,
+            is_empty_file=False,
+            attributes=None,
+            creation_time=None,
+            last_access_time=None,
+            last_write_time=None,
+            folder_index=None,
+            file_in_folder=None,
+            uncompressed_size=0,
+            crc32=None,
+            compressed_size=None,
+            is_encrypted=False,
+        )
+
+    def _folder() -> SevenZipFolder:
+        return SevenZipFolder(
+            coders=[
+                SevenZipCoder(
+                    method=b"\x00",
+                    num_in_streams=1,
+                    num_out_streams=1,
+                    properties=None,
+                )
+            ],
+            bind_pairs=[],
+            packed_indices=[0],
+            unpack_sizes=[1],
+            crc=None,
+            digest_defined=False,
+        )
+
+    n = 8
+    # Solid: one folder, n substreams.
+    solid_files = [_record() for _ in range(n)]
+    solid = _map_files_to_folders(
+        solid_files,
+        folders=[_folder()],
+        pack_sizes=[n],
+        num_unpackstreams_folders=[n],
+        unpack_sizes=[1] * n,
+        digests=[None] * n,
+    )
+    assert [f.folder_index for f in solid] == [0] * n
+    assert [f.file_in_folder for f in solid] == list(range(n))
+    assert all(f.compressed_size == n for f in solid)
+
+    # Non-solid: n folders, one substream each (cache miss every member).
+    nonsolid_files = [_record() for _ in range(n)]
+    nonsolid = _map_files_to_folders(
+        nonsolid_files,
+        folders=[_folder() for _ in range(n)],
+        pack_sizes=[1] * n,
+        num_unpackstreams_folders=[1] * n,
+        unpack_sizes=[1] * n,
+        digests=[None] * n,
+    )
+    assert [f.folder_index for f in nonsolid] == list(range(n))
+    assert [f.file_in_folder for f in nonsolid] == [0] * n
+    assert all(f.compressed_size == 1 for f in nonsolid)
+
+
 def test_lz4_without_lz4_package_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = _reader_for_unit_tests()
     monkeypatch.setattr(codecs, "_lz4_frame", None)

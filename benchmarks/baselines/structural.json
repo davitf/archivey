@@ -94,6 +94,18 @@
       "unpacked_bytes": null,
       "notes": "vs py7zr.list; Q1 native listing target \u2248parity"
     },
+    "sevenzip_many_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 3,
+      "unpacked_bytes": null,
+      "notes": "vs py7zr.list; 1000 tiny COPY members (solid); listing-cost regression guard"
+    },
+    "sevenzip_nonsolid_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 3,
+      "unpacked_bytes": null,
+      "notes": "vs py7zr.list; 256 store members (-ms=off); negative control (no per-folder amortize)"
+    },
     "sevenzip_solid_sequential": {
       "bytes_decompressed": 2097152,
       "source_seek_count": 4,

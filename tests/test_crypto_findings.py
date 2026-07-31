@@ -337,9 +337,7 @@ def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
         is_header_encrypted=False,
         has_encrypted_folders=True,
     )
-    reader._folder_compression = SevenZipReader._build_folder_compression(  # noqa: SLF001
-        reader._archive  # noqa: SLF001
-    )
+    reader._init_folder_caches(reader._archive)  # noqa: SLF001
     record = SevenZipFileRecord(
         filename="store.txt",
         emptystream=False,
@@ -356,8 +354,6 @@ def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
         crc32=None,
         compressed_size=4,
         is_encrypted=True,
-        is_solid=False,
-        compression_methods=(),
     )
     member = reader._to_member(record)  # noqa: SLF001
     assert member.hashes == {}
