@@ -34,6 +34,17 @@ Encrypted / hash fixtures of note:
 | `encryption_blake2sp.rar` | RAR5 `-m0 -htb -ppassword`; HASHMAC tweaked BLAKE2sp |
 | `blake2sp.rar` | RAR5 `-m0 -htb`; plaintext BLAKE2sp (no encryption) |
 
+Many-member listing fixtures (structural benchmark gate; CI has `unrar` but not
+`rar`, so these are committed rather than built on demand):
+
+| Files | Notes |
+| --- | --- |
+| `many_list_store__.rar` | RAR5 `-m0 -s -ep1`; 1000 tiny `fNNNNN.txt` members |
+| `many_list_store_nonsolid__.rar` | RAR5 `-m0 -s- -ep1`; 256 tiny members |
+
+(`-m0` store archives do not set the solid bit even with `-s`; the flags still
+match the regeneration commands in `scripts/gen_rar_fixtures.py`.)
+
 ## Legacy (not regenerated)
 
 | File | Provenance |

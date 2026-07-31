@@ -53,11 +53,10 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
     if fixtures.nonsolid_7z is not None:
         assert "sevenzip_nonsolid_open_list" in by_case
 
-    # Many-member RAR listing needs the ``rar`` writer; soft-skip when absent.
-    if fixtures.many_rar is not None:
-        assert "rar_many_open_list" in by_case
-    if fixtures.nonsolid_rar is not None:
-        assert "rar_nonsolid_open_list" in by_case
+    # Many-member RAR listing: committed fixtures so CI always runs the guard
+    # (workflow installs unrar, not the ``rar`` writer).
+    assert "rar_many_open_list" in by_case
+    assert "rar_nonsolid_open_list" in by_case
 
     random = by_case.get("sevenzip_solid_random")
     assert random is not None

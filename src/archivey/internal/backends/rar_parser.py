@@ -620,7 +620,12 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
 
 
 class _HeaderDecryptStream:
-    """Decrypt subsequent header bytes with AES-CBC; seek/tell pass through."""
+    """Decrypt subsequent header bytes with AES-CBC; seek/tell pass through.
+
+    ``seek`` clears the decrypt buffer. Do not prefetch plaintext then rewind:
+    ``tell`` is the ciphertext cursor, so a plaintext over-read leaves the
+    underlying stream ahead of the logical header position.
+    """
 
     def __init__(self, source: BinaryIO, key: bytes, iv: bytes) -> None:
         self._source = source
@@ -1452,6 +1457,10 @@ def _read_rar5_block(
     Returns
     ``(type, flags, hdata, pos_after_common, header_offset, header_size,
     data_offset, add_size, extra_size)`` or ``None`` at EOF.
+
+    Reads the size vint byte-at-a-time rather than prefetching a large window and
+    seeking back: rewind is unsafe when ``fd`` is a :class:`_HeaderDecryptStream`
+    (ciphertext ``tell`` vs plaintext over-read).
     """
     header_offset = fd.tell()
     preload = 4 + 1

@@ -255,11 +255,10 @@ def build_solid_rar(path: Path, scale: Scale) -> int | None:
     return total if path.exists() else None
 
 
-def build_many_member_rar(path: Path, scale: Scale) -> bool:
-    """Solid store RAR with many tiny members — listing cost dominates.
+def _build_store_rar(path: Path, count: int, *, solid: bool) -> bool:
+    """Store (``-m0``) RAR with ``count`` tiny members; ``solid`` selects ``-s`` / ``-s-``.
 
-    Uses ``rar a -m0 -s`` (RAR5 store, solid). Soft-fails when the ``rar`` writer
-    is missing so CI without RARLAB tools still runs other structural cases.
+    Soft-fails when the ``rar`` writer is missing (CI installs ``unrar`` only).
     """
     if shutil.which("rar") is None:
         return False
@@ -267,9 +266,10 @@ def build_many_member_rar(path: Path, scale: Scale) -> bool:
     if src.exists():
         shutil.rmtree(src)
     src.mkdir(parents=True)
-    for i in range(scale.list_members):
+    for i in range(count):
         (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
-    cmd = ["rar", "a", "-m0", "-s", "-ep1", "-idq", str(path), str(src / "*")]
+    solid_flag = "-s" if solid else "-s-"
+    cmd = ["rar", "a", "-m0", solid_flag, "-ep1", "-idq", str(path), str(src / "*")]
     try:
         subprocess.run(cmd, check=True, capture_output=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -277,29 +277,16 @@ def build_many_member_rar(path: Path, scale: Scale) -> bool:
             path.unlink()
         return False
     return path.exists()
+
+
+def build_many_member_rar(path: Path, scale: Scale) -> bool:
+    """Solid store RAR with many tiny members — listing cost dominates."""
+    return _build_store_rar(path, scale.list_members, solid=True)
 
 
 def build_nonsolid_rar(path: Path, scale: Scale) -> bool:
-    """Non-solid store RAR (``rar -m0 -s-``); listing negative control vs solid many.
-
-    Soft-fails when ``rar`` is unavailable.
-    """
-    if shutil.which("rar") is None:
-        return False
-    src = path.parent / f"{path.stem}-src"
-    if src.exists():
-        shutil.rmtree(src)
-    src.mkdir(parents=True)
-    for i in range(scale.nonsolid_list_members):
-        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
-    cmd = ["rar", "a", "-m0", "-s-", "-ep1", "-idq", str(path), str(src / "*")]
-    try:
-        subprocess.run(cmd, check=True, capture_output=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        if path.exists():
-            path.unlink()
-        return False
-    return path.exists()
+    """Non-solid store RAR; listing negative control vs solid many."""
+    return _build_store_rar(path, scale.nonsolid_list_members, solid=False)
 
 
 def _unpacked_solid(scale: Scale) -> int:

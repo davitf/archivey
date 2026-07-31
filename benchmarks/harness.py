@@ -891,8 +891,8 @@ def run_cases(
         )
 
     # --- RAR open_list vs rarfile ---
-    # Small committed fixture keeps a stable peer when ``rar`` is absent; many-member
-    # store corpora (when built) are the listing-cost regression signal.
+    # Committed fixtures so CI (unrar only, no ``rar`` writer) still runs the many-
+    # member listing guard. On-demand builders remain for realistic-scale regenerations.
     def _append_rar_open_list(
         case: str,
         path: Path,
@@ -947,7 +947,8 @@ def run_cases(
                 )
             )
 
-    rar_list_path = ROOT / "tests" / "fixtures" / "rar" / "basic_solid__.rar"
+    rar_fixtures = ROOT / "tests" / "fixtures" / "rar"
+    rar_list_path = rar_fixtures / "basic_solid__.rar"
     if rar_list_path.is_file():
         _append_rar_open_list(
             "rar_open_list",
@@ -955,25 +956,43 @@ def run_cases(
             notes="vs rarfile.infolist; Q1 native listing target ≈parity",
         )
 
-    if fixtures.many_rar is not None:
-        n = fixtures.scale.list_members
+    # Prefer scale-matched generated corpora when present; always fall back to the
+    # committed ci-sized fixtures so the structural gate cannot soft-skip.
+    committed_many = rar_fixtures / "many_list_store__.rar"
+    many_path = fixtures.many_rar if fixtures.many_rar is not None else committed_many
+    if many_path.is_file():
+        n = (
+            fixtures.scale.list_members
+            if fixtures.many_rar is not None
+            else 1_000  # committed ci fixture
+        )
         _append_rar_open_list(
             "rar_many_open_list",
-            fixtures.many_rar,
+            many_path,
             notes=(
-                f"vs rarfile.infolist; {n} tiny store members (solid); "
+                f"vs rarfile.infolist; {n} tiny store members (-m0); "
                 "listing-cost regression guard"
             ),
         )
 
-    if fixtures.nonsolid_rar is not None:
-        n = fixtures.scale.nonsolid_list_members
+    committed_nonsolid = rar_fixtures / "many_list_store_nonsolid__.rar"
+    nonsolid_path = (
+        fixtures.nonsolid_rar
+        if fixtures.nonsolid_rar is not None
+        else committed_nonsolid
+    )
+    if nonsolid_path.is_file():
+        n = (
+            fixtures.scale.nonsolid_list_members
+            if fixtures.nonsolid_rar is not None
+            else 256  # committed ci fixture
+        )
         _append_rar_open_list(
             "rar_nonsolid_open_list",
-            fixtures.nonsolid_rar,
+            nonsolid_path,
             notes=(
-                f"vs rarfile.infolist; {n} store members (-s-); "
-                "negative control (nonsolid listing)"
+                f"vs rarfile.infolist; {n} store members (-m0 -s-); "
+                "smaller listing control"
             ),
         )
 

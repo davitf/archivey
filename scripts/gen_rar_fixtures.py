@@ -371,6 +371,43 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     )
     _build_file_version_solid(rar5_bin, out_dir / "file_version_solid__.rar")
 
+    # Many-member store listing fixtures (ci-scale structural gate; no ``rar`` in CI).
+    # ``-m0`` never sets the archive solid bit — ``-s`` / ``-s-`` still distinguish
+    # the regeneration commands. Match ``benchmarks.fixtures.SCALES["ci"]``.
+    _LIST_MEMBER_SIZE = 16
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        names: list[str] = []
+        for i in range(1_000):
+            name = f"f{i:05d}.txt"
+            (root / name).write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+            names.append(name)
+        _rar_a(
+            rar5_bin,
+            out_dir / "many_list_store__.rar",
+            names,
+            cwd=root,
+            extra=("-m0", "-s", "-ep1"),
+        )
+        print(f"wrote {(out_dir / 'many_list_store__.rar').relative_to(REPO_ROOT)}")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        names = []
+        for i in range(256):
+            name = f"f{i:05d}.txt"
+            (root / name).write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+            names.append(name)
+        _rar_a(
+            rar5_bin,
+            out_dir / "many_list_store_nonsolid__.rar",
+            names,
+            cwd=root,
+            extra=("-m0", "-s-", "-ep1"),
+        )
+        print(
+            f"wrote {(out_dir / 'many_list_store_nonsolid__.rar').relative_to(REPO_ROOT)}"
+        )
+
     # Multi-volume: 1600-byte payload, 900-byte volumes → two parts.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)

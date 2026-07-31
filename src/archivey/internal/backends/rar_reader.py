@@ -102,12 +102,13 @@ _RAR_HOST_OS_TO_CREATE_SYSTEM: dict[int, CreateSystem] = {
 }
 
 _RAR_METHOD_STORED = 0x30
+_RAR_METHOD_MAX = 0x35  # RAR M5
 _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS = 0x02
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 
 # Shared CompressionMethod tuples — many-member listing hits the same method byte
 # (typically store / M1–M5) thousands of times; avoid per-member allocations.
-_EMPTY_COMPRESSION: tuple[CompressionMethod, ...] = ()
+# RAR M1–M5 are proprietary; expose as UNKNOWN with the method byte as level.
 _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
     CompressionMethod(algo=CompressionAlgorithm.STORED),
 )
@@ -120,7 +121,7 @@ _COMPRESSION_BY_METHOD: dict[int, tuple[CompressionMethod, ...]] = {
                 level=method - _RAR_METHOD_STORED,
             ),
         )
-        for method in range(_RAR_METHOD_STORED + 1, _RAR_METHOD_STORED + 6)
+        for method in range(_RAR_METHOD_STORED + 1, _RAR_METHOD_MAX + 1)
     },
 }
 
@@ -148,7 +149,7 @@ def _password_as_str(password: bytes | str | None) -> str | None:
 def _compression_for(info: RarMemberInfo) -> tuple[CompressionMethod, ...]:
     method = info.compress_type
     if method is None:
-        return _EMPTY_COMPRESSION
+        return ()
     cached = _COMPRESSION_BY_METHOD.get(method)
     if cached is not None:
         return cached
@@ -164,9 +165,7 @@ def _crc_is_tweaked(info: RarMemberInfo) -> bool:
     return bool(enc.flags & _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS)
 
 
-def _member_hashes(
-    info: RarMemberInfo, *, tweaked: bool | None = None
-) -> dict[HashAlgorithm, bytes]:
+def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
     """Plaintext digests safe for member verification without a HashKey.
 
     When ``RAR5_XENC_TWEAKED`` / ``HASHMAC`` (0x02) is set, the stored CRC32 and
@@ -176,8 +175,7 @@ def _member_hashes(
     :meth:`RarReader._tweaked_verify_spec`).
     """
     hashes: dict[HashAlgorithm, bytes] = {}
-    if tweaked is None:
-        tweaked = _crc_is_tweaked(info)
+    tweaked = _crc_is_tweaked(info)
     if info.crc32 is not None and not tweaked:
         hashes[HashAlgorithm.CRC32] = crc32_digest(info.crc32)
     if info.blake2sp_hash is not None and not tweaked:
@@ -544,9 +542,7 @@ class RarReader(BaseArchiveReader):
     def _to_member(self, info: RarMemberInfo) -> ArchiveMember:
         member_type = self._member_type(info)
         version_history = info.is_file_version_history()
-        presented = (
-            f"{info.filename};{info.file_version}" if version_history else info.filename
-        )
+        presented = _presented_filename(info)
         name = normalize_member_name(
             presented,
             member_type,
@@ -560,23 +556,18 @@ class RarReader(BaseArchiveReader):
             else info.filename.encode("utf-8", errors="surrogateescape")
         )
         link_target: str | None = None
-        # Only allocate ``extra`` when there are keys (redir / version / tweaked CRC).
-        extra: dict[str, object] | None = None
+        extra: dict[str, object] = {}
         tweaked = _crc_is_tweaked(info)
         if info.file_redir is not None:
             link_target = info.file_redir[2]
             if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
-                extra = {EXTRA_IS_JUNCTION: True}
+                extra[EXTRA_IS_JUNCTION] = True
         if version_history:
             assert info.file_version is not None
-            if extra is None:
-                extra = {}
             extra["rar.file_version"] = info.file_version
         if tweaked:
             # Stored digests are key-tweaked; keep them out of ``hashes`` (see
             # ``_member_hashes``) but expose the raw values for callers / forward-verify.
-            if extra is None:
-                extra = {}
             if info.crc32 is not None:
                 extra["rar.tweaked_crc32"] = info.crc32
             if info.blake2sp_hash is not None:
@@ -613,12 +604,11 @@ class RarReader(BaseArchiveReader):
             is_current=not version_history,
             create_system=create_system,
             windows_attrs=windows_attrs,
-            hashes=_member_hashes(info, tweaked=tweaked),
+            hashes=_member_hashes(info),
             link_target=link_target,
+            extra=extra,
             _raw=info,
         )
-        if extra is not None:
-            member.extra.update(extra)
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
