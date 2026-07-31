@@ -50,7 +50,12 @@ from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
-from benchmarks.fixtures import ZIP_AES_PASSWORD, FixtureSet, materialize_fixtures
+from benchmarks.fixtures import (
+    SCALES,
+    ZIP_AES_PASSWORD,
+    FixtureSet,
+    materialize_fixtures,
+)
 from benchmarks.wall_baseline import (
     measurement_provenance,
     overlapping_wall_ratio_count,
@@ -890,34 +895,39 @@ def run_cases(
             ),
         )
 
-    # --- RAR open_list vs rarfile (committed fixture for a stable peer; independent
-    # of the optional ``rar`` writer used for solid data-path cases below) ---
-    rar_list_path = ROOT / "tests" / "fixtures" / "rar" / "basic_solid__.rar"
-    if rar_list_path.is_file():
+    # --- RAR open_list vs rarfile ---
+    # Committed fixtures so CI (unrar only, no ``rar`` writer) still runs the many-
+    # member listing guard. On-demand builders remain for realistic-scale regenerations.
+    def _append_rar_open_list(
+        case: str,
+        path: Path,
+        *,
+        notes: str,
+    ) -> None:
         _m_wall, (bdec, seeks) = timed_with_optional_warmup(
-            lambda: _op_open_list(rar_list_path)
+            lambda p=path: _op_open_list(p)
         )
 
-        def _ay_rar_open_list() -> None:
-            with open_archive(rar_list_path) as reader:
+        def _ay() -> None:
+            with open_archive(path) as reader:
                 _ = reader.info
                 list(reader.members())
 
         if _rarfile_available():
             if warmup:
                 wall, _ignored, std_wall = _interleaved_pair_times(
-                    _ay_rar_open_list,
-                    lambda: _rarfile_open_list(rar_list_path),
+                    _ay,
+                    lambda p=path: _rarfile_open_list(p),
                     rounds=7,
                 )
             else:
-                wall, _ = timed_with_optional_warmup(_ay_rar_open_list)
+                wall, _ = timed_with_optional_warmup(_ay)
                 std_wall, _ = timed_with_optional_warmup(
-                    lambda: _rarfile_open_list(rar_list_path)
+                    lambda p=path: _rarfile_open_list(p)
                 )
             results.append(
                 CaseResult(
-                    "rar_open_list",
+                    case,
                     "rar",
                     "open_list",
                     wall,
@@ -925,22 +935,71 @@ def run_cases(
                     seeks,
                     stdlib_wall_s=std_wall,
                     wall_ratio=(wall / std_wall) if std_wall > 0 else None,
-                    notes="vs rarfile.infolist; Q1 native listing target ≈parity",
+                    notes=notes,
                 )
             )
         else:
-            wall, _ = timed_with_optional_warmup(_ay_rar_open_list)
+            wall, _ = timed_with_optional_warmup(_ay)
             results.append(
                 CaseResult(
-                    "rar_open_list",
+                    case,
                     "rar",
                     "open_list",
                     wall,
                     bdec,
                     seeks,
-                    notes="skipped peer: rarfile not installed",
+                    notes=f"{notes}; skipped peer: rarfile not installed",
                 )
             )
+
+    rar_fixtures = ROOT / "tests" / "fixtures" / "rar"
+    rar_list_path = rar_fixtures / "basic_solid__.rar"
+    if rar_list_path.is_file():
+        _append_rar_open_list(
+            "rar_open_list",
+            rar_list_path,
+            notes="vs rarfile.infolist; Q1 native listing target ≈parity",
+        )
+
+    # Prefer scale-matched generated corpora when present; always fall back to the
+    # committed ci-sized fixtures so the structural gate cannot soft-skip.
+    committed_many = rar_fixtures / "many_list_store__.rar"
+    many_path = fixtures.many_rar if fixtures.many_rar is not None else committed_many
+    if many_path.is_file():
+        n = (
+            fixtures.scale.list_members
+            if fixtures.many_rar is not None
+            else SCALES["ci"].list_members  # committed fixture is built at ci scale
+        )
+        _append_rar_open_list(
+            "rar_many_open_list",
+            many_path,
+            notes=(
+                f"vs rarfile.infolist; {n} tiny store members (-m0); "
+                "listing-cost regression guard"
+            ),
+        )
+
+    committed_nonsolid = rar_fixtures / "many_list_store_nonsolid__.rar"
+    nonsolid_path = (
+        fixtures.nonsolid_rar
+        if fixtures.nonsolid_rar is not None
+        else committed_nonsolid
+    )
+    if nonsolid_path.is_file():
+        n = (
+            fixtures.scale.nonsolid_list_members
+            if fixtures.nonsolid_rar is not None
+            else SCALES["ci"].nonsolid_list_members  # committed fixture is ci scale
+        )
+        _append_rar_open_list(
+            "rar_nonsolid_open_list",
+            nonsolid_path,
+            notes=(
+                f"vs rarfile.infolist; {n} store members (-m0 -s-); "
+                "smaller listing control"
+            ),
+        )
 
     # --- Solid RAR data path ---
     # At ci scale always prefer the committed basic_solid fixture so the structural
@@ -1294,8 +1353,8 @@ def format_text_report(payload: dict[str, Any]) -> str:
                 f"- gzip size: {_fmt_bytes(detail.get('gzip_size'))}",
                 f"- solid members: {detail.get('solid_members', '?')} × "
                 f"{_fmt_bytes(detail.get('solid_member_size'))}",
-                f"- 7z list members: {detail.get('list_members', '?')} solid COPY / "
-                f"{detail.get('nonsolid_list_members', '?')} nonsolid",
+                f"- 7z/RAR list members: {detail.get('list_members', '?')} solid "
+                f"tiny / {detail.get('nonsolid_list_members', '?')} nonsolid",
             ]
         )
 

@@ -88,6 +88,8 @@ class FixtureSet:
     many_7z: Path | None
     nonsolid_7z: Path | None
     solid_rar: Path | None
+    many_rar: Path | None
+    nonsolid_rar: Path | None
     unpacked_solid_7z: int
     unpacked_solid_rar: int
     unpacked_zip_aes: int
@@ -190,7 +192,10 @@ def build_solid_7z(path: Path, scale: Scale) -> int:
     return total
 
 
-_LIST_MEMBER_SIZE = 16
+# Payload size for the tiny-member listing corpora. Public because
+# ``scripts/gen_rar_fixtures.py`` builds the committed RAR listing fixtures from the
+# same recipe — ``SCALES`` and this constant are the single source of truth.
+LIST_MEMBER_SIZE = 16
 
 
 def build_many_member_7z(path: Path, scale: Scale) -> None:
@@ -203,7 +208,7 @@ def build_many_member_7z(path: Path, scale: Scale) -> None:
 
     with py7zr.SevenZipFile(path, "w", filters=[{"id": py7zr.FILTER_COPY}]) as archive:
         for i in range(scale.list_members):
-            archive.writestr(f"f{i:05d}.txt", f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+            archive.writestr(f"f{i:05d}.txt", f"payload-{i}\n"[:LIST_MEMBER_SIZE])
 
 
 def build_nonsolid_7z(path: Path, scale: Scale) -> bool:
@@ -220,7 +225,7 @@ def build_nonsolid_7z(path: Path, scale: Scale) -> bool:
         shutil.rmtree(src)
     src.mkdir(parents=True)
     for i in range(scale.nonsolid_list_members):
-        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:_LIST_MEMBER_SIZE])
+        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:LIST_MEMBER_SIZE])
     # -mx=0 store; -ms=off forces one folder per file.
     cmd = ["7z", "a", "-t7z", "-ms=off", "-mx=0", str(path), str(src / "*")]
     try:
@@ -251,6 +256,40 @@ def build_solid_rar(path: Path, scale: Scale) -> int | None:
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
     return total if path.exists() else None
+
+
+def _build_store_rar(path: Path, count: int, *, solid: bool) -> bool:
+    """Store (``-m0``) RAR with ``count`` tiny members; ``solid`` selects ``-s`` / ``-s-``.
+
+    Soft-fails when the ``rar`` writer is missing (CI installs ``unrar`` only).
+    """
+    if shutil.which("rar") is None:
+        return False
+    src = path.parent / f"{path.stem}-src"
+    if src.exists():
+        shutil.rmtree(src)
+    src.mkdir(parents=True)
+    for i in range(count):
+        (src / f"f{i:05d}.txt").write_text(f"payload-{i}\n"[:LIST_MEMBER_SIZE])
+    solid_flag = "-s" if solid else "-s-"
+    cmd = ["rar", "a", "-m0", solid_flag, "-ep1", "-idq", str(path), str(src / "*")]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        if path.exists():
+            path.unlink()
+        return False
+    return path.exists()
+
+
+def build_many_member_rar(path: Path, scale: Scale) -> bool:
+    """Solid store RAR with many tiny members — listing cost dominates."""
+    return _build_store_rar(path, scale.list_members, solid=True)
+
+
+def build_nonsolid_rar(path: Path, scale: Scale) -> bool:
+    """Non-solid store RAR; listing negative control vs solid many."""
+    return _build_store_rar(path, scale.nonsolid_list_members, solid=False)
 
 
 def _unpacked_solid(scale: Scale) -> int:
@@ -338,6 +377,8 @@ def materialize_fixtures(
             nonsolid_7z = nonsolid_path
 
     solid_rar: Path | None = None
+    many_rar: Path | None = None
+    nonsolid_rar: Path | None = None
     unpacked_rar = 0
     rar_path = root / "solid-large.rar"
     if rar_path.exists():
@@ -348,6 +389,12 @@ def materialize_fixtures(
         if built_rar is not None:
             solid_rar = rar_path
             unpacked_rar = built_rar
+    many_rar_path = root / "many-list.rar"
+    if many_rar_path.exists() or build_many_member_rar(many_rar_path, scale_obj):
+        many_rar = many_rar_path
+    nonsolid_rar_path = root / "nonsolid-list.rar"
+    if nonsolid_rar_path.exists() or build_nonsolid_rar(nonsolid_rar_path, scale_obj):
+        nonsolid_rar = nonsolid_rar_path
 
     return FixtureSet(
         root=root,
@@ -363,6 +410,8 @@ def materialize_fixtures(
         many_7z=many_7z,
         nonsolid_7z=nonsolid_7z,
         solid_rar=solid_rar,
+        many_rar=many_rar,
+        nonsolid_rar=nonsolid_rar,
         unpacked_solid_7z=unpacked_7z,
         unpacked_solid_rar=unpacked_rar,
         unpacked_zip_aes=unpacked_zip_aes,

@@ -53,6 +53,11 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
     if fixtures.nonsolid_7z is not None:
         assert "sevenzip_nonsolid_open_list" in by_case
 
+    # Many-member RAR listing: committed fixtures so CI always runs the guard
+    # (workflow installs unrar, not the ``rar`` writer).
+    assert "rar_many_open_list" in by_case
+    assert "rar_nonsolid_open_list" in by_case
+
     random = by_case.get("sevenzip_solid_random")
     assert random is not None
     # Random opens re-decode; recorded, not failed — but must be visible.
@@ -97,6 +102,8 @@ def test_structural_baseline_committed() -> None:
         "rar_solid_sequential",
         "rar_solid_random",
         "rar_encrypted_read_all",
+        "rar_many_open_list",
+        "rar_nonsolid_open_list",
         "zip_aes_read_all",
         "zip_lzma_read_all",
         "zip_read_all_accel_off",

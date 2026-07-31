@@ -288,6 +288,49 @@ def _build_file_version_solid(rar_bin: Path, out: Path) -> None:
     print(f"wrote {out.relative_to(REPO_ROOT)}")
 
 
+def _ci_listing_recipe() -> tuple[int, int, int]:
+    """``(solid members, nonsolid members, payload size)`` for the listing fixtures.
+
+    The committed ``many_list_store*`` archives stand in for the on-demand corpora
+    when the ``rar`` writer is absent (CI installs ``unrar`` only), so their member
+    counts and payload size must match ``benchmarks.fixtures`` exactly — import them
+    rather than restating the numbers here. Imported inside the function because this
+    file runs as a script: the repo root is not on ``sys.path`` at module load.
+    """
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from benchmarks.fixtures import LIST_MEMBER_SIZE, SCALES
+
+    ci = SCALES["ci"]
+    return ci.list_members, ci.nonsolid_list_members, LIST_MEMBER_SIZE
+
+
+def _build_store_listing_rar(
+    rar_bin: Path,
+    out: Path,
+    *,
+    count: int,
+    member_size: int,
+    solid: bool,
+) -> None:
+    """Store (``-m0``) RAR of ``count`` tiny members; mirrors ``_build_store_rar``."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        names: list[str] = []
+        for i in range(count):
+            name = f"f{i:05d}.txt"
+            (root / name).write_text(f"payload-{i}\n"[:member_size])
+            names.append(name)
+        _rar_a(
+            rar_bin,
+            out,
+            names,
+            cwd=root,
+            extra=("-m0", "-s" if solid else "-s-", "-ep1"),
+        )
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
 def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -370,6 +413,25 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         extra=("-m0",),
     )
     _build_file_version_solid(rar5_bin, out_dir / "file_version_solid__.rar")
+
+    # Many-member store listing fixtures (ci-scale structural gate; no ``rar`` in CI).
+    # ``-m0`` never sets the archive solid bit — ``-s`` / ``-s-`` still distinguish
+    # the regeneration commands.
+    many_members, nonsolid_members, member_size = _ci_listing_recipe()
+    _build_store_listing_rar(
+        rar5_bin,
+        out_dir / "many_list_store__.rar",
+        count=many_members,
+        member_size=member_size,
+        solid=True,
+    )
+    _build_store_listing_rar(
+        rar5_bin,
+        out_dir / "many_list_store_nonsolid__.rar",
+        count=nonsolid_members,
+        member_size=member_size,
+        solid=False,
+    )
 
     # Multi-volume: 1600-byte payload, 900-byte volumes → two parts.
     with tempfile.TemporaryDirectory() as td:

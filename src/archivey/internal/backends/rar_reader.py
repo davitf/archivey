@@ -102,8 +102,28 @@ _RAR_HOST_OS_TO_CREATE_SYSTEM: dict[int, CreateSystem] = {
 }
 
 _RAR_METHOD_STORED = 0x30
+_RAR_METHOD_MAX = 0x35  # RAR M5
 _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS = 0x02
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
+
+# Shared CompressionMethod tuples — many-member listing hits the same method byte
+# (typically store / M1–M5) thousands of times; avoid per-member allocations.
+# RAR M1–M5 are proprietary; expose as UNKNOWN with the method byte as level.
+_STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
+    CompressionMethod(algo=CompressionAlgorithm.STORED),
+)
+_COMPRESSION_BY_METHOD: dict[int, tuple[CompressionMethod, ...]] = {
+    _RAR_METHOD_STORED: _STORED_COMPRESSION,
+    **{
+        method: (
+            CompressionMethod(
+                algo=CompressionAlgorithm.UNKNOWN,
+                level=method - _RAR_METHOD_STORED,
+            ),
+        )
+        for method in range(_RAR_METHOD_STORED + 1, _RAR_METHOD_MAX + 1)
+    },
+}
 
 
 def _member_stream_size(member: ArchiveMember) -> int:
@@ -130,9 +150,10 @@ def _compression_for(info: RarMemberInfo) -> tuple[CompressionMethod, ...]:
     method = info.compress_type
     if method is None:
         return ()
-    if method == _RAR_METHOD_STORED:
-        return (CompressionMethod(algo=CompressionAlgorithm.STORED),)
-    # RAR M1–M5 are proprietary; expose as UNKNOWN with the method byte as level.
+    cached = _COMPRESSION_BY_METHOD.get(method)
+    if cached is not None:
+        return cached
+    # Unusual method byte outside M0–M5: still expose as UNKNOWN.
     level = method - _RAR_METHOD_STORED if method >= _RAR_METHOD_STORED else None
     return (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN, level=level),)
 
@@ -520,6 +541,7 @@ class RarReader(BaseArchiveReader):
 
     def _to_member(self, info: RarMemberInfo) -> ArchiveMember:
         member_type = self._member_type(info)
+        version_history = info.is_file_version_history()
         presented = _presented_filename(info)
         name = normalize_member_name(
             presented,
@@ -535,14 +557,15 @@ class RarReader(BaseArchiveReader):
         )
         link_target: str | None = None
         extra: dict[str, object] = {}
+        tweaked = _crc_is_tweaked(info)
         if info.file_redir is not None:
             link_target = info.file_redir[2]
             if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
                 extra[EXTRA_IS_JUNCTION] = True
-        if info.is_file_version_history():
+        if version_history:
             assert info.file_version is not None
             extra["rar.file_version"] = info.file_version
-        if _crc_is_tweaked(info):
+        if tweaked:
             # Stored digests are key-tweaked; keep them out of ``hashes`` (see
             # ``_member_hashes``) but expose the raw values for callers / forward-verify.
             if info.crc32 is not None:
@@ -550,9 +573,10 @@ class RarReader(BaseArchiveReader):
             if info.blake2sp_hash is not None:
                 extra["rar.tweaked_blake2sp"] = info.blake2sp_hash
 
+        host_os = info.host_os
         create_system = (
-            _RAR_HOST_OS_TO_CREATE_SYSTEM.get(info.host_os, CreateSystem.UNKNOWN)
-            if info.host_os is not None
+            _RAR_HOST_OS_TO_CREATE_SYSTEM.get(host_os, CreateSystem.UNKNOWN)
+            if host_os is not None
             else CreateSystem.UNKNOWN
         )
         mode: int | None = None
@@ -562,9 +586,9 @@ class RarReader(BaseArchiveReader):
             # Unix: ArchiveMember.mode is the low 12 permission bits (S_IMODE);
             # mask before the C helper so OverflowError cannot abort listing.
             # Win32: FILE_ATTRIBUTE_* is a 32-bit field.
-            if info.host_os == 3:  # Unix
+            if host_os == 3:  # Unix
                 mode = stat.S_IMODE(info.mode & 0o7777)
-            elif info.host_os == 2:  # Win32
+            elif host_os == 2:  # Win32
                 windows_attrs = info.mode & 0xFFFFFFFF
 
         member = ArchiveMember(
@@ -577,7 +601,7 @@ class RarReader(BaseArchiveReader):
             mode=mode,
             compression=_compression_for(info),
             is_encrypted=info.is_encrypted,
-            is_current=not info.is_file_version_history(),
+            is_current=not version_history,
             create_system=create_system,
             windows_attrs=windows_attrs,
             hashes=_member_hashes(info),
@@ -591,13 +615,12 @@ class RarReader(BaseArchiveReader):
             presented_name=presented,
             archive_name=self._archive_name,
         )
-        if _crc_is_tweaked(info) and self._unrar_password is None:
+        if tweaked and self._unrar_password is None:
             # No password → cannot forward-transform; surface as unverifiable digests.
-            for algorithm in (
+            for algo, present in (
                 (HashAlgorithm.CRC32, info.crc32 is not None),
                 (HashAlgorithm.BLAKE2SP, info.blake2sp_hash is not None),
             ):
-                algo, present = algorithm
                 if not present:
                     continue
                 self._diagnostics_collector.emit(
