@@ -30,6 +30,14 @@ library fails fast at open when the format needs seek (it does not buffer the
 source into memory or a temp file). Use `streaming=True` for pipes/sockets.
 Eager seek-point building is not exposed.
 
+A **seekable** stream source is wrapped in a fixed-size read buffer at the source
+boundary so `read(n)` returns the full count (`ensure_full_count_reads`) — a raw
+`read(n)` may legally return short, and header parsers, archivey's and the stdlib's
+alike, read a short return as EOF. That is bounded readahead over a source the caller
+already made seekable, not the materialization forbidden above: it never converts a
+non-seekable source, and never copies the archive into memory or a temp file. A path
+source has always paid the same cost through `open()`'s `BufferedReader`.
+
 #### Scenario: open mode matrix
 
 | Case | Expected |
@@ -37,6 +45,7 @@ Eager seek-point building is not exposed.
 | `streaming=False` on indexed ZIP | Central directory loaded; random access available |
 | `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
 | `streaming=False` on non-seekable source that needs seek | Error at open (before member data); caller must use `streaming=True` (or supply a seekable source) — library does not buffer |
+| Seekable stream source, either mode | Buffered at the source boundary for full-count `read(n)`; bounded readahead only — never materialized to memory or disk |
 
 ### Requirement: Access-mode enforcement — streaming is forward-only
 
