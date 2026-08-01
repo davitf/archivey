@@ -49,8 +49,11 @@ reports problems; it does not rewrite files.
 `pre-commit` framework's own installer, but on Cursor Cloud it can land in the
 remapped `core.hooksPath`; `./scripts/install-git-hooks.sh` is the supported path.)
 
-RAR *data* tests need the system `unrar` binary (`apt-get install -y unrar`, etc.);
-without it those tests skip cleanly.
+RAR *data* tests need the system `unrar` binary, and encrypted-ZIP fixtures need `7z`
+(`p7zip-full`). Without them those tests skip cleanly — which is the problem: the suite
+still reports green while running ~109 fewer tests. Run `scripts/setup-dev-env.sh` to
+provision both (it is idempotent, and prints anything still missing at the end); agent
+environments run it automatically at session start.
 
 **Before pushing, run the suite in all three dependency configurations CI runs** —
 optional libraries change behaviour by their presence *and* their version, so a change

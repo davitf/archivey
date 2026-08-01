@@ -31,20 +31,36 @@ v1 tree is [`davitf/archivey-old`](https://github.com/davitf/archivey-old).
   behaviour-focused tests, red-green TDD, the pause-and-ask-on-discrepancies rule).
 - `IDEAS.md` — speculative future/backlog ideas (not committed, not in `PLAN.md`).
 
+## Session setup (`unrar`, `7z`, `openspec`, deps)
+
+`scripts/setup-dev-env.sh` provisions everything: the `unrar` and `7z` system
+binaries, the `openspec` CLI, `uv sync --group dev --extra all`, and the
+format-on-commit git hook. It runs automatically — Claude Code web sessions via
+the `SessionStart` hook (`.claude/hooks/session-start.sh`), Cursor Cloud via
+`.cursor/install.sh`. Both call the same script so they cannot drift. Run it by
+hand after a manual clone; it is idempotent.
+
+**Do not skip this.** RAR data tests and the benchmark gate's `rar_*` cases *skip*
+when `unrar` is absent, and encrypted-ZIP fixtures skip without `7z` — quietly. A
+container missing them runs ~109 fewer tests while still reporting all-green, and
+`--update-baselines` there would rewrite `structural.json` without those cases. The
+script ends by printing what is missing; read that line.
+
 ## OpenSpec CLI
 
-The `openspec` CLI (used to list/validate the specs and changes under
-`openspec/`) is **not preinstalled** in the session container, and the container
-is ephemeral — reclone, so it must be reinstalled at the start of each session.
-It ships as the npm package `@fission-ai/openspec` (Node is available):
+Installed by the setup script above. If you need it manually, it ships as the npm
+package `@fission-ai/openspec` (Node is available):
 
 ```bash
 npm install -g @fission-ai/openspec
 ```
 
 The bare `openspec` package on npm is an unrelated empty stub — install the
-`@fission-ai/...` scoped package, not that one. Verify with `openspec --version`
-(known-good: 1.4.1). Common commands, run from the repo root:
+`@fission-ai/...` scoped package, not that one. On images where the global npm
+prefix is not user-writable this fails with `EACCES`; use
+`npm install -g --prefix "$HOME/.local" @fission-ai/openspec` instead (what the
+setup script does). Verify with `openspec --version` (known-good: 1.4.1). Common
+commands, run from the repo root:
 
 ```bash
 openspec list                 # in-flight changes + task progress
