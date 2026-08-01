@@ -52,8 +52,13 @@ benchmarks/`). **Do not commit without formatting.**
 
 Non-obvious gotchas:
 
-- The startup update script is committed at `.cursor/install.sh` (wired via
-  `.cursor/environment.json`). It bootstraps `uv` if missing (JIT Cloud images may
+- The startup script is committed at `scripts/setup-dev-env.sh` and is shared by every
+  environment that provisions a workspace, so they cannot drift on what is installed:
+  Cursor Cloud calls it from `.cursor/install.sh` (wired via `.cursor/environment.json`),
+  Claude Code web from the `SessionStart` hook `.claude/hooks/session-start.sh`
+  (registered in `.claude/settings.json`; it no-ops unless `CLAUDE_CODE_REMOTE=true`,
+  leaving a developer's own machine alone). Run it directly after a manual clone.
+  It bootstraps `uv` if missing (JIT Cloud images may
   not ship it), installs `unrar` + `p7zip-full`, the `openspec` CLI, runs
   `uv sync --group dev --extra all`, and `./scripts/install-git-hooks.sh`, so the
   format-on-commit hook is present without a manual step. It also best-effort
@@ -64,7 +69,13 @@ Non-obvious gotchas:
 - **`7z`** (system binary, from `p7zip-full`) is required by tests that build encrypted
   ZIP fixtures by shelling out to it (`tests/test_password.py`, the encrypted corpus
   entries in `tests/test_corpus_sweep.py`); they skip cleanly when it is absent.
-  The Cloud install script installs `p7zip-full` automatically.
+  The setup script installs `p7zip-full` automatically.
+- Both of the above skip **quietly**, which is the trap: a container without them ran
+  1900 passed / 167 skipped where a provisioned one runs 2009 / 58 — ~109 tests gone
+  with the suite still green. `--update-baselines` in that state would also rewrite
+  `structural.json` without the `rar_*` cases (it now refuses instead). If you are
+  unsure whether the environment is complete, run `scripts/setup-dev-env.sh`; its
+  closing verification block names anything missing.
 - **`openspec` CLI** lives at `~/.local/bin` (on `PATH`). `CLAUDE.md`'s
   `npm install -g @fission-ai/openspec` fails with `EACCES` here because the global npm
   prefix is not user-writable — the update script instead installs it into a writable,
