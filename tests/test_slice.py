@@ -14,8 +14,10 @@ from pathlib import Path
 
 import pytest
 
+from archivey.exceptions import TruncatedError
 from archivey.internal.streams.streamtools import (
     SlicingStream,
+    ensure_full_count_reads,
     fix_stream_start_position,
 )
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
@@ -129,19 +131,67 @@ class TestSlicingStream:
         with pytest.raises(io.UnsupportedOperation, match="seek on non-seekable"):
             sliced.seek(5)
 
-    def test_sized_read_gathers_across_short_reads(self) -> None:
-        """``read(n)`` must return ``n`` bytes even when the underlying drips them out.
+    def test_sized_read_is_full_count_over_a_full_count_inner(self) -> None:
+        """``read(n)`` returns ``n`` when the inner is full-count — the archive-source case.
 
-        A view is what container backends hand their header parsers and expose as member
-        streams, and both are full-count by contract; passing a short underlying return
-        through made a healthy source look truncated.
+        Every slice in the backends views a full-count inner: a ``SharedSource`` handle
+        (``open()``'s ``BufferedReader``, or a caller stream normalized by
+        ``ensure_full_count_reads``), or a decoder. A raw stream that shorts mid-stream
+        gets that buffer in front rather than a gathering loop inside the view — see
+        ``test_sized_read_over_a_raw_short_inner_stops_on_short`` and ADR 0014.
         """
-        sliced = SlicingStream(ShortReadBytesIO(DATA), start=5, length=10)
+        sliced = SlicingStream(
+            ensure_full_count_reads(ShortReadBytesIO(DATA)), start=5, length=10
+        )
         assert sliced.read(7) == DATA[5:12]
         assert sliced.tell() == 7
         # The bound still clamps: only the remaining 3 bytes come back, then EOF.
         assert sliced.read(7) == DATA[12:15]
         assert sliced.read(7) == b""
+
+    def test_sized_read_over_a_raw_short_inner_stops_on_short(self) -> None:
+        """A sized read stops on a short non-empty inner return, by ADR 0014.
+
+        Deliberate: over a decoder, continuing past a short would pull the deferred
+        ``TruncatedError`` into the same call (see
+        ``test_sized_read_preserves_deliver_then_raise``). A RawIO that shorts mid-stream
+        is fixed with a buffer in front, not by gathering here.
+        """
+        sliced = SlicingStream(ShortReadBytesIO(DATA), start=5, length=10)
+        assert sliced.read(7) == DATA[5:6]
+
+    def test_sized_read_preserves_deliver_then_raise(self) -> None:
+        """A decoder's recoverable prefix must survive the view (ADR 0014).
+
+        ``DecompressorStream`` deferred truncation returns a short prefix on the
+        completing call and raises on the *next* empty ``read``. A view that kept pulling
+        after the short would collapse that into one raising call and drop the prefix —
+        which is exactly what a truncated 7z member read through
+        ``SlicingStream(folder_stream, length=size)`` would lose.
+        """
+
+        class _DeliverThenRaise(io.RawIOBase):
+            """Mimics DecompressorStream: short prefix, then raise on the empty read."""
+
+            def __init__(self, prefix: bytes) -> None:
+                self._prefix = prefix
+                self._delivered = False
+
+            def readable(self) -> bool:
+                return True
+
+            def read(self, size: int = -1) -> bytes:  # type: ignore[override]
+                if not self._delivered:
+                    self._delivered = True
+                    return self._prefix
+                raise TruncatedError("stream ended before the declared size")
+
+        prefix = DATA[:4]
+        sliced = SlicingStream(_DeliverThenRaise(prefix), length=20)
+
+        assert sliced.read(20) == prefix  # prefix delivered, not swallowed
+        with pytest.raises(TruncatedError):
+            sliced.read(20)
 
     def test_bounded_read_all_gathers_across_short_reads(self) -> None:
         """``read()`` on a bounded slice must gather across short sized reads.

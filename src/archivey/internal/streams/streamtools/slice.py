@@ -24,6 +24,7 @@ from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
     read_exact,
+    read_full_count,
     source_byte_size,
 )
 
@@ -37,8 +38,11 @@ class SlicingStream(ReadOnlyIOStream):
       - ``length`` caps the slice (default: to the end of the underlying stream).
       - Seeking is relative to the start of the slice.
 
-    ``read`` is **full-count**: ``read(n)`` returns ``n`` bytes unless the slice (or the
-    underlying stream) ends first, gathering across short underlying returns.
+    ``read(n)`` is **full-count over a full-count inner** (ADR 0014): it coalesces with
+    ``read_full_count``, so it returns ``n`` bytes unless the slice ends, the inner ends,
+    or the inner signals a terminal boundary with a short return. It deliberately does
+    *not* keep pulling past a short — that would collapse a decoder's deliver-then-raise
+    truncation shape. A raw inner that shorts mid-stream needs a buffer in front.
 
     Non-seekable underlying stream:
       - ``start`` must be ``None`` (the slice begins at the current position).
@@ -140,14 +144,25 @@ class SlicingStream(ReadOnlyIOStream):
 
     def read(self, n: int = -1, /) -> bytes:
         self._check_open()
-        # A known byte count — an explicit ``read(n)``, or ``read(-1)`` on a bounded slice,
-        # which means "drain the remaining slice" — is gathered with ``read_exact``: a
-        # single underlying ``read(count)`` may legally return a partial chunk, and a view
-        # that passed that through would report a healthy source as truncated (its
-        # consumers are header parsers and member streams, both of which are full-count by
-        # contract). Only ``read(-1)`` on an *unbounded* slice has no count to fill, so it
-        # passes through unchanged.
+        # Three gather policies, and the difference matters (ADR 0014):
+        #
+        # * Sized ``read(n)`` — ``read_full_count``: keep asking while each piece returns
+        #   the full ask, but **stop on the first short non-empty return**. A short return
+        #   from an inner is a terminal signal, not "ask again": a decoder with deferred
+        #   truncation (this view sits directly over one in the 7z member and LZMA
+        #   ``cap_size`` paths) hands back the recoverable prefix now and raises on the
+        #   *next* empty read, and ``read_exact`` here would pull that ``TruncatedError``
+        #   into this call and drop the prefix.
+        # * Bounded ``read(-1)`` — ``read_exact``: the caller asked for the whole slice and
+        #   will not call again, so gather to the bound or EOF (the complete-stream shape
+        #   ``DecompressorStream.readall`` also takes).
+        # * Unbounded ``read(-1)`` — no count to fill; pass through.
+        #
+        # None of this rescues a RawIO that shorts mid-stream; per ADR 0014 that inner
+        # "needs a buffer in front", which is what ``ensure_full_count_reads`` puts at the
+        # source boundary. Every inner a backend slices is full-count already.
         unbounded_drain = n < 0 and self._length is None
+        bounded_drain = n < 0 and not unbounded_drain
         n = self._compute_bytes_to_read(n)  # stays negative for an unbounded drain
         if n == 0:
             return b""
@@ -159,9 +174,12 @@ class SlicingStream(ReadOnlyIOStream):
             if self._seek_before_read:
                 assert self._start is not None  # re-seek views are always seekable
                 self._stream.seek(self._start + self._pos)
-            data = (
-                self._stream.read(n) if unbounded_drain else read_exact(self._stream, n)
-            )
+            if unbounded_drain:
+                data = self._stream.read(n)
+            elif bounded_drain:
+                data = read_exact(self._stream, n)
+            else:
+                data = read_full_count(self._stream, n)
             self._pos += len(data)
             return data
 
