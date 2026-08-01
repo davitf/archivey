@@ -40,6 +40,10 @@ def _running_in_ci() -> bool:
     return os.environ.get("CI", "").lower() in ("1", "true", "yes")
 
 
+def _unreachable_materialize_fixtures(*args: object, **kwargs: object) -> object:
+    raise AssertionError("--update-baselines must refuse before building fixtures")
+
+
 @pytest.mark.timeout(120)
 def test_benchmark_structural_gate(tmp_path: Path) -> None:
     """PR gate: solid sequential decode bound + common-path byte counts."""
@@ -155,16 +159,15 @@ def test_accel_on_skip_is_not_reported_as_under_decode(
         assert "rapidgzip not installed" in skipped.notes
 
 
-def test_write_baselines_omits_skipped_cases(
+def test_write_baselines_refuses_partial_update(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--write-baseline`` without ``[seekable]`` must not bake zeros into the pin.
+    """A run with a skipped case must not rewrite the baseline at all.
 
-    A skipped accel-ON row would otherwise be committed as
-    ``bytes_decompressed=0``, after which every later run *with* rapidgzip reads as a
-    regression against it. That is the worst of the three variants of this bug: it
-    survives in a committed file, and a zero looks enough like a measurement to pass
-    diff review.
+    Both ways of absorbing a skip are silently wrong and produce a well-formed file:
+    keeping the row bakes in ``bytes_decompressed=0`` (later runs *with* the tool then
+    read as regressions), and dropping it yields a baseline that no longer covers the
+    case. Refusing is the only outcome that cannot quietly weaken the gate.
     """
     baseline = tmp_path / "structural.json"
     monkeypatch.setattr(harness, "BASELINES_DIR", tmp_path)
@@ -179,15 +182,40 @@ def test_write_baselines_omits_skipped_cases(
         source_seek_count=28,
         unpacked_bytes=32768,
     )
-    write_baselines([measured, _accel_skipped_case("zip_read_all_accel_on", "zip")])
+    with pytest.raises(ValueError, match="zip_read_all_accel_on"):
+        write_baselines([measured, _accel_skipped_case("zip_read_all_accel_on", "zip")])
 
-    cases = json.loads(baseline.read_text())["cases"]
-    assert "zip_read_all_accel_on" not in cases, (
-        "a case that never ran must not enter the committed baseline"
+    assert not baseline.exists(), (
+        "a refused update must leave no file behind — a half-written baseline is "
+        "exactly what the refusal is protecting against"
     )
-    # ...while a real measurement alongside it is still written unchanged.
+
+    # The same results without the skip still write normally.
+    write_baselines([measured])
+    cases = json.loads(baseline.read_text())["cases"]
     assert cases["zip_read_all_accel_off"]["bytes_decompressed"] == 32768
     assert cases["zip_read_all_accel_off"]["source_seek_count"] == 28
+
+
+def test_update_baselines_refuses_before_running_when_tooling_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Missing tooling fails the CLI up front, naming what to install.
+
+    The run takes minutes; a regeneration that can only produce a partial file should
+    be rejected in seconds. Returning before ``materialize_fixtures`` is what makes
+    this test cheap, and is the behaviour worth pinning.
+    """
+    monkeypatch.setattr(harness, "_rapidgzip_available", lambda: False)
+    monkeypatch.setattr(
+        harness, "materialize_fixtures", _unreachable_materialize_fixtures
+    )
+
+    assert harness.main(["--update-baselines"]) == 2
+
+    err = capsys.readouterr().err
+    assert "rapidgzip" in err and "[seekable]" in err
+    assert "structural.json" in err
 
 
 def test_structural_baseline_committed() -> None:

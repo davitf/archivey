@@ -7,6 +7,11 @@ Run::
     uv run --extra all python -m benchmarks.harness --mode structural
     uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 
+``--update-baselines`` requires the *complete* toolchain (all extras **and** RARLAB
+``unrar`` on PATH) and refuses up front otherwise: a partial run would rewrite
+``structural.json`` without the cases it could not measure, quietly shrinking what the
+gate covers. ``missing_baseline_requirements()`` names what is absent.
+
 Modes:
 
 - ``structural`` (default for CI/PR): **the automated gate** — seek-count baselines,
@@ -399,6 +404,35 @@ def _unrar_available() -> bool:
 def _crypto_available() -> bool:
     """True when the ``cryptography`` package is importable (``[crypto]`` extra)."""
     return importlib.util.find_spec("cryptography") is not None
+
+
+def missing_baseline_requirements() -> list[str]:
+    """Optional tooling whose absence would make a baseline rewrite *partial*.
+
+    Every entry gates cases that are in the committed ``structural.json``. Without the
+    tool those cases either never reach the file (dropped outright) or arrive as skip
+    rows, and the next run gates against a baseline describing less than the suite
+    actually measures — silently, since a shorter file still validates.
+    """
+    checks = (
+        (
+            _rapidgzip_available(),
+            "rapidgzip — the accelerator ON cases; install the [seekable] extra",
+        ),
+        (
+            _py7zr_available(),
+            "py7zr — builds the solid 7z fixture behind the sevenzip_* cases",
+        ),
+        (
+            _crypto_available(),
+            "cryptography — zip_aes_read_all / encrypted RAR; install the [crypto] extra",
+        ),
+        (
+            _unrar_available(),
+            "unrar — the RARLAB binary on PATH; the rar_* data cases",
+        ),
+    )
+    return [why for available, why in checks if not available]
 
 
 def run_cases(
@@ -1286,7 +1320,21 @@ def _wall_drift_checks(
 
 
 def write_baselines(results: list[CaseResult]) -> None:
-    """Rewrite the committed structural (seek/bytes) baseline only."""
+    """Rewrite the committed structural (seek/bytes) baseline only.
+
+    Refuses to write anything when a case did not run. Dropping such a row would leave
+    a baseline that no longer covers it, and *keeping* it would bake a "didn't run"
+    zero in — after which a later run with the tool installed reads as a regression.
+    Neither is recoverable by inspection: both produce a well-formed file. Fail instead,
+    and let the operator install what is missing (``missing_baseline_requirements``).
+    """
+    skipped = sorted(r.case for r in results if r.skipped)
+    if skipped:
+        raise ValueError(
+            "refusing to write a partial structural baseline; these cases did not "
+            f"run: {', '.join(skipped)}. Install the full benchmark toolchain "
+            "(uv sync --group dev --extra all, plus RARLAB unrar on PATH) and re-run."
+        )
     BASELINES_DIR.mkdir(parents=True, exist_ok=True)
     structural: dict[str, Any] = {
         "solid_decode_factor": SOLID_DECODE_FACTOR,
@@ -1296,10 +1344,6 @@ def write_baselines(results: list[CaseResult]) -> None:
         "cases": {},
     }
     for r in results:
-        if r.skipped:
-            # Never bake a "didn't run" zero into the committed baseline: a later run
-            # *with* the extra would then look like a regression against it.
-            continue
         structural["cases"][r.case] = {
             "bytes_decompressed": r.bytes_decompressed,
             "source_seek_count": r.source_seek_count,
@@ -1549,6 +1593,26 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # Checked up front rather than at write time: the run takes minutes, and a
+    # regeneration that can only produce a partial file should cost seconds to reject.
+    if args.update_baselines:
+        missing = missing_baseline_requirements()
+        if missing:
+            print(
+                "--update-baselines needs the full benchmark toolchain — a partial "
+                "run would drop the affected cases from structural.json, leaving the "
+                "gate measuring less than it claims. Missing:",
+                file=sys.stderr,
+            )
+            for item in missing:
+                print(f"  - {item}", file=sys.stderr)
+            print(
+                "Install with: uv sync --group dev --extra all "
+                "(plus RARLAB unrar on PATH), then re-run.",
+                file=sys.stderr,
+            )
+            return 2
 
     warmup = args.warmup or args.scale == "realistic"
     fixtures = materialize_fixtures(args.fixture_dir, scale=args.scale)
