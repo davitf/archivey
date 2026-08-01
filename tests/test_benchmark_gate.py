@@ -91,11 +91,9 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
     # Accelerator ON cases: soft locally without rapidgzip, fail-closed in CI (and
     # whenever it is installed) so a resolution change to the ``[seekable]`` extra
     # cannot silently drop accelerator coverage. A skipped case is *present but
-    # unmeasured* (unpacked_bytes is None), so presence alone is not enough.
+    # unmeasured*, so presence alone is not enough.
     unmeasured_accel = [
-        name
-        for name in _ACCEL_ON_CASES
-        if name not in by_case or by_case[name].unpacked_bytes is None
+        name for name in _ACCEL_ON_CASES if name not in by_case or by_case[name].skipped
     ]
     if unmeasured_accel and (_running_in_ci() or _rapidgzip_available()):
         pytest.fail(
@@ -140,12 +138,19 @@ def test_accel_on_skip_is_not_reported_as_under_decode(
         + "\n".join(failures)
     )
 
-    # The skip must still be *visible* — a silently absent row is how coverage
-    # evaporates unnoticed (see the fail-closed guard in the structural gate).
+    # Every accel-ON case must still be *visible* as a skip — a silently absent row
+    # is how coverage evaporates unnoticed (see the fail-closed guard in the
+    # structural gate). ZIP used to omit its case entirely, which is why it never hit
+    # the under-decode bug but also left no trace of the missing extra.
     by_case = {r.case: r for r in results}
-    skipped = by_case["targz_read_all_accel_on"]
-    assert skipped.unpacked_bytes is None, "a skipped case measured nothing"
-    assert "rapidgzip not installed" in skipped.notes
+    for name in _ACCEL_ON_CASES:
+        assert name in by_case, f"{name} should be reported as skipped, not omitted"
+        skipped = by_case[name]
+        assert skipped.skipped, f"{name}: a case that never ran must say so"
+        assert skipped.unpacked_bytes is None, (
+            f"{name}: a skipped case measured nothing"
+        )
+        assert "rapidgzip not installed" in skipped.notes
 
 
 def test_structural_baseline_committed() -> None:

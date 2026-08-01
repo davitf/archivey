@@ -112,10 +112,42 @@ class CaseResult:
     wall_ratio: float | None = None
     notes: str = ""
 
+    skipped: bool = False
+    """True when the case could not run (missing optional dependency).
+
+    Its axes are then all zero, meaning *no data* — not a measurement of zero. Every
+    structural rule must ignore such a row: a zero that means "never ran" is otherwise
+    indistinguishable from a real short read or a non-engaging accelerator, and gets
+    reported as one. Carry the reason in ``notes``.
+    """
+
 
 def _as_base(reader: Any) -> BaseArchiveReader:
     assert isinstance(reader, BaseArchiveReader)
     return reader
+
+
+def _accel_skipped_case(case: str, fmt: str) -> CaseResult:
+    """Row for an accelerator-ON case that could not run (no rapidgzip installed).
+
+    Emitted rather than omitted so a local report still shows *why* the accelerator
+    case is absent; the structural gate fails closed on it in CI. ``skipped=True`` and
+    a ``None`` ``unpacked_bytes`` keep it out of the structural rules — it once carried
+    the fixture's real size (that size *is* a property of the fixture, so filling it in
+    looked harmless), which made a missing extra surface as
+    ``bytes_decompressed=0 < unpacked=...``: a codec-shaped failure for a
+    packaging-shaped cause.
+    """
+    return CaseResult(
+        case,
+        fmt,
+        "read_all",
+        0.0,
+        0,
+        0,
+        notes="skipped: rapidgzip not installed ([seekable] extra)",
+        skipped=True,
+    )
 
 
 def _op_open_list(path: Path) -> tuple[int, int]:
@@ -584,6 +616,8 @@ def run_cases(
                 notes="rapidgzip accelerator ON for in-ZIP deflate ([seekable])",
             )
         )
+    else:
+        results.append(_accel_skipped_case("zip_read_all_accel_on", "zip"))
 
     # --- TAR (plain / uncompressed — harness peer is tarfile r:) ---
     _m_wall, (bdec, seeks) = timed_with_optional_warmup(
@@ -693,23 +727,7 @@ def run_cases(
             )
         )
         if not has_accel:
-            # unpacked_bytes stays None: nothing was decoded, so the case must not be
-            # measured against the read_all under-decode rule. Carrying the real size
-            # here made a missing extra surface as
-            # ``bytes_decompressed=0 < unpacked=...`` — a codec-shaped failure for a
-            # packaging-shaped cause. The row is still emitted (not omitted) so the
-            # report shows *why* the accelerator case is absent.
-            results.append(
-                CaseResult(
-                    f"{label}_read_all_accel_on",
-                    fmt,
-                    "read_all",
-                    0.0,
-                    0,
-                    0,
-                    notes="skipped: rapidgzip not installed ([seekable] extra)",
-                )
-            )
+            results.append(_accel_skipped_case(f"{label}_read_all_accel_on", fmt))
             continue
         cfg_on = _accel_config(enabled=True)
         # seekable_members so AUTO would also engage; ON engages either way. Matches
@@ -1098,6 +1116,9 @@ def _structural_checks(
     failures: list[str] = []
     cases = (baseline or {}).get("cases", {}) if baseline else {}
     for r in results:
+        if r.skipped:
+            # No data, not a measurement of zero — see CaseResult.skipped.
+            continue
         if r.case.endswith("_sequential") and r.unpacked_bytes:
             limit = int(r.unpacked_bytes * SOLID_DECODE_FACTOR)
             if r.bytes_decompressed > limit:
@@ -1171,7 +1192,10 @@ def _structural_checks(
         by_case = {r.case: r for r in results}
         accel_off = by_case.get("zip_read_all_accel_off")
         accel_on = by_case.get("zip_read_all_accel_on")
-        if accel_off is not None and accel_on is not None:
+        # A skipped ON row seeks 0 times because it never ran; that is not evidence
+        # the accelerator failed to engage (this check predates skip rows, when a
+        # missing rapidgzip omitted the case entirely).
+        if accel_off is not None and accel_on is not None and not accel_on.skipped:
             if accel_on.source_seek_count <= accel_off.source_seek_count:
                 failures.append(
                     f"zip_read_all_accel_on: source_seek_count="
@@ -1269,6 +1293,10 @@ def write_baselines(results: list[CaseResult]) -> None:
         "cases": {},
     }
     for r in results:
+        if r.skipped:
+            # Never bake a "didn't run" zero into the committed baseline: a later run
+            # *with* the extra would then look like a regression against it.
+            continue
         structural["cases"][r.case] = {
             "bytes_decompressed": r.bytes_decompressed,
             "source_seek_count": r.source_seek_count,
