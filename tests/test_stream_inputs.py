@@ -1,13 +1,17 @@
 """Cross-library matrix: the stream helpers vs. every stream type a caller might supply.
 
 The ``streams/streamtools/binaryio.py`` helpers (``is_stream`` / ``is_seekable`` / ``ensure_binaryio`` /
-``ensure_bufferedio`` / ``BinaryIOWrapper``) are core infrastructure: every backend feeds
-them whatever stream the *source* produced. This module verifies they behave correctly
-against the real objects those sources return — local files, every stdlib codec stream,
-zip/tar member streams, archivey's own decompressor streams, network responses (the stdlib
-``http.client.HTTPResponse`` and ``urllib3``), and bare/partial duck-typed objects — plus
-the nested-archive case where one archive's member stream is itself the source for another
+``ensure_bufferedio`` / ``ensure_full_count_reads`` / ``BinaryIOWrapper``) are core
+infrastructure: every backend feeds them whatever stream the *source* produced. This module
+verifies they behave correctly against the real objects those sources return — local files,
+every stdlib codec stream, zip/tar member streams, archivey's own decompressor streams,
+network responses (the stdlib ``http.client.HTTPResponse`` and ``urllib3``), a source whose
+``read(n)`` legally returns short, and bare/partial duck-typed objects — plus the
+nested-archive case where one archive's member stream is itself the source for another
 reader. (httpx has no file-like to test: its streaming API is iterator-based.)
+
+The helpers are what these cases cover; whether the *backends* survive each one is
+``test_short_read_sources.py`` (short returns) and the non-seekable matrix elsewhere.
 
 Each case is a *factory* (streams are single-use), tagged with whether it is already an
 ``io.IOBase`` (so ``is_stream`` passes it through) and whether it is seekable.
@@ -42,12 +46,17 @@ from archivey.internal.streams.streamtools import (
     BinaryIOWrapper,
     ensure_binaryio,
     ensure_bufferedio,
+    ensure_full_count_reads,
     is_seekable,
     is_stream,
     read_exact,
 )
 from archivey.internal.streams.xz import XzDecompressorStream
-from tests.streams_util import NonSeekableBytesIO, make_lzip_member
+from tests.streams_util import (
+    NonSeekableBytesIO,
+    ShortReadBytesIO,
+    make_lzip_member,
+)
 
 # Non-trivial, non-repetitive payload so chunked reads and seeks are meaningful.
 CONTENT = bytes((i * 7 + 13) % 256 for i in range(5000))
@@ -240,6 +249,10 @@ def _non_seekable_bytesio(_tmp_path: Path) -> BinaryIO:
     return NonSeekableBytesIO(CONTENT)
 
 
+def _short_read_bytesio(_tmp_path: Path) -> BinaryIO:
+    return ShortReadBytesIO(CONTENT)
+
+
 def _spooled_tempfile(_tmp_path: Path) -> BinaryIO:
     # Common for buffering uploads/downloads in memory then spilling to disk.
     f = tempfile.SpooledTemporaryFile(max_size=len(CONTENT) // 2)  # forced to spill
@@ -308,6 +321,11 @@ CASES: dict[str, Case] = {
     # --- already-conforming io.IOBase streams (passed through unwrapped) ---
     "buffered_file": Case(_buffered_file, seekable=True, passes_is_stream=True),
     "raw_fileio": Case(_raw_file, seekable=True, passes_is_stream=True),
+    # A raw stream may legally return short from read(n); ensure_full_count_reads is what
+    # keeps the header parsers from reading that as EOF (see test_short_read_sources.py).
+    "short_read_bytesio": Case(
+        _short_read_bytesio, seekable=True, passes_is_stream=True
+    ),
     "bytesio": Case(_bytesio, seekable=True, passes_is_stream=True),
     "spooled_tempfile": Case(_spooled_tempfile, seekable=True, passes_is_stream=True),
     "gzip": Case(_gzip_member, seekable=True, passes_is_stream=True),
@@ -447,6 +465,27 @@ def test_ensure_bufferedio_yields_content(case: Case, tmp_path: Path) -> None:
         _close(stream)
 
 
+def test_ensure_full_count_reads_returns_the_full_count(
+    case: Case, tmp_path: Path
+) -> None:
+    """The archive-source boundary guarantee: ``read(n)`` yields ``n`` short of EOF.
+
+    A non-seekable source is handed back untouched — buffering it would make ``seekable()``
+    claim random access it does not have, and archivey routes those through
+    ``PeekableStream``, which coalesces.
+    """
+    stream = ensure_binaryio(case.build(tmp_path))
+    try:
+        normalized = ensure_full_count_reads(stream)
+        if not case.seekable:
+            assert normalized is stream
+            return
+        assert normalized.read(128) == CONTENT[:128]
+        assert normalized.read(4000) == CONTENT[128:4128]
+    finally:
+        _close(stream)
+
+
 def test_seek_rewind_when_seekable(case: Case, tmp_path: Path) -> None:
     """A seekable source can be rewound and re-read; a non-seekable one reports so."""
     stream = ensure_binaryio(case.build(tmp_path))
@@ -454,10 +493,12 @@ def test_seek_rewind_when_seekable(case: Case, tmp_path: Path) -> None:
         if not case.seekable:
             assert not is_seekable(stream)
             return
-        head = stream.read(100)
-        assert head == CONTENT[:100]
+        # read_exact, not a bare read(100): a raw source may legally return short, and this
+        # test is about rewinding, not about the full-count guarantee
+        # (test_ensure_full_count_reads_returns_the_full_count covers that).
+        assert read_exact(stream, 100) == CONTENT[:100]
         stream.seek(0)
-        assert stream.read(100) == CONTENT[:100]
+        assert read_exact(stream, 100) == CONTENT[:100]
     finally:
         _close(stream)
 

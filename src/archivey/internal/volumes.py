@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import BinaryIO, TypeGuard
 
 from archivey.exceptions import TruncatedError
-from archivey.internal.streams.streamtools import is_stream, source_name
+from archivey.internal.streams.streamtools import (
+    ensure_full_count_reads,
+    is_stream,
+    source_name,
+)
 
 SourceItem = str | Path | BinaryIO
 SourceSequence = Sequence[SourceItem]
@@ -282,7 +286,7 @@ class ResolvedSource:
 def _coerce_path_or_stream(item: SourceItem) -> Path | BinaryIO:
     if isinstance(item, (str, Path)):
         return Path(item)
-    return item
+    return ensure_full_count_reads(item)
 
 
 def _is_source_sequence(source: OpenSourceInput) -> TypeGuard[SourceSequence]:
@@ -294,7 +298,16 @@ def _is_source_sequence(source: OpenSourceInput) -> TypeGuard[SourceSequence]:
 
 
 def resolve_source(source: OpenSourceInput) -> ResolvedSource:
-    """Normalize ``source`` to one open target and record multi-volume detection."""
+    """Normalize ``source`` to one open target and record multi-volume detection.
+
+    Normalizing includes making every caller-supplied stream **full-count** on ``read(n)``
+    (``ensure_full_count_reads``) before it reaches detection or a backend: this is the one
+    boundary every archive source crosses, and the header parsers downstream — archivey's
+    and the stdlib's alike — read fixed-size structures with a single ``read(n)``. Volume
+    items are normalized individually, so :class:`ConcatenatedFile` (whose own ``read``
+    already coalesces across volumes) stays the resolved source that the RAR/7z volume
+    handling recognizes.
+    """
     if _is_source_sequence(source):
         items = [_coerce_path_or_stream(item) for item in source]
         if not items:
@@ -312,7 +325,7 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
         return _resolve_single(source)
     if not is_stream(source):
         raise TypeError(f"unsupported source type: {type(source)!r}")
-    return _resolve_single(source)
+    return _resolve_single(ensure_full_count_reads(source))
 
 
 def _resolve_single(source: Path | BinaryIO) -> ResolvedSource:

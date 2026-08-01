@@ -51,6 +51,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools import (
+    ensure_full_count_reads,
     fix_stream_start_position,
     is_seekable,
     is_stream,
@@ -332,8 +333,11 @@ def open_stream(
         if not source_is_seekable:
             codec_input = PeekableStream(source)
         else:
-            # Same mid-stream origin contract as open_archive.
-            codec_input = fix_stream_start_position(source)
+            # Same source-boundary contract as open_archive (``resolve_source``): coalesce
+            # legal short ``read(n)`` returns before a codec — or a seek-index accelerator
+            # reading the source itself — mistakes one for a truncated stream. Then the
+            # mid-stream origin contract.
+            codec_input = fix_stream_start_position(ensure_full_count_reads(source))
 
     if seekable and not source_is_seekable:
         raise StreamNotSeekableError(

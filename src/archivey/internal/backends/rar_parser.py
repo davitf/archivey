@@ -654,7 +654,10 @@ class _HeaderDecryptStream:
         self._buf.clear()
         need = n - len(out)
         while need > 0:
-            enc = self._source.read(16)
+            # AES-CBC advances one whole block at a time: a short read must be gathered,
+            # not treated as EOF, or the remaining ciphertext decrypts against the wrong
+            # IV and every later header looks corrupt.
+            enc = read_exact(self._source, 16)
             if len(enc) < 16:
                 break
             dec = self._stage.update(enc)
@@ -909,7 +912,7 @@ def _parse_rar3(
 
         try:
             header_offset = header_fd.tell()
-            buf = header_fd.read(_S_BLK_HDR.size)
+            buf = read_exact(header_fd, _S_BLK_HDR.size)
             if not buf:
                 break
             if len(buf) < _S_BLK_HDR.size:
@@ -919,7 +922,7 @@ def _parse_rar3(
             if header_size < _S_BLK_HDR.size:
                 raise CorruptionError(f"Invalid RAR3 header size: {header_size}")
             if header_size > _S_BLK_HDR.size:
-                rest = header_fd.read(header_size - _S_BLK_HDR.size)
+                rest = read_exact(header_fd, header_size - _S_BLK_HDR.size)
                 if len(rest) != header_size - _S_BLK_HDR.size:
                     raise CorruptionError(
                         "Unexpected EOF while reading RAR3 header body"
@@ -1464,7 +1467,7 @@ def _read_rar5_block(
     """
     header_offset = fd.tell()
     preload = 4 + 1
-    head = bytearray(fd.read(preload))
+    head = bytearray(read_exact(fd, preload))
     if not head:
         return None
     if len(head) < preload:
@@ -1488,7 +1491,7 @@ def _read_rar5_block(
     if hdrlen > _RAR5_MAX_HEADER:
         raise CorruptionError(f"RAR5 header too large: {hdrlen}")
     header_size = pos + hdrlen
-    hdata = start_bytes + fd.read(header_size - len(start_bytes))
+    hdata = start_bytes + read_exact(fd, header_size - len(start_bytes))
     if len(hdata) != header_size:
         raise CorruptionError("Unexpected EOF while reading RAR5 header body")
     data_offset = fd.tell()
