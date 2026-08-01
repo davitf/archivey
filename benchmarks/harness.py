@@ -1213,7 +1213,9 @@ def _wall_checks(
     """Sanity ceiling (+ optional informational VISION-band messages as failures)."""
     failures: list[str] = []
     for r in results:
-        if r.wall_ratio is None:
+        # A skipped row measured nothing. Its wall_ratio happens to be None today, but
+        # the contract in CaseResult.skipped is on the flag, not on that coincidence.
+        if r.skipped or r.wall_ratio is None:
             continue
         if r.wall_ratio > WALL_RATIO_BUDGET:
             failures.append(
@@ -1268,7 +1270,8 @@ def _wall_drift_checks(
         return []
     failures: list[str] = []
     for r in results:
-        if r.wall_ratio is None:
+        # See _wall_checks: skipped rows are not measurements, regardless of ratio.
+        if r.skipped or r.wall_ratio is None:
             continue
         old = prior.get(r.case)
         if old is None or old <= 0:
@@ -1423,10 +1426,15 @@ def format_text_report(payload: dict[str, Any]) -> str:
     )
     for r in results:
         notes = r.notes.replace("|", "\\|") if r.notes else ""
+        # Printing 0 for a case that never ran recreates in the table the exact
+        # ambiguity the structural gate stopped treating as data; the reason is in
+        # notes, so the numeric columns should not claim a measurement.
+        bytes_dec = "—" if r.skipped else _fmt_bytes(r.bytes_decompressed)
+        seeks = "—" if r.skipped else str(r.source_seek_count)
         lines.append(
             f"| `{r.case}` | {r.format} | {r.operation} | "
-            f"{_fmt_seconds(r.wall_s)} | {_fmt_bytes(r.bytes_decompressed)} | "
-            f"{r.source_seek_count} | {notes} |"
+            f"{_fmt_seconds(r.wall_s)} | {bytes_dec} | "
+            f"{seeks} | {notes} |"
         )
 
     if other_cases and any(r.case.endswith("_sequential") for r in other_cases):

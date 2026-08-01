@@ -13,12 +13,14 @@ from benchmarks.fixtures import materialize_fixtures
 from benchmarks.harness import (
     STRUCTURAL_BASELINE,
     CaseResult,
+    _accel_skipped_case,
     _crypto_available,
     _rapidgzip_available,
     _structural_checks,
     _unrar_available,
     load_json,
     run_cases,
+    write_baselines,
 )
 
 _RAR_DATA_CASES = (
@@ -153,6 +155,41 @@ def test_accel_on_skip_is_not_reported_as_under_decode(
         assert "rapidgzip not installed" in skipped.notes
 
 
+def test_write_baselines_omits_skipped_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--write-baseline`` without ``[seekable]`` must not bake zeros into the pin.
+
+    A skipped accel-ON row would otherwise be committed as
+    ``bytes_decompressed=0``, after which every later run *with* rapidgzip reads as a
+    regression against it. That is the worst of the three variants of this bug: it
+    survives in a committed file, and a zero looks enough like a measurement to pass
+    diff review.
+    """
+    baseline = tmp_path / "structural.json"
+    monkeypatch.setattr(harness, "BASELINES_DIR", tmp_path)
+    monkeypatch.setattr(harness, "STRUCTURAL_BASELINE", baseline)
+
+    measured = CaseResult(
+        case="zip_read_all_accel_off",
+        format="zip",
+        operation="read_all",
+        wall_s=0.01,
+        bytes_decompressed=32768,
+        source_seek_count=28,
+        unpacked_bytes=32768,
+    )
+    write_baselines([measured, _accel_skipped_case("zip_read_all_accel_on", "zip")])
+
+    cases = json.loads(baseline.read_text())["cases"]
+    assert "zip_read_all_accel_on" not in cases, (
+        "a case that never ran must not enter the committed baseline"
+    )
+    # ...while a real measurement alongside it is still written unchanged.
+    assert cases["zip_read_all_accel_off"]["bytes_decompressed"] == 32768
+    assert cases["zip_read_all_accel_off"]["source_seek_count"] == 28
+
+
 def test_structural_baseline_committed() -> None:
     assert STRUCTURAL_BASELINE.is_file()
     data = json.loads(STRUCTURAL_BASELINE.read_text())
@@ -168,7 +205,10 @@ def test_structural_baseline_committed() -> None:
         "zip_aes_read_all",
         "zip_lzma_read_all",
         "zip_read_all_accel_off",
-        "zip_read_all_accel_on",
+        # All three accel-ON cases, matching the fail-closed guard's set: a
+        # no-rapidgzip regeneration drops them together, so pinning only ZIP left the
+        # tar keys protected by coincidence rather than by the assertion.
+        *_ACCEL_ON_CASES,
     ):
         assert name in cases, f"missing structural baseline case {name}"
 
@@ -272,6 +312,19 @@ def test_format_text_report_table() -> None:
                 "wall_ratio": None,
                 "notes": "solid invariant",
             },
+            {
+                "case": "zip_read_all_accel_on",
+                "format": "zip",
+                "operation": "read_all",
+                "wall_s": 0.0,
+                "bytes_decompressed": 0,
+                "source_seek_count": 0,
+                "unpacked_bytes": None,
+                "stdlib_wall_s": None,
+                "wall_ratio": None,
+                "notes": "skipped: rapidgzip not installed ([seekable] extra)",
+                "skipped": True,
+            },
         ],
     }
     report = format_text_report(payload)
@@ -283,6 +336,14 @@ def test_format_text_report_table() -> None:
     assert "solid invariant" in report
     assert "64 × 256.0 KiB" in report or "64 × 256 KiB" in report
     assert "wall-ratio *drift*" in report
+
+    # A skipped case reports "—" in the numeric columns rather than 0, which would
+    # read as "the accelerator decompressed nothing and never seeked".
+    skipped_row = next(
+        line for line in report.splitlines() if "`zip_read_all_accel_on`" in line
+    )
+    assert "| — | — |" in skipped_row, skipped_row
+    assert "rapidgzip not installed" in skipped_row
 
 
 def test_wall_drift_checks_regressions_and_noise() -> None:
