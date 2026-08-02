@@ -196,7 +196,7 @@ digest. Until that delta lands, the page and the spec disagree — do not silent
 | Format-limitations table as a whole | **OUT** | Encyclopaedia → `formats.md` |
 | Full extraction policy table | **OUT** | → `safe-extraction.md` (maybe 1–2 footgun bullets stay) |
 | "What we can only warn about" | **OUT** | Meta, not actionable traps |
-| Listing completeness vs `members_report` | **ASK** | Contract knowledge vs footgun? |
+| Listing completeness vs `members_report` | **OUT** ✅ | Core API contract, not a silent trap once documented. **Phase 3 / Topic 8:** draw attention on `reading.md` (or today's `usage.md` until the split) **and** in the `members` / `scan_members` / `members_report` docstrings — complete-or-raise vs always-return-and-check-`.error`. |
 | STRICT name rewrite / cross-platform collisions | **ASK** | Extraction footgun, or safe-extraction's job? |
 | `import archivey` patches pycdlib process-globally | **ASK** | Only bites dual-use processes |
 | Spec-mandated quartet (multi-vol ZIP, pipe seek, bit-11, TAR silent-shorten) | **ASK** | See conflict above; recommend formats.md + delta |
