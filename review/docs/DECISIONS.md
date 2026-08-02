@@ -197,7 +197,7 @@ digest. Until that delta lands, the page and the spec disagree — do not silent
 | Full extraction policy table | **OUT** | → `safe-extraction.md` (maybe 1–2 footgun bullets stay) |
 | "What we can only warn about" | **OUT** | Meta, not actionable traps |
 | Listing completeness vs `members_report` | **OUT** ✅ | Core API contract, not a silent trap once documented. **Phase 3 / Topic 8:** draw attention on `reading.md` (or today's `usage.md` until the split) **and** in the `members` / `scan_members` / `members_report` docstrings — complete-or-raise vs always-return-and-check-`.error`. |
-| STRICT name rewrite / cross-platform collisions | **ASK** | Extraction footgun, or safe-extraction's job? |
+| STRICT name rewrite / cross-platform collisions | **IN (one bullet)** ✅ | Footgun if you look up extracted paths by `member.name` or assume Linux has no case/Unicode collisions. Full policy table stays on `safe-extraction.md`. Gotchas: one line + link, e.g. “STRICT may rewrite names; case/Unicode collisions apply on every OS.” |
 | `import archivey` patches pycdlib process-globally | **ASK** | Only bites dual-use processes |
 | Spec-mandated quartet (multi-vol ZIP, pipe seek, bit-11, TAR silent-shorten) | **ASK** | See conflict above; recommend formats.md + delta |
 
