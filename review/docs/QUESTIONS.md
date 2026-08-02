@@ -303,7 +303,7 @@ word and phase 3 uses it.
 |---|---|
 | **Q1** | The whole tree; the spec delta; Q2, Q3, Q7, Q9 |
 | Q2 | Whether raw ADRs appear in the nav (no — summary on `how-it-works.md`) |
-| Q3 | Whether `gotchas.md` shrinks (needs a delta only under option C) |
+| Q3 | Gotchas shape + footgun inclusion rule (✅ D4); borderline bullets still triage |
 | Q4 | Whether ADR 0014 splits, and where its user guarantee lands |
 | Q5 | One commit, independent of everything else |
 | Q6 | Two `git mv`s, independent of everything else |

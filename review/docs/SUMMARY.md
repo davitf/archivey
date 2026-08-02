@@ -59,7 +59,7 @@ paused and surfaced rather than resolved. The maintainer has now answered
   removed, 5 become GitHub URLs, and `index.md`'s "For contributors" block is
   rewritten.
 
-**Q3–Q9 remain open** — all page-level, none blocking the tree.
+**Q4–Q9 remain open** — all page-level, none blocking the tree.
 
 ---
 
@@ -72,7 +72,7 @@ README  CHANGELOG  SECURITY  CONTRIBUTING  AGENTS  VISION  PLAN  IDEAS
    (the four "moved to…" stubs deleted; CLAUDE.md merged into AGENTS.md)
 
 docs/           ── PUBLISHED. User + current, and nothing else. ──
-  index · install* · reading* · philosophy · gotchas(index) · safe-extraction(3×)
+  index · install* · reading* · philosophy · gotchas(footgun digest) · safe-extraction(3×)
   access-and-cost · formats · errors-and-diagnostics* · migrating
   support-matrix · cli* · how-it-works† · api · acknowledgements
                             (* new, split out of usage.md   † new, D2 — includes
@@ -178,7 +178,7 @@ Named explicitly so the migration does not sweep them up for symmetry.
 
 ## Next
 
-1. Answer the rest of [`QUESTIONS.md`](QUESTIONS.md) — Q3–Q9. None blocks the tree
+1. Answer the rest of [`QUESTIONS.md`](QUESTIONS.md) — Q4–Q9. None blocks the tree
    now that Q1 is decided; Q5, Q6 and Q8 are independent one-commit calls.
 2. Phase 3: execute as OpenSpec changes, kept mechanical — the nine-commit
    sequence is in [`inventory.md`](inventory.md) §Migration mechanics. Commits 1–3
