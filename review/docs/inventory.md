@@ -99,15 +99,15 @@ changes are **page shape**, not home (see [`page-shape.md`](page-shape.md)).
 
 ## 3. `docs/decisions/` — the ADR log (15 files, 1,035 lines)
 
-**Recommendation: stays published**, as a named exception to "the site is user +
-current only". An ADR answers "why should I trust your 7z parser?" — an adoption
-question Topic 7 will judge. See Q2.
+**Audience: Maintainer.** Under revised D2 the whole tree moves to
+`dev-docs/decisions/`. Curious-user "why"s are summarised on `docs/how-it-works.md`;
+user-page ADR links are inlined then dropped (GitHub only if uninlinable). See Q2.
 
 | File | Lines | Audience | Proposed home | Rationale |
 |---|---:|---|---|---|
-| `docs/decisions/index.md` | 32 | Both | **KEEP** | Curated index; drop the `grab-bag` link (line 32) → `dev-docs/history/`. |
-| `0001` … `0013` (13 files) | 384 total | Both | **KEEP** | 21–105 lines each, ADR-shaped, maintained index. The lifecycle works — do not churn. |
-| `0014-integrity-verdicts-from-reads-not-close.md` | 615 | Both | **SPLIT** (see Q4) | 59% of the entire ADR corpus in one file; 25× the median ADR. Contains an `## Open questions` section (line 493) and a 56-line `## Guarantee (for users)` (line 320) — an investigation, a user contract, and an ADR fused. It is also the one ADR missing from the nav. Recommend: ~30-line ADR stays; the investigation → `dev-docs/investigations/`; the user guarantee → `docs/reading.md`. |
+| `docs/decisions/index.md` | 32 | Maintainer | `dev-docs/decisions/index.md` | **MOVE**; drop the `grab-bag` link (line 32) → `dev-docs/history/`. |
+| `0001` … `0013` (13 files) | 384 total | Maintainer | `dev-docs/decisions/` | **MOVE**. Lifecycle unchanged — do not churn the ADR shape. |
+| `0014-integrity-verdicts-from-reads-not-close.md` | 615 | Maintainer (+ user guarantee) | **SPLIT** (see Q4) | ~30-line ADR → `dev-docs/decisions/`; investigation → `dev-docs/investigations/`; user guarantee → `docs/reading.md`. |
 
 ---
 

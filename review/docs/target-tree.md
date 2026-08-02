@@ -1,20 +1,21 @@
 # Target tree, nav, and the rule that keeps it
 
 Companion to [`inventory.md`](inventory.md). **Q1 and Q2 are decided** — the site
-unpublishes maintainer material and keeps the ADR log ([`DECISIONS.md`](DECISIONS.md)
-D1/D2), so the tree below is the agreed target, not a proposal. Q3–Q9 still affect
-individual pages, marked where they do.
+unpublishes maintainer material *including* the raw ADR log; curious-user depth
+lives on one published page ([`DECISIONS.md`](DECISIONS.md) D1/D2). Q3–Q9 still
+affect individual pages, marked where they do.
 
 ## The decision rule
 
 The brief proposes two axes and four quadrants. Testing it against the real tree,
-it holds — with one refinement (the ADR log) and one clarification (agent tooling
-is not documentation).
+it holds — with one clarification (agent tooling is not documentation). The earlier
+"ADR log stays published" refinement was reversed (D2, 2026-08-02): adoption
+"why"s are summarised on `how-it-works.md`; raw ADRs are maintainer provenance.
 
 | | **Current / normative** | **Historical / evidence** |
 |---|---|---|
 | **User** | `docs/` — the published site | `CHANGELOG.md` |
-| **Maintainer** | `CONTRIBUTING.md`, `AGENTS.md`, `VISION`/`PLAN`/`IDEAS`, `openspec/specs/`, `dev-docs/` (live registers + runbooks) | `dev-docs/investigations/`, `dev-docs/history/`, `review/archive/`, `openspec/changes/archive/` |
+| **Maintainer** | `CONTRIBUTING.md`, `AGENTS.md`, `VISION`/`PLAN`/`IDEAS`, `openspec/specs/`, `dev-docs/` (live registers + runbooks + **ADR log**) | `dev-docs/investigations/`, `dev-docs/history/`, `review/archive/`, `openspec/changes/archive/` |
 
 **The invariant that makes it enforceable:**
 
@@ -26,15 +27,8 @@ no exception list. The alternative — keeping maintainer material under `docs/`
 excluding it via `exclude_docs` — needs a second list that must stay in sync with
 the first, which is precisely the drift that produced six published-but-unlisted
 pages. The cheaper `exclude_docs` alternative was weighed and rejected in Q1.
-
-**Refinement — `docs/decisions/` stays published** (decided, D2). Strictly it is
-"Maintainer + current", so the pure hypothesis would unpublish it. An ADR answers
-"why did you write your own 7z parser instead of wrapping `py7zr`?", which is an
-*adoption* question, and Topic 7 will judge whether the docs answer it. The ADRs
-are 21–105-line curated records with a maintained index — a different object from
-a 695-line investigation. `docs/how-it-works.md` (new, D2) covers the other half of
-"curated implementation detail for curious users". Both are named exceptions, not
-holes in the rule.
+Raw ADRs follow the same rule: they move to `dev-docs/decisions/`, they are not
+left under `docs/` and excluded.
 
 **Clarification — `.claude/` and `.cursor/` are configuration.** They are Markdown
 addressed by tools at literal paths. Filing them as "contributor docs" invites a
@@ -45,10 +39,13 @@ move that breaks the tools.
 Four questions, in order. The first `yes` wins.
 
 1. **Would someone who only *uses* the library need it?** → `docs/`, and add it to
-   the nav in the same commit.
+   the nav in the same commit. (Curated "why we chose X" one-liners for curious
+   users belong on `how-it-works.md`, not as a new page per decision.)
 2. **Is it a load-bearing "why" that is decided and won't change?** → a new ADR in
-   `docs/decisions/` (keep it ADR-shaped: Context / Decision / Consequences, tens
-   of lines). If it needs an `## Open questions` section, it is not an ADR yet.
+   `dev-docs/decisions/` (keep it ADR-shaped: Context / Decision / Consequences,
+   tens of lines). If it needs an `## Open questions` section, it is not an ADR
+   yet. Mirror a one-line outcome onto `how-it-works.md` when the choice is
+   user-relevant.
 3. **Does a contributor need it to work on the code *today*?** → `dev-docs/` (live
    register or runbook).
 4. **Is it finished evidence — an investigation, a superseded design, a lab
@@ -65,13 +62,15 @@ A published page **must not link into unpublished docs**. In order:
 
 1. **Prefer no link.** If a published page needs a fact, the fact belongs on a
    published page — a link into maintainer material usually means it is filed in
-   the wrong place.
+   the wrong place. For ADR citations specifically: inline the end-user one-liner
+   and drop the link (D2), unless the ADR still has uninlinable user-relevant depth.
 2. **If the extra context is genuinely worth keeping**, link the file on GitHub:
    `https://github.com/davitf/archivey/blob/main/dev-docs/<file>.md` — the pattern
    `README.md:20-22` already uses.
 3. **Never** a bare repo path in prose standing in for a link.
 
-Nine such links exist today; [`DECISIONS.md`](DECISIONS.md) D3 resolves each one.
+Nine internal/grab-bag links exist today; [`DECISIONS.md`](DECISIONS.md) D3
+resolves each one. Ten ADR links are resolved under D2.
 
 ## Proposed tree
 
@@ -97,10 +96,9 @@ docs/                        ── PUBLISHED. User + current, and nothing else.
   migrating.md
   support-matrix.md
   cli.md                     NEW ← usage.md (49 lines today, no nav entry)
-  how-it-works.md            NEW — curated behind-the-scenes overview (D2)
+  how-it-works.md            NEW — curated behind-the-scenes + decisions summary (D2)
   api.md
   acknowledgements.md
-  decisions/                 15 ADRs (0014 split — Q4)
 
 dev-docs/                    ── NOT published. Maintainer + current. ──
   index.md                   ← internal/index.md
@@ -110,6 +108,7 @@ dev-docs/                    ── NOT published. Maintainer + current. ──
   library-analysis.md        ← named verbatim by two specs; needs a delta (Q1)
   release-checklist.md
   release-repo-cutover.md
+  decisions/                 ← docs/decisions/ (raw ADR log; 0014 split — Q4)
   investigations/            ── Maintainer + historical. Finished evidence. ──
     ppmd-native-investigation-brief.md
     ppmd-native-investigation-results.md
@@ -149,17 +148,14 @@ nav:
   - How it works: how-it-works.md
   - API reference: api.md
   - Acknowledgements: acknowledgements.md
-  - Decisions:
-      - Overview: decisions/index.md
-      - … (14 ADRs, including 0014 — which is missing today)
 ```
 
-The `Internal:` and `Grab-bag:` nav sections (13 entries) are deleted. Published
-lines drop from **9,316** (all of `docs/**` today) to roughly **2,000** — the
-1,482-line guide, near-neutral through the splits, plus `decisions/` at ~450 once
-ADR 0014's investigation half moves out. That estimate is approximate: it assumes
-no new prose, and Topic 8 will legitimately grow `safe-extraction.md` further. What
-is not approximate is that every published line is then for a user.
+The `Internal:`, `Grab-bag:`, and `Decisions:` nav sections are deleted (13 + ADR
+entries). Published lines drop from **9,316** (all of `docs/**` today) to roughly
+**1,550–1,800** — the 1,482-line guide, near-neutral through the splits, plus
+`how-it-works.md`, minus the ~1,035-line ADR corpus. That estimate is approximate:
+it assumes no new prose, and Topic 8 will legitimately grow `safe-extraction.md`
+further. What is not approximate is that every published line is then for a user.
 
 `Philosophy` moves down from position 2. It is a good page, but a reader who has
 not yet installed the library does not need the manifesto before the install

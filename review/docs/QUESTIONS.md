@@ -4,11 +4,12 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-> **Q1 and Q2 are answered** (2026-07-29) — see [`DECISIONS.md`](DECISIONS.md).
-> The site is unpublishing `docs/internal/`; `docs/decisions/` stays; and a **new
-> rule D3** applies: published pages must not link into unpublished docs, and where
-> the context is worth keeping the link becomes an absolute GitHub URL. Q3–Q9 below
-> are still open.
+> **Q1 and Q2 are answered** — see [`DECISIONS.md`](DECISIONS.md).
+> The site is unpublishing `docs/internal/` **and** the raw ADR log
+> (`docs/decisions/` → `dev-docs/decisions/`); curious-user depth lives on one
+> published page (`how-it-works.md`, including a decisions summary). **D3:**
+> published pages must not link into unpublished docs; where context is worth
+> keeping the link becomes an absolute GitHub URL. Q3–Q9 below are still open.
 
 ---
 
@@ -75,30 +76,34 @@ only the tree in [`target-tree.md`](target-tree.md) is affected.
 
 ---
 
-## Q2 — Does `docs/decisions/` stay published? ✅ **ANSWERED: yes**
+## Q2 — Does `docs/decisions/` stay published? ✅ **ANSWERED: no (revised 2026-08-02)**
 
-> *"optionally with some curated higher-level implementation details for curious
-> users to know what's going on behind the scenes and the major decisions"*
+> *2026-07-29: "optionally with some curated higher-level implementation details
+> for curious users… and the major decisions" — initially read as keeping the ADR
+> log published.*
+>
+> *2026-08-02: a summary of technical decisions (with links to ADRs / OpenSpec
+> changes) is fine; the whole raw ADR corpus is not. Summary lives on the single
+> `how-it-works.md` page; raw ADRs move to `dev-docs/decisions/`; user-page ADR
+> links are dropped unless the ADR has end-user depth that cannot be inlined.*
 
-Recorded as [`DECISIONS.md`](DECISIONS.md) D2, which also proposes a new
-`docs/how-it-works.md` for the "behind the scenes" half — there is no such page
-today. The reasoning below stands.
-
-
+Recorded as [`DECISIONS.md`](DECISIONS.md) D2 (revised). The original
+recommendation below is superseded — kept for provenance of why the first answer
+went the other way.
 
 Strictly, ADRs are "Maintainer + current", so the pure hypothesis unpublishes them
 along with everything else in Q1.
 
-**Recommendation: keep them published**, as a named exception. An ADR answers "why
-did you write your own 7z parser instead of wrapping `py7zr`?" — that is an
-*adoption* question, and Topic 7 (`review/backlog.md:134`) will judge whether the
-docs answer it. They are 21–105-line curated records with a maintained index, a
-different object from a 695-line investigation. Four user pages already link into
-them ten times.
+**Original recommendation (superseded): keep them published**, as a named
+exception. An ADR answers "why did you write your own 7z parser instead of
+wrapping `py7zr`?" — that is an *adoption* question. They are 21–105-line curated
+records with a maintained index, a different object from a 695-line investigation.
+Four user pages already link into them ten times.
 
-If they are unpublished, **10 working links** from four user pages
-(`acknowledgements.md` ×4, `migrating.md` ×3, `support-matrix.md` ×2, `usage.md`
-×1) would have to leave the site — worse for the reader, and a Topic 7 regression.
+**What we actually decided:** the adoption answer belongs in a short published
+summary on `how-it-works.md`; the ADR files themselves are provenance for
+maintainers and move with the rest of the unpublished tree. The ten user-page
+links are inlined-then-dropped under D2's rule (GitHub only if uninlinable).
 
 ---
 
@@ -134,9 +139,10 @@ section, and 100+ lines of trade-off analysis. It is also the ADR that fell out 
 the nav.
 
 **Recommendation: split three ways** — a ~30-line ADR matching the shape of the
-other 13 stays in `docs/decisions/`; the investigation and trade-off analysis go to
-`dev-docs/investigations/`; the user guarantee moves into the new `docs/reading.md`
-(it is user documentation that currently only exists inside an unlisted ADR).
+other 13 stays in the ADR log (`dev-docs/decisions/` under revised D2); the
+investigation and trade-off analysis go to `dev-docs/investigations/`; the user
+guarantee moves into the new `docs/reading.md` (it is user documentation that
+currently only exists inside an unlisted ADR).
 
 **Counter-argument to weigh:** the depth is *why* the decision is credible, and a
 reader who follows a link from `compressed-streams` wants the full reasoning in one
@@ -288,7 +294,7 @@ word and phase 3 uses it.
 | Q | Blocks |
 |---|---|
 | **Q1** | The whole tree; the spec delta; Q2, Q3, Q7, Q9 |
-| Q2 | Whether `decisions/` appears in the nav |
+| Q2 | Whether raw ADRs appear in the nav (no — summary on `how-it-works.md`) |
 | Q3 | Whether `gotchas.md` shrinks (needs a delta only under option C) |
 | Q4 | Whether ADR 0014 splits, and where its user guarantee lands |
 | Q5 | One commit, independent of everything else |
