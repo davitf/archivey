@@ -1,7 +1,8 @@
 # pyppmd upstream report — 1.3.x native heap corruption on valid PPMd7 data
 
 Status: **not yet filed** (no matching issue at
-<https://github.com/miurahr/pyppmd/issues> as of 2026-07-23).
+<https://github.com/miurahr/pyppmd/issues> as of 2026-07-23). Tracked in
+[`upstream-reports.md`](upstream-reports.md).
 
 > **Consolidated 2026-07-23.** The canonical, ready-to-file report now lives in
 > [`ppmd-native-investigation-results.md` §J](ppmd-native-investigation-results.md)

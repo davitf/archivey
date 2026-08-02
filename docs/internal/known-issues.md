@@ -3,6 +3,10 @@
 > See also [Compression-library analysis](library-analysis.md) for which library backs each
 > codec and why — including why `rapidgzip` is the single accelerator library (the issue below)
 > and why an `indexed_zstd` zstd accelerator would face the same constraint.
+>
+> The **upstream-bug** subset of these issues (pyppmd, rapidgzip, pycdlib) — what
+> is filed, ready to file, or still needs a write-up — is indexed in
+> [`upstream-reports.md`](upstream-reports.md).
 
 ## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive
 

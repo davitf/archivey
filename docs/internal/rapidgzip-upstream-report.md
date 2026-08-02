@@ -1,6 +1,7 @@
 # rapidgzip upstream report — soft EOF and related defects
 
-Status: **documentation only — not filed upstream** (2026-07-20). Soft empty/short
+Status: **documentation only — not filed upstream** (2026-07-20). Tracked in
+[`upstream-reports.md`](upstream-reports.md). Soft empty/short
 success on truncated gzip is **by design** in rapidgzip’s parallel reader (trial-and-error
 mid-stream decode for ratarmount / random access). Filing it as a “bug” would be wrong;
 an `is_stream_complete()`-style API would be a **feature request** we are not opening
