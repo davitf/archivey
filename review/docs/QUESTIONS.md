@@ -4,12 +4,15 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-> **Q1 and Q2 are answered** — see [`DECISIONS.md`](DECISIONS.md).
+> **Q1, Q2, and Q3 are answered** — see [`DECISIONS.md`](DECISIONS.md).
 > The site is unpublishing `docs/internal/` **and** the raw ADR log
 > (`docs/decisions/` → `dev-docs/decisions/`); curious-user depth lives on one
 > published page (`how-it-works.md`, including a decisions summary). **D3:**
 > published pages must not link into unpublished docs; where context is worth
-> keeping the link becomes an absolute GitHub URL. Q3–Q9 below are still open.
+> keeping the link becomes an absolute GitHub URL. **D4:** `gotchas.md` stays as
+> a footgun digest (one line + link), not a format encyclopaedia — and that
+> conflicts with `documentation/spec.md:175`, which the D1 delta must also fix.
+> Q4–Q9 below are still open.
 
 ---
 
@@ -107,7 +110,15 @@ links are inlined-then-dropped under D2's rule (GitHub only if uninlinable).
 
 ---
 
-## Q3 — What is `gotchas.md` for?
+## Q3 — What is `gotchas.md` for? ✅ **ANSWERED: A + footgun rule (D4)**
+
+> *"agree with A. … criteria for being there is: what must the user know to avoid
+> making mistakes or shooting themselves in the foot?"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D4. Shape = option A (keep slot; one
+line + link). Inclusion = footgun-only. Spec conflict at
+`documentation/spec.md:175` surfaced for the D1 delta. Borderline topics listed
+under D4 for maintainer confirmation.
 
 It is required to exist and to sit immediately after basic usage
 (`documentation/spec.md:86,175`). But four of its seven sections have a same-titled
@@ -117,15 +128,12 @@ section in `costs.md`, and the format table restates `formats.md`
 
 | | Approach |
 |---|---|
-| **A** *(recommended)* | Keep the page and its slot; each bullet becomes one line + a link to the owning page. Target ~80 lines from 156. |
+| **A** *(chosen)* | Keep the page and its slot; each bullet becomes one line + a link to the owning page. Target shrinks further under the footgun rule. |
 | **B** | Keep it as a full restatement and accept the drift risk, mitigated by a periodic sync pass. |
 | **C** | Dissolve it into the owning pages. **Requires a `documentation` spec delta** — the page is required by name. |
 
-**Recommendation: A.** It preserves the page's actual value (a curated "read this
-next" digest) and removes the reason a fact would ever be written down twice. Worth
-confirming that a one-line-plus-link entry still satisfies
-`documentation/spec.md:175`, which is about coverage and framing rather than
-length — my reading is that it does, but it is your spec.
+**Recommendation was A** — confirmed. The sharper inclusion rule supersedes the
+earlier assumption that the spec-mandated format-limitation quartet must live here.
 
 ---
 

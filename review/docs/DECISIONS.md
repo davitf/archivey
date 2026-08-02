@@ -3,9 +3,9 @@
 Answers from the maintainer. Recorded here so phase 3 has one place to read from;
 the affected phase-1 artifacts have been updated in place to match.
 
-Still open: **Q3, Q4, Q5, Q6, Q8, Q9** (`QUESTIONS.md`).
-(Q7's dual-audience filing is carried by D1 + D3; the judgement call about publishing
-the gap register is still open under Q7.)
+Still open: **Q4, Q5, Q6, Q7, Q8, Q9** (`QUESTIONS.md`).
+Q3 answered (D4); topic-inclusion triage under the footgun rule is recorded with D4
+and may still refine individual bullets in phase 3 / Topic 8.
 
 ---
 
@@ -142,3 +142,63 @@ but if you would rather it be seamless, the alternative is publishing a small
 curated subset instead of linking out, which is what D2's `how-it-works.md` does for
 the architecture / decisions story. The two mechanisms overlap; D2 handles the
 common case and D3 handles the long tail.
+
+---
+
+## D4 — Q3: `gotchas.md` stays as a footgun digest. **Approved (A), with a sharper rule.**
+
+> *"agree with A. and I don't think gotchas should have all that you mentioned.
+> the criteria for being there is: what must the user know to avoid making mistakes
+> or shooting themselves in the foot? e.g. seeking backwards might require full
+> re-decompression, opening files in solid archives too. you can ask me to decide
+> whether any topic should be included if it's not clear"*
+
+**Shape:** option A — keep the page and its nav slot (required by
+`documentation/spec.md:86`); each entry is one line + a link to the owning page.
+It stops being a third copy of `costs` / `formats` / `safe-extraction`.
+
+**Inclusion rule (normative for this page):**
+
+> A topic belongs on Gotchas only if a user who skipped it is likely to make a
+> mistake or shoot themselves in the foot. Format encyclopaedia, full policy
+> tables, and "plan around this limitation" rows belong on the owning page
+> (`formats.md`, `safe-extraction.md`, `access-and-cost.md`, …), not here.
+
+Examples the maintainer gave as in-scope: backward seek may fully re-decompress;
+solid-archive open order can re-decode the same block.
+
+### Spec conflict — pause and surface
+
+`documentation/spec.md:175-181` currently **requires** Gotchas to include
+multi-volume ZIP rejection, ZIP/ISO seek / no pure pipe, UTF-8 bit-11 unlistable
+archives, and TAR mid-corrupt silent shorten, framed as today's behavior.
+
+Under the footgun rule those are not automatically in. Multi-volume ZIP is a
+loud `UnsupportedFeatureError` (hard to shoot yourself); the others are closer
+but are also "format law" that `formats.md` already owns. **Phase 3's
+`documentation` delta (already required by D1) must also rewrite or drop the
+Gotchas-specific coverage requirement** so the page is allowed to be a footgun
+digest. Until that delta lands, the page and the spec disagree — do not silently
+"interpret" the requirement as satisfied by `formats.md` alone.
+
+### Topic triage (starting point for phase 3 / Topic 8)
+
+| Topic (today's section) | Tentative | Why |
+|---|---|---|
+| Seeking / redecompression | **IN** | Maintainer example |
+| Solid open order | **IN** | Maintainer example |
+| Streaming mode is one pass (second call raises) | **IN** | Easy to call twice after `break` and get a surprise error |
+| No silent pipe buffer (ZIP/ISO need seek) | **IN** | Silent buffering would hide unbounded cost; fail-fast surprises if unread |
+| Wrong password → garbage plaintext niches | **IN** | Silent bad data, not a loud error |
+| Do not close source under live accelerator | **IN** | Process abort, not a Python exception |
+| Accelerators + untrusted input / latency budget | **IN** | Native busy-loop footgun |
+| `get(name)` last-wins; `extract_all(members=[name])` matches every | **IN** | Identity surprises that corrupt caller logic |
+| Format-limitations table as a whole | **OUT** | Encyclopaedia → `formats.md` |
+| Full extraction policy table | **OUT** | → `safe-extraction.md` (maybe 1–2 footgun bullets stay) |
+| "What we can only warn about" | **OUT** | Meta, not actionable traps |
+| Listing completeness vs `members_report` | **ASK** | Contract knowledge vs footgun? |
+| STRICT name rewrite / cross-platform collisions | **ASK** | Extraction footgun, or safe-extraction's job? |
+| `import archivey` patches pycdlib process-globally | **ASK** | Only bites dual-use processes |
+| Spec-mandated quartet (multi-vol ZIP, pipe seek, bit-11, TAR silent-shorten) | **ASK** | See conflict above; recommend formats.md + delta |
+
+Borderline rows are for the maintainer to confirm before Topic 8 rewrites the page.

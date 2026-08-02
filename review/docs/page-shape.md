@@ -123,14 +123,16 @@ authoritative spec (`observations.md` O-2).
 
 **Phase-1 decision:** `gotchas.md` keeps its slot (the `documentation` spec
 requires it there) and keeps being the "read this next" page, but each bullet
-becomes **one line plus a link to the owning page** — target ~80 lines. It stops
-being a place a fact can be written down for the third time.
+becomes **one line plus a link to the owning page**. Inclusion is the **footgun
+rule** (D4): only what a user must know to avoid mistakes. It stops being a place
+a fact can be written down for the third time, and it is not a format encyclopaedia.
 
-> **Constraint check:** `openspec/specs/documentation/spec.md:175` requires the
-> Gotchas page to cover multi-volume ZIP, the ZIP/ISO seek requirement, the UTF-8
-> bit-11 case, and TAR silent-shorten "as today's behavior". A one-line-plus-link
-> entry for each still satisfies that — the requirement is about *coverage and
-> framing*, not length. Confirm in Q3.
+> **Spec conflict (surfaced, D4):** `openspec/specs/documentation/spec.md:175`
+> requires Gotchas to cover multi-volume ZIP, ZIP/ISO seek, UTF-8 bit-11, and TAR
+> silent-shorten. Under the footgun rule those are not automatic. The D1
+> `documentation` delta must rewrite or drop that Gotchas-specific coverage
+> requirement (likely: own them on `formats.md` only). Borderline topics for
+> maintainer triage are listed under D4.
 
 ---
 
@@ -139,7 +141,7 @@ being a place a fact can be written down for the third time.
 | Page | Operation | Destination | Question |
 |---|---|---|---|
 | `docs/usage.md` (270) | split 4 ways | `install` / `reading` / `errors-and-diagnostics` / `cli` | — |
-| `docs/gotchas.md` (156) | shrink to index (~80) | content already lives in `costs`/`formats`/`safe-extraction` | Q3 |
+| `docs/gotchas.md` (156) | shrink to footgun digest | content already lives in `costs`/`formats`/`safe-extraction` | Q3 ✅ D4 |
 | `docs/safe-extraction.md` (93) | grow ~3× by absorption | from `gotchas`, `threat-model`, `SECURITY.md` | Q7 |
 | `docs/internal/threat-model.md` (320) | split | enforced-guarantees → `safe-extraction.md`; O/C register → `dev-docs/` | Q7 |
 | `docs/decisions/0014-*.md` (615) | split 3 ways | ADR (~30) → `dev-docs/decisions/`; investigation → `dev-docs/investigations/`; user guarantee → `reading.md` | Q4 |
