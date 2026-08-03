@@ -227,6 +227,14 @@ migrated and then rewritten.
 
 ## O-14 — Three published pages attribute BLAKE2sp to an extra; it is native and zero-dep
 
+**Closed 2026-08-03** — verified fixed on `main` @ `d34489f`. All three copies now
+state that BLAKE2sp needs no package: `docs/formats.md:16`, `docs/formats.md:105`,
+`docs/acknowledgements.md:73`. `consolidate-optional-extras` (#212) fixed the
+published pages alongside the `pyproject.toml` comment, which is what the last
+paragraph below asked for. Recorded here rather than deleted, because the closing
+argument still stands: a structural audit reading every file for *filing* did not
+catch a factual error on a user page.
+
 Added 2026-07-29 during maintainer review of this audit, so numbered after the fact.
 
 `src/archivey/internal/hashing/blake2sp.py` implements BLAKE2sp on stdlib
