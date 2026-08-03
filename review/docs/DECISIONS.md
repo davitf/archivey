@@ -157,15 +157,27 @@ common case and D3 handles the long tail.
 `documentation/spec.md:86`); each entry is one line + a link to the owning page.
 It stops being a third copy of `costs` / `formats` / `safe-extraction`.
 
+**Page structure (two sections):**
+
+1. **What you should / shouldn't do** — caller choices that shoot you in the foot
+   (cost/API traps): seek/redecompress, solid open order, streaming one-pass,
+   identity (`get` last-wins), STRICT name rewrite / collisions (one bullet),
+   don't close a source under a live accelerator, accelerators + untrusted input
+   under a latency budget, …
+2. **What you should be aware of** — places where Archivey **cannot** fully fulfill
+   “fail loudly and verify”: 7z AES store/copy with no integrity anchor
+   (`DIGEST_UNVERIFIABLE` / garbage plaintext), TAR residuals (trailer-less warn;
+   streaming final corrupt header), bare gzip+rapidgzip best-effort truncation,
+   `.Z` zero-leftover silent cuts, and a short orientation that we differ from
+   stdlib on corruption handling (details → `formats.md`).
+
 **Inclusion rule (normative for this page):**
 
-> A topic belongs on Gotchas only if a user who skipped it is likely to make a
-> mistake or shoot themselves in the foot. Format encyclopaedia, full policy
-> tables, and "plan around this limitation" rows belong on the owning page
-> (`formats.md`, `safe-extraction.md`, `access-and-cost.md`, …), not here.
-
-Examples the maintainer gave as in-scope: backward seek may fully re-decompress;
-solid-archive open order can re-decode the same block.
+> A topic belongs on Gotchas only if (a) a caller choice is likely to cause a
+> mistake or footgun, or (b) Archivey cannot fulfill its intention of failing
+> loudly / verifying. Format encyclopaedia, unsupported-feature lists, full
+> policy tables, and “plan around this limitation” rows belong on the owning
+> page (`formats.md`, `safe-extraction.md`, `access-and-cost.md`, …), not here.
 
 ### Spec conflict — pause and surface
 
@@ -173,32 +185,34 @@ solid-archive open order can re-decode the same block.
 multi-volume ZIP rejection, ZIP/ISO seek / no pure pipe, UTF-8 bit-11 unlistable
 archives, and TAR mid-corrupt silent shorten, framed as today's behavior.
 
-Under the footgun rule those are not automatically in. Multi-volume ZIP is a
-loud `UnsupportedFeatureError` (hard to shoot yourself); the others are closer
-but are also "format law" that `formats.md` already owns. **Phase 3's
-`documentation` delta (already required by D1) must also rewrite or drop the
-Gotchas-specific coverage requirement** so the page is allowed to be a footgun
-digest. Until that delta lands, the page and the spec disagree — do not silently
-"interpret" the requirement as satisfied by `formats.md` alone.
+Maintainer triage (below) puts that quartet **OUT of Gotchas** (except TAR
+honesty residuals under “be aware of”). **Phase 3's `documentation` delta
+(already required by D1) must rewrite or drop the Gotchas-specific coverage
+requirement** so formats owns the encyclopaedia and Gotchas stays the two
+sections above. Until that delta lands, the page and the spec disagree — do not
+silently “interpret” the requirement as satisfied by `formats.md` alone.
 
-### Topic triage (starting point for phase 3 / Topic 8)
+### Topic triage (phase 3 / Topic 8)
 
-| Topic (today's section) | Tentative | Why |
+| Topic | Section | Disposition |
 |---|---|---|
-| Seeking / redecompression | **IN** | Maintainer example |
-| Solid open order | **IN** | Maintainer example |
-| Streaming mode is one pass (second call raises) | **IN** | Easy to call twice after `break` and get a surprise error |
-| No silent pipe buffer (ZIP/ISO need seek) | **IN** | Silent buffering would hide unbounded cost; fail-fast surprises if unread |
-| Wrong password → garbage plaintext niches | **IN** | Silent bad data, not a loud error |
-| Do not close source under live accelerator | **IN** | Process abort, not a Python exception |
-| Accelerators + untrusted input / latency budget | **IN** | Native busy-loop footgun |
-| `get(name)` last-wins; `extract_all(members=[name])` matches every | **IN** | Identity surprises that corrupt caller logic |
-| Format-limitations table as a whole | **OUT** | Encyclopaedia → `formats.md` |
-| Full extraction policy table | **OUT** | → `safe-extraction.md` (maybe 1–2 footgun bullets stay) |
-| "What we can only warn about" | **OUT** | Meta, not actionable traps |
-| Listing completeness vs `members_report` | **OUT** ✅ | Core API contract, not a silent trap once documented. **Phase 3 / Topic 8:** draw attention on `reading.md` (or today's `usage.md` until the split) **and** in the `members` / `scan_members` / `members_report` docstrings — complete-or-raise vs always-return-and-check-`.error`. |
-| STRICT name rewrite / cross-platform collisions | **IN (one bullet)** ✅ | Footgun if you look up extracted paths by `member.name` or assume Linux has no case/Unicode collisions. Full policy table stays on `safe-extraction.md`. Gotchas: one line + link, e.g. “STRICT may rewrite names; case/Unicode collisions apply on every OS.” |
-| `import archivey` patches pycdlib process-globally | **OUT** ✅ | Niche dual-use surprise, not a general footgun. Own on `formats.md` (ISO/pycdlib) and/or acknowledgements / how-it-works; not on Gotchas. |
-| Spec-mandated quartet (multi-vol ZIP, pipe seek, bit-11, TAR silent-shorten) | **ASK** | See conflict above; recommend formats.md + delta |
+| Seeking / redecompression | should/shouldn't | **IN** |
+| Solid open order | should/shouldn't | **IN** |
+| Streaming mode is one pass | should/shouldn't | **IN** |
+| `get(name)` last-wins; `extract_all(members=[name])` matches every | should/shouldn't | **IN** |
+| STRICT name rewrite / cross-platform collisions | should/shouldn't | **IN (one bullet)** ✅ |
+| Do not close source under live accelerator | should/shouldn't | **IN** |
+| Accelerators + untrusted input / latency budget | should/shouldn't | **IN** |
+| Wrong password → garbage / no integrity anchor | be aware of | **IN** |
+| TAR residuals (trailer-less warn; streaming final header) + “we differ from stdlib on corruption” orientation | be aware of | **IN** |
+| Bare gzip+rapidgzip / zlib best-effort truncation; `.Z` zero-leftover | be aware of | **IN** (honesty gaps) |
+| ZIP/ISO need seek / no silent spool | — | **OUT** ✅ — normal format requirement (like RAR/7z); we decided not to spool, so don't document the non-choice |
+| Multi-volume / split ZIP | — | **OUT** ✅ — loud `UnsupportedFeatureError`, not a footgun. Proper support is **not** a simple joining stream (`format-zip` / `IDEAS.md`: needs disk-aware `(disk, offset)` addressing with a native ZIP reader). Leave as unsupported until that idea is picked up |
+| ZIP UTF-8 bit-11 “lie” | — | **OUT** ✅ — rare parser limitation; already fails loudly |
+| Format-limitations table as a whole | — | **OUT** → `formats.md` |
+| Full extraction policy table | — | **OUT** → `safe-extraction.md` |
+| “What we can only warn about” meta section | — | **OUT** |
+| Listing completeness vs `members_report` | — | **OUT** ✅ — strengthen on `reading.md` + docstrings instead |
+| `import archivey` patches pycdlib process-globally | — | **OUT** ✅ → `formats.md` / how-it-works |
 
-Borderline rows are for the maintainer to confirm before Topic 8 rewrites the page.
+Borderline triage complete.

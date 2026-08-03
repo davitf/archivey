@@ -122,17 +122,16 @@ truncation caveat exists in four places, and two of them are stale against the
 authoritative spec (`observations.md` O-2).
 
 **Phase-1 decision:** `gotchas.md` keeps its slot (the `documentation` spec
-requires it there) and keeps being the "read this next" page, but each bullet
-becomes **one line plus a link to the owning page**. Inclusion is the **footgun
-rule** (D4): only what a user must know to avoid mistakes. It stops being a place
-a fact can be written down for the third time, and it is not a format encyclopaedia.
+requires it there) as the "read this next" page. Two sections (D4): **what you
+should/shouldn't do** (cost/API footguns) and **what you should be aware of**
+(honesty / verification gaps). Each entry is **one line plus a link** to the
+owning page. Not a format encyclopaedia.
 
 > **Spec conflict (surfaced, D4):** `openspec/specs/documentation/spec.md:175`
 > requires Gotchas to cover multi-volume ZIP, ZIP/ISO seek, UTF-8 bit-11, and TAR
-> silent-shorten. Under the footgun rule those are not automatic. The D1
-> `documentation` delta must rewrite or drop that Gotchas-specific coverage
-> requirement (likely: own them on `formats.md` only). Borderline topics for
-> maintainer triage are listed under D4.
+> silent-shorten. Maintainer triage puts that quartet **OUT of Gotchas** (TAR
+> honesty residuals stay under “be aware of”). The D1 `documentation` delta must
+> rewrite or drop that Gotchas-specific coverage requirement. Full triage under D4.
 
 ---
 

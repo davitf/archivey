@@ -116,9 +116,10 @@ links are inlined-then-dropped under D2's rule (GitHub only if uninlinable).
 > making mistakes or shooting themselves in the foot?"*
 
 Recorded as [`DECISIONS.md`](DECISIONS.md) D4. Shape = option A (keep slot; one
-line + link). Inclusion = footgun-only. Spec conflict at
-`documentation/spec.md:175` surfaced for the D1 delta. Borderline topics listed
-under D4 for maintainer confirmation.
+line + link). Two sections: **should/shouldn't do** (cost/API footguns) and
+**be aware of** (honesty / verification gaps). Spec conflict at
+`documentation/spec.md:175` surfaced for the D1 delta; quartet triage complete
+under D4.
 
 It is required to exist and to sit immediately after basic usage
 (`documentation/spec.md:86,175`). But four of its seven sections have a same-titled
@@ -303,7 +304,7 @@ word and phase 3 uses it.
 |---|---|
 | **Q1** | The whole tree; the spec delta; Q2, Q3, Q7, Q9 |
 | Q2 | Whether raw ADRs appear in the nav (no — summary on `how-it-works.md`) |
-| Q3 | Gotchas shape + footgun inclusion rule (✅ D4); borderline bullets still triage |
+| Q3 | Gotchas = two sections (should/shouldn't + be aware of); triage ✅ D4 |
 | Q4 | Whether ADR 0014 splits, and where its user guarantee lands |
 | Q5 | One commit, independent of everything else |
 | Q6 | Two `git mv`s, independent of everything else |

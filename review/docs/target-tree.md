@@ -86,7 +86,7 @@ docs/                        ── PUBLISHED. User + current, and nothing else.
   install.md                 NEW ← usage.md; + format × extra × external-tool table
   reading.md                 NEW ← usage.md; open/list/read/stream/detect/passwords
   philosophy.md
-  gotchas.md                 footgun digest, one line + link (Q3 / D4)
+  gotchas.md                 two sections: should/shouldn't + be aware of (Q3 / D4)
   access-and-cost.md         ← costs.md, + the cost half of gotchas.md
   safe-extraction.md         grown ~3×: + extraction half of gotchas.md,
                                + user half of threat-model.md,
