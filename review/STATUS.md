@@ -4,7 +4,7 @@
 
 | Review | State |
 |---|---|
-| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 (audit) delivered** — [`SUMMARY.md`](docs/SUMMARY.md), [`inventory.md`](docs/inventory.md) (all 549 prose files assigned), [`QUESTIONS.md`](docs/QUESTIONS.md), [`observations.md`](docs/observations.md). Headline: the site is 73% maintainer material, and `safe-extraction.md` is its thinnest page. **Phase 2 (decide) complete** — D1–D11 in [`DECISIONS.md`](docs/DECISIONS.md), no questions open. **Phase 3 (migrate) half done** — `docs-ia-unpublish-maintainer-tree` landed in #221 and archived in #222; the follow-up splits change is next. Bias control pass delivered earlier (#208, `docs/independent/`); code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). |
+| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 (audit) delivered** — [`SUMMARY.md`](docs/SUMMARY.md), [`inventory.md`](docs/inventory.md) (all 549 prose files assigned), [`QUESTIONS.md`](docs/QUESTIONS.md), [`observations.md`](docs/observations.md). Headline: the site is 73% maintainer material, and `safe-extraction.md` is its thinnest page. **Phase 2 (decide) complete** — D1–D11 in [`DECISIONS.md`](docs/DECISIONS.md), no questions open. **Phase 3 (migrate) done** — `docs-ia-unpublish-maintainer-tree` landed in #221 and archived in #222; `docs-ia-split-user-guide` is implemented in #223. Phase 4's guardrails shipped with the first change. Bias control pass delivered earlier (#208, `docs/independent/`); code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). |
 
 ### Phase 3, split in two
 
@@ -15,7 +15,7 @@ and a move-plus-rewrite diff is not.
 | Change | Owns |
 |---|---|
 | `docs-ia-unpublish-maintainer-tree` — **landed #221, archived #222** | The moves to `dev-docs/`, the four root stub deletions, ~90 reference repoints, the D2/D3 link resolution, and phase-4 guardrails 1–3 |
-| `docs-ia-split-user-guide` — **implemented, this PR** | The page splits (`usage.md` ×5, ADR 0014 ×3, `threat-model.md` ×2, the `gotchas.md` shrink), `docs/how-it-works.md`, the D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing requirement and the Gotchas-after clause, and the `AGENTS`/`CLAUDE` merge (D6) |
+| `docs-ia-split-user-guide` — **implemented, this PR** | The page splits (`usage.md` ×5, ADR 0014 ×3, `threat-model.md` ×2, the `gotchas.md` shrink), the D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing requirement and the Gotchas-after clause, and the `AGENTS`/`CLAUDE` merge (D6). **Not** `how-it-works.md` — 100% new prose, so it belongs to whichever change writes it |
 
 **The outline is delivered** — [`docs/outline.md`](docs/outline.md), written between
 the two changes: all 16 published pages with purpose, reader question, sections in
