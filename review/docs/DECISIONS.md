@@ -215,3 +215,23 @@ silently “interpret” the requirement as satisfied by `formats.md` alone.
 | `import archivey` patches pycdlib process-globally | — | **OUT** ✅ → `formats.md` / how-it-works |
 
 Borderline triage complete.
+
+---
+
+## D5 — Q4: split ADR 0014 three ways. **Approved.**
+
+> *"three ways"*
+
+`0014-integrity-verdicts-from-reads-not-close.md` (615 lines) becomes:
+
+1. **~30-line ADR** → `dev-docs/decisions/0014-….md` (with the rest of the ADR
+   log under D2). Context / Decision / Consequences only. Resolve or relocate
+   `## Open questions` (overlaps `verification-integrity-mode` / PR #185) —
+   accepted ADRs do not carry open questions.
+2. **Investigation / trade-offs / impl notes** →
+   `dev-docs/investigations/adr-0014-investigation.md`.
+3. **User guarantee** (`## Guarantee (for users)` + call×failure matrix) →
+   `docs/reading.md` (the only copy of that contract today lives inside the ADR).
+
+Phase 3 does the mechanical split + path move; Topic 8 may tighten the
+`reading.md` wording. Do not leave the guarantee only in `dev-docs/`.

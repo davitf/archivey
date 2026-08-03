@@ -138,7 +138,12 @@ earlier assumption that the spec-mandated format-limitation quartet must live he
 
 ---
 
-## Q4 — Split ADR 0014?
+## Q4 — Split ADR 0014? ✅ **ANSWERED: three ways (D5)**
+
+> *"three ways"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D5. Slim ADR → `dev-docs/decisions/`;
+investigation → `dev-docs/investigations/`; user guarantee → `docs/reading.md`.
 
 `docs/decisions/0014-integrity-verdicts-from-reads-not-close.md` is **615 lines** —
 59% of the ADR corpus, ~25× the median ADR (24 lines). It contains an
@@ -147,17 +152,7 @@ earlier assumption that the spec-mandated format-limitation quartet must live he
 section, and 100+ lines of trade-off analysis. It is also the ADR that fell out of
 the nav.
 
-**Recommendation: split three ways** — a ~30-line ADR matching the shape of the
-other 13 stays in the ADR log (`dev-docs/decisions/` under revised D2); the
-investigation and trade-off analysis go to `dev-docs/investigations/`; the user
-guarantee moves into the new `docs/reading.md` (it is user documentation that
-currently only exists inside an unlisted ADR).
-
-**Counter-argument to weigh:** the depth is *why* the decision is credible, and a
-reader who follows a link from `compressed-streams` wants the full reasoning in one
-place. If you prefer it whole, the minimum fix is adding it to the nav and
-resolving or relocating the `## Open questions` section (it overlaps the open
-`verification-integrity-mode` proposal, PR #185).
+**Recommendation was the three-way split** — confirmed.
 
 ---
 
@@ -305,7 +300,7 @@ word and phase 3 uses it.
 | **Q1** | The whole tree; the spec delta; Q2, Q3, Q7, Q9 |
 | Q2 | Whether raw ADRs appear in the nav (no — summary on `how-it-works.md`) |
 | Q3 | Gotchas = two sections (should/shouldn't + be aware of); triage ✅ D4 |
-| Q4 | Whether ADR 0014 splits, and where its user guarantee lands |
+| Q4 | ADR 0014 three-way split (✅ D5) |
 | Q5 | One commit, independent of everything else |
 | Q6 | Two `git mv`s, independent of everything else |
 | Q7 | The size of `safe-extraction.md` and the shape of the gap register |
