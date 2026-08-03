@@ -4,14 +4,10 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-> **Q1–Q6 are answered** — see [`DECISIONS.md`](DECISIONS.md).
-> The site is unpublishing `docs/internal/` **and** the raw ADR log
-> (`docs/decisions/` → `dev-docs/decisions/`); curious-user depth lives on one
-> published page (`how-it-works.md`, including a decisions summary). **D3:**
-> published pages must not link into unpublished docs. **D4:** `gotchas.md` two
-> sections. **D5:** ADR 0014 three-way split. **D6:** `AGENTS.md` canonical.
-> **D7:** `PLAN.md` / `IDEAS.md` → `dev-docs/` (root cleanup). Spec conflict with
-> `documentation/spec.md:175` is for the D1 delta. Q7–Q9 below are still open.
+> **Q1–Q6 and Q7 A are answered** — see [`DECISIONS.md`](DECISIONS.md).
+> … **D8:** threat-model three-way filing (enforced → safe-extraction; user
+> mitigations → Gotchas; maintainer backlog → `dev-docs/`). Q7 B (`known-issues`),
+> Q8, Q9 still open.
 
 ---
 
@@ -199,10 +195,14 @@ root cleanliness over citation-churn avoidance.
 
 ## Q7 — The dual-audience pages: `threat-model.md` and `known-issues.md`
 
-The brief flags these as the deliberate tension to resolve rather than paper over.
-They resolve **differently**, which is the useful finding.
+### `threat-model.md` (320 lines) — ✅ **ANSWERED: three-way (D8)**
 
-### `threat-model.md` (320 lines) — split
+> Enforced → `safe-extraction`; user-mitigable residuals → Gotchas (incl. O6
+> nesting wording); maintainer backlog → `dev-docs/threat-model.md`. C3 metadata
+> fidelity stays an idea (+ optional “not yet supported” in user docs, not a
+> gotcha). Unpublished ≠ safer — filing is by audience.
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D8. Reasoning below kept for provenance.
 
 Two documents in one file:
 
@@ -215,18 +215,11 @@ Two documents in one file:
   compatibility` C1–C4) — a maintainer triage register keyed to OpenSpec changes,
   with measured slip-through rates and py7zr internals.
 
-**Recommendation:** the enforced-guarantees half moves into `docs/safe-extraction.md`
-(where it is a large part of the ~3× growth the independent pass argues for); the
-gap register stays as `dev-docs/threat-model.md`. `VISION.md:28` and `SECURITY.md:73`
-repoint at the new register path.
+**Original recommendation** was enforced → safe-extraction, gaps unpublished.
+**Refined:** strip closed items; move user-mitigable residuals to Gotchas; keep
+only backlog in `dev-docs/`.
 
-**The judgement call for you:** an unpublished gap register means an evaluating
-user cannot read your open security gaps. That can be read as prudence or as
-opacity. My reading is that O1–O8 are *design-note* granularity, not embargoed
-vulnerabilities, and `SECURITY.md` already carries the disclosure posture — but
-publishing your own open-gap list is a positioning decision, not a filing one.
-
-### `known-issues.md` (709 lines) — **no split**
+### `known-issues.md` (709 lines) — **still open (Q7 B)**
 
 Read end to end it is valgrind output, GitHub Actions run IDs, CI workflow
 bandages, version-matrix soak tables, and bisect recipes. The four things a user
@@ -237,10 +230,9 @@ process-globally; bare-`.gz` truncation detection is best-effort.
 
 **Recommendation:** move the whole file to `dev-docs/known-issues.md` and convert
 the two user-page links (`gotchas.md:144`, `costs.md:143`) to absolute GitHub URLs
-per D3.
-No user loses anything. Also fix its index description
-([`observations.md`](observations.md) O-8) and the two runtime error strings that
-cite its path (O-12).
+per D3 (or drop per D4 where the fact is already on Gotchas). Also fix its index
+description ([`observations.md`](observations.md) O-8) and the two runtime error
+strings that cite its path (O-12).
 
 ---
 
@@ -295,7 +287,7 @@ word and phase 3 uses it.
 | Q4 | ADR 0014 three-way split (✅ D5) |
 | Q5 | `AGENTS.md` canonical; `CLAUDE.md` pointer (✅ D6) |
 | Q6 | `PLAN`/`IDEAS` → `dev-docs/` (✅ D7) |
-| Q7 | The size of `safe-extraction.md` and the shape of the gap register |
+| Q7 | A ✅ D8 (threat-model three-way); B still open (`known-issues`) |
 | Q8 | Four deletions |
 | Q9 | Naming only |
 

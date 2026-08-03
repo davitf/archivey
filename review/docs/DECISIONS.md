@@ -3,8 +3,8 @@
 Answers from the maintainer. Recorded here so phase 3 has one place to read from;
 the affected phase-1 artifacts have been updated in place to match.
 
-Still open: **Q7, Q8, Q9** (`QUESTIONS.md`).
-Q3–Q6 answered (D4–D7).
+Still open: **Q7 B, Q8, Q9** (`QUESTIONS.md`).
+Q3–Q6 answered (D4–D7); Q7 A answered (D8). Q7 B (`known-issues.md`) still open.
 
 ---
 
@@ -278,3 +278,44 @@ stays at root is `VISION.md` only (README-linked tie-breaker).
 **Inbound references (~20 today):** phase 3 repoints or drops them as part of the
 broader docs cleanup — do not treat the citation count as a reason to keep the
 files at root. `VISION.md` stays; only `PLAN` / `IDEAS` move.
+
+---
+
+## D8 — Q7 A: threat-model dual-audience filing. **Approved.**
+
+> Three-way filing confirmed; O6 gotchas wording supplied; residuals stay
+> one-liners; metadata fidelity left as an idea (+ optional "not yet supported"
+> mention in user docs, not a gotcha).
+
+**Premise:** unpublishing is about *audience*, not security. A malicious party
+reads code and `dev-docs/` anyway — "hide gaps in unpublished docs" is not safer.
+
+### Three-way split of today's `threat-model.md`
+
+1. **User-facing posture** — trust boundaries + what’s already enforced
+   (lines 9–58) → `docs/safe-extraction.md` (feeds the ~3× growth).
+2. **User-mitigable residuals** → Gotchas (section by kind):
+   - **O6 nested archives** (should/shouldn't or be-aware): be careful of bombs /
+     unbounded expansion / infinite recursion if opening nested archives
+     recursively; the bomb tracker checks expansion rate for *individual*
+     archives and is **not nesting-aware**.
+   - Accelerator hang, O8 residual, O2 file/dir residual, O1 stream-unguarded —
+     one-liners under D4’s sections; expand later if needed.
+3. **Maintainer work register** — what’s left to implement after stripping
+   closed/implemented items (O2–O4/O7 implemented; O1/O8 mitigated; C1/C2
+   closed/addressed) → `dev-docs/threat-model.md` as a **backlog / change-holding
+   area**, not a vault. Remaining backlog-shaped items include O5 OSS-Fuzz
+   onboarding and C4 free-threaded follow-ups.
+
+### C3 Metadata fidelity (xattrs / ACLs / forks)
+
+**Leave as an idea** (`IDEAS.md` / the moved `dev-docs/IDEAS.md`). Not a Gotcha —
+it’s missing attributes, not a footgun. May be mentioned in a **“not yet
+supported”** section of user docs (formats or safe-extraction). Read-side
+promotion of PAX xattrs into a typed field is additive and cheap when a consumer
+appears; extract-apply and true fidelity wait for the writing spec. **No OpenSpec
+change now.**
+
+`VISION.md` / `SECURITY.md` pointers that today cite `docs/internal/threat-model.md`
+repoint at the published posture on `safe-extraction.md` and/or the
+`dev-docs/` register path as appropriate.
