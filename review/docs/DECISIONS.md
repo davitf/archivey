@@ -355,3 +355,19 @@ accelerator” bullet — archivey’s `_TrappingSource` contains Bug 3 (re-rais
 process abort on the archivey path). Residual path-source abort class may remain
 under be-aware-of; link `dev-docs/known-issues.md` / upstream report via GitHub
 if depth is worth keeping.
+
+---
+
+## D10 — Q8: delete the four root stubs; keep grab-bag. **Approved.**
+
+> *"delete stubs, keep grab bag"*
+
+**Delete** the four root “Moved to…” stubs: `ARCHITECTURE.md`, `ASYNC.md`,
+`COMPARISON.md`, `SPEC.md` (5–7 lines each). Tombstones are clutter while URL
+churn is free pre-`0.2.0`.
+
+**Keep** `docs/grab-bag/` content, moved to `dev-docs/history/` under D1
+(SPEC / ARCHITECTURE / COMPARISON / ASYNC + parallel-reader). Provenance for
+ADR section citations and `release-repo-cutover.md`’s historical-record note.
+Citation cleanup can happen in the broader docs rewrite without deleting the
+archaeology yet.

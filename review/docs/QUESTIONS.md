@@ -234,7 +234,11 @@ bandages, version-matrix soak tables, and bisect recipes. User-needed facts live
 
 ---
 
-## Q8 — Deletions
+## Q8 — Deletions ✅ **ANSWERED: delete stubs; keep grab-bag (D10)**
+
+> *"delete stubs, keep grab bag"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D10.
 
 Only one set of files is proposed for deletion:
 
@@ -245,22 +249,8 @@ Only one set of files is proposed for deletion:
 | `COMPARISON.md` | 5 | Same |
 | `SPEC.md` | 6 | Same |
 
-With URL churn free until the tag, a tombstone is clutter rather than a pattern to
-copy. **Unverified:** whether any external page links these four. Nothing is on
-real PyPI and only `0.2.0.dev0` reached TestPyPI, so no release artifact points at
-them; a stray external link cannot be ruled out from inside the repo. If you want
-zero risk, keeping four 6-line files costs nothing.
-
-**Nothing else is proposed for deletion**, including the 3,068 lines of
-`grab-bag/`. Those are cited by five ADRs *by section number* for provenance
-(`0001` §5.6, `0002` §5.7, `0005` §5.3, `0006` §5.1, `0007` §2.1/§5.2), by
-`IDEAS.md:6` ("`SPEC.md` Appendix A"), and `release-repo-cutover.md:64` explicitly
-says to leave `COMPARISON.md` unchanged as a historical record. Git history is not
-a substitute for a document another document cites by section.
-
-**Counter-question for you:** is that provenance chain worth 3,068 lines, or would
-you rather cut the citations and delete the prose? That is a decision about how
-much archaeology the project keeps, and it is yours.
+**Chosen:** delete the four stubs; keep grab-bag prose under `dev-docs/history/`
+(D1) for ADR provenance. Citation cleanup can wait for the docs rewrite.
 
 ---
 
@@ -286,7 +276,7 @@ word and phase 3 uses it.
 | Q5 | `AGENTS.md` canonical; `CLAUDE.md` pointer (✅ D6) |
 | Q6 | `PLAN`/`IDEAS` → `dev-docs/` (✅ D7) |
 | Q7 | A ✅ D8; B ✅ D9 (`known-issues` move + triage follow-up) |
-| Q8 | Four deletions |
+| Q8 | Delete four stubs; keep grab-bag (✅ D10) |
 | Q9 | Naming only |
 
 Q5, Q6 and Q8 can be answered and executed independently of Q1 if you want
