@@ -68,8 +68,8 @@ paused and surfaced rather than resolved. The maintainer has now answered
 Full version with nav and rationale in [`target-tree.md`](target-tree.md).
 
 ```
-README  CHANGELOG  SECURITY  CONTRIBUTING  AGENTS  VISION  PLAN  IDEAS
-   (the four "moved to…" stubs deleted; CLAUDE.md merged into AGENTS.md)
+README  CHANGELOG  SECURITY  CONTRIBUTING  AGENTS  VISION
+   (PLAN/IDEAS → dev-docs/; four "moved to…" stubs deleted; CLAUDE.md pointer)
 
 docs/           ── PUBLISHED. User + current, and nothing else. ──
   index · install* · reading* · philosophy · gotchas(footgun digest) · safe-extraction(3×)
@@ -81,6 +81,7 @@ docs/           ── PUBLISHED. User + current, and nothing else. ──
 dev-docs/       ── NOT published. Maintainer + current. ──
   index · threat-model(register) · open-issues · known-issues · library-analysis
   release-checklist · release-repo-cutover · decisions/ (raw ADR log)
+  PLAN.md · IDEAS.md
   investigations/   finished evidence: ppmd ×3, pyppmd, rapidgzip, parallel-reader
   history/          superseded prose: SPEC · ARCHITECTURE · COMPARISON · ASYNC
 
@@ -146,9 +147,9 @@ Named explicitly so the migration does not sweep them up for symmetry.
   `acknowledgements` are good pages doing one job each. `support-matrix.md` in
   particular is unusually honest — it scopes every claim to the CI job that proves
   it. **No structural change to any of them.**
-- **The `VISION` / `philosophy` split**, and the `VISION` / `PLAN` / `IDEAS` trio
-  at the repo root. The maintainer-vision-vs-user-distill split is deliberate and
-  holds; the root trio is a legible convention, not clutter (Q6).
+- **The `VISION` / `philosophy` split.** Maintainer-vision-vs-user-distill holds.
+  `VISION.md` stays at root; `PLAN` / `IDEAS` move to `dev-docs/` (D7) for a
+  cleaner root.
 - **`.claude/` and `.cursor/`.** Executable configuration that happens to be
   Markdown, addressed by tools at literal paths. Filing them as "docs" would invite
   a move that breaks the tools.

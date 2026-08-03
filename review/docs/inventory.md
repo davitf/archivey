@@ -57,8 +57,8 @@ code) · `Design` (the normative "what is true" + the "why") · `History`
 | `SECURITY.md` | 103 | User | root | **KEEP** | GitHub reads it from root. Its "Hardening notes for callers" (lines 68–89) is *user* security prose living outside the guide — see `observations.md` O-7. |
 | `CONTRIBUTING.md` | 213 | Contrib | root | **KEEP** | GitHub reads it from root. Gains the "where does a new doc go?" rule (phase-4 guardrail). |
 | `VISION.md` | 158 | Contrib/Design | root | **KEEP** | The tie-breaker doc; cited by `review/README.md`, every brief, and `docs/philosophy.md`. Root placement is legible, not clutter. |
-| `PLAN.md` | 660 | Contrib | root | **KEEP** (see Q6) | Phase roadmap; cited by `openspec/project.md`, `review/STATUS.md`. Moving it buys tidiness and costs ~10 inbound links. Recommend no. |
-| `IDEAS.md` | 365 | Contrib | root | **KEEP** (see Q6) | Speculative backlog; cited by 6 archived reviews, 4 ADRs, `openspec/project.md`. Same trade as `PLAN.md`. |
+| `PLAN.md` | 660 | Contrib | `dev-docs/PLAN.md` | **MOVE** (Q6 / D7) | Phase roadmap; root cleanup. Inbound refs cleaned in the broader docs rewrite. |
+| `IDEAS.md` | 365 | Contrib | `dev-docs/IDEAS.md` | **MOVE** (Q6 / D7) | Speculative backlog; same. |
 | `CLAUDE.md` | 117 | Contrib | root | **Merge → `AGENTS.md`** (see Q5) | Overlaps `AGENTS.md`; that file opens by deferring to this one. One canonical agent guide, one pointer. |
 | `AGENTS.md` | 83 | Contrib | root | **Canonical agent guide** (see Q5) | Tool-neutral name; carries ~60 lines of unique Cursor Cloud env content. **Two statements are false today** — see `observations.md` O-1. |
 | `ARCHITECTURE.md` | 7 | History | root | **DELETE** | 7-line "moved to…" stub from an earlier move. URL churn is free (brief, Hard constraints), so a tombstone is clutter, not a pattern. |

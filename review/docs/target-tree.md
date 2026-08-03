@@ -109,6 +109,8 @@ dev-docs/                    ── NOT published. Maintainer + current. ──
   library-analysis.md        ← named verbatim by two specs; needs a delta (Q1)
   release-checklist.md
   release-repo-cutover.md
+  PLAN.md                    ← root (Q6 / D7)
+  IDEAS.md                   ← root (Q6 / D7)
   decisions/                 ← docs/decisions/ (raw ADR log; 0014 split — Q4)
   investigations/            ── Maintainer + historical. Finished evidence. ──
     ppmd-native-investigation-brief.md
