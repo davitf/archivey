@@ -3,9 +3,8 @@
 Answers from the maintainer. Recorded here so phase 3 has one place to read from;
 the affected phase-1 artifacts have been updated in place to match.
 
-Still open: **Q4, Q5, Q6, Q7, Q8, Q9** (`QUESTIONS.md`).
-Q3 answered (D4); topic-inclusion triage under the footgun rule is recorded with D4
-and may still refine individual bullets in phase 3 / Topic 8.
+Still open: **Q5, Q6, Q7, Q8, Q9** (`QUESTIONS.md`).
+Q3 answered (D4); Q4 answered (D5).
 
 ---
 

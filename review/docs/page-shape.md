@@ -143,7 +143,7 @@ owning page. Not a format encyclopaedia.
 | `docs/gotchas.md` (156) | shrink to footgun digest | content already lives in `costs`/`formats`/`safe-extraction` | Q3 ✅ D4 |
 | `docs/safe-extraction.md` (93) | grow ~3× by absorption | from `gotchas`, `threat-model`, `SECURITY.md` | Q7 |
 | `docs/internal/threat-model.md` (320) | split | enforced-guarantees → `safe-extraction.md`; O/C register → `dev-docs/` | Q7 |
-| `docs/decisions/0014-*.md` (615) | split 3 ways | ADR (~30) → `dev-docs/decisions/`; investigation → `dev-docs/investigations/`; user guarantee → `reading.md` | Q4 |
+| `docs/decisions/0014-*.md` (615) | split 3 ways | ADR (~30) → `dev-docs/decisions/`; investigation → `dev-docs/investigations/`; user guarantee → `reading.md` | Q4 ✅ D5 |
 | `docs/internal/known-issues.md` (709) | **no split** | user-relevant 5% is already summarised in `gotchas`/`costs` | Q7 |
 
 `known-issues.md` is the one dual-audience case that resolves to *no split*. Read
