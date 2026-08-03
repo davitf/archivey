@@ -67,26 +67,15 @@ Out of scope for private security reports (use ordinary GitHub issues):
 
 ## Hardening notes for callers
 
-Archivey’s safety posture for untrusted input is documented in:
+Guidance for processing untrusted archives — accelerators and the defended fuzz
+surface, `unrar` in your deployment's trust boundary, and extracting to a scratch
+directory before promoting — lives in the user guide, next to the policies it
+qualifies:
 
-- [`docs/safe-extraction.md`](docs/safe-extraction.md) — extraction policies
-- [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — trust
-  boundaries and open gaps
-
-**Optional `[seekable]` accelerators** (`rapidgzip` and its bundled bzip2
-decoder) are a performance path, not part of the defended fuzz surface. Third-
-party C++ can busy-loop on crafted input in a way Python timeouts cannot cleanly
-interrupt. Callers processing untrusted archives under a hard latency budget
-should leave accelerators off (`AcceleratorMode.OFF`) or enforce their own
-resource limits. Mutation and Atheris harnesses run with accelerators off for
-this reason.
-
-**External tools:** RAR member *data* may be decompressed by the system `unrar`
-binary. Keep that tool updated; treat its availability and behaviour as part of
-your deployment’s trust boundary.
-
-Prefer extracting untrusted archives into a dedicated directory with limited
-permissions, then validating results before promoting them elsewhere.
+- [Safe extraction](https://davitf.github.io/archivey/safe-extraction/) — trust
+  boundaries, what is enforced, policies, limits, and the hardening notes
+- [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — the maintainer gap
+  register
 
 ## Response Process
 

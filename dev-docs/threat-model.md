@@ -6,56 +6,12 @@
 > `safe-extraction` or `archive-reading` delta) when tackled; this document is the
 > holding area and the rationale, not the normative spec.
 
-## Trust boundaries
-
-- **The archive is untrusted.** Every byte of it: member names, link targets, sizes,
-  timestamps, comments, header structures, compressed streams. Crafted and adversarial
-  archives are in scope for *all* guarantees, not just well-formed ones.
-- **The destination directory and local filesystem are trusted at rest** — but not
-  their *contents produced by the extraction itself*: an earlier extracted member is
-  untrusted input to the handling of every later member (this is why symlink targets
-  are re-resolved against the live tree after creation).
-- **The local process and other local processes are trusted.** Concurrent hostile
-  modification of the destination *by another process* during extraction (a local
-  attacker racing us) is out of scope; if that ever changes, `O_NOFOLLOW`/`openat`-style
-  extraction is the direction.
-- **Optional dependencies and external tools** (`pycdlib`, codec packages, the `unrar`
-  binary) are trusted code but *not* trusted to be robust: their failures must surface
-  as translated archivey errors, never silently wrong data.
-
-## What is already enforced (implemented + specced)
-
-- **Path traversal:** `..` components (any separator), absolute paths, drive letters,
-  UNC prefixes, and null bytes are rejected before any write; the destination parent is
-  resolved and containment-checked (`safe-extraction`, `internal/filters.py`).
-- **Extraction-root overwrite:** a *file* member whose normalized name is `"."` or `""`
-  is rejected (`PathTraversalError`); only a directory member may name the extraction
-  root. Prevents a corrupt archive from replacing the destination directory with a
-  regular file (`internal/filters.py` `check_universal`).
-- **Symlink escapes, three layers:** lexical target check at planning time; parent-dir
-  resolution; and post-`os.symlink` re-resolution against the real filesystem (catches
-  chained-symlink attacks staged by earlier members). Escaping links are removed and
-  rejected.
-- **Hardlink targets** are containment-checked and resolved positionally (an earlier
-  same-named member), so a crafted duplicate-name archive cannot redirect a link.
-- **Never write through a symlink:** overwrite handling replaces symlinks, never
-  follows them; atomic temp-file + `os.replace` writes mean interrupted extraction
-  never leaves a half-written destination file.
-- **Special files** (devices, FIFOs, sockets) are always rejected; NTFS junctions are
-  detected, flagged, and never traversed.
-- **Decompression bombs at extraction:** cumulative output cap, per-member ratio,
-  archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
-  count cap — the global guards halt even under `OnError.CONTINUE`.
-- **Permission hygiene:** setuid/setgid/sticky stripped except under `TRUSTED`;
-  ownership applied only under `TRUSTED` as root.
-- **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
-  reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
-  percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
-- **Error honesty:** codec/library exceptions are translated to typed `ArchiveyError`s
-  with context; genuine I/O errors propagate unchanged; no catch-all handlers.
-- **Accelerator lifecycle:** C++-threaded accelerators are close-guarded
-  (`weakref.finalize`) so crafted-input error paths cannot leave aborting threads
-  (see `known-issues.md`).
+> **The user-facing half of this document is published.** Trust boundaries and the
+> full "what is enforced" list now live on
+> [`docs/safe-extraction.md`](../docs/safe-extraction.md) (review/docs `DECISIONS.md`
+> D8) — unpublishing was about *audience*, not secrecy, and an evaluating user is
+> exactly who needs the enforced-guarantees statement. What remains here is the
+> maintainer register: what is still open, and what is left to implement.
 
 ## OPEN gaps — security
 
