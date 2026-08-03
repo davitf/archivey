@@ -78,7 +78,8 @@ resolves each one. Ten ADR links are resolved under D2.
 README.md                    user front door (absolute docs URLs; freezes at 0.2.0)
 CHANGELOG.md  SECURITY.md    user + release
 CONTRIBUTING.md  AGENTS.md   contributor  (AGENTS canonical; CLAUDE.md pointer — Q5 / D6)
-VISION.md  PLAN.md  IDEAS.md product direction
+VISION.md                    product direction (README-linked tie-breaker)
+                             PLAN.md / IDEAS.md → `dev-docs/` (Q6 / D7)
                              (the 4 "moved to…" stubs are deleted)
 
 docs/                        ── PUBLISHED. User + current, and nothing else. ──

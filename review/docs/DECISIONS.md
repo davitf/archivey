@@ -3,8 +3,8 @@
 Answers from the maintainer. Recorded here so phase 3 has one place to read from;
 the affected phase-1 artifacts have been updated in place to match.
 
-Still open: **Q6, Q7, Q8, Q9** (`QUESTIONS.md`).
-Q3–Q5 answered (D4–D6).
+Still open: **Q7, Q8, Q9** (`QUESTIONS.md`).
+Q3–Q6 answered (D4–D7).
 
 ---
 
@@ -259,3 +259,22 @@ auto-loads it by name.
 in the pointer file if that stays Claude-specific). A careless merge drops one.
 
 Phase 3 can do this independently of the docs tree moves.
+
+---
+
+## D7 — Q6: move `PLAN.md` and `IDEAS.md` off the root. **Approved.**
+
+> *"move them"* / *"move them to keep the root cleaner. we're going to
+> rewrite/cleanup most docs anyway and those references might even be removed or
+> should be reorganized"*
+
+**Destination:** `dev-docs/PLAN.md` and `dev-docs/IDEAS.md` (with the rest of the
+unpublished maintainer tree under D1).
+
+**Root after this + D6:** `README`, `CHANGELOG`, `SECURITY`, `CONTRIBUTING`,
+`AGENTS`, `VISION`, plus `CLAUDE.md` as the pointer file. Product direction that
+stays at root is `VISION.md` only (README-linked tie-breaker).
+
+**Inbound references (~20 today):** phase 3 repoints or drops them as part of the
+broader docs cleanup — do not treat the citation count as a reason to keep the
+files at root. `VISION.md` stays; only `PLAN` / `IDEAS` move.

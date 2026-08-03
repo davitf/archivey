@@ -4,16 +4,14 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-> **Q1–Q5 are answered** — see [`DECISIONS.md`](DECISIONS.md).
+> **Q1–Q6 are answered** — see [`DECISIONS.md`](DECISIONS.md).
 > The site is unpublishing `docs/internal/` **and** the raw ADR log
 > (`docs/decisions/` → `dev-docs/decisions/`); curious-user depth lives on one
 > published page (`how-it-works.md`, including a decisions summary). **D3:**
-> published pages must not link into unpublished docs; where context is worth
-> keeping the link becomes an absolute GitHub URL. **D4:** `gotchas.md` stays as
-> two sections (should/shouldn't + be aware of). **D5:** ADR 0014 splits three
-> ways. **D6:** `AGENTS.md` canonical; `CLAUDE.md` pointer (+ Claude-specific
-> notes only). Spec conflict with `documentation/spec.md:175` is for the D1
-> delta. Q6–Q9 below are still open.
+> published pages must not link into unpublished docs. **D4:** `gotchas.md` two
+> sections. **D5:** ADR 0014 three-way split. **D6:** `AGENTS.md` canonical.
+> **D7:** `PLAN.md` / `IDEAS.md` → `dev-docs/` (root cleanup). Spec conflict with
+> `documentation/spec.md:175` is for the D1 delta. Q7–Q9 below are still open.
 
 ---
 
@@ -180,23 +178,22 @@ pointer, retaining only Claude-specific environment notes.
 
 ---
 
-## Q6 — Do `PLAN.md` and `IDEAS.md` leave the repo root?
+## Q6 — Do `PLAN.md` and `IDEAS.md` leave the repo root? ✅ **ANSWERED: move (D7)**
+
+> *"move them to keep the root cleaner. we're going to rewrite/cleanup most docs
+> anyway and those references might even be removed or should be reorganized"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D7. Destination: `dev-docs/PLAN.md`
+and `dev-docs/IDEAS.md`. Inbound refs are cleaned up in the broader docs rewrite,
+not treated as a reason to keep them at root.
 
 The brief notes the root "mixes every audience". After deleting the four stubs and
 merging the agent guides, the root is: `README` (user), `CHANGELOG`/`SECURITY`
 (user + release), `CONTRIBUTING`/`AGENTS` (contributor), `VISION`/`PLAN`/`IDEAS`
 (product direction). Eight files, down from thirteen.
 
-**Recommendation: leave all eight.** Six of the eight are at root because a tool or
-convention expects them there. `VISION.md` is linked from `README.md` and is the
-declared tie-breaker for every review brief. `PLAN.md` and `IDEAS.md` are the only
-two with a real case for moving — and they carry ~20 inbound references between
-them (`openspec/project.md`, `review/STATUS.md`, six archived reviews, four ADRs,
-`threat-model.md`). Moving them is churn for symmetry, which the brief warns
-against.
-
-If you want them moved anyway, `dev-docs/` is the right destination and it is a
-mechanical addition to the phase-3 commit list.
+**Original recommendation was leave all eight** — superseded; maintainer chose
+root cleanliness over citation-churn avoidance.
 
 ---
 
@@ -297,7 +294,7 @@ word and phase 3 uses it.
 | Q3 | Gotchas = two sections (should/shouldn't + be aware of); triage ✅ D4 |
 | Q4 | ADR 0014 three-way split (✅ D5) |
 | Q5 | `AGENTS.md` canonical; `CLAUDE.md` pointer (✅ D6) |
-| Q6 | Two `git mv`s, independent of everything else |
+| Q6 | `PLAN`/`IDEAS` → `dev-docs/` (✅ D7) |
 | Q7 | The size of `safe-extraction.md` and the shape of the gap register |
 | Q8 | Four deletions |
 | Q9 | Naming only |
