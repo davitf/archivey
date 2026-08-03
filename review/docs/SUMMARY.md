@@ -35,31 +35,23 @@ So the site is not merely mis-filed. **It is loudest where a maintainer needs it
 and quietest where a user's mistake is unrecoverable.** Both halves are fixable
 now, and the fix is mostly `git mv` plus four page splits.
 
-### Decided (2026-07-29) — the tree is unblocked
+### Decided — the tree is unblocked; Q1–Q9 complete
 
-The blocking question was that unpublishing `docs/internal/` **contradicts
-`openspec/specs/documentation/spec.md`**, which requires the MkDocs site to present
-internal/grab-bag as "clearly secondary" — i.e. present. Per `CLAUDE.md` that was
-paused and surfaced rather than resolved. The maintainer has now answered
-([`DECISIONS.md`](DECISIONS.md)):
+Answers live in [`DECISIONS.md`](DECISIONS.md) (D1–D11). Headline calls:
 
-- **D1 — unpublish.** The site becomes user-facing only. The spec deltas
-  (`documentation`, and both specs naming `docs/internal/library-analysis.md`
-  verbatim) are now required phase-3 work.
-- **D2 — curated depth stays published; raw ADRs do not.** One new page,
-  `docs/how-it-works.md`, carries the behind-the-scenes overview *and* a short
-  decisions summary. The ADR files move to `dev-docs/decisions/` (D1 invariant:
-  everything under `docs/` is published). User-page ADR links are inlined then
-  dropped unless the ADR still has uninlinable end-user depth (then GitHub per
-  D3). Writing `how-it-works.md` is Topic 8; phase 3 creates the slot and moves
-  the ADR tree.
-- **D3 — a new rule.** Published pages **must not link into unpublished docs**.
-  Where the extra context is worth keeping, the link becomes an absolute
-  `github.com/davitf/archivey/blob/main/…` URL. Of the nine such links today, 4 are
-  removed, 5 become GitHub URLs, and `index.md`'s "For contributors" block is
-  rewritten.
+- **D1 — unpublish** maintainer material → `dev-docs/`.
+- **D2 — curated depth**, not raw ADRs: `how-it-works.md` summary; ADRs → `dev-docs/decisions/`.
+- **D3 — no site links into unpublished docs** (GitHub URLs when depth is worth it).
+- **D4 — Gotchas** = should/shouldn't + be aware of.
+- **D5 — ADR 0014** three-way split.
+- **D6 — `AGENTS.md` canonical**; `CLAUDE.md` pointer.
+- **D7 — `PLAN`/`IDEAS` → `dev-docs/`**.
+- **D8 — threat-model** three-way filing.
+- **D9 — `known-issues` → `dev-docs/`** + required triage follow-up.
+- **D10 — delete root stubs**; keep grab-bag history.
+- **D11 — directory name = `dev-docs/`**.
 
-**Q4–Q9 remain open** — all page-level, none blocking the tree.
+**No questions remain open.** Phase 3 can execute.
 
 ---
 
@@ -179,7 +171,8 @@ Named explicitly so the migration does not sweep them up for symmetry.
 
 ## Next
 
-1. Answer the rest of [`QUESTIONS.md`](QUESTIONS.md) — Q4–Q9. None blocks the tree
+1. Execute phase 3 from [`DECISIONS.md`](DECISIONS.md) + [`target-tree.md`](target-tree.md).
+   All Q1–Q9 are answered (D1–D11).
    now that Q1 is decided; Q5, Q6 and Q8 are independent one-commit calls.
 2. Phase 3: execute as OpenSpec changes, kept mechanical — the nine-commit
    sequence is in [`inventory.md`](inventory.md) §Migration mechanics. Commits 1–3
