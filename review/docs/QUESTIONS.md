@@ -157,7 +157,12 @@ the nav.
 
 ---
 
-## Q5 — `AGENTS.md` or `CLAUDE.md`: which is canonical?
+## Q5 — `AGENTS.md` or `CLAUDE.md`: which is canonical? ✅ **ANSWERED: AGENTS.md (D6)**
+
+> *"AGENTS.md canonical, Claude just pointer. if there's Claude-specific
+> environment info, then that can remain on Claude.md"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D6.
 
 `AGENTS.md` (83 lines) opens by deferring to `CLAUDE.md` (117 lines). Overlap is
 roughly 20 lines (formatting-before-commit, the three-config rule, `uv`). The rest
@@ -170,19 +175,8 @@ reference-repo instructions, and the 7z/RAR strategy.
 are described as unimplemented). The file that is not canonical is the one that
 rotted — which is the argument for having one.
 
-**Recommendation: one canonical file, `AGENTS.md`**, absorbing `CLAUDE.md`'s
-content, with `CLAUDE.md` reduced to a pointer (Claude Code auto-loads it, so it
-cannot simply be deleted). `AGENTS.md` is the tool-neutral convention and does not
-privilege one agent vendor.
-
-**Watch out on merge:** the two files give *different* `openspec` install commands
-on purpose — `CLAUDE.md:31` uses `npm install -g`, `AGENTS.md:68-71` notes that
-fails with `EACCES` on Cursor Cloud and uses `--prefix "$HOME/.local"`. Both are
-correct for their environment; a careless merge will drop one.
-
-Choosing `CLAUDE.md` as canonical instead is equally workable — the decision is
-which convention you want to maintain, and either way the stale statements get
-fixed.
+**Recommendation was `AGENTS.md` canonical** — confirmed. `CLAUDE.md` becomes a
+pointer, retaining only Claude-specific environment notes.
 
 ---
 
@@ -302,7 +296,7 @@ word and phase 3 uses it.
 | Q2 | Whether raw ADRs appear in the nav (no — summary on `how-it-works.md`) |
 | Q3 | Gotchas = two sections (should/shouldn't + be aware of); triage ✅ D4 |
 | Q4 | ADR 0014 three-way split (✅ D5) |
-| Q5 | One commit, independent of everything else |
+| Q5 | `AGENTS.md` canonical; `CLAUDE.md` pointer (✅ D6) |
 | Q6 | Two `git mv`s, independent of everything else |
 | Q7 | The size of `safe-extraction.md` and the shape of the gap register |
 | Q8 | Four deletions |

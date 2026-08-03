@@ -235,3 +235,27 @@ Borderline triage complete.
 
 Phase 3 does the mechanical split + path move; Topic 8 may tighten the
 `reading.md` wording. Do not leave the guarantee only in `dev-docs/`.
+
+---
+
+## D6 — Q5: `AGENTS.md` is canonical; `CLAUDE.md` is a pointer. **Approved.**
+
+> *"AGENTS.md canonical, Claude just pointer. if there's Claude-specific
+> environment info, then that can remain on Claude.md"*
+
+**Canonical agent guide:** `AGENTS.md` absorbs the shared content today in
+`CLAUDE.md` (repo map, openspec CLI setup, `archivey-dev` reference-repo notes,
+7z/RAR strategy, session setup). Fix the stale statements (O-1: CLI / native
+7z/RAR “unimplemented”) in that pass.
+
+**`CLAUDE.md`:** short pointer to `AGENTS.md` / `CONTRIBUTING.md`, plus any
+**Claude Code–specific** environment notes that do not belong in the shared
+guide (e.g. SessionStart hook behavior). Do not delete the file — Claude Code
+auto-loads it by name.
+
+**Watch out on merge:** keep both `openspec` install recipes (global npm vs
+`--prefix "$HOME/.local"` for EACCES on Cursor Cloud) under session setup in
+`AGENTS.md` (or note the Cursor variant in `AGENTS.md` and the Claude default
+in the pointer file if that stays Claude-specific). A careless merge drops one.
+
+Phase 3 can do this independently of the docs tree moves.
