@@ -31,14 +31,14 @@ So there are two denominators, and only one of them is comparable:
 
 | | Lines | safe-extraction | access-and-cost |
 |---|---:|---:|---:|
-| **Core teaching pages** — install, reading, gotchas, safe-extraction, access-and-cost, formats, errors, cli | ~1,215 | **23.0%** | **18.9%** |
-| All published pages, incl. migrating / support-matrix / philosophy / api / acknowledgements | ~2,045 | 13.7% | 11.2% |
+| **Core teaching pages** — install, opening, reading, gotchas, safe-extraction, access-and-cost, formats, errors, cli | ~1,255 | **22.3%** | **18.3%** |
+| All published pages, incl. migrating / support-matrix / philosophy / api / acknowledgements | ~2,085 | 13.4% | 11.0% |
 
 Against the comparable denominator the target shape lands where the independent
 pass argued it should: safe extraction within ~2 points of ~25%, access/cost within
-~1 point of ~20% once §10's config screen is counted — not the ~10-point and
+~2 points of ~20% once the config screen is counted — not the ~10-point and
 ~15-point gaps the raw comparison suggested. **This is not a reason to relax**: the
-safe-extraction figure assumes the ~90 lines of new prose in §4 below actually get
+safe-extraction figure assumes the ~90 lines of new prose in §5 below actually get
 written. Merging alone gets it to ~200 lines / 17%, which is
 [`page-shape.md`](page-shape.md) §1's own estimate.
 
@@ -48,11 +48,12 @@ Projected sizes, for sequencing rather than as targets:
 |---|---:|---:|---|
 | `index.md` | 57 | ~85 | + 30-second recipes |
 | `install.md` | — | ~70 | **new**, split from `usage.md` + new matrix |
-| `reading.md` | — | ~220 | **new**, split from `usage.md` + ADR 0014 |
+| `opening-and-listing.md` | — | ~105 | **new**, split from `usage.md` |
+| `reading-members.md` | — | ~125 | **new**, split from `usage.md` + ADR 0014 |
 | `gotchas.md` | 155 | ~70 | shrink to a digest |
 | `safe-extraction.md` | 93 | ~280 | grow ~3× |
 | `access-and-cost.md` | 154 | ~230 | rename + absorb + config screen |
-| `formats.md` | 185 | ~185 | unchanged size, two fixes |
+| `formats.md` | 185 | ~215 | two fixes + the dedupe recipe |
 | `errors-and-diagnostics.md` | — | ~90 | **new** |
 | `cli.md` | — | ~70 | **new**, split from `usage.md` |
 | `migrating.md` | 174 | 174 | unchanged |
@@ -140,15 +141,12 @@ across three other pages.
 
 ---
 
-## 3. `reading.md` — Reading archives **(new)**
+## 3. `opening-and-listing.md` — Opening and listing **(new)**
 
-**Purpose.** The contract for getting members and bytes out of an archive, from
-open to close.
+**Purpose.** Point Archivey at a thing, get past whatever guards it, and find out
+what is inside.
 
-**Reader question.** "How do I list this, and how do I read one file out of it?"
-
-The biggest new page, and the one carrying the most currently-undocumented
-behaviour: eight of the 29 must-explain items land here with no home today.
+**Reader question.** "What's in this archive?"
 
 **Sections.**
 
@@ -163,62 +161,106 @@ behaviour: eight of the 29 must-explain items land here with no home today.
    A conflict means **magic wins and `FORMAT_EXTENSION_CONFLICT` fires** — name the
    diagnostic (must-explain #22). `open_stream` vs `open_archive` on the same
    `.gz`, and the inner-TAR upgrade (must-explain #21).
-4. **Read a member.** `open()` / `read()`, forward-only and one-live by default.
-   `read()` is **all-or-raise and unbounded** — it has no size guard, which is a
-   memory-bomb surface on untrusted input (must-explain #24). The chunked-loop
-   recipe for recovering a truncated prefix.
-5. **The integrity guarantee.** Content faults raise from `read`, never from
-   `close`; the call × failure matrix. This contract's only copy today lives inside
-   a 615-line ADR (D5).
-6. **`stream_members()`.** Lifetime — the yielded stream is valid **only until the
-   iterator advances** — and laziness: open, decompress and password errors surface
-   on **first read**, not on yield, so "I iterated everything so passwords were
-   checked" is false (must-explain #10). Both undocumented today.
-7. **Streaming mode.** `streaming=True`, the single forward pass, what raises in
-   that mode. Cross-link the cost consequences rather than restating them.
-8. **Damaged archives.** `members()` / `scan_members()` complete-or-raise;
+4. **Passwords.** Single, list, `PasswordProvider`. Order matters. A static
+   password on a format without encryption raises `UnsupportedOperationError`
+   (must-explain #13); the ZipCrypto STORED trap is a `gotchas.md` line pointing at
+   `access-and-cost.md`.
+5. **Damaged archives.** `members()` / `scan_members()` complete-or-raise;
    `members_report()` for prefix + error; `__iter__` / `stream_members` yield then
-   raise. Not salvage.
-9. **Duplicate names and `is_current`.** Last-entry-wins, `SUPERSEDED` on extract,
+   raise. Not salvage. Carries a "see Errors and diagnostics" callout, since that
+   page sits later in the nav than the first failure a reader meets.
+6. **Duplicate names and `is_current`.** Last-entry-wins, `SUPERSEDED` on extract,
    the filter one-liners.
-10. **Passwords.** Single, list, `PasswordProvider`. Order matters. A static
-    password on a format without encryption raises `UnsupportedOperationError`
-    (must-explain #13); the ZipCrypto STORED trap is a `gotchas.md` line pointing
-    at `access-and-cost.md`.
-11. **Cheap dedupe with stored hashes.** The recipe, unchanged.
-12. **Identity and lifetime.** `member in reader` is **identity, not name** — a
-    string raises `TypeError` rather than falling back to iteration, which would
-    consume a streaming pass (must-explain #19). A member from another reader
-    raises. **Closing the reader does not invalidate already-open streams**
-    (must-explain #20). **Non-file members cannot be `open()`ed** (must-explain
-    #26). All four undocumented today.
-13. **Errors, in one line each.** `reading.md` raises more distinct types than any
-    other page's material, and `errors-and-diagnostics.md` sits after `formats.md` in
-    the nav — so §4 and §8 each carry an explicit "see Errors and diagnostics" callout
-    rather than waiting for the reader to arrive there.
-14. **One-shot extract**, and why it has no `members=`. Note that `extract()`
-    **auto-opens streaming for a non-seekable source** while `open_archive` refuses
-    one — the inconsistency users hit first (must-explain #4, undocumented).
 
-**Not here.** What an access pattern *costs* (`access-and-cost.md`). Extraction
-policy (`safe-extraction.md`). The exception tree
-(`errors-and-diagnostics.md`).
+**Not here.** Reading bytes out of a member (`reading-members.md`). What a listing
+*costs* — `ListingCost`, listing limits (`access-and-cost.md`, `safe-extraction.md`).
+Per-format listing quirks (`formats.md`). The dedupe recipe, which moved to
+`formats.md` beside the stored-digest matrix it depends on.
 
-**Sources.** `docs/usage.md:20-183`;
-`dev-docs/decisions/0014-integrity-verdicts-from-reads-not-close.md:320-375` (§5).
-**New:** §2, §6, §12, §13's streaming note, and the named diagnostic in §3.
-
-> **Boundary check — this page vs `access-and-cost.md`.** The independent outline
-> had three pages here: opening/detection/passwords (~10%), access modes and cost
-> (~20%), reading members (~8%). The target tree has two. The mapping holds: its §3
-> and §5 are this page, its §4 is `access-and-cost.md`. The one genuinely split
-> concept is `streaming=True` — the *contract* is §7 here, the *consequences* are
-> on the cost page. Keep the contract here and link out; duplicating it is how
-> `gotchas.md` became a third copy of two other pages.
+**Sources.** `docs/usage.md:20-55` (§1, §5); `:95-100` (§3); `:145-173` (§6);
+`:175-183` (§4).
+**New:** §2 entirely, the named diagnostic in §3, the §5 callout (~25 lines).
 
 ---
 
-## 4. `safe-extraction.md` — Safe extraction
+## 4. `reading-members.md` — Reading members **(new)**
+
+**Purpose.** The contract for getting bytes out, and what each outcome means.
+
+**Reader question.** "How do I read one file out of this, and can I trust what I
+got?"
+
+Carries the most currently-undocumented behaviour of any page: five of the nine
+must-explain gaps land here.
+
+**Sections.**
+
+1. **Read a member.** `open()` / `read()`, forward-only and one-live by default.
+   `read()` is **all-or-raise and unbounded** — it has no size guard, which is a
+   memory-bomb surface on untrusted input (must-explain #24). The chunked-loop
+   recipe for recovering a truncated prefix. Carries the second "see Errors and
+   diagnostics" callout.
+2. **The integrity guarantee.** Content faults raise from `read`, never from
+   `close`; the call × failure matrix. The load-bearing asymmetry:
+   `read(member.size)` raises on corruption but returns a **short buffer** on
+   truncation — known-wrong bytes are withheld, an apparent incomplete prefix is
+   delivered. "No exception" does not mean "complete." This contract's only copy
+   today lives inside a 615-line ADR (D5).
+3. **`stream_members()`.** Lifetime — the yielded stream is valid **only until the
+   iterator advances** — and laziness: open, decompress and password errors surface
+   on **first read**, not on yield, so "I iterated everything so passwords were
+   checked" is false (must-explain #10). Both undocumented today.
+4. **Streaming mode.** `streaming=True`, the single forward pass, what raises in
+   that mode. Cross-link the cost consequences rather than restating them.
+5. **Identity and lifetime.** `member in reader` is **identity, not name** — a
+   string raises `TypeError` rather than falling back to iteration, which would
+   consume a streaming pass (must-explain #19). A member from another reader raises.
+   **Closing the reader does not invalidate already-open streams** (must-explain
+   #20). **Non-file members cannot be `open()`ed** (must-explain #26). All four
+   undocumented today.
+6. **One-shot extract**, in three lines and a link. `archivey.extract(src, dest)`
+   is `safe-extraction.md` §1's material — what belongs *here* is why it has no
+   `members=` (selecting a subset needs the member list, which would force
+   open/list/reopen — must-explain #5) and that it **auto-opens streaming for a
+   non-seekable source** while `open_archive` refuses one, the inconsistency users
+   hit first (must-explain #4, undocumented).
+
+**Not here.** Enumerating an archive (`opening-and-listing.md`). What an access
+pattern *costs* (`access-and-cost.md`). Extraction policy (`safe-extraction.md`).
+The exception tree (`errors-and-diagnostics.md`).
+
+**Sources.** `docs/usage.md:57-83` (§1); `:102-111` (§4); `:85-93` (§6, reduced to a
+cross-link); `dev-docs/decisions/0014-integrity-verdicts-from-reads-not-close.md:320-375`
+(§2).
+**New:** §3, §5, and §6's streaming note (~35 lines).
+
+> **Why this is two pages and not one.** An earlier draft had a single
+> `reading.md`. Tallied by section it came to **268 lines** — `usage.md`'s own size
+> (274), the page being split for being too big. The sections divide 133/135 between
+> "what's in this archive" and "give me the bytes" with almost no overlap, which is a
+> joint rather than a cut. `usage.md` failed by doing five *jobs*; a single
+> `reading.md` would do two. Each of these does one.
+>
+> Two sections were misfiled regardless of the split and are relocated with it: the
+> **dedupe recipe** (31 lines) to `formats.md`, beside the stored-digest matrix it is
+> *about*; and **one-shot extract** (9 lines), whose code block duplicates
+> `safe-extraction.md` §1 and whose unique content is three lines of rationale.
+>
+> Three seams rub, and each resolves the same way the `access-and-cost.md` boundary
+> already did — contract here, consequences there:
+>
+> | Friction | Resolution |
+> |---|---|
+> | `stream_members()` yields `(member, stream)` — both halves | **Reading**: its hard parts are stream lifetime and laziness, which are stream contract, not enumeration |
+> | `streaming=True` affects listing and reading alike | Contract on **reading**; `access-and-cost.md` owns the consequences |
+> | "Open and list" straddles by name | Split by reader question, not by call name: opening is how you *get* a listing |
+>
+> **Consequence for the splits delta:** `documentation/spec.md:86-87` requires Gotchas
+> to sit immediately after "basic usage". With two pages the delta must name which —
+> **`reading-members.md`**, since that is where the traps the digest indexes actually
+> live.
+
+## 5. `safe-extraction.md` — Safe extraction
 
 **Purpose.** The page without which the library cannot be used safely on untrusted
 input. Becomes the guide's largest page.
@@ -282,7 +324,7 @@ merge cannot close, and the reason the 23.8% above is a plan rather than a fact.
 
 ---
 
-## 5. `access-and-cost.md` — Access costs and pitfalls
+## 6. `access-and-cost.md` — Access costs and pitfalls
 
 **Purpose.** What each access pattern costs, and which knob to reach for.
 
@@ -325,7 +367,7 @@ merge cannot close, and the reason the 23.8% above is a plan rather than a fact.
     the page.
 
 **Not here.** Accelerator *process* risk (`gotchas.md`, one line, linking to
-`known-issues.md`). The stream contract itself (`reading.md`).
+`known-issues.md`). The stream contract itself (`reading-members.md`).
 
 **Sources.** `docs/costs.md:1-154` (renamed); `docs/gotchas.md:13-25` and `27-37`
 (the cost half, absorbed as the digest shrinks).
@@ -343,7 +385,7 @@ merge cannot close, and the reason the 23.8% above is a plan rather than a fact.
 
 ---
 
-## 6. `gotchas.md` — Gotchas
+## 7. `gotchas.md` — Gotchas
 
 **Purpose.** The "read this next" digest. One line per trap plus a link to the page
 that owns it. Not a third copy of anything.
@@ -376,7 +418,7 @@ line linking to the page that owns the depth:
 | Residual | Section | Line |
 |---|---|---|
 | **O6 nested archives** | should/shouldn't | The bomb tracker checks expansion for *individual* archives and is **not nesting-aware**. Recursion is caller-driven — bound depth and size yourself. → `safe-extraction.md` §10 |
-| **O1 unguarded paths** | should/shouldn't | `stream_members()` is not covered by `ListingLimits`, and `read()` / `open()` stream sizes are unbounded — chunk untrusted payloads. → `safe-extraction.md` §8, `reading.md` §4 |
+| **O1 unguarded paths** | should/shouldn't | `stream_members()` is not covered by `ListingLimits`, and `read()` / `open()` stream sizes are unbounded — chunk untrusted payloads. → `safe-extraction.md` §8, `reading-members.md` §1 |
 | **O8 7z header encryption** | be aware of | Above. |
 | **O2 name collisions** | should/shouldn't | Already covered by the STRICT-rewrite bullet; collision behaviour is OS-dependent by design (ADR 0013). |
 
@@ -402,14 +444,23 @@ not say "the process dies" (D9 / O-15).
 
 ---
 
-## 7. `formats.md` — Formats and extras
+## 8. `formats.md` — Formats and extras
 
 **Purpose.** Per-format capability, quirks, and what each needs.
 
 **Reader question.** "Why did this format do that?"
 
 **Sections.** Quick matrix · ZIP · TAR · 7z · RAR · ISO · Directory · single-file
-compressors · stored digests · detection. Structure unchanged; it is a good page.
+compressors · stored digests **+ the cheap-dedupe recipe** · detection. Otherwise
+unchanged; it is a good page.
+
+One addition and two fixes.
+
+**Addition — the dedupe recipe joins the stored-digest matrix.** The recipe keys on
+`member.hashes` and falls back to computing a digest while reading; the matrix that
+says which formats populate `member.hashes` at all is the section directly above it.
+They were on different pages, which is why a reader could follow the recipe without
+ever learning that TAR and bzip2 return nothing from it.
 
 Two fixes:
 
@@ -431,12 +482,13 @@ pages alongside the `pyproject.toml` comment, which is what O-14 asked for.
 **Not here.** Cost consequences (`access-and-cost.md`). What to install
 (`install.md`, which owns the matrix by extra).
 
-**Sources.** `docs/formats.md:1-185`, plus the quartet D4 moves out of Gotchas
-(`docs/gotchas.md:71-89`) folded into the per-format sections that own each row.
+**Sources.** `docs/formats.md:1-185`; `docs/usage.md:113-143` (the dedupe recipe);
+plus the quartet D4 moves out of Gotchas (`docs/gotchas.md:71-89`) folded into the
+per-format sections that own each row.
 
 ---
 
-## 8. `errors-and-diagnostics.md` — Errors and diagnostics **(new)**
+## 9. `errors-and-diagnostics.md` — Errors and diagnostics **(new)**
 
 **Purpose.** What gets raised, what gets recorded, and how to tell them apart.
 
@@ -475,7 +527,7 @@ Diagnostics have a 181-line spec and, on the site, two lines at the bottom of
 
 ---
 
-## 9. `cli.md` — Command line **(new)**
+## 10. `cli.md` — Command line **(new)**
 
 **Purpose.** The `archivey` command as a tool in its own right.
 
@@ -501,18 +553,19 @@ no nav entry — a reader looking for a command-line tool has no reason to open 
 6. **Passwords on argv are visible to `ps`.** Say it here.
 7. **Reserved:** `--salvage`, stdin `-`, `hash` / `create` / `convert`.
 
-**Not here.** Library equivalents (`reading.md`, `safe-extraction.md`).
+**Not here.** Library equivalents (`opening-and-listing.md`, `reading-members.md`,
+`safe-extraction.md`).
 
 **Sources.** `docs/usage.md:219-266`.
 **New:** §3 as its own block, §6.
 
 ---
 
-## 10–15. The pages that do not change shape
+## 11–16. The pages that do not change shape
 
 | Page | Purpose | Change |
 |---|---|---|
-| `migrating.md` | zipfile / tarfile / shutil / patool / py7zr recipes | None. Re-point the two links that named `usage.md` sections now on `reading.md`. |
+| `migrating.md` | zipfile / tarfile / shutil / patool / py7zr recipes | None structurally. Re-point three links: `usage.md#read-a-member` → `reading-members.md`, `usage.md#duplicate-names-and-is_current` → `opening-and-listing.md`, `costs.md` → `access-and-cost.md`. |
 | `support-matrix.md` | What CI proves, and what it deliberately does not claim | None. The most honest page on the site — every claim is scoped to the job that proves it. |
 | `philosophy.md` | Why Archivey exists, end-user framing | None. Moves down the nav: a reader who has not installed it does not need the manifesto before the install page. |
 | `api.md` | Generated reference | None structurally. `ArchiveMember` is **mutable** for late-bound backend fields and callers should treat it as read-only and use `.replace()`; `modified` may be naive or aware, so compare via `modified_utc()` (must-explain #24) — docstring work, not page work. |
@@ -530,38 +583,38 @@ proves it is complete rather than merely tidy.
 | # | Behaviour | Owner | Today |
 |---:|---|---|---|
 | 1 | Two exception roots | errors | usage.md ✓ |
-| 2 | One live forward-only stream by default | reading | usage.md ✓ |
+| 2 | One live forward-only stream by default | reading-members | usage.md ✓ |
 | 3 | `streaming` + `concurrent_members` exclusive | access-and-cost | costs.md ✓ |
-| 4 | `extract()` auto-streams a pipe; `open_archive` refuses one | reading | **gap** |
-| 5 | `extract()` has no `members=` | reading | usage.md ✓ |
+| 4 | `extract()` auto-streams a pipe; `open_archive` refuses one | reading-members | **gap** |
+| 5 | `extract()` has no `members=` | reading-members | usage.md ✓ |
 | 6 | `OnError.STOP` continues past blocks | safe-extraction | ✓ |
 | 7 | Bomb limits halt under `CONTINUE` | safe-extraction | gotchas ✓ |
 | 8 | `extract_all(config=)` cannot raise the open-time listing ceiling | safe-extraction | **gap** |
-| 9 | Duplicate names: last wins | reading | usage.md ✓ |
-| 10 | `stream_members` lifetime + laziness | reading | **gap** |
+| 9 | Duplicate names: last wins | opening-and-listing | usage.md ✓ |
+| 10 | `stream_members` lifetime + laziness | reading-members | **gap** |
 | 11 | Solid cost is orthogonal to concurrency | access-and-cost | costs.md ✓ |
-| 12 | Mid-stream seekable sources start at `tell()` | reading | **gap** |
-| 13 | Password shapes, order, ZipCrypto STORED | reading + gotchas | partial |
+| 12 | Mid-stream seekable sources start at `tell()` | opening-and-listing | **gap** |
+| 13 | Password shapes, order, ZipCrypto STORED | opening-and-listing + gotchas | partial |
 | 14 | RAR data needs RARLAB `unrar` | install + formats | ✓ |
 | 15 | `PARTIAL` / `NONE`, not a vanished format | install | **gap** |
 | 16 | `AUTO` falls back silently; `ON` raises | access-and-cost | partial |
 | 17 | `TRUSTED` still runs the universal checks | safe-extraction | gotchas ✓ |
 | 18 | Hardlink orphans and the seekable second pass | safe-extraction | thin |
-| 19 | `member in reader` is identity | reading | **gap** |
-| 20 | Close does not invalidate open streams | reading | support-matrix ✓ |
-| 21 | `open_stream` vs `open_archive`; inner-TAR upgrade | reading + formats | partial |
-| 22 | Magic wins over extension, with a diagnostic | reading + errors | partial |
+| 19 | `member in reader` is identity | reading-members | **gap** |
+| 20 | Close does not invalidate open streams | reading-members | support-matrix ✓ |
+| 21 | `open_stream` vs `open_archive`; inner-TAR upgrade | opening-and-listing + formats | partial |
+| 22 | Magic wins over extension, with a diagnostic | opening-and-listing + errors | partial |
 | 23 | CLI defaults diverge from the library | cli | partial |
-| 24 | `read()` unbounded; `ArchiveMember` mutable | reading + api | **gap** |
-| 25 | Multi-volume and directory overrides | reading + formats | **gap** |
-| 26 | Non-file members cannot be opened | reading | **gap** |
+| 24 | `read()` unbounded; `ArchiveMember` mutable | reading-members + api | **gap** |
+| 25 | Multi-volume and directory overrides | opening-and-listing + formats | **gap** |
+| 26 | Non-file members cannot be opened | reading-members | **gap** |
 | 27 | `strict_archive_eof` defaults to warn | formats + gotchas | ✓ |
 | 28 | Measurement is opt-in and open-scoped | access-and-cost | **gap** |
 | 29 | ISO patches pycdlib process-wide | formats + gotchas | ✓ |
 
-**Nine outright gaps, five partials.** Eight of the nine land on `reading.md` or
-`install.md` — the two pages that do not exist yet, which is the outline's own
-argument for splitting `usage.md` rather than polishing it.
+**Nine outright gaps, five partials.** Eight of the nine land on the three pages that
+do not exist yet — `install.md`, `opening-and-listing.md`, `reading-members.md` —
+which is the outline's own argument for splitting `usage.md` rather than polishing it.
 
 Verify each against the code before writing: the independent pass could not see
 intent and over-reports. Its own worked example is #29, which it flagged as
@@ -581,12 +634,13 @@ The splits are moves. These are the writing tasks that remain, in priority order
 | `errors-and-diagnostics.md` | Translation, diagnostics-as-data, the codes worth knowing, policy, limits vs filters | ~55 |
 | `how-it-works.md` | All six sections (D2) | ~150 |
 | `install.md` | `format_availability()` section; re-cutting the matrix by extra | ~45 |
-| `reading.md` | Sources, `stream_members` lifetime, identity and lifetime, the `extract()` pipe note | ~45 |
+| `opening-and-listing.md` | Sources, the named detection diagnostic, the errors callout | ~25 |
+| `reading-members.md` | `stream_members` lifetime, identity and lifetime, the `extract()` pipe note | ~35 |
 | `access-and-cost.md` | ON-vs-AUTO, measurement, the config-at-a-glance screen | ~55 |
 | `gotchas.md` | Rewrite the accelerator bullet for `_TrappingSource`; the four D8 residual one-liners | ~10 |
 | `index.md` | The four 30-second recipes | ~30 |
 
-~480 lines of new prose. That is Topic 8's floor, before the accuracy pass it was
+~495 lines of new prose. That is Topic 8's floor, before the accuracy pass it was
 commissioned for.
 
 ## Review disposition (PR #223)
@@ -606,7 +660,8 @@ in above; the rest are recorded here so the reasoning survives.
 **Declined, with reasons:**
 
 - **"Errors sits too late in the nav" (finding 7).** Reordering trades one reader's
-  problem for another's; the cross-link in `reading.md` §13 is the cheaper half of the
+  problem for another's; the callouts in `opening-and-listing.md` §5 and
+  `reading-members.md` §1 are the cheaper half of the
   reviewer's own suggested fix, and it is in.
 - **"Add a nav stub for `how-it-works.md` in the splits change" (decision 5).** This
   re-raises what
@@ -642,27 +697,46 @@ justification. The delta must rewrite that requirement anyway, because the
 enumeration at `:85-86` names "basic usage", which stops being a page. The order
 stands on the recipes argument, not on cost.
 
-### D-b — `reading.md` stays one page
+### D-b — `reading.md` splits in two. **Reversed 2026-08-03.**
 
-`usage.md` failed because it did five *jobs* — install, read, dedupe, errors, CLI —
-not because it had thirteen sections. `reading.md` does one: getting members and
-bytes out of an archive. Section count is a proxy for the real test, which is whether
-each section serves *the* purpose, and that is what the **Not here** field exists to
-enforce.
+> *Originally decided: stays one page, on the argument that `usage.md` failed by
+> doing five jobs rather than by having thirteen sections, and that `reading.md`
+> does one. Reversed after the maintainer asked for the section-by-section tally.*
 
-The proposed alternative was also measured and does not solve the stated problem:
-splitting off `opening.md` (open · sources · detection · passwords) leaves ~55 lines
-there and ~215 still on `reading.md`, because the weight is the integrity guarantee
-(56 lines from ADR 0014), duplicates (30) and the dedupe recipe (31) — all member-I/O.
+**What changed: the arithmetic.** The one-page decision rested on a ~220-line
+estimate. Tallied section by section it is **268** — `usage.md`'s own size (274),
+the page being split for being too big. The "does one job" claim did not survive
+the tally either: it does two, enumerate and read, and the sections divide
+**133/135** between them with almost no overlap.
 
-**The named lever, if Topic 8 finds the page unwieldy:** move the dedupe recipe to
-`formats.md`, beside the stored-digest matrix it already cross-references. That is
-~31 lines and a section boundary that already exists. Deliberately **not** done
-pre-emptively — a change with no driver.
+An even split that also follows a reader question is a joint, not a cut. So:
+
+| Page | Lines | Reader question |
+|---|---:|---|
+| `opening-and-listing.md` | ~105 | "What's in this archive?" |
+| `reading-members.md` | ~125 | "How do I read one file out, and can I trust it?" |
+
+**The original argument still stands — it just points the other way.** `usage.md`
+failed by doing five jobs. A single `reading.md` would do two. Each of these does
+one, which is the same test applied to a number I had got wrong.
+
+**Two relocations that were right regardless of the split**, and are carried with it:
+
+- **The dedupe recipe** (31 lines) → `formats.md`, beside the stored-digest matrix it
+  is *about*. This was already named as the size lever; it is a filing fix on its own
+  merits, since the recipe and the matrix that tells you which formats populate
+  `member.hashes` were on different pages.
+- **One-shot extract** (9 lines) → three lines and a cross-link. Its code block
+  duplicates `safe-extraction.md` §1; only the no-`members=` rationale and the
+  auto-streaming note are unique.
+
+**Cost, paid:** one more nav entry (16), and the splits delta must name which of the
+two pages Gotchas sits immediately after — `reading-members.md`, where the traps the
+digest indexes actually live.
 
 ### D-c — The config screen is a section on `access-and-cost.md`, not its own page
 
-As written in §5 §10. The nav stays at 15 entries.
+As written in §6 §10. The nav goes to 16 entries with the D-b split, not 17.
 
 ### Reversal cost, stated honestly
 
@@ -673,11 +747,11 @@ all three:
 |---|---|
 | **D-a** nav order | **Free.** One `mkdocs.yml` line, plus wording in a `documentation` delta that is being written regardless. |
 | **D-c** config screen placement | **Cheap.** Moving a self-contained section to a new page; a nav entry and one link repoint. |
-| **D-b** `reading.md` as one page | **Moderate, and it grows.** Re-splitting means splitting *written* prose, not moving blocks — the outline's own timing argument. It stays bounded while URL churn is free; **after the `0.2.0` tag it also costs a redirect**, which is the one thing this whole review was sequenced to avoid. |
+| **D-b** the opening/reading split | **Paid now, which was the point.** Re-merging or re-cutting after prose lands means moving *written* text, not blocks, and after the `0.2.0` tag it also costs a redirect. Deciding it before a word is written is the cheap moment, and this is that moment. |
 
-So D-a and D-c are genuinely reversible on sight of the result. D-b is reversible
-**before the tag** and awkward after it — if it is going to be revisited, the moment
-is when `reading.md`'s prose is first drafted, not after the guide ships.
+So D-a and D-c are genuinely reversible on sight of the result. D-b was the one that
+was not, which is why it was re-examined before the splits change rather than after —
+and why the tally that reversed it was worth asking for.
 
 ## Still open
 

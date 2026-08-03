@@ -15,22 +15,22 @@ and a move-plus-rewrite diff is not.
 | Change | Owns |
 |---|---|
 | `docs-ia-unpublish-maintainer-tree` — **landed #221, archived #222** | The moves to `dev-docs/`, the four root stub deletions, ~90 reference repoints, the D2/D3 link resolution, and phase-4 guardrails 1–3 |
-| Follow-up (next, outline delivered) | The four page splits (`usage.md` ×4, ADR 0014 ×3, `threat-model.md` ×2, the `gotchas.md` shrink), `docs/how-it-works.md`, the D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing requirement, and the `AGENTS`/`CLAUDE` merge (D6) |
+| Follow-up (next, outline delivered) | The page splits (`usage.md` ×5, ADR 0014 ×3, `threat-model.md` ×2, the `gotchas.md` shrink), `docs/how-it-works.md`, the D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing requirement and the Gotchas-after clause, and the `AGENTS`/`CLAUDE` merge (D6) |
 
 **The outline is delivered** — [`docs/outline.md`](docs/outline.md), written between
-the two changes: all 15 published pages with purpose, reader question, sections in
+the two changes: all 16 published pages with purpose, reader question, sections in
 order, explicit non-coverage, and `file:lines` sources. It is the worklist the splits
 execute against and the one Topic 8 starts from. Headline findings:
 
 - **The proportions land**, once the denominator is stated. Against the core teaching
   pages — the comparable denominator, since the independent pass's outline had no
-  migration, platform or API page — safe extraction reaches 23.0% against its ~25%
-  target, and access/cost 18.9% against ~20%.
+  migration, platform or API page — safe extraction reaches 22.3% against its ~25%
+  target, and access/cost 18.3% against ~20%.
 - **Nine of the 29 must-explain behaviours are documented nowhere today**, and eight
-  of those land on `reading.md` or `install.md` — the two pages that do not exist
-  yet. That is the outline's own argument for splitting `usage.md` rather than
-  polishing it.
-- **~480 lines of new prose** are needed that no merge can supply, over half of it
+  of those land on the three pages that do not exist yet — `install.md`,
+  `opening-and-listing.md`, `reading-members.md`. That is the outline's own argument
+  for splitting `usage.md` rather than polishing it.
+- **~495 lines of new prose** are needed that no merge can supply, over half of it
   on `safe-extraction.md` and the new `errors-and-diagnostics.md`. That is Topic 8's
   floor, before the accuracy pass it was commissioned for.
 
@@ -38,9 +38,13 @@ A structure review on #223 added four things the outline had missed: a 30-second
 recipes block on Home (the independent pass's page 1, dropped), a config-at-a-glance
 screen, the four D8 threat-model residual one-liners on Gotchas, and Home's Highlight
 link repoints. Three page-shape questions it raised are **decided** in `outline.md`
-§Decided: nav order stands, `reading.md` stays one page, the config screen is a
-section rather than a page. The outline records what each is worth to reverse — the
-first two on sight of the drafted prose, the third only before the `0.2.0` tag.
+§Decided: nav order stands, and the config screen is a section rather than a page.
+The third — whether `reading.md` stays one page — was decided yes, then **reversed**
+when the maintainer asked for a section-by-section tally: the page came to 268 lines,
+`usage.md`'s own size, and divided 133/135 between "what's in this archive" and
+"give me the bytes". It becomes `opening-and-listing.md` + `reading-members.md`, and
+the dedupe recipe moves to `formats.md` beside the stored-digest matrix it depends
+on. The nav goes to 16 entries.
 
 **The splits change is next**, and owns: the four page splits, `how-it-works.md`, the
 D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing
@@ -75,7 +79,7 @@ Ranked, from `backlog.md` and `PLAN.md`:
 3. **Topic 8** — documentation *content* (accuracy vs the code, then gaps, then
    quality). Separate from the IA review by design: that one decides where pages live,
    this one whether they are right. Starts from the IA review's `observations.md`
-   and `outline.md`, which between them name ~480 lines of prose that must be written
+   and `outline.md`, which between them name ~495 lines of prose that must be written
    and 15 recorded content problems (O-14 closed by #212).
 4. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
 5. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
