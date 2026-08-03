@@ -4,10 +4,10 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-> **Q1–Q6 and Q7 A are answered** — see [`DECISIONS.md`](DECISIONS.md).
-> … **D8:** threat-model three-way filing (enforced → safe-extraction; user
-> mitigations → Gotchas; maintainer backlog → `dev-docs/`). Q7 B (`known-issues`),
-> Q8, Q9 still open.
+> **Q1–Q7 are answered** — see [`DECISIONS.md`](DECISIONS.md).
+> … **D8:** threat-model three-way. **D9:** `known-issues.md` → `dev-docs/` +
+> **required follow-up triage** (resolved / mitigated / upstream / fixable / evidence).
+> Q8–Q9 still open.
 
 ---
 
@@ -219,20 +219,19 @@ Two documents in one file:
 **Refined:** strip closed items; move user-mitigable residuals to Gotchas; keep
 only backlog in `dev-docs/`.
 
-### `known-issues.md` (709 lines) — **still open (Q7 B)**
+### `known-issues.md` (709 lines) — ✅ **ANSWERED: move whole + triage follow-up (D9)**
+
+> Move to `dev-docs/known-issues.md`; no published subset. **Required follow-up:**
+> classify sections (resolved / mitigated / upstream unfixable / we-can-fix /
+> evidence-only) so the file does not stay an unwieldy dump. Sibling roles vs
+> IDEAS / open-issues / threat-model / investigations recorded under D9. Gotchas
+> accelerator bullet rewritten for `_TrappingSource` mitigation.
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D9.
 
 Read end to end it is valgrind output, GitHub Actions run IDs, CI workflow
-bandages, version-matrix soak tables, and bisect recipes. The four things a user
-needs from it are **already** summarised in `gotchas.md` and `costs.md` with a link
-back: do not close a source under a live accelerator stream; leave accelerators off
-for untrusted input under a latency budget; `import archivey` patches pycdlib
-process-globally; bare-`.gz` truncation detection is best-effort.
-
-**Recommendation:** move the whole file to `dev-docs/known-issues.md` and convert
-the two user-page links (`gotchas.md:144`, `costs.md:143`) to absolute GitHub URLs
-per D3 (or drop per D4 where the fact is already on Gotchas). Also fix its index
-description ([`observations.md`](observations.md) O-8) and the two runtime error
-strings that cite its path (O-12).
+bandages, version-matrix soak tables, and bisect recipes. User-needed facts live
+(or will live) on Gotchas / formats / SECURITY under D4/D8.
 
 ---
 
@@ -287,7 +286,7 @@ word and phase 3 uses it.
 | Q4 | ADR 0014 three-way split (✅ D5) |
 | Q5 | `AGENTS.md` canonical; `CLAUDE.md` pointer (✅ D6) |
 | Q6 | `PLAN`/`IDEAS` → `dev-docs/` (✅ D7) |
-| Q7 | A ✅ D8 (threat-model three-way); B still open (`known-issues`) |
+| Q7 | A ✅ D8; B ✅ D9 (`known-issues` move + triage follow-up) |
 | Q8 | Four deletions |
 | Q9 | Naming only |
 

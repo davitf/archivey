@@ -3,8 +3,8 @@
 Answers from the maintainer. Recorded here so phase 3 has one place to read from;
 the affected phase-1 artifacts have been updated in place to match.
 
-Still open: **Q7 B, Q8, Q9** (`QUESTIONS.md`).
-Q3–Q6 answered (D4–D7); Q7 A answered (D8). Q7 B (`known-issues.md`) still open.
+Still open: **Q8, Q9** (`QUESTIONS.md`).
+Q3–Q7 answered (D4–D9).
 
 ---
 
@@ -200,7 +200,7 @@ silently “interpret” the requirement as satisfied by `formats.md` alone.
 | Streaming mode is one pass | should/shouldn't | **IN** |
 | `get(name)` last-wins; `extract_all(members=[name])` matches every | should/shouldn't | **IN** |
 | STRICT name rewrite / cross-platform collisions | should/shouldn't | **IN (one bullet)** ✅ |
-| Do not close source under live accelerator | should/shouldn't | **IN** |
+| Do not close source under live accelerator | should/shouldn't → **rewrite** | **Stale as written.** Bug 3 is contained via `_TrappingSource` (fault → benign EOF toward rapidgzip; archivey re-raises). Gotchas must not say “process dies.” Topic 8: rewrite; residual path-source abort class may stay under be-aware-of. See D9. |
 | Accelerators + untrusted input / latency budget | should/shouldn't | **IN** |
 | Wrong password → garbage / no integrity anchor | be aware of | **IN** |
 | TAR residuals (trailer-less warn; streaming final header) + “we differ from stdlib on corruption” orientation | be aware of | **IN** |
@@ -319,3 +319,39 @@ change now.**
 `VISION.md` / `SECURITY.md` pointers that today cite `docs/internal/threat-model.md`
 repoint at the published posture on `safe-extraction.md` and/or the
 `dev-docs/` register path as appropriate.
+
+---
+
+## D9 — Q7 B: move `known-issues.md` whole; triage later. **Approved.**
+
+> *"agree. but let's write down that we should do this follow up"*
+
+**Now (phase 3):** `git mv docs/internal/known-issues.md →
+dev-docs/known-issues.md`. No published subset. User-page links drop or become
+GitHub URLs per D3/D4 (most facts already on Gotchas / formats / SECURITY). Fix
+index blurb (O-8) and runtime error strings that cite the old path (O-12).
+
+**Follow-up (explicit, do not skip):** triage the file so it does not remain an
+unwieldy dump. Classify every section into:
+
+| Bucket | Meaning | Long-term home |
+|---|---|---|
+| Resolved (ours) | Fixed in archivey | Short note or delete; detail → `investigations/` / git |
+| Mitigated (ours) | Upstream/stdlib broken; we contain it | Current-contract notes here; user one-liners → Gotchas / formats |
+| Upstream unfixable | Need upstream; we only work around | Stay in `known-issues` + link investigation / upstream report |
+| Open, we can fix | Archivey work remaining | Prefer `open-issues` / OpenSpec change / `IDEAS` — not forensics |
+| Evidence only | Valgrind, CI run IDs, soak matrices | `investigations/` or drop once the conclusion is recorded |
+
+**Sibling map** (keep distinct):
+
+- `IDEAS.md` — speculative product (“we might build X”)
+- `open-issues.md` — maintainer triage of product gaps
+- `threat-model.md` (post-D8) — security/compat backlog
+- `known-issues.md` — defect/contract forensics (upstream + mitigations + evidence)
+- `investigations/` — finished write-ups that fed the above
+
+**Gotchas (Topic 8, with D4):** rewrite the “don’t close a source under a live
+accelerator” bullet — archivey’s `_TrappingSource` contains Bug 3 (re-raise, no
+process abort on the archivey path). Residual path-source abort class may remain
+under be-aware-of; link `dev-docs/known-issues.md` / upstream report via GitHub
+if depth is worth keeping.
