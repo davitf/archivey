@@ -177,7 +177,7 @@ def _open_member(self, member: ArchiveMember) -> BinaryIO: ...
 # exempt unless MemberStreams.CONCURRENT is declared (then TAR/ISO use one per-reader
 # shared-handle lock). With MemberStreams.CONCURRENT: materialize, then fan out;
 # free-threaded correctness is covered by the Linux 3.13t CI job. Full contract:
-# docs/grab-bag/parallel-reader.md.
+# dev-docs/investigations/parallel-reader.md.
 
 @abstractmethod
 def _close_archive(self) -> None: ...

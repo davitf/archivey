@@ -149,7 +149,7 @@ retrofit (the accelerator used to sit directly on the caller's stream) and can o
 upstream. Path sources are unaffected (rapidgzip owns an independent handle) for the
 *Python-source-raises* trigger. Separately, some **path**-source truncations / CRC
 mismatches can still `std::terminate` during worker finalization after a Python
-exception — see `docs/internal/rapidgzip-upstream-report.md` §2. The stdlib codec
+exception — see `dev-docs/investigations/rapidgzip-upstream-report.md` §2. The stdlib codec
 fallbacks raise a normal `ValueError`, which the reader boundary translates to
 `UnsupportedOperationError`.
 
@@ -201,7 +201,7 @@ longer load-bearing and the wrapper could be simplified.
 **Status: root cause pinpointed to the pyppmd 1.3.0 `ThreadDecoder.c` rewrite (upstream
 PR miurahr/pyppmd#126); mitigated in archivey by bounding every decode; not yet fixed
 upstream (no issue filed there as of 2026-07-16 — ready-to-file draft in
-`docs/internal/pyppmd-upstream-report.md`). Linux and Windows both affected (different
+`dev-docs/investigations/pyppmd-upstream-report.md`). Linux and Windows both affected (different
 trigger shapes).** Not adversarial input — happy-path encode/decode of valid PPMd data.
 
 ### Root cause (valgrind-confirmed; refined 2026-07-23)
@@ -224,8 +224,8 @@ they never crash, and why py7zr (which always passes `max_length`) never sees th
 
 Full source-level analysis, valgrind evidence, the 1.2.0→1.3.0 regression window, and
 the corrected, ready-to-file upstream report are in
-`docs/internal/ppmd-native-investigation-results.md` (§D root cause, §J report). The
-older `docs/internal/pyppmd-upstream-report.md` is folded into a pointer to it (it had
+`dev-docs/investigations/ppmd-native-investigation-results.md` (§D root cause, §J report). The
+older `dev-docs/investigations/pyppmd-upstream-report.md` is folded into a pointer to it (it had
 attributed the corruption to the model walk; §J corrects that to the output-buffer UAF).
 The deterministic valgrind gate is `scripts/ppmd_uaf_valgrind.py`.
 
@@ -408,7 +408,7 @@ ARCHIVEY_PPMD_STRESS_ITERS=30 uv run --no-sync python scripts/ppmd_native_stress
 ### Next steps
 
 - **File the upstream issue** — the ready-to-file draft (root cause, repro, crash-rate
-  tables, suggested fixes) is `docs/internal/pyppmd-upstream-report.md`; the repro
+  tables, suggested fixes) is `dev-docs/investigations/pyppmd-upstream-report.md`; the repro
   script is self-contained (`pyppmd` + stdlib). No matching issue existed upstream as
   of 2026-07-16.
 - When a fixed pyppmd ships, run the verification checklist at the end of that report;
@@ -428,8 +428,8 @@ decoder is freed so `Ppmd7T_Free` cannot resume it into the freed output block
 (the same UAF, at teardown). Both mitigations attack the same defect: never leave
 a native worker blocked at dispose. Required CI **still** keeps
 `--allow-exit-after-green` for this module — see the caveat below. Full lab notes:
-`docs/internal/ppmd-exit-after-green-exploration.md`; corrected root cause and the
-quiesce measurement: `docs/internal/ppmd-native-investigation-results.md` (§D, §I).
+`dev-docs/investigations/ppmd-exit-after-green-exploration.md`; corrected root cause and the
+quiesce measurement: `dev-docs/investigations/ppmd-native-investigation-results.md` (§D, §I).
 
 ### Symptom (pre-mitigation)
 
@@ -524,7 +524,7 @@ Do **not** claim the Free race is gone until the deterministic
 `scripts/ppmd_uaf_valgrind.py` gate is green on the hot-race platforms
 (3.12+/free-threaded/Windows) or teardown is process-isolated by default;
 quiesce-on-close is defense-in-depth (see *Residual*). See also: exploration doc,
-`docs/internal/ppmd-native-investigation-results.md` (§D/§I/§J),
+`dev-docs/investigations/ppmd-native-investigation-results.md` (§D/§I/§J),
 `scripts/ci_run_native_modules.py`, `.github/workflows/ppmd-native-stress.yml`.
 
 ## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)

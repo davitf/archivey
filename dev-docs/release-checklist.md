@@ -22,7 +22,7 @@ from the git tag). `publish.yml` fails if the tag and packaged version disagree.
       T2/T3/T7/D4; D2 `SECURITY.md` and DD4 rapidgzip characterization are done).
 - [ ] First public release only: cutover runbook complete (or consciously
       releasing to TestPyPI while finishing remaining cutover steps — see
-      `docs/internal/release-repo-cutover.md`; repo is already named `archivey`).
+      `dev-docs/release-repo-cutover.md`; repo is already named `archivey`).
 
 ---
 
@@ -112,9 +112,9 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
       `access-and-cost.md`.
 - [ ] `VISION.md` performance / safety sentences still match what you are willing
       to ship (no falsifiable over-claim).
-- [ ] `docs/internal/threat-model.md` open items: either fixed, consciously
+- [ ] `dev-docs/threat-model.md` open items: either fixed, consciously
       deferred with wording, or called out in SECURITY / gotchas.
-- [ ] `docs/internal/open-issues.md` not contradicting shipped decisions (stale
+- [ ] `dev-docs/open-issues.md` not contradicting shipped decisions (stale
       rows fixed or moved to Closed).
 - [ ] MkDocs builds clean:
 

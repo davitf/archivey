@@ -80,7 +80,7 @@ same change when relevant.
 - **Why fixable:** Spec’d hardening / shared emission table; called out in the
   unrar-piping investigation as a future change (same class as mixed-password
   ALL-pipe forbid).
-- **Refs:** PR #101 (still open) / `docs/internal/rar-unrar-piping-investigation.md`
+- **Refs:** PR #101 (still open) / `dev-docs/investigations/rar-unrar-piping-investigation.md`
   (when merged); `format-rar`.
 
 ---

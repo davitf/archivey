@@ -13,7 +13,7 @@ Deep dive (code citations, issue table, repros):
 Archivey product mitigation (empty→stdlib fallback + single-member ISIZE backstop):
 **implemented** in `_GzipTruncationCheckStream` (OpenSpec change
 `rapidgzip-truncation-investigation`). Accelerator shutdown / dual-load /
-Python-source `terminate()`: `docs/internal/known-issues.md` (Bugs 1–3).
+Python-source `terminate()`: `dev-docs/known-issues.md` (Bugs 1–3).
 
 Pinned: **rapidgzip 0.16.0** ≡ librapidarchive `1221a30` (`[version] Bump rapidgzip
 version to 0.16.0`). Soft-EOF paths unchanged on inspected HEAD.

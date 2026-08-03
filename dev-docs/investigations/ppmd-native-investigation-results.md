@@ -1,9 +1,9 @@
 # PPMd / pyppmd native investigation — results
 
-**Brief:** `docs/internal/ppmd-native-investigation-brief.md`
-**Prior work:** `docs/internal/pyppmd-upstream-report.md`,
-`docs/internal/ppmd-exit-after-green-exploration.md`,
-`docs/internal/known-issues.md`, `scripts/pyppmd_crash_repro.py`
+**Brief:** `dev-docs/investigations/ppmd-native-investigation-brief.md`
+**Prior work:** `dev-docs/investigations/pyppmd-upstream-report.md`,
+`dev-docs/investigations/ppmd-exit-after-green-exploration.md`,
+`dev-docs/known-issues.md`, `scripts/pyppmd_crash_repro.py`
 **Date started:** 2026-07-23
 **Status:** complete (empirical + source). Findings appended as experiments
 finished. Source
@@ -561,7 +561,7 @@ already-green soak.
 ## J. Upstream report (ready to file against miurahr/pyppmd)
 
 This section is the self-contained, paste-able bug report. It **supersedes the
-root-cause analysis** in `docs/internal/pyppmd-upstream-report.md` (that draft
+root-cause analysis** in `dev-docs/investigations/pyppmd-upstream-report.md` (that draft
 attributed the corruption to the vendored 7-Zip model being walked on a
 desynchronised range coder; valgrind shows the *first* corrupting write is an
 output-buffer use-after-free in pyppmd's own `ThreadDecoder.c`). The two describe
@@ -679,7 +679,7 @@ Never overshoot: require the exact `unpack_size`; bound every `decode` to
 drains; a single capped extra NUL. Plus **quiesce-on-close** — drive a parked
 worker to `finished` with bounded `decode(b"\0", 1)` before disposal so
 `Ppmd7T_Free` cannot resume it into freed memory (`PpmdDecoder._quiesce_worker`,
-§I). See `docs/internal/known-issues.md`.
+§I). See `dev-docs/known-issues.md`.
 
 ### Verification checklist for a fixed release
 

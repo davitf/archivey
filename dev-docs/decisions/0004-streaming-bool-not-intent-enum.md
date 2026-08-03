@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** during v2 build (post-COMPARISON recommendation)
-- **Provenance:** `docs/grab-bag/COMPARISON.md` decision update; OpenSpec
+- **Provenance:** `dev-docs/history/COMPARISON.md` decision update; OpenSpec
   `access-mode-and-cost`
 
 ## Context

@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** early architecture
-- **Provenance:** `docs/grab-bag/ARCHITECTURE.md` §5.1; OpenSpec `format-zip`
+- **Provenance:** `dev-docs/history/ARCHITECTURE.md` §5.1; OpenSpec `format-zip`
 
 ## Context
 
