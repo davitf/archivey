@@ -121,12 +121,13 @@ with open_archive("photos.zip") as reader:      # no CONCURRENT declared
 ```
 
 That is the deliberate design: accidental cross-thread sharing fails loudly on the first
-call instead of corrupting data on some later run. See
-[decision 0003](decisions/0003-member-streams-opt-in.md) for why capabilities are opt-in.
+call instead of corrupting data on some later run. Capabilities are opt-in rather than
+always-on because the single-stream default is what lets a reader hold one decode
+position per archive, which is the cheap path for every format.
 
 Note that `ConcurrentAccessError` is an
 [`ArchiveyUsageError`][archivey.ArchiveyUsageError], which sits **outside** the
-`ArchiveyError` tree ([decision 0012](decisions/0012-usage-errors-outside-archiveyerror.md)).
+`ArchiveyError` tree.
 A broad `except ArchiveyError` around your archive handling will *not* swallow it — which
 is intended, because it reports a bug in the calling code, not a problem with the archive.
 

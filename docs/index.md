@@ -43,8 +43,15 @@ with archivey.open_archive("photos.zip") as reader:
 
 ## For contributors
 
-- **[Decision log](decisions/index.md)** — why key design choices were made
-- **[Internal reference](internal/index.md)** — threat model, codec analysis, known issues
-- **[Grab-bag](grab-bag/index.md)** — historical prose, explorations, triage later
-- Repo root (not part of this site): `VISION.md`, `PLAN.md`, `IDEAS.md`,
-  `CONTRIBUTING.md`; authoritative contracts in `openspec/specs/`
+This site is the user guide, and nothing else. Contributor material lives in the
+[repository](https://github.com/davitf/archivey):
+
+- [`CONTRIBUTING.md`](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)
+  — coding and testing standards
+- [`openspec/specs/`](https://github.com/davitf/archivey/tree/main/openspec/specs)
+  — the authoritative behaviour contracts
+- [`dev-docs/`](https://github.com/davitf/archivey/tree/main/dev-docs) — decision
+  log, threat model, codec analysis, known issues, roadmap, and finished
+  investigations
+- [`VISION.md`](https://github.com/davitf/archivey/blob/main/VISION.md) — what the
+  project is for and how trade-offs get settled

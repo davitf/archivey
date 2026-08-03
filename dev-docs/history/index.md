@@ -1,16 +1,18 @@
-# Grab-bag (triage later)
+# History (triage later)
 
-Material that does **not** belong in the end-user guide or the curated decision log, but
-must not be deleted. Sort these into OpenSpec annexes, decisions, or `docs/internal/`
-when someone has time.
+Superseded prose, kept for provenance: several ADRs cite these documents, and
+`release-repo-cutover.md` treats them as the historical record. Material that does
+**not** belong in the end-user guide or the curated decision log, but must not be
+deleted. Sort these into OpenSpec annexes, decisions, or `dev-docs/` when someone has
+time.
 
 | Doc | Likely status | Notes |
 | --- | --- | --- |
 | [SPEC.md](SPEC.md) | **Superseded as authority** by `openspec/specs/` | Large prose contract; useful archaeology; may drift |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Partially superseded | Module layout + trade-offs; load-bearing “why” extracted to `docs/decisions/` |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Partially superseded | Module layout + trade-offs; load-bearing “why” extracted to `dev-docs/decisions/` |
 | [COMPARISON.md](COMPARISON.md) | Historical | DEV vs clean-slate comparison; Intent-enum recommendation later reversed |
 | [ASYNC.md](ASYNC.md) | Exploration | Not a v1 decision; sync-only stands; seams still interesting |
-| [parallel-reader.md](parallel-reader.md) | Exploration → mostly landed | Concurrent-member-streams superseded much of this; keep for audit notes / benchmarks pointers |
+| [parallel-reader.md](../investigations/parallel-reader.md) | Exploration → mostly landed | Filed under `investigations/` — still cited from `src/`. Concurrent-member-streams superseded much of this; keep for audit notes / benchmarks pointers |
 
 ## Suggested triage (not done in this pass)
 

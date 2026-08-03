@@ -5,7 +5,7 @@ Linux ``warmup_codecs`` abort and the Windows fresh-process heap corruption have
 pytest entry point. They are **excluded from the default suite** via the
 ``ppmd_native_stress`` marker (selected only by the non-blocking stress workflow).
 
-See ``docs/internal/known-issues.md``.
+See ``dev-docs/known-issues.md``.
 """
 
 from __future__ import annotations

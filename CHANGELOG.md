@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 How to update this file for a release: see
-[`docs/internal/release-checklist.md`](docs/internal/release-checklist.md)
+[`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)
 (commit walk since the previous tag + performance numbers vs that release).
 
 ## [Unreleased]
@@ -46,7 +46,7 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Security
 
-- Threat model and open residuals: `docs/internal/threat-model.md`.
+- Threat model and open residuals: `dev-docs/threat-model.md`.
 - Root [`SECURITY.md`](SECURITY.md) — private vulnerability reporting via
   [GitHub Security Advisories](https://github.com/davitf/archivey/security/advisories/new),
   scope, and guidance that optional `[seekable]` accelerators are not part of

@@ -511,7 +511,7 @@ class TarReader(BaseArchiveReader):
         Streaming cannot see a rejected *final* header (tarfile's ``_Stream`` hides the
         block and it cannot be recovered without re-reading), so that one case surfaces as
         a missing-trailer warning there rather than corruption — see
-        ``docs/internal/known-issues.md``.
+        ``dev-docs/known-issues.md``.
         """
         if self._eof_header_rejected:
             self._emit_eof_marker(

@@ -161,7 +161,7 @@ input (`block_offsets_complete=True` is not trustworthy). Archivey backstops gzi
 seekable source** (path or caller-owned `BinaryIO`) with empty→stdlib fallback plus a
 single-member ISIZE compare; multi-member ISIZE sum is deferred. Full write-up:
 [`rapidgzip-upstream-report.md`](rapidgzip-upstream-report.md). End-user note:
-[Gotchas](../gotchas.md#format-limitations). **Not filed upstream** (would be a feature request
+[Gotchas](../docs/gotchas.md#format-limitations). **Not filed upstream** (would be a feature request
 for an incompleteness flag, not a bug report).
 
 ### rapidgzip's index does not expose gzip member boundaries (0.16.0)

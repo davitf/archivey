@@ -242,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     _safe_print(
         "Note: coverage is disabled in children; last-nodeid breadcrumbs survive "
-        "SIGSEGV/SIGABRT. See docs/internal/known-issues.md."
+        "SIGSEGV/SIGABRT. See dev-docs/known-issues.md."
     )
 
     results: list[tuple[str, int, str, str]] = []
@@ -306,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     if soft:
         lines.append(
             f"{soft} run(s) aborted after a green pytest session (known pyppmd "
-            "exit-time flake; see `docs/internal/known-issues.md`). Soft-counted "
+            "exit-time flake; see `dev-docs/known-issues.md`). Soft-counted "
             "because `--allow-exit-after-green` was set."
         )
         lines.append("")
@@ -314,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         "Coverage is disabled in these children: a poisoned heap often only aborts "
         "during pytest-cov flush/GC or interpreter teardown after every test passed. "
         "Split modules + last-nodeid breadcrumbs are for locating the offender. See "
-        "`docs/internal/known-issues.md`."
+        "`dev-docs/known-issues.md`."
     )
     summary = "\n".join(lines) + "\n"
 

@@ -8,7 +8,7 @@ give credit properly.
 License texts for adapted kernels live next to the code
 (`src/archivey/internal/streams/unix_compress.py`,
 `src/archivey/internal/backends/rar_parser.py`). Packaging extras and codec rationale:
-[Formats](formats.md), [library analysis](internal/library-analysis.md).
+[Formats](formats.md), [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
 
 ## Thanks
 
@@ -32,8 +32,8 @@ These are not on the primary read path (except where noted).
 
 | Project | Role |
 | --- | --- |
-| [py7zr](https://github.com/miurahr/py7zr) (Hiroshi Miura et al.) | 7z **format reference** and **dev oracle** / optional external corpus (`ARCHIVEY_PY7ZR_TEST_FILES`). Reading is native; writing is not shipped yet — see [ADR 0001](decisions/0001-native-7z-not-py7zr.md). |
-| [rarfile](https://github.com/markokr/rarfile) | RAR **format reference**, **dev oracle**, optional corpus (`ARCHIVEY_RARFILE_TEST_FILES`), and two legacy fixtures under `tests/fixtures/rar/` (RAR 1.5 / 2.0). Reading metadata is native; data uses RARLAB `unrar` — see [ADR 0002](decisions/0002-native-rar-metadata-unrar-data.md). |
+| [py7zr](https://github.com/miurahr/py7zr) (Hiroshi Miura et al.) | 7z **format reference** and **dev oracle** / optional external corpus (`ARCHIVEY_PY7ZR_TEST_FILES`). Reading is native (a pure-Python header parser over stdlib codecs, so the common 7z archive needs no third-party package); writing is not shipped yet. |
+| [rarfile](https://github.com/markokr/rarfile) | RAR **format reference**, **dev oracle**, optional corpus (`ARCHIVEY_RARFILE_TEST_FILES`), and two legacy fixtures under `tests/fixtures/rar/` (RAR 1.5 / 2.0). Reading metadata is native; member data uses RARLAB `unrar`, because the RAR decompression algorithm is not licensed for reimplementation. |
 | [libarchive](https://github.com/libarchive/libarchive) (+ [libarchive-c](https://github.com/Changaco/python-libarchive-c)) | Optional **cross-format corpus** oracle (`ARCHIVEY_LIBARCHIVE_TEST_FILES` → libarchive’s `libarchive/test` uuencoded archives). Dev-only; not a runtime backend. |
 | [7-Zip](https://www.7-zip.org/) / `7z` CLI ([p7zip](https://github.com/p7zip-project/p7zip)) | Fixture builder and anti-item / encrypted-ZIP oracle in tests (when installed). |
 | [RARLAB](https://www.rarlab.com/) `unrar` / `rar` | Runtime decompressor for RAR **member data**; fixture generator for committed RAR samples. |
@@ -41,9 +41,11 @@ These are not on the primary read path (except where noted).
 ## Seekable-stream design references
 
 Indexed / seekable decompressors shaped the stream layer even when Archivey does **not**
-depend on them. Full scoring lives in [library analysis](internal/library-analysis.md);
-the single-accelerator constraint is in [ADR 0008](decisions/0008-single-accelerator-rapidgzip.md)
-and [known issues](internal/known-issues.md).
+depend on them. Archivey loads **one** accelerator library per process: rapidgzip covers gzip and
+bzip2, and standalone `indexed_bzip2` is deliberately not imported because loading
+both corrupts the heap on macOS. Full scoring lives in
+[library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md); the accelerator
+lifecycle notes are in [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 | Project | Role |
 | --- | --- |
@@ -51,7 +53,7 @@ and [known issues](internal/known-issues.md).
 | [rapidgzip](https://github.com/mxmlnkn/rapidgzip) (mxmlnkn) | Runtime `[seekable]` accelerator for gzip **and** bzip2 (`IndexedBzip2File` bundled inside rapidgzip). |
 | [indexed_bzip2](https://github.com/mxmlnkn/indexed_bzip2) / [indexed_gzip](https://github.com/pauldmccarthy/indexed_gzip) | Evaluated for random access; standalone `indexed_bzip2` is **deliberately not** imported (macOS dual-load heap corruption with rapidgzip). Same author lineage as rapidgzip; also relevant via [ratarmount](https://github.com/mxmlnkn/ratarmount). |
 | [indexed_zstd](https://github.com/martinellimarco/indexed_zstd) (martinellimarco) | Evaluated for efficient seeking over arbitrary `.zst`; **deferred** (frame-granularity only; C++ coexistence risk). Tracked in `IDEAS.md`. |
-| [pyzstd](https://github.com/animalize/pyzstd) | Evaluated for zstd decode / `SeekableZstdFile` (Seekable Zstd container only). Decode instead targets stdlib `compression.zstd` / [backports.zstd](https://github.com/Rogdham/backports.zstd) — see [ADR 0009](decisions/0009-zstd-stdlib-backports.md). |
+| [pyzstd](https://github.com/animalize/pyzstd) | Evaluated for zstd decode / `SeekableZstdFile` (Seekable Zstd container only). Decode instead targets stdlib `compression.zstd` (Python 3.14+) and [backports.zstd](https://github.com/Rogdham/backports.zstd) below it, so zstd needs no permanent third-party dependency. |
 | [zstandard](https://github.com/indygreg/python-zstandard) | Former zstd backend; replaced after the compression-library evaluation. |
 
 ## Runtime dependencies (optional extras)

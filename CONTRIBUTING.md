@@ -4,10 +4,13 @@ Thanks for working on Archivey! This file is the **coding and testing standards*
 the *design* lives elsewhere and is authoritative:
 
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs.
-- `docs/` — end-user guide; `docs/decisions/` — design decision log; `docs/internal/` —
-  threat model / codec analysis; `docs/grab-bag/` — historical SPEC/ARCHITECTURE/
-  COMPARISON/ASYNC and explorations (not normative).
-- `VISION.md`, `PLAN.md`, `IDEAS.md` — vision, roadmap, backlog.
+- `docs/` — the published end-user guide, and nothing else (see "Where does a new doc
+  go?" at the end of this file).
+- `dev-docs/` — unpublished maintainer material: `decisions/` (the ADR log),
+  threat model / codec analysis / known issues, `investigations/` (finished
+  evidence), `history/` (superseded SPEC/ARCHITECTURE/COMPARISON/ASYNC prose,
+  not normative).
+- `VISION.md` (repo root), `dev-docs/PLAN.md`, `dev-docs/IDEAS.md` — vision, roadmap, backlog.
 - `openspec/changes/<change>/` — in-flight proposals (propose changes here, don't
   edit shipped specs ad hoc). Default schema is `library` (compact library-style
   deltas); see `openspec/schemas/library/README.md` and `openspec/config.yaml`.
@@ -87,10 +90,10 @@ workflow must pass `--python <matrix>` (and `UV_PYTHON`) on every `uv sync` /
 
 ## Cutting a release
 
-See [`docs/internal/release-checklist.md`](docs/internal/release-checklist.md)
+See [`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)
 (CHANGELOG triage, perf vs previous tag, docs, three-config tests, version bump,
 tag, publish). One-time repo rename / PyPI setup:
-[`docs/internal/release-repo-cutover.md`](docs/internal/release-repo-cutover.md).
+[`dev-docs/release-repo-cutover.md`](dev-docs/release-repo-cutover.md).
 User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Tooling decisions
@@ -131,7 +134,7 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
 - **Comments explain *why*, not *what*.** Match the comment density and style of the
   surrounding code. Don't narrate what the code obviously does; do explain non-obvious
   decisions, format quirks, and edge cases (these archives are full of them). For a
-  complex decision, a comment **may point** at a spec, `docs/decisions/`, architecture
+  complex decision, a comment **may point** at a spec, `dev-docs/decisions/`, architecture
   note, exploration, or OpenSpec change — but **summarize the reason inline whenever
   possible** so the pointer is optional depth, not the only explanation.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
@@ -221,3 +224,34 @@ ask the maintainer** rather than silently picking an interpretation. A conflict 
 means a decision hasn't been made yet, and guessing bakes the wrong one into the code.
 Surface it (an issue, a PR comment, or an `openspec/changes/` proposal) and let it be
 decided explicitly.
+
+## Where does a new doc go?
+
+Four questions, in order. The first `yes` wins.
+
+1. **Would someone who only *uses* the library need it?** → `docs/`, **and add it to
+   `mkdocs.yml`'s nav in the same commit**. Curated "why we chose X" one-liners for
+   curious users belong inline on the page that raises the question, not as a new
+   page per decision.
+2. **Is it a load-bearing "why" that is decided and won't change?** → a new ADR in
+   `dev-docs/decisions/`, ADR-shaped (Context / Decision / Consequences, tens of
+   lines). If it needs an `## Open questions` section, it is not an ADR yet.
+3. **Does a contributor need it to work on the code *today*?** → `dev-docs/` (a live
+   register or a runbook).
+4. **Is it finished evidence — an investigation, a superseded design, a lab
+   notebook?** → `dev-docs/investigations/`, or `dev-docs/history/` for prose that a
+   newer document replaced.
+
+If it is a *review*, it belongs to the `review/` lifecycle. If it is a *proposed
+behaviour change*, it belongs to `openspec/changes/`.
+
+**The invariant:** everything under `docs/` is published and is for users; nothing
+else lives under `docs/`. That is why maintainer material sits in `dev-docs/` rather
+than under `docs/` behind an exclusion list — an exclusion list needs a second list
+to keep in sync with the first, and drift between the two is what left six pages
+published, URL-reachable and absent from every menu.
+
+`scripts/check_docs_nav.py` enforces it, along with the rule that a published page
+must not link into unpublished material: prefer inlining the fact, and where the
+depth is genuinely worth keeping, link the file on GitHub with an absolute
+`https://github.com/davitf/archivey/blob/main/…` URL.

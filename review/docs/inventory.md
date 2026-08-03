@@ -219,19 +219,25 @@ Ordered so each commit is verifiable by inspection. No redirects (the free windo
 is open — brief, Hard constraints); no content edits except the three splits, which
 get their own commits.
 
+**Refreshed 2026-08-03.** The original table predated D2's revision (which moved the
+raw ADR log out of the site) and so had no row for `docs/decisions/`; it also
+predated the decision to split phase 3 into two OpenSpec changes. Both are folded in
+below. Commits 1–5 are `openspec/changes/docs-ia-unpublish-maintainer-tree`; 6–9 are
+the follow-up change.
+
 | # | Commit | Shape | Verifiable by |
 |---|---|---|---|
 | 1 | Delete the four root stubs | 4 deletions + `IDEAS.md:6` repoint | Inspection |
-| 2 | `git mv docs/internal → dev-docs`, `docs/grab-bag → dev-docs/history` | Pure rename + `mkdocs.yml` nav deletions | `git log --follow`; `mkdocs build --strict` |
-| 3 | Repoint inbound links | ~35 edits: 9 in `docs/**`, 8 code comments, 2 runtime error strings, `CONTRIBUTING`/`CHANGELOG`/`VISION`/`PLAN`/`IDEAS`/`CLAUDE`/`SECURITY`, `openspec/project.md` | `grep -r 'docs/internal\|grab-bag'` returns only archived material |
-| 4 | OpenSpec delta: `documentation` + `packaging-and-extras` | Spec change, **gated on Q1** | `openspec validate --strict` |
-| 5 | Split `usage.md` → 4 pages | Content move, no rewrite; **also needs a `documentation` delta** (below) | Diff shows moved blocks only; `openspec validate --strict` |
-| 6 | Split ADR 0014 | Content move | Same |
-| 7 | Split `threat-model.md` | Content move | Same |
-| 8 | Shrink `gotchas.md` to an index | Content **deletion** + links | Each removed bullet has a surviving home |
-| 9 | Guardrails | Nav-completeness check, link checker, `CONTRIBUTING.md` placement rule | CI red on a planted violation |
+| 2 | `git mv` the maintainer tree: `docs/internal → dev-docs` (investigations to `dev-docs/investigations/`), `docs/grab-bag → dev-docs/history`, **`docs/decisions → dev-docs/decisions`** (D2), `PLAN`/`IDEAS` → `dev-docs/` (D7) | Pure rename (35 files) + `mkdocs.yml` nav deletions (27 entries) | `git status` shows renames; `git log --follow`; `mkdocs build --strict` |
+| 3 | Repoint inbound references | ~90 edits: `src/**` (incl. **2 runtime error strings**), `tests/`, `scripts/`, CI workflows, `pyproject.toml`, root docs, `openspec/project.md`, `.claude/`, and the relative links inside the moved tree | `grep -r 'docs/internal\|docs/grab-bag\|docs/decisions'` returns only `review/**` and archives |
+| 4 | Resolve published-page links | D3's nine (4 dropped, 5 → absolute repo URLs, `index.md` block rewritten) + D2's ten ADR links (inlined and dropped) | `grep '](internal/\|](grab-bag/\|](decisions/' docs/*.md` is empty |
+| 5 | Guardrails + `documentation` / `packaging-and-extras` deltas | `scripts/check_docs_nav.py`, CI wiring, `CONTRIBUTING.md` placement rule | CI red on a planted violation; `openspec validate --strict` |
+| 6 | Split `usage.md` → 4 pages | Content move, no rewrite; **also needs a `documentation` delta** (below) | Diff shows moved blocks only; `openspec validate --strict` |
+| 7 | Split ADR 0014 | Content move | Same |
+| 8 | Split `threat-model.md` | Content move | Same |
+| 9 | Shrink `gotchas.md` to an index; `how-it-works.md`; the D4 Gotchas delta | Content **deletion** + links + one new page | Each removed bullet has a surviving home |
 
-Commits 5–8 are the only ones that touch prose, and each is a single page. Commits
+Commits 6–9 are the only ones that touch prose, and each is a single page. Commits
 1–3 are the bulk of the file churn and are `git mv`-only.
 
 **Correction (2026-07-29, maintainer review): commit 5 needs a spec delta too.**

@@ -3,7 +3,7 @@
 > **Not user-facing.** Holding area for items that *look* like user gotchas but are
 > candidates to fix (product), sync (docs/specs), or deliberately leave irreducible.
 > Companion to [threat-model.md](threat-model.md) (security/compat gap register) and
-> root `IDEAS.md` (speculative backlog). User-facing [Gotchas](../gotchas.md) should
+> `dev-docs/IDEAS.md` (speculative backlog). User-facing [Gotchas](../docs/gotchas.md) should
 > keep the **irreducible** bucket (plus post-v1 “may improve later” notes) —
 > everything else either ships as a fix or stays here until it does.
 >
@@ -110,7 +110,7 @@ Code is done unless noted. These should not appear in Gotchas as “broken.”
 ## Irreducible — document forever (user Gotchas)
 
 These are constraints of formats, stdlib, or upstream. Hardenings and diagnostics
-help; they do not disappear. Covered in [Gotchas](../gotchas.md).
+help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 
 - **Solid archives:** out-of-order `open()` can re-decode; prefer `stream_members()`.
 - **Seek without index:** backward seek may re-decompress (`STREAM_REWIND_REDECOMPRESSES`).

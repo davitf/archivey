@@ -10,14 +10,14 @@ v1 tree is [`davitf/archivey-old`](https://github.com/davitf/archivey-old).
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
   strategy; the tie-breaker when trade-offs conflict. End-user distill:
   `docs/philosophy.md`.
-- `PLAN.md` — phased implementation roadmap (resequenced 2026-07: native 7z/RAR
-  before CLI before writing). `IDEAS.md` — speculative backlog.
+- `dev-docs/PLAN.md` — phased implementation roadmap (resequenced 2026-07: native
+  7z/RAR before CLI before writing). `dev-docs/IDEAS.md` — speculative backlog.
 - `docs/` — end-user MkDocs guide (`philosophy`, `usage`, `costs`, `formats`,
-  `safe-extraction`, `api`). `docs/decisions/` — ADR-style “why” log.
-  `docs/internal/` — threat model, codec analysis, known issues.
-  `docs/grab-bag/` — historical `SPEC` / `ARCHITECTURE` / `COMPARISON` / `ASYNC`
+  `safe-extraction`, `api`). `dev-docs/decisions/` — ADR-style “why” log.
+  `dev-docs/` — threat model, codec analysis, known issues.
+  `dev-docs/history/` — historical `SPEC` / `ARCHITECTURE` / `COMPARISON` / `ASYNC`
   and explorations (not normative; triage later).
-- `docs/internal/threat-model.md` — trust boundaries + the open security/compat gap
+- `dev-docs/threat-model.md` — trust boundaries + the open security/compat gap
   register (each open item becomes an OpenSpec change when tackled).
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs
   (OpenSpec format: requirements + WHEN/THEN scenarios). The specs are authoritative,
@@ -29,7 +29,8 @@ v1 tree is [`davitf/archivey-old`](https://github.com/davitf/archivey-old).
 - `openspec/changes/<change>/` — in-flight change proposals (proposal/tasks).
 - `CONTRIBUTING.md` — coding/testing standards (type-checking, exception translation,
   behaviour-focused tests, red-green TDD, the pause-and-ask-on-discrepancies rule).
-- `IDEAS.md` — speculative future/backlog ideas (not committed, not in `PLAN.md`).
+- `dev-docs/IDEAS.md` — speculative future/backlog ideas (not committed, not in
+  `dev-docs/PLAN.md`).
 
 ## Session setup (`unrar`, `7z`, `openspec`, deps)
 

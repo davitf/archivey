@@ -210,7 +210,7 @@ write failure.
   still rejected. `TRUSTED` attempts the faithful bytes and lets the local OS decide.
 
 Residual: a public un-escape helper is deferred (addable non-breakingly). User-facing
-notes: [Gotchas — Extraction](../gotchas.md#extraction), ADR 0013.
+notes: [Gotchas — Extraction](../docs/gotchas.md#extraction), ADR 0013.
 
 ### O8. 7z wrong header-decryption password can silently yield an *empty* archive — mitigated
 
@@ -282,7 +282,7 @@ machine" plus divergent solid/password behavior.
 Non-RARLAB binaries on `PATH` raise `PackageNotInstalledError` naming RARLAB `unrar`;
 there is no silent fallback to `unrar-free` / `unar` / `7z`. Licensing remains a
 documented system dependency (archivey itself stays permissively licensed). See
-ADR [`0002-native-rar-metadata-unrar-data`](../decisions/0002-native-rar-metadata-unrar-data.md)
+ADR [`0002-native-rar-metadata-unrar-data`](decisions/0002-native-rar-metadata-unrar-data.md)
 and OpenSpec `format-rar`.
 
 ### C2. Warnings that should be data — addressed
@@ -318,4 +318,4 @@ must use real synchronization rather than relying on the GIL. Parallel extractio
 remains future, and speed claims require measurements proportionate to the mechanism changed.
 Accelerator close-before-finalize
 (`known-issues.md`) still applies, so member-stream lifecycle leases defer backend teardown
-until the final stream closes. See [`parallel-reader.md`](../grab-bag/parallel-reader.md) §4.
+until the final stream closes. See [`parallel-reader.md`](investigations/parallel-reader.md) §4.

@@ -14,36 +14,12 @@ nav:
   - Platforms and threading: support-matrix.md
   - API reference: api.md
   - Acknowledgements: acknowledgements.md
-  - Decisions:
-      - Overview: decisions/index.md
-      - Native 7z (not py7zr): decisions/0001-native-7z-not-py7zr.md
-      - Native RAR + unrar: decisions/0002-native-rar-metadata-unrar-data.md
-      - MemberStreams opt-in: decisions/0003-member-streams-opt-in.md
-      - streaming bool: decisions/0004-streaming-bool-not-intent-enum.md
-      - Sync-only v1: decisions/0005-sync-only-v1.md
-      - Stdlib zipfile: decisions/0006-stdlib-zipfile.md
-      - Mutable ArchiveMember: decisions/0007-mutable-archive-member.md
-      - Single accelerator: decisions/0008-single-accelerator-rapidgzip.md
-      - Zstd backend: decisions/0009-zstd-stdlib-backports.md
-      - No silent buffer: decisions/0010-no-silent-buffer-nonseekable.md
-      - Zero-dep core: decisions/0011-zero-dependency-core.md
-      - Usage errors: decisions/0012-usage-errors-outside-archiveyerror.md
-      - Cross-platform name safety: decisions/0013-cross-platform-name-safety-policies.md
-  - Internal:
-      - Overview: internal/index.md
-      - Threat model: internal/threat-model.md
-      - Open issues (gotchas triage): internal/open-issues.md
-      - Compression-library analysis: internal/library-analysis.md
-      - Known issues: internal/known-issues.md
-      - Release checklist: internal/release-checklist.md
-      - Release-repo cutover: internal/release-repo-cutover.md
-  - Grab-bag:
-      - Overview: grab-bag/index.md
-      - SPEC (historical): grab-bag/SPEC.md
-      - ARCHITECTURE (historical): grab-bag/ARCHITECTURE.md
-      - COMPARISON (historical): grab-bag/COMPARISON.md
-      - ASYNC exploration: grab-bag/ASYNC.md
-      - Parallel-reader notes: grab-bag/parallel-reader.md
+
+# Everything under `docs/` is published and is for users; nothing else lives there.
+# Maintainer material (decision log, threat model, codec analysis, known issues,
+# investigations, superseded prose) is in `dev-docs/`, outside the site — not under
+# `docs/` behind an exclusion list, which would need a second list to keep in sync.
+# `scripts/check_docs_nav.py` enforces both halves of that invariant.
 
 plugins:
   - search

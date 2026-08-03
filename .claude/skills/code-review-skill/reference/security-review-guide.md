@@ -4,7 +4,7 @@ Security-focused checklist for reviewing changes in a **pure Python archive libr
 (read / stream / extract untrusted archives). Prefer this over web/app checklists —
 there is no browser UI, SQL/ORM layer, or HTTP API in this project.
 
-Primary references in-repo: `docs/internal/threat-model.md`, `docs/safe-extraction.md`,
+Primary references in-repo: `dev-docs/threat-model.md`, `docs/safe-extraction.md`,
 `VISION.md` (safe-by-default + memory-safe parsing of hostile input).
 
 ## Hostile Archive Input

@@ -583,7 +583,7 @@ class BaseArchiveReader(ArchiveReader):
         (``MemberStreams.CONCURRENT``, from ``open_archive(concurrent_members=True)``):
         first-touch materialization is coordinated
         (wait/share), and after the snapshot is published workers may fan out. Forward-only
-        / streaming passes remain single-owner. See ``docs/grab-bag/parallel-reader.md``.
+        / streaming passes remain single-owner. See ``dev-docs/investigations/parallel-reader.md``.
         """
         ...
 

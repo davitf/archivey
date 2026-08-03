@@ -333,7 +333,7 @@ class ExtractionCoordinator:
         # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> written path.
         # Tracks non-directory members written THIS run so a second member resolving to the
         # same key is a deterministic collision on every OS (not a platform-dependent silent
-        # merge). See _write_member / docs/decisions/0013.
+        # merge). See _write_member / dev-docs/decisions/0013.
         collision_map: dict[str, Path] = {}
         orphans: list[_Orphan] = []
         members_done = 0

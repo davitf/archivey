@@ -70,7 +70,7 @@ Out of scope for private security reports (use ordinary GitHub issues):
 Archivey’s safety posture for untrusted input is documented in:
 
 - [`docs/safe-extraction.md`](docs/safe-extraction.md) — extraction policies
-- [`docs/internal/threat-model.md`](docs/internal/threat-model.md) — trust
+- [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — trust
   boundaries and open gaps
 
 **Optional `[seekable]` accelerators** (`rapidgzip` and its bundled bzip2

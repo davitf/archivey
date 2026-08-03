@@ -4,7 +4,7 @@
 > "might do later, worth remembering" notes — *not* part of the `PLAN.md` phase
 > roadmap. Firm, decided v1 deferrals (async, in-place modify, sparse-file
 > extraction, etc.) live in `openspec/project.md`
-> ("Deferred / out of scope (v1)") and `SPEC.md` Appendix A — this file is the
+> ("Deferred / out of scope (v1)") and `dev-docs/history/SPEC.md` Appendix A — this file is the
 > looser idea pile. Promote an item by writing a real spec/`openspec` change for it.
 
 ## Backends & format coverage
@@ -154,7 +154,7 @@
   extra NUL (same overshoot family as unbounded decode), plus upstream
   `Ppmd7T_Free` on unfinished workers. Fixed by capping NUL recovery output and
   subprocess-isolating unfinished-decoder adversarial tests. Notes:
-  `docs/internal/known-issues.md`, `docs/internal/ppmd-exit-after-green-exploration.md`.
+  `dev-docs/known-issues.md`, `dev-docs/investigations/ppmd-exit-after-green-exploration.md`.
 
 - **rapidgzip for zlib / raw-deflate streams** — give zlib- and deflate-compressed streams
   the same fast random access rapidgzip already gives gzip. This is especially valuable for the
@@ -166,7 +166,7 @@
   minimal 10-byte gzip header + 8-byte trailer so rapidgzip will index it; check whether it needs
   a *valid* CRC32/ISIZE trailer or just well-formed framing to build the seek index. No
   coexistence concern — archivey already uses rapidgzip as its single accelerator library (see
-  `docs/internal/known-issues.md`). Pairs with **seek-index persistence** below.
+  `dev-docs/known-issues.md`). Pairs with **seek-index persistence** below.
 
 - **Compressed-passthrough transcoding (no recompress)** — when writing a member from a source
   that is itself an archive/compressed stream, and the destination format can carry the source's
@@ -198,7 +198,7 @@
   backend ratarmount uses, wrapping `libzstd-seek`), is a heavy Cython/C++17 extension that
   statically bundles a C++ core "based on `indexed_bzip2`" — so it carries the *same class* of
   macOS dual-load symbol-collision risk that forced archivey onto a single accelerator library
-  (`docs/internal/known-issues.md`) and would need its own coexistence canary.
+  (`dev-docs/known-issues.md`) and would need its own coexistence canary.
 
   **But first check whether it actually buys us anything our own infrastructure can't.**
   `libzstd-seek`'s jump table maps **frame boundaries only** — its own header says records map a
@@ -244,7 +244,7 @@
     are available (header field or seek table) and otherwise fall back to the rewind path.
 
   Note `pyzstd.SeekableZstdFile` is **not** a substitute either: it reads only the *Seekable
-  Zstd* container, not plain `.zst`. See `docs/internal/library-analysis.md` (zstd).
+  Zstd* container, not plain `.zst`. See `dev-docs/library-analysis.md` (zstd).
 
 - **Opt-in free-space pre-flight for extraction** — before extracting, sum the *declared*
   uncompressed sizes of the **selected** members and compare against
@@ -313,7 +313,7 @@
 ## Strategy & adoption (2026-07 review backlog)
 
 > Parked here from the 2026-07 architecture-review discussion so nothing is lost.
-> Security/compat items with a threat angle live in `docs/internal/threat-model.md` (the gap
+> Security/compat items with a threat angle live in `dev-docs/threat-model.md` (the gap
 > register); the product framing lives in `VISION.md`. These are the rest.
 
 - **Salvage / best-effort read mode** — the founding use case (indexing decades of
@@ -348,7 +348,7 @@
 - **Warnings-as-data sweep** — audit every `logger.warning` in the library: each should
   (also) be queryable as data (member/info field, `FormatInfo`, `CostReceipt`,
   `ExtractionResult`), since most applications never surface logging. See
-  `docs/internal/threat-model.md` C2.
+  `dev-docs/threat-model.md` C2.
 - **Extraction collision handling + `OverwritePolicy.RENAME`** — deterministic
   cross-platform handling of casefold/normalization collisions (threat-model O2), plus
   an opt-in RENAME policy (`name (1)`) for archives with intentional duplicates.

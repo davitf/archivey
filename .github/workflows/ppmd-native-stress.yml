@@ -3,7 +3,7 @@ name: PPMd native stress
 # Investigation vehicle for intermittent ``pyppmd`` native aborts on *valid* PPMd
 # streams (Windows STATUS_HEAP_CORRUPTION; Linux SIGSEGV / malloc abort after
 # other-codec warmup; Linux/Windows exit-after-green abort of
-# tests/test_ppmd_raw_streams.py). See docs/internal/known-issues.md.
+# tests/test_ppmd_raw_streams.py). See dev-docs/known-issues.md.
 #
 # Runs on every PR and on pushes to main so we keep signal, but lives in its *own*
 # workflow on purpose: do **not** add this check as a required status check — a red
@@ -101,7 +101,7 @@ jobs:
         # The archivey scenarios MUST be clean (a regression here is an archivey bug and
         # fails the step); the bare-pyppmd overshoot reproducer is a detector run without
         # --strict-pyppmd, so its expected-red on 1.3.x does not fail the step. Still
-        # non-required overall. See docs/internal/ppmd-native-investigation-results.md §J.
+        # non-required overall. See dev-docs/investigations/ppmd-native-investigation-results.md §J.
         if: runner.os == 'Linux' && steps.sync.outcome == 'success'
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync

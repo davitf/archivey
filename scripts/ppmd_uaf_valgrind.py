@@ -11,7 +11,7 @@ while that worker still holds a raw pointer into it, and the worker is later
 resumed (by the next call or by ``Ppmd7T_Free`` at teardown) to free-run into the
 freed block — a use-after-free write at ``ThreadDecoder.c:134``. Root-cause
 analysis, valgrind evidence, and the 1.2.0→1.3.0 (#126) regression window are in
-``docs/internal/ppmd-native-investigation-results.md`` (§D, §J).
+``dev-docs/investigations/ppmd-native-investigation-results.md`` (§D, §J).
 
 Unlike the crash-rate soak in ``scripts/pyppmd_crash_repro.py`` (a probabilistic
 race whose rate swings with allocator layout and Python/GIL mode), this driver is

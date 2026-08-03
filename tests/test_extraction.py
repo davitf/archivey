@@ -1619,7 +1619,7 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
 # ---------------------------------------------------------------------------
 # Cross-platform name safety (safe-extraction O2/O3/O4/O7) — asserted
 # deterministically on every platform, not gated on the runner OS.
-# See docs/decisions/0013-cross-platform-name-safety-policies.md.
+# See dev-docs/decisions/0013-cross-platform-name-safety-policies.md.
 # ---------------------------------------------------------------------------
 
 

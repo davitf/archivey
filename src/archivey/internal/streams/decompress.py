@@ -378,7 +378,7 @@ _PPMD_UNSIZED_DECODE_CHUNK = 65536
 # call shape. When the container pack is known-complete, empty ``decode(b"", 64)``
 # drains may still finish a large tail (including past premature ``eof``); when the
 # pack is known-incomplete, we refuse those post-eof drains (near-EOF MemoryError
-# otherwise). See ``docs/internal/ppmd-exit-after-green-exploration.md``.
+# otherwise). See ``dev-docs/investigations/ppmd-exit-after-green-exploration.md``.
 _PPMD_EXTRA_NUL_MAX_OUTPUT = 64
 
 # Bounded number of single-symbol NUL decodes used to quiesce a parked native
@@ -402,7 +402,7 @@ class PpmdDecoder(BaseDecoder):
     ``malloc`` abort/SIGSEGV, Windows ``STATUS_HEAP_CORRUPTION``) — measured for
     ``-1`` and for sized requests ≳64 KiB beyond the real payload alike. Requesting
     exactly the remaining output is the safe contract; see
-    ``docs/internal/known-issues.md`` and ``docs/internal/pyppmd-upstream-report.md``.
+    ``dev-docs/known-issues.md`` and ``dev-docs/investigations/pyppmd-upstream-report.md``.
 
     Because PPMd7 has no end mark, there is no safe request size without knowing the
     payload length — so ``unpack_size`` is **required** for variant 7 (the 7z header
@@ -450,7 +450,7 @@ class PpmdDecoder(BaseDecoder):
                 "PPMd7 (7z var.H) requires unpack_size: the format has no end mark, "
                 "and decoding without the exact output bound runs pyppmd past the "
                 "end of stream (native heap corruption on 1.3.x — see "
-                "docs/internal/known-issues.md)"
+                "dev-docs/known-issues.md)"
             )
         if variant != 8 and pack_size is None:
             # Without pack_size, a premature native ``eof`` (pyppmd flips it early on a
@@ -464,7 +464,7 @@ class PpmdDecoder(BaseDecoder):
                 "PPMd7 (7z var.H) requires pack_size: it has no end mark, so completing "
                 "a member past a premature native eof needs the declared compressed "
                 "length to tell full delivery from truncation (see "
-                "docs/internal/known-issues.md)"
+                "dev-docs/known-issues.md)"
             )
         self._order = order
         self._mem_size = mem_size
@@ -671,7 +671,7 @@ class PpmdDecoder(BaseDecoder):
         lookahead and exit on its own 1-symbol budget, so ``Ppmd7T_Free`` sees a
         finished worker and becomes a no-op. Measured: valgrind 8154 → 0 invalid
         writes on a truncated-pack teardown. Best-effort and idempotent; safe to
-        call more than once. See ``docs/internal/ppmd-native-investigation-results.md``
+        call more than once. See ``dev-docs/investigations/ppmd-native-investigation-results.md``
         (§D root cause, §I mitigation).
         """
         decomp = getattr(self, "_decomp", None)
