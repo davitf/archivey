@@ -3,8 +3,8 @@
 Answers from the maintainer. Recorded here so phase 3 has one place to read from;
 the affected phase-1 artifacts have been updated in place to match.
 
-Still open: **Q9** (`QUESTIONS.md`).
-Q3–Q8 answered (D4–D10).
+Still open: **none** — Q1–Q9 answered (D1–D11).
+Phase 3 can execute from this file + [`target-tree.md`](target-tree.md).
 
 ---
 
@@ -371,3 +371,15 @@ churn is free pre-`0.2.0`.
 ADR section citations and `release-repo-cutover.md`’s historical-record note.
 Citation cleanup can happen in the broader docs rewrite without deleting the
 archaeology yet.
+
+---
+
+## D11 — Q9: unpublished tree is named `dev-docs/`. **Approved.**
+
+> *"stick with it"*
+
+Confirm the placeholder used throughout this review pack: maintainer material
+lives under **`dev-docs/`** (not `maintainers/`, `internal-docs/`, `notes/`, or
+`contributing/`). Phase 3 uses that name for all moves
+(`internal/` → `dev-docs/`, `grab-bag/` → `dev-docs/history/`, `decisions/` →
+`dev-docs/decisions/`, `PLAN`/`IDEAS` → `dev-docs/`, etc.).

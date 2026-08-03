@@ -4,9 +4,8 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-> **Q1–Q8 are answered** — see [`DECISIONS.md`](DECISIONS.md).
-> … **D10:** delete four root stubs; keep grab-bag → `dev-docs/history/`.
-> **Q9** (directory name) still open.
+> **Q1–Q9 are all answered** — see [`DECISIONS.md`](DECISIONS.md) D1–D11.
+> Phase 3 can execute from those decisions + [`target-tree.md`](target-tree.md).
 
 ---
 
@@ -254,14 +253,15 @@ Only one set of files is proposed for deletion:
 
 ---
 
-## Q9 — Directory name for the unpublished maintainer tree
+## Q9 — Directory name for the unpublished maintainer tree ✅ **ANSWERED: `dev-docs/` (D11)**
 
-If Q1 = A, the material needs a home. `dev-docs/` is used throughout these
-documents as a placeholder.
+> *"stick with it"*
 
-Alternatives: `maintainers/`, `internal-docs/`, `notes/`, or `contributing/`
-(reads oddly next to root `CONTRIBUTING.md`). Purely a naming preference — say the
-word and phase 3 uses it.
+Recorded as [`DECISIONS.md`](DECISIONS.md) D11. Placeholder confirmed as the
+real name for phase 3.
+
+If Q1 = A, the material needs a home. Alternatives considered: `maintainers/`,
+`internal-docs/`, `notes/`, `contributing/`. Pure naming preference.
 
 ---
 
@@ -277,7 +277,7 @@ word and phase 3 uses it.
 | Q6 | `PLAN`/`IDEAS` → `dev-docs/` (✅ D7) |
 | Q7 | A ✅ D8; B ✅ D9 (`known-issues` move + triage follow-up) |
 | Q8 | Delete four stubs; keep grab-bag (✅ D10) |
-| Q9 | Naming only |
+| Q9 | Directory name = `dev-docs/` (✅ D11) |
 
 Q5, Q6 and Q8 can be answered and executed independently of Q1 if you want
 something to land while Q1 is still open.
