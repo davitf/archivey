@@ -3,8 +3,8 @@
 Answers from the maintainer. Recorded here so phase 3 has one place to read from;
 the affected phase-1 artifacts have been updated in place to match.
 
-Still open: **Q8, Q9** (`QUESTIONS.md`).
-Q3–Q7 answered (D4–D9).
+Still open: **Q9** (`QUESTIONS.md`).
+Q3–Q8 answered (D4–D10).
 
 ---
 

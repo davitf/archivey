@@ -4,10 +4,9 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-> **Q1–Q7 are answered** — see [`DECISIONS.md`](DECISIONS.md).
-> … **D8:** threat-model three-way. **D9:** `known-issues.md` → `dev-docs/` +
-> **required follow-up triage** (resolved / mitigated / upstream / fixable / evidence).
-> Q8–Q9 still open.
+> **Q1–Q8 are answered** — see [`DECISIONS.md`](DECISIONS.md).
+> … **D10:** delete four root stubs; keep grab-bag → `dev-docs/history/`.
+> **Q9** (directory name) still open.
 
 ---
 
