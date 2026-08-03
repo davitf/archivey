@@ -4,15 +4,16 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-> **Q1–Q4 are answered** — see [`DECISIONS.md`](DECISIONS.md).
+> **Q1–Q5 are answered** — see [`DECISIONS.md`](DECISIONS.md).
 > The site is unpublishing `docs/internal/` **and** the raw ADR log
 > (`docs/decisions/` → `dev-docs/decisions/`); curious-user depth lives on one
 > published page (`how-it-works.md`, including a decisions summary). **D3:**
 > published pages must not link into unpublished docs; where context is worth
 > keeping the link becomes an absolute GitHub URL. **D4:** `gotchas.md` stays as
 > two sections (should/shouldn't + be aware of). **D5:** ADR 0014 splits three
-> ways (slim ADR / investigation / user guarantee → `reading.md`). Spec conflict
-> with `documentation/spec.md:175` is for the D1 delta. Q5–Q9 below are still open.
+> ways. **D6:** `AGENTS.md` canonical; `CLAUDE.md` pointer (+ Claude-specific
+> notes only). Spec conflict with `documentation/spec.md:175` is for the D1
+> delta. Q6–Q9 below are still open.
 
 ---
 
