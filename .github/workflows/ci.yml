@@ -62,6 +62,11 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Set up Python
         run: uv python install 3.12
+      # Runs before the build because it catches what the build cannot: mkdocs reports
+      # published-but-unlisted pages at INFO level and exits 0, which is how six pages
+      # stayed URL-reachable and search-indexed while absent from every menu.
+      - name: Check docs tree completeness
+        run: uv run --python 3.12 --group docs python scripts/check_docs_nav.py
       - name: Build docs (strict)
         # --python overrides repo `.python-version` (3.11) so docs actually run on 3.12.
         run: uv run --python 3.12 --group docs mkdocs build --strict
