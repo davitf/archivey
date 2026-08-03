@@ -162,7 +162,7 @@ fuzz harnesses MUST live in a PEP 735 dependency group (`dev`, `fuzz`, …) and 
 absent from every user-facing extra.
 
 The per-codec library choice and rationale SHALL be recorded in
-`docs/internal/library-analysis.md`. A guard test or check script SHALL prevent dead or
+`dev-docs/library-analysis.md`. A guard test or check script SHALL prevent dead or
 test-only dependencies from returning to user-facing extras. A dependency pinned
 ahead of its implementation phase, such as `tqdm` for the CLI, is permitted only
 through an explicit documented allowlist in that guard.
