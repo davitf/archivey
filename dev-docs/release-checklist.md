@@ -94,7 +94,7 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
   artifact you used.
 
 - [ ] Paste a compact summary into the CHANGELOG entry (and refresh
-      `docs/costs.md` / VISION measured tables if numbers moved materially).
+      `docs/access-and-cost.md` / VISION measured tables if numbers moved materially).
       Note measurement host / core count (see `benchmarks/RESULTS.md`).
 - [ ] Confirm PR structural gate still passes:
 

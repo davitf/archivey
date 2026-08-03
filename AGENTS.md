@@ -126,7 +126,7 @@ Non-obvious gotchas:
   `structural.json` without the `rar_*` cases (it now refuses instead). If you are
   unsure whether the environment is complete, run `scripts/setup-dev-env.sh`; its
   closing verification block names anything missing.
-- **`openspec` CLI** lives at `~/.local/bin` (on `PATH`). `CLAUDE.md`'s
+- **`openspec` CLI** lives at `~/.local/bin` (on `PATH`). The plain
   `npm install -g @fission-ai/openspec` fails with `EACCES` here because the global npm
   prefix is not user-writable — the update script instead installs it into a writable,
   already-on-`PATH` prefix: `npm install -g --prefix "$HOME/.local" @fission-ai/openspec`.

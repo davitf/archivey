@@ -15,7 +15,7 @@ and a move-plus-rewrite diff is not.
 | Change | Owns |
 |---|---|
 | `docs-ia-unpublish-maintainer-tree` — **landed #221, archived #222** | The moves to `dev-docs/`, the four root stub deletions, ~90 reference repoints, the D2/D3 link resolution, and phase-4 guardrails 1–3 |
-| Follow-up (next, outline delivered) | The page splits (`usage.md` ×5, ADR 0014 ×3, `threat-model.md` ×2, the `gotchas.md` shrink), `docs/how-it-works.md`, the D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing requirement and the Gotchas-after clause, and the `AGENTS`/`CLAUDE` merge (D6) |
+| `docs-ia-split-user-guide` — **implemented, this PR** | The page splits (`usage.md` ×5, ADR 0014 ×3, `threat-model.md` ×2, the `gotchas.md` shrink), `docs/how-it-works.md`, the D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing requirement and the Gotchas-after clause, and the `AGENTS`/`CLAUDE` merge (D6) |
 
 **The outline is delivered** — [`docs/outline.md`](docs/outline.md), written between
 the two changes: all 16 published pages with purpose, reader question, sections in
@@ -46,9 +46,24 @@ when the maintainer asked for a section-by-section tally: the page came to 268 l
 the dedupe recipe moves to `formats.md` beside the stored-digest matrix it depends
 on. The nav goes to 16 entries.
 
-**The splits change is next**, and owns: the four page splits, `how-it-works.md`, the
-D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing
-requirement, and the `AGENTS`/`CLAUDE` merge (D6).
+**The splits change is implemented.** The guide is now 15 pages, each doing one job:
+`usage.md` split five ways, `costs.md` → `access-and-cost.md`, `safe-extraction.md`
+grown from 93 lines to 176, `gotchas.md` shrunk from 155 to 87 as a digest, ADR 0014
+and `threat-model.md` split, and `AGENTS.md` canonical with `CLAUDE.md` a 26-line
+pointer.
+
+**What ships thin, on purpose.** This change moved blocks; it did not write the
+~495 lines of new prose the outline identifies. `install.md` has no
+`format_availability()` section, `errors-and-diagnostics.md` has no diagnostics
+narrative, `safe-extraction.md` has no bounded-recursion recipe, and
+`how-it-works.md` does not exist — so the nav is 15 entries, not the outline's 16.
+That is Topic 8's worklist, and `outline.md` is the specification for it.
+
+**Two things the move surfaced that were not on anyone's list:** ~35 references to
+`docs/internal/` and `docs/grab-bag/` survived *inside* `dev-docs/` because #221's
+sed pass never covered that tree, and the ZIP UTF-8 bit-11 row existed only on
+Gotchas — the spec delta's migration note had claimed `formats.md` already carried
+it. Both fixed here.
 
 `debt-ledger/` and `performance/` were archived on 2026-07-28 after the last two ledger
 items (**T7** corpus-matrix audit, **T4** half-test) landed and **performance Q4** was
