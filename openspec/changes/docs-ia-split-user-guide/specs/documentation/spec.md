@@ -93,8 +93,10 @@ same-titled section on another page, and the rapidgzip caveat had already drifte
 across four copies. The replacement requirement above states what Gotchas *is* and
 gives it an inclusion rule, which is the durable version of the same intent.
 
-**Migration**: The three ZIP/ISO rows move to the per-format sections of
-`formats.md`, which already carry them. The TAR silent-shorten row stays covered —
+**Migration**: The multi-volume and ZIP/ISO-need-seek rows already existed on
+`formats.md` and in `access-and-cost.md` §Non-seekable sources. The UTF-8 bit-11 row
+did **not** — it lived only on Gotchas — and is added to `formats.md` §ZIP as part of
+this change, next to the member-name encoding rules it belongs with. The TAR silent-shorten row stays covered —
 "Document TAR EOF honesty and the strict_archive_eof opt-in" independently requires
 it in the formats guide *and* on the Gotchas page, and D4 keeps TAR honesty residuals
 under "what you should be aware of". No user-facing fact is dropped by this removal.

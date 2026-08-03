@@ -47,6 +47,11 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   default `cp437`). When UTF-8 is inferred for an unflagged name, a
   `member_name_encoding_inferred` diagnostic records it. Passing `encoding=` to
   `open_archive` is authoritative — it is used verbatim and disables the sniff.
+- **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
+  bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
+  parsing the central directory, so the failure is archive-wide rather than confined to
+  the one bad name. A native ZIP reader could recover the other entries; today it
+  cannot. Rare, and it fails loudly.
 - ZipCrypto multi-password confirmation can be expensive on **STORED** members — see
   [access costs](access-and-cost.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
   `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
