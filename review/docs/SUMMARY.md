@@ -11,7 +11,7 @@ no page's content has been edited.**
 | **`SUMMARY.md`** | this file — headline, tree, findings, what is fine |
 | [`inventory.md`](inventory.md) | all 549 prose files → audience, current home, target home, rationale. The migration worklist. |
 | [`QUESTIONS.md`](QUESTIONS.md) | the nine decisions that are yours, with a recommendation each |
-| [`DECISIONS.md`](DECISIONS.md) | **the answers so far** — Q1/Q2 decided, plus the new D3 linking rule |
+| [`DECISIONS.md`](DECISIONS.md) | **the answers so far** — Q1/Q2 (revised)/D3 |
 | [`target-tree.md`](target-tree.md) | the tree, the nav, the "where does a new doc go?" rule, the guardrails |
 | [`page-shape.md`](page-shape.md) | the merge/split/delete decisions the brief reserves to this phase |
 | [`observations.md`](observations.md) | 13 content problems recorded for Topic 8, not acted on |
@@ -35,28 +35,23 @@ So the site is not merely mis-filed. **It is loudest where a maintainer needs it
 and quietest where a user's mistake is unrecoverable.** Both halves are fixable
 now, and the fix is mostly `git mv` plus four page splits.
 
-### Decided (2026-07-29) — the tree is unblocked
+### Decided — the tree is unblocked; Q1–Q9 complete
 
-The blocking question was that unpublishing `docs/internal/` **contradicts
-`openspec/specs/documentation/spec.md`**, which requires the MkDocs site to present
-internal/grab-bag as "clearly secondary" — i.e. present. Per `CLAUDE.md` that was
-paused and surfaced rather than resolved. The maintainer has now answered
-([`DECISIONS.md`](DECISIONS.md)):
+Answers live in [`DECISIONS.md`](DECISIONS.md) (D1–D11). Headline calls:
 
-- **D1 — unpublish.** The site becomes user-facing only. The spec deltas
-  (`documentation`, and both specs naming `docs/internal/library-analysis.md`
-  verbatim) are now required phase-3 work.
-- **D2 — curated depth stays published.** `docs/decisions/` keeps its slot, and a
-  new `docs/how-it-works.md` gives curious users a behind-the-scenes overview
-  instead of a valgrind transcript. That page has no predecessor — writing it is
-  Topic 8; phase 3 creates the slot.
-- **D3 — a new rule.** Published pages **must not link into unpublished docs**.
-  Where the extra context is worth keeping, the link becomes an absolute
-  `github.com/davitf/archivey/blob/main/…` URL. Of the nine such links today, 4 are
-  removed, 5 become GitHub URLs, and `index.md`'s "For contributors" block is
-  rewritten.
+- **D1 — unpublish** maintainer material → `dev-docs/`.
+- **D2 — curated depth**, not raw ADRs: `how-it-works.md` summary; ADRs → `dev-docs/decisions/`.
+- **D3 — no site links into unpublished docs** (GitHub URLs when depth is worth it).
+- **D4 — Gotchas** = should/shouldn't + be aware of.
+- **D5 — ADR 0014** three-way split.
+- **D6 — `AGENTS.md` canonical**; `CLAUDE.md` pointer.
+- **D7 — `PLAN`/`IDEAS` → `dev-docs/`**.
+- **D8 — threat-model** three-way filing.
+- **D9 — `known-issues` → `dev-docs/`** + required triage follow-up.
+- **D10 — delete root stubs**; keep grab-bag history.
+- **D11 — directory name = `dev-docs/`**.
 
-**Q3–Q9 remain open** — all page-level, none blocking the tree.
+**No questions remain open.** Phase 3 can execute.
 
 ---
 
@@ -65,18 +60,20 @@ paused and surfaced rather than resolved. The maintainer has now answered
 Full version with nav and rationale in [`target-tree.md`](target-tree.md).
 
 ```
-README  CHANGELOG  SECURITY  CONTRIBUTING  AGENTS  VISION  PLAN  IDEAS
-   (the four "moved to…" stubs deleted; CLAUDE.md merged into AGENTS.md)
+README  CHANGELOG  SECURITY  CONTRIBUTING  AGENTS  VISION
+   (PLAN/IDEAS → dev-docs/; four "moved to…" stubs deleted; CLAUDE.md pointer)
 
 docs/           ── PUBLISHED. User + current, and nothing else. ──
-  index · install* · reading* · philosophy · gotchas(index) · safe-extraction(3×)
+  index · install* · reading* · philosophy · gotchas(footgun digest) · safe-extraction(3×)
   access-and-cost · formats · errors-and-diagnostics* · migrating
-  support-matrix · cli* · how-it-works† · api · acknowledgements · decisions/
-                            (* new, split out of usage.md   † new, D2)
+  support-matrix · cli* · how-it-works† · api · acknowledgements
+                            (* new, split out of usage.md   † new, D2 — includes
+                              decisions summary; raw ADRs → `dev-docs/decisions/`)
 
 dev-docs/       ── NOT published. Maintainer + current. ──
   index · threat-model(register) · open-issues · known-issues · library-analysis
-  release-checklist · release-repo-cutover
+  release-checklist · release-repo-cutover · decisions/ (raw ADR log)
+  PLAN.md · IDEAS.md
   investigations/   finished evidence: ppmd ×3, pyppmd, rapidgzip, parallel-reader
   history/          superseded prose: SPEC · ARCHITECTURE · COMPARISON · ASYNC
 
@@ -134,17 +131,17 @@ Named explicitly so the migration does not sweep them up for symmetry.
   archived ones, `project.md` as cross-cutting context, schemas for authoring.
   **No changes** beyond the two deltas Q1 forces if it is approved — and those are
   a *consequence* of a decision, not a criticism of the lifecycle.
-- **The ADR log**, ADR 0014 aside. 13 records of 21–105 lines, a maintained index,
-  linked ten times from user prose. Recommended to stay **published** (Q2) —
-  reading them is how an evaluator decides whether to trust a hand-written 7z
-  parser.
+- **The ADR log**, ADR 0014 aside. 13 records of 21–105 lines, a maintained index —
+  the *lifecycle* is fine and stays. Under revised D2 they move to
+  `dev-docs/decisions/`; the published site carries a short decisions summary on
+  `how-it-works.md` instead of the raw corpus.
 - **The core user pages.** `philosophy`, `migrating`, `formats`, `support-matrix`,
   `acknowledgements` are good pages doing one job each. `support-matrix.md` in
   particular is unusually honest — it scopes every claim to the CI job that proves
   it. **No structural change to any of them.**
-- **The `VISION` / `philosophy` split**, and the `VISION` / `PLAN` / `IDEAS` trio
-  at the repo root. The maintainer-vision-vs-user-distill split is deliberate and
-  holds; the root trio is a legible convention, not clutter (Q6).
+- **The `VISION` / `philosophy` split.** Maintainer-vision-vs-user-distill holds.
+  `VISION.md` stays at root; `PLAN` / `IDEAS` move to `dev-docs/` (D7) for a
+  cleaner root.
 - **`.claude/` and `.cursor/`.** Executable configuration that happens to be
   Markdown, addressed by tools at literal paths. Filing them as "docs" would invite
   a move that breaks the tools.
@@ -174,7 +171,8 @@ Named explicitly so the migration does not sweep them up for symmetry.
 
 ## Next
 
-1. Answer the rest of [`QUESTIONS.md`](QUESTIONS.md) — Q3–Q9. None blocks the tree
+1. Execute phase 3 from [`DECISIONS.md`](DECISIONS.md) + [`target-tree.md`](target-tree.md).
+   All Q1–Q9 are answered (D1–D11).
    now that Q1 is decided; Q5, Q6 and Q8 are independent one-commit calls.
 2. Phase 3: execute as OpenSpec changes, kept mechanical — the nine-commit
    sequence is in [`inventory.md`](inventory.md) §Migration mechanics. Commits 1–3

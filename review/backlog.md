@@ -178,7 +178,10 @@ worth ranking rather than bundling:
    does? The surface has churned hard — native 7z/RAR, the CLI, verify fusion, extraction
    policies, diagnostics. Past debt-ledger passes found docstring/spec mismatches; the
    user guide has never had a systematic pass. Mechanically checkable in places: every
-   code block in `docs/` should run, and several would make good doctests.
+   code block in `docs/` should run, and several would make good doctests. **Also:**
+   rewrite the Gotchas accelerator “don’t close source” bullet for `_TrappingSource`
+   (D9); triage `dev-docs/known-issues.md` into resolved / mitigated / upstream /
+   fixable / evidence (D9 — required follow-up, not optional).
 2. **Gaps.** What does an adopting engineer look for and not find? Overlaps Topic 7 —
    coordinate: Topic 7 judges whether the docs *persuade*, this asks whether they
    *answer*. If Topic 7 has already run, take its gap list as input.

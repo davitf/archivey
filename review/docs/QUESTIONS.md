@@ -4,11 +4,8 @@ Phase 2 of the docs IA review is "Decide" (`brief.md`). These are the calls that
 are product/ownership decisions, not reviewer decisions. Each has a
 recommendation; none is decided here.
 
-> **Q1 and Q2 are answered** (2026-07-29) — see [`DECISIONS.md`](DECISIONS.md).
-> The site is unpublishing `docs/internal/`; `docs/decisions/` stays; and a **new
-> rule D3** applies: published pages must not link into unpublished docs, and where
-> the context is worth keeping the link becomes an absolute GitHub URL. Q3–Q9 below
-> are still open.
+> **Q1–Q9 are all answered** — see [`DECISIONS.md`](DECISIONS.md) D1–D11.
+> Phase 3 can execute from those decisions + [`target-tree.md`](target-tree.md).
 
 ---
 
@@ -75,34 +72,47 @@ only the tree in [`target-tree.md`](target-tree.md) is affected.
 
 ---
 
-## Q2 — Does `docs/decisions/` stay published? ✅ **ANSWERED: yes**
+## Q2 — Does `docs/decisions/` stay published? ✅ **ANSWERED: no (revised 2026-08-02)**
 
-> *"optionally with some curated higher-level implementation details for curious
-> users to know what's going on behind the scenes and the major decisions"*
+> *2026-07-29: "optionally with some curated higher-level implementation details
+> for curious users… and the major decisions" — initially read as keeping the ADR
+> log published.*
+>
+> *2026-08-02: a summary of technical decisions (with links to ADRs / OpenSpec
+> changes) is fine; the whole raw ADR corpus is not. Summary lives on the single
+> `how-it-works.md` page; raw ADRs move to `dev-docs/decisions/`; user-page ADR
+> links are dropped unless the ADR has end-user depth that cannot be inlined.*
 
-Recorded as [`DECISIONS.md`](DECISIONS.md) D2, which also proposes a new
-`docs/how-it-works.md` for the "behind the scenes" half — there is no such page
-today. The reasoning below stands.
-
-
+Recorded as [`DECISIONS.md`](DECISIONS.md) D2 (revised). The original
+recommendation below is superseded — kept for provenance of why the first answer
+went the other way.
 
 Strictly, ADRs are "Maintainer + current", so the pure hypothesis unpublishes them
 along with everything else in Q1.
 
-**Recommendation: keep them published**, as a named exception. An ADR answers "why
-did you write your own 7z parser instead of wrapping `py7zr`?" — that is an
-*adoption* question, and Topic 7 (`review/backlog.md:134`) will judge whether the
-docs answer it. They are 21–105-line curated records with a maintained index, a
-different object from a 695-line investigation. Four user pages already link into
-them ten times.
+**Original recommendation (superseded): keep them published**, as a named
+exception. An ADR answers "why did you write your own 7z parser instead of
+wrapping `py7zr`?" — that is an *adoption* question. They are 21–105-line curated
+records with a maintained index, a different object from a 695-line investigation.
+Four user pages already link into them ten times.
 
-If they are unpublished, **10 working links** from four user pages
-(`acknowledgements.md` ×4, `migrating.md` ×3, `support-matrix.md` ×2, `usage.md`
-×1) would have to leave the site — worse for the reader, and a Topic 7 regression.
+**What we actually decided:** the adoption answer belongs in a short published
+summary on `how-it-works.md`; the ADR files themselves are provenance for
+maintainers and move with the rest of the unpublished tree. The ten user-page
+links are inlined-then-dropped under D2's rule (GitHub only if uninlinable).
 
 ---
 
-## Q3 — What is `gotchas.md` for?
+## Q3 — What is `gotchas.md` for? ✅ **ANSWERED: A + footgun rule (D4)**
+
+> *"agree with A. … criteria for being there is: what must the user know to avoid
+> making mistakes or shooting themselves in the foot?"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D4. Shape = option A (keep slot; one
+line + link). Two sections: **should/shouldn't do** (cost/API footguns) and
+**be aware of** (honesty / verification gaps). Spec conflict at
+`documentation/spec.md:175` surfaced for the D1 delta; quartet triage complete
+under D4.
 
 It is required to exist and to sit immediately after basic usage
 (`documentation/spec.md:86,175`). But four of its seven sections have a same-titled
@@ -112,19 +122,21 @@ section in `costs.md`, and the format table restates `formats.md`
 
 | | Approach |
 |---|---|
-| **A** *(recommended)* | Keep the page and its slot; each bullet becomes one line + a link to the owning page. Target ~80 lines from 156. |
+| **A** *(chosen)* | Keep the page and its slot; each bullet becomes one line + a link to the owning page. Target shrinks further under the footgun rule. |
 | **B** | Keep it as a full restatement and accept the drift risk, mitigated by a periodic sync pass. |
 | **C** | Dissolve it into the owning pages. **Requires a `documentation` spec delta** — the page is required by name. |
 
-**Recommendation: A.** It preserves the page's actual value (a curated "read this
-next" digest) and removes the reason a fact would ever be written down twice. Worth
-confirming that a one-line-plus-link entry still satisfies
-`documentation/spec.md:175`, which is about coverage and framing rather than
-length — my reading is that it does, but it is your spec.
+**Recommendation was A** — confirmed. The sharper inclusion rule supersedes the
+earlier assumption that the spec-mandated format-limitation quartet must live here.
 
 ---
 
-## Q4 — Split ADR 0014?
+## Q4 — Split ADR 0014? ✅ **ANSWERED: three ways (D5)**
+
+> *"three ways"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D5. Slim ADR → `dev-docs/decisions/`;
+investigation → `dev-docs/investigations/`; user guarantee → `docs/reading.md`.
 
 `docs/decisions/0014-integrity-verdicts-from-reads-not-close.md` is **615 lines** —
 59% of the ADR corpus, ~25× the median ADR (24 lines). It contains an
@@ -133,20 +145,16 @@ length — my reading is that it does, but it is your spec.
 section, and 100+ lines of trade-off analysis. It is also the ADR that fell out of
 the nav.
 
-**Recommendation: split three ways** — a ~30-line ADR matching the shape of the
-other 13 stays in `docs/decisions/`; the investigation and trade-off analysis go to
-`dev-docs/investigations/`; the user guarantee moves into the new `docs/reading.md`
-(it is user documentation that currently only exists inside an unlisted ADR).
-
-**Counter-argument to weigh:** the depth is *why* the decision is credible, and a
-reader who follows a link from `compressed-streams` wants the full reasoning in one
-place. If you prefer it whole, the minimum fix is adding it to the nav and
-resolving or relocating the `## Open questions` section (it overlaps the open
-`verification-integrity-mode` proposal, PR #185).
+**Recommendation was the three-way split** — confirmed.
 
 ---
 
-## Q5 — `AGENTS.md` or `CLAUDE.md`: which is canonical?
+## Q5 — `AGENTS.md` or `CLAUDE.md`: which is canonical? ✅ **ANSWERED: AGENTS.md (D6)**
+
+> *"AGENTS.md canonical, Claude just pointer. if there's Claude-specific
+> environment info, then that can remain on Claude.md"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D6.
 
 `AGENTS.md` (83 lines) opens by deferring to `CLAUDE.md` (117 lines). Overlap is
 roughly 20 lines (formatting-before-commit, the three-config rule, `uv`). The rest
@@ -159,48 +167,40 @@ reference-repo instructions, and the 7z/RAR strategy.
 are described as unimplemented). The file that is not canonical is the one that
 rotted — which is the argument for having one.
 
-**Recommendation: one canonical file, `AGENTS.md`**, absorbing `CLAUDE.md`'s
-content, with `CLAUDE.md` reduced to a pointer (Claude Code auto-loads it, so it
-cannot simply be deleted). `AGENTS.md` is the tool-neutral convention and does not
-privilege one agent vendor.
-
-**Watch out on merge:** the two files give *different* `openspec` install commands
-on purpose — `CLAUDE.md:31` uses `npm install -g`, `AGENTS.md:68-71` notes that
-fails with `EACCES` on Cursor Cloud and uses `--prefix "$HOME/.local"`. Both are
-correct for their environment; a careless merge will drop one.
-
-Choosing `CLAUDE.md` as canonical instead is equally workable — the decision is
-which convention you want to maintain, and either way the stale statements get
-fixed.
+**Recommendation was `AGENTS.md` canonical** — confirmed. `CLAUDE.md` becomes a
+pointer, retaining only Claude-specific environment notes.
 
 ---
 
-## Q6 — Do `PLAN.md` and `IDEAS.md` leave the repo root?
+## Q6 — Do `PLAN.md` and `IDEAS.md` leave the repo root? ✅ **ANSWERED: move (D7)**
+
+> *"move them to keep the root cleaner. we're going to rewrite/cleanup most docs
+> anyway and those references might even be removed or should be reorganized"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D7. Destination: `dev-docs/PLAN.md`
+and `dev-docs/IDEAS.md`. Inbound refs are cleaned up in the broader docs rewrite,
+not treated as a reason to keep them at root.
 
 The brief notes the root "mixes every audience". After deleting the four stubs and
 merging the agent guides, the root is: `README` (user), `CHANGELOG`/`SECURITY`
 (user + release), `CONTRIBUTING`/`AGENTS` (contributor), `VISION`/`PLAN`/`IDEAS`
 (product direction). Eight files, down from thirteen.
 
-**Recommendation: leave all eight.** Six of the eight are at root because a tool or
-convention expects them there. `VISION.md` is linked from `README.md` and is the
-declared tie-breaker for every review brief. `PLAN.md` and `IDEAS.md` are the only
-two with a real case for moving — and they carry ~20 inbound references between
-them (`openspec/project.md`, `review/STATUS.md`, six archived reviews, four ADRs,
-`threat-model.md`). Moving them is churn for symmetry, which the brief warns
-against.
-
-If you want them moved anyway, `dev-docs/` is the right destination and it is a
-mechanical addition to the phase-3 commit list.
+**Original recommendation was leave all eight** — superseded; maintainer chose
+root cleanliness over citation-churn avoidance.
 
 ---
 
 ## Q7 — The dual-audience pages: `threat-model.md` and `known-issues.md`
 
-The brief flags these as the deliberate tension to resolve rather than paper over.
-They resolve **differently**, which is the useful finding.
+### `threat-model.md` (320 lines) — ✅ **ANSWERED: three-way (D8)**
 
-### `threat-model.md` (320 lines) — split
+> Enforced → `safe-extraction`; user-mitigable residuals → Gotchas (incl. O6
+> nesting wording); maintainer backlog → `dev-docs/threat-model.md`. C3 metadata
+> fidelity stays an idea (+ optional “not yet supported” in user docs, not a
+> gotcha). Unpublished ≠ safer — filing is by audience.
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D8. Reasoning below kept for provenance.
 
 Two documents in one file:
 
@@ -213,36 +213,31 @@ Two documents in one file:
   compatibility` C1–C4) — a maintainer triage register keyed to OpenSpec changes,
   with measured slip-through rates and py7zr internals.
 
-**Recommendation:** the enforced-guarantees half moves into `docs/safe-extraction.md`
-(where it is a large part of the ~3× growth the independent pass argues for); the
-gap register stays as `dev-docs/threat-model.md`. `VISION.md:28` and `SECURITY.md:73`
-repoint at the new register path.
+**Original recommendation** was enforced → safe-extraction, gaps unpublished.
+**Refined:** strip closed items; move user-mitigable residuals to Gotchas; keep
+only backlog in `dev-docs/`.
 
-**The judgement call for you:** an unpublished gap register means an evaluating
-user cannot read your open security gaps. That can be read as prudence or as
-opacity. My reading is that O1–O8 are *design-note* granularity, not embargoed
-vulnerabilities, and `SECURITY.md` already carries the disclosure posture — but
-publishing your own open-gap list is a positioning decision, not a filing one.
+### `known-issues.md` (709 lines) — ✅ **ANSWERED: move whole + triage follow-up (D9)**
 
-### `known-issues.md` (709 lines) — **no split**
+> Move to `dev-docs/known-issues.md`; no published subset. **Required follow-up:**
+> classify sections (resolved / mitigated / upstream unfixable / we-can-fix /
+> evidence-only) so the file does not stay an unwieldy dump. Sibling roles vs
+> IDEAS / open-issues / threat-model / investigations recorded under D9. Gotchas
+> accelerator bullet rewritten for `_TrappingSource` mitigation.
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D9.
 
 Read end to end it is valgrind output, GitHub Actions run IDs, CI workflow
-bandages, version-matrix soak tables, and bisect recipes. The four things a user
-needs from it are **already** summarised in `gotchas.md` and `costs.md` with a link
-back: do not close a source under a live accelerator stream; leave accelerators off
-for untrusted input under a latency budget; `import archivey` patches pycdlib
-process-globally; bare-`.gz` truncation detection is best-effort.
-
-**Recommendation:** move the whole file to `dev-docs/known-issues.md` and convert
-the two user-page links (`gotchas.md:144`, `costs.md:143`) to absolute GitHub URLs
-per D3.
-No user loses anything. Also fix its index description
-([`observations.md`](observations.md) O-8) and the two runtime error strings that
-cite its path (O-12).
+bandages, version-matrix soak tables, and bisect recipes. User-needed facts live
+(or will live) on Gotchas / formats / SECURITY under D4/D8.
 
 ---
 
-## Q8 — Deletions
+## Q8 — Deletions ✅ **ANSWERED: delete stubs; keep grab-bag (D10)**
+
+> *"delete stubs, keep grab bag"*
+
+Recorded as [`DECISIONS.md`](DECISIONS.md) D10.
 
 Only one set of files is proposed for deletion:
 
@@ -253,33 +248,20 @@ Only one set of files is proposed for deletion:
 | `COMPARISON.md` | 5 | Same |
 | `SPEC.md` | 6 | Same |
 
-With URL churn free until the tag, a tombstone is clutter rather than a pattern to
-copy. **Unverified:** whether any external page links these four. Nothing is on
-real PyPI and only `0.2.0.dev0` reached TestPyPI, so no release artifact points at
-them; a stray external link cannot be ruled out from inside the repo. If you want
-zero risk, keeping four 6-line files costs nothing.
-
-**Nothing else is proposed for deletion**, including the 3,068 lines of
-`grab-bag/`. Those are cited by five ADRs *by section number* for provenance
-(`0001` §5.6, `0002` §5.7, `0005` §5.3, `0006` §5.1, `0007` §2.1/§5.2), by
-`IDEAS.md:6` ("`SPEC.md` Appendix A"), and `release-repo-cutover.md:64` explicitly
-says to leave `COMPARISON.md` unchanged as a historical record. Git history is not
-a substitute for a document another document cites by section.
-
-**Counter-question for you:** is that provenance chain worth 3,068 lines, or would
-you rather cut the citations and delete the prose? That is a decision about how
-much archaeology the project keeps, and it is yours.
+**Chosen:** delete the four stubs; keep grab-bag prose under `dev-docs/history/`
+(D1) for ADR provenance. Citation cleanup can wait for the docs rewrite.
 
 ---
 
-## Q9 — Directory name for the unpublished maintainer tree
+## Q9 — Directory name for the unpublished maintainer tree ✅ **ANSWERED: `dev-docs/` (D11)**
 
-If Q1 = A, the material needs a home. `dev-docs/` is used throughout these
-documents as a placeholder.
+> *"stick with it"*
 
-Alternatives: `maintainers/`, `internal-docs/`, `notes/`, or `contributing/`
-(reads oddly next to root `CONTRIBUTING.md`). Purely a naming preference — say the
-word and phase 3 uses it.
+Recorded as [`DECISIONS.md`](DECISIONS.md) D11. Placeholder confirmed as the
+real name for phase 3.
+
+If Q1 = A, the material needs a home. Alternatives considered: `maintainers/`,
+`internal-docs/`, `notes/`, `contributing/`. Pure naming preference.
 
 ---
 
@@ -288,14 +270,14 @@ word and phase 3 uses it.
 | Q | Blocks |
 |---|---|
 | **Q1** | The whole tree; the spec delta; Q2, Q3, Q7, Q9 |
-| Q2 | Whether `decisions/` appears in the nav |
-| Q3 | Whether `gotchas.md` shrinks (needs a delta only under option C) |
-| Q4 | Whether ADR 0014 splits, and where its user guarantee lands |
-| Q5 | One commit, independent of everything else |
-| Q6 | Two `git mv`s, independent of everything else |
-| Q7 | The size of `safe-extraction.md` and the shape of the gap register |
-| Q8 | Four deletions |
-| Q9 | Naming only |
+| Q2 | Whether raw ADRs appear in the nav (no — summary on `how-it-works.md`) |
+| Q3 | Gotchas = two sections (should/shouldn't + be aware of); triage ✅ D4 |
+| Q4 | ADR 0014 three-way split (✅ D5) |
+| Q5 | `AGENTS.md` canonical; `CLAUDE.md` pointer (✅ D6) |
+| Q6 | `PLAN`/`IDEAS` → `dev-docs/` (✅ D7) |
+| Q7 | A ✅ D8; B ✅ D9 (`known-issues` move + triage follow-up) |
+| Q8 | Delete four stubs; keep grab-bag (✅ D10) |
+| Q9 | Directory name = `dev-docs/` (✅ D11) |
 
 Q5, Q6 and Q8 can be answered and executed independently of Q1 if you want
 something to land while Q1 is still open.

@@ -251,3 +251,15 @@ task 4.4.
 **Worth noting for Topic 8's framing:** this is a factual error on a user page that
 a structural audit reading every file for *filing* did not catch. It is evidence
 that the content pass has to be its own deliberate read, not a byproduct.
+
+---
+
+## O-15 — `known-issues.md` needs a triage pass after the IA move (D9)
+
+Recorded with Q7 B. Phase 3 only moves the file to `dev-docs/known-issues.md`.
+A **required follow-up** (Topic 8 accuracy pass, or a dedicated small change)
+classifies every section: resolved (ours) / mitigated (ours) / upstream
+unfixable / open we-can-fix / evidence-only — and routes items to IDEAS,
+`open-issues`, threat-model register, or `investigations/` per
+[`DECISIONS.md`](DECISIONS.md) D9. Also rewrite the Gotchas accelerator bullet
+for `_TrappingSource` (Bug 3 is contained; “process dies” is stale).
