@@ -4,7 +4,7 @@
 > "might do later, worth remembering" notes — *not* part of the `PLAN.md` phase
 > roadmap. Firm, decided v1 deferrals (async, in-place modify, sparse-file
 > extraction, etc.) live in `openspec/project.md`
-> ("Deferred / out of scope (v1)") and `SPEC.md` Appendix A — this file is the
+> ("Deferred / out of scope (v1)") and `dev-docs/history/SPEC.md` Appendix A — this file is the
 > looser idea pile. Promote an item by writing a real spec/`openspec` change for it.
 
 ## Backends & format coverage
