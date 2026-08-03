@@ -4,10 +4,10 @@ Thanks for working on Archivey! This file is the **coding and testing standards*
 the *design* lives elsewhere and is authoritative:
 
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs.
-- `docs/` — end-user guide; `docs/decisions/` — design decision log; `docs/internal/` —
-  threat model / codec analysis; `docs/grab-bag/` — historical SPEC/ARCHITECTURE/
+- `docs/` — end-user guide; `dev-docs/decisions/` — design decision log; `dev-docs/` —
+  threat model / codec analysis; `dev-docs/history/` — historical SPEC/ARCHITECTURE/
   COMPARISON/ASYNC and explorations (not normative).
-- `VISION.md`, `PLAN.md`, `IDEAS.md` — vision, roadmap, backlog.
+- `VISION.md` (repo root), `dev-docs/PLAN.md`, `dev-docs/IDEAS.md` — vision, roadmap, backlog.
 - `openspec/changes/<change>/` — in-flight proposals (propose changes here, don't
   edit shipped specs ad hoc). Default schema is `library` (compact library-style
   deltas); see `openspec/schemas/library/README.md` and `openspec/config.yaml`.
@@ -87,10 +87,10 @@ workflow must pass `--python <matrix>` (and `UV_PYTHON`) on every `uv sync` /
 
 ## Cutting a release
 
-See [`docs/internal/release-checklist.md`](docs/internal/release-checklist.md)
+See [`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)
 (CHANGELOG triage, perf vs previous tag, docs, three-config tests, version bump,
 tag, publish). One-time repo rename / PyPI setup:
-[`docs/internal/release-repo-cutover.md`](docs/internal/release-repo-cutover.md).
+[`dev-docs/release-repo-cutover.md`](dev-docs/release-repo-cutover.md).
 User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Tooling decisions
@@ -131,7 +131,7 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
 - **Comments explain *why*, not *what*.** Match the comment density and style of the
   surrounding code. Don't narrate what the code obviously does; do explain non-obvious
   decisions, format quirks, and edge cases (these archives are full of them). For a
-  complex decision, a comment **may point** at a spec, `docs/decisions/`, architecture
+  complex decision, a comment **may point** at a spec, `dev-docs/decisions/`, architecture
   note, exploration, or OpenSpec change — but **summarize the reason inline whenever
   possible** so the pointer is optional depth, not the only explanation.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file

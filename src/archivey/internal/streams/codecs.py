@@ -123,7 +123,7 @@ _rapidgzip = _optional("rapidgzip")
 # ``indexed_bzip2`` package. Loading both rapidgzip and indexed_bzip2 into one process corrupts
 # the heap and aborts on macOS (they statically bundle an overlapping C++ core, whose symbols
 # collide under dyld). Routing both gzip and bzip2 through rapidgzip keeps a single accelerator
-# library in the process, which is safe on every platform. See docs/internal/known-issues.md.
+# library in the process, which is safe on every platform. See dev-docs/known-issues.md.
 _rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
 
 # The DEFLATE-family codecs are stdlib-backed, so they declare no ``requirement`` — rapidgzip

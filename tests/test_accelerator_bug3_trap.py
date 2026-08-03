@@ -1,5 +1,5 @@
 """Bug 3 containment: rapidgzip must not abort the process when its caller-owned source
-faults mid-decode (``docs/internal/known-issues.md`` Bug 3).
+faults mid-decode (``dev-docs/known-issues.md`` Bug 3).
 
 rapidgzip ``std::terminate``s (SIGABRT) when a Python source callback raises while it is
 decoding — classically, the caller closes their own source underneath a live accelerator. No

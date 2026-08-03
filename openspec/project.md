@@ -2,9 +2,9 @@
 
 > Cross-cutting context shared by all capability specs in `openspec/specs/`.
 > Authoritative contracts are the capability specs in this tree. Historical prose
-> (`SPEC` / `ARCHITECTURE` / `COMPARISON`) lives under `docs/grab-bag/` and may
+> (`SPEC` / `ARCHITECTURE` / `COMPARISON`) lives under `dev-docs/history/` and may
 > drift; end-user docs are under `docs/`, decision rationales under
-> `docs/decisions/`.
+> `dev-docs/decisions/`.
 
 ## What this is
 
@@ -84,7 +84,7 @@ external `unrar` binary does the proprietary data decompression. `py7zr` and
 
 The build sequence is a **clean-slate rewrite** — new code written fresh against
 the specs, with `archivey-dev` as reference-only (leaf format/codec logic is
-ported as isolated units; the spine is written fresh). See `PLAN.md` (repo root)
+ported as isolated units; the spine is written fresh). See `dev-docs/PLAN.md`
 for the detailed, phase-by-phase task list, the layered port-vs-rewrite split,
 the frozen-oracle test strategy, and the per-phase acceptance criteria (each
 phase's "done" is defined as a set of covered spec scenarios). Phases are
@@ -138,5 +138,5 @@ specify reading a split set as one logical archive (RAR volume stitching; 7z vol
 concatenation). See those specs.
 
 For looser, **speculative** "might do later" ideas (native streaming ZIP, libarchive
-backend, pathlib/fsspec navigation, subprocess decompressors, …) see `IDEAS.md` at the
-repo root.
+backend, pathlib/fsspec navigation, subprocess decompressors, …) see
+`dev-docs/IDEAS.md`.

@@ -43,7 +43,7 @@ class ExtractionPolicy(Enum):
     name rejection (O3/O4), and portable-name normalization (O7). ``STRICT`` is
     portable-by-default; ``TRUSTED`` defers to the local OS (faithful bytes, no name
     rejection or rewrite). See
-    ``docs/decisions/0013-cross-platform-name-safety-policies.md``.
+    ``dev-docs/decisions/0013-cross-platform-name-safety-policies.md``.
     """
 
     STRICT = "strict"  # default; untrusted archives

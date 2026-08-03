@@ -26,7 +26,7 @@ tracks visited extents — see :func:`_install_pycdlib_directory_cycle_guard`. I
 confined to pycdlib and transparent on well-formed images, but a program that also uses
 pycdlib directly in the same process will see archivey's guarded ``deque`` there too. This
 is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever; see
-``docs/internal/known-issues.md``.
+``dev-docs/known-issues.md``.
 """
 
 from __future__ import annotations

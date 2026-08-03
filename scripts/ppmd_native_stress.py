@@ -13,7 +13,7 @@ the same process before PPMd (``warmup_codecs``): SIGSEGV / ``malloc(): invalid 
 at roughly ~1/3 of child runs. Raw ``pyppmd`` encode/decode alone has not reproduced
 that Linux abort here.
 
-See ``docs/internal/known-issues.md``.
+See ``dev-docs/known-issues.md``.
 
 This script is the dedicated investigation vehicle. Default scenarios favour the
 **minimal surface** (raw ``pyppmd`` / archivey codec streams, no 7z container), then
@@ -563,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
         "Known issue: valid PPMd streams can abort inside `pyppmd` (Windows "
         "`STATUS_HEAP_CORRUPTION`; Linux SIGSEGV / malloc abort especially after "
         "other-codec warmup). Prefer `raw_*` scenarios to isolate the minimal "
-        "surface. See `docs/internal/known-issues.md`."
+        "surface. See `dev-docs/known-issues.md`."
     )
     summary = "\n".join(lines) + "\n"
 

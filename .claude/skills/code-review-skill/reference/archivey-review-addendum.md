@@ -16,7 +16,7 @@
 | [`VISION.md`](../../../../VISION.md) | Product tie-breaker when trade-offs conflict |
 | [`CONTRIBUTING.md`](../../../../CONTRIBUTING.md) | Coding, typing, exceptions, testing, three-config gate |
 | [`openspec/specs/`](../../../../openspec/specs/) | Capability contracts — starting point for behavior, revisable when wrong (§3) |
-| [`docs/internal/threat-model.md`](../../../../docs/internal/threat-model.md) | Trust boundaries + open security gaps |
+| [`dev-docs/threat-model.md`](../../../../dev-docs/threat-model.md) | Trust boundaries + open security gaps |
 | [`review/README.md`](../../../../review/README.md) | Deep-review conventions, ranking, deliverable shape |
 | [`review/STATUS.md`](../../../../review/STATUS.md) | Live triage of in-flight review follow-ups |
 
@@ -450,7 +450,7 @@ Use the skill’s high-level + line-by-line techniques here
 addendum’s §1–§5 only as a **mental checklist**, not by loading linked designs.
 
 **Documentation debt rule:** if a pass-1 concern only dissolves after reading
-external prose (OpenSpec `design.md`, long PR body, `docs/decisions/`, …), that is
+external prose (OpenSpec `design.md`, long PR body, `dev-docs/decisions/`, …), that is
 usually **🟡 `[important]` documentation debt in the code** — not proof you should
 have absorbed the design first. A comment that **summarizes *why* inline** and
 optionally points at a spec / decision / exploration is fine; a bare “see design.md”

@@ -43,7 +43,7 @@ walking the native model on a desynchronized range coder — heap corruption.
 The same release added an after-eof guard to the *cffi* backend only; the C
 extension has none, so ``decode(b"\\0", -1)`` after eof restarts the runaway
 worker on finished state (hottest trigger). Full write-up + suggested fixes:
-``docs/internal/pyppmd-upstream-report.md``.
+``dev-docs/investigations/pyppmd-upstream-report.md``.
 
 Examples::
 

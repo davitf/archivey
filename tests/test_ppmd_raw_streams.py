@@ -2,7 +2,7 @@
 
 These tests exercise ``pyppmd`` and archivey's PPMd codec/stream adapters directly so
 Windows/Linux native aborts can be chased on the *minimal* surface (see
-``docs/internal/known-issues.md`` and ``scripts/ppmd_native_stress.py``).
+``dev-docs/known-issues.md`` and ``scripts/ppmd_native_stress.py``).
 
 Notes:
 - In-process PPMd7 create/destroy loops are skipped on Windows (have aborted CI with
@@ -364,7 +364,7 @@ def test_archivey_ppmd7_repeated_construct_destroy() -> None:
 # ---------------------------------------------------------------------------
 # quiesce-on-close wiring + logic (deterministic; no native abort dependency)
 #
-# The teardown use-after-free (docs/internal/ppmd-native-investigation-results.md
+# The teardown use-after-free (dev-docs/investigations/ppmd-native-investigation-results.md
 # §D/§I) is a race that does not reproduce reliably in-process, so these tests
 # assert the *mechanism* — that a parked worker is driven to exit on dispose and
 # the happy path is skipped — with fakes, not by trying to provoke a crash.
@@ -498,8 +498,8 @@ def test_decompressor_stream_seek_recreate_closes_old_decoder() -> None:
 # Adversarial-input regression tests (pyppmd 1.3.x native aborts)
 #
 # pyppmd 1.3.x heap corruption fires when the native decoder runs past the true
-# end of stream (unbounded budget); see docs/internal/known-issues.md and
-# docs/internal/pyppmd-upstream-report.md. These tests pin the shapes damaged or
+# end of stream (unbounded budget); see dev-docs/known-issues.md and
+# dev-docs/investigations/pyppmd-upstream-report.md. These tests pin the shapes damaged or
 # hostile archives can force — truncation, early close, garbage tails — which
 # must fail cleanly (archivey exception or bounded output) and never abort the
 # process.

@@ -208,7 +208,7 @@ POLICY_TRANSFORMS: dict[ExtractionPolicy, Callable[[ArchiveMember], ArchiveMembe
 # the policy permission transform and any user filter). They make destination-name handling
 # deterministic on every OS: ``STRICT`` is portable-by-default, ``STANDARD`` is portable but
 # not paranoid, ``TRUSTED`` defers to the local OS (no name rejection or rewrite). See
-# ``docs/decisions/0013-cross-platform-name-safety-policies.md``.
+# ``dev-docs/decisions/0013-cross-platform-name-safety-policies.md``.
 
 # Windows reserved device names (case-insensitive, with or without an extension). Matched
 # against the first dot-separated component of each path segment — ``NUL`` and ``NUL.txt``

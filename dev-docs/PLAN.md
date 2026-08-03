@@ -2,7 +2,7 @@
 
 > **Approach:** clean-slate rewrite. New code is written fresh against the
 > authoritative `openspec/specs/` capability specs (historical prose lives under
-> `docs/grab-bag/SPEC.md` and `docs/grab-bag/ARCHITECTURE.md`). The
+> `dev-docs/history/SPEC.md` and `dev-docs/history/ARCHITECTURE.md`). The
 > existing `archivey-dev` codebase is **reference-only** — we read it and port
 > specific, well-isolated parts (leaf format/codec logic), but we do **not** copy
 > it wholesale as a baseline.
@@ -111,7 +111,7 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
    **explicit free-threading support statement** (the `3.13t`
    job runs core-only — document the matrix rather than leaving it implicit). Recurring
    cut steps (CHANGELOG, perf vs previous tag, tests, tag, publish):
-   `docs/internal/release-checklist.md`. Tag `0.2.0` after this.
+   `dev-docs/release-checklist.md`. Tag `0.2.0` after this.
 
 **Deferred to a later version (not `0.2.0`):**
 - **Salvage / best-effort read mode** — the founding use case (index truncated/corrupt
@@ -132,7 +132,7 @@ OpenSpec changes for this sequencing (active vs archived):
 `rapidgzip-deflate-zlib-acceleration` (2026-07-15); `stored-digest-dedupe-parity`,
 `rar-blake2sp-verification`, `adversarial-string-corpus-contract` (2026-07-14);
 `rar-file-version-members` (2026-07-15). (Provenance: the `review/` deep-review set —
-`roadmap.md`, `SUMMARY.md`, `QUESTIONS.md` — and `docs/internal/threat-model.md` O1–O7.)
+`roadmap.md`, `SUMMARY.md`, `QUESTIONS.md` — and `dev-docs/threat-model.md` O1–O7.)
 
 ---
 
@@ -161,8 +161,8 @@ Port-vs-rewrite is decided by **layer**, not file-by-file:
 | Format detection logic + magic table | **Port as unit** |
 | `ArchiveStream`, `Rewindable`/`Recordable`, `DecompressorStream`/XZ/lzip | **Port as unit** (relocated into `internal/streams/`) |
 | Declarative test corpus (`sample_archives.py`, `ArchiveContents`, `FileInfo`) | **Port as unit** (cleaned; see test strategy) |
-| Public API surface (`open_archive`, reader methods, types) | **Write fresh** to `SPEC.md` |
-| `BaseArchiveReader` ABC + registration/iteration/link logic | **Write fresh** to `ARCHITECTURE.md` |
+| Public API surface (`open_archive`, reader methods, types) | **Write fresh** to `dev-docs/history/SPEC.md` |
+| `BaseArchiveReader` ABC + registration/iteration/link logic | **Write fresh** to `dev-docs/history/ARCHITECTURE.md` |
 | Backend registry + `Backend` ABC | **Write fresh** |
 | `ExtractionHelper` (pending/deferred state machine) | **Write fresh** as `ExtractionCoordinator` |
 | `io_helpers.py` god-module, `BinaryIOWrapper` method-swap trick | **Write fresh** as the `internal/streams/` package |
@@ -427,7 +427,7 @@ as a light tripwire, not a hard ban).
 
 ## Phase 5 — Public API finalization, cost surface, and diagnostics
 
-**Goal:** the public surface matches `SPEC.md` across every format built so far, and
+**Goal:** the public surface matches `dev-docs/history/SPEC.md` across every format built so far, and
 warning-producing paths use the lifecycle-aware diagnostics contract before native
 7z/RAR readers expand that surface.
 
@@ -469,7 +469,7 @@ migrated warning path.
 All of `archive-reading`, `archive-data-model`, `access-mode-and-cost`,
 `error-handling`, and `diagnostics`, including affected deltas for detection,
 extraction, streams, formats, and logging.
-**Gates:** `pyrefly` + `ty` clean (strict); public API matches `SPEC.md §2–§7`; CostReceipt
+**Gates:** `pyrefly` + `ty` clean (strict); public API matches `dev-docs/history/SPEC.md §2–§7`; CostReceipt
 correct for every format implemented so far.
 
 ---
@@ -482,7 +482,7 @@ passing; wire the oracles. See `format-7z/spec.md`, `format-rar/spec.md`,
 
 **Entry criteria:** Phase 5 green; **the fuzzing scaffold is stood up** (property
 tests + the corpus mutation harness running; Atheris harnesses for the new parsers
-land with them — see cross-cutting concerns and `docs/internal/threat-model.md` O5);
+land with them — see cross-cutting concerns and `dev-docs/threat-model.md` O5);
 `py7zr`/`rarfile`/`unrar` available as
 dev-group oracles; the **shared-source stream plumbing** decided/landed — a
 `streamtools` shared-source view (the shape of stdlib `zipfile._SharedFile`: one
@@ -491,7 +491,7 @@ concurrently-open member streams by construction, and a decided concurrency
 contract via `MemberStreams.CONCURRENT` (post-materialization fan-out; free-threaded
 correctness covered by the Linux `3.13t` CI job) — what is
 supported vs. what fails loudly as `ArchiveyUsageError` / `ConcurrentAccessError`,
-never silent interleaving; see `docs/grab-bag/parallel-reader.md` and
+never silent interleaving; see `dev-docs/investigations/parallel-reader.md` and
 the parallel-extraction entry in `IDEAS.md`.
 
 ### Tasks
@@ -634,7 +634,7 @@ coverage **reported, not gated**); no committed generated binaries.
 
 ### Fuzzing & benchmarks (cross-cutting scaffold)
 
-- **Fuzzing** (see `docs/internal/threat-model.md` O5), staged: (a) now — Hypothesis property
+- **Fuzzing** (see `dev-docs/threat-model.md` O5), staged: (a) now — Hypothesis property
   tests for the pure safety logic (naming, `check_universal`, link resolution,
   detection) and a corpus **mutation harness** (bit-flips/truncations over generated
   archives asserting never-crash / never-hang / always a typed `ArchiveyError`);
@@ -647,7 +647,7 @@ coverage **reported, not gated**); no committed generated binaries.
 
 ### Risk areas
 - **Spine-first ordering:** leaf backends in Phase 3+ attach to the Phase-1 ABC,
-  so the ABC must be right the first time (it is written to `ARCHITECTURE.md`, not
+  so the ABC must be right the first time (it is written to `dev-docs/history/ARCHITECTURE.md`, not
   evolved from DEV). Mitigation: vertical slices — bring one backend fully green
   before the next, so ABC gaps surface early.
 - **Hardlink edge cases in streaming mode:** TAR guarantees target-precedes-link;

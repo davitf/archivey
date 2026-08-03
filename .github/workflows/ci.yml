@@ -247,7 +247,7 @@ jobs:
       # Process isolation for intermittent Linux [all] heap corruption (rapidgzip /
       # pyppmd natives). Separate steps — not a multiline script with shell
       # continuations — keep this Windows/PowerShell-safe. Full write-up + soak/A/B:
-      # docs/internal/known-issues.md ("Intermittent Linux full-suite heap corruption").
+      # dev-docs/known-issues.md ("Intermittent Linux full-suite heap corruption").
       # --no-sync so the all-lowest leg keeps its minimum-version resolution.
       - name: Run tests
         if: matrix.install == 'all' || matrix.install == 'all-lowest'

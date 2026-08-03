@@ -62,7 +62,7 @@ recommended = [
     # >=1.3.1: 1.1.x/1.2.0 return silently wrong bytes on chunked bounded PPMd
     # decodes (premature eof mid-stream); 1.3.1 fixes that but needs bounded
     # max_length to avoid native heap corruption — archivey always bounds.
-    # See docs/internal/known-issues.md and docs/internal/pyppmd-upstream-report.md.
+    # See dev-docs/known-issues.md and dev-docs/investigations/pyppmd-upstream-report.md.
     "pyppmd>=1.3.1",
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
@@ -82,7 +82,7 @@ recommended = [
 # rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
 # separate indexed_bzip2 package is deliberately NOT a dependency: loading both libraries into
 # one process corrupts the heap and aborts on macOS (overlapping statically-linked C++ symbols).
-# >=0.16.0 is the floor known to expose IndexedBzip2File. See docs/internal/known-issues.md.
+# >=0.16.0 is the floor known to expose IndexedBzip2File. See dev-docs/known-issues.md.
 #
 # Kept OUT of [recommended] on purpose: it is a heavy native build that can fail to compile,
 # importing it re-enables the GIL on free-threaded builds, and it carries the accelerator
@@ -109,7 +109,7 @@ free-threaded = [
 ]
 # The conventional "everything" name. Unlike before, it is now a strict superset of
 # [recommended] rather than an alias for it. After the compression-library evaluation
-# (docs/internal/library-analysis.md) two dead backends were dropped from the extras —
+# (dev-docs/library-analysis.md) two dead backends were dropped from the extras —
 # python-xz (v2 reads XZ with its own native xz.py over stdlib lzma; archivey-dev#214 —
 # never imported) and pyzstd (the zstd decode decision is stdlib compression.zstd /
 # backports.zstd; it was only a test-fixture generator and is now in the dev group).

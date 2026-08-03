@@ -167,7 +167,7 @@ def _windows_isolated_codec_roundtrip(
     With PPMd decodes now bounded by folder ``unpack_size``, that param runs on
     ``win32`` again through this harness like the other codec labels; the non-blocking
     ``PPMd native stress`` workflow / ``scripts/ppmd_native_stress.py`` keep watching
-    for regressions — see ``docs/internal/known-issues.md``.
+    for regressions — see ``dev-docs/known-issues.md``.
 
     The child writes flushed phase breadcrumbs to ``phase.txt`` so a hard abort still
     leaves a last-known step for the parent to report.

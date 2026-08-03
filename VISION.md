@@ -2,7 +2,7 @@
 
 > What this project is trying to become, why it should exist, and the priorities that
 > follow. `openspec/specs/` defines *what the library does* (historical prose in
-> `docs/grab-bag/`); this document defines *what it is for* and how to make trade-offs
+> `dev-docs/history/`); this document defines *what it is for* and how to make trade-offs
 > when they conflict. End-user distill: `docs/philosophy.md`. (Recorded 2026-07 from
 > maintainer + review discussions.)
 
@@ -25,7 +25,7 @@ feels like stdlib**.
 
 1. **Safe by default.** Extraction cannot be zip-slipped, symlink-escaped, or
    decompression-bombed unless the caller explicitly opts out. Safety is a *contract*
-   (specced, tested, threat-modeled — see `docs/internal/threat-model.md`), not a feature flag.
+   (specced, tested, threat-modeled — see `dev-docs/threat-model.md`), not a feature flag.
 2. **Memory-safe parsing of hostile input.** The native-first strategy for 7z/RAR (and
    eventually ZIP) is not purity for its own sake: pure-Python parsers can be *wrong*
    but they cannot be *corrupted*. C archive parsers (libarchive et al.) have a long
@@ -57,7 +57,7 @@ That origin story encodes priorities that remain core:
 - **Damaged input is a first-class citizen** — the founding corpus is full of it. A
   truncated archive should yield every member that *is* recoverable plus an honest
   error, not a bare exception at open. (Gap today: reads are all-or-error; a
-  "salvage" read mode is on the backlog — see `IDEAS.md`.)
+  "salvage" read mode is on the backlog — see `dev-docs/IDEAS.md`.)
 - **Hashes without decompression where possible.** Formats already store CRC32/BLAKE2
   digests; a dedupe pass should be able to use `member.hashes` without reading data.
 
@@ -68,7 +68,7 @@ That origin story encodes priorities that remain core:
   authority (`openspec/project.md`).
 - Anything the library can only *warn* about should ideally also be **queryable as
   data** — a logging warning most applications never see is a surprise deferred, not
-  avoided. (Backlog: the warnings-as-data sweep, `IDEAS.md`.)
+  avoided. (Backlog: the warnings-as-data sweep, `dev-docs/IDEAS.md`.)
 - Contracts hold under adversarial input, not just well-formed archives.
 
 ## Performance budget
@@ -136,7 +136,7 @@ No "bug-free" promises. Instead, machinery that catches bugs before release:
 
 - **Not an everything-tool**: no in-place archive modification, no encryption-write for
   7z/RAR, no async API in v1 (decided deferrals — `openspec/project.md`).
-- **Not a backup engine** — but see the open metadata-fidelity decision (`IDEAS.md`):
+- **Not a backup engine** — but see the open metadata-fidelity decision (`dev-docs/IDEAS.md`):
   whether xattrs/ACLs/owners round-trip determines whether backup tools can *build on*
   archivey. Read-side fidelity is cheap to add later (fields are additive); the
   decision truly binds only when writing lands.
