@@ -1,10 +1,28 @@
-# In-flight review status (2026-07-29)
+# In-flight review status (2026-08-03)
 
 ## In flight
 
 | Review | State |
 |---|---|
-| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 (audit) delivered** — [`SUMMARY.md`](docs/SUMMARY.md), [`inventory.md`](docs/inventory.md) (all 549 prose files assigned), [`QUESTIONS.md`](docs/QUESTIONS.md), [`observations.md`](docs/observations.md); prompt recorded at [`docs/phase-1-prompt.md`](docs/phase-1-prompt.md). Headline: the site is 73% maintainer material, and `safe-extraction.md` is its thinnest page. **Now at phase 2 (decide)** — Q1 is blocking because unpublishing `docs/internal/` conflicts with `openspec/specs/documentation`. Bias control pass delivered earlier (#208, `docs/independent/`); code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). |
+| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 (audit) delivered** — [`SUMMARY.md`](docs/SUMMARY.md), [`inventory.md`](docs/inventory.md) (all 549 prose files assigned), [`QUESTIONS.md`](docs/QUESTIONS.md), [`observations.md`](docs/observations.md). Headline: the site is 73% maintainer material, and `safe-extraction.md` is its thinnest page. **Phase 2 (decide) complete** — D1–D11 in [`DECISIONS.md`](docs/DECISIONS.md), no questions open. **Now at phase 3 (migrate)**, split in two: `openspec/changes/docs-ia-unpublish-maintainer-tree` moves the maintainer tree to `dev-docs/` and lands the guardrails; a follow-up change does the page splits. Bias control pass delivered earlier (#208, `docs/independent/`); code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). |
+
+### Phase 3, split in two
+
+The move-only half and the prose half are separate changes for the same reason the
+IA review and Topic 8 are separate: a rename-only diff is verifiable by inspection
+and a move-plus-rewrite diff is not.
+
+| Change | Owns |
+|---|---|
+| `docs-ia-unpublish-maintainer-tree` (in flight) | The moves to `dev-docs/`, the four root stub deletions, ~90 reference repoints, the D2/D3 link resolution, and phase-4 guardrails 1–3 |
+| Follow-up (not yet proposed) | The four page splits (`usage.md` ×4, ADR 0014 ×3, `threat-model.md` ×2, the `gotchas.md` shrink), `docs/how-it-works.md`, the D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing requirement, and the `AGENTS`/`CLAUDE` merge (D6) |
+
+Before phase 3 is done: an outline of the final guide — per page, sections in order
+with their main points and the `file:lines` they are sourced from — written between
+the two changes. It is the worklist the splits execute against and the one Topic 8
+starts from; writing it before the moves would mean outlining a tree about to lose
+80% of its files, and writing it after the splits would be too late to change a page
+boundary cheaply.
 
 `debt-ledger/` and `performance/` were archived on 2026-07-28 after the last two ledger
 items (**T7** corpus-matrix audit, **T4** half-test) landed and **performance Q4** was
