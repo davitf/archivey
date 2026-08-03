@@ -31,12 +31,13 @@ So there are two denominators, and only one of them is comparable:
 
 | | Lines | safe-extraction | access-and-cost |
 |---|---:|---:|---:|
-| **Core teaching pages** — install, reading, gotchas, safe-extraction, access-and-cost, formats, errors, cli | ~1,175 | **23.8%** | **16.6%** |
-| All published pages, incl. migrating / support-matrix / philosophy / api / acknowledgements | ~1,985 | 14.1% | 9.8% |
+| **Core teaching pages** — install, reading, gotchas, safe-extraction, access-and-cost, formats, errors, cli | ~1,215 | **23.0%** | **18.9%** |
+| All published pages, incl. migrating / support-matrix / philosophy / api / acknowledgements | ~2,045 | 13.7% | 11.2% |
 
 Against the comparable denominator the target shape lands where the independent
-pass argued it should, and the remaining access/cost gap is ~3 points rather than
-the ~10 the raw comparison suggested. **This is not a reason to relax**: the
+pass argued it should: safe extraction within ~2 points of ~25%, access/cost within
+~1 point of ~20% once §10's config screen is counted — not the ~10-point and
+~15-point gaps the raw comparison suggested. **This is not a reason to relax**: the
 safe-extraction figure assumes the ~90 lines of new prose in §4 below actually get
 written. Merging alone gets it to ~200 lines / 17%, which is
 [`page-shape.md`](page-shape.md) §1's own estimate.
@@ -45,12 +46,12 @@ Projected sizes, for sequencing rather than as targets:
 
 | Page | Now | Projected | Shape |
 |---|---:|---:|---|
-| `index.md` | 57 | ~55 | unchanged |
+| `index.md` | 57 | ~85 | + 30-second recipes |
 | `install.md` | — | ~70 | **new**, split from `usage.md` + new matrix |
 | `reading.md` | — | ~220 | **new**, split from `usage.md` + ADR 0014 |
-| `gotchas.md` | 155 | ~65 | shrink to a digest |
+| `gotchas.md` | 155 | ~70 | shrink to a digest |
 | `safe-extraction.md` | 93 | ~280 | grow ~3× |
-| `access-and-cost.md` | 154 | ~195 | rename + absorb |
+| `access-and-cost.md` | 154 | ~230 | rename + absorb + config screen |
 | `formats.md` | 185 | ~185 | unchanged size, two fixes |
 | `errors-and-diagnostics.md` | — | ~90 | **new** |
 | `cli.md` | — | ~70 | **new**, split from `usage.md` |
@@ -71,15 +72,29 @@ Projected sizes, for sequencing rather than as targets:
 
 **Sections.**
 
-1. One-paragraph what-it-is + the six-line example. Unchanged.
-2. Highlights — seven bullets. Unchanged.
-3. User guide — renumber for the new page set and order.
-4. For contributors — the repo pointer block, already rewritten.
+1. One-paragraph what-it-is + the six-line list example. Unchanged.
+2. **Thirty-second recipes.** Four copy-paste blocks: list members · extract safely ·
+   stream one member · read a pipe with `streaming=True`. One screen, each linking to
+   the page that owns it. **Keep it tiny** — the moment it grows a fifth block it is
+   becoming the next `usage.md`.
+3. Highlights — seven bullets. Content unchanged, **three links repointed**:
+   `extras → install.md` (`index.md:21`), `access costs → access-and-cost.md`
+   (`:27`), `exception hierarchy → errors-and-diagnostics.md` (`:29`).
+4. User guide — renumbered for the new page set and order.
+5. For contributors — the repo pointer block, already rewritten.
 
 **Not here.** The pitch (that is `README.md`, and `philosophy.md` for the long
-form). Anything a reader has to scroll for.
+form). Anything a reader has to scroll for. Any recipe that needs explaining.
 
-**Sources.** `docs/index.md:1-57`, nav list renumbered.
+**Sources.** `docs/index.md:1-57`.
+**New:** §2 entirely (~30 lines).
+
+> **Why §2 exists.** The independent pass made "30-second recipes" its page 1 after
+> install (`independent/proposed-outline.md:23-31`) on the grounds that first-hour
+> abandonment happens when people never see the safety defaults and reach for the
+> stdlib instead. Today Home shows *listing* and nothing else, so the safe-by-default
+> claim appears as a Highlights bullet and never as code. `migrating.md` covers the
+> same ground for people arriving from `zipfile`; this covers everyone else.
 
 ---
 
@@ -177,7 +192,11 @@ behaviour: eight of the 29 must-explain items land here with no home today.
     raises. **Closing the reader does not invalidate already-open streams**
     (must-explain #20). **Non-file members cannot be `open()`ed** (must-explain
     #26). All four undocumented today.
-13. **One-shot extract**, and why it has no `members=`. Note that `extract()`
+13. **Errors, in one line each.** `reading.md` raises more distinct types than any
+    other page's material, and `errors-and-diagnostics.md` sits after `formats.md` in
+    the nav — so §4 and §8 each carry an explicit "see Errors and diagnostics" callout
+    rather than waiting for the reader to arrive there.
+14. **One-shot extract**, and why it has no `members=`. Note that `extract()`
     **auto-opens streaming for a non-seekable source** while `open_archive` refuses
     one — the inconsistency users hit first (must-explain #4, undocumented).
 
@@ -294,7 +313,13 @@ merge cannot close, and the reason the 23.8% above is a plan rather than a fact.
 9. **Measurement.** `io_stats()` returns `None` unless the archive was opened inside
    `enable_measurement()` — opt-in *and* open-scoped, which is why counters read
    zero (must-explain #28, undocumented).
-10. **Wall-time bands.** Aspirational, with the measured column. **Fix the
+10. **Config at a glance.** Every `ArchiveyConfig` / `ExtractionLimits` /
+    `ListingLimits` field, its default, and one line on when to change it — with each
+    row linking to the page that *teaches* it rather than restating the teaching.
+    Covers the knobs that currently have no reference home: `use_rapidgzip` /
+    `AcceleratorMode`, `strict_archive_eof`, `zip_unflagged_fallback_encoding` and
+    `encoding=`, `listing_limits`, diagnostic policy and retention.
+11. **Wall-time bands.** Aspirational, with the measured column. **Fix the
     `davitf/archivey-2` link** (O-4).
 11. **Checklist.** The situation → knob table. Unchanged; it is the best thing on
     the page.
@@ -304,7 +329,17 @@ merge cannot close, and the reason the 23.8% above is a plan rather than a fact.
 
 **Sources.** `docs/costs.md:1-154` (renamed); `docs/gotchas.md:13-25` and `27-37`
 (the cost half, absorbed as the digest shrinks).
-**New:** §5's ON-vs-AUTO split, §9.
+**New:** §5's ON-vs-AUTO split, §9, §10 (~35 lines).
+
+> **The weakest placement call in this outline.** The knobs do not belong to one page:
+> cost knobs are here, limits and policies are `safe-extraction.md`, `strict_archive_eof`
+> and encoding are `formats.md`, diagnostic policy is `errors-and-diagnostics.md`. A
+> single dense screen is a *reference* artifact, and this page is the one whose subject
+> is "what you pay and what you pass", which is the closest fit — but the independent
+> pass wanted a standalone configuration page at ~4%
+> (`independent/proposed-outline.md:115-122`), and that is a defensible alternative.
+> Flagged for the maintainer rather than settled here; the section's *content* is the
+> same either way.
 
 ---
 
@@ -329,10 +364,24 @@ belong to the owning page.
    bullet) · don't close a source under a live accelerator stream · accelerators off
    for untrusted input under a latency budget.
 2. **What you should be aware of.** 7z AES store/copy with no integrity anchor ·
-   TAR residuals (trailer-less warns; streaming final header) · bare gzip/zlib +
-   rapidgzip best-effort truncation · `.Z` zero-leftover silent cuts · `import
-   archivey` patches pycdlib process-globally · a short "we differ from stdlib on
-   corruption handling" orientation.
+   7z header-encryption residual (garbage that parses as a plausible non-empty header
+   can still slip — O8) · TAR residuals (trailer-less warns; streaming final header) ·
+   bare gzip/zlib + rapidgzip best-effort truncation · `.Z` zero-leftover silent cuts ·
+   `import archivey` patches pycdlib process-globally · a short "we differ from stdlib
+   on corruption handling" orientation.
+
+**The four threat-model residuals D8 routes here** (`DECISIONS.md` D8 §2), each one
+line linking to the page that owns the depth:
+
+| Residual | Section | Line |
+|---|---|---|
+| **O6 nested archives** | should/shouldn't | The bomb tracker checks expansion for *individual* archives and is **not nesting-aware**. Recursion is caller-driven — bound depth and size yourself. → `safe-extraction.md` §10 |
+| **O1 unguarded paths** | should/shouldn't | `stream_members()` is not covered by `ListingLimits`, and `read()` / `open()` stream sizes are unbounded — chunk untrusted payloads. → `safe-extraction.md` §8, `reading.md` §4 |
+| **O8 7z header encryption** | be aware of | Above. |
+| **O2 name collisions** | should/shouldn't | Already covered by the STRICT-rewrite bullet; collision behaviour is OS-dependent by design (ADR 0013). |
+
+Accelerator hang is already carried by the "accelerators off under a latency budget"
+bullet in §1.
 
 **Explicitly out** (D4 triage, decided): ZIP/ISO needing seek · multi-volume ZIP ·
 ZIP UTF-8 bit-11 · the format-limitations table · the full policy table · listing
@@ -533,17 +582,74 @@ The splits are moves. These are the writing tasks that remain, in priority order
 | `how-it-works.md` | All six sections (D2) | ~150 |
 | `install.md` | `format_availability()` section; re-cutting the matrix by extra | ~45 |
 | `reading.md` | Sources, `stream_members` lifetime, identity and lifetime, the `extract()` pipe note | ~45 |
-| `access-and-cost.md` | ON-vs-AUTO, measurement | ~20 |
-| `gotchas.md` | Rewrite the accelerator bullet for `_TrappingSource` | ~5 |
+| `access-and-cost.md` | ON-vs-AUTO, measurement, the config-at-a-glance screen | ~55 |
+| `gotchas.md` | Rewrite the accelerator bullet for `_TrappingSource`; the four D8 residual one-liners | ~10 |
+| `index.md` | The four 30-second recipes | ~30 |
 
-~410 lines of new prose. That is Topic 8's floor, before the accuracy pass it was
+~480 lines of new prose. That is Topic 8's floor, before the accuracy pass it was
 commissioned for.
+
+## Review disposition (PR #223)
+
+An automated structure/flow review raised nine findings. Four are accepted and folded
+in above; the rest are recorded here so the reasoning survives.
+
+**Accepted:**
+
+| # | Finding | Where it landed |
+|---|---|---|
+| 2 | No 30-second recipes — the independent pass's page 1 | `index.md` §2 |
+| 4 | No configuration reference home | `access-and-cost.md` §10 |
+| 5 | D8's O6 nested-archives Gotchas line dropped | `gotchas.md` §6, **plus three more** — the review found O6; D8 §2 also requires O1, O8 and O2 one-liners, and two of those were missing too |
+| 6 | Home's Highlights links need repointing, not just nav renumbering | `index.md` §3 |
+
+**Declined, with reasons:**
+
+- **"Errors sits too late in the nav" (finding 7).** Reordering trades one reader's
+  problem for another's; the cross-link in `reading.md` §13 is the cheaper half of the
+  reviewer's own suggested fix, and it is in.
+- **"Add a nav stub for `how-it-works.md` in the splits change" (decision 5).** This
+  re-raises what
+  `openspec/changes/archive/2026-08-03-docs-ia-unpublish-maintainer-tree/design.md`
+  Decision 4 already argued and the maintainer merged: an empty published page breaks
+  the invariant the migration exists to establish, on day one, with the exception
+  being the page whose job is to demonstrate the rule. It remains a live question
+  (below) — but it is not reopened by restating D2, which Decision 4 already quoted.
+
+**Two the reviewer is right to raise and neither of us should settle — see below.**
 
 ## Open questions
 
 1. **The `documentation` spec's Gotchas requirement** (`spec.md:178-193`) still
    requires the quartet D4 removed. The splits change must rewrite or drop it —
    flagged in §6, not resolved here.
-2. **How much of `how-it-works.md` belongs in phase 3 at all.** It is the only page
+2. **Where `safe-extraction.md` sits in the nav.** It is position 5 of 15, immediately
+   after the digest that links to it — not buried, but later than the independent pass
+   wanted for the page carrying `VISION.md` claim #1. The blocker is
+   `documentation/spec.md:86-87`: *"Gotchas SHALL sit immediately after basic usage in
+   primary navigation."*
+   **One correction to the review's framing:** it recommends keeping the order to avoid
+   a spec change, but the splits delta **must already rewrite that requirement** — the
+   enumeration at `:85-86` names "basic usage", which ceases to be a page. So
+   `Reading → Safe extraction → Gotchas` costs wording in a delta that is already
+   being written, not a new fight. The trade is real either way: Gotchas-after-Reading
+   is a deliberate "read this next" hand-off, and moving Safe extraction above it
+   weakens that.
+3. **Whether `reading.md` stays one page.** Fourteen sections is the outline's own
+   largest page, and the review is right that splits freeze boundaries. But its
+   proposed fix does not fix it: carving off `opening.md` (open · sources · detection ·
+   passwords) yields ~55 lines there and still ~215 on `reading.md`, because the weight
+   is in the integrity guarantee (56 lines from ADR 0014), duplicates (30) and the
+   dedupe recipe (31) — all member-I/O material. If the size is the worry, the honest
+   lever is moving the dedupe recipe to `formats.md` beside the stored-digest matrix it
+   already cross-references, not splitting open-from-read.
+   **The distinction that matters:** `usage.md` failed because it did five *jobs*
+   (install, read, dedupe, errors, CLI), not because it had thirteen sections.
+   `reading.md` does one. A section cap is a proxy; "does this serve *the* purpose"
+   is the real test, and that is what the **Not here** field is for.
+4. **Where the config screen lives** — a section on `access-and-cost.md` (as written
+   above) or its own short page, as the independent pass wanted at ~4%. The content is
+   identical either way; only the nav entry differs.
+5. **How much of `how-it-works.md` belongs in phase 3 at all.** It is the only page
    on this list that is 100% new prose, which makes it Topic 8 work sitting inside a
    splits change. Writing it last, or deferring it whole, are both defensible.
