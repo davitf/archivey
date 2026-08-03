@@ -214,8 +214,7 @@ misuse raise [`ArchiveyUsageError`][archivey.ArchiveyUsageError] (e.g.
 `ConcurrentAccessError`), which is **not** an `ArchiveyError` — so a blanket
 `except ArchiveyError` never silently swallows a bug. (When an *archive* genuinely can't
 provide an operation — seeking a non-seekable member, a format that can't list — that is a
-real `ArchiveyError`: `UnsupportedOperationError`.) See
-[decision 0012](decisions/0012-usage-errors-outside-archiveyerror.md).
+real `ArchiveyError`: `UnsupportedOperationError`.)
 
 ## Command-line interface
 

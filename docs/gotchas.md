@@ -141,7 +141,7 @@ promise process-proof behavior on every hostile input.
   superset of correct results on valid trees).
 
 Details: [Access costs — accelerators](costs.md#accelerators-and-process-aborts),
-[internal known issues](internal/known-issues.md).
+[known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 ## What we can only warn about
 
@@ -152,5 +152,4 @@ Details: [Access costs — accelerators](costs.md#accelerators-and-process-abort
 - Concurrent hostile modification of the destination during extract is out of scope.
 
 When something looks like a bug but is listed here as format law, check
-[Formats](formats.md) and the [internal open-issues triage](internal/open-issues.md)
-before assuming a silent failure.
+[Formats](formats.md) before assuming a silent failure.

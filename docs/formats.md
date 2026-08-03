@@ -23,7 +23,7 @@ most often surprise callers. Authoritative detail lives in `openspec/specs/forma
 listing and metadata work without it, reading bytes does not.
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
-rapidgzip accelerator. Full codec rationale: [library analysis](internal/library-analysis.md).
+rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
 Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledgements.md).
 
 ## ZIP

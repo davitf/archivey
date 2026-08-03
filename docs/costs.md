@@ -140,7 +140,7 @@ members.
 The `[seekable]` path uses `rapidgzip` (gzip / zlib / raw deflate + bzip2). Do not close
 the caller-owned source underneath a live accelerator-backed stream — some upstream
 defects can abort the process rather than raise. Details:
-[internal known issues](internal/known-issues.md).
+[known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 ## Checklist
 

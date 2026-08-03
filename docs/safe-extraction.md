@@ -25,7 +25,7 @@ destination directory. Any Python-level failure removes them; only a hard kill
 extraction destination are archivey's staging files and are safe to delete before
 re-running the extraction.
 
-Full trust boundaries and open gaps: [threat model](internal/threat-model.md).
+Full trust boundaries and open gaps: [threat model](https://github.com/davitf/archivey/blob/main/dev-docs/threat-model.md).
 
 ## Policies
 

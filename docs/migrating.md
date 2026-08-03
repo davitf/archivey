@@ -128,7 +128,8 @@ What changes:
 - **No external binary for 7z**, and no CLI output parsing. Archivey has a native 7z
   reader (common codecs in the core; PPMd/Deflate64 and AES via `[recommended]`).
 - **RAR still needs `unrar`** for member *data* — metadata and listing are native. That is
-  a licensing constraint, not an oversight ([decision 0002](decisions/0002-native-rar-metadata-unrar-data.md)).
+  a licensing constraint, not an oversight: the RAR decompression algorithm may not be
+  reimplemented, so `unrar` stays in the picture for data while metadata does not need it.
 - **Errors are exceptions, not exit codes**, and hostile archives can't reach a shell:
   the whole point is not handing untrusted filenames to a subprocess.
 - Wrong passwords raise `EncryptionError` rather than prompting on a tty and hanging.
@@ -151,8 +152,7 @@ archivey.extract("a.7z", "out/")
 
 The reason to switch is memory safety and uniformity: Archivey parses 7z and RAR metadata
 in pure Python rather than delegating to a third-party parser, and the same reader
-interface covers every other format you handle. See
-[decision 0001](decisions/0001-native-7z-not-py7zr.md).
+interface covers every other format you handle.
 
 ## Things that will bite you
 
@@ -168,7 +168,7 @@ Worth reading before you migrate a production path:
    body; use a chunked loop if you want the recoverable prefix
    ([usage](usage.md#read-a-member)).
 4. **Random access on a pipe fails loudly** instead of silently buffering the whole thing
-   into memory ([decision 0010](decisions/0010-no-silent-buffer-nonseekable.md)). Pass
-   `streaming=True` for a forward-only pass.
+   into memory — an unbounded allocation you did not ask for is worse than an error.
+   Pass `streaming=True` for a forward-only pass.
 5. **Salvage is not implemented yet.** Reading a badly damaged archive gives you the
    recoverable prefix plus an honest error, not a best-effort resync past the damage.
