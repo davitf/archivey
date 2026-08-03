@@ -616,40 +616,77 @@ in above; the rest are recorded here so the reasoning survives.
   being the page whose job is to demonstrate the rule. It remains a live question
   (below) — but it is not reopened by restating D2, which Decision 4 already quoted.
 
-**Two the reviewer is right to raise and neither of us should settle — see below.**
+**Two the reviewer raised that needed a maintainer call — both now decided below.**
 
-## Open questions
+## Decided (2026-08-03)
+
+> *"let's do it according to your recommendations. we can always reorder after we see
+> the written results"*
+
+Taken as written, with one caveat on what "reorder later" actually costs (below).
+
+### D-a — Nav order stands: `… Reading → Gotchas → Safe extraction → Access and cost …`
+
+Safe extraction stays at position 5, and `documentation/spec.md:86-87`'s
+Gotchas-immediately-after-basic-usage rule is honoured rather than rewritten.
+
+The recipes block (`index.md` §2) is what makes this defensible: "extract safely" is
+now a copy-paste block on the **first screen**, linking straight to the page. The
+independent pass's objection was never really about ordinal position — it was that a
+reader could finish their first hour without meeting the safety defaults. A recipe on
+Home answers that more directly than a nav swap would.
+
+**Note for whoever writes the splits delta:** the review's stated reason for keeping
+this order — avoiding a spec change — is wrong, and should not be recycled as
+justification. The delta must rewrite that requirement anyway, because the
+enumeration at `:85-86` names "basic usage", which stops being a page. The order
+stands on the recipes argument, not on cost.
+
+### D-b — `reading.md` stays one page
+
+`usage.md` failed because it did five *jobs* — install, read, dedupe, errors, CLI —
+not because it had thirteen sections. `reading.md` does one: getting members and
+bytes out of an archive. Section count is a proxy for the real test, which is whether
+each section serves *the* purpose, and that is what the **Not here** field exists to
+enforce.
+
+The proposed alternative was also measured and does not solve the stated problem:
+splitting off `opening.md` (open · sources · detection · passwords) leaves ~55 lines
+there and ~215 still on `reading.md`, because the weight is the integrity guarantee
+(56 lines from ADR 0014), duplicates (30) and the dedupe recipe (31) — all member-I/O.
+
+**The named lever, if Topic 8 finds the page unwieldy:** move the dedupe recipe to
+`formats.md`, beside the stored-digest matrix it already cross-references. That is
+~31 lines and a section boundary that already exists. Deliberately **not** done
+pre-emptively — a change with no driver.
+
+### D-c — The config screen is a section on `access-and-cost.md`, not its own page
+
+As written in §5 §10. The nav stays at 15 entries.
+
+### Reversal cost, stated honestly
+
+"We can reorder after we see the written results" is true, but not equally true of
+all three:
+
+| Decision | Cost to reverse after the splits land |
+|---|---|
+| **D-a** nav order | **Free.** One `mkdocs.yml` line, plus wording in a `documentation` delta that is being written regardless. |
+| **D-c** config screen placement | **Cheap.** Moving a self-contained section to a new page; a nav entry and one link repoint. |
+| **D-b** `reading.md` as one page | **Moderate, and it grows.** Re-splitting means splitting *written* prose, not moving blocks — the outline's own timing argument. It stays bounded while URL churn is free; **after the `0.2.0` tag it also costs a redirect**, which is the one thing this whole review was sequenced to avoid. |
+
+So D-a and D-c are genuinely reversible on sight of the result. D-b is reversible
+**before the tag** and awkward after it — if it is going to be revisited, the moment
+is when `reading.md`'s prose is first drafted, not after the guide ships.
+
+## Still open
 
 1. **The `documentation` spec's Gotchas requirement** (`spec.md:178-193`) still
-   requires the quartet D4 removed. The splits change must rewrite or drop it —
-   flagged in §6, not resolved here.
-2. **Where `safe-extraction.md` sits in the nav.** It is position 5 of 15, immediately
-   after the digest that links to it — not buried, but later than the independent pass
-   wanted for the page carrying `VISION.md` claim #1. The blocker is
-   `documentation/spec.md:86-87`: *"Gotchas SHALL sit immediately after basic usage in
-   primary navigation."*
-   **One correction to the review's framing:** it recommends keeping the order to avoid
-   a spec change, but the splits delta **must already rewrite that requirement** — the
-   enumeration at `:85-86` names "basic usage", which ceases to be a page. So
-   `Reading → Safe extraction → Gotchas` costs wording in a delta that is already
-   being written, not a new fight. The trade is real either way: Gotchas-after-Reading
-   is a deliberate "read this next" hand-off, and moving Safe extraction above it
-   weakens that.
-3. **Whether `reading.md` stays one page.** Fourteen sections is the outline's own
-   largest page, and the review is right that splits freeze boundaries. But its
-   proposed fix does not fix it: carving off `opening.md` (open · sources · detection ·
-   passwords) yields ~55 lines there and still ~215 on `reading.md`, because the weight
-   is in the integrity guarantee (56 lines from ADR 0014), duplicates (30) and the
-   dedupe recipe (31) — all member-I/O material. If the size is the worry, the honest
-   lever is moving the dedupe recipe to `formats.md` beside the stored-digest matrix it
-   already cross-references, not splitting open-from-read.
-   **The distinction that matters:** `usage.md` failed because it did five *jobs*
-   (install, read, dedupe, errors, CLI), not because it had thirteen sections.
-   `reading.md` does one. A section cap is a proxy; "does this serve *the* purpose"
-   is the real test, and that is what the **Not here** field is for.
-4. **Where the config screen lives** — a section on `access-and-cost.md` (as written
-   above) or its own short page, as the independent pass wanted at ~4%. The content is
-   identical either way; only the nav entry differs.
-5. **How much of `how-it-works.md` belongs in phase 3 at all.** It is the only page
-   on this list that is 100% new prose, which makes it Topic 8 work sitting inside a
-   splits change. Writing it last, or deferring it whole, are both defensible.
+   requires the quartet D4 removed. Not a question so much as a task the splits change
+   must not skip: rewrite or drop it. Until then the page and the spec disagree, and
+   "`formats.md` covers it" is not a reading the spec supports.
+2. **How much of `how-it-works.md` belongs in phase 3 at all.** It is the only page on
+   this list that is 100% new prose, which makes it Topic 8 work sitting inside a
+   splits change. Current position, carried from the merged change's `design.md`
+   Decision 4: no stub, the page and its nav slot are created by whichever change
+   writes its content. Reversing that is one commit.

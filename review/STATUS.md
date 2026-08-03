@@ -30,9 +30,21 @@ execute against and the one Topic 8 starts from. Headline findings:
   of those land on `reading.md` or `install.md` — the two pages that do not exist
   yet. That is the outline's own argument for splitting `usage.md` rather than
   polishing it.
-- **~410 lines of new prose** are needed that no merge can supply, over half of it
+- **~480 lines of new prose** are needed that no merge can supply, over half of it
   on `safe-extraction.md` and the new `errors-and-diagnostics.md`. That is Topic 8's
   floor, before the accuracy pass it was commissioned for.
+
+A structure review on #223 added four things the outline had missed: a 30-second
+recipes block on Home (the independent pass's page 1, dropped), a config-at-a-glance
+screen, the four D8 threat-model residual one-liners on Gotchas, and Home's Highlight
+link repoints. Three page-shape questions it raised are **decided** in `outline.md`
+§Decided: nav order stands, `reading.md` stays one page, the config screen is a
+section rather than a page. The outline records what each is worth to reverse — the
+first two on sight of the drafted prose, the third only before the `0.2.0` tag.
+
+**The splits change is next**, and owns: the four page splits, `how-it-works.md`, the
+D4 Gotchas spec delta, the `documentation` delta for the `usage.md`-named listing
+requirement, and the `AGENTS`/`CLAUDE` merge (D6).
 
 `debt-ledger/` and `performance/` were archived on 2026-07-28 after the last two ledger
 items (**T7** corpus-matrix audit, **T4** half-test) landed and **performance Q4** was
