@@ -24,8 +24,8 @@ execute against and the one Topic 8 starts from. Headline findings:
 
 - **The proportions land**, once the denominator is stated. Against the core teaching
   pages — the comparable denominator, since the independent pass's outline had no
-  migration, platform or API page — safe extraction reaches 23.8% against its ~25%
-  target, and access/cost 16.6% against ~20%.
+  migration, platform or API page — safe extraction reaches 23.0% against its ~25%
+  target, and access/cost 18.9% against ~20%.
 - **Nine of the 29 must-explain behaviours are documented nowhere today**, and eight
   of those land on `reading.md` or `install.md` — the two pages that do not exist
   yet. That is the outline's own argument for splitting `usage.md` rather than
@@ -75,7 +75,7 @@ Ranked, from `backlog.md` and `PLAN.md`:
 3. **Topic 8** — documentation *content* (accuracy vs the code, then gaps, then
    quality). Separate from the IA review by design: that one decides where pages live,
    this one whether they are right. Starts from the IA review's `observations.md`
-   and `outline.md`, which between them name ~410 lines of prose that must be written
+   and `outline.md`, which between them name ~480 lines of prose that must be written
    and 15 recorded content problems (O-14 closed by #212).
 4. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
 5. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
