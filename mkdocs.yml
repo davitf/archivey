@@ -4,14 +4,18 @@ site_url: https://davitf.github.io/archivey/
 
 nav:
   - Home: index.md
-  - Philosophy: philosophy.md
-  - Basic usage: usage.md
-  - Migrating from zipfile/tarfile: migrating.md
+  - Install and extras: install.md
+  - Opening and listing: opening-and-listing.md
+  - Reading members: reading-members.md
   - Gotchas: gotchas.md
-  - Access costs and pitfalls: costs.md
-  - Formats and extras: formats.md
   - Safe extraction: safe-extraction.md
+  - Access costs and pitfalls: access-and-cost.md
+  - Formats and extras: formats.md
+  - Errors and diagnostics: errors-and-diagnostics.md
+  - Command line: cli.md
+  - Migrating from zipfile/tarfile: migrating.md
   - Platforms and threading: support-matrix.md
+  - Philosophy: philosophy.md
   - API reference: api.md
   - Acknowledgements: acknowledgements.md
 

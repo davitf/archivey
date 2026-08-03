@@ -2,11 +2,11 @@
 
 Archivey’s one interface hides a lot of format history. Defaults stay on the cheap,
 honest path — but some traps are still format law, stdlib behavior, or upstream
-native code. If you read only one page after [Basic usage](usage.md), make it this
+native code. If you read only one page after [Reading members](reading-members.md), make it this
 one.
 
 Skim the bullets when debugging; follow the links when you need the full contract.
-Deeper cost recipes live in [Access costs](costs.md); the full extraction policy
+Deeper cost recipes live in [Access costs](access-and-cost.md); the full extraction policy
 tables in [Safe extraction](safe-extraction.md); per-format matrices in
 [Formats](formats.md).
 
@@ -22,7 +22,7 @@ is never free.
   and the known compressed input is large enough (about 1 MiB). Smaller members
   stay on stdlib codecs.
 
-See [Access costs — seeking](costs.md#seeking-inside-compressed-members).
+See [Access costs — seeking](access-and-cost.md#seeking-inside-compressed-members).
 
 ## Solid archives and open order
 
@@ -34,7 +34,7 @@ opening members out of order can decode the same block repeatedly.
 - `concurrent_members=True` makes overlapping streams *correct*; it does **not**
   remove solid open-order cost.
 
-See [Access costs — solid archives](costs.md#solid-archives-prefer-one-forward-pass).
+See [Access costs — solid archives](access-and-cost.md#solid-archives-prefer-one-forward-pass).
 
 ## Listing completeness vs damage
 
@@ -140,7 +140,7 @@ promise process-proof behavior on every hostile input.
   same process also uses pycdlib directly, it sees that guarded behavior (a strict
   superset of correct results on valid trees).
 
-Details: [Access costs — accelerators](costs.md#accelerators-and-process-aborts),
+Details: [Access costs — accelerators](access-and-cost.md#accelerators-and-process-aborts),
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 ## What we can only warn about

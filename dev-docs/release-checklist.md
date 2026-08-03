@@ -106,8 +106,10 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
 
 ## 3. Docs and claims
 
-- [ ] End-user docs still match behavior: `docs/usage.md`, `formats.md`,
-      `safe-extraction.md`, `gotchas.md`, `api.md`, `philosophy.md`, `costs.md`.
+- [ ] End-user docs still match behavior: `install.md`, `opening-and-listing.md`,
+      `reading-members.md`, `formats.md`, `safe-extraction.md`, `gotchas.md`,
+      `errors-and-diagnostics.md`, `cli.md`, `api.md`, `philosophy.md`,
+      `access-and-cost.md`.
 - [ ] `VISION.md` performance / safety sentences still match what you are willing
       to ship (no falsifiable over-claim).
 - [ ] `docs/internal/threat-model.md` open items: either fixed, consciously

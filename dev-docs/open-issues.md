@@ -70,7 +70,7 @@ same change when relevant.
 - **Why partially fixable:** Keep mitigating in-tree; full fix is upstream. Product
   work: document loudly (Gotchas); optionally refuse accelerator on non-path /
   non-owned sources; hang sandbox for untrusted input (threat-model O5 follow-up).
-- **Refs:** `known-issues.md` Bug 3; `costs.md`; Gotchas; threat-model accelerator hang.
+- **Refs:** `known-issues.md` Bug 3; `access-and-cost.md`; Gotchas; threat-model accelerator hang.
 
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
@@ -98,8 +98,8 @@ Code is done unless noted. These should not appear in Gotchas as “broken.”
 | RAR password via stdin (`-p` + stdin) | #127 | **Closed** — `formats.md` |
 | Cross-platform name safety (O2/O3/O4/O7 + RENAME) | #109 / #123 | **Closed** — Gotchas + threat-model marked implemented |
 | RAR5 `-ver` history rows in `members()` | Specced + implemented | **Closed** — Gotchas + `formats.md` |
-| Duplicate names / `get` last-wins / str vs `ArchiveMember` selectors | Specced | Gotchas done; optional `usage.md` pointer remains nice-to-have |
-| Hardlink target = earlier same name by `member_id` | Specced | Gotchas done; optional `usage.md` pointer remains nice-to-have |
+| Duplicate names / `get` last-wins / str vs `ArchiveMember` selectors | Specced | Gotchas done; optional `opening-and-listing.md` pointer remains nice-to-have |
+| Hardlink target = earlier same name by `member_id` | Specced | Gotchas done; optional `opening-and-listing.md` pointer remains nice-to-have |
 | Nested-archive stance + bounded recursion recipe | Behavior OK | Gotchas one-liner done; fuller recipe still nice for usage/O6 |
 | Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Gotchas done; optional line in `safe-extraction.md` |
 | Accelerator opt-out for untrusted + latency budget | Mitigations in tree | Gotchas + costs cover it; P5 residual remains |
@@ -172,5 +172,5 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 ## Suggested first cuts
 
 1. **Why Archivey page** (next narrative doc): hardenings / why not wrap / why “large.”
-2. Optional polish: `usage.md` duplicate-name / hardlink pointers; fuller nested-archive
+2. Optional polish: `opening-and-listing.md` duplicate-name / hardlink pointers; fuller nested-archive
    recipe; one line in `safe-extraction.md` on symlink-hostile FS.
