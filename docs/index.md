@@ -11,6 +11,38 @@ with archivey.open_archive("photos.zip") as reader:
         print(member.name, member.size)
 ```
 
+## Thirty seconds
+
+```python
+import sys
+
+import archivey
+
+# Extract safely. Path traversal, symlink escapes and bombs are blocked by
+# default; you opt out, not in.  -> Safe extraction
+report = archivey.extract("untrusted.zip", "out/")
+
+# Read one member, verified. A corrupt or truncated member raises from read(),
+# never quietly returns short.  -> Reading members
+with archivey.open_archive("photos.zip") as reader:
+    data = reader.read("subdir/a.txt")
+
+# Stream one member without materialising it.  -> Reading members
+with archivey.open_archive("big.tar.gz") as reader:
+    for member, stream in reader.stream_members():
+        if member.is_file:
+            for chunk in iter(lambda: stream.read(1 << 20), b""):
+                ...
+
+# Read from a pipe: forward-only, single pass.  -> Access costs
+with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
+    for member, stream in reader.stream_members():
+        ...
+```
+
+[Safe extraction](safe-extraction.md) · [Reading members](reading-members.md) ·
+[Access costs](access-and-cost.md) · [Install](install.md)
+
 ## Highlights
 
 - **One interface for every format** — ZIP, TAR (`.tar.gz`/`.bz2`/`.xz`/`.zst`/…), RAR, 7z,

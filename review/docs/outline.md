@@ -637,11 +637,12 @@ The splits are moves. These are the writing tasks that remain, in priority order
 | `opening-and-listing.md` | Sources, the named detection diagnostic, the errors callout | ~25 |
 | `reading-members.md` | `stream_members` lifetime, identity and lifetime, the `extract()` pipe note | ~35 |
 | `access-and-cost.md` | ON-vs-AUTO, measurement, the config-at-a-glance screen | ~55 |
-| `gotchas.md` | Rewrite the accelerator bullet for `_TrappingSource`; the four D8 residual one-liners | ~10 |
-| `index.md` | The four 30-second recipes | ~30 |
+| ~~`gotchas.md`~~ | ~~Accelerator bullet + the four D8 residuals~~ — **shipped** in `docs-ia-split-user-guide` | — |
+| ~~`index.md`~~ | ~~The four 30-second recipes~~ — **shipped**, see D-a | — |
 
-~495 lines of new prose. That is Topic 8's floor, before the accuracy pass it was
-commissioned for.
+~455 lines of new prose still outstanding (~495 identified, ~40 shipped with the
+splits change). That is Topic 8's floor, before the accuracy pass it was commissioned
+for.
 
 ## Review disposition (PR #223)
 
@@ -660,9 +661,10 @@ in above; the rest are recorded here so the reasoning survives.
 **Declined, with reasons:**
 
 - **"Errors sits too late in the nav" (finding 7).** Reordering trades one reader's
-  problem for another's; the callouts in `opening-and-listing.md` §5 and
-  `reading-members.md` §1 are the cheaper half of the
-  reviewer's own suggested fix, and it is in.
+  problem for another's; the callouts in `opening-and-listing.md` §Damaged archives and
+  `reading-members.md` §Read a member are the cheaper half of the reviewer's own
+  suggested fix. *(Written here before they existed — the round-2 re-review caught
+  that, and they are now in the pages.)*
 - **"Add a nav stub for `how-it-works.md` in the splits change" (decision 5).** This
   re-raises what
   `openspec/changes/archive/2026-08-03-docs-ia-unpublish-maintainer-tree/design.md`
@@ -672,6 +674,25 @@ in above; the rest are recorded here so the reasoning survives.
   (below) — but it is not reopened by restating D2, which Decision 4 already quoted.
 
 **Two the reviewer raised that needed a maintainer call — both now decided below.**
+
+## Review disposition, round 2 (PR #223, post-implementation)
+
+A re-review after the splits landed raised six findings. Four were consistency debt
+this change itself created, and all four are fixed; two are correctly Topic 8's.
+
+| # | Finding | Outcome |
+|---|---|---|
+| 1 | **D-a overclaimed.** It justified the nav order with a recipes block "now on the first screen" — written in the present tense for prose that was never written, because the splits change is move-only. | **Fixed by writing the recipes** (~30 lines, `index.md` §Thirty seconds). A fourth exception to design.md Decision 1, and the strongest one: the other three keep a page from being *broken*, this one keeps a shipped decision from resting on something imaginary. Softening D-a to future tense was the alternative; making the claim true is better. |
+| 2 | **Same-PR contradiction.** `gotchas.md` said the accelerator fault is contained and re-raised; `access-and-cost.md` §Accelerators still said it "can abort the process" — and the Gotchas line linked there. | **Fixed.** The section is rewritten and renamed: archivey traps the caller-source case (`tests/test_accelerator_bug3_trap.py` is the authority), and the genuinely uncontained residual — path-source finalization aborts — is named as such. |
+| 3 | **A link with no landing.** The O6 nesting line pointed at `safe-extraction.md#limits`, which never mentioned nesting. | **Fixed.** One paragraph under Limits: the tracker is per-archive, so bound recursion yourself. The worked recipe stays Topic 8. |
+| 4 | **A claim written before it was true.** The round-1 disposition declined the Errors nav reorder on the grounds that callouts "are in" — they were not. | **Fixed.** Both callouts written, and the disposition entry now says it was written ahead of the work. |
+| 5 | Outline worklist rows stale for work that shipped. | **Fixed** above. |
+| 6 | O-2 (`formats.md` "path `.gz`" vs the spec's any-declared-seekable) still open. | **Agreed, Topic 8.** It is an accuracy fix, not consistency debt from this change. |
+
+**The pattern worth naming.** Three of the four were the *same* mistake: recording a
+decision in the present tense before doing the thing it depends on. A worklist that
+says what will happen and a record that says what did are different documents, and
+writing them in one pass invites exactly this. Findings 1 and 4 are that error twice.
 
 ## Decided (2026-08-03)
 
@@ -686,7 +707,10 @@ Safe extraction stays at position 5, and `documentation/spec.md:86-87`'s
 Gotchas-immediately-after-basic-usage rule is honoured rather than rewritten.
 
 The recipes block (`index.md` §2) is what makes this defensible: "extract safely" is
-now a copy-paste block on the **first screen**, linking straight to the page. The
+a copy-paste block on the **first screen**, linking straight to the page. It shipped
+with `docs-ia-split-user-guide` rather than waiting for Topic 8, precisely because a
+nav decision must not rest on a mitigation that does not exist — see §Review
+disposition, round 2. The
 independent pass's objection was never really about ordinal position — it was that a
 reader could finish their first hour without meeting the safety defaults. A recipe on
 Home answers that more directly than a nav swap would.
@@ -755,10 +779,11 @@ and why the tally that reversed it was worth asking for.
 
 ## Still open
 
-1. **The `documentation` spec's Gotchas requirement** (`spec.md:178-193`) still
-   requires the quartet D4 removed. Not a question so much as a task the splits change
-   must not skip: rewrite or drop it. Until then the page and the spec disagree, and
-   "`formats.md` covers it" is not a reading the spec supports.
+1. ~~**The `documentation` spec's Gotchas requirement**~~ — **done.**
+   `docs-ia-split-user-guide` encodes it as `REMOVED` plus a replacement requirement
+   that states what Gotchas *is*, with a migration note recording where each displaced
+   fact survives. It reaches `openspec/specs/` when the change is archived after
+   merge.
 2. **How much of `how-it-works.md` belongs in phase 3 at all.** It is the only page on
    this list that is 100% new prose, which makes it Topic 8 work sitting inside a
    splits change. Current position, carried from the merged change's `design.md`

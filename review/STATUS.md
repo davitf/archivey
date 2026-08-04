@@ -32,7 +32,8 @@ execute against and the one Topic 8 starts from. Headline findings:
   for splitting `usage.md` rather than polishing it.
 - **~495 lines of new prose** are needed that no merge can supply, over half of it
   on `safe-extraction.md` and the new `errors-and-diagnostics.md`. That is Topic 8's
-  floor, before the accuracy pass it was commissioned for.
+  floor, before the accuracy pass it was commissioned for. (~40 of them shipped with
+  the splits change; see below.)
 
 A structure review on #223 added four things the outline had missed: a 30-second
 recipes block on Home (the independent pass's page 1, dropped), a config-at-a-glance
@@ -48,16 +49,24 @@ on. The nav goes to 16 entries.
 
 **The splits change is implemented.** The guide is now 15 pages, each doing one job:
 `usage.md` split five ways, `costs.md` → `access-and-cost.md`, `safe-extraction.md`
-grown from 93 lines to 176, `gotchas.md` shrunk from 155 to 87 as a digest, ADR 0014
+grown from 93 lines to 181, `gotchas.md` shrunk from 155 to 87 as a digest, ADR 0014
 and `threat-model.md` split, and `AGENTS.md` canonical with `CLAUDE.md` a 26-line
 pointer.
 
-**What ships thin, on purpose.** This change moved blocks; it did not write the
-~495 lines of new prose the outline identifies. `install.md` has no
-`format_availability()` section, `errors-and-diagnostics.md` has no diagnostics
-narrative, `safe-extraction.md` has no bounded-recursion recipe, and
-`how-it-works.md` does not exist — so the nav is 15 entries, not the outline's 16.
-That is Topic 8's worklist, and `outline.md` is the specification for it.
+**What ships thin, on purpose.** This change moved blocks; it wrote ~40 of the ~495
+lines of new prose the outline identifies and left ~455 for Topic 8. `install.md` has
+no `format_availability()` section, `errors-and-diagnostics.md` no diagnostics
+narrative, `access-and-cost.md` no config screen, and `how-it-works.md` does not exist
+— so the nav is 15 entries, not the outline's 16. `outline.md` is the specification
+for the rest.
+
+**A re-review caught four consistency problems this change had created**, all now
+fixed: `index.md`'s recipes were promised by decision D-a but never written (the nav
+order rests on them, so they shipped); `access-and-cost.md` still said accelerator
+faults abort the process while the rewritten `gotchas.md` said they are contained;
+the Gotchas nesting line pointed at a Limits section that never mentioned nesting; and
+two Errors callouts were recorded as done before being written. Three of the four were
+the same error — writing a record in the present tense ahead of the work it describes.
 
 **Two things the move surfaced that were not on anyone's list:** ~35 references to
 `docs/internal/` and `docs/grab-bag/` survived *inside* `dev-docs/` because #221's
@@ -94,8 +103,8 @@ Ranked, from `backlog.md` and `PLAN.md`:
 3. **Topic 8** — documentation *content* (accuracy vs the code, then gaps, then
    quality). Separate from the IA review by design: that one decides where pages live,
    this one whether they are right. Starts from the IA review's `observations.md`
-   and `outline.md`, which between them name ~495 lines of prose that must be written
-   and 15 recorded content problems (O-14 closed by #212).
+   and `outline.md`, which between them name ~455 lines of prose still to write and 15
+   recorded content problems (O-14 closed by #212).
 4. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
 5. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
    library, and items 1–4 are exactly the gaps it would otherwise re-find. The docs

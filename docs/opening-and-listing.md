@@ -36,6 +36,7 @@ with archivey.open_archive("messy.tar") as reader:
 ```
 
 `__iter__` / `stream_members()` **yield the prefix then raise** on the same failures.
+What each failure type means is on [Errors and diagnostics](errors-and-diagnostics.md).
 Diagnostics alone are not the primary signal. This is not salvage (resync past damage);
 `--salvage` remains reserved. Random-access extract still fail-closes before writing
 when listing ends in terminal damage.

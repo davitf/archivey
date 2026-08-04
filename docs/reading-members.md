@@ -30,7 +30,9 @@ intentional: a silent lossy success is worse than not salvaging. To recover a tr
 prefix, use a chunked loop (`read(n)` until empty or exception). Content faults raise from
 `read`, never from `close`. When a member is short *and* carries a digest, the error type is
 best-effort (`TruncatedError`); shortfall and digest mismatch are not always separable —
-`except archivey.ReadError` catches both.
+`except archivey.ReadError` catches both — see
+[Errors and diagnostics](errors-and-diagnostics.md) for the full tree, including why
+mistakes in *your* code are deliberately kept out of it.
 
 ## The integrity guarantee
 

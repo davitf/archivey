@@ -153,6 +153,11 @@ Bomb guards apply during **extraction**. Listing caps apply when a full member l
 materialized — prefer `stream_members()` for huge untrusted archives when you only need
 a sequential subset.
 
+**The bomb tracker is per-archive, not nesting-aware.** It measures the expansion of
+the archive it is extracting, so a zip-of-zips can amplify past your budget one level
+at a time. Recursion into nested archives is caller-driven: if you open extracted
+members as archives, bound the depth and the cumulative size yourself.
+
 ## Hardening notes for callers
 
 **Optional `[seekable]` accelerators** (`rapidgzip` and its bundled bzip2
