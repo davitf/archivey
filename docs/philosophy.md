@@ -26,7 +26,7 @@ not as silent guesses or a different API per backend.
 
 Extraction cannot be zip-slipped, symlink-escaped, or decompression-bombed unless you
 explicitly opt out. Safety is a contract, not a marketing flag. See
-[Safe extraction](safe-extraction.md).
+[Safe extraction](extracting.md).
 
 ## Don’t-shoot-yourself by design
 
@@ -42,7 +42,7 @@ Archivey’s defaults are the **cheap, honest path**:
 - random-access open fails fast on a non-seekable source (no silent buffering)
 
 When you need more, you **declare** it. Escape hatches are explicit, not ambient. See
-[Access costs and pitfalls](costs.md).
+[Access costs and pitfalls](access-and-cost.md).
 
 ## Escape hatches for advanced use
 
@@ -68,7 +68,7 @@ evidence-based (magic first). Access cost is queryable (`reader.cost`). Prefer
 only need integrity fingerprints.
 
 Wall-time expectations are **aspirational peer-ratio bands** (not a silent promise):
-see [Access costs — wall-time bands](costs.md#wall-time-bands-aspirational). Re-run the
+see [Access costs — wall-time bands](access-and-cost.md#wall-time-bands-aspirational). Re-run the
 harness if you want numbers on your machine.
 
 ## What this is not

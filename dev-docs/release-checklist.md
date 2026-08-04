@@ -22,7 +22,7 @@ from the git tag). `publish.yml` fails if the tag and packaged version disagree.
       T2/T3/T7/D4; D2 `SECURITY.md` and DD4 rapidgzip characterization are done).
 - [ ] First public release only: cutover runbook complete (or consciously
       releasing to TestPyPI while finishing remaining cutover steps — see
-      `docs/internal/release-repo-cutover.md`; repo is already named `archivey`).
+      `dev-docs/release-repo-cutover.md`; repo is already named `archivey`).
 
 ---
 
@@ -94,7 +94,7 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
   artifact you used.
 
 - [ ] Paste a compact summary into the CHANGELOG entry (and refresh
-      `docs/costs.md` / VISION measured tables if numbers moved materially).
+      `docs/access-and-cost.md` / VISION measured tables if numbers moved materially).
       Note measurement host / core count (see `benchmarks/RESULTS.md`).
 - [ ] Confirm PR structural gate still passes:
 
@@ -106,13 +106,15 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
 
 ## 3. Docs and claims
 
-- [ ] End-user docs still match behavior: `docs/usage.md`, `formats.md`,
-      `safe-extraction.md`, `gotchas.md`, `api.md`, `philosophy.md`, `costs.md`.
+- [ ] End-user docs still match behavior: `install.md`, `opening-and-listing.md`,
+      `reading-members.md`, `formats.md`, `extracting.md`, `gotchas.md`,
+      `errors-and-diagnostics.md`, `cli.md`, `api.md`, `philosophy.md`,
+      `access-and-cost.md`.
 - [ ] `VISION.md` performance / safety sentences still match what you are willing
       to ship (no falsifiable over-claim).
-- [ ] `docs/internal/threat-model.md` open items: either fixed, consciously
+- [ ] `dev-docs/threat-model.md` open items: either fixed, consciously
       deferred with wording, or called out in SECURITY / gotchas.
-- [ ] `docs/internal/open-issues.md` not contradicting shipped decisions (stale
+- [ ] `dev-docs/open-issues.md` not contradicting shipped decisions (stale
       rows fixed or moved to Closed).
 - [ ] MkDocs builds clean:
 

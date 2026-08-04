@@ -39,7 +39,7 @@ promise with that line; treat `0.2.0` as the first release of this library.
 ### Changed
 
 - Performance claims are **aspirational peer-ratio bands** with a published
-  measured table in `docs/costs.md` / `VISION.md` (nightly realistic ratios;
+  measured table in `docs/access-and-cost.md` / `VISION.md` (nightly realistic ratios;
   refresh at release time per the checklist).
 - GitHub repository renamed from `archivey-2` → `archivey` (canonical name);
   the prior v1 repo was renamed to `archivey-old`.

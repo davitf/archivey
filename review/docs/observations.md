@@ -227,6 +227,14 @@ migrated and then rewritten.
 
 ## O-14 — Three published pages attribute BLAKE2sp to an extra; it is native and zero-dep
 
+**Closed 2026-08-03** — verified fixed on `main` @ `d34489f`. All three copies now
+state that BLAKE2sp needs no package: `docs/formats.md:16`, `docs/formats.md:105`,
+`docs/acknowledgements.md:73`. `consolidate-optional-extras` (#212) fixed the
+published pages alongside the `pyproject.toml` comment, which is what the last
+paragraph below asked for. Recorded here rather than deleted, because the closing
+argument still stands: a structural audit reading every file for *filing* did not
+catch a factual error on a user page.
+
 Added 2026-07-29 during maintainer review of this audit, so numbered after the fact.
 
 `src/archivey/internal/hashing/blake2sp.py` implements BLAKE2sp on stdlib
@@ -263,3 +271,105 @@ unfixable / open we-can-fix / evidence-only — and routes items to IDEAS,
 `open-issues`, threat-model register, or `investigations/` per
 [`DECISIONS.md`](DECISIONS.md) D9. Also rewrite the Gotchas accelerator bullet
 for `_TrappingSource` (Bug 3 is contained; “process dies” is stale).
+
+---
+
+## O-16 — The integrity guarantee overstated what a `CorruptionError` means
+
+Raised by the maintainer 2026-08-04, reading the moved text on
+`docs/reading-members.md`, and **fixed in `docs-ia-split-user-guide`** rather than
+deferred: it is a factual error about a load-bearing safety claim on a published page.
+
+The moved-in wording said a `CorruptionError` means *"discard everything read from this
+member; none of it is trustworthy"*. The ADR it came from qualified that with "as a
+complete intact member", but the bolding buried the qualifier and the sentence read as
+the stronger claim.
+
+What is actually true, and what the page now says:
+
+| Claim | Correct version |
+|---|---|
+| Bytes read before a `CorruptionError` are worthless | **Unknown quality.** On a compressed member that fails mid-stream, some are probably fine — we cannot say which, or how much. Unverified, not known-bad. |
+| `CorruptionError` vs `TruncatedError` tells you what happened | **A best-effort label, not a diagnosis.** Damage that decodes into a shorter stream is indistinguishable from real truncation. Don't branch on it. |
+| Every error raises | **We try to raise on every error we can detect.** Some formats store no checksum; some damage decodes to something valid-looking. |
+
+No spec had to change — `compressed-streams` specifies the *exception mapping*
+(corrupt → `CorruptionError`, short → `TruncatedError`), not the reliability of the
+distinction or the status of the prefix. `dev-docs/investigations/adr-0014-investigation.md`
+carries a note recording the sharpened reading next to the original reasoning.
+
+A third point was added the same day, and it is the reassuring half: **a chunked read
+loop delivers every readable byte and then raises.** `read(member.size)` returns short
+and quiet, but the next read raises — so `while chunk := stream.read(n)` cannot end
+silently on a truncated member. Verified against
+`tests/test_codecs.py::test_verify_expected_size_short_chunked_then_empty_raises`,
+which asserts the loop collects the whole available prefix before the `TruncatedError`.
+The page now shows that loop as the recover-the-prefix recipe.
+
+**For Topic 8:** do not restore the stronger phrasing when tightening this section, and
+keep the chunked-loop guarantee — it is the answer to "how do I get what is readable
+out of a damaged member".
+
+*(Correction 2026-08-04: an earlier draft called that a "VISION founding use case".
+It is not. VISION's two load-bearing claims are safe-by-default and memory-safe
+parsing of hostile input; the founding use case is indexing and deduplicating messy
+backups, and "damaged input is a first-class citizen" is one of five priorities that
+origin story implies — and that bullet is about not failing at open, i.e. the listing
+side, not the read contract.)*
+
+---
+
+## O-17 — Dev-doc register leaked into the user guide
+
+Raised by the maintainer 2026-08-04. Several pages read as too technical for their
+audience, which is the predictable cost of the IA migration: `safe-extraction.md` took
+its enforced-guarantees list from a threat model, `reading-members.md` took its
+guarantee from an ADR, and `formats.md` was always written close to the specs. The
+prose is accurate; the register is wrong for the reader.
+
+**The audience, stated so the rewrite has a target:** a working developer who is not a
+compression or archive-format specialist. They know Python and streams. They do not
+know what a "solid folder", an "ISIZE trailer", a "check value" or a "terminal
+boundary" is unless the page says.
+
+**Rules for the Topic 8 rewrite:**
+
+1. **Define or drop the jargon.** First use of a format term gets a half-sentence gloss,
+   or the sentence gets rewritten without it.
+2. **Lead with what the reader does, not with the mechanism.** "Don't close the source
+   underneath a live stream" before the explanation of why the C++ layer objects.
+3. **Cut the provenance voice.** "This is a deliberate idiom, not a trap", "the
+   load-bearing asymmetry", "target contract; best-effort today on a few backends" are
+   ADR register — they argue with a reviewer who is not present.
+4. **Be shorter.** Most of these sections lose 20–30% with nothing of substance gone.
+   The guarantee section on `reading-members.md` is the worked example: rewritten for
+   O-16, it is both more accurate and shorter.
+5. **Keep the honesty.** Plainer is not vaguer. "We can't tell which bytes are good"
+   is plain *and* precise; "the prefix is best-effort salvageable" is neither.
+
+---
+
+## O-18 — Reader close vs escaped member streams: docs are right, but the design was questioned
+
+Raised by the maintainer 2026-08-04 on the outline's must-explain #20 line ("closing
+the reader does not invalidate already-open streams") — *"doesn't it? that surprised
+me."*
+
+**Checked, and the docs are correct.** It is specified
+(`archive-reading/spec.md:543-580`, "Context-manager and close lifecycle"), tested
+(`tests/test_member_streams.py::test_post_close_reader_ops_are_usage_errors`), and
+**consistent across all seven backends** — zip, tar, tar.gz, bare gz, directory, 7z and
+RAR all read fine after `reader.close()`, and `stream.close()` afterwards is clean. So
+there is nothing for Topic 8 to fix in the prose.
+
+One wording nuance worth keeping in mind when tightening: the spec requirement says a
+stream **MAY** remain usable, while its own scenario table states it as an outcome. The
+guide currently promises the stronger version. If the behaviour is ever revisited, the
+guide is the thing that has to change first.
+
+**What the check turned up is a product question, not a docs one**, and it is filed as
+`dev-docs/open-issues.md` **P7**: an unclosed member stream leaks a file descriptor
+that GC never reclaims (+1 on every backend measured), and `reader.close()` does not
+release it. That is closer to the hazard the maintainer's instinct was pointing at than
+the read-after-close behaviour itself.
+

@@ -3,7 +3,7 @@
 - **Status:** accepted
 - **Date:** 2026-07-15 (`cross-platform-name-safety`)
 - **Provenance:** that change's design; OpenSpec `safe-extraction`; threat model
-  O2/O3/O4/O7 (`docs/internal/threat-model.md`)
+  O2/O3/O4/O7 (`dev-docs/threat-model.md`)
 
 ## Context
 

@@ -47,8 +47,13 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   default `cp437`). When UTF-8 is inferred for an unflagged name, a
   `member_name_encoding_inferred` diagnostic records it. Passing `encoding=` to
   `open_archive` is authoritative — it is used verbatim and disables the sniff.
+- **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
+  bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
+  parsing the central directory, so the failure is archive-wide rather than confined to
+  the one bad name. A native ZIP reader could recover the other entries; today it
+  cannot. Rare, and it fails loudly.
 - ZipCrypto multi-password confirmation can be expensive on **STORED** members — see
-  [costs](costs.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
+  [access costs](access-and-cost.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
   `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
   (integrity is the HMAC). Without it, an AES member raises
   `PackageNotInstalledError` but is still listed as encrypted.
@@ -174,7 +179,37 @@ a full `read()` still verifies through the normal path.
 | single-file `.lz` | seekable path + `seekable_members=True` (one or many members; multi-member value is combined) | `crc32` |
 | `.bz2` / `.xz` / zlib / brotli / `.Z`, TAR, directory | — | none |
 
-See [usage](usage.md#cheap-dedupe-with-stored-hashes) for the cheap→computed fallback recipe.
+### Cheap dedupe with stored hashes
+
+Prefer digests the archive already stores — the matrix above says which formats
+have one — and fall back to computing a digest while reading when they do not:
+
+```python
+import hashlib
+import archivey
+from archivey import HashAlgorithm
+
+def content_key(reader, member):
+    """Best available digest for a first-pass dedupe index."""
+    if HashAlgorithm.BLAKE2SP in member.hashes:
+        return ("stored", "blake2sp", member.hashes[HashAlgorithm.BLAKE2SP])
+    if HashAlgorithm.CRC32 in member.hashes:
+        return ("stored", "crc32", member.hashes[HashAlgorithm.CRC32])
+    # No cheap stored digest (e.g. tar, bzip2): compute while reading.
+    h = hashlib.sha256()
+    with reader.open(member) as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            h.update(chunk)
+    return ("computed", "sha256", h.digest())
+
+with archivey.open_archive("backups.zip") as reader:
+    for member in reader:
+        if member.is_file and member.is_current:
+            print(member.name, content_key(reader, member))
+```
+
+Stored digests are weaker or format-specific; computed digests are stronger but cost a
+full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
 
 ## Detection
 

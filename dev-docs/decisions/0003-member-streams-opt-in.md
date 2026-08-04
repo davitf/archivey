@@ -3,7 +3,7 @@
 - **Status:** accepted
 - **Date:** 2026-07-11
 - **Provenance:** OpenSpec change `concurrent-member-streams` (proposal + design);
-  PRs promoting `MemberStreams`; `docs/costs.md`
+  PRs promoting `MemberStreams`; `docs/access-and-cost.md`
 
 ## Context
 

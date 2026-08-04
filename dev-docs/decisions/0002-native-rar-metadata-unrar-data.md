@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-07
-- **Provenance:** `VISION.md`; `docs/grab-bag/ARCHITECTURE.md` §5.7; OpenSpec `format-rar`
+- **Provenance:** `VISION.md`; `dev-docs/history/ARCHITECTURE.md` §5.7; OpenSpec `format-rar`
 
 ## Context
 

@@ -45,13 +45,13 @@ What changes:
 - **`extractall` was never safe.** `zipfile.extractall` sanitizes absolute paths and `..`
   by mangling them, but happily writes symlinks that point outside the destination.
   `extract_all` **blocks** traversal and symlink escapes by default and reports them as
-  `ExtractionStatus.BLOCKED`. See [Safe extraction](safe-extraction.md).
+  `ExtractionStatus.BLOCKED`. See [Safe extraction](extracting.md).
 - **Passwords are an open-time argument**, not per-call `pwd=`:
   `open_archive("secret.zip", password="hunter2")`. Archivey also reads **WinZip AES**
   members (with the `[recommended]` extra), which `zipfile` cannot decrypt at all.
 - **Duplicate names are visible.** `namelist()` returns duplicates with no way to tell
   which one wins; Archivey marks the live entry with `member.is_current`. See
-  [duplicate names](usage.md#duplicate-names-and-is_current).
+  [duplicate names](opening-and-listing.md#duplicate-names-and-is_current).
 - `reader.read(name)` needs no `getinfo` round-trip, and works the same on every format.
 
 ## From `tarfile`
@@ -86,7 +86,7 @@ What changes:
 - **Compressed tars are solid.** `tarfile` lets you call `extractfile` in any order and
   silently re-decompresses from the start each time — that's the classic accidental
   O(n²). Archivey makes the cost visible via `reader.cost` and steers you to
-  `stream_members()`. See [Access costs](costs.md).
+  `stream_members()`. See [Access costs](access-and-cost.md).
 - **Truncated archives.** `tarfile` often stops silently at a short read. Archivey gives
   you the recovered prefix *and* the error via `members_report()`.
 
@@ -160,13 +160,13 @@ Worth reading before you migrate a production path:
 
 1. **Extraction is strict.** Archives that "worked" with `extractall` may now report
    `BLOCKED` members. That is the point — but check the
-   [`ExtractionReport`](safe-extraction.md) rather than assuming success.
+   [`ExtractionReport`](extracting.md) rather than assuming success.
 2. **One live member stream by default.** If you held several `extractfile()` handles
    open, pass `concurrent_members=True`. See
    [supported platforms and threading](support-matrix.md).
 3. **`read()` is all-or-raise.** A truncated member raises instead of returning a short
    body; use a chunked loop if you want the recoverable prefix
-   ([usage](usage.md#read-a-member)).
+   ([reading members](reading-members.md#read-a-member)).
 4. **Random access on a pipe fails loudly** instead of silently buffering the whole thing
    into memory — an unbounded allocation you did not ask for is worse than an error.
    Pass `streaming=True` for a forward-only pass.

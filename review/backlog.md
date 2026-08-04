@@ -185,9 +185,16 @@ worth ranking rather than bundling:
 2. **Gaps.** What does an adopting engineer look for and not find? Overlaps Topic 7 —
    coordinate: Topic 7 judges whether the docs *persuade*, this asks whether they
    *answer*. If Topic 7 has already run, take its gap list as input.
-3. **Quality: tone, length, examples, structure within a page.** Lowest value per hour
-   and the easiest to bikeshed. Do it last, and only where a page is load-bearing
-   (`index`, `usage`, `formats`, `safe-extraction`).
+3. **Register and concision — promoted, not polish.** The IA migration moved prose from
+   a threat model, an ADR and the specs onto user pages. It is accurate and it reads
+   like the documents it came from. The audience is a working developer who is *not* an
+   archive-format specialist, and several pages currently assume otherwise. Rules and
+   the worked example are in `review/docs/observations.md` **O-17**; the accuracy half
+   of the same problem is **O-16**. This is no longer "do it last if there is time" —
+   the material that most needs it is the material carrying the safety claims.
+4. **Remaining quality: examples, structure within a page.** The genuinely
+   bikeshed-prone part. Do it last, and only where a page is load-bearing (`index`,
+   `safe-extraction`, `formats`, `opening-and-listing`, `reading-members`).
 
 **Sequencing.** After the IA migration lands, before Topic 7 ideally — so the capstone
 judges docs that are both correctly filed and correct. If time forces a choice, do (1)

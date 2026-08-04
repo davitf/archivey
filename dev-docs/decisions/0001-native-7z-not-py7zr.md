@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-07 (v2 direction; implementation via `native-7z-reader`)
-- **Provenance:** `VISION.md`; `docs/grab-bag/ARCHITECTURE.md` §5.6; OpenSpec `format-7z`;
+- **Provenance:** `VISION.md`; `dev-docs/history/ARCHITECTURE.md` §5.6; OpenSpec `format-7z`;
   DEV `sevenzip-native-reader` exploration
 
 ## Context

@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-07 (`zstd-stdlib-backend-migration`)
-- **Provenance:** `docs/internal/library-analysis.md`; OpenSpec `packaging-and-extras`
+- **Provenance:** `dev-docs/library-analysis.md`; OpenSpec `packaging-and-extras`
 
 ## Context
 

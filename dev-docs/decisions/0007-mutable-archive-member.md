@@ -2,7 +2,7 @@
 
 - **Status:** accepted (reversed from an earlier frozen draft)
 - **Date:** Phase 5 / data-model work
-- **Provenance:** `docs/grab-bag/ARCHITECTURE.md` §2.1 / §5.2; OpenSpec
+- **Provenance:** `dev-docs/history/ARCHITECTURE.md` §2.1 / §5.2; OpenSpec
   `archive-data-model`
 
 ## Context

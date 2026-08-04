@@ -61,7 +61,7 @@ Do these in order — the `archivey` name must be free before this repo can take
 6. **Local prose references** (safe to do at rename time; left as-is until then because
    they are correct while the repo is still named `archivey-2`):
     - `CLAUDE.md` line ~3 — "This repo (`archivey-2`) …" → `archivey`.
-    - `docs/grab-bag/COMPARISON.md` — leave unchanged; it is a historical record of the
+    - `dev-docs/history/COMPARISON.md` — leave unchanged; it is a historical record of the
       repo-strategy decision where `archivey-2` is the accurate name.
 7. **Local clones.** `git remote set-url origin …/archivey.git` (GitHub auto-redirects
    git ops, but tidy it).

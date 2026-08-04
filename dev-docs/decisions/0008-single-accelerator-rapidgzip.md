@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** compression-library evaluation / known-issues work
-- **Provenance:** `docs/internal/known-issues.md`; `docs/internal/library-analysis.md`;
+- **Provenance:** `dev-docs/known-issues.md`; `dev-docs/library-analysis.md`;
   `[seekable]` extra
 
 ## Context

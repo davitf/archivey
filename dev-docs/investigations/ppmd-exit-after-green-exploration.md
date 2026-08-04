@@ -1,7 +1,7 @@
 # Exploration: `pyppmd` exit-after-green abort
 
 **PR:** #188 (this branch)  
-**Issue:** `docs/internal/known-issues.md` → “`pyppmd` exit-after-green abort”  
+**Issue:** `dev-docs/known-issues.md` → “`pyppmd` exit-after-green abort”  
 **Status:** partially mitigated (overshoot fixed; `Ppmd7T_Free` residual + CI soft-pass remain — see “Fix applied”)  
 **Date started:** 2026-07-23  
 **Date updated:** 2026-07-23

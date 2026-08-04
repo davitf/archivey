@@ -2,8 +2,8 @@
 
 - **Status:** accepted (v1); async deferred
 - **Date:** recorded in architecture trade-offs; explored in grab-bag `ASYNC.md`
-- **Provenance:** `docs/grab-bag/ARCHITECTURE.md` §5.3; `openspec/project.md` deferrals;
-  `docs/grab-bag/ASYNC.md`
+- **Provenance:** `dev-docs/history/ARCHITECTURE.md` §5.3; `openspec/project.md` deferrals;
+  `dev-docs/history/ASYNC.md`
 
 ## Context
 

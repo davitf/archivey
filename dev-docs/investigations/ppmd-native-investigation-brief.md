@@ -4,8 +4,8 @@
 and **pyppmd bindings**, not archivey API design.  
 **Date:** 2026-07-23  
 **Repo context:** `archivey-2` PR #188 / branch work around
-`docs/internal/ppmd-exit-after-green-exploration.md` and
-`docs/internal/pyppmd-upstream-report.md`.  
+`dev-docs/investigations/ppmd-exit-after-green-exploration.md` and
+`dev-docs/investigations/pyppmd-upstream-report.md`.  
 **Pinned wheel in labs:** `pyppmd==1.3.1` (C extension `pyppmd.c._ppmd`).
 
 ---
@@ -42,7 +42,7 @@ from archivey’s mitigations alone:
    only via `pyppmd.c._ppmd`?
 
 Deliver a short written report (can append to this doc or
-`docs/internal/ppmd-exit-after-green-exploration.md`) with: file/line citations,
+`dev-docs/investigations/ppmd-exit-after-green-exploration.md`) with: file/line citations,
 minimal C or Python repros, and a clear “7-Zip vs pyppmd” verdict per failure mode.
 
 ---
@@ -72,9 +72,9 @@ and what a correct upstream fix would be.
 
 | Doc | Contents |
 |-----|----------|
-| `docs/internal/pyppmd-upstream-report.md` | Ready-to-file upstream issue draft; 1.3.0 `ThreadDecoder.c` rewrite (#126); overshoot / `-1` / after-eof crash tables; suggested C-level fixes |
-| `docs/internal/ppmd-exit-after-green-exploration.md` | Exit-after-green lab notebook: truncated NUL flush, A/B natives, trailing `0x00`, last-byte isolation, chunked drains, pack-size gate |
-| `docs/internal/known-issues.md` | “Intermittent pyppmd native aborts” + “exit-after-green abort” sections |
+| `dev-docs/investigations/pyppmd-upstream-report.md` | Ready-to-file upstream issue draft; 1.3.0 `ThreadDecoder.c` rewrite (#126); overshoot / `-1` / after-eof crash tables; suggested C-level fixes |
+| `dev-docs/investigations/ppmd-exit-after-green-exploration.md` | Exit-after-green lab notebook: truncated NUL flush, A/B natives, trailing `0x00`, last-byte isolation, chunked drains, pack-size gate |
+| `dev-docs/known-issues.md` | “Intermittent pyppmd native aborts” + “exit-after-green abort” sections |
 | `scripts/pyppmd_crash_repro.py` | Self-contained repro (`pyppmd` + stdlib): modes `extra-null`, `overshoot`, `oversized`, `sized-safe`, … |
 
 ### Upstream / reference trees to clone
@@ -332,12 +332,12 @@ already landed).
 You are investigating native PPMd / pyppmd heap corruption and bitstream-end
 behavior for the archivey project. Read and follow the investigative brief at:
 
-  docs/internal/ppmd-native-investigation-brief.md
+  dev-docs/investigations/ppmd-native-investigation-brief.md
 
 Also read:
-  docs/internal/pyppmd-upstream-report.md
-  docs/internal/ppmd-exit-after-green-exploration.md
-  (relevant sections of) docs/internal/known-issues.md
+  dev-docs/investigations/pyppmd-upstream-report.md
+  dev-docs/investigations/ppmd-exit-after-green-exploration.md
+  (relevant sections of) dev-docs/known-issues.md
   scripts/pyppmd_crash_repro.py
 
 Clone miurahr/pyppmd and study the C sources (especially ThreadDecoder and

@@ -74,7 +74,7 @@ That origin story encodes priorities that remain core:
 ## Performance budget
 
 Wall-time targets are **aspirational peer-ratio bands**, not a claim that every
-path meets them today. Measured ratios live in [`docs/costs.md`](docs/costs.md)
+path meets them today. Measured ratios live in [`docs/access-and-cost.md`](docs/access-and-cost.md)
 (and the nightly harness report); re-run
 `python -m benchmarks.harness --mode full --scale realistic` to check on your host.
 

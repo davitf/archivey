@@ -1,155 +1,87 @@
 # Gotchas
 
-Archivey’s one interface hides a lot of format history. Defaults stay on the cheap,
-honest path — but some traps are still format law, stdlib behavior, or upstream
-native code. If you read only one page after [Basic usage](usage.md), make it this
-one.
+Archivey's one interface hides a lot of format history. Defaults stay on the cheap,
+honest path — but some traps are still format law, stdlib behaviour, or upstream
+native code. If you read only one page after
+[Reading members](reading-members.md), make it this one.
 
-Skim the bullets when debugging; follow the links when you need the full contract.
-Deeper cost recipes live in [Access costs](costs.md); the full extraction policy
-tables in [Safe extraction](safe-extraction.md); per-format matrices in
-[Formats](formats.md).
+This page is a **digest**: one line per trap, and a link to the page that owns the
+detail. A topic is here only if a caller choice is likely to shoot you in the foot,
+or if Archivey cannot fully deliver on failing loudly and verifying. Format
+matrices, policy tables and unsupported-feature lists live on their owning pages.
 
-## Seeking and redecompression
+## What you should and shouldn't do
 
-Member streams are forward-only unless you ask. Seeking inside a compressed member
-is never free.
+- **Don't seek backwards in a compressed member without meaning it.** Without
+  `seekable_members=True`, `seek()` raises. With it and no index or accelerator, a
+  backward seek **re-decompresses from the start** — loudly, via
+  `STREAM_REWIND_REDECOMPRESSES`, but it still costs.
+  → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
+- **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
+  compressed TAR, a named `open()` can restart the whole block. Prefer one forward
+  pass. `concurrent_members=True` makes overlapping streams *correct*; it does not
+  make them cheap.
+  → [Solid archives](access-and-cost.md#solid-archives-prefer-one-forward-pass)
+- **Don't expect a second pass in streaming mode.** The first of `__iter__` /
+  `stream_members` / `extract_all` consumes it — including after an early `break`.
+  → [Streaming is one pass](access-and-cost.md#streaming-mode-is-one-pass)
+- **Don't assume a name identifies one member.** `get(name)` is **last-wins** when
+  names collide, and `extract_all(members=["x"])` matches **every** member named
+  `x`. Pass an `ArchiveMember` when you mean one identity.
+  → [Duplicate names](opening-and-listing.md#duplicate-names-and-is_current)
+- **Don't assume the file lands at `member.name`.** Under `STRICT`, trailing dots and
+  spaces are stripped and non-UTF-8 bytes percent-escaped; case and
+  Unicode-normalisation twins collide on **every** OS, not just Windows.
+  → [Names change on disk](extracting.md#names-change-on-disk)
+- **Don't `read()` a member from an untrusted archive without a size guard.**
+  `read()` is unbounded, and `stream_members()` is deliberately outside
+  `ListingLimits`. Chunk untrusted payloads.
+  → [Limits](extracting.md#limits)
+- **Don't recurse into nested archives without bounding it yourself.** The bomb
+  tracker checks expansion for *individual* archives and is **not nesting-aware**, so
+  a zip-of-zips can amplify past your limits one level at a time.
+  → [Limits](extracting.md#limits)
+- **Don't close a source underneath a live accelerator-backed stream.** Archivey
+  contains the upstream fault and re-raises it as a normal Python error, so this is a
+  clean failure rather than a crash — but the stream is still dead and the read still
+  fails. → [Accelerators](access-and-cost.md#accelerators-and-process-aborts)
+- **Do turn accelerators off for untrusted input under a hard latency budget**
+  (`AcceleratorMode.OFF`), or enforce your own timeout: crafted input can busy-loop
+  in C++ where a Python timeout cannot cleanly interrupt it.
+  → [Hardening notes](extracting.md#hardening-notes-for-callers)
 
-- Without `seekable_members=True`, `seek()` raises — that is intentional.
-- With `seekable_members=True` but no index or accelerator, a backward seek **re-decompresses
-  from the start** (`STREAM_REWIND_REDECOMPRESSES`).
-- Under `use_rapidgzip=AUTO`, rapidgzip is used only when seekability is declared
-  and the known compressed input is large enough (about 1 MiB). Smaller members
-  stay on stdlib codecs.
+## What you should be aware of
 
-See [Access costs — seeking](costs.md#seeking-inside-compressed-members).
+Places where Archivey **cannot** fully deliver "fail loudly and verify". None of
+these are bugs; all of them are stated so you can decide whether they matter to you.
 
-## Solid archives and open order
-
-On solid 7z / RAR (and compressed TAR, which is solid for random member access),
-opening members out of order can decode the same block repeatedly.
-
-- Prefer one forward pass: `stream_members()` (or iterate in archive order).
-- Named `open()` of a mid-block member may restart the solid block.
-- `concurrent_members=True` makes overlapping streams *correct*; it does **not**
-  remove solid open-order cost.
-
-See [Access costs — solid archives](costs.md#solid-archives-prefer-one-forward-pass).
-
-## Listing completeness vs damage
-
-- `members()` / `scan_members()` — complete listing or raise.
-- `members_report()` — always returns `MemberListReport`; check `error`
-  (`None` means complete). Use this for inventory of messy archives.
-- Iteration yields recovered members then raises on terminal archive listing
-  damage (either access mode). Incomplete materialization is not treated as a
-  successful complete list.
-- Not the same as `--salvage` / best-effort resync (still future).
-
-## Streaming mode is one pass
-
-With `streaming=True`, the first of `__iter__` / `stream_members` / `extract_all`
-consumes the pass — including after an early `break`. A second call raises.
-
-- Use `scan_members()` to finish or drain when you need a full list after a partial
-  pass.
-- ZIP and ISO still need a seekable source today, even with `streaming=True`.
-  Archivey will not silently buffer a pipe. A future native ZIP reader may improve
-  the pipe case; ISO stays seekful.
-
-## Passwords that look “accepted”
-
-Wrong passwords usually fail loudly. A few format niches do not.
-
-| Situation | What happens | What to do |
-| --- | --- | --- |
-| 7z AES + store/copy + **no** folder digest and **no** member CRC | Format-legal; wrong password can yield garbage (matches 7-Zip). Archivey emits `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). | Treat the payload as unverified; prefer archives that store CRCs |
-| 7z **header-encrypted**, wrong password | Usually fails; a rare decode that looks like an empty header is rejected as `EncryptionError` (never a silent empty listing). Residual: garbage that parses as a non-empty plausible header can still slip (inherent without a password check value). | Prefer a known-good password; don’t treat “0 members” as proof of emptiness without checking diagnostics/errors |
-| ZipCrypto + multi-password + **STORED** | ~1/256 wrong candidates pass the weak open check → may CRC-scan the whole member | Prefer a single known password for huge stored members |
-| 7z with several candidates | Each wrong try pays key derivation | List the most likely password first |
-
-## Format limitations
-
-These are not archivey bugs; they are format or stdlib constraints. Some may improve
-with a future native ZIP/TAR reader — until then, plan around them.
-
-| Limitation | Today | Later? |
-| --- | --- | --- |
-| TAR mid-archive corrupt header | Stdlib `tarfile` can treat it as clean EOF → silently short listing. Archivey raises `CorruptionError` **by default** when the stopped scan lands on a rejected (non-null) header block. A tar that just lacks the two-block null trailer (trailer-less / `cat`-joined, or truncated exactly at a member boundary) is warned via `ARCHIVE_EOF_MARKER_MISSING`; for inventory/dedupe use `ArchiveyConfig(strict_archive_eof=True)` to make that a `TruncatedError` too. | Native TAR walker |
-| TAR corrupt **final** header, streaming | Caught in random-access reads; in forward-only `streaming=True` it surfaces as the missing-trailer warning, not `CorruptionError` (tarfile's stream layer hides the block). | Native TAR walker closes the gap |
-| Multi-volume ZIP (`.z01`…`.zip`) | Detected and rejected (`UnsupportedFeatureError`) — rejoin first | May improve with native ZIP |
-| ZIP/ISO from a pure pipe | Need seek; no silent spool | ZIP pipe reading may improve later; ISO stays seekful |
-| ZIP UTF-8 flag “lie” (bit 11) | Stdlib may make the **whole** archive unlistable | May improve with native ZIP |
-| RAR5 `-ver` history rows | Appear in `members()` as `path;1`, … with `is_current=False`; default **extract skips** them | — |
-| RAR member **data** | Needs RARLAB `unrar` on `PATH` (not `unrar-free`). Listing works without it | — |
-| BCJ2 (7z) | Rejected (`UnsupportedFeatureError`) — never garbage output | — |
-| Gzip multi-member | Trailer CRC is last-member only — omitted from `member.hashes` | — |
-| Bare `.gz` / `open_stream` + rapidgzip | Truncation/corruption detection is **best-effort, not guaranteed**. Upstream soft-EOFs by design; Archivey backstops **any seekable source** — a path or a caller-owned `BinaryIO` alike (empty→stdlib + single-member ISIZE) — but a residual hole remains (multi-member ISIZE summing is deferred). If you need certainty on standalone gzip, use `use_rapidgzip=OFF` (stdlib). This row is about **raw/bare streams** — not ZIP/7z/… members (those still hit container CRC/`VerifyingStream`). | — |
-| Standalone zlib/raw deflate + rapidgzip | Same certainty caveat for **bare** streams: no ISIZE-style backstop; mid-stream cuts may stay silent. Container members are covered by CRC/size verify. | — |
-| `.Z` truncation | Only nonzero leftover bits raise; zero-leftover cuts can stay silent | — |
-
-## Names, duplicates, and hardlinks
-
-Archive order and identity matter more than “the” name.
-
-- `get(name)` is **last-wins** when names collide.
-- `extract_all(members=["x"])` matches **every** member named `x`; pass an
-  `ArchiveMember` when you mean one identity.
-- Hardlink targets resolve to an **earlier** same-named member by `member_id`, not
-  to “whichever `get` would return.”
-- Members with `is_current=False` (for example RAR version history) stay visible in
-  listings but are skipped on extract by default.
-
-## Extraction
-
-Extraction is safe by default, but “safe” still means policies, limits, and
-sometimes a different path on disk than `member.name`. If you remember only three
-things: **STRICT may rewrite names**, **case/Unicode collisions are deliberate on
-every OS**, and **history / non-current members are listed but not extracted**
-unless you ask.
-
-| Need to know | Detail |
-| --- | --- |
-| Safe ≠ unlimited | Traversal, symlink escapes, and bombs are blocked; huge/hostile archives can still raise `ResourceLimitError` unless you raise limits. |
-| STRICT rewrites some names | Trailing dots/spaces stripped; non-UTF-8 bytes percent-escaped. Disk path may differ from `member.name` — see `EXTRACTION_NAME_SANITIZED` / `requested_path`. |
-| Collisions are first-class | Under `STRICT`/`STANDARD`, `README`/`readme` (and NFC/NFD twins) collide on **all** platforms. `OverwritePolicy` applies; `REPLACE` is not a silent merge — a collision diagnostic fires. Use `OverwritePolicy.RENAME` (`photo (1).jpg`) for intentional duplicates. |
-| Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `file:ads`, …). |
-| `OnError.CONTINUE` ≠ ignore bombs | Per-member failures can continue; global bomb and listing guards still stop. |
-| `OnError.STOP` is failures-only | Policy blocks are always recorded and continued; inspect the report (or exit `3` on the CLI) for `BLOCKED`. Abort-on-unsafe is a separate future opt-in. |
-| `TRUSTED` still won’t traverse | Ownership / sticky bits only when allowed; path safety stays on. |
-| Hardlinks + filters | Excluding a hardlink’s source can orphan the link (especially on streaming sources); `OnError` decides fail vs continue. |
-| Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
-| Staging leftovers | `.archivey-tmp-*` under the destination are safe to delete (left only after hard kill / power loss). |
-| Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`; `stream_members()` is intentionally unguarded. |
-
-Full policy tables: [Safe extraction](safe-extraction.md).
-
-## Native libraries and process risk
-
-Optional accelerators and some codec wheels are native code. Archivey hardens what it
-can (close-on-finalize, a single accelerator library, bounded PPMd feeds); it cannot
-promise process-proof behavior on every hostile input.
-
-- Do **not** close a caller-owned source underneath a live accelerator-backed stream —
-  some upstream defects abort the process rather than raise.
-- For untrusted input under a hard latency budget, leave accelerators off
-  (`AcceleratorMode.OFF`) or enforce your own timeout — crafted input can busy-loop
-  in C++.
-- `import archivey` installs a hang-safety guard inside pycdlib’s namespace. If the
-  same process also uses pycdlib directly, it sees that guarded behavior (a strict
-  superset of correct results on valid trees).
-
-Details: [Access costs — accelerators](costs.md#accelerators-and-process-aborts),
-[known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
-
-## What we can only warn about
-
-- Prefer `reader.diagnostics` / the extraction report over hoping something appeared
-  in logs.
-- Nested-archive amplification and metadata fidelity (xattrs / ACLs / forks) are not
-  claimed beyond what the docs say.
-- Concurrent hostile modification of the destination during extract is out of scope.
-
-When something looks like a bug but is listed here as format law, check
-[Formats](formats.md) before assuming a silent failure.
+- **Archivey is stricter than the stdlib about damage.** Where `tarfile` and `gzip`
+  often stop quietly, Archivey raises or emits a diagnostic. Code ported from the
+  stdlib may start seeing errors on archives that "worked".
+- **A wrong 7z password can yield garbage.** With AES plus store/copy and neither a
+  folder digest nor a member CRC, the format offers no check value — matching 7-Zip.
+  Archivey emits `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the
+  payload as unverified. → [7z](formats.md#7z)
+- **A 7z header-decryption residual remains.** A wrong password that decodes to a
+  plausible **non-empty** header can still parse; an empty one is rejected as
+  `EncryptionError`, never a silent empty listing. Don't read "0 members" as proof of
+  emptiness without checking diagnostics.
+- **TAR has two honesty residuals.** A trailer-less or `cat`-joined tar is *warned*
+  about, not raised — it is byte-identical to a truncation at a member boundary; set
+  `strict_archive_eof=True` when you need a provably complete listing. And a corrupt
+  **final** header is caught in random access but not in forward-only streaming.
+  → [TAR](formats.md#tar-and-compressed-tar)
+- **Truncation detection on bare gzip/zlib through rapidgzip is best-effort.**
+  Upstream soft-EOFs by design and Archivey backstops it, but a residual hole
+  remains. Use `use_rapidgzip=OFF` when you need certainty. This is about **bare**
+  streams — ZIP/7z members carry their own CRC and fail properly.
+  → [Single-file compressors](formats.md#single-file-compressors)
+- **`.Z` truncation is partly silent.** Only nonzero leftover bits raise; a cut on a
+  code boundary stays quiet.
+- **`import archivey` patches pycdlib process-globally.** A hang-safety guard is
+  installed inside pycdlib's namespace. Other code using pycdlib in the same process
+  sees that guarded behaviour — a strict superset of correct results on valid trees.
+  → [ISO 9660](formats.md#iso-9660)
+- **Prefer `reader.diagnostics` and the extraction report over logs.** Advisories are
+  queryable data, not just log lines.
+  → [Errors and diagnostics](errors-and-diagnostics.md)

@@ -135,11 +135,22 @@ are the expensive niche: a wrong candidate that passes the weak open check may f
 full-member CRC scan. Prefer a single known password when reading huge stored encrypted
 members.
 
-## Accelerators and process aborts
+## Accelerators and source lifetime
 
-The `[seekable]` path uses `rapidgzip` (gzip / zlib / raw deflate + bzip2). Do not close
-the caller-owned source underneath a live accelerator-backed stream — some upstream
-defects can abort the process rather than raise. Details:
+The `[seekable]` path uses `rapidgzip` (gzip / zlib / raw deflate + bzip2), which is
+C++ and does not tolerate its Python source disappearing mid-decode: upstream, that
+raises through a `terminate()` boundary and aborts the process.
+
+**Archivey contains that.** A caller-owned source is wrapped so the fault becomes a
+benign EOF toward the accelerator and is re-raised as an ordinary Python exception —
+verified in `tests/test_accelerator_bug3_trap.py`, which asserts the untrapped path
+aborts while archivey's exits cleanly. So closing a source underneath a live stream is
+a clean failure, not a crash. Still don't do it: the stream is dead and the read
+fails.
+
+One residual is genuinely upstream and not contained: some **path**-source truncations
+and CRC mismatches can still `std::terminate` during worker finalization after a Python
+exception. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 ## Checklist
