@@ -298,7 +298,17 @@ No spec had to change — `compressed-streams` specifies the *exception mapping*
 distinction or the status of the prefix. `dev-docs/investigations/adr-0014-investigation.md`
 carries a note recording the sharpened reading next to the original reasoning.
 
-**For Topic 8:** do not restore the stronger phrasing when tightening this section.
+A third point was added the same day, and it is the reassuring half: **a chunked read
+loop delivers every readable byte and then raises.** `read(member.size)` returns short
+and quiet, but the next read raises — so `while chunk := stream.read(n)` cannot end
+silently on a truncated member. Verified against
+`tests/test_codecs.py::test_verify_expected_size_short_chunked_then_empty_raises`,
+which asserts the loop collects the whole available prefix before the `TruncatedError`.
+The page now shows that loop as the recover-the-prefix recipe.
+
+**For Topic 8:** do not restore the stronger phrasing when tightening this section, and
+keep the chunked-loop guarantee — it is the answer to "how do I get what is readable
+out of a damaged member", which is a VISION founding use case.
 
 ---
 

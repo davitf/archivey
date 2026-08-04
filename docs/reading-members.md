@@ -59,8 +59,23 @@ What that does and does not promise:
   known-good, not known-bad.
 - **A full-length return means the checksum matched.** Trust it as far as you trust
   that digest.
-- **A short return with no exception does not mean "complete".** Check the length, or
-  read again to get the error.
+- **A short return with no exception does not mean "complete".** `read(member.size)`
+  on a truncated member hands back what it has and stays quiet. Check the length — or
+  just read again, because the *next* read raises.
+
+That last point is what makes the ordinary chunked loop safe: it delivers every byte
+that was readable and *then* raises, rather than ending quietly on a short member. So
+the recoverable prefix and the error both reach you.
+
+```python
+buf = bytearray()
+try:
+    with reader.open("member.bin") as stream:
+        while chunk := stream.read(1 << 20):
+            buf.extend(chunk)
+except archivey.ReadError:
+    ...  # buf holds everything that was readable; the member is damaged
+```
 
 If you need certainty regardless of how you read — partial reads, seeks, or "never
 hand me unverified bytes" — `VerificationMode.STRICT` verifies a whole member before
