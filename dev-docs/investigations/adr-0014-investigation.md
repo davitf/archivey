@@ -77,6 +77,19 @@ failure, and the labels are often **best-effort guesses** about what went wrong:
   right: those bytes are known-bad. When only a checksum mismatch is known, prior
   chunks are also untrustworthy as a whole (the digest covers them).
 
+> **Sharpened 2026-08-04 (maintainer).** "Prior chunks are untrustworthy *as a whole*"
+> is a statement about the member not being verifiable end to end — it is **not** a
+> claim that the bytes are wrong. On a compressed member that fails mid-stream, some of
+> what was already delivered is probably correct; we cannot say which part or how much.
+> The published wording on `docs/reading-members.md` was rewritten to say exactly that,
+> because the bolded "none of it is trustworthy" in the original ADR read as the
+> stronger claim even though the qualifier that followed narrowed it.
+>
+> Two related corrections, same source: the `CorruptionError` / `TruncatedError` split
+> is a **best-effort label, not a diagnosis** — damage that decodes shorter is
+> indistinguishable from truncation — and the promise is that we *try* to raise on
+> every error we can detect, which is not the same as detecting every error.
+
 So "deliver the apparent prefix before failing" is right for the *truncation label* and
 pointless for a known checksum / auth failure. Option A is correct *for corruption*;
 truncation-shaped failures naturally serve their apparent prefix and fail on a later

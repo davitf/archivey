@@ -271,3 +271,62 @@ unfixable / open we-can-fix / evidence-only — and routes items to IDEAS,
 `open-issues`, threat-model register, or `investigations/` per
 [`DECISIONS.md`](DECISIONS.md) D9. Also rewrite the Gotchas accelerator bullet
 for `_TrappingSource` (Bug 3 is contained; “process dies” is stale).
+
+---
+
+## O-16 — The integrity guarantee overstated what a `CorruptionError` means
+
+Raised by the maintainer 2026-08-04, reading the moved text on
+`docs/reading-members.md`, and **fixed in `docs-ia-split-user-guide`** rather than
+deferred: it is a factual error about a load-bearing safety claim on a published page.
+
+The moved-in wording said a `CorruptionError` means *"discard everything read from this
+member; none of it is trustworthy"*. The ADR it came from qualified that with "as a
+complete intact member", but the bolding buried the qualifier and the sentence read as
+the stronger claim.
+
+What is actually true, and what the page now says:
+
+| Claim | Correct version |
+|---|---|
+| Bytes read before a `CorruptionError` are worthless | **Unknown quality.** On a compressed member that fails mid-stream, some are probably fine — we cannot say which, or how much. Unverified, not known-bad. |
+| `CorruptionError` vs `TruncatedError` tells you what happened | **A best-effort label, not a diagnosis.** Damage that decodes into a shorter stream is indistinguishable from real truncation. Don't branch on it. |
+| Every error raises | **We try to raise on every error we can detect.** Some formats store no checksum; some damage decodes to something valid-looking. |
+
+No spec had to change — `compressed-streams` specifies the *exception mapping*
+(corrupt → `CorruptionError`, short → `TruncatedError`), not the reliability of the
+distinction or the status of the prefix. `dev-docs/investigations/adr-0014-investigation.md`
+carries a note recording the sharpened reading next to the original reasoning.
+
+**For Topic 8:** do not restore the stronger phrasing when tightening this section.
+
+---
+
+## O-17 — Dev-doc register leaked into the user guide
+
+Raised by the maintainer 2026-08-04. Several pages read as too technical for their
+audience, which is the predictable cost of the IA migration: `safe-extraction.md` took
+its enforced-guarantees list from a threat model, `reading-members.md` took its
+guarantee from an ADR, and `formats.md` was always written close to the specs. The
+prose is accurate; the register is wrong for the reader.
+
+**The audience, stated so the rewrite has a target:** a working developer who is not a
+compression or archive-format specialist. They know Python and streams. They do not
+know what a "solid folder", an "ISIZE trailer", a "check value" or a "terminal
+boundary" is unless the page says.
+
+**Rules for the Topic 8 rewrite:**
+
+1. **Define or drop the jargon.** First use of a format term gets a half-sentence gloss,
+   or the sentence gets rewritten without it.
+2. **Lead with what the reader does, not with the mechanism.** "Don't close the source
+   underneath a live stream" before the explanation of why the C++ layer objects.
+3. **Cut the provenance voice.** "This is a deliberate idiom, not a trap", "the
+   load-bearing asymmetry", "target contract; best-effort today on a few backends" are
+   ADR register — they argue with a reviewer who is not present.
+4. **Be shorter.** Most of these sections lose 20–30% with nothing of substance gone.
+   The guarantee section on `reading-members.md` is the worked example: rewritten for
+   O-16, it is both more accurate and shorter.
+5. **Keep the honesty.** Plainer is not vaguer. "We can't tell which bytes are good"
+   is plain *and* precise; "the prefix is best-effort salvageable" is neither.
+

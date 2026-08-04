@@ -36,58 +36,57 @@ mistakes in *your* code are deliberately kept out of it.
 
 ## The integrity guarantee
 
-> **Read a member to its end: a corrupt member raises `CorruptionError` on a `read()`;
-> a truncated member raises `TruncatedError` or returns short of its declared size; a
-> clean member returns all its bytes, checksum-verified. Stop before the end and it is
-> not verified. `close()` never raises a content error (target contract; best-effort
-> today on a few backends).**
+**Read a member to its end and Archivey checks it.** Where the archive stores a
+checksum or an authentication tag, a full read verifies it and raises if it does not
+match. Stop early and nothing is checked. Errors always come from `read()`, never from
+`close()` — so a `finally` block can't mask one.
 
-"To its end" means `read(-1)` / `readall`, reading until `read()` returns `b""`, or —
-for a member with a **declared** size — reading that many bytes. For that whole-member
-read, each outcome tells you what the library claims — with the honesty caveats below:
+"To its end" means `read(-1)`, reading until `read()` returns `b""`, or — for a member
+with a declared size — reading that many bytes.
 
-- a **`CorruptionError`** means we have positive evidence of wrongness — **discard
-  everything read from this member; none of it is trustworthy** as a complete intact
-  member (the raising call returns nothing). A digest / auth mismatch is the clear
-  case; mid-stream structural failures are likewise treated as untrustworthy;
-- a **`TruncatedError`** means the member appears **incomplete** — the bytes already
-  returned are a **best-effort salvageable prefix**, not a proven-correct prefix
-  (corruption that decodes to a shorter stream is easily labeled truncation). The
-  raising call itself returns nothing; do not treat the prefix as the whole member;
-- a **full-length** return (`len == member.size`, or a subsequent `b""`) means the
-  content was **checksum-verified** — trust it under the digest's strength;
-- a **short** return (`len < member.size`, no exception) means **truncation-shaped** —
-  an apparent incomplete member; **"no exception" does not mean "complete."** Check
-  the length, or read again to get the `TruncatedError`. Prefix correctness remains
-  best-effort.
+What that does and does not promise:
 
-Corruption that the library can *prove* (digest / auth mismatch, over-run) is caught
-whenever such a read reaches the end — independent of whether `close()` is ever
-called. Callers who must verify **regardless** of access pattern (partial reads,
-seeks, or "never release unverified bytes") use `VerificationMode.STRICT`
-(`verification-integrity-mode`), which fully verifies a member before returning any of
-it.
+- **We try to raise on every error we can detect** — not on every error. Some formats
+  store no checksum at all, and some damage decodes into something that looks
+  perfectly valid.
+- **`CorruptionError` vs `TruncatedError` is a best-effort guess, not a diagnosis.**
+  Damage that happens to decode into a shorter stream is indistinguishable from a
+  genuine truncation. Don't branch on which one you got — `except archivey.ReadError`
+  catches both.
+- **Bytes delivered before the error are of unknown quality.** When a compressed
+  member fails mid-stream, some of what you already read is probably fine — but we
+  can't tell you which part, or how much. Treat the prefix as unverified: not
+  known-good, not known-bad.
+- **A full-length return means the checksum matched.** Trust it as far as you trust
+  that digest.
+- **A short return with no exception does not mean "complete".** Check the length, or
+  read again to get the error.
 
-### Call × failure matrix (size-declared member)
+If you need certainty regardless of how you read — partial reads, seeks, or "never
+hand me unverified bytes" — `VerificationMode.STRICT` verifies a whole member before
+returning any of it.
 
-Assume a member truncated after 110 decompressed bytes with `member.size == 500`:
+### What each call does
+
+For a member whose declared size is 500 bytes, truncated after 110:
 
 | Call | Corrupt at full length | Truncated after 110 of 500 |
 | --- | --- | --- |
-| `read(109)` (from start) | (n/a — not yet at end) | returns 109, **no error** (did not ask past available) |
-| `read(110)` (from start) | (n/a — not yet at end) | returns 110, **no error** (exactly available) |
-| `read(111)` (from start) | (n/a) | returns short 110; following `read()` raises `TruncatedError` |
-| `read(member.size)` | raises `CorruptionError` | returns short (`len < size`), **no exception** |
-| `read(-1)` / `readall` | raises `CorruptionError` | raises `TruncatedError` |
-| chunked until `b""` | raises on the read that reaches the size (withholds that chunk) | delivers the whole prefix; first read *past* available returns short; the next raises `TruncatedError` |
-| partial read, then `close()` | quiet (early stop) | quiet (early stop) |
+| `read(109)` | not yet at the end — no error | returns 109, no error |
+| `read(110)` | not yet at the end — no error | returns 110, no error |
+| `read(111)` | not yet at the end — no error | returns 110; the next `read()` raises |
+| `read(member.size)` | raises `CorruptionError` | returns 110 short, **no exception** |
+| `read(-1)` | raises `CorruptionError` | raises `TruncatedError` |
+| chunked until `b""` | raises on the chunk that reaches the size, and withholds it | delivers the prefix, then raises |
+| partial read, then `close()` | quiet — you stopped early | quiet — you stopped early |
 
-The load-bearing asymmetry: **`read(member.size)` raises on corruption but returns a
-short buffer on truncation** — because a known digest failure yields wrong bytes
-(withheld) while a truncation-shaped end yields an apparent incomplete prefix
-(delivered). This is a **deliberate idiom** ("return the available prefix; raise on
-known-wrong bytes"), not a trap. Size-unknown members have no `member.size` to read
-to, so a bare `read(n)` cannot self-certify at all — use `read(-1)` / read-to-`b""`.
+The one row worth remembering is **`read(member.size)`**: it raises on corruption but
+returns a short buffer on truncation. Known-wrong bytes are withheld; an apparently
+incomplete prefix is handed over. So a short return from that call is a signal, not a
+success — check the length.
+
+Members with no declared size have nothing to read *to*, so `read(n)` can't
+self-certify at all. Use `read(-1)` or read until `b""`.
 
 ## Streaming mode (pipes)
 

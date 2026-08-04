@@ -624,6 +624,23 @@ thoroughly — what was missing was only the *user-facing* surfacing
 
 ---
 
+## Register: who the guide is written for
+
+Added 2026-08-04 after the maintainer read the migrated pages. Recorded here because
+it applies to every page below, not to one of them.
+
+**The reader is a working developer who is not an archive-format specialist.** They
+know Python and streams; they do not know what a solid folder, an ISIZE trailer or a
+check value is unless the page tells them. Prose moved from `dev-docs/` and the specs
+carries the wrong register by default — accurate, and written for a reviewer rather
+than a user.
+
+Rules for the rewrite, with the worked example, are `observations.md` **O-17**. The
+short version: gloss or drop the jargon, lead with what the reader does rather than the
+mechanism, cut the arguing-with-a-reviewer voice, and expect most sections to lose
+20–30% without losing substance. Plainer is not vaguer — "we can't tell which bytes are
+good" is both plainer and more precise than "the prefix is best-effort salvageable".
+
 ## What merging cannot supply
 
 The splits are moves. These are the writing tasks that remain, in priority order:
