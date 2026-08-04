@@ -136,6 +136,27 @@ way.
 behaviour correctly. They do **not** mention the leak, because it is not user-facing
 advice until this is decided.
 
+### P8. A directory path silently ignores an explicit `format=`
+
+- **Today:** `open_archive(path, format=ArchiveFormat.ZIP)` on a path that happens to
+  be a directory opens it as a directory pseudo-archive. `core.py:201-203` sets
+  `resolved_format = ArchiveFormat.DIRECTORY` before the caller's `format=` is ever
+  consulted, so the argument is discarded without a diagnostic.
+- **Why it looks wrong:** every other way of being explicit about the format is
+  honoured or rejected loudly. A caller who passes `format=` is asserting something,
+  and this is the one case where the assertion is silently overruled. The plausible
+  path there is a variable holding what the caller believes is an archive path —
+  exactly the case where a quiet reinterpretation is least welcome.
+- **Proposal:** raise `ArchiveyUsageError` when `format=` is passed for a directory
+  path and is not `DIRECTORY`. Cheap, and the check has one call site. Passing
+  `format=DIRECTORY` explicitly stays valid.
+- **Cost of not fixing:** the guide has to teach the exception, which is one more
+  rule for a case nobody wants.
+- **Refs:** raised by the maintainer reviewing `docs/opening-and-listing.md` (#224);
+  `outline.md` must-explain #25. `docs/opening-and-listing.md` states the current
+  behaviour neutrally — "this holds even if you pass `format=`" — so the line becomes
+  "raises" rather than needing a rewrite if this is fixed.
+
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
 - **Today:** Solid ALL-pipe demux must match what `unrar` actually emits (RAR5

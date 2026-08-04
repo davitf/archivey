@@ -418,3 +418,65 @@ BinaryIO` (`internal/volumes.py:21-22`), and `_is_source_sequence` explicitly ex
 `bytes` so a bytestring is never mistaken for a sequence of sources. "Byte sequences"
 was a misreading of the multi-volume sequence type. The written page says paths,
 directories, streams, and ordered sequences of those.
+
+---
+
+## O-21 — Review round on `opening-and-listing.md`: what the register rules were missing
+
+**14 maintainer comments on the first written page (#224).** Four were factual
+corrections, and all four were right. Recording them because the pattern generalises
+to the remaining fourteen pages.
+
+**The four factual errors, all mine:**
+
+1. **"The question is settled when you open the file"** (deferred inner-TAR) was
+   simply wrong. `open_archive` calls the same `detect_format`, so it gets the same
+   answer; when the codec is absent the *open* fails with a missing-package error.
+   Nothing is resolved later.
+2. **`.gz` was the example** for the missing-codec case, and `gzip` is stdlib — the
+   case cannot arise for it. The optional codecs are zstd (below 3.14), lz4, brotli,
+   ppmd and deflate64.
+3. **"An embedded archive needs no slicing"** overstated it. `fix_stream_start_position`
+   wraps a mid-positioned stream with a `start` and no `end`, so the archive is taken
+   to run to EOF. Trailing data is the caller's problem.
+4. **"A non-seekable stream is fine too"** was true for only half the formats.
+   `SUPPORTS_STREAMING_NON_SEEKABLE` is `True` for TAR and single-file compressors,
+   `False` for ZIP, 7z, RAR and ISO.
+
+**And one thing I never wrote:** multi-volume sets are discovered from *any single
+volume path* (`discover_volume_siblings`), across three naming schemes, with 7z sets
+checked for completeness. I had documented only the explicit-sequence form — the
+power-user path — and omitted the one nearly every caller will use.
+
+**The generalisation.** The O-17 register rules are about *how* a sentence reads;
+every one of these is about whether it is true, and four of five came from writing
+confidently about a mechanism after reading only the function that names it. The
+per-page procedure needs a step the first pass did not have: **for each behavioural
+claim, find the line that implements it, and check the branch where it does not hold.**
+Every error above lived in that branch — the codec that is absent, the stream that has
+data after it, the backend whose flag is `False`.
+
+**Three register findings worth carrying forward**, beyond O-17's list:
+
+- **Say when a reader can skip something.** `detect_format` needed "most callers never
+  need this: `open_archive` detects the format itself" more than it needed detail.
+- **Informality can cost clarity.** "A pipe or anything else you cannot seek in" is
+  worse than "a pipe or another non-seekable stream" — it sounds friendlier and is
+  harder to parse.
+- **Internal mechanism is not user-facing behaviour.** "Archivey buffers what it peeks
+  at during detection and replays it" describes a correct implementation detail the
+  reader can do nothing with; the behaviour is just "you can open a non-seekable
+  stream".
+
+**One product issue filed:** `dev-docs/open-issues.md` **P8** — a directory path
+silently discards an explicit `format=`. The maintainer's instinct that it should
+raise is right; it is the only case where an explicit format assertion is overruled
+without a diagnostic.
+
+**One gap the self-review caught, of the same class as O-19:** `gotchas.md` links to
+`#duplicate-names-and-is_current` for the `get()` last-wins footgun, and the section
+never stated it — a link landing on a page that does not carry the fact. Stating it
+turned up an inaccuracy in the Gotchas line itself: it named
+`extract_all(members=["x"])` as the hazard, but `extraction.py:364` hardwires the
+`is_current` skip after the filter, so extraction is safe. `stream_members` has no
+such skip, and is the real one. Both pages now say so.

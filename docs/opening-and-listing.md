@@ -1,6 +1,6 @@
 # Opening and listing
 
-Point Archivey at something, get past whatever guards it, and find out what is
+Open an archive — unlocking it first if it needs a password — and find out what is
 inside. Reading the bytes out is [Reading members](reading-members.md).
 
 ## Open and list
@@ -12,32 +12,83 @@ with archivey.open_archive("photos.zip") as reader:
     for member in reader:                    # archive order
         print(member.name, member.size, member.type)
 
-    members = reader.members()               # complete list, or raise
+    members = reader.members()               # the full list, or an error
     info = reader.get("subdir/a.txt")        # by name
     print(reader.format, reader.cost)
 ```
 
-You get random access by default. If your source is a pipe or anything else you
-cannot seek in, pass `streaming=True` for a forward-only single pass — otherwise
-the open fails immediately rather than halfway through.
+**By default you can open any member you like, in any order.** That is what most
+callers want, and it is what the example above relies on.
+
+It is not always the cheapest thing to do, though. In a solid 7z or RAR, or any
+compressed `.tar.gz`, members are compressed together as one long run, so jumping to
+a member in the middle can mean decompressing everything before it — and doing that
+once per member turns a linear read into a quadratic one. If you are going to touch
+most of the archive anyway, iterate instead: one forward pass decodes each member
+once. `reader.cost` tells you which situation you are in, and
+[Access costs](access-and-cost.md#solid-archives-prefer-one-forward-pass) has the
+detail.
+
+If your source is a pipe or another non-seekable stream, pass `streaming=True` for a
+forward-only single pass. Without it the open fails immediately rather than halfway
+through — see [What you can open](#what-you-can-open) for which formats can be read
+this way at all.
+
+### `open_archive` or `open_stream`?
+
+A `.gz`, `.bz2`, `.xz`, `.zst` and so on holds one compressed payload, with no
+archive structure around it. Either entry point handles that; they differ in what you
+get back:
+
+```python
+archivey.open_archive("logs.tar.gz")   # an archive: the files inside the tar
+archivey.open_stream("access.log.gz")  # a stream: the decompressed bytes
+```
+
+`open_archive` works on a plain `.gz` too — you get an archive with exactly one
+member, named after the file. Use `open_stream` when you just want the bytes and
+know there is no tar inside.
 
 ## What you can open
 
 | Source | What happens |
 |---|---|
 | A path to a file | Opened and detected as usual |
-| A path to a directory | Opens as a pseudo-archive, one member per file. A directory always opens as a directory, even if you pass `format=` |
-| An open binary stream | See below |
-| A sequence of paths or streams | The volumes of one multi-volume archive, in order. **7z and RAR only** — anything else raises. A one-item sequence is just that item |
+| A path to a directory | Opens as a pseudo-archive, one member per file. This holds even if you pass `format=` |
+| An open binary stream | Any format can be read from a *seekable* stream. From a non-seekable one — a pipe, a socket, an HTTP response — only TAR (including compressed tar) and the single-file compressors work, with `streaming=True`. ZIP, 7z, RAR and ISO keep their index at the end of the file or address it by offset, so they need to seek; asking anyway raises `StreamNotSeekableError` at open, suggesting you buffer to disk or a `BytesIO` |
+| A sequence of paths or streams | The volumes of one multi-volume archive, in order — see below |
 
-Streams have one rule worth knowing: **a seekable stream is read from wherever it
-currently is.** Archivey treats that position as byte 0 of the archive, so an
-archive embedded in a larger file needs no slicing — seek to where it starts and
-hand the stream over. A non-seekable stream is fine too, with `streaming=True`;
-Archivey buffers what it peeks at during detection and replays it, so detection
-never eats bytes the archive needs.
+**A seekable stream is read from wherever it currently is**, through to the end.
+Archivey treats the current position as byte 0 of the archive, so an archive stored
+at a known offset inside a larger file opens without copying it out: seek to its
+first byte and hand the stream over. There is no matching end bound, so this works
+when the archive runs to the end of the stream; if something follows it, wrap the
+stream in your own bounded view first.
+
+### Multi-volume archives
+
+Only 7z and RAR split across volumes. **Pass the path of any one volume and Archivey
+finds the rest**, in the naming schemes those tools produce:
+
+| Scheme | Give it |
+|---|---|
+| `backup.7z.001`, `.002`, … | Any part |
+| `backup.part1.rar`, `.part2.rar`, … | Any part |
+| `backup.rar` + `backup.r00`, `.r01`, … | The `.rar`, or any `.rNN` |
+
+A 7z set is checked for completeness, so a missing middle part is an error rather
+than a silent short read.
+
+You can also pass the volumes yourself, as an ordered sequence of paths or open
+streams — useful when they are not siblings on disk, or not on disk at all. Do that
+and the order you give is the order used, with no discovery. A one-item sequence is
+treated as a single source, and a multi-volume sequence for any format other than 7z
+or RAR raises.
 
 ## Detection
+
+Most callers never need this: `open_archive` detects the format itself. Use
+`detect_format` when you want to know what a file is *before* deciding to open it.
 
 ```python
 info = archivey.detect_format("mystery.bin")
@@ -50,20 +101,12 @@ bytes and tells you, via a `FORMAT_EXTENSION_CONFLICT`
 [diagnostic](errors-and-diagnostics.md) naming both candidates — a `.jpg` that is
 really a ZIP opens fine, and you can still find out that the name lied.
 
-One disagreement is not reported, because it is not one: a `foo.tar.gz` may come
-back as plain `GZ`. Deciding whether a compressed stream contains a tar means
-looking inside it, and detection skips that when the decompressor isn't installed.
-The question is settled when you open the file.
-
-That is also the difference between the two entry points on the same `.gz`:
-
-```python
-archivey.open_archive("logs.tar.gz")   # the files inside the tar
-archivey.open_stream("access.log.gz")  # the decompressed bytes, as a stream
-```
-
-`open_archive` works on a plain `.gz` as well — you get an archive with exactly one
-member, named after the file.
+`detect_format` reports the same format `open_archive` would use, with one wrinkle
+worth knowing. Telling a `.tar.zst` from a plain `.zst` means decompressing a little
+of it to look for the tar header, so when that compressor's package is not installed
+the check cannot run and the bare compressor is reported instead. You are not left
+guessing: opening the file raises a missing-package error naming what to install.
+See [Install and extras](install.md#what-each-format-needs).
 
 ## Passwords
 
@@ -72,8 +115,8 @@ archivey.open_archive("secret.7z", password="hunter2")
 archivey.open_archive("secret.zip", password=["likely", "fallback"])
 ```
 
-Put the most likely password first. Every wrong candidate costs work before it is
-rejected, and on 7z that work is expensive key derivation.
+Put the most likely password first: every wrong candidate costs work before it is
+rejected, which can be expensive (especially on 7z).
 
 Passing a password to a format that has no encryption at all — a tar, say — raises
 `UnsupportedOperationError` rather than ignoring it, since it usually means the call
@@ -82,10 +125,13 @@ called if something actually asks for a password.
 
 ## Damaged archives
 
-`members()` / `scan_members()` assert a **complete** listing and raise on terminal
-damage; `members_report()` gives you the recoverable prefix *and* the error together.
-Iteration yields the prefix, then raises. See
-[Errors and diagnostics](errors-and-diagnostics.md#listing-a-damaged-archive) for the
+`members()` and `scan_members()` give you the whole listing or raise — if the archive
+is damaged partway through, you get an error, never a quietly shortened list.
+`members_report()` is the other half of that deal: it hands back the members it did
+manage to read *together with* the error that stopped it. Iterating yields members up
+to the damage and then raises.
+
+[Errors and diagnostics](errors-and-diagnostics.md#listing-a-damaged-archive) has the
 recipe and what each failure means.
 
 ## Duplicate names and is_current
@@ -97,9 +143,19 @@ iteration return every entry — but it marks which one is live:
 - The **last** entry with a given name has `is_current=True`.
 - Earlier entries with that name have `is_current=False`.
 
-`extract_all` already follows this: superseded entries are skipped and reported as
-`ExtractionStatus.SUPERSEDED` (not to be confused with `NOT_OVERWRITTEN`, which is
-about files already on disk), so what lands on disk matches a fresh write.
+`reader.get(name)` and `reader.open(name)` follow the same rule: a name resolves to
+the last entry, which is the live one.
+
+`extract_all` also follows it. Superseded entries are skipped and reported as
+`ExtractionStatus.SUPERSEDED` (distinct from `NOT_OVERWRITTEN`, which is about files
+already on disk), so what lands on disk matches a fresh write.
+
+**Selecting members by name is the one place to be careful.** A name in a selector —
+`extract_all(members=["notes.txt"])`, `stream_members(members=["notes.txt"])` —
+matches *every* entry with that name, not just the live one. For `extract_all` that
+is harmless, since the superseded ones are skipped anyway; `stream_members` has no
+such skip and will hand you each version in turn. Pass the `ArchiveMember` itself
+when you mean one specific entry — selectors match those by identity.
 
 In your own code, filter for the live state:
 
@@ -108,7 +164,7 @@ with archivey.open_archive("updated.tar") as reader:
     current = [m for m in reader if m.is_current]
 ```
 
-or don't, if you want the history:
+Or keep every version, for a history view:
 
 ```python
 with archivey.open_archive("history.tar") as reader:
