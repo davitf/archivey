@@ -9,13 +9,18 @@ search-indexed while absent from every menu. Six pages had drifted out that way
 strict build the whole time. Since `docs/` now holds user material only, "not in
 the nav" means "published to nobody on purpose", which is never what anyone meant.
 
-**Every absolute repo URL in the published pages resolves to a real file.** Published
+**Every absolute URL resolves — repo links and site links alike.** Published
 pages must not link into unpublished maintainer docs; where the depth is worth
 keeping, the link is an absolute `github.com/davitf/archivey/blob/main/…` URL
 instead. Those URLs point at files this repository moves around, and nothing in a
 docs build looks at them — so they rot silently, which is the exact failure this
 whole reorganization exists to fix. Checking them offline costs nothing: the target
 is a path in this very repository.
+
+The site URLs in `README.md` matter more, because they freeze forever at the 0.2.0
+tag — PyPI release metadata is immutable, so the README of a published release can
+never be edited. Splitting `usage.md` five ways broke `.../archivey/usage/` and the
+first version of this script did not notice, because it checked only repo links.
 
 Run by hand with:
 
@@ -41,6 +46,14 @@ MKDOCS_YML = ROOT / "mkdocs.yml"
 REPO_URL = re.compile(
     r"https://github\.com/davitf/archivey/(?:blob|tree)/main/([^)\s\"'#]+)"
 )
+
+# Absolute links to the published site itself. These are the ones that freeze forever
+# at the 0.2.0 tag, because PyPI release metadata is immutable — the README of a
+# published release can never be edited. Splitting `usage.md` five ways broke
+# `.../archivey/usage/` and nothing caught it, because the check below originally
+# covered only repo URLs. A site URL maps to a page by its slug: `/archivey/formats/`
+# is `docs/formats.md`.
+SITE_URL = re.compile(r"https://davitf\.github\.io/archivey/([a-z0-9-]*)/")
 
 
 def load_nav_files() -> list[str]:
@@ -103,6 +116,14 @@ def main() -> int:
                     f"{source.relative_to(ROOT)} links "
                     f"github.com/davitf/archivey/…/{target}, which is not in this repo."
                 )
+        for slug in sorted(set(SITE_URL.findall(text))):
+            if not slug:  # the site root
+                continue
+            if f"{slug}.md" not in on_disk:
+                problems.append(
+                    f"{source.relative_to(ROOT)} links davitf.github.io/archivey/{slug}/, "
+                    f"but docs/{slug}.md does not exist — that URL 404s."
+                )
 
     if problems:
         print("Published docs tree is inconsistent:\n", file=sys.stderr)
@@ -110,7 +131,7 @@ def main() -> int:
             print(f"  - {problem}", file=sys.stderr)
         return 1
 
-    print(f"docs/: {len(on_disk)} pages, all in nav; repo links all resolve.")
+    print(f"docs/: {len(on_disk)} pages, all in nav; repo and site links all resolve.")
     return 0
 
 
