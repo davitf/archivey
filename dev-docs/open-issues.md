@@ -165,7 +165,7 @@ Code is done unless noted. These should not appear in Gotchas as “broken.”
 | Duplicate names / `get` last-wins / str vs `ArchiveMember` selectors | Specced | Gotchas done; optional `opening-and-listing.md` pointer remains nice-to-have |
 | Hardlink target = earlier same name by `member_id` | Specced | Gotchas done; optional `opening-and-listing.md` pointer remains nice-to-have |
 | Nested-archive stance + bounded recursion recipe | Behavior OK | Gotchas one-liner done; fuller recipe still nice for usage/O6 |
-| Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Gotchas done; optional line in `safe-extraction.md` |
+| Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Gotchas done; optional line in `extracting.md` |
 | Accelerator opt-out for untrusted + latency budget | Mitigations in tree | Gotchas + costs cover it; P5 residual remains |
 | Truncated gzip: stdlib engine recovers prefix on large `read(n)` (`gzip-zlib-truncation-recovery`) | Done | **Composed** with rapidgzip empty→stdlib: fallback fully switches `_inner` to the same gzip-window `DecompressorStream` (#183 / ADR 0014); ISIZE remains for non-empty soft EOF. |
 
@@ -237,4 +237,4 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 
 1. **Why Archivey page** (next narrative doc): hardenings / why not wrap / why “large.”
 2. Optional polish: `opening-and-listing.md` duplicate-name / hardlink pointers; fuller nested-archive
-   recipe; one line in `safe-extraction.md` on symlink-hostile FS.
+   recipe; one line in `extracting.md` on symlink-hostile FS.

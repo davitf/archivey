@@ -8,7 +8,7 @@ nav:
   - Opening and listing: opening-and-listing.md
   - Reading members: reading-members.md
   - Gotchas: gotchas.md
-  - Safe extraction: safe-extraction.md
+  - Extracting: extracting.md
   - Access costs and pitfalls: access-and-cost.md
   - Formats and extras: formats.md
   - Errors and diagnostics: errors-and-diagnostics.md

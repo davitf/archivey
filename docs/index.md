@@ -40,7 +40,7 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
         ...
 ```
 
-[Safe extraction](safe-extraction.md) · [Reading members](reading-members.md) ·
+[Safe extraction](extracting.md) · [Reading members](reading-members.md) ·
 [Access costs](access-and-cost.md) · [Install](install.md)
 
 ## Highlights
@@ -54,7 +54,7 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
 - **Native 7z and RAR metadata readers** — no `py7zr`/`rarfile` on the read path (RAR
   member *data* still uses the system `unrar`).
 - **Safe by default** — extraction blocks path traversal, symlink escapes, and archive
-  bombs unless you opt out. See [Safe extraction](safe-extraction.md).
+  bombs unless you opt out. See [Safe extraction](extracting.md).
 - **Streaming-friendly** — read straight from a pipe in a single forward pass, with
   explicit, predictable [access costs](access-and-cost.md) for solid archives and seeking.
 - **Consistent handling** of symlinks, timestamps, permissions, passwords, and a single
@@ -66,7 +66,7 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
 2. **[Opening and listing](opening-and-listing.md)** — sources, detection, passwords, what's inside
 3. **[Reading members](reading-members.md)** — getting bytes out, and what each outcome means
 4. **[Gotchas](gotchas.md)** — traps worth knowing after the basics (read this next)
-5. **[Safe extraction](safe-extraction.md)** — what “safe by default” means in practice
+5. **[Safe extraction](extracting.md)** — what “safe by default” means in practice
 6. **[Access costs and pitfalls](access-and-cost.md)** — hidden decompression costs and how to avoid them
 7. **[Formats and extras](formats.md)** — per-format quirks, required libraries, limitations
 8. **[Errors and diagnostics](errors-and-diagnostics.md)** — what is raised, what is recorded

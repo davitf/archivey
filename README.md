@@ -14,7 +14,7 @@ This is the **v2** clean-slate implementation. The previous (v1) codebase is arc
 [Reading members](https://davitf.github.io/archivey/reading-members/) ·
 [Migrating from zipfile/tarfile](https://davitf.github.io/archivey/migrating/) ·
 [Formats and extras](https://davitf.github.io/archivey/formats/) ·
-[Safe extraction](https://davitf.github.io/archivey/safe-extraction/) ·
+[Safe extraction](https://davitf.github.io/archivey/extracting/) ·
 [API reference](https://davitf.github.io/archivey/api/)
 
 ## Contributing and security

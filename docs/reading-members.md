@@ -34,38 +34,20 @@ best-effort (`TruncatedError`); shortfall and digest mismatch are not always sep
 [Errors and diagnostics](errors-and-diagnostics.md) for the full tree, including why
 mistakes in *your* code are deliberately kept out of it.
 
-## The integrity guarantee
+## What a read gives you back
 
-**Read a member to its end and Archivey checks it.** Where the archive stores a
-checksum or an authentication tag, a full read verifies it and raises if it does not
-match. Stop early and nothing is checked. Errors always come from `read()`, never from
-`close()` — so a `finally` block can't mask one.
+Reading a member to its end verifies it where the archive stores a checksum, and
+raises rather than quietly handing you short or wrong data. Two things are worth
+knowing here; the full contract is on
+[Errors and diagnostics](errors-and-diagnostics.md#the-integrity-guarantee).
 
-"To its end" means `read(-1)`, reading until `read()` returns `b""`, or — for a member
-with a declared size — reading that many bytes.
-
-What that does and does not promise:
-
-- **We try to raise on every error we can detect** — not on every error. Some formats
-  store no checksum at all, and some damage decodes into something that looks
-  perfectly valid.
-- **`CorruptionError` vs `TruncatedError` is a best-effort guess, not a diagnosis.**
-  Damage that happens to decode into a shorter stream is indistinguishable from a
-  genuine truncation. Don't branch on which one you got — `except archivey.ReadError`
-  catches both.
-- **Bytes delivered before the error are of unknown quality.** When a compressed
-  member fails mid-stream, some of what you already read is probably fine — but we
-  can't tell you which part, or how much. Treat the prefix as unverified: not
-  known-good, not known-bad.
-- **A full-length return means the checksum matched.** Trust it as far as you trust
-  that digest.
-- **A short return with no exception does not mean "complete".** `read(member.size)`
-  on a truncated member hands back what it has and stays quiet. Check the length — or
-  just read again, because the *next* read raises.
-
-That last point is what makes the ordinary chunked loop safe: it delivers every byte
-that was readable and *then* raises, rather than ending quietly on a short member. So
-the recoverable prefix and the error both reach you.
+- **`read(member.size)` behaves differently for the two failures.** On corruption it
+  raises and withholds the chunk that reached the size. On truncation it returns a
+  **short buffer with no exception** — known-wrong bytes are held back, an apparently
+  incomplete prefix is handed over. So a short return from that call is a signal:
+  check the length.
+- **The ordinary chunked loop is safe.** It delivers every readable byte and *then*
+  raises, so it cannot end quietly on a damaged member:
 
 ```python
 buf = bytearray()
@@ -76,32 +58,6 @@ try:
 except archivey.ReadError:
     ...  # buf holds everything that was readable; the member is damaged
 ```
-
-If you need certainty regardless of how you read — partial reads, seeks, or "never
-hand me unverified bytes" — `VerificationMode.STRICT` verifies a whole member before
-returning any of it.
-
-### What each call does
-
-For a member whose declared size is 500 bytes, truncated after 110:
-
-| Call | Corrupt at full length | Truncated after 110 of 500 |
-| --- | --- | --- |
-| `read(109)` | not yet at the end — no error | returns 109, no error |
-| `read(110)` | not yet at the end — no error | returns 110, no error |
-| `read(111)` | not yet at the end — no error | returns 110; the next `read()` raises |
-| `read(member.size)` | raises `CorruptionError` | returns 110 short, **no exception** |
-| `read(-1)` | raises `CorruptionError` | raises `TruncatedError` |
-| chunked until `b""` | raises on the chunk that reaches the size, and withholds it | delivers the prefix, then raises |
-| partial read, then `close()` | quiet — you stopped early | quiet — you stopped early |
-
-The one row worth remembering is **`read(member.size)`**: it raises on corruption but
-returns a short buffer on truncation. Known-wrong bytes are withheld; an apparently
-incomplete prefix is handed over. So a short return from that call is a signal, not a
-success — check the length.
-
-Members with no declared size have nothing to read *to*, so `read(n)` can't
-self-certify at all. Use `read(-1)` or read until `b""`.
 
 ## Streaming mode (pipes)
 
@@ -117,7 +73,7 @@ In streaming mode, `members()` / `get()` / `open()` / `read()` raise
 ## One-shot extract
 
 `archivey.extract(src, dest)` extracts everything with safe defaults — see
-[Safe extraction](safe-extraction.md).
+[Safe extraction](extracting.md).
 
 There is deliberately no `members=` on the one-shot helper: selecting a subset needs
 the member list, which would force open / list / reopen. Use an already-open reader

@@ -26,7 +26,7 @@ not as silent guesses or a different API per backend.
 
 Extraction cannot be zip-slipped, symlink-escaped, or decompression-bombed unless you
 explicitly opt out. Safety is a contract, not a marketing flag. See
-[Safe extraction](safe-extraction.md).
+[Safe extraction](extracting.md).
 
 ## Don’t-shoot-yourself by design
 

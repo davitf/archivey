@@ -6,7 +6,7 @@ Decision 1).
 - [x] 1.1 `install.md` ← `usage.md:3-18`
 - [x] 1.2 `opening-and-listing.md` ← `:20-55`, `:95-100`, `:145-173`, `:175-183`
 - [x] 1.3 `reading-members.md` ← `:57-83`, `:102-111`, and `:85-93` reduced to a cross-link
-- [x] 1.4 `errors-and-diagnostics.md` ← `:185-217` + the diagnostics note at `safe-extraction.md:90-93`
+- [x] 1.4 `errors-and-diagnostics.md` ← `:185-217` + the diagnostics note at `extracting.md:90-93`
 - [x] 1.5 `cli.md` ← `:219-266`
 - [x] 1.6 Delete `usage.md`; drop its `## Next` block (the nav is the next-steps list)
 - [x] 1.7 Rewrite the nav: 15 entries in the D-a order
@@ -22,11 +22,11 @@ Decision 1).
 - [x] 3.2 `dev-docs/investigations/adr-0014-investigation.md` ← the trade-offs, implementation notes, and the `## Open questions` section (O-6)
 - [x] 3.3 The user guarantee (`:320-375`) → `reading-members.md` §2
 
-## 4. Split `threat-model.md` and grow `safe-extraction.md` (D8)
+## 4. Split `threat-model.md` and grow `extracting.md` (D8)
 
-- [x] 4.1 Trust boundaries + what is enforced (`dev-docs/threat-model.md:9-58`) → `safe-extraction.md`; drop the D3 repo link that pointed at it
-- [x] 4.2 Extraction half of `gotchas.md` (`:103-126`, `:91-102`) → `safe-extraction.md`
-- [x] 4.3 `SECURITY.md:68-89` caller-hardening notes → `safe-extraction.md`, with a link back from `SECURITY.md` (O-7)
+- [x] 4.1 Trust boundaries + what is enforced (`dev-docs/threat-model.md:9-58`) → `extracting.md`; drop the D3 repo link that pointed at it
+- [x] 4.2 Extraction half of `gotchas.md` (`:103-126`, `:91-102`) → `extracting.md`
+- [x] 4.3 `SECURITY.md:68-89` caller-hardening notes → `extracting.md`, with a link back from `SECURITY.md` (O-7)
 - [x] 4.4 `dev-docs/threat-model.md` keeps the O/C register only
 
 ## 5. Shrink `gotchas.md` to a digest (D4)

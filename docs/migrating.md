@@ -45,7 +45,7 @@ What changes:
 - **`extractall` was never safe.** `zipfile.extractall` sanitizes absolute paths and `..`
   by mangling them, but happily writes symlinks that point outside the destination.
   `extract_all` **blocks** traversal and symlink escapes by default and reports them as
-  `ExtractionStatus.BLOCKED`. See [Safe extraction](safe-extraction.md).
+  `ExtractionStatus.BLOCKED`. See [Safe extraction](extracting.md).
 - **Passwords are an open-time argument**, not per-call `pwd=`:
   `open_archive("secret.zip", password="hunter2")`. Archivey also reads **WinZip AES**
   members (with the `[recommended]` extra), which `zipfile` cannot decrypt at all.
@@ -160,7 +160,7 @@ Worth reading before you migrate a production path:
 
 1. **Extraction is strict.** Archives that "worked" with `extractall` may now report
    `BLOCKED` members. That is the point — but check the
-   [`ExtractionReport`](safe-extraction.md) rather than assuming success.
+   [`ExtractionReport`](extracting.md) rather than assuming success.
 2. **One live member stream by default.** If you held several `extractfile()` handles
    open, pass `concurrent_members=True`. See
    [supported platforms and threading](support-matrix.md).

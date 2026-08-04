@@ -20,26 +20,13 @@ with archivey.open_archive("photos.zip") as reader:
 Default open is **random access** (`streaming=False`). On a pipe or other non-seekable
 source, either pass a seekable file or use `streaming=True` (forward-only, one pass).
 
-### Damaged archives: prefix + honest error
+### Damaged archives
 
-`members()` / `scan_members()` assert a **complete** listing (raise on terminal
-archive damage). When you need both the recoverable prefix and the error — the
-VISION “damaged input” path — use `members_report()`:
-
-```python
-with archivey.open_archive("messy.tar") as reader:
-    report = reader.members_report()
-    for member in report:                    # recovered members (may be a prefix)
-        print(member.name)
-    if report.error is not None:             # incomplete listing
-        raise report.error
-```
-
-`__iter__` / `stream_members()` **yield the prefix then raise** on the same failures.
-What each failure type means is on [Errors and diagnostics](errors-and-diagnostics.md).
-Diagnostics alone are not the primary signal. This is not salvage (resync past damage);
-`--salvage` remains reserved. Random-access extract still fail-closes before writing
-when listing ends in terminal damage.
+`members()` / `scan_members()` assert a **complete** listing and raise on terminal
+damage; `members_report()` gives you the recoverable prefix *and* the error together.
+Iteration yields the prefix, then raises. See
+[Errors and diagnostics](errors-and-diagnostics.md#listing-a-damaged-archive) for the
+recipe and what each failure means.
 
 ## Detect without opening
 

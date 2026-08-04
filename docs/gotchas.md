@@ -32,15 +32,15 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
 - **Don't assume the file lands at `member.name`.** Under `STRICT`, trailing dots and
   spaces are stripped and non-UTF-8 bytes percent-escaped; case and
   Unicode-normalisation twins collide on **every** OS, not just Windows.
-  → [Names change on disk](safe-extraction.md#names-change-on-disk)
+  → [Names change on disk](extracting.md#names-change-on-disk)
 - **Don't `read()` a member from an untrusted archive without a size guard.**
   `read()` is unbounded, and `stream_members()` is deliberately outside
   `ListingLimits`. Chunk untrusted payloads.
-  → [Limits](safe-extraction.md#limits)
+  → [Limits](extracting.md#limits)
 - **Don't recurse into nested archives without bounding it yourself.** The bomb
   tracker checks expansion for *individual* archives and is **not nesting-aware**, so
   a zip-of-zips can amplify past your limits one level at a time.
-  → [Limits](safe-extraction.md#limits)
+  → [Limits](extracting.md#limits)
 - **Don't close a source underneath a live accelerator-backed stream.** Archivey
   contains the upstream fault and re-raises it as a normal Python error, so this is a
   clean failure rather than a crash — but the stream is still dead and the read still
@@ -48,7 +48,7 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
 - **Do turn accelerators off for untrusted input under a hard latency budget**
   (`AcceleratorMode.OFF`), or enforce your own timeout: crafted input can busy-loop
   in C++ where a Python timeout cannot cleanly interrupt it.
-  → [Hardening notes](safe-extraction.md#hardening-notes-for-callers)
+  → [Hardening notes](extracting.md#hardening-notes-for-callers)
 
 ## What you should be aware of
 

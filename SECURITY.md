@@ -72,7 +72,7 @@ surface, `unrar` in your deployment's trust boundary, and extracting to a scratc
 directory before promoting — lives in the user guide, next to the policies it
 qualifies:
 
-- [Safe extraction](https://davitf.github.io/archivey/safe-extraction/) — trust
+- [Safe extraction](https://davitf.github.io/archivey/extracting/) — trust
   boundaries, what is enforced, policies, limits, and the hardening notes
 - [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — the maintainer gap
   register

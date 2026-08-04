@@ -6,7 +6,9 @@ before the moves would have meant outlining a tree about to lose 80% of its file
 outlining after the splits would be too late to move a page boundary cheaply.
 
 Measured against `main` @ `d34489f`, after `docs-ia-unpublish-maintainer-tree`
-landed. Every source citation is a live `file:lines` in that tree.
+landed. Every source citation is a live `file:lines` in that tree — so **Sources** rows
+name `docs/safe-extraction.md`, which D-d later renamed to `docs/extracting.md`. The
+citations are left as measured; renaming them would break the line numbers.
 
 | Field | What it is for |
 |---|---|
@@ -29,16 +31,16 @@ from `src/` and `tests/` and had no evidence base for either
 
 So there are two denominators, and only one of them is comparable:
 
-| | Lines | safe-extraction | access-and-cost |
+| | Lines | extracting | access-and-cost |
 |---|---:|---:|---:|
-| **Core teaching pages** — install, opening, reading, gotchas, safe-extraction, access-and-cost, formats, errors, cli | ~1,255 | **22.3%** | **18.3%** |
+| **Core teaching pages** — install, opening, reading, gotchas, extracting, access-and-cost, formats, errors, cli | ~1,255 | **22.3%** | **18.3%** |
 | All published pages, incl. migrating / support-matrix / philosophy / api / acknowledgements | ~2,085 | 13.4% | 11.0% |
 
 Against the comparable denominator the target shape lands where the independent
-pass argued it should: safe extraction within ~2 points of ~25%, access/cost within
+pass argued it should: extracting within ~2 points of ~25%, access/cost within
 ~2 points of ~20% once the config screen is counted — not the ~10-point and
 ~15-point gaps the raw comparison suggested. **This is not a reason to relax**: the
-safe-extraction figure assumes the ~90 lines of new prose in §5 below actually get
+extracting figure assumes the ~90 lines of new prose in §5 below actually get
 written. Merging alone gets it to ~200 lines / 17%, which is
 [`page-shape.md`](page-shape.md) §1's own estimate.
 
@@ -51,7 +53,7 @@ Projected sizes, for sequencing rather than as targets:
 | `opening-and-listing.md` | — | ~105 | **new**, split from `usage.md` |
 | `reading-members.md` | — | ~125 | **new**, split from `usage.md` + ADR 0014 |
 | `gotchas.md` | 155 | ~70 | shrink to a digest |
-| `safe-extraction.md` | 93 | ~280 | grow ~3× |
+| `extracting.md` | 93 | ~280 | grow ~3× |
 | `access-and-cost.md` | 154 | ~230 | rename + absorb + config screen |
 | `formats.md` | 185 | ~215 | two fixes + the dedupe recipe |
 | `errors-and-diagnostics.md` | — | ~90 | **new** |
@@ -173,7 +175,7 @@ what is inside.
    the filter one-liners.
 
 **Not here.** Reading bytes out of a member (`reading-members.md`). What a listing
-*costs* — `ListingCost`, listing limits (`access-and-cost.md`, `safe-extraction.md`).
+*costs* — `ListingCost`, listing limits (`access-and-cost.md`, `extracting.md`).
 Per-format listing quirks (`formats.md`). The dedupe recipe, which moved to
 `formats.md` beside the stored-digest matrix it depends on.
 
@@ -219,14 +221,14 @@ must-explain gaps land here.
    #20). **Non-file members cannot be `open()`ed** (must-explain #26). All four
    undocumented today.
 6. **One-shot extract**, in three lines and a link. `archivey.extract(src, dest)`
-   is `safe-extraction.md` §1's material — what belongs *here* is why it has no
+   is `extracting.md` §1's material — what belongs *here* is why it has no
    `members=` (selecting a subset needs the member list, which would force
    open/list/reopen — must-explain #5) and that it **auto-opens streaming for a
    non-seekable source** while `open_archive` refuses one, the inconsistency users
    hit first (must-explain #4, undocumented).
 
 **Not here.** Enumerating an archive (`opening-and-listing.md`). What an access
-pattern *costs* (`access-and-cost.md`). Extraction policy (`safe-extraction.md`).
+pattern *costs* (`access-and-cost.md`). Extraction policy (`extracting.md`).
 The exception tree (`errors-and-diagnostics.md`).
 
 **Sources.** `docs/usage.md:57-83` (§1); `:102-111` (§4); `:85-93` (§6, reduced to a
@@ -244,7 +246,7 @@ cross-link); `dev-docs/decisions/0014-integrity-verdicts-from-reads-not-close.md
 > Two sections were misfiled regardless of the split and are relocated with it: the
 > **dedupe recipe** (31 lines) to `formats.md`, beside the stored-digest matrix it is
 > *about*; and **one-shot extract** (9 lines), whose code block duplicates
-> `safe-extraction.md` §1 and whose unique content is three lines of rationale.
+> `extracting.md` §1 and whose unique content is three lines of rationale.
 >
 > Three seams rub, and each resolves the same way the `access-and-cost.md` boundary
 > already did — contract here, consequences there:
@@ -260,7 +262,7 @@ cross-link); `dev-docs/decisions/0014-integrity-verdicts-from-reads-not-close.md
 > **`reading-members.md`**, since that is where the traps the digest indexes actually
 > live.
 
-## 5. `safe-extraction.md` — Safe extraction
+## 5. `extracting.md` — Extracting
 
 **Purpose.** The page without which the library cannot be used safely on untrusted
 input. Becomes the guide's largest page.
@@ -374,7 +376,7 @@ merge cannot close, and the reason the 23.8% above is a plan rather than a fact.
 **New:** §5's ON-vs-AUTO split, §9, §10 (~35 lines).
 
 > **The weakest placement call in this outline.** The knobs do not belong to one page:
-> cost knobs are here, limits and policies are `safe-extraction.md`, `strict_archive_eof`
+> cost knobs are here, limits and policies are `extracting.md`, `strict_archive_eof`
 > and encoding are `formats.md`, diagnostic policy is `errors-and-diagnostics.md`. A
 > single dense screen is a *reference* artifact, and this page is the one whose subject
 > is "what you pay and what you pass", which is the closest fit — but the independent
@@ -417,8 +419,8 @@ line linking to the page that owns the depth:
 
 | Residual | Section | Line |
 |---|---|---|
-| **O6 nested archives** | should/shouldn't | The bomb tracker checks expansion for *individual* archives and is **not nesting-aware**. Recursion is caller-driven — bound depth and size yourself. → `safe-extraction.md` §10 |
-| **O1 unguarded paths** | should/shouldn't | `stream_members()` is not covered by `ListingLimits`, and `read()` / `open()` stream sizes are unbounded — chunk untrusted payloads. → `safe-extraction.md` §8, `reading-members.md` §1 |
+| **O6 nested archives** | should/shouldn't | The bomb tracker checks expansion for *individual* archives and is **not nesting-aware**. Recursion is caller-driven — bound depth and size yourself. → `extracting.md` §10 |
+| **O1 unguarded paths** | should/shouldn't | `stream_members()` is not covered by `ListingLimits`, and `read()` / `open()` stream sizes are unbounded — chunk untrusted payloads. → `extracting.md` §8, `reading-members.md` §1 |
 | **O8 7z header encryption** | be aware of | Above. |
 | **O2 name collisions** | should/shouldn't | Already covered by the STRICT-rewrite bullet; collision behaviour is OS-dependent by design (ADR 0013). |
 
@@ -495,7 +497,7 @@ per-format sections that own each row.
 **Reader question.** "What do I catch, and where did that warning go?"
 
 Diagnostics have a 181-line spec and, on the site, two lines at the bottom of
-`safe-extraction.md` plus a bare symbol list in `api.md`.
+`extracting.md` plus a bare symbol list in `api.md`.
 
 **Sections.**
 
@@ -520,7 +522,7 @@ Diagnostics have a 181-line spec and, on the site, two lines at the bottom of
    `FilterRejectionError` (a member refused) — different causes, different fixes.
 
 **Not here.** The generated symbol list (`api.md`). What extraction policy blocks
-(`safe-extraction.md`).
+(`extracting.md`).
 
 **Sources.** `docs/usage.md:185-217`; `docs/safe-extraction.md:90-93`.
 **New:** §3, §4, §5, §6, §7 — roughly 55 of the page's 90 lines.
@@ -554,7 +556,7 @@ no nav entry — a reader looking for a command-line tool has no reason to open 
 7. **Reserved:** `--salvage`, stdin `-`, `hash` / `create` / `convert`.
 
 **Not here.** Library equivalents (`opening-and-listing.md`, `reading-members.md`,
-`safe-extraction.md`).
+`extracting.md`).
 
 **Sources.** `docs/usage.md:219-266`.
 **New:** §3 as its own block, §6.
@@ -587,9 +589,9 @@ proves it is complete rather than merely tidy.
 | 3 | `streaming` + `concurrent_members` exclusive | access-and-cost | costs.md ✓ |
 | 4 | `extract()` auto-streams a pipe; `open_archive` refuses one | reading-members | **gap** |
 | 5 | `extract()` has no `members=` | reading-members | usage.md ✓ |
-| 6 | `OnError.STOP` continues past blocks | safe-extraction | ✓ |
-| 7 | Bomb limits halt under `CONTINUE` | safe-extraction | gotchas ✓ |
-| 8 | `extract_all(config=)` cannot raise the open-time listing ceiling | safe-extraction | **gap** |
+| 6 | `OnError.STOP` continues past blocks | extracting | ✓ |
+| 7 | Bomb limits halt under `CONTINUE` | extracting | gotchas ✓ |
+| 8 | `extract_all(config=)` cannot raise the open-time listing ceiling | extracting | **gap** |
 | 9 | Duplicate names: last wins | opening-and-listing | usage.md ✓ |
 | 10 | `stream_members` lifetime + laziness | reading-members | **gap** |
 | 11 | Solid cost is orthogonal to concurrency | access-and-cost | costs.md ✓ |
@@ -598,8 +600,8 @@ proves it is complete rather than merely tidy.
 | 14 | RAR data needs RARLAB `unrar` | install + formats | ✓ |
 | 15 | `PARTIAL` / `NONE`, not a vanished format | install | **gap** |
 | 16 | `AUTO` falls back silently; `ON` raises | access-and-cost | partial |
-| 17 | `TRUSTED` still runs the universal checks | safe-extraction | gotchas ✓ |
-| 18 | Hardlink orphans and the seekable second pass | safe-extraction | thin |
+| 17 | `TRUSTED` still runs the universal checks | extracting | gotchas ✓ |
+| 18 | Hardlink orphans and the seekable second pass | extracting | thin |
 | 19 | `member in reader` is identity | reading-members | **gap** |
 | 20 | Close does not invalidate open streams | reading-members | support-matrix ✓ |
 | 21 | `open_stream` vs `open_archive`; inner-TAR upgrade | opening-and-listing + formats | partial |
@@ -647,7 +649,7 @@ The splits are moves. These are the writing tasks that remain, in priority order
 
 | Where | What | Est. |
 |---|---|---:|
-| `safe-extraction.md` | Bounded-recursion recipe (O6), "what `TRUSTED` does not relax", the config-ceiling rule | ~90 |
+| `extracting.md` | Bounded-recursion recipe (O6), "what `TRUSTED` does not relax", the config-ceiling rule | ~90 |
 | `errors-and-diagnostics.md` | Translation, diagnostics-as-data, the codes worth knowing, policy, limits vs filters | ~55 |
 | `how-it-works.md` | All six sections (D2) | ~150 |
 | `install.md` | `format_availability()` section; re-cutting the matrix by extra | ~45 |
@@ -701,7 +703,7 @@ this change itself created, and all four are fixed; two are correctly Topic 8's.
 |---|---|---|
 | 1 | **D-a overclaimed.** It justified the nav order with a recipes block "now on the first screen" — written in the present tense for prose that was never written, because the splits change is move-only. | **Fixed by writing the recipes** (~30 lines, `index.md` §Thirty seconds). A fourth exception to design.md Decision 1, and the strongest one: the other three keep a page from being *broken*, this one keeps a shipped decision from resting on something imaginary. Softening D-a to future tense was the alternative; making the claim true is better. |
 | 2 | **Same-PR contradiction.** `gotchas.md` said the accelerator fault is contained and re-raised; `access-and-cost.md` §Accelerators still said it "can abort the process" — and the Gotchas line linked there. | **Fixed.** The section is rewritten and renamed: archivey traps the caller-source case (`tests/test_accelerator_bug3_trap.py` is the authority), and the genuinely uncontained residual — path-source finalization aborts — is named as such. |
-| 3 | **A link with no landing.** The O6 nesting line pointed at `safe-extraction.md#limits`, which never mentioned nesting. | **Fixed.** One paragraph under Limits: the tracker is per-archive, so bound recursion yourself. The worked recipe stays Topic 8. |
+| 3 | **A link with no landing.** The O6 nesting line pointed at `extracting.md#limits`, which never mentioned nesting. | **Fixed.** One paragraph under Limits: the tracker is per-archive, so bound recursion yourself. The worked recipe stays Topic 8. |
 | 4 | **A claim written before it was true.** The round-1 disposition declined the Errors nav reorder on the grounds that callouts "are in" — they were not. | **Fixed.** Both callouts written, and the disposition entry now says it was written ahead of the work. |
 | 5 | Outline worklist rows stale for work that shipped. | **Fixed** above. |
 | 6 | O-2 (`formats.md` "path `.gz`" vs the spec's any-declared-seekable) still open. | **Agreed, Topic 8.** It is an accuracy fix, not consistency debt from this change. |
@@ -718,9 +720,9 @@ writing them in one pass invites exactly this. Findings 1 and 4 are that error t
 
 Taken as written, with one caveat on what "reorder later" actually costs (below).
 
-### D-a — Nav order stands: `… Reading → Gotchas → Safe extraction → Access and cost …`
+### D-a — Nav order stands: `… Reading members → Gotchas → Extracting → Access and cost …`
 
-Safe extraction stays at position 5, and `documentation/spec.md:86-87`'s
+Extracting stays at position 5, and `documentation/spec.md:86-87`'s
 Gotchas-immediately-after-basic-usage rule is honoured rather than rewritten.
 
 The recipes block (`index.md` §2) is what makes this defensible: "extract safely" is
@@ -768,7 +770,7 @@ one, which is the same test applied to a number I had got wrong.
   merits, since the recipe and the matrix that tells you which formats populate
   `member.hashes` were on different pages.
 - **One-shot extract** (9 lines) → three lines and a cross-link. Its code block
-  duplicates `safe-extraction.md` §1; only the no-`members=` rationale and the
+  duplicates `extracting.md` §1; only the no-`members=` rationale and the
   auto-streaming note are unique.
 
 **Cost, paid:** one more nav entry (16), and the splits delta must name which of the
@@ -793,6 +795,45 @@ all three:
 So D-a and D-c are genuinely reversible on sight of the result. D-b was the one that
 was not, which is why it was re-examined before the splits change rather than after —
 and why the tally that reversed it was worth asking for.
+
+### D-d — `safe-extraction.md` → `extracting.md`. **2026-08-04.**
+
+Consistency with `opening-and-listing` / `reading-members` (the sibling form is
+verb-ing) is the surface reason. The stronger one is that `philosophy.md` says
+*"safety is a contract, not a marketing flag"* — and a page asserting "safe" in its
+own filename is the flag. The page demonstrates it; it need not claim it. Nav label:
+**Extracting**. If adoption work later wants the word in the menu, the label can carry
+it without the filename doing so.
+
+### D-e — The damage contract moves to `errors-and-diagnostics.md`. **2026-08-04.**
+
+The integrity guarantee, the call × failure matrix and the `members_report()` recipe
+leave the two flow pages for `errors-and-diagnostics.md`, under **"When an archive is
+damaged"**. What stays in the flow is the one-line honesty promise plus a link.
+
+**This reverses an argument I made, and the correction is the point.** I opposed
+exactly this on the grounds that damage handling is "a VISION founding use case", so
+segregating it would demote something core. Checked: VISION's two load-bearing claims
+are safe-by-default and memory-safe parsing of hostile input. The founding use case is
+*indexing and deduplicating messy backups*; "damaged input is a first-class citizen" is
+one of five priorities that origin story implies, and that bullet is specifically about
+not failing at **open** — the listing side — not the read contract.
+
+The maintainer's split is the accurate one, and it is a **depth** split rather than a
+mood split, which is why it does not scatter:
+
+| | Where |
+|---|---|
+| "No silent errors" — reads raise rather than returning short data quietly | Footgun property. One line, in the flow. |
+| The contract — matrix, prefix semantics, `members_report()` | Recovery depth. Advanced; most readers never need it. |
+
+One exception, called by the maintainer: the `read(member.size)` asymmetry — raises on
+corruption, returns short on truncation — **stays in the flow**, because that one is a
+footgun, not depth.
+
+Sizes: `reading-members` 129 → 84, `opening-and-listing` 90 → 76,
+`errors-and-diagnostics` 43 → 140. The third was the thinnest new page and its target
+was ~90; it is now filled with material that belongs on it rather than padding.
 
 ## Still open
 

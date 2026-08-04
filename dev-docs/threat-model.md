@@ -8,7 +8,7 @@
 
 > **The user-facing half of this document is published.** Trust boundaries and the
 > full "what is enforced" list now live on
-> [`docs/safe-extraction.md`](../docs/safe-extraction.md) (review/docs `DECISIONS.md`
+> [`docs/extracting.md`](../docs/extracting.md) (review/docs `DECISIONS.md`
 > D8) — unpublishing was about *audience*, not secrecy, and an evaluating user is
 > exactly who needs the enforced-guarantees statement. What remains here is the
 > maintainer register: what is still open, and what is left to implement.

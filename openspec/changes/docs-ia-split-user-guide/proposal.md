@@ -3,7 +3,7 @@
 Phase 3's second half. `docs-ia-unpublish-maintainer-tree` (#221) moved maintainer
 material out of the site; this reshapes what is left. `usage.md` is 274 lines doing
 five jobs, the CLI has a 271-line spec and no nav entry, `gotchas.md` restates four
-sections of `costs.md` verbatim, and `safe-extraction.md` — carrying `VISION.md`
+sections of `costs.md` verbatim, and `extracting.md` — carrying `VISION.md`
 claim #1 and backed by the largest spec in the tree — is the thinnest page on the
 site.
 
@@ -16,7 +16,7 @@ order, and `file:lines` sources.
   `reading-members.md`, `errors-and-diagnostics.md`, `cli.md`.
 - **Rename `costs.md` → `access-and-cost.md`** and absorb the cost half of
   `gotchas.md`.
-- **Grow `safe-extraction.md` ~3×** by absorbing the extraction half of
+- **Grow `extracting.md` ~3×** by absorbing the extraction half of
   `gotchas.md`, the user half of `dev-docs/threat-model.md`, and `SECURITY.md`'s
   caller-hardening notes.
 - **Shrink `gotchas.md`** from 155 lines to a two-section digest: one line plus a
@@ -24,7 +24,7 @@ order, and `file:lines` sources.
 - **Split ADR 0014** three ways (D5) and **`threat-model.md`** two ways (D8).
 - **Relocate two sections** that were misfiled regardless: the dedupe recipe to
   `formats.md` beside the stored-digest matrix, and one-shot extract down to a
-  cross-link since its code block duplicates `safe-extraction.md`.
+  cross-link since its code block duplicates `extracting.md`.
 - **`AGENTS.md` becomes canonical**, `CLAUDE.md` a pointer plus Claude-specific
   environment notes (D6), fixing two false statements (O-1).
 - **Four `documentation` spec deltas**: the site-IA page enumeration and the

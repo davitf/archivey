@@ -7,7 +7,7 @@ be an end-user page carrying a nav entry; maintainer material — decision log, 
 model, codec analysis, known issues, open-issues triage, finished investigations,
 and superseded historical prose — SHALL live under `dev-docs/`, outside the site,
 rather than under `docs/` behind an exclusion list. The user narrative covers
-install, opening and listing, reading members, gotchas, safe extraction, access
+install, opening and listing, reading members, gotchas, extracting, access
 costs/pitfalls, formats/extras, errors and diagnostics, the command line, migration,
 platforms, philosophy, and the API reference. Each page SHALL do one job, stated in
 its opening lines. Gotchas SHALL sit immediately after `reading-members.md` in
@@ -28,8 +28,8 @@ where maintainer depth is worth preserving the link MUST be an absolute
 ### Requirement: Document complete-or-raise listing vs MemberListReport
 
 The end-user guide SHALL document the dual listing contract on
-`docs/opening-and-listing.md`, with the Gotchas digest carrying a one-line pointer
-to it:
+`docs/errors-and-diagnostics.md`, with `docs/opening-and-listing.md` carrying a
+short pointer to it:
 
 - `members()` / `scan_members()` — complete listing or raise (assert completeness).
 - `members_report()` → `MemberListReport` — recovered members plus `error` when the
@@ -46,8 +46,9 @@ archive). Salvage / `--salvage` remains out of scope and separately reserved.
 
 | Case | Expected |
 | --- | --- |
-| Reader wants inventory of a possibly damaged tar | Finds `members_report()` recipe (check `error`, use report `.members`) on `opening-and-listing.md` |
+| Reader wants inventory of a possibly damaged tar | Reaches the `members_report()` recipe (check `error`, use report `.members`) — pointer on `opening-and-listing.md`, recipe on `errors-and-diagnostics.md` |
 | Reader wants “fail if not complete” | Directed to `members()` / `scan_members()` |
+| Reader only wants to read a healthy archive | Meets the one-line "we raise rather than return short data" promise in the flow, and is not made to read the contract |
 | Reader looks for salvage/best-effort | Pointed to reserved/future salvage — not `members_report` |
 
 ## ADDED Requirements
@@ -63,7 +64,7 @@ A topic belongs on Gotchas only if (a) a caller choice is likely to cause a mist
 or a footgun, or (b) Archivey cannot fulfil its intention of failing loudly and
 verifying. Format encyclopaedia, unsupported-feature lists, full policy tables, and
 "plan around this limitation" rows SHALL live on the owning page (`formats.md`,
-`safe-extraction.md`, `access-and-cost.md`) and MUST NOT be restated here.
+`extracting.md`, `access-and-cost.md`) and MUST NOT be restated here.
 
 The page SHALL carry the user-mitigable threat-model residuals: nested-archive
 amplification (the bomb tracker is not nesting-aware), the unguarded paths
@@ -76,8 +77,8 @@ header-encryption residual, and name-collision behaviour.
 | --- | --- |
 | Seeking re-decompresses; solid open order; streaming is one pass | Present, one line each, linking `access-and-cost.md` |
 | Multi-volume ZIP; ZIP/ISO needing seek; UTF-8 bit-11 | **Absent** — loud errors or normal format requirements; `formats.md` owns them |
-| Full extraction policy table | **Absent** — `safe-extraction.md` owns it |
-| Nested-archive amplification | Present as a one-liner; the bounded-recursion recipe lives on `safe-extraction.md` |
+| Full extraction policy table | **Absent** — `extracting.md` owns it |
+| Nested-archive amplification | Present as a one-liner; the bounded-recursion recipe lives on `extracting.md` |
 | A fact stated on Gotchas and on its owning page | Digest line links out rather than restating, so the two cannot drift |
 
 ## REMOVED Requirements

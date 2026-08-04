@@ -31,7 +31,7 @@ execute against and the one Topic 8 starts from. Headline findings:
   `opening-and-listing.md`, `reading-members.md`. That is the outline's own argument
   for splitting `usage.md` rather than polishing it.
 - **~495 lines of new prose** are needed that no merge can supply, over half of it
-  on `safe-extraction.md` and the new `errors-and-diagnostics.md`. That is Topic 8's
+  on `extracting.md` and the new `errors-and-diagnostics.md`. That is Topic 8's
   floor, before the accuracy pass it was commissioned for. (~40 of them shipped with
   the splits change; see below.)
 
@@ -48,9 +48,9 @@ the dedupe recipe moves to `formats.md` beside the stored-digest matrix it depen
 on. The nav goes to 16 entries.
 
 **The splits change is implemented.** The guide is now 15 pages, each doing one job:
-`usage.md` split five ways, `costs.md` → `access-and-cost.md`, `safe-extraction.md`
-grown from 93 lines to 181, `gotchas.md` shrunk from 155 to 87 as a digest, ADR 0014
-and `threat-model.md` split, and `AGENTS.md` canonical with `CLAUDE.md` a 26-line
+`usage.md` split five ways, `costs.md` → `access-and-cost.md`, `safe-extraction.md` →
+`extracting.md` grown from 93 to 181, `gotchas.md` shrunk from 155 to 87 as a digest,
+ADR 0014 and `threat-model.md` split, and `AGENTS.md` canonical with `CLAUDE.md` a 26-line
 pointer.
 
 **What ships thin, on purpose.** This change moved blocks; it wrote ~40 of the ~495
@@ -67,6 +67,20 @@ faults abort the process while the rewritten `gotchas.md` said they are containe
 the Gotchas nesting line pointed at a Limits section that never mentioned nesting; and
 two Errors callouts were recorded as done before being written. Three of the four were
 the same error — writing a record in the present tense ahead of the work it describes.
+
+**Two later refinements**, both settled with the maintainer after the first pass and
+recorded as `outline.md` D-d/D-e: `safe-extraction.md` became **`extracting.md`** (the
+sibling form is verb-ing, and `philosophy.md` calls safety "a contract, not a marketing
+flag" — a page asserting "safe" in its filename is the flag), and the **damage contract**
+moved out of the two flow pages into `errors-and-diagnostics.md` under "When an archive
+is damaged". The flow keeps the one-line honesty promise plus a link, and keeps the
+`read(member.size)` asymmetry because that one is a footgun rather than depth.
+`reading-members` 129 → 84, `opening-and-listing` 90 → 76, `errors-and-diagnostics`
+43 → 140.
+
+That reversed an argument I had made against it — that damage is "a VISION founding use
+case". It is not: VISION's load-bearing claims are safe-by-default and memory-safe
+parsing, and the founding use case is deduplicating messy backups.
 
 **Two things the move surfaced that were not on anyone's list:** ~35 references to
 `docs/internal/` and `docs/grab-bag/` survived *inside* `dev-docs/` because #221's

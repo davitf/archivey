@@ -12,9 +12,9 @@ carries that bind this change:
 | --- | --- |
 | D4 | Gotchas is a two-section digest — one line + a link per entry — with a normative inclusion rule |
 | D5 | ADR 0014 splits three ways; the user guarantee lands in the guide |
-| D8 | `threat-model.md` splits three ways; the enforced-guarantees prose feeds `safe-extraction.md` |
+| D8 | `threat-model.md` splits three ways; the enforced-guarantees prose feeds `extracting.md` |
 | D6 | `AGENTS.md` canonical, `CLAUDE.md` a pointer |
-| D-a | Nav order: `… Reading members → Gotchas → Safe extraction → Access and cost …` |
+| D-a | Nav order: `… Reading members → Gotchas → Extracting → Access and cost …` |
 | D-b | `reading.md` splits into `opening-and-listing.md` + `reading-members.md` |
 | D-c | The config screen is a section on `access-and-cost.md`, not a page |
 
@@ -67,8 +67,8 @@ which is the check that makes the deletion reviewable:
 | Streaming mode is one pass | 49-58 | `access-and-cost.md` §Streaming |
 | Passwords that look accepted | 60-70 | Kept, compressed to two digest lines |
 | Format limitations | 71-89 | `formats.md`, per-format sections |
-| Names, duplicates, hardlinks | 91-102 | `safe-extraction.md` §Names, `opening-and-listing.md` |
-| Extraction | 103-126 | `safe-extraction.md` |
+| Names, duplicates, hardlinks | 91-102 | `extracting.md` §Names, `opening-and-listing.md` |
+| Extraction | 103-126 | `extracting.md` |
 | Native libraries and process risk | 128-144 | Kept as digest lines |
 | What we can only warn about | 146-155 | Dropped (D4: meta section is OUT) |
 
@@ -83,7 +83,7 @@ which is the argument that split phase 3 in the first place and kept #221 mechan
 So this change moves blocks. Pages that need new prose ship thin and get filled by
 Topic 8: `install.md` without its `format_availability()` section,
 `errors-and-diagnostics.md` without the diagnostics narrative,
-`safe-extraction.md` without the bounded-recursion recipe.
+`extracting.md` without the bounded-recursion recipe.
 
 Three exceptions, because the alternative is shipping something wrong rather than
 something thin:
@@ -119,7 +119,38 @@ cosmetic gain. Its `## Open questions` section (O-6) moves to the investigation 
 rather than being resolved here: an accepted ADR should not carry open questions, but
 closing them is a `verification-integrity-mode` decision, not a docs one.
 
-### 4. `costs.md` → `access-and-cost.md` is a rename, committed separately
+### 4. `safe-extraction.md` → `extracting.md`, and the damage contract moves to Errors
+
+Both settled with the maintainer after the first implementation pass.
+
+**The rename** is consistency with `opening-and-listing` / `reading-members` — the
+sibling form is verb-ing — but the stronger reason is that `philosophy.md` says
+"safety is a contract, not a marketing flag", and a page asserting "safe" in its own
+filename is the flag. The page demonstrates the safety; it does not need to claim it.
+The nav label is "Extracting"; if adoption work later wants the word in the menu, the
+label can carry it without the filename doing so.
+
+**The damage contract** — the integrity guarantee, the call × failure matrix, and the
+`members_report()` recipe — moves from the two flow pages to
+`errors-and-diagnostics.md`, under a "When an archive is damaged" heading. What stays
+in the flow is the one-line honesty promise plus a link.
+
+This corrects a claim I had used to argue against exactly this move: that damage
+handling is "a VISION founding use case". It is not. VISION's two load-bearing claims
+are safe-by-default and memory-safe parsing; the founding use case is deduplicating
+messy backups, and "damaged input is a first-class citizen" is one of five priorities
+that origin story implies — with that bullet specifically about not failing at *open*,
+the listing side. The maintainer's split is the accurate one: **"no silent errors" is
+a footgun property that belongs in the flow; the contract is recovery depth that most
+readers never need.** The page sizes follow — `reading-members` 129 → 84,
+`opening-and-listing` 90 → 76, `errors-and-diagnostics` 43 → 131, which also fills the
+thinnest new page with material that belongs on it.
+
+One exception the maintainer called: the `read(member.size)` asymmetry (raises on
+corruption, returns short on truncation) stays in the flow, because that one is a
+footgun rather than depth.
+
+### 5. `costs.md` → `access-and-cost.md` is a rename, committed separately
 
 Done as its own commit with no content edits so `git log --follow` stays exact, then
 the absorption lands on top. The same discipline as #221's commit 2.
