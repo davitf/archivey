@@ -308,7 +308,14 @@ The page now shows that loop as the recover-the-prefix recipe.
 
 **For Topic 8:** do not restore the stronger phrasing when tightening this section, and
 keep the chunked-loop guarantee — it is the answer to "how do I get what is readable
-out of a damaged member", which is a VISION founding use case.
+out of a damaged member".
+
+*(Correction 2026-08-04: an earlier draft called that a "VISION founding use case".
+It is not. VISION's two load-bearing claims are safe-by-default and memory-safe
+parsing of hostile input; the founding use case is indexing and deduplicating messy
+backups, and "damaged input is a first-class citizen" is one of five priorities that
+origin story implies — and that bullet is about not failing at open, i.e. the listing
+side, not the read contract.)*
 
 ---
 
