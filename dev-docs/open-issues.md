@@ -72,6 +72,70 @@ same change when relevant.
   non-owned sources; hang sandbox for untrusted input (threat-model O5 follow-up).
 - **Refs:** `known-issues.md` Bug 3; `access-and-cost.md`; Gotchas; threat-model accelerator hang.
 
+### P7. An unclosed member stream is never reclaimed — `reader.close()` does not help
+
+**Raised 2026-08-04** by the maintainer, reading `docs/reading-members.md`: *"closing
+streams on reader close makes sense and might be safer."*
+
+**Current behaviour is specified and consistent**, so this is a design question, not a
+bug. `archive-reading/spec.md:555-557` says a member stream opened before close **MAY**
+remain usable until that stream is closed, with backend resources alive until the last
+one closes; the scenario table at `:576-577` reads it as a guarantee. Measured on all
+seven backends (zip, tar, tar.gz, bare gz, directory, 7z, RAR): reading after
+`reader.close()` succeeds everywhere, and `stream.close()` afterwards is clean.
+
+**What the measurement also found, and this is the actual hazard:** dropping the
+stream reference *without* closing it leaks a file descriptor that GC never reclaims —
+`+1 fd` on every backend tested, unchanged after three `gc.collect()` passes. So:
+
+```python
+with archivey.open_archive(p) as r:
+    s = r.open("m.txt")      # forgot to close s
+# reader closed, s dropped -> one fd held until process exit
+```
+
+The reader's own close is the natural place a caller expects that to be cleaned up,
+and today it is not.
+
+**The argument for the current design**, which is not obvious and should not be lost:
+
+1. `archive-reading/spec.md:82-83` makes "never silently close/invalidate a held
+   stream" a general principle — it is the same rule that makes a second overlapping
+   `open()` raise instead of closing the first.
+2. **The accelerator hazard runs the other way.** Closing a source underneath a live
+   rapidgzip stream is precisely the operation that used to abort the process
+   (`known-issues.md` Bug 3). Making `reader.close()` do that routinely would exercise
+   the trapped path on every `with` block that holds a stream. Archivey contains it
+   now — but it is contained, not free.
+
+**The argument against**, i.e. for the maintainer's instinct:
+
+1. **Stdlib does the opposite.** `zipfile.ZipFile.close()` and `tarfile.TarFile.close()`
+   both invalidate member streams. Migrating users get a behaviour they did not ask
+   for, and `migrating.md` does not mention it.
+2. **Deterministic release.** Escaped streams are almost always a bug; failing loudly
+   finds them, and the fd above stops leaking.
+3. `stream_members()` already invalidates on advance, so "streams are ephemeral" is
+   established where it matters most — the general `open()` case is the outlier.
+
+**Options:**
+
+| | Change | Cost |
+|---|---|---|
+| **A** | Keep as specified; add a **diagnostic on reader close when streams are still open**, and close-on-finalize so a dropped stream is reclaimed | No API break; fixes the leak; keeps the accelerator path cold |
+| **B** | Close member streams on `reader.close()`, matching stdlib | Spec delta to `archive-reading`; breaks the escaped-stream contract; routinely exercises the Bug 3 trap |
+| **C** | Status quo | The fd leak stays, and it is silent |
+
+**Recommendation: A.** It gets the safety the instinct is reaching for — nothing leaks,
+and you are told when you left a stream open — without turning `reader.close()` into
+the operation that closes a source under a live accelerator. B is defensible on
+stdlib-parity grounds and would need its own change; it is not a docs decision either
+way.
+
+**Docs status:** `docs/reading-members.md` and `support-matrix.md` describe the current
+behaviour correctly. They do **not** mention the leak, because it is not user-facing
+advice until this is decided.
+
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
 - **Today:** Solid ALL-pipe demux must match what `unrar` actually emits (RAR5

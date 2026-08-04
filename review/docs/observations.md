@@ -340,3 +340,29 @@ boundary" is unless the page says.
 5. **Keep the honesty.** Plainer is not vaguer. "We can't tell which bytes are good"
    is plain *and* precise; "the prefix is best-effort salvageable" is neither.
 
+---
+
+## O-18 — Reader close vs escaped member streams: docs are right, but the design was questioned
+
+Raised by the maintainer 2026-08-04 on the outline's must-explain #20 line ("closing
+the reader does not invalidate already-open streams") — *"doesn't it? that surprised
+me."*
+
+**Checked, and the docs are correct.** It is specified
+(`archive-reading/spec.md:543-580`, "Context-manager and close lifecycle"), tested
+(`tests/test_member_streams.py::test_post_close_reader_ops_are_usage_errors`), and
+**consistent across all seven backends** — zip, tar, tar.gz, bare gz, directory, 7z and
+RAR all read fine after `reader.close()`, and `stream.close()` afterwards is clean. So
+there is nothing for Topic 8 to fix in the prose.
+
+One wording nuance worth keeping in mind when tightening: the spec requirement says a
+stream **MAY** remain usable, while its own scenario table states it as an outcome. The
+guide currently promises the stronger version. If the behaviour is ever revisited, the
+guide is the thing that has to change first.
+
+**What the check turned up is a product question, not a docs one**, and it is filed as
+`dev-docs/open-issues.md` **P7**: an unclosed member stream leaks a file descriptor
+that GC never reclaims (+1 on every backend measured), and `reader.close()` does not
+release it. That is closer to the hazard the maintainer's instinct was pointing at than
+the read-after-close behaviour itself.
+
