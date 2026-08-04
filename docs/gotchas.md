@@ -44,7 +44,7 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
 - **Don't close a source underneath a live accelerator-backed stream.** Archivey
   contains the upstream fault and re-raises it as a normal Python error, so this is a
   clean failure rather than a crash — but the stream is still dead and the read still
-  fails. → [Accelerators](access-and-cost.md#accelerators-and-process-aborts)
+  fails. → [Accelerators](access-and-cost.md#accelerators-and-source-lifetime)
 - **Do turn accelerators off for untrusted input under a hard latency budget**
   (`AcceleratorMode.OFF`), or enforce your own timeout: crafted input can busy-loop
   in C++ where a Python timeout cannot cleanly interrupt it.

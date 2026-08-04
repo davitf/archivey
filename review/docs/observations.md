@@ -373,3 +373,48 @@ that GC never reclaims (+1 on every backend measured), and `reader.close()` does
 release it. That is closer to the hazard the maintainer's instinct was pointing at than
 the read-after-close behaviour itself.
 
+
+---
+
+## O-19 — Broken anchors ship silently; the guardrail now covers them
+
+**Found while writing `opening-and-listing.md` (Topic 8, page 1).** Three links in
+the published tree pointed at headings that do not exist:
+
+| Link | Where | Why it broke |
+|---|---|---|
+| `gotchas.md#passwords-that-look-accepted` | `formats.md:98` | Section deleted by the Gotchas shrink |
+| `gotchas.md#format-limitations` | `formats.md:148` | Same |
+| `access-and-cost.md#accelerators-and-process-aborts` | `gotchas.md:47` | Heading is "Accelerators and source **lifetime**" |
+
+All three were created by `docs-ia-split-user-guide` and shipped green. This is
+finding **F5** in the flesh: `mkdocs build --strict` reports a missing anchor at INFO
+level and then exits 0, exactly as it does for a page missing from the nav.
+
+**Fixed, in both senses.** The two `formats.md` links were pointing *backwards* — the
+digest rule (D4) says Gotchas links to the page that owns a fact, not the reverse, and
+`formats.md` already stated both facts in full, so the link sentences are gone rather
+than repointed. The third is repointed. And `scripts/check_docs_nav.py` now resolves
+every intra-`docs/` anchor, cross-page and same-page, deriving the ids by running each
+file through Python-Markdown's own `toc` extension rather than reimplementing the slug
+rule — so the check cannot drift from what the site serves. Verified against planted
+failures of both kinds.
+
+Worth having before the rewrite rather than after: moving a heading is the single most
+common thing the remaining ~455 lines of prose will do.
+
+**One register leak fixed in passing:** `formats.md` §7z said "See threat-model O8",
+citing an unpublished maintainer document by internal item number. That is O-17's
+failure mode with a dangling reference on top.
+
+---
+
+## O-20 — `open_archive` does not accept bytes
+
+**Outline correction, not a docs bug.** `outline.md` §3 listed the sources as "paths,
+file objects, directories, byte sequences". There is no `bytes` source:
+`OpenSourceInput = SourceItem | SourceSequence` with `SourceItem = str | Path |
+BinaryIO` (`internal/volumes.py:21-22`), and `_is_source_sequence` explicitly excludes
+`bytes` so a bytestring is never mistaken for a sequence of sources. "Byte sequences"
+was a misreading of the multi-volume sequence type. The written page says paths,
+directories, streams, and ordered sequences of those.
