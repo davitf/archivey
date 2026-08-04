@@ -82,9 +82,11 @@ be an end-user page carrying a nav entry; maintainer material — decision log, 
 model, codec analysis, known issues, open-issues triage, finished investigations,
 and superseded historical prose — SHALL live under `dev-docs/`, outside the site,
 rather than under `docs/` behind an exclusion list. The user narrative covers
-philosophy, basic usage, gotchas, access costs/pitfalls, formats/extras, safe
-extraction, and the API reference. Gotchas SHALL sit immediately after basic usage
-in primary navigation. A published page SHALL NOT link to a path outside `docs/`;
+install, opening and listing, reading members, gotchas, extracting, access
+costs/pitfalls, formats/extras, errors and diagnostics, the command line, migration,
+platforms, philosophy, and the API reference. Each page SHALL do one job, stated in
+its opening lines. Gotchas SHALL sit immediately after `reading-members.md` in
+primary navigation. A published page SHALL NOT link to a path outside `docs/`;
 where maintainer depth is worth preserving the link MUST be an absolute
 `https://github.com/davitf/archivey/blob/main/…` URL.
 
@@ -93,14 +95,16 @@ where maintainer depth is worth preserving the link MUST be an absolute
 | Case | Expected |
 | --- | --- |
 | User opens the docs home | Every nav entry is an end-user page; no internal, grab-bag, or decision-log section exists |
-| User finishes basic usage | Next recommended page is Gotchas |
+| User finishes reading members | Next recommended page is Gotchas |
+| User wants to know what to install | `install.md` answers it, including formats needing an external binary |
 | Contributor looks up “why not py7zr” | Answer is in `dev-docs/decisions/` in the repository, not on the site |
 | Published page needs maintainer depth | Absolute `github.com/davitf/archivey/blob/main/dev-docs/…` URL, never a site-relative path into unpublished material |
 
 ### Requirement: Document complete-or-raise listing vs MemberListReport
 
-The end-user guide (`docs/usage.md` and related Gotchas / API notes) SHALL
-document the dual listing contract:
+The end-user guide SHALL document the dual listing contract on
+`docs/errors-and-diagnostics.md`, with `docs/opening-and-listing.md` carrying a
+short pointer to it:
 
 - `members()` / `scan_members()` — complete listing or raise (assert completeness).
 - `members_report()` → `MemberListReport` — recovered members plus `error` when the
@@ -117,8 +121,9 @@ archive). Salvage / `--salvage` remains out of scope and separately reserved.
 
 | Case | Expected |
 | --- | --- |
-| Reader wants inventory of a possibly damaged tar | Finds `members_report()` recipe (check `error`, use report `.members`) |
+| Reader wants inventory of a possibly damaged tar | Reaches the `members_report()` recipe (check `error`, use report `.members`) — pointer on `opening-and-listing.md`, recipe on `errors-and-diagnostics.md` |
 | Reader wants “fail if not complete” | Directed to `members()` / `scan_members()` |
+| Reader only wants to read a healthy archive | Meets the one-line "we raise rather than return short data" promise in the flow, and is not made to read the contract |
 | Reader looks for salvage/best-effort | Pointed to reserved/future salvage — not `members_report` |
 
 ### Requirement: Document the stored-digest matrix and cheap-dedupe recipe
@@ -175,23 +180,6 @@ place this is written.
 | Streaming final-header limitation | Documented as caught in random access, missed in streaming; native TAR may close it later |
 | Post-v1 native TAR | Mentioned as possible future improvement for the residual + streaming gap, not a v1 promise |
 
-### Requirement: Gotchas page covers post-v1-fixable limitations as current behavior
-
-When the end-user Gotchas page exists, it SHALL include current limitations that
-are candidates for later native ZIP/TAR work — multi-volume ZIP rejection, ZIP/ISO
-seek requirement (no pure pipe), UTF-8 general-purpose bit 11 unlistable archives,
-and TAR mid-corrupt silent shorten — framed as **today’s behavior** with an
-optional “may improve with a native ZIP/TAR reader later” note, not as open bugs
-and not as a roadmap commitment.
-
-#### Scenario: post-v1 limitation framing
-
-| Case | Expected |
-| --- | --- |
-| Multi-volume ZIP | Documented as rejected today; optional “may improve later” |
-| TAR silent shorten | Documented with diagnostic; `nonzero` raises by default, ambiguous `absent`/`short` residual warns unless strict; optional native TAR note |
-| Contributor-only open-issues list | Not required reading for end users |
-
 ### Requirement: Published tree completeness is enforced in CI
 
 CI SHALL fail when a file under `docs/` has no entry in `mkdocs.yml`'s nav, when a
@@ -210,4 +198,32 @@ navigation.
 | Nav entry names a file that does not exist | Check fails, naming the entry |
 | `blob/main/dev-docs/…` URL in a published page whose target was renamed | Check fails, naming the URL and the page it appears on |
 | Every `docs/` file navigable and every repo URL resolvable | Check passes; the docs job proceeds to `mkdocs build --strict` |
+
+### Requirement: Gotchas page is a footgun digest, not a format encyclopaedia
+
+The Gotchas page SHALL carry two sections — **what you should / shouldn't do**
+(caller choices that cause mistakes) and **what you should be aware of** (places
+where Archivey cannot fully fail loudly or verify) — with each entry one line plus a
+link to the page that owns the detail.
+
+A topic belongs on Gotchas only if (a) a caller choice is likely to cause a mistake
+or a footgun, or (b) Archivey cannot fulfil its intention of failing loudly and
+verifying. Format encyclopaedia, unsupported-feature lists, full policy tables, and
+"plan around this limitation" rows SHALL live on the owning page (`formats.md`,
+`extracting.md`, `access-and-cost.md`) and MUST NOT be restated here.
+
+The page SHALL carry the user-mitigable threat-model residuals: nested-archive
+amplification (the bomb tracker is not nesting-aware), the unguarded paths
+(`stream_members()` outside `ListingLimits`, unbounded `read()`), the 7z
+header-encryption residual, and name-collision behaviour.
+
+#### Scenario: Gotchas inclusion matrix
+
+| Case | Expected |
+| --- | --- |
+| Seeking re-decompresses; solid open order; streaming is one pass | Present, one line each, linking `access-and-cost.md` |
+| Multi-volume ZIP; ZIP/ISO needing seek; UTF-8 bit-11 | **Absent** — loud errors or normal format requirements; `formats.md` owns them |
+| Full extraction policy table | **Absent** — `extracting.md` owns it |
+| Nested-archive amplification | Present as a one-liner; the bounded-recursion recipe lives on `extracting.md` |
+| A fact stated on Gotchas and on its owning page | Digest line links out rather than restating, so the two cannot drift |
 
