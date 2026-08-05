@@ -18,16 +18,9 @@ with archivey.open_archive("photos.zip") as reader:
 ```
 
 **By default you can open any member you like, in any order.** That is what most
-callers want, and it is what the example above relies on.
-
-It is not always the cheapest thing to do, though. In a solid 7z or RAR, or any
-compressed `.tar.gz`, members are compressed together as one long run, so jumping to
-a member in the middle can mean decompressing everything before it — and doing that
-once per member turns a linear read into a quadratic one. If you are going to touch
-most of the archive anyway, iterate instead: one forward pass decodes each member
-once. `reader.cost` tells you which situation you are in, and
-[Access costs](access-and-cost.md#solid-archives-prefer-one-forward-pass) has the
-detail.
+callers want, and it is what the example above relies on. It is not always the
+cheapest way to read, though — [Reading members](reading-members.md#two-ways-to-read)
+covers when to make one forward pass instead.
 
 If your source is a pipe or another non-seekable stream, pass `streaming=True` for a
 forward-only single pass. Without it the open fails immediately rather than halfway
@@ -53,10 +46,13 @@ know there is no tar inside.
 
 | Source | What happens |
 |---|---|
-| A path to a file | Opened and detected as usual |
-| A path to a directory | Opens as a pseudo-archive, one member per file. This holds even if you pass `format=` |
-| An open binary stream | Any format can be read from a *seekable* stream. From a non-seekable one — a pipe, a socket, an HTTP response — only TAR (including compressed tar) and the single-file compressors work, with `streaming=True`. ZIP, 7z, RAR and ISO keep their index at the end of the file or address it by offset, so they need to seek; asking anyway raises `StreamNotSeekableError` at open, suggesting you buffer to disk or a `BytesIO` |
-| A sequence of paths or streams | The volumes of one multi-volume archive, in order — see below |
+| A path to a file | Detected and opened |
+| A path to a directory | Opens as a pseudo-archive, one member per file |
+| An open binary stream | Any format if it is seekable; only some formats if not — see below |
+| A sequence of paths or streams | The volumes of one multi-volume archive — see below |
+
+A directory opens as a directory even if you pass `format=`; the argument is ignored
+rather than rejected.
 
 **A seekable stream is read from wherever it currently is**, through to the end.
 Archivey treats the current position as byte 0 of the archive, so an archive stored
@@ -64,6 +60,12 @@ at a known offset inside a larger file opens without copying it out: seek to its
 first byte and hand the stream over. There is no matching end bound, so this works
 when the archive runs to the end of the stream; if something follows it, wrap the
 stream in your own bounded view first.
+
+**A non-seekable stream** — a pipe, a socket, an HTTP response body — needs
+`streaming=True`, and works for TAR (including compressed tar) and the single-file
+compressors. ZIP, 7z, RAR and ISO keep their index at the end of the archive or
+address it by offset, so they have to seek: opening one from a pipe raises
+`StreamNotSeekableError`, and the fix is to buffer it to a file or a `BytesIO` first.
 
 ### Multi-volume archives
 

@@ -189,6 +189,7 @@ Code is done unless noted. These should not appear in Gotchas as “broken.”
 | Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Gotchas done; optional line in `extracting.md` |
 | Accelerator opt-out for untrusted + latency budget | Mitigations in tree | Gotchas + costs cover it; P5 residual remains |
 | Truncated gzip: stdlib engine recovers prefix on large `read(n)` (`gzip-zlib-truncation-recovery`) | Done | **Composed** with rapidgzip empty→stdlib: fallback fully switches `_inner` to the same gzip-window `DecompressorStream` (#183 / ADR 0014); ISIZE remains for non-empty soft EOF. |
+| Solid out-of-order `open()` re-decode: spec says it warns, nothing does | **Spec overstates code** | `archive-reading/spec.md:476-477` says random `open()` on a solid archive "may re-decode from block start **and warn** to prefer `stream_members()`". There is no such `DiagnosticCode`, and no `logger.warning` in the 7z/RAR/TAR backends — `STREAM_REWIND_REDECOMPRESSES` is emitted only from `archive_stream.py:442`, for a backward **seek inside one member**. Either add the diagnostic or drop "and warn" from the spec; until then the cost is silent. `docs/reading-members.md` and `gotchas.md` both say so. Found writing `reading-members.md` (#224). |
 
 ---
 

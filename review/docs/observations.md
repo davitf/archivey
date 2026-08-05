@@ -480,3 +480,70 @@ turned up an inaccuracy in the Gotchas line itself: it named
 `extract_all(members=["x"])` as the hazard, but `extraction.py:364` hardwires the
 `is_current` skip after the filter, so extraction is safe. `stream_members` has no
 such skip, and is the real one. Both pages now say so.
+
+---
+
+## O-22 — Two more register rules, and the opening/reading boundary
+
+**From the second review round on #224, plus writing `reading-members.md`.**
+
+### Table cells stay short
+
+Maintainer, generalising from a five-line cell in the "What you can open" table:
+*"table cell contents should be succinct; if it grows too much, it's probably better
+to add details to the text afterwards."* Adopted as a rule for every page. The failure
+mode is easy to fall into, because a table looks like the tidy place to put a
+conditional rule — but a cell has no room for the *why*, and the reader ends up
+parsing a paragraph laid out as a column. The fix is mechanical: cell states the
+answer, prose below carries the condition and the reason.
+
+Applied: the non-seekable-stream row went from five lines to nine words, with the
+format list and the "their index sits at the end" reason moved into prose.
+
+### Rule: the boundary is the reader's question, not the call name
+
+The maintainer asked whether the read-cost material on `opening-and-listing.md` should
+move to the reading page, and where `stream_members()` belongs. Both resolve the same
+way, and it is the rule the outline already stated for the split — *contract here,
+consequences there* — applied to a case the outline did not name:
+
+| Belongs to **Opening** | Belongs to **Reading** |
+|---|---|
+| The open-*time* decision: `streaming=`, what a source can be | The read-*time* strategy: `open()` vs one forward pass |
+| What is in the archive: listing, detection, names, passwords | What comes out of a member: bytes, integrity, stream lifetime |
+
+So the solid-archive cost argument moves to Reading, where it is the reason to choose
+`stream_members()`, and `stream_members()` itself is a Reading topic — the outline had
+already decided this ("its hard parts are stream lifetime and laziness, which are
+stream contract, not enumeration"), and the confusion came from Opening having grown a
+strategy section that was never its job. Opening keeps one sentence and a link.
+
+The stronger form: **a page owns a decision if the reader makes it while doing that
+page's job.** Choosing `streaming=True` happens with your hand on `open_archive`.
+Choosing between `open()` and `stream_members()` happens when you want bytes.
+
+### The new check earned its place immediately
+
+O-21's procedural fix — for each behavioural claim, find the implementing line *and*
+check the branch where it does not hold — caught an error in the first page written
+after it. I wrote that Archivey warns (`STREAM_REWIND_REDECOMPRESSES`) when a solid
+archive is read out of order. It does not: that code is emitted from one site
+(`archive_stream.py:442`), for a backward **seek inside a member**, and no diagnostic
+or log warning exists for the solid case at all. The page now says the cost is silent.
+
+That turned up a **spec overstatement** rather than only a docs error:
+`archive-reading/spec.md:476-477` promises that random `open()` on a solid archive
+"may re-decode from block start **and warn** to prefer `stream_members()`". Filed in
+`dev-docs/open-issues.md` under docs/specs drift — either the diagnostic gets added or
+the spec drops the clause.
+
+### One thing deliberately left undocumented
+
+Must-explain **#20** ("closing the reader does not invalidate already-open streams")
+is *not* stated on `reading-members.md`. It is true today and verified across all
+seven backends (O-18), but the spec says a stream **MAY** remain usable, the
+maintainer has said closing-on-reader-close seems safer, and **P7** may change it. The
+page gives the advice that survives either decision — close streams before closing the
+reader, which `with` does for you — plus the resource consequence, which is P7's
+user-visible half. Documenting the permissive behaviour would be documenting something
+there is active intent to remove.
