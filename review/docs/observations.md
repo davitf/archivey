@@ -547,3 +547,38 @@ page gives the advice that survives either decision — close streams before clo
 reader, which `with` does for you — plus the resource consequence, which is P7's
 user-visible half. Documenting the permissive behaviour would be documenting something
 there is active intent to remove.
+
+---
+
+## O-23 — Diagnostics describe the archive, not the caller
+
+**Maintainer ruling, deciding the solid-warning question from O-22.** The spec
+promised a warning on solid out-of-order `open()` that no backend implements. The
+resolution is not "add the diagnostic" but a boundary that was never written down:
+
+> Diagnostics are archive-related, not usage-related.
+
+Every existing code fits it — a normalized member name, an inferred encoding, a
+format/extension conflict, a missing EOF marker, an invalid timestamp, an
+unverifiable digest, a degraded seek index — each describes something true about the
+bytes the caller was handed. "You opened members out of order" describes the program
+doing the reading. It belongs in the API documentation, and it is now in the
+`ArchiveReader.open()` and `.read()` docstrings, which render into `docs/api.md`.
+
+`spec-drop-unimplemented-solid-warning` removes the clause from both places it
+appeared. A plain `warnings.warn` was left explicitly undecided.
+
+**One code sits awkwardly against the rule and is worth a later look:**
+`STREAM_REWIND_REDECOMPRESSES` fires because the *caller* sought backwards. It is
+defensible on the reading that its message states a property of the codec ("this codec
+has no random-access index"), surfaced at the moment it costs something — but if the
+rule is taken strictly, this is the one existing code that reports a usage pattern.
+Not raised as a question because nothing depends on it: it ships, it is documented on
+`gotchas.md` and `access-and-cost.md`, and renaming or recategorising it would be
+churn. Flagged so the rule is not later read as inconsistent by accident.
+
+**Process note.** This is the second finding in two pages where writing user-facing
+prose caught a *spec* defect rather than a docs one. Both were invisible to
+`openspec validate --strict`, which checks structure, not whether a requirement
+describes shipped behaviour. Worth remembering when estimating the remaining pages:
+the accuracy pass is finding things outside its own scope at a steady rate.
