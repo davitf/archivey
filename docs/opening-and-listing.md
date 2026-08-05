@@ -51,8 +51,8 @@ know there is no tar inside.
 | An open binary stream | Any format if it is seekable; only some formats if not — see below |
 | A sequence of paths or streams | The volumes of one multi-volume archive — see below |
 
-A directory opens as a directory even if you pass `format=`; the argument is ignored
-rather than rejected.
+Passing a `format=` that says anything other than a directory, for a path that is one,
+raises `ArchiveyUsageError` rather than quietly reading the directory tree instead.
 
 **A seekable stream is read from wherever it currently is**, through to the end.
 Archivey treats the current position as byte 0 of the archive, so an archive stored

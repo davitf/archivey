@@ -136,7 +136,13 @@ way.
 behaviour correctly. They do **not** mention the leak, because it is not user-facing
 advice until this is decided.
 
-### P8. A directory path silently ignores an explicit `format=`
+### P8. A directory path silently ignores an explicit `format=` — **CLOSED**
+
+**Fixed** in `reject-format-override-on-directory` (#224): `open_archive` now raises
+`ArchiveyUsageError` when a directory path is given a `format=` that is neither `None`
+nor `DIRECTORY`. Original write-up below.
+
+
 
 - **Today:** `open_archive(path, format=ArchiveFormat.ZIP)` on a path that happens to
   be a directory opens it as a directory pseudo-archive. `core.py:201-203` sets

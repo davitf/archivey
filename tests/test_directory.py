@@ -72,6 +72,19 @@ def test_open_directory_as_string(simple_dir: Path) -> None:
         assert reader.format == ArchiveFormat.DIRECTORY  # type: ignore[attr-defined]
 
 
+def test_explicit_directory_format_is_accepted(simple_dir: Path) -> None:
+    with open_archive(simple_dir, format=ArchiveFormat.DIRECTORY) as reader:
+        assert reader.format == ArchiveFormat.DIRECTORY  # type: ignore[attr-defined]
+
+
+def test_conflicting_format_on_directory_raises(simple_dir: Path) -> None:
+    # Silently overruling format= would hand back a reader over the directory tree to
+    # a caller who asserted something else, and everything downstream would succeed on
+    # the wrong data.
+    with pytest.raises(archivey.ArchiveyUsageError, match="is a directory"):
+        open_archive(simple_dir, format=ArchiveFormat.ZIP)
+
+
 def test_archive_info_format(simple_dir: Path) -> None:
     with open_archive(simple_dir) as reader:
         info = reader.info

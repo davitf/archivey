@@ -196,10 +196,19 @@ def open_archive(
     reader_source = resolved.open_source
     archive_name = resolved.archive_name
 
-    # --- Resolve format: directory path forces DIRECTORY (overrides format=);
-    # else caller format, else magic detect. ---
+    # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
+    # format= is rejected, not ignored); else caller format, else magic detect. ---
     resolved_format = format
     if isinstance(reader_source, Path) and reader_source.is_dir():
+        # Silently overruling format= here would hand back a reader over the directory
+        # tree for a caller who asserted something else -- the wrong data, succeeding.
+        # Every other explicit-format conflict is refused loudly; so is this one.
+        if format is not None and format != ArchiveFormat.DIRECTORY:
+            raise ArchiveyUsageError(
+                f"{archive_name or reader_source} is a directory, but format="
+                f"{format!r} was requested. Pass a path to an archive file, or "
+                f"format=ArchiveFormat.DIRECTORY to read the directory tree."
+            )
         resolved_format = ArchiveFormat.DIRECTORY
 
     detected: FormatInfo | None = None
