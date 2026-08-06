@@ -72,7 +72,30 @@ same change when relevant.
   non-owned sources; hang sandbox for untrusted input (threat-model O5 follow-up).
 - **Refs:** `known-issues.md` Bug 3; `access-and-cost.md`; Gotchas; threat-model accelerator hang.
 
-### P7. An unclosed member stream is never reclaimed — `reader.close()` does not help
+### P7. An unclosed member stream is never reclaimed — **CLOSED**
+
+**Resolved** in `close-member-streams-on-reader-close` (#224), and not by any of the
+three options below. The maintainer chose **B** (close member streams on
+`reader.close()`, stdlib parity) after pointing out that the principle A was protecting
+says something narrower than the write-up assumed: "never silently close/invalidate a
+held stream" sits inside the *concurrency gate* paragraph, where it is the rule that
+makes a second overlapping `open()` raise instead of closing the first. It is about how
+contention is resolved, not about lifetime.
+
+Two corrections to the analysis below, both found while implementing:
+
+1. **B does not exercise the Bug 3 accelerator trap.** Teardown was already deferred
+   until the last lease dropped, so the source was never closed under a live stream —
+   and B closes streams *before* teardown, which is the safe order either way.
+2. **The fd leak was a plain bug, not a design consequence.** The safety-net finalizer
+   could never fire: its callback strongly referenced the stream, and `weakref.finalize`
+   keeps the callback alive until it fires, so the stream kept itself alive. Fixed by
+   capturing `id(stream)` — which is all `ReaderState` ever used. It leaked under every
+   option, including A.
+
+Original write-up below.
+
+### P7 (original). An unclosed member stream is never reclaimed — `reader.close()` does not help
 
 **Raised 2026-08-04** by the maintainer, reading `docs/reading-members.md`: *"closing
 streams on reader close makes sense and might be safer."*

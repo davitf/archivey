@@ -633,15 +633,14 @@ def test_reentrant_open_after_first_read(tmp_path: Path) -> None:
 
 
 def test_read_after_reader_and_source_close_raises_typed_error() -> None:
-    # archive-reading "fail loudly" scenario: with the reader AND the caller's source
-    # stream closed, reading a still-open member stream surfaces a typed error at the
-    # reader boundary — never a raw ValueError. (Reader close alone does NOT invalidate
-    # member streams: the SharedSource is non-owning and deliberately left open, matching
-    # ZIP/path-source behavior — and killing the source under a live rapidgzip stream
-    # would abort the process; see dev-docs/known-issues.md.) Pinned to the stdlib gzip path
-    # with an incompressible payload larger than its read-ahead, so the post-close read
-    # deterministically touches the closed source (the accelerator may buffer a small
-    # member whole on its first read — and terminates on a dead source, per above).
+    # archive-reading "fail loudly" scenario: when the caller closes the source out from
+    # under a live member stream, the next read surfaces a typed error at the reader
+    # boundary — never a raw ValueError. Archivey never closes a caller-supplied
+    # BinaryIO itself, so this state is only reachable by the caller doing it.
+    # Pinned to the stdlib gzip path with an incompressible payload larger than its
+    # read-ahead, so the read deterministically touches the closed source (the
+    # accelerator may buffer a small member whole on its first read — and terminates on
+    # a dead source; see dev-docs/known-issues.md).
     payload = random.Random(0).randbytes(256 * 1024)  # incompressible: stays ~256 KiB
     config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
     source = io.BytesIO(gzip.compress(payload))
@@ -649,11 +648,11 @@ def test_read_after_reader_and_source_close_raises_typed_error() -> None:
     (member,) = ar.members()
     stream = ar.open(member)
     assert stream.read(16) == payload[:16]
-    ar.close()
-    assert stream.read(16) == payload[16:32]  # reader close alone: still readable
     source.close()
     with pytest.raises(ArchiveyUsageError):
         while stream.read(65536):
             pass
     with contextlib.suppress(Exception):
         stream.close()
+    with contextlib.suppress(Exception):
+        ar.close()

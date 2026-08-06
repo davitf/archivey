@@ -290,8 +290,18 @@ class ReaderState:
 
     def release_live_stream(self, stream: ArchiveStream) -> bool:
         """Release a stream lease. Returns True if the caller should run teardown."""
+        return self.release_live_stream_id(id(stream))
+
+    def release_live_stream_id(self, sid: int) -> bool:
+        """Release a stream lease by identity token.
+
+        Separate from :meth:`release_live_stream` so a stream's own finalizer can hold
+        the token instead of the stream — holding the stream would keep it alive and
+        stop the finalizer from ever running. Safe against id reuse: the token is
+        removed when the stream closes, and a finalizer runs before its referent's
+        memory can be handed to another object.
+        """
         with self._lock:
-            sid = id(stream)
             if sid not in self._live_streams:
                 return False
             self._live_streams.discard(sid)

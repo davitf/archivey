@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gc
 import io
+import weakref
 from pathlib import Path
 
 import pytest
@@ -137,6 +139,43 @@ def test_post_close_reader_ops_are_usage_errors(tmp_path: Path) -> None:
     reader.close()
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.open("b.txt")
-    # Escaped stream remains usable.
-    assert stream.read() == b"aaa"
-    stream.close()
+    # The reader's close took the stream with it.
+    assert stream.closed
+    stream.close()  # idempotent
+
+
+def test_dropped_stream_is_garbage_collected(tmp_path: Path) -> None:
+    """A stream the caller never closed is collectable once the reader closes it."""
+    root = _two_file_dir(tmp_path)
+    reader = open_archive(root)
+    stream = reader.open("a.txt")
+    ref = weakref.ref(stream)
+
+    reader.close()
+    del stream
+    for _ in range(3):
+        gc.collect()
+
+    assert ref() is None, "an unclosed member stream is still reachable after gc"
+
+
+def test_dropped_stream_is_collected_without_reader_close(tmp_path: Path) -> None:
+    """An abandoned reader's unclosed stream must still become collectable.
+
+    Regression, and the only test here that catches it: the safety-net finalizer
+    captured a callback that strongly referenced the stream. ``weakref.finalize``
+    keeps its callback alive until it fires, so the stream kept *itself* alive and the
+    finalizer could never fire -- the stream and its file descriptor survived every
+    ``gc.collect()`` until process exit. Closing the reader detaches the finalizer and
+    hides the bug, so the reader here is dropped rather than closed.
+    """
+    root = _two_file_dir(tmp_path)
+    reader = open_archive(root)
+    stream = reader.open("a.txt")
+    ref = weakref.ref(stream)
+
+    del stream, reader
+    for _ in range(3):
+        gc.collect()
+
+    assert ref() is None

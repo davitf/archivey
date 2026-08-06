@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+import weakref
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -285,6 +286,10 @@ class BaseArchiveReader(ArchiveReader):
         # pass another reader's identity check; and not a plain counter, whose small
         # sequential values invite confusion with member_id or hardcoding).
         self._archive_id = uuid.uuid4().hex
+        # Public member streams still open, so close() can close them (stdlib parity:
+        # ZipFile.close()/TarFile.close() invalidate member streams too). Weak, because
+        # a strong set here would be one more thing keeping a dropped stream alive.
+        self._public_streams: weakref.WeakSet[ArchiveStream] = weakref.WeakSet()
         # The archive's source, recorded by backends that have one (path or stream);
         # backs the generalized compressed_source_size property below.
         self._source: Path | BinaryIO | None = None
@@ -382,9 +387,17 @@ class BaseArchiveReader(ArchiveReader):
     def _register_public_stream(self, stream: ArchiveStream) -> ArchiveStream:
         """Admit ``stream`` under the live-stream gate and attach lease release on close."""
         self._state.acquire_live_stream(stream)
+        self._public_streams.add(stream)
+
+        # Capture the identity token, not the stream. ``weakref.finalize`` keeps its
+        # callback alive until it fires, so a callback that strongly referenced the
+        # stream would keep the stream alive too — and the finalizer could then never
+        # fire. That is exactly what happened: an unclosed stream held its file
+        # descriptor until process exit, immune to gc.collect().
+        stream_id = id(stream)
 
         def _on_close() -> None:
-            if self._state.release_live_stream(stream):
+            if self._state.release_live_stream_id(stream_id):
                 self._maybe_teardown()
 
         stream._on_close = _on_close
@@ -1626,23 +1639,48 @@ class BaseArchiveReader(ArchiveReader):
 
         Idempotent. With declared concurrency, blocks until in-flight worker
         ``open()`` / ``read()`` / ``get()`` / ``members()`` calls return, then marks the
-        reader closed. Escaped open member streams keep their lifecycle leases and remain
-        readable until they are closed. A worker that never returns is a caller bug (same
-        as any lock); there is no artificial timeout.
+        reader closed. Still-open member streams are then closed, matching
+        ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a member stream does
+        not outlive the reader it came from.
 
         Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
-        pass is actively executing. Teardown runs at most once (possibly deferred until
-        the last leased stream closes).
+        pass is actively executing, and the reader stays open. Teardown runs at most
+        once, after the last stream's lease drops.
         """
         if self._closed:
             return
         # Only mark closed after mark_reader_closed succeeds (or is a no-op because another
-        # thread already closed). Raising on an active pass must leave the reader open.
-        if self._state.mark_reader_closed():
-            self._closed = True
+        # thread already closed). Raising on an active pass must leave the reader open --
+        # so member streams are closed only once the transition has actually happened.
+        run_teardown = self._state.mark_reader_closed()
+        self._closed = True
+        self._close_public_streams()
+        if run_teardown:
             self._maybe_teardown()
-        else:
-            self._closed = True
+
+    def _close_public_streams(self) -> None:
+        """Close member streams that are still open, in the order they were opened.
+
+        Each close releases that stream's lease, and the last one triggers teardown
+        through the ordinary path -- so the source is always closed *after* the streams
+        reading through it, never underneath one.
+        """
+        failures: list[BaseException] = []
+        # Snapshot: closing mutates the weak set through the lease callbacks.
+        for stream in list(self._public_streams):
+            if stream.closed:
+                continue
+            try:
+                stream.close()
+            except BaseException as exc:  # noqa: BLE001 - report every failure, not the first
+                failures.append(exc)
+        self._public_streams.clear()
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup(
+                "closing member streams during reader close failed", failures
+            )
 
     def __enter__(self) -> "BaseArchiveReader":
         self._state.require_open("__enter__")

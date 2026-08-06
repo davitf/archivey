@@ -188,8 +188,8 @@ def test_multithread_iso_open_read(tmp_path: Path) -> None:
 
 
 @pytest.mark.concurrent_reader
-def test_close_with_live_streams_defers_teardown(tmp_path: Path) -> None:
-    """Live streams survive reader.close(); new opens fail; bytes remain readable."""
+def test_close_closes_every_live_stream(tmp_path: Path) -> None:
+    """reader.close() closes all live streams, not just one; new opens fail."""
     path = _make_zip(tmp_path / "a.zip", n=4)
     reader = open_archive(path, concurrent_members=True)
     members = [m for m in reader.members() if m.is_file]
@@ -197,12 +197,9 @@ def test_close_with_live_streams_defers_teardown(tmp_path: Path) -> None:
     reader.close()
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.open(members[2].name)
-    assert {s.read() for s in streams} == {
-        _expected(4)[members[0].name],
-        _expected(4)[members[1].name],
-    }
+    assert all(s.closed for s in streams)
     for s in streams:
-        s.close()
+        s.close()  # idempotent
 
 
 @pytest.mark.concurrent_reader
@@ -374,8 +371,10 @@ def test_close_drains_in_flight_workers_then_closes(tmp_path: Path) -> None:
     assert not errors
     stream = stream_box["s"]
     assert stream is not None
-    assert stream.read() == _expected(4)["f0.txt"]  # type: ignore[union-attr]
-    stream.close()  # type: ignore[union-attr]
+    # The worker's open() completed before close() was allowed to proceed, so the
+    # stream existed -- and close() then closed it along with the reader.
+    assert stream.closed  # type: ignore[union-attr]
+    stream.close()  # type: ignore[union-attr]  # idempotent
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.open("f1.txt")
 
@@ -423,15 +422,14 @@ def test_concurrent_double_close_exception_group_on_dual_failure(
     def boom_inner_close() -> None:
         raise OSError("stream close failed")
 
-    # Force the stream's inner close to fail when the lease drops into teardown via
-    # stream.close() after reader.close() — exercise the ExceptionGroup path on the
-    # stream side (reader close itself only teardowns when no leases remain).
-    reader.close()
-    # Patch after reader close: closing the escaped stream triggers deferred teardown.
+    # Both halves fail during one reader.close(): closing the reader closes the member
+    # stream (whose inner close fails), and dropping that last lease runs teardown
+    # (which also fails). The caller must see one ExceptionGroup, not whichever
+    # exception happened to be raised last.
     inner = stream._ensure_open()
     monkeypatch.setattr(inner, "close", boom_inner_close)
     with pytest.raises(ExceptionGroup) as exc_info:
-        stream.close()
+        reader.close()
     assert "member-stream close and archive teardown both failed" in str(exc_info.value)
 
 

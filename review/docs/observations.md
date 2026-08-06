@@ -582,3 +582,52 @@ prose caught a *spec* defect rather than a docs one. Both were invisible to
 `openspec validate --strict`, which checks structure, not whether a requirement
 describes shipped behaviour. Worth remembering when estimating the remaining pages:
 the accuracy pass is finding things outside its own scope at a steady rate.
+
+---
+
+## O-24 — P7 resolved by re-reading the principle, not by weighing the options
+
+**The maintainer chose option B** (close member streams on `reader.close()`), which the
+P7 write-up had argued against. The deciding move was not a trade-off judgement but a
+correction to what the governing sentence says:
+
+> "never silently close/invalidate a held stream" (`archive-reading/spec.md:83`)
+
+That sentence sits **inside the concurrency-gate paragraph**. It is the rule that makes
+a second overlapping `open()` raise `ConcurrentAccessError` instead of quietly closing
+the first — a rule about how *contention* is resolved, not about lifetime. P7 quoted it
+as a general principle and built the escaped-stream contract on top of it. Checked, and
+the maintainer is right: the paragraph is entirely about the gate.
+
+**Two things in my own P7 analysis were wrong**, both found only by implementing it:
+
+1. **"B routinely exercises the Bug 3 accelerator trap" — false.** Teardown was already
+   deferred until the last lease dropped, so the source was never closed under a live
+   stream. B closes the stream *first* and tears down after, which is the safe order.
+   The hazard I warned about was the one the existing design already avoided, and B
+   preserves.
+2. **The fd leak was a plain bug, not a consequence of the design.** The safety-net
+   finalizer could never fire: `_register_public_stream`'s callback captured the
+   *stream*, and `weakref.finalize` keeps its callback alive until it fires — so the
+   stream kept itself alive and the weakref never died. `ReaderState` only ever used
+   `id(stream)`. The leak would have persisted under option A, which was the option I
+   recommended *because* it fixed the leak.
+
+The comment on `_attach_finalizer` says "Hold only the close hook; do not keep the
+stream alive." The intent was right and a closure two files away defeated it — which is
+why it survived: the file that states the invariant is not the file that breaks it.
+
+**Process note, third in a row.** Each of the last three pages has produced a finding
+outside the docs: a spec clause describing behaviour that never shipped (O-23), an API
+silently discarding an argument (P8), and now a finalizer that could not run. None were
+reachable by reading prose. All three came from the O-21 rule — check the branch where
+the claim does not hold — applied to a sentence I was about to write for users.
+
+**Cost note.** The estimate of ~455 lines of remaining prose is holding as prose, but
+it is not the real cost: three of five decided items so far have turned into code
+changes with spec deltas and tests. That is worth knowing before planning the rest.
+
+**Docs consequence.** `docs/reading-members.md` can now state the behaviour instead of
+the advice written to survive either outcome (O-22), and `support-matrix.md`'s
+"one live-stream caveat" is rewritten — it described deferred teardown keeping escaped
+streams readable, which is no longer true. Must-explain **#20** is closed.
