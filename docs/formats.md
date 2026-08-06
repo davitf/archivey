@@ -95,9 +95,9 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   folder member may re-decode from the folder start.
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
   value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
-  `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). See [Gotchas](gotchas.md#passwords-that-look-accepted).
+  `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the payload as unverified.
 - **Header-encrypted wrong password:** a decoded header with zero file records is
-  rejected as `EncryptionError` (never a silent empty listing). See threat-model O8.
+  rejected as `EncryptionError` (never a silent empty listing).
 - `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
   values 25–62 raise `UnsupportedFeatureError`.
 - Writing is not shipped in the current release (`py7zr` is a **dev oracle** only).
@@ -144,8 +144,7 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   rapidgzip, weaker than stdlib alone. Do **not** rely on it when you need certainty;
   set `use_rapidgzip=OFF`. This caveat applies to **bare** `.gz` / `open_stream` (and
   bare zlib/raw deflate), not to ZIP/7z/… **members**: those already carry CRC/size and
-  fail via `VerifyingStream` when the decoded payload is short or wrong. See
-  [Gotchas — format limitations](gotchas.md#format-limitations).
+  fail via `VerifyingStream` when the decoded payload is short or wrong.
 - `.lz` surfaces a whole-member CRC-32 the same way **size** is exposed: only when
   `seekable_members=True` is declared on a path source (seekable lzip backend). For
   multi-member lzip the value is derived by combining per-trailer CRCs with each

@@ -26,8 +26,9 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   `stream_members` / `extract_all` consumes it — including after an early `break`.
   → [Streaming is one pass](access-and-cost.md#streaming-mode-is-one-pass)
 - **Don't assume a name identifies one member.** `get(name)` is **last-wins** when
-  names collide, and `extract_all(members=["x"])` matches **every** member named
-  `x`. Pass an `ArchiveMember` when you mean one identity.
+  names collide, and a name in a selector matches **every** member with that name —
+  `stream_members(members=["x"])` hands you each version in turn. Pass an
+  `ArchiveMember` when you mean one identity.
   → [Duplicate names](opening-and-listing.md#duplicate-names-and-is_current)
 - **Don't assume the file lands at `member.name`.** Under `STRICT`, trailing dots and
   spaces are stripped and non-UTF-8 bytes percent-escaped; case and
@@ -44,7 +45,7 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
 - **Don't close a source underneath a live accelerator-backed stream.** Archivey
   contains the upstream fault and re-raises it as a normal Python error, so this is a
   clean failure rather than a crash — but the stream is still dead and the read still
-  fails. → [Accelerators](access-and-cost.md#accelerators-and-process-aborts)
+  fails. → [Accelerators](access-and-cost.md#accelerators-and-source-lifetime)
 - **Do turn accelerators off for untrusted input under a hard latency budget**
   (`AcceleratorMode.OFF`), or enforce your own timeout: crafted input can busy-loop
   in C++ where a Python timeout cannot cleanly interrupt it.

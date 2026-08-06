@@ -136,6 +136,27 @@ way.
 behaviour correctly. They do **not** mention the leak, because it is not user-facing
 advice until this is decided.
 
+### P8. A directory path silently ignores an explicit `format=`
+
+- **Today:** `open_archive(path, format=ArchiveFormat.ZIP)` on a path that happens to
+  be a directory opens it as a directory pseudo-archive. `core.py:201-203` sets
+  `resolved_format = ArchiveFormat.DIRECTORY` before the caller's `format=` is ever
+  consulted, so the argument is discarded without a diagnostic.
+- **Why it looks wrong:** every other way of being explicit about the format is
+  honoured or rejected loudly. A caller who passes `format=` is asserting something,
+  and this is the one case where the assertion is silently overruled. The plausible
+  path there is a variable holding what the caller believes is an archive path —
+  exactly the case where a quiet reinterpretation is least welcome.
+- **Proposal:** raise `ArchiveyUsageError` when `format=` is passed for a directory
+  path and is not `DIRECTORY`. Cheap, and the check has one call site. Passing
+  `format=DIRECTORY` explicitly stays valid.
+- **Cost of not fixing:** the guide has to teach the exception, which is one more
+  rule for a case nobody wants.
+- **Refs:** raised by the maintainer reviewing `docs/opening-and-listing.md` (#224);
+  `outline.md` must-explain #25. `docs/opening-and-listing.md` states the current
+  behaviour neutrally — "this holds even if you pass `format=`" — so the line becomes
+  "raises" rather than needing a rewrite if this is fixed.
+
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
 - **Today:** Solid ALL-pipe demux must match what `unrar` actually emits (RAR5
@@ -168,6 +189,7 @@ Code is done unless noted. These should not appear in Gotchas as “broken.”
 | Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Gotchas done; optional line in `extracting.md` |
 | Accelerator opt-out for untrusted + latency budget | Mitigations in tree | Gotchas + costs cover it; P5 residual remains |
 | Truncated gzip: stdlib engine recovers prefix on large `read(n)` (`gzip-zlib-truncation-recovery`) | Done | **Composed** with rapidgzip empty→stdlib: fallback fully switches `_inner` to the same gzip-window `DecompressorStream` (#183 / ADR 0014); ISIZE remains for non-empty soft EOF. |
+| Solid out-of-order `open()` re-decode: spec says it warns, nothing does | **Spec overstates code** | `archive-reading/spec.md:476-477` says random `open()` on a solid archive "may re-decode from block start **and warn** to prefer `stream_members()`". There is no such `DiagnosticCode`, and no `logger.warning` in the 7z/RAR/TAR backends — `STREAM_REWIND_REDECOMPRESSES` is emitted only from `archive_stream.py:442`, for a backward **seek inside one member**. Either add the diagnostic or drop "and warn" from the spec; until then the cost is silent. `docs/reading-members.md` and `gotchas.md` both say so. Found writing `reading-members.md` (#224). |
 
 ---
 

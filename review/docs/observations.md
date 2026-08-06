@@ -373,3 +373,177 @@ that GC never reclaims (+1 on every backend measured), and `reader.close()` does
 release it. That is closer to the hazard the maintainer's instinct was pointing at than
 the read-after-close behaviour itself.
 
+
+---
+
+## O-19 — Broken anchors ship silently; the guardrail now covers them
+
+**Found while writing `opening-and-listing.md` (Topic 8, page 1).** Three links in
+the published tree pointed at headings that do not exist:
+
+| Link | Where | Why it broke |
+|---|---|---|
+| `gotchas.md#passwords-that-look-accepted` | `formats.md:98` | Section deleted by the Gotchas shrink |
+| `gotchas.md#format-limitations` | `formats.md:148` | Same |
+| `access-and-cost.md#accelerators-and-process-aborts` | `gotchas.md:47` | Heading is "Accelerators and source **lifetime**" |
+
+All three were created by `docs-ia-split-user-guide` and shipped green. This is
+finding **F5** in the flesh: `mkdocs build --strict` reports a missing anchor at INFO
+level and then exits 0, exactly as it does for a page missing from the nav.
+
+**Fixed, in both senses.** The two `formats.md` links were pointing *backwards* — the
+digest rule (D4) says Gotchas links to the page that owns a fact, not the reverse, and
+`formats.md` already stated both facts in full, so the link sentences are gone rather
+than repointed. The third is repointed. And `scripts/check_docs_nav.py` now resolves
+every intra-`docs/` anchor, cross-page and same-page, deriving the ids by running each
+file through Python-Markdown's own `toc` extension rather than reimplementing the slug
+rule — so the check cannot drift from what the site serves. Verified against planted
+failures of both kinds.
+
+Worth having before the rewrite rather than after: moving a heading is the single most
+common thing the remaining ~455 lines of prose will do.
+
+**One register leak fixed in passing:** `formats.md` §7z said "See threat-model O8",
+citing an unpublished maintainer document by internal item number. That is O-17's
+failure mode with a dangling reference on top.
+
+---
+
+## O-20 — `open_archive` does not accept bytes
+
+**Outline correction, not a docs bug.** `outline.md` §3 listed the sources as "paths,
+file objects, directories, byte sequences". There is no `bytes` source:
+`OpenSourceInput = SourceItem | SourceSequence` with `SourceItem = str | Path |
+BinaryIO` (`internal/volumes.py:21-22`), and `_is_source_sequence` explicitly excludes
+`bytes` so a bytestring is never mistaken for a sequence of sources. "Byte sequences"
+was a misreading of the multi-volume sequence type. The written page says paths,
+directories, streams, and ordered sequences of those.
+
+---
+
+## O-21 — Review round on `opening-and-listing.md`: what the register rules were missing
+
+**14 maintainer comments on the first written page (#224).** Four were factual
+corrections, and all four were right. Recording them because the pattern generalises
+to the remaining fourteen pages.
+
+**The four factual errors, all mine:**
+
+1. **"The question is settled when you open the file"** (deferred inner-TAR) was
+   simply wrong. `open_archive` calls the same `detect_format`, so it gets the same
+   answer; when the codec is absent the *open* fails with a missing-package error.
+   Nothing is resolved later.
+2. **`.gz` was the example** for the missing-codec case, and `gzip` is stdlib — the
+   case cannot arise for it. The optional codecs are zstd (below 3.14), lz4, brotli,
+   ppmd and deflate64.
+3. **"An embedded archive needs no slicing"** overstated it. `fix_stream_start_position`
+   wraps a mid-positioned stream with a `start` and no `end`, so the archive is taken
+   to run to EOF. Trailing data is the caller's problem.
+4. **"A non-seekable stream is fine too"** was true for only half the formats.
+   `SUPPORTS_STREAMING_NON_SEEKABLE` is `True` for TAR and single-file compressors,
+   `False` for ZIP, 7z, RAR and ISO.
+
+**And one thing I never wrote:** multi-volume sets are discovered from *any single
+volume path* (`discover_volume_siblings`), across three naming schemes, with 7z sets
+checked for completeness. I had documented only the explicit-sequence form — the
+power-user path — and omitted the one nearly every caller will use.
+
+**The generalisation.** The O-17 register rules are about *how* a sentence reads;
+every one of these is about whether it is true, and four of five came from writing
+confidently about a mechanism after reading only the function that names it. The
+per-page procedure needs a step the first pass did not have: **for each behavioural
+claim, find the line that implements it, and check the branch where it does not hold.**
+Every error above lived in that branch — the codec that is absent, the stream that has
+data after it, the backend whose flag is `False`.
+
+**Three register findings worth carrying forward**, beyond O-17's list:
+
+- **Say when a reader can skip something.** `detect_format` needed "most callers never
+  need this: `open_archive` detects the format itself" more than it needed detail.
+- **Informality can cost clarity.** "A pipe or anything else you cannot seek in" is
+  worse than "a pipe or another non-seekable stream" — it sounds friendlier and is
+  harder to parse.
+- **Internal mechanism is not user-facing behaviour.** "Archivey buffers what it peeks
+  at during detection and replays it" describes a correct implementation detail the
+  reader can do nothing with; the behaviour is just "you can open a non-seekable
+  stream".
+
+**One product issue filed:** `dev-docs/open-issues.md` **P8** — a directory path
+silently discards an explicit `format=`. The maintainer's instinct that it should
+raise is right; it is the only case where an explicit format assertion is overruled
+without a diagnostic.
+
+**One gap the self-review caught, of the same class as O-19:** `gotchas.md` links to
+`#duplicate-names-and-is_current` for the `get()` last-wins footgun, and the section
+never stated it — a link landing on a page that does not carry the fact. Stating it
+turned up an inaccuracy in the Gotchas line itself: it named
+`extract_all(members=["x"])` as the hazard, but `extraction.py:364` hardwires the
+`is_current` skip after the filter, so extraction is safe. `stream_members` has no
+such skip, and is the real one. Both pages now say so.
+
+---
+
+## O-22 — Two more register rules, and the opening/reading boundary
+
+**From the second review round on #224, plus writing `reading-members.md`.**
+
+### Table cells stay short
+
+Maintainer, generalising from a five-line cell in the "What you can open" table:
+*"table cell contents should be succinct; if it grows too much, it's probably better
+to add details to the text afterwards."* Adopted as a rule for every page. The failure
+mode is easy to fall into, because a table looks like the tidy place to put a
+conditional rule — but a cell has no room for the *why*, and the reader ends up
+parsing a paragraph laid out as a column. The fix is mechanical: cell states the
+answer, prose below carries the condition and the reason.
+
+Applied: the non-seekable-stream row went from five lines to nine words, with the
+format list and the "their index sits at the end" reason moved into prose.
+
+### Rule: the boundary is the reader's question, not the call name
+
+The maintainer asked whether the read-cost material on `opening-and-listing.md` should
+move to the reading page, and where `stream_members()` belongs. Both resolve the same
+way, and it is the rule the outline already stated for the split — *contract here,
+consequences there* — applied to a case the outline did not name:
+
+| Belongs to **Opening** | Belongs to **Reading** |
+|---|---|
+| The open-*time* decision: `streaming=`, what a source can be | The read-*time* strategy: `open()` vs one forward pass |
+| What is in the archive: listing, detection, names, passwords | What comes out of a member: bytes, integrity, stream lifetime |
+
+So the solid-archive cost argument moves to Reading, where it is the reason to choose
+`stream_members()`, and `stream_members()` itself is a Reading topic — the outline had
+already decided this ("its hard parts are stream lifetime and laziness, which are
+stream contract, not enumeration"), and the confusion came from Opening having grown a
+strategy section that was never its job. Opening keeps one sentence and a link.
+
+The stronger form: **a page owns a decision if the reader makes it while doing that
+page's job.** Choosing `streaming=True` happens with your hand on `open_archive`.
+Choosing between `open()` and `stream_members()` happens when you want bytes.
+
+### The new check earned its place immediately
+
+O-21's procedural fix — for each behavioural claim, find the implementing line *and*
+check the branch where it does not hold — caught an error in the first page written
+after it. I wrote that Archivey warns (`STREAM_REWIND_REDECOMPRESSES`) when a solid
+archive is read out of order. It does not: that code is emitted from one site
+(`archive_stream.py:442`), for a backward **seek inside a member**, and no diagnostic
+or log warning exists for the solid case at all. The page now says the cost is silent.
+
+That turned up a **spec overstatement** rather than only a docs error:
+`archive-reading/spec.md:476-477` promises that random `open()` on a solid archive
+"may re-decode from block start **and warn** to prefer `stream_members()`". Filed in
+`dev-docs/open-issues.md` under docs/specs drift — either the diagnostic gets added or
+the spec drops the clause.
+
+### One thing deliberately left undocumented
+
+Must-explain **#20** ("closing the reader does not invalidate already-open streams")
+is *not* stated on `reading-members.md`. It is true today and verified across all
+seven backends (O-18), but the spec says a stream **MAY** remain usable, the
+maintainer has said closing-on-reader-close seems safer, and **P7** may change it. The
+page gives the advice that survives either decision — close streams before closing the
+reader, which `with` does for you — plus the resource consequence, which is P7's
+user-visible half. Documenting the permissive behaviour would be documenting something
+there is active intent to remove.
