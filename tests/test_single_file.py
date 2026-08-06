@@ -225,6 +225,52 @@ def test_lzip_size_from_trailer(tmp_path: Path) -> None:
         assert ar.members()[0].size is None
 
 
+@pytest.mark.parametrize(
+    ("suffix", "make"),
+    [
+        (".lz", lambda payload: make_lzip_member(payload)),
+        (".xz", lambda payload: lzma.compress(payload)),
+    ],
+)
+def test_cheap_size_does_not_require_a_path_source(
+    tmp_path: Path, suffix: str, make
+) -> None:
+    """An in-memory source gets the same size as a file with identical bytes.
+
+    The probes were gated on ``isinstance(source, Path)`` rather than on seekability,
+    so a ``BytesIO`` silently lost ``member.size`` (and, for lzip, the stored CRC-32)
+    even though the bytes and the seekability were identical. Nothing about the index
+    or trailer scan needs a filesystem path.
+    """
+    payload = b"payload" * 500
+    data = make(payload)
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(data)
+
+    with open_archive(path, seekable_members=True) as ar:
+        from_path = ar.members()[0]
+        expected_size, expected_hashes = from_path.size, dict(from_path.hashes)
+    assert expected_size == len(payload)
+
+    buf = io.BytesIO(data)
+    with open_archive(buf, seekable_members=True) as ar:
+        from_stream = ar.members()[0]
+        assert from_stream.size == expected_size
+        assert dict(from_stream.hashes) == expected_hashes
+    # The probe must not close or disturb a stream the caller owns.
+    assert not buf.closed
+    buf.seek(0)
+    assert buf.read() == data
+
+
+def test_cheap_size_still_needs_seekability(suffix: str = ".lz") -> None:
+    """Non-seekable sources still get no cheap size -- that gate is the real one."""
+    payload = b"payload" * 500
+    stream = NonSeekableBytesIO(make_lzip_member(payload))
+    with open_archive(stream, streaming=True) as ar:
+        assert next(iter(ar)).size is None
+
+
 # ---------------------------------------------------------------------------
 # Stored decompressed CRC (cheap dedupe; no decompression)
 # ---------------------------------------------------------------------------

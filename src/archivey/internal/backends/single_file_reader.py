@@ -53,6 +53,7 @@ from archivey.internal.streams.decompressor_stream import DecompressorStream
 from archivey.internal.streams.lzip import peek_index_summary
 from archivey.internal.streams.streamtools import (
     SharedSource,
+    SlicingStream,
     is_seekable,
     is_stream,
     read_exact,
@@ -293,12 +294,14 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_lzip_index(self) -> tuple[int, int] | None:
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.
 
-        Same gate as size historically: path source with declared SEEKABLE so the index
-        scan is enabled. Returns ``None`` when the index is unavailable or corrupt.
+        Gated on declared SEEKABLE, which is what enables the index scan. The source
+        only has to *be* seekable, not be a path: ``_with_seekable_source`` gives the
+        probe a handle either way and returns ``None`` for a non-seekable source.
+        Returns ``None`` when the index is unavailable or corrupt.
         """
         if self._codec is not Codec.LZIP:
             return None
-        if not isinstance(self._source, Path) or not self._codec_config.seekable:
+        if not self._codec_config.seekable:
             return None
 
         def probe(f: BinaryIO) -> tuple[int, int] | None:
@@ -315,22 +318,26 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_decompressed_size(self) -> int | None:
         """Decompressed size from the stream index/trailer, when cheaply available.
 
-        Only attempted for a path source (a fresh handle the probe fully owns), so it never
-        disturbs a caller-provided stream's position or lifetime.
+        Needs a seekable source, not a path: ``_with_seekable_source`` opens a fresh
+        handle for a path and restores a caller stream's position afterwards. The codec
+        is opened over a non-owning :class:`SlicingStream` view, so closing the probe's
+        decompressor never closes a stream the caller owns.
         """
-        if not isinstance(self._source, Path):
-            return None
-        try:
-            backend = resolve_codec(self._codec, self._codec_config)
-            stream = backend.open(str(self._source))
-        except (ArchiveyError, OSError, ValueError):
-            return None
-        try:
-            if isinstance(stream, DecompressorStream):
-                return stream.try_get_size()
-            return None
-        finally:
-            stream.close()
+
+        def probe(f: BinaryIO) -> int | None:
+            try:
+                backend = resolve_codec(self._codec, self._codec_config)
+                stream = backend.open(SlicingStream(f, start=0))
+            except (ArchiveyError, OSError, ValueError):
+                return None
+            try:
+                if isinstance(stream, DecompressorStream):
+                    return stream.try_get_size()
+                return None
+            finally:
+                stream.close()
+
+        return self._with_seekable_source(probe)
 
     # --- reader hooks --------------------------------------------------------------------
 

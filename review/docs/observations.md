@@ -631,3 +631,52 @@ changes with spec deltas and tests. That is worth knowing before planning the re
 the advice written to survive either outcome (O-22), and `support-matrix.md`'s
 "one live-stream caveat" is rewritten — it described deferred teardown keeping escaped
 streams readable, which is no longer true. Must-explain **#20** is closed.
+
+
+---
+
+## O-25 — Closed: the specs were right, the code and `formats.md` were wrong
+
+**O-2 has been open since the audit** as "`formats.md` says path `.gz`, the spec says
+any declared-seekable source". Investigating it found a third answer: **both specs
+already say seekability**, and it was the *code* that required a filesystem path.
+
+Measured, same bytes both ways, `seekable_members=True`:
+
+| Source | `.lz` size | `.lz` crc32 | `.xz` size |
+|---|---|---|---|
+| `Path` | 3500 | present | 3500 |
+| `BytesIO` | **`None`** | **absent** | **`None`** |
+
+Two probes in `single_file_reader.py` gated on `isinstance(self._source, Path)`:
+
+- `_probe_lzip_index` — gratuitously. It immediately calls `_with_seekable_source`,
+  which already handles a seekable stream and returns `None` for a non-seekable one.
+  The docstring said "Same gate as size historically", which is how a restriction
+  outlives whatever once justified it.
+- `_probe_decompressed_size` — for a stated reason: a path gives "a fresh handle the
+  probe fully owns", so it "never disturbs a caller-provided stream's position or
+  lifetime". Real concern, already-solved problem: `_with_seekable_source` restores the
+  position, and a non-owning `SlicingStream` view means closing the probe's decompressor
+  cannot close a stream the caller owns.
+
+**What the specs actually say**, both checked rather than assumed:
+`format-single-file-compressors` gates GZIP's CRC on "seekable/path", LZIP's on "when
+the seekable lzip index is available", and the size matrix mentions no source shape at
+all. `seekable-decompressor-streams:122-124` goes further and says the ISIZE backstop
+applies to "any declared-seekable source — a path or a caller-owned `BinaryIO` alike —
+**not only path sources**".
+
+So there is **no spec delta**: this is a bug fix bringing code into line with a spec
+that was already correct, plus two `formats.md` sentences that had copied the code's
+restriction rather than the spec's rule. No OpenSpec change was raised for it.
+
+**Guard.** `test_cheap_size_does_not_require_a_path_source` compares a `BytesIO`
+against a file with identical bytes for `.lz` and `.xz`, and asserts the caller's
+stream is neither closed nor disturbed. Verified failing before the fix.
+
+**The lesson is about O-2's original framing, not the bug.** It was filed as a
+docs-consistency note — two documents disagreeing — so for weeks the obvious action
+looked like "pick the right sentence". Nobody asked which one the code implemented. A
+disagreement between two descriptions of behaviour is evidence about the *behaviour*,
+and the cheapest way to settle it is to run it.
