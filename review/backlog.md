@@ -22,9 +22,18 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
   work in progress.
 - **Topic 8** (documentation *content*) — accuracy / gaps / quality of the prose, after
   the in-flight docs IA review has settled where each page lives.
+- **Topic 9** (simplicity & consistency) — **brief in flight** as
+  [`simplicity-consistency/`](simplicity-consistency/brief.md) (2026-08-06).
+  Behavioural uniformity across formats/entry points, accidental complexity, and
+  spec↔code honesty before `0.2.0`. Prompted by the docs cleanup / #225 pattern:
+  writing user prose keeps finding library surprises that are not docs bugs.
+  Distinct from Topic 5 (structural debt, paid) and api-coherence (surface shape,
+  archived): this one asks whether remaining *behaviour* differences are format
+  law or accretion.
 
-**Topic numbers are IDs, not an order.** Current intended sequence: the docs IA review
-(in flight) → **Topic 8** → **Topic 6** → **Topic 7** last. See [`STATUS.md`](STATUS.md).
+**Topic numbers are IDs, not an order.** Current intended sequence: docs IA (in
+flight) → **Topic 9** (overlap OK with Topic 8) → **Topic 8** → **Topic 6** →
+**Topic 7** last. See [`STATUS.md`](STATUS.md).
 
 ## Parked from archived deep reviews (2026-07)
 
@@ -43,7 +52,10 @@ review directories for these.
 The **docs full review** is in flight as of 2026-07-29 ([`docs/brief.md`](docs/brief.md)) —
 an information-architecture pass separating user / contributor / design-record / history,
 commissioned ahead of Topic 7 because it decides where docs *live*, not whether they
-persuade. [`STATUS.md`](STATUS.md) records the current ordering.
+persuade. **Topic 9** ([`simplicity-consistency/brief.md`](simplicity-consistency/brief.md))
+was commissioned 2026-08-06 from the same docs work: writing the guide kept finding
+library surprises that are not content bugs. [`STATUS.md`](STATUS.md) records the
+current ordering.
 
 When commissioned, each gets its own top-level directory with a `brief.md` and
 archives when addressed (see `README.md`).
@@ -203,6 +215,27 @@ alone: an inaccurate doc is a bug, an unpolished one is not.
 **Guardrail to consider while doing it:** executable examples (doctest or a tested
 snippets file) turn accuracy from a recurring manual review into a CI failure. That is
 the difference between doing this pass once and doing it every release.
+
+## Topic 9 — Simplicity & consistency (behavioural uniformity)
+
+**Why separate from Topic 5 / api-coherence:** Topic 5 was a *debt ledger*
+(shortcuts, duplication, pay/keep) and is archived — S2/S3 paid. api-coherence
+judged public surface shape and the member model at freeze (P1 duplicate names
+fixed). Neither asked the question the docs cleanup keeps answering empirically:
+*for the same call, do two formats or two entry points still disagree for no
+good reason?*
+
+**Why now:** writing user prose (O-21–O-26) produced four library fixes in #225
+and a repeatable method (find the implementing line; check the failing branch;
+check the spec before rewriting the sentence). Run that method across the
+uniform-interface matrix before `0.2.0` freezes accidents into Gotchas bullets.
+
+**Owns:** cross-format / cross-entry-point behavioural parity; silent exceptions;
+spec fiction; pre-freeze vocabulary leftovers (`MemberStreams` vs
+`open_stream(seekable=)`). **Does not own:** Topic 8 prose, Topic 6 perf,
+Topic 7 adoption, salvage/native-ZIP features, debt-ledger KEEPs, settled ADRs.
+
+Brief and seeds: [`simplicity-consistency/brief.md`](simplicity-consistency/brief.md).
 
 ## Not a review — a feature gap to track separately
 
