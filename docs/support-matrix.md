@@ -133,10 +133,10 @@ is intended, because it reports a bug in the calling code, not a problem with th
 
 ### One live-stream caveat
 
-Closing a reader while member streams are still open defers backend teardown until the
-last stream closes, so escaped streams stay readable. This is by design, but it means a
-`close()` on one thread can block on I/O finishing elsewhere — don't treat reader close
-as instantaneous under concurrency.
+Closing a reader closes the member streams still open on it, and only then releases the
+backend. So `close()` on one thread can block on I/O finishing elsewhere — don't treat
+reader close as instantaneous under concurrency, and don't hand a member stream to
+another thread that might still be reading it when the owner closes the reader.
 
 ## Thread-safety summary
 

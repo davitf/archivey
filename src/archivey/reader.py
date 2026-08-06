@@ -141,13 +141,23 @@ class ArchiveReader(ABC):
         member object or a name (an unknown name raises ``KeyError``; a member object
         that was not yielded by this reader raises ``ArchiveyUsageError`` — same identity
         rule as ``member in reader``). The caller is responsible for closing the returned
-        stream. Returns an :class:`~archivey.ArchiveStream` (usable as ``BinaryIO``)."""
+        stream. Returns an :class:`~archivey.ArchiveStream` (usable as ``BinaryIO``).
+
+        **Cost, when ``reader.cost.access_cost`` is ``SOLID``** (solid 7z/RAR, any
+        compressed tar): members share one compression run, so opening one decodes
+        every member before it. Doing that for each member in turn is quadratic in the
+        archive size. Nothing warns about it — prefer :meth:`stream_members`, which
+        decodes the run once."""
         ...
 
     @abstractmethod
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read a member's full contents as ``bytes`` (unbounded — prefer :meth:`open`
-        or :meth:`stream_members` for anything not known to be small)."""
+        or :meth:`stream_members` for anything not known to be small).
+
+        Carries :meth:`open`'s solid-archive cost: on a ``SOLID`` archive this decodes
+        every member preceding the requested one, so a loop over all members is
+        quadratic. Use :meth:`stream_members` for that."""
         ...
 
     @abstractmethod
@@ -198,8 +208,16 @@ class ArchiveReader(ABC):
 
     @abstractmethod
     def close(self) -> None:
-        """Release resources held by the reader. Idempotent; using a reader after
-        ``close()`` is undefined."""
+        """Release resources held by the reader. Idempotent.
+
+        **Member streams do not outlive the reader.** Any still open when ``close()``
+        runs are closed with it, in the order they were opened, the same way
+        ``zipfile.ZipFile.close()`` and ``tarfile.TarFile.close()`` behave — reading one
+        afterwards fails as it would for any closed file, and closing it again is a
+        no-op. The archive's own source is released after the last of them, never
+        underneath a stream still reading through it.
+
+        Using the *reader* itself after ``close()`` raises ``ArchiveyUsageError``."""
         ...
 
     @abstractmethod

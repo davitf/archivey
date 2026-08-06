@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gc
 import io
+import weakref
 from pathlib import Path
 
 import pytest
@@ -137,6 +139,77 @@ def test_post_close_reader_ops_are_usage_errors(tmp_path: Path) -> None:
     reader.close()
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.open("b.txt")
-    # Escaped stream remains usable.
-    assert stream.read() == b"aaa"
-    stream.close()
+    # The reader's close took the stream with it.
+    assert stream.closed
+    stream.close()  # idempotent
+
+
+def test_dropped_stream_is_garbage_collected(tmp_path: Path) -> None:
+    """A stream the caller never closed is collectable once the reader closes it."""
+    root = _two_file_dir(tmp_path)
+    reader = open_archive(root)
+    stream = reader.open("a.txt")
+    ref = weakref.ref(stream)
+
+    reader.close()
+    del stream
+    for _ in range(3):
+        gc.collect()
+
+    assert ref() is None, "an unclosed member stream is still reachable after gc"
+
+
+def test_dropped_stream_is_collected_without_reader_close(tmp_path: Path) -> None:
+    """An abandoned reader's unclosed stream must still become collectable.
+
+    Regression, and the only test here that catches it: the safety-net finalizer
+    captured a callback that strongly referenced the stream. ``weakref.finalize``
+    keeps its callback alive until it fires, so the stream kept *itself* alive and the
+    finalizer could never fire -- the stream and its file descriptor survived every
+    ``gc.collect()`` until process exit. Closing the reader detaches the finalizer and
+    hides the bug, so the reader here is dropped rather than closed.
+    """
+    root = _two_file_dir(tmp_path)
+    reader = open_archive(root)
+    stream = reader.open("a.txt")
+    ref = weakref.ref(stream)
+
+    del stream, reader
+    for _ in range(3):
+        gc.collect()
+
+    assert ref() is None
+
+
+def test_reader_close_closes_streams_in_open_order(tmp_path: Path) -> None:
+    """Close order is part of the contract, so the registry has to preserve it.
+
+    A ``WeakSet`` would not: its iteration order is unrelated to insertion. The
+    registry is a counter-keyed weak mapping instead, so dict insertion order carries
+    the promise the spec makes.
+    """
+    root = tmp_path
+    names = [f"m{i}.txt" for i in range(6)]
+    for name in names:
+        (root / name).write_bytes(name.encode())
+
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    closed_order: list[int] = []
+    real_close = ArchiveStream.close
+
+    def recording_close(self: ArchiveStream) -> None:
+        closed_order.append(id(self))
+        real_close(self)
+
+    reader = open_archive(root, concurrent_members=True)
+    try:
+        streams = [reader.open(name) for name in names]
+        opened_order = [id(s) for s in streams]
+        ArchiveStream.close = recording_close  # type: ignore[method-assign]
+        reader.close()
+    finally:
+        ArchiveStream.close = real_close  # type: ignore[method-assign]
+
+    ours = [sid for sid in closed_order if sid in set(opened_order)]
+    assert ours == opened_order

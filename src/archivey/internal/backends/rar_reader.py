@@ -667,20 +667,34 @@ class RarReader(BaseArchiveReader):
             and m._raw.is_file_version_history()
             for m in self._members
         )
-        proc, stdout = open_unrar_p(
-            path,
-            password=self._unrar_password,
-            version_control=version_control,
-        )
-        self._live_unrar = proc
-        # Each payload member in the pipe is verified individually (CRC/BLAKE2sp and
-        # declared length via fused ArchiveStream verify), so the pipe-level unrar
-        # exit code is redundant for corruption and is suppressed here to avoid
-        # legacy-format false positives; wrong-password (11) still maps.
-        owned: BinaryIO = self._track_decompressed(
-            _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
-        )
-        solid = SolidBlockReader(owned)
+        solid: SolidBlockReader | None = None
+
+        def _pipe() -> SolidBlockReader:
+            """Spawn ``unrar p`` on the first read into the pass, not at pass start.
+
+            A caller that iterates the pass without reading any member — listing a
+            solid RAR through ``stream_members``, or an extraction whose selector
+            matches nothing — never spawns ``unrar`` and is never asked for a
+            password.
+            """
+            nonlocal solid
+            if solid is None:
+                proc, stdout = open_unrar_p(
+                    path,
+                    password=self._unrar_password,
+                    version_control=version_control,
+                )
+                self._live_unrar = proc
+                # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
+                # and declared length via fused ArchiveStream verify), so the pipe-level
+                # unrar exit code is redundant for corruption and is suppressed here to
+                # avoid legacy-format false positives; wrong-password (11) still maps.
+                owned: BinaryIO = self._track_decompressed(
+                    _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
+                )
+                solid = SolidBlockReader(owned)
+            return solid
+
         pipe_offset = 0
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
@@ -691,18 +705,18 @@ class RarReader(BaseArchiveReader):
                 return None
             size = _member_stream_size(member)
             # Capture the pipe offset for this member, then advance the running
-            # cursor. ``lazy=True`` defers skip-decode until first read; verify
-            # is fused into the outer ArchiveStream so a never-opened handle
-            # skips verify on close (no solid positioning for unread members).
+            # cursor. The pipe itself is spawned, and the skip-decode to this
+            # offset run, on the first read; verify is fused into the outer
+            # ArchiveStream so a never-opened handle skips verify on close (no
+            # solid positioning, and no ``unrar``, for unread members).
             member_offset = pipe_offset
             pipe_offset += size
-            lazy_solid = solid.open_member(member_offset, size, lazy=True)
 
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
             return self._wrap_member_stream(
                 None,
                 member.name,
-                open_fn=lambda inner=lazy_solid: inner,
+                open_fn=lambda: _pipe().open_member(member_offset, size, lazy=True),
                 size=member.size,
                 track_output=False,
                 seekable=False,
@@ -713,7 +727,8 @@ class RarReader(BaseArchiveReader):
             )
 
         def _cleanup() -> None:
-            solid.close()
+            if solid is not None:
+                solid.close()
             self._live_unrar = None
 
         yield from self._drive_pass_streams(

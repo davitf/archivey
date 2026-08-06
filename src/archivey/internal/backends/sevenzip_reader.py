@@ -25,7 +25,7 @@ import io
 import re
 import stat
 import zlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -334,6 +334,21 @@ class SevenZipReader(BaseArchiveReader):
         current_folder: int | None = None
         solid: SolidBlockReader | None = None
 
+        def _folder_reader(
+            folder_index: int, member: ArchiveMember
+        ) -> SolidBlockReader:
+            """Open the folder's decode pipeline, once, on the first read into it."""
+            nonlocal solid
+            if solid is None:
+                # Count at the folder decode layer (solid invariant); member wraps
+                # pass track_output=False so sequential reads are not double-counted.
+                solid = SolidBlockReader(
+                    self._track_decompressed(
+                        self._open_folder_stream(folder_index, member)
+                    )
+                )
+            return solid
+
         def _open(member: ArchiveMember) -> ArchiveStream | None:
             nonlocal current_folder, solid
             if not member.is_file:
@@ -347,16 +362,12 @@ class SevenZipReader(BaseArchiveReader):
             if raw.folder_index != current_folder:
                 if solid is not None:
                     solid.close()
+                    solid = None
                 current_folder = raw.folder_index
-                # Count at the folder decode layer (solid invariant); member wraps
-                # pass track_output=False so sequential reads are not double-counted.
-                solid = SolidBlockReader(
-                    self._track_decompressed(
-                        self._open_folder_stream(raw.folder_index, member)
-                    )
-                )
-            assert solid is not None
-            return self._member_stream_from_solid(solid, member)
+            folder_index = raw.folder_index
+            return self._member_stream_from_solid(
+                lambda: _folder_reader(folder_index, member), member
+            )
 
         def _cleanup() -> None:
             if solid is not None:
@@ -643,24 +654,27 @@ class SevenZipReader(BaseArchiveReader):
         )
 
     def _member_stream_from_solid(
-        self, solid: SolidBlockReader, member: ArchiveMember
+        self, open_solid: Callable[[], SolidBlockReader], member: ArchiveMember
     ) -> ArchiveStream:
-        """Hand out a stream whose solid positioning runs on first read.
+        """Hand out a stream whose folder decode and positioning run on first read.
 
-        Uses ``solid.open_member(..., lazy=True)`` so an unselected handle can be
-        closed without skip-decoding. Verification is fused into the outer
-        ``ArchiveStream``: a never-opened lazy handle skips verify on close, so
-        unread members do not force solid positioning.
+        ``open_solid`` opens the member's 7z folder — decompressor setup, and the
+        password confirmation for an encrypted folder — the first time any member of
+        that folder is actually read. A folder whose members are all skipped is never
+        decoded and never asks for a password. Within an opened folder,
+        ``open_member(..., lazy=True)`` defers the skip past unread earlier members in
+        the same way. Verification is fused into the outer ``ArchiveStream``: a
+        never-opened handle skips verify on close, so unread members do not force
+        either step.
         """
         prefix = self._member_prefix(member)
         size = _member_stream_size(member)
-        lazy_solid = solid.open_member(prefix, size, lazy=True)
         verify = member.size is not None or bool(member.hashes)
 
         return self._wrap_member_stream(
             None,
             member.name,
-            open_fn=lambda: lazy_solid,
+            open_fn=lambda: open_solid().open_member(prefix, size, lazy=True),
             size=member.size,
             track_output=False,
             seekable=False,

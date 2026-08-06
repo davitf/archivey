@@ -19,7 +19,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     TruncatedError,
 )
-from archivey.internal.backends import rar_unrar
+from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
@@ -75,6 +75,42 @@ def test_basic_solid_stream_and_random(name: str) -> None:
         }
         assert streamed == _BASIC_CONTENTS
         assert archive.read("file1.txt") == _BASIC_CONTENTS["file1.txt"]
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "name",
+    ["basic_solid__.rar", "basic_solid__rar4.rar"],
+)
+def test_solid_pass_spawns_unrar_only_on_the_first_read(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A solid pass nobody reads from costs no ``unrar`` process.
+
+    ``stream_members`` promises unread members are not opened or decompressed and
+    do not request passwords; a pipe spawned at pass start would break all three.
+    """
+    spawns: list[Path] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(path: Path, **kwargs: object):
+        spawns.append(path)
+        return original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
+    with open_archive(_fixture(name)) as archive:
+        assert archive.info.is_solid is True
+        for _member, _stream in archive.stream_members():
+            pass
+    assert spawns == []
+
+    with open_archive(_fixture(name)) as archive:
+        for member, stream in archive.stream_members():
+            if member.name == "file1.txt":
+                assert stream is not None
+                assert stream.read() == _BASIC_CONTENTS["file1.txt"]
+    assert len(spawns) == 1
 
 
 @requires_binary("unrar")

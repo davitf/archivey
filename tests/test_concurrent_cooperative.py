@@ -123,15 +123,18 @@ def test_close_during_stream_members_raises(tmp_path: Path) -> None:
 # --- 7.4 cooperative lifecycle ----------------------------------------------------------
 
 
-def test_escaped_stream_survives_reader_close(tmp_path: Path) -> None:
+def test_reader_close_closes_member_streams(tmp_path: Path) -> None:
+    """A member stream does not outlive its reader (stdlib ZipFile/TarFile parity)."""
     root = _dir_with_files(tmp_path)
     reader = open_archive(root)
     stream = reader.open("a.txt")
     reader.close()
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.open("b.txt")
-    assert stream.read() == b"aaa"
-    stream.close()
+    assert stream.closed
+    with pytest.raises(ValueError, match="closed file"):
+        stream.read()
+    stream.close()  # idempotent
 
 
 def test_caller_owned_source_not_closed_by_reader() -> None:

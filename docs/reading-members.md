@@ -136,9 +136,17 @@ tests identity, not name: giving it a string raises `TypeError` and points you a
 `reader.get(name)`, rather than falling back to a scan that would consume a streaming
 pass.
 
-**Close member streams before closing the reader.** A `with` block on each stream
-does this for you. An open stream holds the resources it is reading through, and
-those are not released by closing the reader.
+**A member stream does not outlive its reader.** Closing the reader closes any member
+streams still open on it, the same way `zipfile.ZipFile.close()` and
+`tarfile.TarFile.close()` do — so reading one afterwards raises, as it would for any
+closed file. Nesting `with` blocks is still the clearest way to write it, and it means
+you never depend on the order:
+
+```python
+with archivey.open_archive("photos.zip") as reader:
+    with reader.open("subdir/a.txt") as stream:
+        data = stream.read()
+```
 
 ## Streaming mode (pipes)
 

@@ -72,7 +72,30 @@ same change when relevant.
   non-owned sources; hang sandbox for untrusted input (threat-model O5 follow-up).
 - **Refs:** `known-issues.md` Bug 3; `access-and-cost.md`; Gotchas; threat-model accelerator hang.
 
-### P7. An unclosed member stream is never reclaimed — `reader.close()` does not help
+### P7. An unclosed member stream is never reclaimed — **CLOSED**
+
+**Resolved** in `close-member-streams-on-reader-close` (#225), and not by any of the
+three options below. The maintainer chose **B** (close member streams on
+`reader.close()`, stdlib parity) after pointing out that the principle A was protecting
+says something narrower than the write-up assumed: "never silently close/invalidate a
+held stream" sits inside the *concurrency gate* paragraph, where it is the rule that
+makes a second overlapping `open()` raise instead of closing the first. It is about how
+contention is resolved, not about lifetime.
+
+Two corrections to the analysis below, both found while implementing:
+
+1. **B does not exercise the Bug 3 accelerator trap.** Teardown was already deferred
+   until the last lease dropped, so the source was never closed under a live stream —
+   and B closes streams *before* teardown, which is the safe order either way.
+2. **The fd leak was a plain bug, not a design consequence.** The safety-net finalizer
+   could never fire: its callback strongly referenced the stream, and `weakref.finalize`
+   keeps the callback alive until it fires, so the stream kept itself alive. Fixed by
+   capturing `id(stream)` — which is all `ReaderState` ever used. It leaked under every
+   option, including A.
+
+Original write-up below.
+
+### P7 (original). An unclosed member stream is never reclaimed — `reader.close()` does not help
 
 **Raised 2026-08-04** by the maintainer, reading `docs/reading-members.md`: *"closing
 streams on reader close makes sense and might be safer."*
@@ -136,7 +159,13 @@ way.
 behaviour correctly. They do **not** mention the leak, because it is not user-facing
 advice until this is decided.
 
-### P8. A directory path silently ignores an explicit `format=`
+### P8. A directory path silently ignores an explicit `format=` — **CLOSED**
+
+**Fixed** in `reject-format-override-on-directory` (#225): `open_archive` now raises
+`ArchiveyUsageError` when a directory path is given a `format=` that is neither `None`
+nor `DIRECTORY`. Original write-up below.
+
+
 
 - **Today:** `open_archive(path, format=ArchiveFormat.ZIP)` on a path that happens to
   be a directory opens it as a directory pseudo-archive. `core.py:201-203` sets
@@ -152,10 +181,23 @@ advice until this is decided.
   `format=DIRECTORY` explicitly stays valid.
 - **Cost of not fixing:** the guide has to teach the exception, which is one more
   rule for a case nobody wants.
-- **Refs:** raised by the maintainer reviewing `docs/opening-and-listing.md` (#224);
+- **Refs:** raised by the maintainer reviewing `docs/opening-and-listing.md` (#224), fixed in #225;
   `outline.md` must-explain #25. `docs/opening-and-listing.md` states the current
   behaviour neutrally — "this holds even if you pass `format=`" — so the line becomes
   "raises" rather than needing a rewrite if this is fixed.
+
+### P9. Should a solid out-of-order `open()` warn at all?
+
+- **Today:** nothing warns. `reader.cost.access_cost == SOLID` is the queryable signal,
+  and `ArchiveReader.open()` / `.read()` docstrings carry the cost (#225).
+- **Decided already:** it is **not** a diagnostic. Diagnostics describe the archive, not
+  the caller's usage pattern — see the docs/specs row below.
+- **Open question:** whether a plain `warnings.warn` is worth it. Arguments for: a
+  quadratic read is a real footgun and nothing surfaces it at runtime. Against: it fires
+  on a legitimate access pattern the caller may have chosen knowingly, and per-call
+  emission would log once per member in exactly the loop that needs the advice
+  (once-per-reader would be the shape). Deliberately parked rather than left implicit.
+- **Refs:** `spec-drop-unimplemented-solid-warning` (#225); O-23.
 
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
@@ -189,7 +231,8 @@ Code is done unless noted. These should not appear in Gotchas as “broken.”
 | Symlink-unsupported FS ≠ `tarfile` copy-through | Specced | Gotchas done; optional line in `extracting.md` |
 | Accelerator opt-out for untrusted + latency budget | Mitigations in tree | Gotchas + costs cover it; P5 residual remains |
 | Truncated gzip: stdlib engine recovers prefix on large `read(n)` (`gzip-zlib-truncation-recovery`) | Done | **Composed** with rapidgzip empty→stdlib: fallback fully switches `_inner` to the same gzip-window `DecompressorStream` (#183 / ADR 0014); ISIZE remains for non-empty soft EOF. |
-| Solid out-of-order `open()` re-decode: spec says it warns, nothing does | **Spec overstates code** | `archive-reading/spec.md:476-477` says random `open()` on a solid archive "may re-decode from block start **and warn** to prefer `stream_members()`". There is no such `DiagnosticCode`, and no `logger.warning` in the 7z/RAR/TAR backends — `STREAM_REWIND_REDECOMPRESSES` is emitted only from `archive_stream.py:442`, for a backward **seek inside one member**. Either add the diagnostic or drop "and warn" from the spec; until then the cost is silent. `docs/reading-members.md` and `gotchas.md` both say so. Found writing `reading-members.md` (#224). |
+| `stream_members` laziness not honoured by the solid backends | Behaviour was wrong | **Closed** — the spec already required it ("unselected/unread members are not opened/decompressed **and do not request passwords**"); 7z opened each folder at yield time and solid RAR spawned `unrar` at pass start, so iterating an encrypted archive without reading raised `EncryptionError` and made a wrong password look right. Both now defer to the first read. Fixed in #225; found by review on #224. |
+| Solid out-of-order `open()` re-decode: spec said it warns, nothing does | Behaviour correct | **Decided** — the spec was wrong, not the code. Maintainer's rule: **diagnostics describe the archive, not the caller's usage pattern**, so "you opened members out of order" is not a diagnostic. `spec-drop-unimplemented-solid-warning` removes the clause; `ArchiveReader.open()` / `.read()` docstrings carry the cost instead, and `reader.cost.access_cost` remains the queryable signal. A plain `warnings.warn` is on the radar as **P9** rather than silently undecided. Fixed in #225; found writing `reading-members.md` (#224). |
 
 ---
 

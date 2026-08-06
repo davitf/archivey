@@ -225,6 +225,52 @@ def test_lzip_size_from_trailer(tmp_path: Path) -> None:
         assert ar.members()[0].size is None
 
 
+@pytest.mark.parametrize(
+    ("suffix", "make"),
+    [
+        (".lz", lambda payload: make_lzip_member(payload)),
+        (".xz", lambda payload: lzma.compress(payload)),
+    ],
+)
+def test_cheap_size_does_not_require_a_path_source(
+    tmp_path: Path, suffix: str, make
+) -> None:
+    """An in-memory source gets the same size as a file with identical bytes.
+
+    The probes were gated on ``isinstance(source, Path)`` rather than on seekability,
+    so a ``BytesIO`` silently lost ``member.size`` (and, for lzip, the stored CRC-32)
+    even though the bytes and the seekability were identical. Nothing about the index
+    or trailer scan needs a filesystem path.
+    """
+    payload = b"payload" * 500
+    data = make(payload)
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(data)
+
+    with open_archive(path, seekable_members=True) as ar:
+        from_path = ar.members()[0]
+        expected_size, expected_hashes = from_path.size, dict(from_path.hashes)
+    assert expected_size == len(payload)
+
+    buf = io.BytesIO(data)
+    with open_archive(buf, seekable_members=True) as ar:
+        from_stream = ar.members()[0]
+        assert from_stream.size == expected_size
+        assert dict(from_stream.hashes) == expected_hashes
+    # The probe must not close or disturb a stream the caller owns.
+    assert not buf.closed
+    buf.seek(0)
+    assert buf.read() == data
+
+
+def test_cheap_size_still_needs_seekability(suffix: str = ".lz") -> None:
+    """Non-seekable sources still get no cheap size -- that gate is the real one."""
+    payload = b"payload" * 500
+    stream = NonSeekableBytesIO(make_lzip_member(payload))
+    with open_archive(stream, streaming=True) as ar:
+        assert next(iter(ar)).size is None
+
+
 # ---------------------------------------------------------------------------
 # Stored decompressed CRC (cheap dedupe; no decompression)
 # ---------------------------------------------------------------------------
@@ -633,15 +679,14 @@ def test_reentrant_open_after_first_read(tmp_path: Path) -> None:
 
 
 def test_read_after_reader_and_source_close_raises_typed_error() -> None:
-    # archive-reading "fail loudly" scenario: with the reader AND the caller's source
-    # stream closed, reading a still-open member stream surfaces a typed error at the
-    # reader boundary — never a raw ValueError. (Reader close alone does NOT invalidate
-    # member streams: the SharedSource is non-owning and deliberately left open, matching
-    # ZIP/path-source behavior — and killing the source under a live rapidgzip stream
-    # would abort the process; see dev-docs/known-issues.md.) Pinned to the stdlib gzip path
-    # with an incompressible payload larger than its read-ahead, so the post-close read
-    # deterministically touches the closed source (the accelerator may buffer a small
-    # member whole on its first read — and terminates on a dead source, per above).
+    # archive-reading "fail loudly" scenario: when the caller closes the source out from
+    # under a live member stream, the next read surfaces a typed error at the reader
+    # boundary — never a raw ValueError. Archivey never closes a caller-supplied
+    # BinaryIO itself, so this state is only reachable by the caller doing it.
+    # Pinned to the stdlib gzip path with an incompressible payload larger than its
+    # read-ahead, so the read deterministically touches the closed source (the
+    # accelerator may buffer a small member whole on its first read — and terminates on
+    # a dead source; see dev-docs/known-issues.md).
     payload = random.Random(0).randbytes(256 * 1024)  # incompressible: stays ~256 KiB
     config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
     source = io.BytesIO(gzip.compress(payload))
@@ -649,11 +694,11 @@ def test_read_after_reader_and_source_close_raises_typed_error() -> None:
     (member,) = ar.members()
     stream = ar.open(member)
     assert stream.read(16) == payload[:16]
-    ar.close()
-    assert stream.read(16) == payload[16:32]  # reader close alone: still readable
     source.close()
     with pytest.raises(ArchiveyUsageError):
         while stream.read(65536):
             pass
     with contextlib.suppress(Exception):
         stream.close()
+    with contextlib.suppress(Exception):
+        ar.close()
