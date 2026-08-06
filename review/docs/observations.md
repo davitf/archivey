@@ -680,3 +680,49 @@ docs-consistency note — two documents disagreeing — so for weeks the obvious
 looked like "pick the right sentence". Nobody asked which one the code implemented. A
 disagreement between two descriptions of behaviour is evidence about the *behaviour*,
 and the cheapest way to settle it is to run it.
+
+---
+
+## O-26 — A reviewer's correct counter-example is not automatically a docs bug
+
+O-25's lesson, arrived at from the other direction. There, two documents disagreed and
+nobody had asked which one the code implemented. Here a reviewer produced a *correct,
+reproducible counter-example* to a sentence on `reading-members.md`:
+
+> **Nothing is decompressed until you read.** A member you skip is never opened, and
+> no password is requested for it.
+
+True for ZIP and the default lazy path; false for solid 7z, where an encrypted archive
+with a wrong password raised `EncryptionError` while iterating, before yielding a
+single member. The suggested fix was to scope the claim to the formats where it holds
+and invert the password-proof advice for solid archives.
+
+**That would have documented a bug as a contract.** `archive-reading/spec.md` already
+required what the page said — "unselected/unread members are not opened/decompressed
+**and do not request passwords**", with a matrix row to match. The page was right and
+two backends were wrong: 7z opened each folder's decode pipeline at yield time (which
+for an encrypted folder runs the whole password confirmation), and solid RAR spawned
+`unrar p` at pass start. Both now defer to the first read.
+
+**The rule.** When a behavioural claim in the guide is shown to be false, check the
+spec before rewriting the sentence. Three outcomes, and only one is a docs fix:
+
+| Spec says | What is broken |
+| --- | --- |
+| The same thing the page says | The **code** — fix it; the sentence already stands |
+| Nothing about it | The **spec** — decide the contract, then write both |
+| Something else | The **page** — rewrite it |
+
+This is the mirror of O-21, where the page over-claimed and the code was right. The
+check is the same in both directions — find the line that implements the claim — but
+the conclusion is not, and "a counter-example turned up, so soften the sentence" gets
+it wrong half the time.
+
+It was also the cheaper fix. Softening would have put a format-conditional into the one
+paragraph a reader consults to decide whether iterating proves their password; fixing
+the code removed the condition instead.
+
+**Scope note.** The maintainer's framing drove the fix past the reported symptom:
+passwords in 7z are per *folder*, so laziness is per folder too — reading one member of
+a three-folder archive opens exactly one folder. Fixing only the reported case (the
+first folder, at pass start) would have left the same class of surprise one folder in.

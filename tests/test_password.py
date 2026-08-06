@@ -13,7 +13,7 @@ from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.password import _PasswordCandidates
 from archivey.measurement import enable_measurement
 from archivey.types import ArchiveMember, MemberType
-from tests.conftest import requires_binary
+from tests.conftest import requires, requires_binary
 
 
 def _make_multi_password_zip(path: Path) -> None:
@@ -223,6 +223,7 @@ def test_7z_iterating_without_reading_never_asks_for_a_password(
     assert names == ["f0.txt", "f1.txt", "f2.txt"]
 
 
+@requires("cryptography")
 @requires_binary("7z")
 @pytest.mark.parametrize("solid", [True, False], ids=["solid", "nonsolid"])
 def test_7z_wrong_password_raises_on_the_read_not_the_yield(
@@ -245,6 +246,7 @@ def test_7z_wrong_password_raises_on_the_read_not_the_yield(
     assert yielded == ["f0.txt", "f1.txt", "f2.txt"]
 
 
+@requires("cryptography")
 @requires_binary("7z")
 def test_7z_reading_one_member_opens_only_its_own_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
