@@ -79,7 +79,9 @@ finds the rest**, in the naming schemes those tools produce:
 | `backup.rar` + `backup.r00`, `.r01`, … | The `.rar`, or any `.rNN` |
 
 A 7z set is checked for completeness, so a missing middle part is an error rather
-than a silent short read.
+than a silent short read. The old RAR scheme needs its `.rar` present either way: that
+file is volume one, so a `.rNN` on its own is read as a lone file rather than as part
+of a set.
 
 You can also pass the volumes yourself, as an ordered sequence of paths or open
 streams — useful when they are not siblings on disk, or not on disk at all. Do that
@@ -107,7 +109,8 @@ really a ZIP opens fine, and you can still find out that the name lied.
 worth knowing. Telling a `.tar.zst` from a plain `.zst` means decompressing a little
 of it to look for the tar header, so when that compressor's package is not installed
 the check cannot run and the bare compressor is reported instead. You are not left
-guessing: opening the file raises a missing-package error naming what to install.
+guessing: opening the file raises `UnsupportedFormatError`, naming the package to
+install.
 See [Install and extras](install.md#what-each-format-needs).
 
 ## Passwords
