@@ -69,12 +69,21 @@ Three things about the yielded streams are worth knowing:
 - **The stream is only valid until you advance.** The iterator closes it before
   producing the next pair, so read what you need in the loop body. Keeping a
   reference and reading it later gets you a closed stream, not stale data.
-- **Non-file members yield `None`.** Directories, and entries that carry no data,
+- **Non-file members yield `None`.** Directories, symbolic links and hard links all
   come through as `(member, None)` — hence the `if stream is None` above.
 - **Nothing is decompressed until you read.** A member you skip is never opened, and
   no password is requested for it. So "I iterated the whole archive without an error,
   therefore the password is right" does not follow: pass a selector, or read each
   stream, if you want the archive actually checked.
+
+Links are the one to watch, because `reader.open()` *does* follow them. Following a
+link means reading the target's bytes, and those live somewhere else in the archive —
+in a single forward pass that position may already be behind you. Formats that could
+reach it anyway follow the same rule, so the loop body does not change shape from one
+archive to the next. A loop that skips every `None` therefore skips links, where the
+same loop written around `open()` would hand you the target's contents. Read
+`member.link_target` if you need to resolve them yourself, or let
+[extraction](extracting.md) recreate the links for you.
 
 A `stream_members()` pass owns the reader while it runs. Calling `open()`,
 `members()` or another pass inside the loop raises `ArchiveyUsageError` rather than
@@ -113,7 +122,8 @@ having.
 
 **Symbolic and hard links are followed**, so opening one gives you the target's
 bytes. A broken link raises `LinkTargetNotFoundError`, and a cycle raises rather than
-spinning.
+spinning. `stream_members()` is the exception: it yields links as `(member, None)`,
+for the reason given above.
 
 **Directories and other non-file entries cannot be opened.** `reader.open()` on one
 raises `ArchiveyUsageError` naming the type — check `member.type` first, or use the
