@@ -142,7 +142,7 @@ release.
 | Concurrent first-touch on unmaterialized `CONCURRENT` reader | One builder; others wait; all proceed on published snapshot; no overlap `ArchiveyUsageError` |
 | Materialization fails before publish | Private state discarded; `UNMATERIALIZED`; waiters re-elect/see error; lifecycle stays `OPEN` |
 | Workers active + `__iter__`/`stream_members`/`extract_all` | Later op → `ArchiveyUsageError`; active streams OK |
-| `close()` under `CONCURRENT` with in-flight workers | Blocks until return; closes; no raise merely for active workers; idle escaped streams stay leased |
+| `close()` under `CONCURRENT` with in-flight workers | Blocks until return, then closes; no raise merely for active workers; idle member streams are closed by that `close()` and their leases drop |
 | Two members in one solid block opened together | Correct independent bytes; may re-decode; no concurrency exception |
 | Same on CPython `3.13t` free-threaded job | Data-race-free; same observables as regular build |
 
@@ -167,18 +167,26 @@ callbacks still run with no reader-state lock held).
 
 Under declared concurrency, `reader.close()` SHALL wait for in-flight
 worker `open()`/`read()` calls to return and then transition the reader to
-closed, rather than raising because workers are active. Escaped open member
-streams SHALL remain governed by the lifecycle-lease contract in
-`archive-reading`. Close idempotency, one-shot teardown, and post-close
+closed, rather than raising because workers are active. Member streams still open
+at that point SHALL be closed by that `close()`, per "Context-manager and close
+lifecycle" in `archive-reading`; their leases drop as they close, and teardown
+follows the last one. Close idempotency, one-shot teardown, and post-close
 rejection SHALL be preserved.
+
+Closing those streams SHALL happen **once**, on a single caller. Concurrent
+`close()` calls SHALL NOT each walk the live-stream set: `ArchiveStream.close`
+tests its closed flag outside its lock, so two callers would otherwise be able to
+enter one stream's underlying `close()` together — and a backend that is not
+re-entrant on close would be entered twice. The same once-guard shape as teardown
+applies, and like teardown the claim is not retried.
 
 #### Scenario: draining close matrix
 
 | Case | Expected |
 | --- | --- |
 | `close()` while workers execute | Blocks until return; then closed; no raise merely for active workers |
-| Escaped stream still open as `close()` returns | Readable until its `close()`; teardown once after final lease |
-| Two threads `close()` / `__exit__` | Teardown once; both return; dual failures → one `ExceptionGroup` |
+| Member stream still open when `close()` runs | Closed by that `close()`; teardown once after the last lease drops |
+| Two threads `close()` / `__exit__` | Stream shutdown once **and** teardown once; both return; dual failures → one `ExceptionGroup` |
 | Op after `close()` returned | `ArchiveyUsageError` (unchanged) |
 
 ### Requirement: Distinct passes and shared streams remain single-owner

@@ -39,6 +39,12 @@ archivey.open_archive(
 encoding, configuration precedence, and backend selection retain their existing
 contracts. `format=None` auto-detects; an explicit format bypasses detection.
 
+A **directory path** resolves to `ArchiveFormat.DIRECTORY`. An explicit `format=`
+naming anything else SHALL raise `ArchiveyUsageError` rather than being discarded:
+silently overruling it returns a reader over the directory tree to a caller who
+asserted a different format, so every read downstream succeeds on the wrong data.
+`format=ArchiveFormat.DIRECTORY` and `format=None` both remain valid.
+
 **Diagnostics at open (observable):** On success, advisory events from automatic
 detection (if any) appear in this reader's cumulative `diagnostics` for its
 lifetime and are not duplicated. Explicit `format=` skips detection, so open
@@ -55,6 +61,9 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 | `format=ArchiveFormat.ZIP` succeeds | No detection diagnostics from open |
 | Open raises | No reader returned |
 | `password="secret"` | Returned reader uses that password for encrypted members |
+| Directory path, no `format=` | Opens as `DIRECTORY` |
+| Directory path, `format=ArchiveFormat.DIRECTORY` | Opens as `DIRECTORY` |
+| Directory path, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError`, naming the path and the requested format |
 
 ### Requirement: Declared member-stream capabilities
 
@@ -80,7 +89,9 @@ capabilities become a typed part of the `ArchiveReader` contract (today
 data stream per reader; streams are forward-only. "Live" spans `open()` →
 stream `close()`/context exit (not EOF, not GC). A second overlapping `open()`
 SHALL raise `ConcurrentAccessError` at the later call and leave the first stream
-untouched/readable — never silently close/invalidate a held stream. Every member
+untouched/readable — the gate never resolves contention by closing a held stream.
+(This is a rule about *contention*, not lifetime: `reader.close()` does close
+member streams — see "Context-manager and close lifecycle".) Every member
 stream (random `open()` and `stream_members()` yields) SHALL report
 `seekable() is False`; `seek()` SHALL raise `io.UnsupportedOperation`; `tell()`
 SHALL work. Sequential `open → read → close → open next` is unaffected.
@@ -474,7 +485,9 @@ visible.
 Yielded streams are iterator-owned and valid only until advance: the iterator SHALL
 close/invalidate the previous stream before the next yield. MUST NOT retain a
 growing decompressed-block cache until reader close. On solid archives, random
-`open()` may re-decode from block start and warn to prefer `stream_members()`.
+`open()` may re-decode from block start; the cost is silent, and callers are
+directed to `stream_members()` by `reader.cost.access_cost` and by the `open()` /
+`read()` docstrings rather than by a runtime warning.
 
 A `stream_members()` invocation is an exclusive one-pass/data-path operation in
 both modes. It SHALL NOT overlap random `open()`, materialization, another
@@ -496,7 +509,7 @@ streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 | Advance after one yield | Prior stream closed/invalidated first |
 | Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
-| Random `open()` into solid block | Re-decode from block start + skip; warn to prefer `stream_members()` |
+| Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
 
 ### Requirement: Transparent link following
 
@@ -552,9 +565,18 @@ be idempotent.
   `__enter__`, iteration/listing/lookup, metadata/cost, `open`/`read`,
   `stream_members`, extraction) SHALL raise `ArchiveyUsageError`. Repeated
   `close()` / `__exit__` are no-ops.
-- A member stream opened before close MAY remain usable until that stream is
-  closed (escaped stream). Backend resources stay alive until the last such
-  stream closes. Callers SHOULD close member streams promptly.
+- `close()` SHALL close every member stream still open on that reader, in the
+  order they were opened, and SHALL do so only after the reader has actually
+  transitioned to closed (so a `close()` that raises leaves streams untouched).
+  A member stream SHALL NOT outlive its reader — reading one afterwards raises
+  as it would for any closed stream. This matches `zipfile.ZipFile.close()` and
+  `tarfile.TarFile.close()`.
+- Each stream close releases that stream's lease, so backend teardown still runs
+  once, after the last stream closes — the source is never torn down underneath
+  a stream still reading through it.
+- A member-stream close failure SHALL NOT prevent the remaining streams from
+  being closed; a single failure propagates, several surface as a
+  `BaseExceptionGroup`.
 - Archivey SHALL never close a caller-supplied `BinaryIO`. If the caller closes
   it early, a later operation raises `ArchiveyUsageError` for the closed source;
   concurrent external close with I/O is unsupported.
@@ -573,10 +595,13 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 
 | Case | Expected |
 | --- | --- |
-| Open stream, then close reader (no concurrent I/O) | New reader ops → `ArchiveyUsageError`; stream usable until its close; backend released after final stream close |
-| Idle open stream + `reader.close()` | Close succeeds; stream remains usable until stream close |
+| Open stream, then close reader (no concurrent I/O) | New reader ops → `ArchiveyUsageError`; the stream is closed by that `close()`; backend released after it |
+| Idle open stream + `reader.close()` | Close succeeds and closes the stream; a later read raises; `stream.close()` is a no-op |
+| Several open streams + `reader.close()` | All are closed; teardown runs once, after the last |
+| `close()` raises (active pass/worker) | Reader stays open; member streams untouched |
+| Stream dropped without close | Finalizer reclaims it; the stream must not be kept alive by its own finalizer |
 | Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
-| `open_archive()` context exits | Reader closed; backend released unless an escaped stream remains open |
+| `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |
 | Op after reader close | `ArchiveyUsageError` |
 
 ### Requirement: Password candidates and provider
