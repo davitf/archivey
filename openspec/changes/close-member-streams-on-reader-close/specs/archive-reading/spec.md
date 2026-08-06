@@ -107,5 +107,5 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 | `close()` raises (active pass/worker) | Reader stays open; member streams untouched |
 | Stream dropped without close | Finalizer reclaims it; the stream must not be kept alive by its own finalizer |
 | Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
-| `open_archive()` context exits | Reader closed; backend released unless an escaped stream remains open |
+| `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |
 | Op after reader close | `ArchiveyUsageError` |

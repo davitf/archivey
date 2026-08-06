@@ -74,6 +74,7 @@ class ReaderState:
         self._live_streams: set[int] = set()
         self._lease_count = 1  # reader itself holds one lease until close
         self._teardown_claimed = False
+        self._stream_shutdown_claimed = False
         # Library-internal open windows (extract_all's coordinator, first-touch link
         # reads), keyed BY THREAD: the exemption from the live-stream gate and from
         # worker rejection applies only to the thread that entered the window. A plain
@@ -360,6 +361,27 @@ class ReaderState:
                 self._closing = False
                 self._close_cv.notify_all()
                 raise
+
+    def claim_stream_shutdown(self) -> bool:
+        """True exactly once, for the caller that should close live member streams.
+
+        The same shape as :meth:`claim_teardown`, and needed for the same reason.
+        ``mark_reader_closed`` returns ``False`` both for "I performed the transition
+        but leases remain" and for "a peer had already closed", so its return value
+        cannot identify the thread that owns stream shutdown. Without this guard two
+        concurrent ``close()`` calls both walk the stream registry — and
+        ``ArchiveStream.close`` tests ``self.closed`` outside its lock, so both can
+        reach ``inner.close()`` on the same stream. A backend that is not re-entrant on
+        close (rapidgzip especially) would be entered twice.
+
+        Like teardown, the claim is not retried: a ``close()`` whose stream shutdown
+        raises has already consumed it.
+        """
+        with self._lock:
+            if self._stream_shutdown_claimed:
+                return False
+            self._stream_shutdown_claimed = True
+            return True
 
     def claim_teardown(self) -> bool:
         with self._lock:

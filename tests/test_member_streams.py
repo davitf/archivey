@@ -179,3 +179,37 @@ def test_dropped_stream_is_collected_without_reader_close(tmp_path: Path) -> Non
         gc.collect()
 
     assert ref() is None
+
+
+def test_reader_close_closes_streams_in_open_order(tmp_path: Path) -> None:
+    """Close order is part of the contract, so the registry has to preserve it.
+
+    A ``WeakSet`` would not: its iteration order is unrelated to insertion. The
+    registry is a counter-keyed weak mapping instead, so dict insertion order carries
+    the promise the spec makes.
+    """
+    root = tmp_path
+    names = [f"m{i}.txt" for i in range(6)]
+    for name in names:
+        (root / name).write_bytes(name.encode())
+
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    closed_order: list[int] = []
+    real_close = ArchiveStream.close
+
+    def recording_close(self: ArchiveStream) -> None:
+        closed_order.append(id(self))
+        real_close(self)
+
+    reader = open_archive(root, concurrent_members=True)
+    try:
+        streams = [reader.open(name) for name in names]
+        opened_order = [id(s) for s in streams]
+        ArchiveStream.close = recording_close  # type: ignore[method-assign]
+        reader.close()
+    finally:
+        ArchiveStream.close = real_close  # type: ignore[method-assign]
+
+    ours = [sid for sid in closed_order if sid in set(opened_order)]
+    assert ours == opened_order

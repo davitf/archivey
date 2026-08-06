@@ -30,6 +30,25 @@
 - [x] 3.5 Rework the dual-failure `ExceptionGroup` test: both halves now fail during
       one `reader.close()`
 
+## 3b. Review round (#225)
+
+- [x] 3b.1 One caller closes the streams: `ReaderState.claim_stream_shutdown()`,
+      the same once-guard shape as `claim_teardown`. `mark_reader_closed()` returns
+      `False` both for "I transitioned, leases remain" and "a peer already closed",
+      so it cannot identify the owner
+- [x] 3b.2 Red-green test: two synchronised `close()` calls run stream shutdown
+      **once** (verified it reports 2 without the guard)
+- [x] 3b.3 Ordered registry — the delta promises close "in the order they were
+      opened" and `WeakSet` iteration is unordered. Counter-keyed
+      `WeakValueDictionary`; red-green test verified against a `WeakSet`
+- [x] 3b.4 Finish the escaped-stream scrub: the `open_archive()`-context-exits
+      matrix row in this delta, and the two `reader-concurrency` rows plus prose
+      that still described post-close leased escaped streams
+- [x] 3b.5 `ArchiveReader.close()` ABC docstring — it is what `docs/api.md`
+      publishes, and it still said post-close use was "undefined"
+- [x] 3b.6 `dev-docs/open-issues.md`: P7/P8 closures cite #225, not #224; the
+      `warnings.warn` question filed as **P9** rather than left implicit
+
 ## 4. Spec and docs
 
 - [x] 4.1 Scope the gate's "never silently close" sentence to contention
@@ -41,6 +60,7 @@
 ## 5. Verify
 
 - [x] 5.1 `openspec validate --strict close-member-streams-on-reader-close`
-- [x] 5.2 Dry-run archive on a scratch tree; confirm `~2`, then reset
+- [x] 5.2 Dry-run archive on a scratch tree; confirm `~2` archive-reading +
+      `~2` reader-concurrency, then reset
 - [x] 5.3 Suite green in all three dependency configurations
 - [x] 5.4 `ruff`, `pyrefly`, `mkdocs build --strict`

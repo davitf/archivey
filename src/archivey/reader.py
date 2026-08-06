@@ -208,8 +208,16 @@ class ArchiveReader(ABC):
 
     @abstractmethod
     def close(self) -> None:
-        """Release resources held by the reader. Idempotent; using a reader after
-        ``close()`` is undefined."""
+        """Release resources held by the reader. Idempotent.
+
+        **Member streams do not outlive the reader.** Any still open when ``close()``
+        runs are closed with it, in the order they were opened, the same way
+        ``zipfile.ZipFile.close()`` and ``tarfile.TarFile.close()`` behave — reading one
+        afterwards fails as it would for any closed file, and closing it again is a
+        no-op. The archive's own source is released after the last of them, never
+        underneath a stream still reading through it.
+
+        Using the *reader* itself after ``close()`` raises ``ArchiveyUsageError``."""
         ...
 
     @abstractmethod

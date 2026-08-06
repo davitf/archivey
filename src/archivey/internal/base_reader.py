@@ -288,8 +288,14 @@ class BaseArchiveReader(ArchiveReader):
         self._archive_id = uuid.uuid4().hex
         # Public member streams still open, so close() can close them (stdlib parity:
         # ZipFile.close()/TarFile.close() invalidate member streams too). Weak, because
-        # a strong set here would be one more thing keeping a dropped stream alive.
-        self._public_streams: weakref.WeakSet[ArchiveStream] = weakref.WeakSet()
+        # a strong registry here would be one more thing keeping a dropped stream alive.
+        # Keyed by an open counter rather than being a set, because close order is part
+        # of the contract and WeakSet iteration is unordered; dict iteration is
+        # insertion-ordered, and dead entries drop out on their own.
+        self._public_streams: weakref.WeakValueDictionary[int, ArchiveStream] = (
+            weakref.WeakValueDictionary()
+        )
+        self._public_stream_seq = 0
         # The archive's source, recorded by backends that have one (path or stream);
         # backs the generalized compressed_source_size property below.
         self._source: Path | BinaryIO | None = None
@@ -387,7 +393,8 @@ class BaseArchiveReader(ArchiveReader):
     def _register_public_stream(self, stream: ArchiveStream) -> ArchiveStream:
         """Admit ``stream`` under the live-stream gate and attach lease release on close."""
         self._state.acquire_live_stream(stream)
-        self._public_streams.add(stream)
+        self._public_stream_seq += 1
+        self._public_streams[self._public_stream_seq] = stream
 
         # Capture the identity token, not the stream. ``weakref.finalize`` keeps its
         # callback alive until it fires, so a callback that strongly referenced the
@@ -1654,7 +1661,13 @@ class BaseArchiveReader(ArchiveReader):
         # so member streams are closed only once the transition has actually happened.
         run_teardown = self._state.mark_reader_closed()
         self._closed = True
-        self._close_public_streams()
+        # Exactly one caller closes the streams. mark_reader_closed() returns False both
+        # when this thread transitioned with leases outstanding and when a peer had
+        # already closed, so it cannot tell the owner from a late caller -- and
+        # ArchiveStream.close tests `self.closed` outside its lock, so two concurrent
+        # close() calls could otherwise both reach inner.close() on the same stream.
+        if self._state.claim_stream_shutdown():
+            self._close_public_streams()
         if run_teardown:
             self._maybe_teardown()
 
@@ -1666,8 +1679,8 @@ class BaseArchiveReader(ArchiveReader):
         reading through it, never underneath one.
         """
         failures: list[BaseException] = []
-        # Snapshot: closing mutates the weak set through the lease callbacks.
-        for stream in list(self._public_streams):
+        # Snapshot: closing mutates the registry through the lease callbacks.
+        for stream in list(self._public_streams.values()):
             if stream.closed:
                 continue
             try:
