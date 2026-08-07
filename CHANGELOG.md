@@ -35,6 +35,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
 - Declarative corpus + mutation / Hypothesis / Atheris testing contract;
   three-configuration CI (`[all]`, `[all-lowest]`, `[core-only]`).
 - Benchmark harness: PR structural gate + change-guarded nightly wall-ratio drift.
+- `FormatAvailability.required_source` — the weakest source shape a format can be read
+  from, so "can I read this straight from a pipe?" is a query instead of a
+  `StreamNotSeekableError` to catch. `StreamCapability` is now ordered
+  (`FORWARD_ONLY < SEEKABLE`), so the test is
+  `availability.required_source <= reader.cost.stream_capability`.
 
 ### Changed
 

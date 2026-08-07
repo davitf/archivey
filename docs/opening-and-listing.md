@@ -67,6 +67,23 @@ compressors. ZIP, 7z, RAR and ISO keep their index at the end of the archive or
 address it by offset, so they have to seek: opening one from a pipe raises
 `StreamNotSeekableError`, and the fix is to buffer it to a file or a `BytesIO` first.
 
+**You do not have to find that out by trying.** `format_availability(fmt).required_source`
+is the weakest source shape the format can be read from, so "pipe it if you can,
+otherwise spool it to disk" is a comparison rather than a `try`/`except`:
+
+```python
+from archivey import StreamCapability, detect_format, format_availability
+
+if format_availability(detect_format(head)).required_source <= StreamCapability.FORWARD_ONLY:
+    ...  # feed the pipe straight in with streaming=True
+else:
+    ...  # spool to a file first
+```
+
+`StreamCapability` is ordered (`FORWARD_ONLY < SEEKABLE`), which is why `<=` reads as
+"this source is strong enough" — and why the same comparison works against an already
+open archive's `reader.cost.stream_capability`.
+
 ### Multi-volume archives
 
 Only 7z and RAR split across volumes. **Pass the path of any one volume and Archivey

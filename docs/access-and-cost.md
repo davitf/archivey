@@ -45,6 +45,13 @@ Every open archive exposes a machine-readable receipt:
 
 Cost never changes what is *legal* — it describes what your access pattern will *pay*.
 
+`StreamCapability` is ordered — `FORWARD_ONLY < SEEKABLE` — because a seekable source
+can serve every read a forward-only one can. That is what lets you compare a source
+against a format's stated minimum (`format_availability(fmt).required_source`) instead
+of trying the open and catching the failure; see
+[Opening and listing](opening-and-listing.md). `listing_cost` and
+`access_cost` are *not* ordered: their values name kinds of work, not strengths.
+
 ### RAR listing cost
 
 RAR reports `listing_cost=INDEXED`: the native parser walks all file headers at open
