@@ -248,6 +248,7 @@ uninformative — F10).
 | `parity-matrix.md` | expected vs observed, the diff, and the O-21 trace per divergence |
 | `silent-exceptions.md` | argument-discard / spec-honesty / error-translation sweeps |
 | `vocabulary.md` | surface-vocabulary leftovers that freeze at the tag |
+| [`open-questions-for-discussion.md`](open-questions-for-discussion.md) | **Shareable standalone brief** — every still-open item written for a reader with no prior context; safe to circulate outside the project |
 | `q13-rewind-diagnostic.md` | Q13 worked through: the resolution, three drafts (docstring / O-23 reframe + 14-code audit / spec note), and **F19** |
 | `QUESTIONS.md` | 16 maintainer decisions — **all ruled on**, each with severity, evidence, fix vehicle, and the decision recorded inline; plus the pay list re-ranked against them |
 | `repro/probe_matrix.py` | the generator — runs the whole matrix by execution |
