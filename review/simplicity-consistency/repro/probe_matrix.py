@@ -185,10 +185,14 @@ class Target:
         return list(self.entry.passwords)
 
     def open_ra(self, **kwargs: Any):
+        return self.open_ra_source(self.path, **kwargs)
+
+    def open_ra_source(self, source: Any, **kwargs: Any):
+        """Open an arbitrary source shape for this target, with its passwords applied."""
         pw = self.passwords
         if pw and "password" not in kwargs:
             kwargs["password"] = pw
-        return open_archive(self.path, **kwargs)
+        return open_archive(source, **kwargs)
 
 
 def _entry_for(key: str, preferred: Iterable[str]) -> CorpusEntry | None:
@@ -555,6 +559,69 @@ def probe_metadata(t: Target) -> None:
         )
 
 
+def probe_metadata_by_source_shape(t: Target) -> None:
+    """H6/H7: does the *source shape* change metadata, holding the flags fixed?
+
+    Added after the merge with PR #231, which found a residual Path gate the first
+    pass missed: a row that only ever opens a ``Path`` cannot see it. Everything here
+    re-asks H1-H3 over a seekable ``BytesIO``, so a Path-only fill shows up as a
+    difference rather than as a matching pair of cells.
+    """
+    rows = ("H6 compressed_size (BytesIO)", "H7 hashes (BytesIO)")
+    if t.is_directory_source:
+        for row in rows:
+            t.cells[row] = Cell(
+                "N/A", UNMEASURED, "directory source has no byte stream"
+            )
+        return
+    data = t.path.read_bytes()
+    try:
+        with t.open_ra_source(io.BytesIO(data)) as reader:
+            member = _first_file_member(reader)
+            if member is None:
+                for row in rows:
+                    t.cells[row] = Cell("N/A", UNMEASURED, "no FILE member")
+                return
+            t.cells["H6 compressed_size (BytesIO)"] = Cell(
+                "None" if member.compressed_size is None else "int",
+                OBSERVED,
+                str(member.compressed_size),
+            )
+            t.cells["H7 hashes (BytesIO)"] = Cell(
+                ",".join(sorted(h.value for h in member.hashes)) or "(empty)", OBSERVED
+            )
+    except BaseException as exc:  # noqa: BLE001
+        for row in rows:
+            t.cells[row] = Cell("unmeasured", UNMEASURED, _exc_label(exc))
+
+
+def probe_header_encryption(t: Target) -> None:
+    """E9: does opening need the password, or only reading?
+
+    `#225` made *data*-encryption password work lazy. Header encryption cannot be
+    lazy -- the listing itself is ciphertext -- so this row separates the two and keeps
+    "no password until you read" from being stated more broadly than it holds.
+    """
+    row = "E9 open without password (header-encrypted)"
+    # The probe's main entry is a plain corpus shape, so find a header-encrypting one
+    # for this format key rather than reusing ``t.entry``.
+    entry = next(
+        (e for e in CORPUS if e.encrypt_header and t.key in e.formats),
+        None,
+    )
+    if entry is None:
+        t.cells[row] = Cell(
+            "N/A", UNMEASURED, "no header-encrypting corpus entry for this format"
+        )
+        return
+    try:
+        path = corpus_archive_path(entry, t.key, t.path.parent)
+    except BaseException as exc:  # noqa: BLE001
+        t.cells[row] = Cell("unmeasured", UNMEASURED, _exc_label(exc))
+        return
+    t.cells[row] = probe(lambda: open_archive(path).close())
+
+
 def probe_stream_entry_parity(t: Target) -> None:
     """X rows: does the ``open_stream`` route agree with the ``open_archive`` route?
 
@@ -592,6 +659,8 @@ PROBES: tuple[Callable[[Target], None], ...] = (
     probe_streaming,
     probe_cost,
     probe_metadata,
+    probe_metadata_by_source_shape,
+    probe_header_encryption,
     probe_stream_entry_parity,
 )
 

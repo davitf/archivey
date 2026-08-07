@@ -73,6 +73,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "Password required to decrypt the 7z header",
+          "provenance": "observed",
+          "value": "raise EncryptionError"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -94,6 +99,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "crc32"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "45",
+          "provenance": "observed",
+          "value": "int"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "crc32"
@@ -134,7 +149,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -264,6 +279,11 @@
           "provenance": "observed",
           "value": "ok opens"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -285,6 +305,16 @@
           "value": "None"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -325,7 +355,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -455,6 +485,11 @@
           "provenance": "observed",
           "value": "ok opens"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -476,6 +511,16 @@
           "value": "None"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -516,7 +561,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -632,19 +677,24 @@
           "value": "raise ArchiveyUsageError"
         },
         "E6 password= on this format": {
-          "detail": "Format ArchiveFormat.DIRECTORY does not support passwords (it carries no encryption). (archive='/tmp/archivey-probe-_zqjafa9/basic', format=DIRECTORY)",
+          "detail": "Format ArchiveFormat.DIRECTORY does not support passwords (it carries no encryption). (archive='/tmp/archivey-probe-gmsqxswi/basic', format=DIRECTORY)",
           "provenance": "observed",
           "value": "raise UnsupportedOperationError"
         },
         "E7 explicit wrong format=": {
-          "detail": "/tmp/archivey-probe-_zqjafa9/basic is a directory, but format=ArchiveFormat.TAR was requested. Pass a path to an archive file, or format=ArchiveFormat.DIRECTORY to read the directory tree.",
+          "detail": "/tmp/archivey-probe-gmsqxswi/basic is a directory, but format=ArchiveFormat.TAR was requested. Pass a path to an archive file, or format=ArchiveFormat.DIRECTORY to read the directory tree.",
           "provenance": "observed",
           "value": "raise ArchiveyUsageError"
         },
         "E8 open_stream() on this file": {
-          "detail": "Compressed stream not found: /tmp/archivey-probe-_zqjafa9/basic",
+          "detail": "Compressed stream not found: /tmp/archivey-probe-gmsqxswi/basic",
           "provenance": "observed",
           "value": "raise FileNotFoundError"
+        },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
         },
         "H1 member.hashes keys (no read)": {
           "detail": "",
@@ -662,7 +712,7 @@
           "value": "int"
         },
         "H4 member.modified": {
-          "detail": "2026-08-07 01:13:43.054958+00:00",
+          "detail": "2026-08-07 01:34:12.793530+00:00",
           "provenance": "observed",
           "value": "datetime"
         },
@@ -670,6 +720,16 @@
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "directory source has no byte stream",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
+        "H7 hashes (BytesIO)": {
+          "detail": "directory source has no byte stream",
+          "provenance": "unmeasured",
+          "value": "N/A"
         },
         "R1 len(reader)": {
           "detail": "object of type 'DirectoryReader' has no len()",
@@ -707,7 +767,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -837,6 +897,11 @@
           "provenance": "observed",
           "value": "ok opens"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -858,6 +923,16 @@
           "value": "None"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "crc32"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "crc32"
@@ -898,7 +973,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -1028,6 +1103,11 @@
           "provenance": "observed",
           "value": "ok opens"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -1049,6 +1129,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "crc32"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "crc32"
@@ -1089,7 +1179,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -1219,6 +1309,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -1240,6 +1335,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "0",
+          "provenance": "observed",
+          "value": "int"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -1280,7 +1385,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -1410,6 +1515,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -1431,6 +1541,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "13",
+          "provenance": "observed",
+          "value": "int"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -1471,7 +1591,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -1601,6 +1721,11 @@
           "provenance": "observed",
           "value": "ok opens"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -1622,6 +1747,16 @@
           "value": "None"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -1662,7 +1797,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -1792,6 +1927,11 @@
           "provenance": "observed",
           "value": "ok opens"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -1813,6 +1953,16 @@
           "value": "None"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -1853,7 +2003,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -1983,6 +2133,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -2004,6 +2159,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -2044,7 +2209,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -2174,6 +2339,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -2195,6 +2365,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -2235,7 +2415,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -2365,6 +2545,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -2386,6 +2571,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -2426,7 +2621,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -2556,6 +2751,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -2577,6 +2777,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -2617,7 +2827,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -2747,6 +2957,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -2768,6 +2983,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -2808,7 +3033,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -2938,6 +3163,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -2959,6 +3189,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -2999,7 +3239,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -3129,6 +3369,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -3150,6 +3395,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -3190,7 +3445,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -3320,6 +3575,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -3341,6 +3601,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -3381,7 +3651,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -3511,6 +3781,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -3532,6 +3807,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -3572,7 +3857,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -3702,6 +3987,11 @@
           "provenance": "observed",
           "value": "ok opens"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -3723,6 +4013,16 @@
           "value": "None"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -3763,7 +4063,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -3893,6 +4193,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -3914,6 +4219,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "crc32"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "15",
+          "provenance": "observed",
+          "value": "int"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "crc32"
@@ -3954,7 +4269,7 @@
           "value": "raise ArchiveyUsageError"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -4084,6 +4399,11 @@
           "provenance": "observed",
           "value": "raise UnsupportedFormatError"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -4105,6 +4425,16 @@
           "value": "datetime"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "47",
+          "provenance": "observed",
+          "value": "int"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -4145,7 +4475,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -4275,6 +4605,11 @@
           "provenance": "observed",
           "value": "ok opens"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -4296,6 +4631,16 @@
           "value": "None"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -4336,7 +4681,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },
@@ -4466,6 +4811,11 @@
           "provenance": "observed",
           "value": "ok opens"
         },
+        "E9 open without password (header-encrypted)": {
+          "detail": "no header-encrypting corpus entry for this format",
+          "provenance": "unmeasured",
+          "value": "N/A"
+        },
         "H1 member.hashes keys (no read)": {
           "detail": "",
           "provenance": "observed",
@@ -4487,6 +4837,16 @@
           "value": "None"
         },
         "H5 hashes after full read": {
+          "detail": "",
+          "provenance": "observed",
+          "value": "(empty)"
+        },
+        "H6 compressed_size (BytesIO)": {
+          "detail": "None",
+          "provenance": "observed",
+          "value": "None"
+        },
+        "H7 hashes (BytesIO)": {
           "detail": "",
           "provenance": "observed",
           "value": "(empty)"
@@ -4527,7 +4887,7 @@
           "value": "N/A"
         },
         "R7 second overlapping open()": {
-          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:192).",
+          "detail": "A member stream is already open on this reader. Close it before opening another, or reopen the archive with concurrent_members=True (this archive was opened without concurrent_members at /home/user/archivey/review/simplicity-consistency/repro/probe_matrix.py:195).",
           "provenance": "observed",
           "value": "raise ConcurrentAccessError"
         },

@@ -24,9 +24,9 @@ that asserts it.
 | `seekable-decompressor-streams`: slow-rewind "warns/names `[seekable]` accelerator" | `STREAM_REWIND_REDECOMPRESSES` (`archive_stream.py:442`) | **Honest** |
 | `seekable-decompressor-streams`: optional seek index degrades | `SEEK_INDEX_DEGRADED` | **Honest** |
 | `archive-reading`: solid random `open()` — "**no diagnostic, no warning**", discoverable via `cost.access_cost` and the docstring | correctly **absent**; `grep -rn "warnings.warn" src/archivey/` returns **nothing** | **Honest** (the #225 spec-drop landed cleanly) |
-| `format-single-file-compressors`: "XZ, ZST \| Header size when encoder wrote it; otherwise `None`" | only surfaced under `seekable_members=True` | **Divergent** — filed as **P1**, not counted twice |
+| `format-single-file-compressors`: "XZ, ZST \| Header size when encoder wrote it; otherwise `None`" | only surfaced under `seekable_members=True` | **Divergent** — filed as **F1**, not counted twice |
 
-**Result:** one divergence, and it is P1's spec half. The class #225 opened (a
+**Result:** one divergence, and it is F1's spec half. The class #225 opened (a
 requirement describing behaviour that never shipped) did not recur elsewhere in the
 landed specs.
 
@@ -42,8 +42,8 @@ generalized. It was not.
 
 | Argument | Honoured by | Silently discarded by | Filed as |
 |---|---|---|---|
-| `encoding=` | ZIP, TAR + all compressed-TAR variants | ISO, 7z, directory, single-file | **P4** |
-| `format=` (explicit, wrong, but plausible-as-empty) | every format that fails loudly | TAR over an ISO's zero-filled system area | **P3** |
+| `encoding=` | ZIP, TAR + all compressed-TAR variants | ISO, 7z, directory, single-file | **F2** |
+| `format=` (explicit, wrong, but plausible-as-empty) | every format that fails loudly | TAR over an ISO's zero-filled system area | **F7** |
 
 ### Checked and clean
 
@@ -51,16 +51,16 @@ generalized. It was not.
 |---|---|
 | `password=` on a format with no encryption | **Refused**, not ignored — `UnsupportedOperationError` on all 22 non-encrypting keys. A bare `PasswordProvider` is correctly allowed through (unused backends never call it). |
 | `streaming=True` + `concurrent_members=True` | **Refused** at open on every key. |
-| `seekable_members=True` where a backend cannot seek | Not a discard — the flag is honoured to the extent the backend can, per spec. (It also does something it should not: **P1**.) |
-| `config.strict_archive_eof` on non-TAR formats | Inert by construction (the setting names an EOF marker only TAR has); no caller assertion is being overruled. Records as fine, but see **P3** — it is also inert in the one case where a caller would most want it. |
+| `seekable_members=True` where a backend cannot seek | Not a discard — the flag is honoured to the extent the backend can, per spec. (It also does something it should not: **F1**.) |
+| `config.strict_archive_eof` on non-TAR formats | Inert by construction (the setting names an EOF marker only TAR has); no caller assertion is being overruled. Records as fine, but see **F7** — it is also inert in the one case where a caller would most want it. |
 | `config.use_rapidgzip` / `use_indexed_bzip2` on formats with no such codec | Inert by construction; `AcceleratorMode.AUTO` is a preference, not an assertion. Fine. |
 | `limits=` / `ExtractionLimits` per format | Applied uniformly by the extraction coordinator, not per backend. Fine. |
 | CLI flags that no-op on some formats | None found; the CLI's format-specific behaviour is in what it *prints*, not in silently dropped flags. |
 
 **The generalizable rule, if the maintainer wants one:** *an explicit argument that
 names something the resolved backend cannot act on is refused at the entry point.*
-That covers P4 directly and P3 partially. It is one rule replacing three special cases,
-which is the §Values "predictability beats cleverness" trade the brief asks for. → **Q4**.
+That covers F2 directly and F7 partially. It is one rule replacing three special cases,
+which is the §Values "predictability beats cleverness" trade the brief asks for. → **Q2**.
 
 ---
 
@@ -79,7 +79,7 @@ crossed the public boundary in the whole probe run, except the ones the spec *re
 - `ValueError` for I/O on a closed stream — mandated ("closed stream I/O continues to
   raise `ValueError`").
 - `FileNotFoundError` for a missing path — mandated ("filesystem `OSError` … propagate
-  unchanged"). The *directory* case is the exception, and it is **P6**.
+  unchanged"). The *directory* case is the exception, and it is **F11**.
 
 The raw raises that exist in `src/` were inspected individually:
 
@@ -92,10 +92,105 @@ The raw raises that exist in `src/` were inspected individually:
 | `directory_reader.py:325` `TypeError("Directory backend requires a Path source")` | Internal invariant; `core.py` cannot route a non-Path here. **Fine.** |
 | `volumes.py`, `detection.py`, `zip_aes.py` `ValueError`s | All argument-validation on internal seek/slice helpers, behind the public boundary. **Fine.** |
 
-**Conclusion:** the S1 error boundary held on every newer path the brief asked about —
-the RAR `unrar` map, the 7z pipeline, single-file, and the extract coordinator all route
-through the base reader's translation and stamping. This seed is a **non-issue** and is
-recorded in SUMMARY §What is actually fine so it is not re-derived.
+**Conclusion, corrected by the merge:** the S1 error boundary held on every newer path
+*inside* it — the RAR `unrar` map, the 7z pipeline, single-file, and the extract
+coordinator all route through the base reader's translation and stamping. But the second
+pass found three holes **outside** it, which a probe that only exercises opened readers
+cannot see: `resolve_source` runs before any translator exists (**F3**), ZIP's blanket
+`ValueError` arm swallows a lifecycle fault on the way past (**F4**), and one `unrar`
+spawn site sits outside `_translated_errors` (**F15**). Those are written up below; the
+*inside* of the boundary remains a non-issue.
+
+---
+
+## 3b. F3 — raw `ValueError` crosses `open_archive` for volume-sequence misuse
+
+**Sites** (all in `src/archivey/internal/volumes.py`): `:145` empty `ConcatenatedFile`
+sources, `:167` non-seekable volume stream, `:269` `join_volumes` empty paths, `:314`
+`resolve_source([])`.
+
+**Why nothing types them:** `core.open_archive` calls `resolve_source` at `core.py:194`
+— before format resolution, before the registry lookup, before any backend exists. There
+is no translator on that path.
+
+**Observed (re-verified in this tree):**
+
+```python
+open_archive([])
+# builtins.ValueError: source sequence must not be empty
+
+open_archive([pipe, pipe])           # two non-seekable streams
+# builtins.ValueError: all volume streams must be seekable
+```
+
+**The inconsistency is the finding.** The *single*-source spelling of the second refusal
+is already typed and carries a remediation sentence:
+
+```
+StreamNotSeekableError: Random access (streaming=False) requires a seekable source.
+Open with streaming=True ... or buffer it to disk or a BytesIO and reopen.
+```
+
+So the same caller mistake gets a typed, actionable error when written one way and a
+bare `ValueError` when written another. Empty-sequence is caller misuse
+(`ArchiveyUsageError`); non-seekable volumes are a capability refusal
+(`StreamNotSeekableError`).
+
+**Classification: accident.** → **Q3**. Guardrails:
+`test_empty_source_sequence_raises_raw_valueerror`,
+`test_non_seekable_volume_sequence_raises_raw_valueerror`, plus two red halves.
+
+---
+
+## 3c. F4 — ZIP reports an already-closed handle as archive damage
+
+ZIP's `_translate_exception` maps **every** `ValueError` to `CorruptionError`. The ZIP
+reader also raises `ValueError("Attempt to use ZIP archive that was already closed")` in
+five places (mirroring stdlib `zipfile`). The two meet:
+
+```
+CorruptionError: Corrupt ZIP member offset/structure:
+ValueError('Attempt to use ZIP archive that was already closed')
+```
+
+`ArchiveStream._fail` special-cases the substring `"closed file"`, which
+`"already closed"` does not match.
+
+**Not this finding:** a normal `reader.close()` followed by `open()`/`members()` already
+raises `ArchiveyUsageError` — settled in `#225` and pinned by the uniform-surface
+guardrail. Only the path where the **underlying handle is closed while the reader still
+believes it is open** lands in the blanket arm.
+
+**Why it matters beyond taxonomy:** `CorruptionError` tells a caller the *archive* is
+damaged. Here the bytes are fine and the handle is not, so the error sends them hunting
+a bad file. Compare the translator breadths — ZIP's is by far the widest:
+
+| Backend | `_translate_exception` catches |
+|---|---|
+| ZIP | `BadZipFile`, `RuntimeError`(pw), `UnsupportedOperation`, `NotImplementedError`, zlib/lzma, **all `ValueError`**, `OSError`(bz2), `UnicodeDecodeError`, `EOFError` |
+| TAR | `ReadError`, `EOFError` |
+| 7z / RAR | `EOFError` only |
+| ISO | PyCdlib + `IndexError`/`struct`/`ValueError`/… → corruption |
+
+**Classification: accident.** Narrowest fix: carve `"already closed"` out ahead of the
+blanket arm. Broader fix: narrow ZIP's `ValueError` arm to known-corruption substrings —
+worth considering, since it is the arm most likely to mislabel the *next* lifecycle bug
+too. → **Q4**. Guardrails: `test_zip_underlying_close_is_reported_as_corruption` (pin),
+`test_zip_underlying_close_is_a_usage_error` (red half).
+
+---
+
+## 3d. F15 — one raw `RuntimeError` on the `unrar` spawn path
+
+`rar_unrar.py:157` raises `RuntimeError("unrar produced no stdout pipe")` when
+`proc.stdout is None`. Its call sites (`rar_reader.py:682`, `:883`) are **outside**
+`_translated_errors`, and the RAR translator returns `None` for anything but `EOFError`,
+so it would escape raw.
+
+The two passes disagreed mildly on disposition: unreachable in practice with
+`subprocess.Popen(..., stdout=PIPE)` (so "note it"), versus cheap to close (so "map it").
+Both are defensible; it is a one-line change either way. `PLAUSIBLE`, not `CONFIRMED` —
+no repro exists because the condition cannot be provoked. → **Q15**.
 
 ---
 
@@ -115,4 +210,39 @@ is arguably what makes it feel like usage rather than archive.
 
 The genuinely open half of O-23 — whether to emit a plain `warnings.warn` on a solid
 random `open()` — is **still undecided**, and there is no such call anywhere in `src/`.
-→ **Q7**.
+→ **Q13**.
+
+---
+
+## 5. F10 — the one advisory that is not queryable data
+
+`VISION.md`, twice over:
+
+> Anything the library can only *warn* about should ideally also be **queryable as
+> data** — a logging warning most applications never see is a surprise deferred, not
+> avoided.
+
+Every advisory in the library satisfies that — `MEMBER_NAME_NORMALIZED`,
+`MEMBER_NAME_ENCODING_INFERRED`, `FORMAT_EXTENSION_CONFLICT`, `MEMBER_TIMESTAMP_INVALID`,
+`SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `SEEK_INDEX_DEGRADED`,
+`STREAM_REWIND_REDECOMPRESSES`, `ARCHIVE_EOF_MARKER_MISSING`, the extraction codes —
+**except one**. `naming.py:38–53` warns about bidirectional control characters in a
+member name (the RTL-override disguise trick) through a bare `logger.warning`, with no
+`DiagnosticCode`, no context dataclass, and therefore no `reader.diagnostics` entry, no
+`DiagnosticPolicy` escalation, and no way for a security-conscious caller to *query* it.
+
+Its immediate neighbour in the same helper — name normalization — does have a code. So
+this is an omission, not a policy.
+
+**The spec angle, and a correction to the second pass's framing.**
+`testing-contract:55` says *"RTL warns or rejects"*, and the scenario at `:76–79` says
+*"the member is rejected **or** exactly one warning is emitted"*. The second pass filed
+this as spec fiction. It is not: the clause is a **disjunction** and the code implements
+one branch, so no requirement goes unperformed. The defect is that the clause is
+**uninformative** — a reader cannot tell which outcome ships, which is the opposite of
+what a conformance spec is for. Tightening it to "warns exactly once via `logger`; null
+bytes reject as traversal" is right, and is the cheaper half of Q10.
+
+The rankable finding is the VISION gap underneath: promoting bidi to a `DiagnosticCode`
+would make the library's advisory surface uniform for the first time. → **Q10**.
+Guardrail: `test_bidi_name_warning_has_no_diagnostic_code`.

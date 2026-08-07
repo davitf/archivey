@@ -12,7 +12,7 @@ does not hold; check the spec before calling it a docs bug*) for each disagreeme
 | | |
 |---|---|
 | Format keys measured | **24 of 25** (`FORMAT_KEYS`) |
-| Unmeasured | `rar` — the RARLAB `rar` **writer** is absent, so no RAR fixture is built. Deliberate (see SUMMARY P9), not an environment gap. Every RAR cell is `unmeasured`, never `N/A`. |
+| Unmeasured | `rar` — the RARLAB `rar` **writer** is absent, so no RAR fixture is built. Deliberate (see SUMMARY F16), not an environment gap. Every RAR cell is `unmeasured`, never `N/A`. |
 | Rows | ~40 caller-visible operations × the format keys, plus source-shape crosses (Path / seekable `BytesIO` / non-seekable) where shape can change the answer |
 | Cell provenance | Every cell in `repro/matrix.md` is **observed** (the probe performed the call) or explicitly `unmeasured` / `N/A`-with-reason. No cell is *read*-only; nothing was inferred from source. |
 | `N/A` reasons used | "directory pseudo-archive has no byte stream" (E2–E4 for `dir`), "not a single-file compressed stream" (X rows), "no FILE/DIRECTORY member in this corpus entry" |
@@ -53,7 +53,7 @@ and `::test_streaming_mode_is_uniform_across_formats`.
 
 ## Disagreements
 
-### P1 — `seekable_members` decides whether metadata exists
+### F1 — `seekable_members` decides whether metadata exists
 
 **Expected** (rows H1/H5, and `format-single-file-compressors`): `member.size` follows
 the per-codec table; `member.hashes` carries a stored digest "when readable **without
@@ -131,7 +131,7 @@ unrelated things.
 
 ---
 
-### P2 — directory backend vs the index-topology table
+### F6 — directory backend vs the index-topology table
 
 **Expected** (row R6, from `access-mode-and-cost`'s index-topology table):
 
@@ -164,11 +164,11 @@ winner, and the two fixes are genuinely different products:
   changes too.
 
 Note the coupling: whichever side moves, `listing_cost` and the topology table must end
-up telling the same story. → **Q2**.
+up telling the same story. → **Q6**.
 
 ---
 
-### P3 — an asserted format that is wrong can succeed
+### F7 — an asserted format that is wrong can succeed
 
 **Expected** (row E6, generalizing `archive-reading`'s directory rule): an explicit
 `format=` that the source cannot be is refused, not silently honoured over wrong data.
@@ -197,11 +197,11 @@ and citable. What is *not* format law is that `open_archive` performs no plausib
 check when the caller has explicitly asserted a format — the same reasoning
 `reject-format-override-on-directory` accepted for directories ("the wrong data,
 succeeding") applies unchanged. Whether the answer is a post-open plausibility gate, a
-diagnostic, or "accept it, TAR is TAR" is a product call. → **Q3**.
+diagnostic, or "accept it, TAR is TAR" is a product call. → **Q7**.
 
 ---
 
-### P4 — `encoding=` accepted and discarded
+### F2 — `encoding=` accepted and discarded
 
 **Expected** (§Rows the specs do not decide, item 6): no spec generalizes the
 directory-`format=` rule to other discarded arguments, so this had to be *decided*
@@ -226,11 +226,11 @@ and the caller's explicit override is dropped on the floor anyway.
 
 **Classification: accident.** Not because the backends should decode differently, but
 because #225/P8 already decided that discarding an explicit caller assertion is the
-wrong shape, and that decision was applied to one argument only. → **Q4**.
+wrong shape, and that decision was applied to one argument only. → **Q2**.
 
 ---
 
-### P5 — pipe capability is behaviour, not data
+### F8 — pipe capability is behaviour, not data
 
 **Expected** (row E4): format-forced, "and the question is only whether it is
 *queryable*."
@@ -250,11 +250,11 @@ The queryable half is missing. `FormatAvailability` exposes `format`, `support`,
 "pipe this if you can, else buffer it" must try-and-catch.
 
 **Classification: accident, with real freeze-cost** — `FormatAvailability` is public and
-its field set freezes at `0.2.0`. → **Q5**.
+its field set freezes at `0.2.0`. → **Q8**.
 
 ---
 
-### P6 — the entry points disagree about directories
+### F11 — the entry points disagree about directories
 
 | Call | Result |
 |---|---|
@@ -269,7 +269,7 @@ One predicate collapses two distinct situations, and the message asserts the fal
 
 **Classification: accident.** Small, but it is the "same concept → same failure mode"
 value in miniature: the two entry points give a caller two different stories about the
-same path. → **Q6**.
+same path. → **Q12**.
 
 ---
 
@@ -280,9 +280,91 @@ not skipped.
 
 | Question | Observed answer | Disposition |
 |---|---|---|
-| Do `open_stream` and `open_archive` agree on the same `.gz`? | Yes on `seek()` default (both `io.UnsupportedOperation`), yes on size (`None`), and they agree on the P1 divergence too. | Fine — the routes are consistent; the P1 bug is shared, not divergent. |
+| Do `open_stream` and `open_archive` agree on the same `.gz`? | Yes on `seek()` default (both `io.UnsupportedOperation`), yes on size (`None`), and they agree on the F1 divergence too. | Fine — the routes are consistent; the F1 bug is shared, not divergent. |
 | Does `extract()`'s auto-streaming match an explicit streaming open? | Yes — `extract(pipe)` succeeds for TAR family, raises the same `StreamNotSeekableError` for ZIP/ISO/7z. | Fine. |
 | Cost rows for directory / ISO / single-file (C7) | directory `REQUIRES_SCANNING`+`DIRECT`; ISO `INDEXED`+`DIRECT`; single-file `INDEXED`+`DIRECT`, `solid_block_count=None`, `is_solid=False`. | Defensible and self-consistent. `.gz` being `DIRECT`/not-solid while `.tar.gz` is `SOLID` is right: one member cannot depend on another. **Fine.** |
 | `hashes` emptiness for TAR / ISO / directory (H6) | empty on all three — none stores a whole-member digest. `zip-aes` is also empty (WinZip AE-2 zeroes the CRC field: format law, citable). | Fine. |
-| When does password work happen (P6 of expected)? | Not at `open_archive()` for any probed format, including 7z header-encrypted and ZipCrypto. | Fine — #225's laziness fix has no siblings. |
-| Must a discarded argument be an error? | Unstated; two live instances (P3, P4). | **Escalated** → Q3/Q4. |
+| When does password work happen (F11 of expected)? | Not at `open_archive()` for any probed format, including 7z header-encrypted and ZipCrypto. | Fine — #225's laziness fix has no siblings. |
+| Must a discarded argument be an error? | Unstated; two live instances (F7, F2). | **Escalated** → Q7/Q2. |
+
+---
+
+## Rows added by the merge with the second pass
+
+Two rows the first pass never ran. Both were added to `repro/probe_matrix.py` and
+re-verified here — a row that only ever opens a `Path`, or only ever opens *with* the
+password, cannot see either of these.
+
+### F5 — `compressed_size` is Path-gated on every single-file codec
+
+**Expected** (nothing in `archive-data-model` conditions `compressed_size` on source
+shape; #225/O-25 established that probes gate on *seekability*, not on `Path`).
+
+**Observed** — probe rows `H3` (Path) vs `H6` (seekable `BytesIO`):
+
+| Family | `compressed_size` from `Path` | from `BytesIO` |
+|---|---|---|
+| `gz`, `gz-meta`, `bz2`, `xz`, `zst`, `lz4`, `lz`, `zz`, `br` | `int` | **`None`** |
+| `zip`, `zip-aes`, `iso`, `iso-joliet`, `7z` | `int` | `int` |
+| `tar` family | `None` | `None` (a TAR member has no separate compressed size) |
+
+**O-21 trace.** `single_file_reader.py:173` —
+`os.path.getsize(self._source) if isinstance(self._source, Path) and self._source.exists() else None`.
+There is no seekable-stream fallback, although `_with_seekable_source` sits a few lines
+below and already gives every other probe on that class a handle for both shapes.
+
+**Classification: accident**, and the narrowest one in the review — the fix is a
+`SEEK_END` on the branch that currently returns `None`. It is the residual the #225
+Path/seekable sweep did not reach, which is precisely why the first pass's "seed A2 is
+clean" verdict was wrong.
+
+**Guardrails:** `test_single_file_compressed_size_is_path_gated` (pin, all 8 codecs),
+`test_single_file_compressed_size_is_not_path_gated` (red half),
+`test_container_formats_report_compressed_size_from_either_shape` (the target shape).
+
+### F9 — header encryption is not lazy, and the guide does not say so
+
+**Observed** — probe row `E9`, opening a header-encrypting corpus entry with **no**
+password:
+
+| Archive | `open_archive(path)` with no password |
+|---|---|
+| 7z, `-mhe` (header-encrypted) | `EncryptionError: Password required to decrypt the 7z header` |
+| RAR, encrypted headers (`tests/fixtures/rar/encrypted_header__.rar`) | `EncryptionError: RAR archive has encrypted headers but no password was provided` |
+| ZIP / 7z / RAR with **data**-only encryption | opens and lists fine; the password is asked for at member read |
+
+**Classification: format law** — the listing itself is ciphertext, so there is nothing
+to be lazy about. The finding is the **docs** half: `docs/reading-members.md:74–77`
+states the laziness rule unbounded —
+
+> **Nothing is decompressed until you read.** A member you skip is never opened, and no
+> password is requested for it.
+
+— which is true for data encryption and false for a header-encrypted archive, where the
+loop that bullet describes never gets to exist. `docs/formats.md` documents the header
+cases; the two pages need to agree. → **Q9**.
+
+**Correction this forces:** the first pass reported "no password work at
+`open_archive()` for any probed format, including 7z header-encrypted". Its probe passed
+the corpus entry's password, so the row was never exercised. The corrected statement is
+the bounded one above.
+
+**Guardrails:** `test_header_encrypted_7z_needs_the_password_at_open`,
+`test_data_encrypted_members_still_list_without_a_password`.
+
+### RAR: unmeasured via the corpus, measured via fixtures
+
+The first pass reported the RAR column as wholly `unmeasured`. That is half right and is
+narrowed here: the declarative **corpus** cannot build RAR without the `rar` writer (41
+sweep cases skip — F16), but committed fixtures under `tests/fixtures/rar/` do let RAR
+*reading* be probed, which is how the second pass filled its RAR column:
+
+| Row | RAR |
+|---|---|
+| `open_path`, `open_seekable_bytesio` | OK |
+| pipe, `streaming=False` / `streaming=True` / `extract` | `StreamNotSeekableError` (trailing-index family — matches ZIP/7z/ISO) |
+| `listing_cost` / `access_cost` | `INDEXED` / `DIRECT` (non-solid fixture) |
+| `hashes` | `crc32` (`blake2sp` on RAR5 fixtures that carry it) |
+| header-encrypted open without password | `EncryptionError` (F9) |
+
+No RAR-specific divergence was found on any of those rows.

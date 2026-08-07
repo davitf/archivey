@@ -14,8 +14,12 @@ Nothing here changes library behaviour: the review is analysis-only until the
 maintainer picks pay items (`brief.md` §Hard constraints). Pinning a divergence is
 **not** endorsing it.
 
-Every red half names the finding id from
-`review/simplicity-consistency/SUMMARY.md` so the two stay linked.
+Every test names the merged finding id from
+`review/simplicity-consistency/SUMMARY.md` so the two stay linked. The review was
+delivered twice independently (PR #230 and PR #231) and merged; findings carried over
+from the second pass are marked in the SUMMARY's provenance column and their guardrails
+were moved here from `review/simplicity-consistency/tests/`, which `testpaths =
+["tests"]` never collected — a guardrail CI does not run guards nothing.
 """
 
 from __future__ import annotations
@@ -36,7 +40,10 @@ from archivey import (
     open_archive,
     open_stream,
 )
+from archivey.types import MemberType
 from tests.sample_archives import CORPUS, FORMAT_KEYS, CorpusEntry, corpus_archive_path
+
+_FILE = MemberType.FILE
 
 _BY_ID: dict[str, CorpusEntry] = {e.id: e for e in CORPUS}
 
@@ -84,13 +91,13 @@ class _NonSeekable(io.RawIOBase):
 
 
 # ---------------------------------------------------------------------------
-# P1 — declared member-stream seekability leaks into member *metadata*
+# F1 — declared member-stream seekability leaks into member *metadata*
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("key", ["lz", "xz"])
 def test_declared_seekability_changes_member_size(key: str, tmp_path: Path) -> None:
-    """P1 (pin): ``member.size`` today depends on ``seekable_members``.
+    """F1 (pin): ``member.size`` today depends on ``seekable_members``.
 
     This pins the divergence as it is, so a change to it is visible in the diff.
     ``seekable_members`` is documented as being about ``seek()`` on a member stream;
@@ -108,13 +115,13 @@ def test_declared_seekability_changes_member_size(key: str, tmp_path: Path) -> N
 
 @pytest.mark.xfail(
     strict=True,
-    reason="P1: seekable_members is a stream capability; it must not change metadata",
+    reason="F1: seekable_members is a stream capability; it must not change metadata",
 )
 @pytest.mark.parametrize("key", ["lz", "xz"])
 def test_member_size_does_not_depend_on_declared_seekability(
     key: str, tmp_path: Path
 ) -> None:
-    """P1 (red half): the same archive should report the same ``size`` either way.
+    """F1 (red half): the same archive should report the same ``size`` either way.
 
     The size comes from the xz index / lzip trailer — a bounded peek over a source that
     is already seekable. Nothing about it needs the caller to want ``seek()``.
@@ -130,12 +137,12 @@ def test_member_size_does_not_depend_on_declared_seekability(
 
 @pytest.mark.xfail(
     strict=True,
-    reason="P1: VISION 'hashes without decompression' — lzip CRC-32 is a trailer read",
+    reason="F1: VISION 'hashes without decompression' — lzip CRC-32 is a trailer read",
 )
 def test_lzip_surfaces_crc32_without_declaring_seekable_members(
     tmp_path: Path,
 ) -> None:
-    """P1 (red half): a dedupe caller doing a plain ``open_archive`` gets the CRC-32.
+    """F1 (red half): a dedupe caller doing a plain ``open_archive`` gets the CRC-32.
 
     ``format-single-file-compressors`` promises the lzip CRC-32 "when the seekable lzip
     index is available"; today the gate is the caller's ``seekable_members`` flag, so
@@ -149,7 +156,7 @@ def test_lzip_surfaces_crc32_without_declaring_seekable_members(
 
 
 def test_gzip_crc32_is_not_gated_on_declared_seekability(tmp_path: Path) -> None:
-    """P1 (guardrail): gzip already does it the right way — keep it that way.
+    """F1 (guardrail): gzip already does it the right way — keep it that way.
 
     The gzip trailer CRC-32 is surfaced from a bounded peek regardless of
     ``seekable_members``. This is the behaviour the lzip/xz rows should converge on,
@@ -164,13 +171,13 @@ def test_gzip_crc32_is_not_gated_on_declared_seekability(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# P2 — index-topology table vs the directory backend
+# F6 — index-topology table vs the directory backend
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_directory_report_peek_returns_none(streaming: bool, tmp_path: Path) -> None:
-    """P2 (pin): the directory backend has no upfront index to peek at."""
+    """F6 (pin): the directory backend has no upfront index to peek at."""
     path = _archive("basic", "dir", tmp_path)
     with open_archive(path, streaming=streaming) as reader:
         assert reader.members_report_if_available() is None
@@ -178,14 +185,14 @@ def test_directory_report_peek_returns_none(streaming: bool, tmp_path: Path) -> 
 
 @pytest.mark.xfail(
     strict=True,
-    reason="P2: access-mode-and-cost lists 'Leading (directory, ISO)' as a complete "
+    reason="F6: access-mode-and-cost lists 'Leading (directory, ISO)' as a complete "
     "report in both modes; the directory backend returns None",
 )
 @pytest.mark.parametrize("streaming", [False, True])
 def test_directory_report_peek_matches_index_topology_spec(
     streaming: bool, tmp_path: Path
 ) -> None:
-    """P2 (red half): spec and code disagree — which one is wrong is a maintainer call.
+    """F6 (red half): spec and code disagree — which one is wrong is a maintainer call.
 
     Recorded as a red half rather than a spec edit because `CONTRIBUTING.md` says to
     pause and ask on a spec/design discrepancy instead of silently picking a winner.
@@ -201,7 +208,7 @@ def test_directory_report_peek_matches_index_topology_spec(
 def test_leading_and_trailing_index_backends_do_offer_a_report_peek(
     key: str, tmp_path: Path
 ) -> None:
-    """P2 (guardrail): the backends the topology table covers correctly still do."""
+    """F6 (guardrail): the backends the topology table covers correctly still do."""
     path = _archive("basic", key, tmp_path)
     with open_archive(path) as reader:
         report = reader.members_report_if_available()
@@ -211,14 +218,14 @@ def test_leading_and_trailing_index_backends_do_offer_a_report_peek(
 
 
 def test_tar_has_no_report_peek_before_a_pass(tmp_path: Path) -> None:
-    """P2 (guardrail): the no-index row of the topology table — format law, pinned."""
+    """F6 (guardrail): the no-index row of the topology table — format law, pinned."""
     path = _archive("basic", "tar", tmp_path)
     with open_archive(path) as reader:
         assert reader.members_report_if_available() is None
 
 
 # ---------------------------------------------------------------------------
-# P3 — an explicit wrong format= can succeed with an empty listing
+# F7 — an explicit wrong format= can succeed with an empty listing
 # ---------------------------------------------------------------------------
 
 
@@ -226,7 +233,7 @@ def test_tar_has_no_report_peek_before_a_pass(tmp_path: Path) -> None:
 def test_wrong_explicit_format_on_iso_yields_an_empty_listing(
     strict_eof: bool, tmp_path: Path
 ) -> None:
-    """P3 (pin): ``format=TAR`` over an ISO opens and lists zero members.
+    """F7 (pin): ``format=TAR`` over an ISO opens and lists zero members.
 
     An ISO's first 32 KiB system area is zero-filled, which is byte-identical to a TAR
     end-of-archive marker, so the TAR reader sees a valid empty archive.
@@ -241,11 +248,11 @@ def test_wrong_explicit_format_on_iso_yields_an_empty_listing(
 
 @pytest.mark.xfail(
     strict=True,
-    reason="P3: same class as the directory format= override rejected in #225 — an "
+    reason="F7: same class as the directory format= override rejected in #225 — an "
     "asserted format that is wrong should not succeed on the wrong data",
 )
 def test_wrong_explicit_format_does_not_silently_succeed(tmp_path: Path) -> None:
-    """P3 (red half): asserting the wrong format should not return a clean empty reader."""
+    """F7 (red half): asserting the wrong format should not return a clean empty reader."""
     path = _archive("basic", "iso", tmp_path)
     with pytest.raises(Exception):  # noqa: B017 - shape is the open question, not the type
         with open_archive(path, format=ArchiveFormat.TAR) as reader:
@@ -253,7 +260,7 @@ def test_wrong_explicit_format_does_not_silently_succeed(tmp_path: Path) -> None
 
 
 def test_wrong_explicit_format_is_loud_for_most_formats(tmp_path: Path) -> None:
-    """P3 (guardrail): the non-zero-prefixed formats do fail loudly — keep them loud."""
+    """F7 (guardrail): the non-zero-prefixed formats do fail loudly — keep them loud."""
     path = _archive("basic", "zip", tmp_path)
     with pytest.raises(Exception):  # noqa: B017
         with open_archive(path, format=ArchiveFormat.TAR) as reader:
@@ -261,7 +268,7 @@ def test_wrong_explicit_format_is_loud_for_most_formats(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# P4 — encoding= is honoured by some backends and silently discarded by others
+# F2 — encoding= is honoured by some backends and silently discarded by others
 # ---------------------------------------------------------------------------
 
 
@@ -277,39 +284,39 @@ def _names_with_and_without_encoding(path: Path) -> tuple[list[str], list[str]]:
 
 @pytest.mark.parametrize("key", ["zip", "tar"])
 def test_encoding_argument_is_applied(key: str, tmp_path: Path) -> None:
-    """P4 (guardrail): the backends that consume ``encoding=`` still consume it."""
+    """F2 (guardrail): the backends that consume ``encoding=`` still consume it."""
     base, alt = _names_with_and_without_encoding(_archive("basic", key, tmp_path))
     assert base != alt
 
 
 @pytest.mark.parametrize("key", ["iso", "7z", "dir"])
 def test_encoding_argument_is_silently_discarded(key: str, tmp_path: Path) -> None:
-    """P4 (pin): these backends accept ``encoding=`` and ignore it, with no signal."""
+    """F2 (pin): these backends accept ``encoding=`` and ignore it, with no signal."""
     base, alt = _names_with_and_without_encoding(_archive("basic", key, tmp_path))
     assert base == alt
 
 
 @pytest.mark.xfail(
     strict=True,
-    reason="P4: same class as the directory format= override — an explicit argument "
+    reason="F2: same class as the directory format= override — an explicit argument "
     "that cannot be honoured should be refused, not discarded",
 )
 @pytest.mark.parametrize("key", ["iso", "7z", "dir"])
 def test_unusable_encoding_argument_is_refused(key: str, tmp_path: Path) -> None:
-    """P4 (red half): ignoring an explicit caller assertion is the #225/P8 failure mode."""
+    """F2 (red half): ignoring an explicit caller assertion is the #225/P8 failure mode."""
     path = _archive("basic", key, tmp_path)
     with pytest.raises(ArchiveyUsageError):
         open_archive(path, encoding="cp500").close()
 
 
 # ---------------------------------------------------------------------------
-# P5 — pipe support: loud and uniform (good), but not queryable (the finding)
+# F8 — pipe support: loud and uniform (good), but not queryable (the finding)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("key", ["zip", "iso", "7z"])
 def test_trailing_index_formats_refuse_a_pipe_loudly(key: str, tmp_path: Path) -> None:
-    """P5 (guardrail): the refusal is one typed error with one message shape.
+    """F8 (guardrail): the refusal is one typed error with one message shape.
 
     This half of the seed turned out to be **fine**, and pinning it is what keeps it
     fine: a backend that started failing softly here would be a regression.
@@ -322,19 +329,19 @@ def test_trailing_index_formats_refuse_a_pipe_loudly(key: str, tmp_path: Path) -
 
 @pytest.mark.parametrize("key", ["tar", "tar.gz"])
 def test_front_indexed_formats_accept_a_pipe(key: str, tmp_path: Path) -> None:
-    """P5 (guardrail): the other side of the same rule."""
+    """F8 (guardrail): the other side of the same rule."""
     path = _archive("basic", key, tmp_path)
     with open_archive(_NonSeekable(path.read_bytes()), streaming=True) as reader:
         assert sum(1 for _ in reader) > 0
 
 
 # ---------------------------------------------------------------------------
-# P6 — the two entry points disagree about what a directory is
+# F11 — the two entry points disagree about what a directory is
 # ---------------------------------------------------------------------------
 
 
 def test_open_stream_reports_a_directory_as_not_found(tmp_path: Path) -> None:
-    """P6 (pin): ``open_stream`` says "not found" for a path that exists."""
+    """F11 (pin): ``open_stream`` says "not found" for a path that exists."""
     d = tmp_path / "tree"
     d.mkdir()
     with pytest.raises(FileNotFoundError, match="Compressed stream not found"):
@@ -343,11 +350,11 @@ def test_open_stream_reports_a_directory_as_not_found(tmp_path: Path) -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="P6: the path exists and is a directory; 'not found' is the wrong story, "
+    reason="F11: the path exists and is a directory; 'not found' is the wrong story, "
     "and open_archive opens the same path happily",
 )
 def test_open_stream_directory_error_names_the_real_problem(tmp_path: Path) -> None:
-    """P6 (red half): whatever the type, the message must not claim the path is absent.
+    """F11 (red half): whatever the type, the message must not claim the path is absent.
 
     Asserted as the *absence* of "not found" rather than the presence of "directory":
     the message interpolates the path, and a pytest tmp dir carries the test's own name,
@@ -362,7 +369,7 @@ def test_open_stream_directory_error_names_the_real_problem(tmp_path: Path) -> N
 
 
 def test_open_archive_opens_the_directory_open_stream_rejects(tmp_path: Path) -> None:
-    """P6 (guardrail): the asymmetry itself, pinned so a fix has to address both sides."""
+    """F11 (guardrail): the asymmetry itself, pinned so a fix has to address both sides."""
     d = tmp_path / "tree"
     d.mkdir()
     (d / "a.txt").write_bytes(b"hello")
@@ -447,7 +454,7 @@ def test_rar_column_is_unmeasured_without_the_rar_writer() -> None:
     The consequence is worth stating rather than discovering twice: the 41 RAR cases of
     the cross-format conformance sweep run on no CI leg and in no provisioned dev
     environment, so the RAR column of that regression net is unexercised. Whether that
-    is still the intended trade-off is Q9 in `review/simplicity-consistency/QUESTIONS.md`.
+    is still the intended trade-off is F16 / Q11 in `review/simplicity-consistency/QUESTIONS.md`.
 
     The assertion is the coupling itself: RAR readability does not imply RAR
     measurability, so a green suite on an unrar-only box says nothing about the RAR
@@ -459,3 +466,221 @@ def test_rar_column_is_unmeasured_without_the_rar_writer() -> None:
     if shutil.which("rar") is not None:
         pytest.skip("rar writer present — the RAR corpus column is measurable here")
     assert rar_is_readable, "unrar present: RAR reads fine, yet no RAR fixture is built"
+
+
+# ---------------------------------------------------------------------------
+# F3 — raw ValueError crosses open_archive for volume-sequence misuse
+# (merged from the second review pass; verified independently here)
+# ---------------------------------------------------------------------------
+
+
+def test_empty_source_sequence_raises_raw_valueerror(tmp_path: Path) -> None:
+    """F3 (pin): `open_archive([])` raises a bare `ValueError`.
+
+    `resolve_source` runs at `core.py:194`, before any backend translator exists, so
+    nothing on that path can type the error.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        open_archive([])
+    assert type(excinfo.value) is ValueError  # not an ArchiveyError/UsageError subclass
+
+
+def test_non_seekable_volume_sequence_raises_raw_valueerror() -> None:
+    """F3 (pin): a non-seekable volume stream raises a bare `ValueError` too.
+
+    Note the inconsistency this pins: the *single*-source version of the same refusal
+    is a typed `StreamNotSeekableError` (see the pipe guardrails above).
+    """
+    with pytest.raises(ValueError) as excinfo:
+        open_archive([_NonSeekable(b"x" * 100), _NonSeekable(b"y" * 100)])
+    assert type(excinfo.value) is ValueError
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="F3: caller misuse and capability refusal are both typed everywhere else",
+)
+def test_empty_source_sequence_is_a_usage_error() -> None:
+    """F3 (red half): an empty sequence is caller misuse, so `ArchiveyUsageError`."""
+    with pytest.raises(ArchiveyUsageError):
+        open_archive([])
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="F3: a non-seekable volume is the same refusal as a non-seekable single "
+    "source, which is already StreamNotSeekableError",
+)
+def test_non_seekable_volume_sequence_is_a_stream_error() -> None:
+    """F3 (red half): match the single-source spelling of the same refusal."""
+    with pytest.raises(StreamNotSeekableError):
+        open_archive([_NonSeekable(b"x" * 100), _NonSeekable(b"y" * 100)])
+
+
+# ---------------------------------------------------------------------------
+# F4 — ZIP maps every ValueError to CorruptionError, including "already closed"
+# ---------------------------------------------------------------------------
+
+
+def _zip_bytes() -> bytes:
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+    return buf.getvalue()
+
+
+def test_zip_underlying_close_is_reported_as_corruption() -> None:
+    """F4 (pin): closing the underlying `ZipFile` under a live reader reads as damage.
+
+    Distinct from the settled `#225` behaviour: a normal `reader.close()` followed by
+    `open()` already raises `ArchiveyUsageError` (pinned by the uniform-surface test
+    above). Only this path — the underlying handle closed while the reader still
+    believes it is open — lands in the ZIP translator's blanket `ValueError` arm.
+    """
+    from archivey import CorruptionError
+
+    with open_archive(io.BytesIO(_zip_bytes())) as reader:
+        member = next(m for m in reader.members() if m.type is _FILE)
+        reader._archive.close()  # type: ignore[attr-defined]  # deliberate: simulate the fault
+        with pytest.raises(CorruptionError):
+            reader.open(member)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="F4: an already-closed handle is a lifecycle fault, not archive damage; "
+    "reporting it as CorruptionError sends a caller hunting a bad file",
+)
+def test_zip_underlying_close_is_a_usage_error() -> None:
+    """F4 (red half): the archive bytes are fine — the handle is not."""
+    with open_archive(io.BytesIO(_zip_bytes())) as reader:
+        member = next(m for m in reader.members() if m.type is _FILE)
+        reader._archive.close()  # type: ignore[attr-defined]
+        with pytest.raises(ArchiveyUsageError):
+            reader.open(member)
+
+
+# ---------------------------------------------------------------------------
+# F5 — single-file compressed_size is still Path-gated
+# ---------------------------------------------------------------------------
+
+_SINGLE_FILE_KEYS = ["gz", "bz2", "xz", "zst", "lz4", "lz", "zz", "br"]
+
+
+@pytest.mark.parametrize("key", _SINGLE_FILE_KEYS)
+def test_single_file_compressed_size_is_path_gated(key: str, tmp_path: Path) -> None:
+    """F5 (pin): `compressed_size` is filled for a Path and `None` for a `BytesIO`.
+
+    This is the residual the `#225` Path/seekable sweep did not reach, and it holds for
+    **every** single-file codec, not just gzip: `single_file_reader.py:173` uses
+    `os.path.getsize` behind an `isinstance(..., Path)` check with no seekable-stream
+    fallback, while the trailer/CRC probes beside it already handle both.
+    """
+    path = _archive("single-file", key, tmp_path)
+    with open_archive(path) as reader:
+        from_path = reader.members()[0].compressed_size
+    with open_archive(io.BytesIO(path.read_bytes())) as reader:
+        from_stream = reader.members()[0].compressed_size
+
+    assert isinstance(from_path, int)
+    assert from_stream is None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="F5: a seekable stream can answer this with one SEEK_END, exactly as the "
+    "trailer probes next to it already do",
+)
+@pytest.mark.parametrize("key", ["gz", "xz"])
+def test_single_file_compressed_size_is_not_path_gated(
+    key: str, tmp_path: Path
+) -> None:
+    """F5 (red half): source shape must not decide whether the field exists."""
+    path = _archive("single-file", key, tmp_path)
+    with open_archive(path) as reader:
+        from_path = reader.members()[0].compressed_size
+    with open_archive(io.BytesIO(path.read_bytes())) as reader:
+        from_stream = reader.members()[0].compressed_size
+
+    assert from_path == from_stream
+
+
+def test_container_formats_report_compressed_size_from_either_shape(
+    tmp_path: Path,
+) -> None:
+    """F5 (guardrail): the container backends already do it right — keep them there."""
+    path = _archive("basic", "zip", tmp_path)
+    with open_archive(path) as reader:
+        from_path = next(m for m in reader.members() if m.type is _FILE).compressed_size
+    with open_archive(io.BytesIO(path.read_bytes())) as reader:
+        from_stream = next(
+            m for m in reader.members() if m.type is _FILE
+        ).compressed_size
+    assert from_path == from_stream and from_path is not None
+
+
+# ---------------------------------------------------------------------------
+# F9 — header encryption needs the password at open (format law), and the
+# user guide's laziness bullet does not say so
+# ---------------------------------------------------------------------------
+
+
+def test_header_encrypted_7z_needs_the_password_at_open(tmp_path: Path) -> None:
+    """F9 (guardrail): format law — the listing itself is ciphertext.
+
+    Pinned because it bounds the `#225` laziness fix: *data* encryption stays lazy,
+    *header* encryption cannot. `docs/reading-members.md` currently states the lazy
+    half without the bound (finding F11).
+    """
+    from archivey import EncryptionError
+
+    entry = _entry("encrypted-header")
+    if "7z" not in entry.formats:
+        pytest.skip("no header-encrypted 7z corpus entry")
+    availability = format_availability(FORMAT_KEYS["7z"])
+    if availability.support is FormatSupport.NONE:
+        pytest.skip(f"7z not readable here: {availability.missing}")
+    path = corpus_archive_path(entry, "7z", tmp_path)
+
+    with pytest.raises(EncryptionError):
+        open_archive(path)
+    with open_archive(path, password=entry.passwords[0]) as reader:
+        assert len(reader.members()) > 0
+
+
+def test_data_encrypted_members_still_list_without_a_password(tmp_path: Path) -> None:
+    """F9 (guardrail): the other half — data encryption stays lazy, per `#225`."""
+    entry = _entry("encrypted")
+    key = next((k for k in ("zip", "7z") if k in entry.formats), None)
+    if key is None:
+        pytest.skip("no data-encrypted corpus entry in a measurable format")
+    availability = format_availability(FORMAT_KEYS[key])
+    if availability.support is FormatSupport.NONE:
+        pytest.skip(f"{key} not readable here: {availability.missing}")
+    path = corpus_archive_path(entry, key, tmp_path)
+
+    with open_archive(path) as reader:  # no password at all
+        assert len(reader.members()) > 0
+
+
+# ---------------------------------------------------------------------------
+# F10 — the bidi/RTL warning is ambient only
+# ---------------------------------------------------------------------------
+
+
+def test_bidi_name_warning_has_no_diagnostic_code() -> None:
+    """F10 (pin): the RTL/bidi warning is a bare `logger.warning`, not queryable data.
+
+    `VISION.md`: "anything the library can only *warn* about should ideally also be
+    queryable as data — a logging warning most applications never see is a surprise
+    deferred, not avoided." Every other advisory in the library has a `DiagnosticCode`;
+    this one does not, which makes it the single ambient-only advisory.
+    """
+    from archivey.diagnostics import DiagnosticCode
+
+    codes = {c.value for c in DiagnosticCode}
+    assert not any("bidi" in c or "bidirectional" in c or "rtl" in c for c in codes)
+    # ... while name *normalization*, its neighbour in the same helper, does have one.
+    assert "member_name_normalized" in codes
