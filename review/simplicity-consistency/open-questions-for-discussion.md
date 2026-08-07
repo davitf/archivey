@@ -341,21 +341,41 @@ question "which decoder do we keep, and for how long?" has no obvious answer:
   decoder outlives the member stream that created it — and if so, what owns it, and what
   does `close()` on the archive have to tear down?
 
-**The first thing to check, before any of the above.** *Is it actually a non-issue?*
-Specifically: **on the backends that declare `concurrent_members`, does the implementation
-already materialize member data (to a temp file or memory) rather than keeping N live
-decoders?** If it does, then concurrent members never hold a reusable decoder in the first
-place, the two mechanisms don't interact, and O2b's forward-reuse rule can be specified
-against the single-live-stream path alone — which is the easy case. That would shrink this
-question from "design a cache" to "write down that they are disjoint."
+### The cheap check, run — and it comes back "no"
 
-That check is cheap and should precede the brainstorm. If it comes back "yes, already
-materialized," O2b is unblocked immediately. If it comes back "no, N live decoders," then
-the bullets above are the agenda.
+The hope was that this might be a non-issue: **do the backends that declare
+`concurrent_members` already materialize member data rather than keeping N live decoders?**
+If so the two mechanisms never interact and O2b could be specified against the
+single-live-stream path alone. **Measured, and they do not.**
 
-**Not measured for this document.** The concurrency paths were explicitly outside the
-review's scope (see "Not examined at all" at the end), so nothing here is backed by a
-measurement — unlike the O2b numbers above.
+On a 6-member single-folder solid 7z (200 KB per member, 1.2 MB payload,
+`solid_block_count=1`), under `open_archive(concurrent_members=True)`:
+
+| | |
+|---|---|
+| Open members 1 and 4 simultaneously, read both | **succeeds** |
+| `IoStats.bytes_decompressed` for those two reads | **1 400 000** |
+| Expected if each decodes independently from the folder start | 400 000 + 1 000 000 = **1 400 000** |
+| Same second `open()` **without** `concurrent_members` | `ConcurrentAccessError` |
+
+So two members of the *same* solid folder hold **two independent live decode pipelines**,
+each decoding from the folder's start, at the same time. The CONCURRENT fan-out in this
+library is over the **listing snapshot** ("first-touch materialization" in
+`reader_state.py` is the member list, not member data) — member reads are not materialized.
+
+The code says the same thing: `_open_member` calls `_open_folder_stream` →
+`open_folder_pipeline` unconditionally on every call
+(`src/archivey/internal/backends/sevenzip_reader.py:535`), and the comment at `:554`
+already acknowledges it — *"each from-start folder decode counts."*
+
+**So the bullets above are the agenda, not a formality.** N concurrent opens on one solid
+folder means N live LZMA states, each carrying its own dictionary; "hold the decoder open"
+has to answer what happens to all N when they close. RAR solid blocks are the same
+question and are unmeasured (the corpus cannot build RAR here — see O6).
+
+**Registered as backlog**, with this context, in `dev-docs/IDEAS.md` §Performance &
+robustness, next to the existing "Parallel extraction / concurrent member streams" entry.
+Promote by writing an `openspec` change.
 
 ---
 

@@ -280,10 +280,16 @@ uninformative — F10).
 | `vocabulary.md` | surface-vocabulary leftovers that freeze at the tag |
 | [`open-questions-for-discussion.md`](open-questions-for-discussion.md) | **Shareable standalone brief** — every still-open item written for a reader with no prior context; safe to circulate outside the project |
 | `q13-rewind-diagnostic.md` | Q13 worked through: the resolution, three drafts (docstring / O-23 reframe + 14-code audit / spec note), and **F19** |
-| `QUESTIONS.md` | 16 maintainer decisions — **all ruled on**, each with severity, evidence, fix vehicle, and the decision recorded inline; plus the pay list re-ranked against them |
+| `QUESTIONS.md` | 16 maintainer decisions — **all ruled on**, each with severity, evidence, fix vehicle, and the decision recorded inline; plus the pay list re-ranked against them, and the Round-2 resolution index |
+| [**`WORKPLAN.md`**](WORKPLAN.md) | **Start here to do the work.** The nine concrete deliverables — W1–W9 — each a single PR or `openspec` change, with change ids, files, spec deltas, the red halves that flip, and the dependency order |
 | `repro/probe_matrix.py` | the generator — runs the whole matrix by execution |
 | `repro/matrix.md`, `repro/matrix.json` | its output at this commit |
-| `tests/test_review_simplicity_consistency.py` | **54 guardrails + 15 strict-xfail red halves**, in `tests/` so CI runs them |
+| `tests/test_review_simplicity_consistency.py` | **61 guardrails + 16 strict-xfail red halves**, in `tests/` so CI runs them |
+
+**Two axes, on purpose.** `QUESTIONS.md`'s pay list ranks outcomes by *what unblocks
+what*; `WORKPLAN.md` groups the same outcomes into *units of work* — six findings that
+each add a diagnostic code become one change there, not six. Use the pay list to decide
+what matters; use the work plan to actually ship it.
 
 ## Baseline (this environment, `[all]` config)
 

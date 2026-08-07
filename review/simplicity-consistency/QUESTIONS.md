@@ -574,6 +574,13 @@ Every question was answered, so this is no longer a "pick a few" list — it is 
 the decisions imply, ordered by what unblocks what. **None of it is implemented in this
 PR**; the review stays analysis-only until each item gets its own change.
 
+> **To actually do this work, see [`WORKPLAN.md`](WORKPLAN.md).** It regroups these rows
+> into **nine deliverables (W1–W9)**, each a single PR or `openspec` change with a change
+> id, the files it touches, its spec deltas, the red halves that flip, and the dependency
+> order. The two lists differ on purpose: this one ranks by *what unblocks what*, the work
+> plan groups by *what ships together* — the six rows that each add a diagnostic code are
+> one change there (W4), not six.
+
 ### Tier 1 — bugfix PRs, red halves already committed
 
 | # | Work | Notes |
@@ -623,4 +630,4 @@ taxonomy and the policy plumbing.
 | 15b | **F19 / O1** — replace the rewind predicate with the seek's re-decode distance. **Now specified:** cost = `target − nearest preceding seek point`; **absolute** byte threshold; **record once per stream, evaluate the policy on every qualifying seek.** | Still a *behaviour* change and still the one item here that needs care. One empirical unknown remains: whether `rapidgzip` exposes its index spacing — if not, that path keeps the accelerator-presence rule and the spec must admit the predicate is not uniform. OpenSpec change on `seekable-decompressor-streams` + bugfix; guardrails already committed. |
 | 16 | ~~**Q16 / C1**~~ — **answered by O3**: keep per-archive placement, keep both names, and the "before the tag" deadline dissolves because a per-`open()` flag is purely additive later. Vehicle drops to **decision only**; no spec edit needed. | — |
 | 17 | **O2b** — hold the 7z folder decoder open across `open()` calls, forward-reuse only, closing the measured 4.5×-vs-1.0× gap against `.tar.gz` | Direction agreed by both reviews and scoped (forward reuse only, no cache, no eviction policy). Not tag-gated. **Blocked on 18.** |
-| 18 | **O2c** — decide what decoder reuse means when members are opened *concurrently* | **The only item in this file with no proposed answer.** Neither outside review engaged with it. First step is a cheap factual check, not a design session: do the backends that declare `concurrent_members` already materialize member data rather than holding N live decoders? If yes, the two mechanisms are disjoint and 17 unblocks immediately. If no, the open sub-questions are keep-all-vs-keep-one, eviction policy, memory budget, closest-preceding selection, and interaction with the single-live-stream rule. The concurrency paths were **not measured by this review**. |
+| 18 | **O2c** — decide what decoder reuse means when members are opened *concurrently* | **The only item in this file with no proposed answer**, and now **deliberately deferred** — registered in `dev-docs/IDEAS.md` §Performance & robustness with full context. The cheap "is it already a non-issue?" check was run and came back **no**: two members of the *same* solid 7z folder open concurrently hold **two independent live decodes**, `bytes_decompressed = 1 400 000` for two 200 KB members (`sevenzip_reader.py:535`). So the agenda stands: keep-all-vs-keep-one, eviction policy, memory budget, closest-preceding selection, decoder lifetime past its member stream, and interaction with the single-live-stream gate. Needs its own brainstorm, then an `openspec` change. |
