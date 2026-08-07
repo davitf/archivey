@@ -76,6 +76,23 @@ class AcceleratorMode(Enum):
 RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 1 * 1024 * 1024
 
 
+# How many decompressed bytes a backward seek must re-decode before
+# STREAM_REWIND_REDECOMPRESSES reports it: target offset minus the nearest preceding
+# seek point, measured at seek time.
+#
+# ABSOLUTE, NOT RELATIVE, and the counterexample is why. A relative rule ("you re-decoded
+# more than the distance you jumped") sounds like it captures disproportionate work, but
+# on a 1 GB single-block .xz, seeking from the end back to 900 MB re-decodes 900 MB while
+# jumping only ~100 MB — a 0.11x ratio, under any sane relative threshold. Relative goes
+# quietest exactly where the absolute cost is highest. The caller cares about wall time,
+# which tracks bytes re-decoded.
+#
+# Same number as RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE above. They measure different
+# quantities (compressed input size vs decompressed re-decode distance) but encode the
+# same judgement: below about a megabyte the work is not worth a caller's attention.
+REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for :func:`archivey.extract` / :meth:`extract_all`.

@@ -52,6 +52,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
   assertion that this archive is encrypted, and a batch caller passing one keyring
   across mixed input should not fail on the one plain `.tar`. A *wrong* password on an
   *encrypted* archive still raises `EncryptionError`.
+- **`STREAM_REWIND_REDECOMPRESSES` is now cost-based.** It used to fire on the codec's
+  *identity*, decided once at open, so xz / lzip / unix-compress never emitted — even
+  though a single-block `.xz` (what `lzma.compress` and un-threaded `xz` produce) has one
+  seek point at the origin and rewinds exactly like a codec with no index. Measured while
+  fixing this, `rapidgzip`'s index has the same property: three block offsets across a
+  5 MB stream, so a backward seek can discard megabytes with the accelerator engaged and
+  the old rule said nothing there either. The predicate is now the decoded progress the
+  rewind discards, against an absolute 1 MiB threshold, uniformly across codecs — so
+  small rewinds that used to warn are now quiet, and large ones that used to be silent
+  now report. The diagnostic is still **recorded** once per stream, but a `RAISE` policy
+  is now evaluated on **every** qualifying seek: a tripwire that disarms after firing once
+  is not a tripwire.
 - **`strict_archive_eof=True` now asserts what it documents.** It used to check only
   that the two-block TAR trailer was present, so 4 KiB of arbitrary appended bytes passed
   silently under the flag you set for "a provably complete listing". Every byte from the

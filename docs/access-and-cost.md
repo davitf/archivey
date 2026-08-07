@@ -95,8 +95,20 @@ With `seekable_members=True`:
 
 - XZ / lzip can seek via native indexes
 - gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed
-- otherwise a backward seek may **re-decompress from the start** (loud diagnostic, not
-  silent)
+- otherwise a backward seek may **re-decompress from the start**
+
+Whether that gets a diagnostic is decided by **what the seek actually costs**, not by the
+codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the rewind discards more than
+about a megabyte of decoded progress — the bytes you would have to decode again to get
+back where you were. That matters because a format that *can* carry an index does not
+always *have* a useful one. A single-block `.xz` (what `lzma.compress` and un-threaded
+`xz` produce) has exactly one seek point, at the origin, so rewinding it costs the same
+as rewinding a codec with no index at all — and an engaged `rapidgzip` can hold an index
+sparse enough for the same thing. Small rewinds stay quiet on every codec.
+
+If you set a `DiagnosticPolicy` to `RAISE` on that code as a guard against accidentally
+quadratic seek loops, note that it fires on **every** qualifying seek, not only the
+first — the report still records one entry.
 
 The flag changes what member streams can *do*, and nothing else. It does not change what
 `members()` reports: the xz index and lzip trailer are read from any seekable source, so

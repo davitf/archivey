@@ -743,47 +743,30 @@ def _single_block_xz(tmp_path: Path) -> Path:
 
     `xz` without threading writes a single block too, so this is the common shape,
     not a contrived one.
+
+    2 MB rather than the 1 MB the review used: the fix's threshold is
+    `REWIND_REDECODE_WARN_BYTES` = 1 **MiB** (1 048 576), and 1 000 000 sits just under
+    it, so the original payload would have measured the threshold rather than the
+    blind spot.
     """
     import lzma
     import random
 
     path = tmp_path / "one_block.xz"
-    path.write_bytes(lzma.compress(random.Random(7).randbytes(1_000_000)))
+    path.write_bytes(lzma.compress(random.Random(7).randbytes(2_000_000)))
     return path
 
 
-def test_single_block_xz_rewind_is_silent(tmp_path: Path) -> None:
-    """F19 (pin): a full backward seek on a single-block xz emits no diagnostic.
-
-    The predicate for `STREAM_REWIND_REDECOMPRESSES` is codec identity, decided once
-    at open (`codecs.py` `rewind_warning`), and XZ returns `None` unconditionally
-    because the format *can* carry a block index. A single-block file's index is
-    degenerate — one seek point at the origin — so the seek re-decodes from byte 0
-    exactly like an index-less codec, and says nothing.
-
-    The consequence that matters is not the missing message: a `DiagnosticPolicy` set
-    to `RAISE` to guard against quadratic seeks does not fire here either.
-    """
-    path = _single_block_xz(tmp_path)
-    with open_stream(path, seekable=True) as stream:
-        payload_len = len(stream.read())
-        stream.seek(10)  # full rewind: nothing before it but the origin
-        stream.read(4)
-        assert payload_len > 0
-        assert dict(stream.diagnostics.counts) == {}
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="F19: a degenerate index re-decodes from the start like no index at all; "
-    "the predicate should be the seek's re-decode distance, not the codec's name",
-)
 def test_full_rewind_emits_regardless_of_codec(tmp_path: Path) -> None:
-    """F19 (red half): the same work should produce the same signal.
+    """F19 (fixed): the same work produces the same signal.
 
-    A backward seek that re-decodes the whole stream is the event the diagnostic
-    exists for. Whether the codec *could* have carried a useful index is irrelevant
-    when this particular file does not.
+    A backward seek that throws away the whole decoded stream is the event the
+    diagnostic exists for. Whether the codec *could* have carried a useful index is
+    irrelevant when this particular file does not: a single-block xz has one seek point
+    (the origin), so the rewind costs exactly what an index-less codec's does.
+
+    The predicate used to be codec identity, decided once at open, and XZ returned
+    ``None`` unconditionally because the *format* can carry a block index.
     """
     from archivey.diagnostics import DiagnosticCode
 
@@ -792,8 +775,65 @@ def test_full_rewind_emits_regardless_of_codec(tmp_path: Path) -> None:
         stream.read()
         stream.seek(10)
         stream.read(4)
-        assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES.value in dict(
+        assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES in dict(
             stream.diagnostics.counts
+        )
+
+
+def test_cheap_rewind_stays_silent(tmp_path: Path) -> None:
+    """F19 (guardrail): the predicate is cost, so a *small* rewind must go quiet.
+
+    The old codec-identity rule warned on any backward seek in an index-less stream,
+    including a 1 KB one, which is noise. This is the other half of the same fix and the
+    half a cost-based rule could regress by simply always warning.
+    """
+    import lzma
+
+    from archivey.diagnostics import DiagnosticCode
+
+    path = tmp_path / "small.lzma"
+    path.write_bytes(lzma.compress(b"x" * 1000, format=lzma.FORMAT_ALONE))
+    with open_stream(path, seekable=True) as stream:
+        stream.read()
+        stream.seek(0)
+        stream.read(4)
+        assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES not in dict(
+            stream.diagnostics.counts
+        )
+
+
+def test_rewind_policy_escalates_on_every_qualifying_seek(tmp_path: Path) -> None:
+    """F19 / O1: recorded once, escalated always.
+
+    The tripwire is the diagnostic's real job — a `RAISE` policy so a batch job aborts
+    instead of silently going quadratic — and a guard that disarms after firing once is
+    not a guard. Deduplication is a presentation concern for the report; escalation is
+    control flow for a caller who explicitly asked to be stopped.
+    """
+    from archivey import ArchiveyConfig, DiagnosticRaisedError
+    from archivey.diagnostics import (
+        DiagnosticCode,
+        DiagnosticDisposition,
+        DiagnosticPolicy,
+    )
+
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy(
+            overrides={
+                DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: DiagnosticDisposition.RAISE
+            }
+        )
+    )
+    path = _single_block_xz(tmp_path)
+    with open_stream(path, seekable=True, config=config) as stream:
+        stream.read()
+        for _ in range(2):
+            with pytest.raises(DiagnosticRaisedError):
+                stream.seek(10)
+            stream.read()
+        # ...and the report still holds exactly one record, not one per seek.
+        assert (
+            stream.diagnostics.counts[DiagnosticCode.STREAM_REWIND_REDECOMPRESSES] == 1
         )
 
 
