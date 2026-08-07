@@ -33,3 +33,24 @@
 - [x] 4.1 `openspec validate --strict decouple-member-metadata-from-declared-seekability`
 - [x] 4.2 `uv run pytest` in all three dependency configs, `ruff check`,
       `ruff format --check`, `pyrefly check`, `ty check`.
+
+## Archive (after this merges)
+
+Left unchecked on purpose: `scripts/check_openspec_archived.py` reads an all-complete
+tasks list as "finished but unarchived" and fails on `main`, and archiving is a separate
+step from merging (`CONTRIBUTING.md`).
+
+- [ ] A.1 `openspec archive decouple-member-metadata-from-declared-seekability --yes`, then commit the resulting
+      `openspec/specs/` diff.
+
+**Archive order matters.** Several of these changes modify the same requirement, so a
+later one pastes an earlier one's version and only matches once that has been applied:
+
+```
+format-availability-required-source -> decouple-member-metadata-from-declared-seekability -> review-diagnostics-batch -> reject-bidi-overrides-in-safe-extraction -> strict-archive-eof-trailing-bytes -> rewind-diagnostic-redecode-cost
+```
+
+Verified by dry-run archive on a scratch tree in that order: all six apply, and the only
+lines removed from `openspec/specs/` are ones a delta deliberately rewrites. (`openspec
+validate --strict` does **not** catch a mis-targeted `MODIFIED` header — it passed while
+two deltas would have silently dropped a scenario on archive.)

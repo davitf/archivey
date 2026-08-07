@@ -47,7 +47,7 @@ least one **directional mark** case proving it is *not* rejected:
 | Archive member named `../evil` is extracted | `PathTraversalError`; destination outside tree remains untouched |
 | Truncated or CRC-invalid archive is read | `CorruptionError` or `TruncatedError`; original exception is `__cause__` |
 
-#### Scenario: bidi diagnostic is backend-independent
+#### Scenario: RTL warning is backend-independent
 
 - **WHEN** any backend presents a member whose name contains U+202E RIGHT-TO-LEFT OVERRIDE
 - **THEN** the name is presented as stored and exactly one `MEMBER_NAME_BIDI_CONTROL` diagnostic is emitted for that presentation
