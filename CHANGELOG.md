@@ -84,6 +84,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Security
 
+- **Bidi override filenames are refused during extraction.** A member name or link
+  target containing a Unicode bidi override or isolate (U+202A–202E, U+2066–2069) is
+  rejected with the new `DeceptiveNameError` — those characters reorder surrounding
+  text, which is how `evil‮gnp.exe` displays as a `.png`. The three *directional marks*
+  (U+061C, U+200E, U+200F) are deliberately **not** rejected: they reorder nothing and
+  appear in legitimate Arabic and Hebrew filenames. Listing and reading still present
+  every name exactly as stored, with `MEMBER_NAME_BIDI_CONTROL`.
 - Threat model and open residuals: `dev-docs/threat-model.md`.
 - Root [`SECURITY.md`](SECURITY.md) — private vulnerability reporting via
   [GitHub Security Advisories](https://github.com/davitf/archivey/security/advisories/new),

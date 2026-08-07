@@ -31,8 +31,24 @@ if TYPE_CHECKING:
 
 # Unicode bidi formatting controls can make the displayed order of a filename differ
 # materially from its stored order (for example, disguising an executable suffix).
-_BIDI_CONTROLS = frozenset(
+#
+# TWO SETS, AND THE DIFFERENCE MATTERS. Everything here is worth *telling* a caller
+# about; only the reordering subset below is refused during extraction.
+BIDI_CONTROLS = frozenset(
     "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+)
+
+# The embeddings, overrides and isolates: U+202A-202E (LRE/RLE/PDF/LRO/RLO) and
+# U+2066-2069 (LRI/RLI/FSI/PDI). These open a *span* and reorder the surrounding text,
+# which is exactly and only what the "\u2026gnp.exe" disguise needs.
+#
+# Deliberately NOT the three directional marks in the set above (U+061C ALM, U+200E LRM,
+# U+200F RLM): those set the direction of a single neutral character, reorder nothing,
+# and do occur in legitimate Arabic and Hebrew filenames. Enumerated rather than written
+# as `BIDI_CONTROLS - {marks}` so the marks stay one deliberate edit away from being
+# rejected, not one typo away.
+BIDI_REORDERING_CONTROLS = frozenset(
+    "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 )
 
 
@@ -59,7 +75,7 @@ def emit_member_name_bidi_control(
     name = member.name
     if name.isascii():
         return
-    found = [char for char in name if char in _BIDI_CONTROLS]
+    found = [char for char in name if char in BIDI_CONTROLS]
     if not found:
         return
     collector.emit(
