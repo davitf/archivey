@@ -19,15 +19,18 @@ completed changes out of `changes/`.
 
 | Dir | Review | Status |
 |-----|--------|--------|
-| `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; **phase 1 (audit) delivered** — `SUMMARY.md` + `inventory.md` + `QUESTIONS.md`. Awaiting phase-2 decisions (Q1 is blocking: it conflicts with `openspec/specs/documentation`). |
+| `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; phases 1–3 largely done (IA migrate + guide splits). Topic 8 content prose still open; see `STATUS.md`. |
+| `simplicity-consistency/` | Simplicity & consistency pass — uniform interface, accidental format/entry-point differences, spec honesty | Brief 2026-08-06; analysis-only until maintainer picks pay items. Prompted by docs cleanup / #225. |
 
 The round commissioned 2026-07-17 — the **non-security** pass toward the first public
 `0.2.0` — closed on 2026-07-28 when `debt-ledger/` and `performance/` were archived.
 Every finding there is fixed, accepted, or recorded as an explicit deferral.
 
-`backlog.md` holds what is left: Topic 6 (decode-engine perf, + parked stream-layering
-Q4), Topic 7 (outside-in adoption capstone — the **capstone**, meaningful only once
-everything else is addressed), and the parked-from-archive table.
+`backlog.md` holds what is left: Topic 8 (documentation *content*), Topic 6
+(decode-engine perf, + parked stream-layering Q4), Topic 7 (outside-in adoption
+capstone — the **capstone**, meaningful only once everything else is addressed), and
+the parked-from-archive table. Topic 9 is the in-flight `simplicity-consistency/` row
+above. `STATUS.md` records the intended ordering.
 
 Note that an empty `review/` does **not** mean `0.2.0` is ready: the release bundle
 (`PLAN.md` item 6 — packaging finalize, the free-threading support statement, the
