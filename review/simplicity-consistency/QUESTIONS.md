@@ -22,7 +22,7 @@
 > | Q13 | F12 `STREAM_REWIND` | **Reopened → worked.** Resolution + drafts in [`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md); spawned **F19** |
 > | Q14 | F13 + F14 docs/imports | **Do both** |
 > | Q15 | F15 `unrar` `RuntimeError` | **Map it** |
-> | Q16 | C1 `seekable` vocabulary | **Revisit before the tag** (overrides the merged verdict) |
+> | Q16 | C1 `seekable` vocabulary | **Revisit before the tag** (overrides the merged verdict) — *superseded by O3, see Round 2* |
 >
 > **Two rulings go against this review's recommendation, deliberately** — Q13 and Q16.
 > Both are recorded as-decided; see those sections for what the decision now requires.
@@ -32,6 +32,7 @@
 > carries a recommendation — **decided-no**, because solid open has a *better* open-time
 > data signal (`cost.access_cost == SOLID`) than the rewind does, so if the rewind does
 > not warrant an ambient warning, solid open certainly does not.
+> *(**Closed in Round 2 as O2a**, unanimously, on exactly that reasoning.)*
 >
 > **Q13 vindicated its override.** Working it produced a resolution neither pass reached
 > and a new `CONFIRMED` finding (**F19**: the rewind predicate is silent for a degenerate
@@ -39,6 +40,33 @@
 >
 > The review itself remains **analysis-only** — nothing below is implemented in this
 > PR. The pay list at the foot of this file is re-ranked against these decisions.
+
+> ## Round 2 — resolutions after outside comment (2026-08-07)
+>
+> The residue of the sixteen was written up as
+> [`open-questions-for-discussion.md`](open-questions-for-discussion.md) (O1–O8) and sent
+> for outside comment. Two independent reviews came back; **eight of the ten items are now
+> resolved.** Full reasoning lives in that document — this table is the index.
+>
+> | O | Question | Resolution | Touches |
+> |---|---|---|---|
+> | O1 | Rewind diagnostic predicate | Cost-based (`target − nearest preceding seek point`), **absolute** byte threshold, and **record once / evaluate policy every time** | Q13, F19 |
+> | O2a | Warn on out-of-order solid `open()` | **No.** Record the decision in the spec — the last formally-open sub-question from the table above is now closed | Q13 |
+> | O2b | Hold the decompressor open across `open()` | **Yes in principle**, scoped to *forward reuse only*; not tag-gated; blocked on O2c | new |
+> | **O2c** | **Decoder lifetime under concurrent members** | **OPEN — the only unanswered item.** Check first whether concurrency already materializes | new |
+> | O3 | Where to express seekability | **Per-archive, keep both names.** Per-`open()` is purely additive later, so nothing is foreclosed | **Q16** |
+> | O4 | Pipe-readability field shape | **`required_source: StreamCapability`**, read as an ordered *minimum requirement* | Q8 |
+> | O5 | Argument the backend can't act on | **Split by intent** — assertions refuse, offered resources permit. `password=` becomes permissive in *all* forms | Q2, Q7 |
+> | O6 | RAR corpus on CI | Still open on *how*; **diagnosis redirected** — payload-digest hypothesis is ruled out, look at mode bits / uid / gid / mtime | Q11 |
+> | O7 | Reject bidi names? | **Reject overrides/isolates** (U+202A–202E, U+2066–2069) in safe extraction; **keep marks** (U+061C, U+200E, U+200F) warn-only | Q10 |
+> | O8 | `strict_archive_eof` / empty TAR | **(a)** zero members must **not** raise — an empty tar is byte-identical to zeros; add `EMPTY_ARCHIVE` + after-the-fact detection for the extension path. **(b)** `strict_archive_eof` asserts *nothing but zeros from trailer to EOF* | Q7, F20 |
+>
+> **Two round-1 leanings were reversed**, both on argument rather than preference: O1's
+> threshold (relative → absolute) and O8's empty-TAR question (open → definitely-not-raise).
+> Each reversal is spelled out where it happened, including the middle option this review
+> proposed and that the measurement killed.
+>
+> **Q16 is answered by O3** — see that section below.
 
 
 Sixteen decisions, merged from the two independent passes (PR #230 and PR #231). Each
@@ -503,6 +531,27 @@ worth one confirmation that the spec still says what you want.
   name.)*
 - **Vehicle:** decision only.
 
+### Round 2 — **answered by O3, and the "before the tag" framing is retracted**
+
+Two outside reviews took this up as O3 and converged. Three parts:
+
+1. **The names stay.** `seekable_members=` on `open_archive`, `seekable=` on
+   `open_stream`. No third spelling was proposed that read better in both contexts.
+   `archive-reading` §"Declared member-stream capabilities" therefore stands unedited —
+   but now because it is right, not merely because it is there.
+2. **The real question underneath was placement, not naming** — should the capability be
+   `archive.open(member, seekable=True)` instead? Answer: keep it per-archive, because
+   declaring seekability drives *open-time* work (whether a seek index is built, whether
+   an accelerator is selected), and a per-`open()` flag forces either lazy index
+   construction (new state and lifetime questions, related to O2c) or unconditional
+   construction (taxing callers who never seek).
+3. **The deadline in the ruling above dissolves.** Adding `archive.open(member,
+   seekable=True)` later is a *purely additive* API change — a new keyword with a
+   behaviour-preserving default. So per-archive-now forecloses nothing, and this stops
+   being pre-freeze work. **The vehicle drops from "OpenSpec change, then implementation"
+   to "decision only,"** which is what the merged verdict originally said — reached this
+   time by argument rather than by deferring to the spec.
+
 ---
 
 ## Also decided, no action
@@ -543,13 +592,18 @@ marker is removed — that is the signal the fix landed.
 | # | Work | Spec touched |
 |---|---|---|
 | 6 | **Q1 / F1** — decouple metadata harvest from `seekable_members` | `format-single-file-compressors` (the XZ row is already wrong) |
-| 7 | **Q8 / F8** — capability axis on `FormatAvailability`, reusing `StreamCapability` | `backend-registry` / `packaging-and-extras` — do before the surface freezes |
+| 7 | **Q8 / F8** — add `required_source: StreamCapability` to `FormatAvailability` (O4) | `backend-registry` / `packaging-and-extras` — **the only tag-gated item in this file** |
 | 8 | **Q2 / F2** — diagnostic when `encoding=` is passed to a backend that ignores it | `diagnostics` + the affected `format-*` specs |
+| 8b | **O5** — make `password=` permissive in *all* forms (static string, list, provider) with a diagnostic when unused, and write down the assertion-vs-resource rule | `archive-reading` + `diagnostics`. Removes the measured static/provider asymmetry. |
 | 9 | **Q7 / F7** — diagnostic when an explicit `format=` yields an empty listing | `archive-reading` / `format-detection` |
+| 9b | **O8a** — `EMPTY_ARCHIVE` diagnostic, plus after-the-fact detection when an *extension*-chosen format yields an empty listing | `diagnostics` + `format-detection`. Covers the layer Q7 does not (F20). |
 | 10 | **Q10 / F10** — `MEMBER_NAME_BIDI_CONTROL` diagnostic, and tighten the RTL clause | `diagnostics` + `testing-contract` |
+| 10b | **O7** — reject bidi *overrides/isolates* (U+202A–202E, U+2066–2069) in safe extraction; keep the three *marks* warn-only | `safe-extraction` + `testing-contract`. Do **not** reuse `_BIDI_CONTROLS` as the reject set — it is broader (`naming.py:32`). |
+| 10c | **O8b** — `strict_archive_eof` asserts nothing but zeros from the trailer to EOF | `format-tar`. Note the O(tail) cost on the flag's docstring. |
 
-Q2, Q7 and Q10 all add diagnostic codes; **worth landing as one `diagnostics` change**
-rather than three, since they share the taxonomy and the policy plumbing.
+Six of these add diagnostic codes — Q2, **O5**, Q7, **O8a**, Q10, and the O7 code —
+**worth landing as one `diagnostics` change** rather than six, since they share the
+taxonomy and the policy plumbing.
 
 ### Tier 3 — spec-only, docs-only, and process
 
@@ -558,20 +612,15 @@ rather than three, since they share the taxonomy and the policy plumbing.
 | 11 | **Q6 / F6** — drop `directory` from the leading-index row | OpenSpec change on `access-mode-and-cost`. Flips its red half; if that XPASSes *before* the change lands, the code moved instead — check which. |
 | 12 | **Q9 / F9** — caveat the laziness bullet in `reading-members.md` | docs-only; the published claim is currently false |
 | 13 | **Q14 / F13 + F14** — `must-explain` #25, and the two CLI imports | docs-only + 2-line import change |
-| 14 | **Q11 / F16** — make the RAR conformance sweep runnable on one CI leg | CI/testing change; touches `ci.yml`, possibly the RAR fixtures |
+| 14 | **Q11 / F16** — make the RAR conformance sweep runnable on one CI leg | CI/testing change; touches `ci.yml`, possibly the RAR fixtures. **Start by diffing member *metadata* across platforms (mode bits / uid / gid / mtime)** — the payload-digest hypothesis is ruled out (O6). |
+| 14b | **O2a** — record in `access-mode-and-cost` that a solid out-of-order `open()` deliberately emits no warning, and why | spec-only. Closes the last formally-open sub-question from the decisions table; rediscovered by two reviews already. |
 
 ### Tier 4 — design work the decisions opened
-
-Two rulings went against the review's recommendation and therefore create work rather
-than closing it:
 
 | # | Work | Why it is design, not a fix |
 |---|---|---|
 | 15 | ~~**Q13 / F12**~~ — **done**: worked through in [`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md). Three drafts ready (docstring / O-23 reframe + audit / `diagnostics` admission rule), no behaviour change. Moved to Tier 3 in practice. | — |
-| 15b | **F19** — replace the rewind predicate with the seek's re-decode distance | Genuine design work, and the one item here that is a *behaviour* change. Open sub-questions in the linked file: threshold shape (absolute vs relative), whether "once per stream" still holds under a cost-based predicate, and whether `rapidgzip` exposes index spacing. OpenSpec change on `seekable-decompressor-streams` + bugfix; guardrails already committed. |
-| 16 | **Q16 / C1** — revisit `seekable_members` vs `open_stream(seekable=)` | `archive-reading` §"Declared member-stream capabilities" currently **mandates** the present spelling, so the spec has to change *before* any rename or alias. Free until the tag; not free after. |
-
-**Still undecided, and it will resurface unless written down:** the O-23 sub-question
-inside Q13 — whether a solid out-of-order `open()` should emit a plain `warnings.warn`.
-Code and spec agree on "no warning" today and `VISION.md` argues against adding one, but
-that has never been recorded as a decision.
+| 15b | **F19 / O1** — replace the rewind predicate with the seek's re-decode distance. **Now specified:** cost = `target − nearest preceding seek point`; **absolute** byte threshold; **record once per stream, evaluate the policy on every qualifying seek.** | Still a *behaviour* change and still the one item here that needs care. One empirical unknown remains: whether `rapidgzip` exposes its index spacing — if not, that path keeps the accelerator-presence rule and the spec must admit the predicate is not uniform. OpenSpec change on `seekable-decompressor-streams` + bugfix; guardrails already committed. |
+| 16 | ~~**Q16 / C1**~~ — **answered by O3**: keep per-archive placement, keep both names, and the "before the tag" deadline dissolves because a per-`open()` flag is purely additive later. Vehicle drops to **decision only**; no spec edit needed. | — |
+| 17 | **O2b** — hold the 7z folder decoder open across `open()` calls, forward-reuse only, closing the measured 4.5×-vs-1.0× gap against `.tar.gz` | Direction agreed by both reviews and scoped (forward reuse only, no cache, no eviction policy). Not tag-gated. **Blocked on 18.** |
+| 18 | **O2c** — decide what decoder reuse means when members are opened *concurrently* | **The only item in this file with no proposed answer.** Neither outside review engaged with it. First step is a cheap factual check, not a design session: do the backends that declare `concurrent_members` already materialize member data rather than holding N live decoders? If yes, the two mechanisms are disjoint and 17 unblocks immediately. If no, the open sub-questions are keep-all-vs-keep-one, eviction policy, memory budget, closest-preceding selection, and interaction with the single-live-stream rule. The concurrency paths were **not measured by this review**. |

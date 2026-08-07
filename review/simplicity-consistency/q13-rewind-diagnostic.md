@@ -115,16 +115,29 @@ This is a behaviour change and it needs its own OpenSpec change on
 is what has to move). It is **independent** of drafts A–C below, which are docs/rule
 work with no behaviour change — so it should not hold them up.
 
-Open sub-questions for whoever takes F19:
+Open sub-questions for whoever takes F19 — **all three answered in round 2 (O1)**, after
+two outside reviews; see [`open-questions-for-discussion.md`](open-questions-for-discussion.md) §O1:
 
-1. **Threshold shape** — absolute bytes (mirroring `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`),
-   or relative ("re-decoded more than the distance you jumped")? The relative form is
-   more meaningful for a tripwire; the absolute form matches existing precedent.
-2. **Still once per stream?** With a cost-based predicate, "once" may be the wrong cap —
-   a caller doing many expensive seeks arguably wants each one to trip the guard. But
-   changing it breaks the specced "at most once per stream" and risks flooding.
-3. **Does `rapidgzip` expose its index spacing?** If not, that arm keeps the current
-   accelerator-presence rule, and the spec has to say the predicate is not uniform.
+1. **Threshold shape — absolute bytes.** ~~The relative form is more meaningful for a
+   tripwire~~ — *reversed.* Relative goes quietest exactly where absolute cost is
+   highest: on a 1 GB single-block `.xz`, seeking from the end back to 900 MB re-decodes
+   900 MB, but the jump distance is only ~100 MB, so the ratio is ~0.11× and stays under
+   any sane relative threshold. Relative measures inefficiency; the caller cares about
+   wall time, which tracks bytes re-decoded. Absolute also matches
+   `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`, so there is one threshold vocabulary.
+2. **Still once per stream — yes for recording, no for escalation.** Split the two jobs
+   that "once" was conflating: **record** the diagnostic at most once per stream (bounded
+   output, spec text unchanged in effect), but **evaluate the policy on every qualifying
+   seek**, so a `RAISE` policy stops the second expensive seek too. Deduplication is a
+   presentation concern for the report; escalation is control flow for a caller who asked
+   to be stopped. Dissolves the flooding-vs-tripwire tension instead of trading it off.
+   Note this is a change to how a deduplicated diagnostic relates to its policy in
+   general — decide whether it is the rule for *all* once-per-stream codes or a local
+   exception, and write it down either way.
+3. **`rapidgzip` index spacing — still unknown, and it is a measurement, not a decision.**
+   Check the accelerator's API; if the spacing is not retrievable, that arm keeps the
+   accelerator-presence rule and the spec has to say the predicate is not uniform across
+   codecs. Tracked as work.
 
 **Guardrails committed:** `test_single_block_xz_rewind_is_silent` (pins the blind spot),
 `test_full_rewind_emits_regardless_of_codec` (strict-xfail red half).
@@ -223,6 +236,15 @@ and `archive-reading:512` specifies the opposite.
 `CostReceipt` says "this codec has no seek index." If the rewind does not warrant an
 ambient warning, solid open certainly does not.
 
+> **RESOLVED in round 2 as O2a — decided-no, unanimously.** Both outside reviews reached
+> the same conclusion by the same argument, plus one more: a `warnings.warn` here would be
+> the library's first, against a `VISION.md` rule that prefers structured diagnostics
+> because *"a logging warning most applications never see is a surprise deferred, not
+> avoided."* **The deliverable is the written record, not a behaviour change** — the
+> behaviour is already right, and this has been rediscovered by three separate reviews
+> now. It belongs in `access-mode-and-cost` as an explicit "deliberately no warning, and
+> here is why."
+
 ---
 
 ## 5. Draft C — `diagnostics` spec note
@@ -249,8 +271,9 @@ normative rather than only living in an observation:
 | Draft A — docstring names the trap | docs-only | drafted; land with F1, sequence against F19 |
 | Draft B — reframed O-23 rule + 14-code audit | observation edit | drafted |
 | Draft C — normative admission rule | OpenSpec change on `diagnostics` | drafted |
-| Solid-open `warnings.warn` | the sub-question O-23 left open | **recommend decided-no**; needs the maintainer's word |
+| Solid-open `warnings.warn` | the sub-question O-23 left open | **RESOLVED (O2a) — no.** Unanimous in round 2; record it in `access-mode-and-cost` |
 | **F19** — predicate silent for a degenerate index | **new `CONFIRMED` finding** | behaviour change; own OpenSpec change; guardrails committed |
+| F19's three sub-questions | design | **RESOLVED (O1)** — absolute threshold; record-once/escalate-always; `rapidgzip` spacing is an open *measurement* |
 
 Net for the small half: one docstring paragraph, one rule rewrite, one spec note — no
 behaviour change, no new public surface. F19 is separate and larger.

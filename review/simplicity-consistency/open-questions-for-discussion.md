@@ -3,9 +3,30 @@
 **Written to be shared and read standalone.** No prior context needed; everything you
 need to form an opinion is inline. Dated 2026-08-07, against `main` @ `2792f9c`.
 
-If you only want to weigh in on one thing: **O1** and **O2b** are the two with real
-performance consequences, **O4** is the one with a deadline, and **O5** is the one where
-picking a principle would settle three separate arguments at once.
+**Revision 2** — this document went out for comment and came back with two independent
+reviews. Eight of the ten items are now settled and are marked **RESOLVED** in place, with
+the argument that decided them kept so the reasoning survives; one item (**O2b**) grew a
+new sub-question that nobody addressed and that is the actual blocker (**O2c**). If you
+read revision 1, the changed answers are O1's threshold shape and O8's "should an empty
+TAR raise" — both flipped, both for reasons worth reading.
+
+If you only want to weigh in on one thing, read **O2c** — the concurrent-members
+lifetime problem. It is the only item where no reviewer has yet offered an answer.
+
+### State at a glance
+
+| | Item | Status |
+|---|---|---|
+| O1 | Rewind diagnostic predicate | **Resolved** — cost-based, absolute threshold, record/escalate split |
+| O2a | Warn on out-of-order solid `open()` | **Resolved** — no |
+| O2b | Hold the decompressor open across `open()` | Direction agreed; blocked on O2c |
+| **O2c** | **Reuse under concurrent members** | **Open — the real question** |
+| O3 | Where to express "I want to seek" | **Resolved** — per-archive, keep both names |
+| O4 | Shape of the pipe-readability field | **Resolved** — `required_source: StreamCapability` |
+| O5 | Argument the backend can't act on | **Resolved** — split by intent |
+| O6 | Testing RAR without committed binaries | Open — diagnosis redirected, see below |
+| O7 | Reject bidi-override filenames? | **Resolved** — reject overrides, warn on marks |
+| O8 | `strict_archive_eof` / empty TAR | **Resolved** — don't raise; tighten the knob |
 
 ---
 
@@ -22,10 +43,12 @@ It is heading for its first public release, **`0.2.0`**. Nothing is on real PyPI
 **behaviour changes are still free** — "that would be breaking" is not an argument in any
 question below. What *is* costly is anything that freezes into the public API at the tag.
 
-A review just walked every caller-visible operation across 24 formats by running code
-(not reading it), and produced 19 findings. **Sixteen questions were asked and answered.**
-What follows is only what is still genuinely open — plus a few things that are decided but
-where the *execution* has an unresolved sub-choice.
+A review walked every caller-visible operation across 24 formats by running code (not
+reading it), and produced 20 findings. **Sixteen questions were asked and answered**, and
+this document carried the remainder. After two rounds of outside comment, **eight of those
+ten are now resolved too** — leaving O2c (new, and the only item with no answer proposed
+by anyone) and O6 (open, with its diagnosis redirected). The resolved items are kept in
+place with their reasoning, because several of them are the kind that get relitigated.
 
 Two useful conventions from the project, referenced below:
 
@@ -64,7 +87,8 @@ Three consequences that recur below:
    passes one configuration across heterogeneous input and wants it to apply where it
    can ("here are the twenty passwords we know"). The one-off caller wants a typo to
    fail loudly. That tension is exactly **O5**, and it is why "split by intent" —
-   assertions refuse, offered resources permit — looks better than picking one globally.
+   assertions refuse, offered resources permit — was chosen over picking one globally.
+   This framing did the deciding, which is the argument for keeping it written down.
 3. **Only groups 1 and 3 ever notice performance** — but they are the target audience,
    and they are the ones for whom a 4.5× cost cliff between two solid formats
    (**O2b**) or a silent quadratic seek (**O1**) actually matters.
@@ -140,19 +164,44 @@ One rule, no per-codec taxonomy. There's also precedent: the gzip path *already*
 size threshold rather than a codec rule, staying quiet below a floor because
 "the rewind is cheap enough that warning is noise."
 
-### What we actually need decided
+### RESOLVED — cost-based predicate, absolute threshold, record/escalate split
 
-1. **Threshold shape.** Absolute bytes (matching the existing gzip precedent), or
-   relative — "you re-decoded more than the distance you jumped"? The relative form is
-   more meaningful for a tripwire (it captures *disproportionate* work); the absolute
-   form matches what's already in the codebase.
-2. **Still "at most once per stream"?** That's the current specified behaviour and it
-   keeps output bounded. But under a cost-based predicate, a caller doing many expensive
-   seeks arguably wants *each* one to trip the guard — otherwise the tripwire fires once
-   and then goes quiet while the job stays quadratic. Changing it risks flooding.
-3. **Does `rapidgzip` expose its index spacing?** If not, that path keeps the current
-   accelerator-presence rule and the specification has to admit the predicate isn't
-   uniform across codecs.
+Both reviews and this review converged on the cost-based predicate above. The two
+sub-choices resolved as follows.
+
+**1. Threshold shape: absolute bytes, not relative.** Revision 1 leaned relative
+("you re-decoded more than the distance you jumped"), on the grounds that it captures
+*disproportionate* work. That is wrong on the case that matters most, and the
+counterexample is decisive:
+
+> A 1 GB single-block `.xz` stream. Seek from the end back to offset 900 MB. The nearest
+> seek point is the origin, so the redecode cost is 900 MB — enormous. But the *jump
+> distance* is only ~100 MB, so the relative ratio is ~0.11× — **well under any sane
+> relative threshold, and the tripwire stays silent.** The relative form goes quietest
+> exactly where the absolute cost is highest.
+
+Relative measures inefficiency; the caller cares about *wall time*, which tracks bytes
+re-decoded. It also matches the existing gzip precedent already in the codebase, so
+there is one threshold vocabulary rather than two.
+
+**2. "At most once per stream" — split recording from escalation.** This was the useful
+new idea and it dissolves the flooding-versus-tripwire tension rather than trading it off:
+
+- **Record** the diagnostic at most once per stream, as today. Bounded output, the
+  audit trail stays readable, no behaviour change for the passive reader.
+- **Evaluate the policy on every qualifying seek.** If a policy escalates the code to
+  `RAISE`, the *second* expensive seek raises too — the guard does not disarm itself
+  after firing once.
+
+The two jobs of this diagnostic are different jobs and were only ever coupled by
+implementation convenience. Deduplication is a presentation concern for the report;
+escalation is a control-flow concern for the caller who explicitly asked to be stopped.
+
+**3. `rapidgzip` index spacing — still empirical.** Nobody knows whether the accelerator
+exposes its index granularity. This needs a measurement, not a decision: check the API,
+and if the spacing isn't retrievable, that path keeps the current accelerator-presence
+rule and the specification has to say the predicate is not uniform across codecs. Flagged
+as work, not as an open question.
 
 Any answer needs a spec change (the current text explicitly says xz/lzip/unix-compress
 "SHALL NOT emit this event") plus the code change. Tests pinning today's blind spot are
@@ -180,13 +229,18 @@ plain Python `warnings.warn` instead?*
 the current specification says the opposite — "no diagnostic, no warning — discoverable
 via `reader.cost.access_cost` and the `open()` docstring."
 
-**Recommendation on the table: decide "no", and write it down.** This case has a *better*
-signal than the seek case in O1: `cost.access_cost == SOLID` is right there in the cost
-receipt at open, before you do anything. If the rewind — which has no open-time signal at
-all — doesn't warrant an ambient warning, this one certainly doesn't.
+### RESOLVED — no ambient warning; record the decision
 
-It needs an explicit answer rather than drift: it has now been rediscovered by two
-separate reviews, and will be again until it is recorded.
+Unanimous across both reviews. This case has a *better* signal than the seek case in O1:
+`cost.access_cost == SOLID` is right there in the cost receipt at open, before you do
+anything. If the rewind — which has no open-time signal at all — doesn't warrant an
+ambient warning, this one certainly doesn't. A `warnings.warn` would also be the library's
+first, against a project rule that prefers structured diagnostics precisely because
+"a logging warning most applications never see is a surprise deferred, not avoided."
+
+**The deliverable is the written record, not the behaviour** — the behaviour is already
+correct. This has now been rediscovered by two separate reviews and will be again until
+the spec says "deliberately no warning here, and here is why."
 
 ### O2b — Should the reader hold the decompressor open across `open()` calls? *(new)*
 
@@ -225,24 +279,27 @@ in-order random `open()` is free. On 7z it does not.
 the identical caller code differs by 4.5×. It is not a hypothetical optimization: one
 backend already demonstrates the behaviour the other lacks.
 
-**What is worth deciding:**
+**Direction agreed, three points settled, one blocker remaining:**
 
-1. **Should the 7z reader hold its folder decoder open across `open()` calls**, so
-   in-order random access costs one pass, as `.tar.gz` already does? The maintainer's
-   own note is that this "opens a whole can of worms" — lifetime, when to discard,
-   interaction with the single-live-stream rule and with concurrent members. All true.
-   But the payoff is a 4.5× cost cliff on the founding use case (walk an archive, hash
-   every member), and closing a cross-backend inconsistency rather than inventing
-   something new.
-2. **Now or later?** Nothing about it is a public-API change, so it is not tag-gated —
-   which argues for later. Against: the current cost is the thing the documentation
-   currently tells users to work around by using `stream_members()`, and a caller who
-   reaches for `open()` because they want random access has no way to know 7z charges
-   4.5× where TAR charges 1×.
-3. **Either way, does this change the answer to O2a?** Arguably yes: if in-order random
-   access stops being expensive on 7z, the remaining expensive pattern is genuinely
-   out-of-order, and a warning for it becomes better-targeted — though the "the cost
-   receipt already told you" argument still stands.
+1. **Yes in principle** — the 7z reader should hold its folder decoder open across
+   `open()` calls, so in-order random access costs one pass, as `.tar.gz` already does.
+   Nobody defended the status quo. The payoff is a 4.5× cost cliff on the founding use
+   case (walk an archive, hash every member), and it closes a cross-backend inconsistency
+   rather than inventing something new.
+2. **Scope it to forward reuse only.** Keep at most the *one* decoder positioned at or
+   before the requested member, and reuse it only when the target is at or ahead of the
+   current position; otherwise discard and restart. That captures the entire 4.5× → 1.0×
+   win — which is a *forward*-progress win — without a cache, an eviction policy, or a
+   memory budget. Backward access stays exactly as expensive as today, which is honest:
+   it genuinely is expensive.
+3. **Not tag-gated, so timing is free.** Nothing here is a public-API change, so this
+   need not land before `0.2.0`. It does not foreclose anything either way.
+4. **It does not change O2a.** Even with forward reuse, out-of-order access stays
+   expensive, and the argument against warning — the cost receipt already told you at
+   open — is unaffected.
+
+**What blocks it is not the above.** It is the lifetime question under concurrent
+members, which neither review addressed. That is O2c.
 
 **Caveats on the numbers.** The 7z archive was written with `-mx1` by the system `7z`;
 solid-block layout varies with settings, and a multi-folder archive would show a smaller
@@ -250,6 +307,55 @@ ratio. The `.tar.gz` one-pass baseline itself reads ~2.65× the compressed file,
 unexplained and was not chased — the *relative* comparisons above are the reliable part.
 Ratios are stated against each format's own one-pass cost for that reason. RAR was not
 measured (see O6 — the test corpus cannot build RAR here).
+
+### O2c — What does holding the decompressor open mean when members are concurrent? *(open — nobody has answered this)*
+
+**This is the actual blocker on O2b, and it is why the optimization has been deliberately
+deferred rather than just not-yet-done.** Both external reviews discussed O2b's payoff and
+neither engaged with this; one explicitly deferred to the maintainer on it. It is stated
+here as its own question so it can be brainstormed on its own terms.
+
+**The easy case, for contrast.** With **one open member at a time**, "hold the decoder
+open" is straightforward: there is exactly one underlying decompression stream, it has one
+position, and the rule is the forward-reuse rule in O2b(2) — reuse if the target is ahead,
+discard and restart otherwise. One object, one lifetime, one decision point.
+
+**The hard case.** The library also supports **concurrent members** — several member
+streams open and readable at once, on backends that declare the capability. Now the
+question "which decoder do we keep, and for how long?" has no obvious answer:
+
+- **When N member streams are open concurrently, are there N underlying decoders?** If
+  each concurrent member needs its own decode position in a shared solid stream, holding
+  them open means holding N decompressor states — each with its own window/dictionary
+  memory. On a solid 7z with a large dictionary that is not a small number.
+- **When those N streams close, which of the N do we keep?** All of them, so the next
+  `open()` can pick the closest preceding one? Only one — and if so, which? The
+  furthest-advanced? The most recently used? Each choice is a cache policy, with an
+  eviction rule and a memory budget, which is exactly the complexity O2b(2) was scoped to
+  avoid.
+- **Does "pick the closest preceding decoder" beat "restart"?** It is the obviously
+  appealing rule, but it needs the same `nearest-point-before` reasoning as O1, plus a
+  tie-break, plus a rule for what to do when the closest one is *behind* but only barely.
+- **What is the interaction with the single-live-stream rule?** Backends that do *not*
+  declare concurrency enforce one live stream at a time. Does forward reuse mean the
+  decoder outlives the member stream that created it — and if so, what owns it, and what
+  does `close()` on the archive have to tear down?
+
+**The first thing to check, before any of the above.** *Is it actually a non-issue?*
+Specifically: **on the backends that declare `concurrent_members`, does the implementation
+already materialize member data (to a temp file or memory) rather than keeping N live
+decoders?** If it does, then concurrent members never hold a reusable decoder in the first
+place, the two mechanisms don't interact, and O2b's forward-reuse rule can be specified
+against the single-live-stream path alone — which is the easy case. That would shrink this
+question from "design a cache" to "write down that they are disjoint."
+
+That check is cheap and should precede the brainstorm. If it comes back "yes, already
+materialized," O2b is unblocked immediately. If it comes back "no, N live decoders," then
+the bullets above are the agenda.
+
+**Not measured for this document.** The concurrency paths were explicitly outside the
+review's scope (see "Not examined at all" at the end), so nothing here is backed by a
+measurement — unlike the O2b numbers above.
 
 ---
 
@@ -305,14 +411,33 @@ That same finding — the flag also silently changing which *metadata* you get b
 already decided and being fixed. Worth separating: **the bad thing about
 `seekable_members` was never its name.**
 
-### What we need
+### RESOLVED — keep per-archive, keep both names, and note that this decision has no deadline
 
-- Is the per-archive placement right, or should the capability move to (or also exist at)
-  the member level, accepting the spec change and the index-lifetime work?
-- If it stays per-archive, is there a name that reads correctly in both contexts, rather
-  than picking one of the two current ones?
-- If nothing changes, is the specification's current wording the reason, or just its
-  effect? (It is the only thing making this "settled".)
+Both reviews agreed on all three parts.
+
+**1. Placement stays per-archive.** The index-lifetime argument above is decisive on its
+own: declaring seekability drives open-time work, and a per-`open()` flag would mean
+either building the index lazily on first seekable open — new state, new lifetime
+questions, and the same problem O2c is stuck on — or building it always, taxing callers
+who never seek.
+
+**2. The decisive point, which removes the deadline entirely:** adding
+`archive.open(member, seekable=True)` later is a **purely additive** API change. A new
+keyword argument with a default that preserves today's behaviour breaks nothing. So
+per-archive-now forecloses per-member-later; it is a decision that can be revisited with
+real usage data instead of guessed at now. **This is also the answer to the separately
+tracked question of whether the capability vocabulary must be finalized before `0.2.0`:
+it must not.**
+
+**3. Keep both spellings.** `seekable_members=` on `open_archive` (it names what it
+applies to, among several members) and `seekable=` on `open_stream` (one stream, no
+ambiguity). Both spell the capability `seekable`, which was the actual consistency
+requirement. No third name was proposed that read better in both contexts, and the
+review's own conclusion stands: **the bad thing about `seekable_members` was never its
+name** — it was the metadata divergence, which is separately decided and being fixed.
+
+The specification's current wording therefore stays as-is, but for the reason above rather
+than by default.
 
 ---
 
@@ -333,15 +458,43 @@ data, never discovered by trial.
 Adding a field later is technically additive, but the shape question gets much harder
 once callers are pattern-matching the object.
 
-Options:
+Options considered:
 
 - A single boolean (`streams_from_pipe: bool`)? Simple, but boolean fields age badly when
   a third source shape appears.
 - A set/collection of supported source shapes? More future-proof, more to specify.
 - Reuse the existing `StreamCapability` vocabulary (`SEEKABLE` / `FORWARD_ONLY`), which
-  the cost receipt already uses for the source-shape axis? Avoids inventing a second
-  vocabulary for the same concept — probably the cheap right answer, but worth a second
-  opinion before it sets.
+  the cost receipt already uses for the source-shape axis.
+
+### RESOLVED — `required_source: StreamCapability`, read as a minimum requirement
+
+Both reviews landed on reusing `StreamCapability`, and one sharpened it into the framing
+that makes it work:
+
+```python
+required_source: StreamCapability   # the *weakest* source shape this format can read from
+```
+
+`StreamCapability` is **ordered** — `FORWARD_ONLY` is weaker than `SEEKABLE` — so the
+field is a minimum requirement, and the caller's test is a comparison, not a lookup table:
+
+| Format | `required_source` | Reading |
+|---|---|---|
+| TAR, single-file codecs | `FORWARD_ONLY` | a pipe is enough |
+| ZIP, ISO, 7z, RAR | `SEEKABLE` | needs to seek to a trailing index |
+
+Why this beats the set-of-shapes option: a set can express nonsense (`{SEEKABLE}` but not
+`FORWARD_ONLY` is fine; `{FORWARD_ONLY}` but not `SEEKABLE` is not a real format), whereas
+an ordered minimum can only express the real thing. And it beats the boolean because when
+a third source shape appears it is a new enum member, not a second boolean that has to be
+kept consistent with the first.
+
+It also avoids inventing a second vocabulary for a concept the cost receipt already names
+on its source-shape axis — a caller can compare `format.required_source` against
+`reader.cost.stream_capability` directly, because they are the same type.
+
+**Deadline note:** this is the one item that genuinely must land before the `0.2.0` tag,
+because `FormatAvailability` is a public frozen dataclass.
 
 ---
 
@@ -391,23 +544,36 @@ password list in a lambda, which no one would guess.
 
 So the asymmetry isn't only across arguments; it's **inside `password=` itself**.
 
-### What we need decided
+### RESOLVED — split by intent, and `password=` becomes permissive in all its forms
 
-Pick the model, then apply it to all three:
+Unanimous across both reviews and this one. The model is:
 
-- **Permissive + diagnostic** (what `encoding=` is getting, and what a password *provider*
-  already does): the entry point accepts, the backend ignores, the discard is queryable.
-  Best for batch/keyring callers. Weakest for the caller who typo'd an argument.
-- **Strict refusal** (what static `password=` does today, and what the directory `format=`
-  fix established): loud, catches mistakes immediately. Worst for mixed-format batches.
-- **Split by intent**: refuse when the argument is an *assertion about this archive*
-  (`format=` — "I claim this is a ZIP"), permit when it is a *resource offered for use if
-  needed* (`password=`, arguably `encoding=`). This is the most defensible line and the
-  one that explains why the existing static/provider split feels wrong — a list of
-  candidates is a keyring, not an assertion.
+> **Refuse when the argument is an assertion about *this* archive. Permit — and record a
+> diagnostic — when it is a resource offered for use if needed.**
 
-Whatever the answer, the static-vs-provider inconsistency inside `password=` should
-probably stop existing either way.
+Applied to all three:
+
+| Argument | Intent | Behaviour |
+|---|---|---|
+| `format=` | **Assertion** — "I claim this is a ZIP" | **Refuse** when it can't hold. Already the established behaviour; the directory-path fix generalises rather than being a special case. |
+| `password=` | **Resource** — a keyring | **Permit** in *every* form. On an archive with no encryption, a static string, a list, and a provider callable all behave the same: accepted, never consulted, diagnostic recorded. |
+| `encoding=` | **Resource** — a hint for name decoding | **Permit**, diagnostic when the backend can't act on it. (Already the maintainer's decision; this now has a principle behind it rather than being a lone softening.) |
+
+The measured asymmetry *inside* `password=` — static list refuses, provider callable
+opens fine — was the strongest evidence for this line. The permissive behaviour already
+exists in the library; it is just reachable only by wrapping your password list in a
+lambda, which nobody would guess. Making all three forms permissive removes an
+inconsistency rather than adding a permission.
+
+**What is given up, stated plainly:** the caller who passes `password=` to an archive
+that has no encryption no longer gets an immediate error. That is the batch caller's
+whole point, and the diagnostic is there for anyone who wants to check. The typo case
+this used to catch is narrow — a *wrong* password on an *encrypted* archive still fails
+loudly, which is the case that actually matters.
+
+**Not covered by this principle:** arguments that are neither assertions nor resources.
+None were found in this review, but the rule should be written as a rule, so the next
+argument's category is a question with an answer rather than a fresh debate.
 
 ---
 
@@ -444,6 +610,18 @@ RAR-specific problem showed up on any of those.
 Extra context: `0.2.0` headlines a native RAR reader, which is what makes this worth
 resolving now rather than after.
 
+**Diagnosis update — one hypothesis is already ruled out.** A reviewer proposed that the
+platform-dependence comes from the corpus asserting exact *payload digests*, which would
+differ if a writer normalized content. It does not: the corpus asserts `act.size ==
+len(exp.contents)` and checks digest **key presence**, not digest values. So the
+platform-dependence is not in the payload.
+
+That redirects the diagnosis to **metadata** the `rar` writer records differently per
+platform — most likely candidates, in order: **mode bits** (umask, and the executable bit
+on macOS vs Linux), **uid/gid**, and **mtime** granularity. Whoever picks this up should
+start by diffing the recorded member metadata of the same corpus entry built on both
+platforms, rather than re-examining content hashing.
+
 ---
 
 ## O7 — Should a filename with a right-to-left override be *rejected*, not just flagged?
@@ -462,19 +640,41 @@ normalization, *does* have one.
 **Already decided:** give it a diagnostic code like the others, so it's queryable and a
 policy can escalate it.
 
-**Still open, and worth a security-minded opinion:** the specification currently says the
-member is *"rejected **or** exactly one warning is emitted"* — permitting either, which
-is why nobody noticed the code only does one of them. Once we're editing that clause
-anyway, should the answer be "warn" (current behaviour, plus the new diagnostic), or
-should bidi controls in names be *rejected* by the safe-extraction path the way
+**The question was:** the specification currently says the member is *"rejected **or**
+exactly one warning is emitted"* — permitting either, which is why nobody noticed the code
+only does one of them. Once we're editing that clause anyway, should the answer be "warn",
+or should bidi controls in names be *rejected* by the safe-extraction path the way
 path-traversal and null bytes already are?
 
-Arguments for warn-only: the danger is in *display*, not in the write — the library
-extracts to the literal name, and a caller who never shows the name to a human is
-unaffected. Rejecting breaks legitimate right-to-left filenames (Arabic, Hebrew).
+### RESOLVED — reject the *overrides* during safe extraction; keep the *marks* warn-only
 
-Arguments for reject-under-strict-policy: the library's headline claim is safe-by-default,
-and the extraction policy already rejects other display-and-path tricks.
+Both reviews converged on the distinction that makes this answerable, and it is the one
+the original framing missed: **bidi controls are not one category.**
+
+- **Overrides and isolates** — U+202A–202E (LRE/RLE/PDF/LRO/RLO) and U+2066–2069
+  (LRI/RLI/FSI/PDI) — change the *rendered order of surrounding text*. They have no
+  legitimate reason to appear in a filename; the `.gnp.exe` trick needs one of them.
+  **Reject these** in the safe-extraction path, alongside path traversal and null bytes.
+- **Directional marks** — U+061C (Arabic letter mark), U+200E (LRM), U+200F (RLM) — are
+  invisible hints that do *not* reorder surrounding text, and **do occur in legitimate
+  Arabic and Hebrew filenames**. **Keep these warn-only** with the new diagnostic code.
+
+This dissolves the "rejecting breaks legitimate RTL filenames" objection, because
+**RTL script is not a bidi control at all**: an Arabic or Hebrew filename contains Arabic
+or Hebrew *letters*, whose direction comes from the characters' own properties. Nothing in
+`فهرس.txt` is in either list above. Rejecting overrides costs legitimate RTL users
+nothing.
+
+**A correction to the reviewers' proposal, from reading the code.** One review proposed
+rejecting "the bidi control set" and listed exactly U+202A–202E and U+2066–2069. The
+library's actual `_BIDI_CONTROLS` (`src/archivey/internal/naming.py:32`) is **broader** —
+it also contains U+061C, U+200E and U+200F. So "reject everything currently warned about"
+would sweep in the three marks and *would* break legitimate RTL filenames. The reject set
+must be defined explicitly as the two override/isolate ranges, not as "the existing set."
+
+**Scope, to be explicit:** rejection belongs to the *safe-extraction* path, which is where
+a name becomes a filesystem path. Listing and reading still present the name as stored,
+with the diagnostic — the library does not get to decide that a name is unreadable.
 
 ---
 
@@ -544,25 +744,68 @@ doesn't.
 does **not** cover the extension-fallback layer, because there is no explicit `format=`
 to compare against.
 
-### The questions
+### RESOLVED (a) — a zero-member TAR must **not** raise
 
-1. **Should a TAR that yields zero members raise?** It would close all three layers at
-   once, and "any zero-filled file is a valid tar" is a genuinely bad property. Against:
-   an empty tar is legal — `tar cf empty.tar --files-from /dev/null` is a real thing that
-   `tarfile` accepts — so this makes archivey stricter than the stdlib on valid input, and
-   the project's stated position is that damaged input should yield what is recoverable
-   plus an honest error, not a refusal. A middle option: raise only when the archive has
-   zero members **and** the file continues past the trailer.
-2. **Should `strict_archive_eof` also assert that nothing follows the trailer?** That
-   would make it match its documented promise, and would fire on both the ISO case and the
-   trailing-junk case. Costs: `tar` writers pad with zeros routinely (that is fine — they
-   are zeros), but concatenated archives and some tools append real data after a trailer,
-   so this could reject files that other tools read happily. It is opt-in, which is the
-   argument for making it mean the stronger thing.
-3. **Does the extension-fallback layer need its own answer?** Per the framing section,
-   the caller here is likely group 2 (one-off, human watching) or group 1 (batch over
-   messy input) — and a diagnostic reaches only the second. If the answer to (1) is "no",
-   this layer stays silent for the caller least equipped to notice.
+Revision 1 left this genuinely open and floated a middle option. **Both are dead, killed
+by one measurement:**
+
+> A legitimately empty tar, as written by `tarfile` or by
+> `tar cf empty.tar --files-from /dev/null`, is **10240 bytes, every one of them zero.**
+> It is **byte-identical** to a 10 KiB zero-filled garbage file. There is no predicate
+> over the bytes that separates them, because there is no difference between them.
+
+So "raise on zero members" would reject a file the stdlib accepts and that `tar(1)`
+itself produces. And the proposed middle option — "raise when zero members **and** the
+file continues past the trailer" — fails for the same reason: the trailer is at 1024
+bytes and the legitimate empty tar continues to 10240, so the condition is true for the
+*valid* file. The middle option would reject every empty tar in existence.
+
+**Decided instead — two mechanisms, neither of which raises:**
+
+1. **An `EMPTY_ARCHIVE` diagnostic**, format-independent, emitted whenever a listing
+   completes with zero members. Cheap, honest, and it says the true thing ("this archive
+   is empty") rather than a guess ("this file is probably garbage"). It reaches the batch
+   caller, who is the one running over messy input at scale.
+2. **After-the-fact detection for the extension-fallback layer**, which is the realistic
+   one and which the already-decided explicit-`format=` diagnostic does not cover. When
+   the format was chosen by *extension* and the result is an empty listing, run content
+   detection on the bytes; if detection would have refused the file (as measured, it does
+   refuse 32 KiB of zeros), emit a diagnostic saying so. This costs nothing in the common
+   case because it only runs on an empty result, and it converts "silently opens as an
+   empty TAR" into something queryable without making any valid file fail.
+
+**Acknowledged gap, deliberately accepted:** neither mechanism reaches the one-off caller
+(framing group 2), who does not read diagnostics. Per the framing section that would
+require an exception or a default, and the measurement above says no correct exception
+exists. The honest position is that a zero-filled `z.tar` opens as an empty archive, that
+this is *correct* behaviour, and that a caller who needs more must either use content
+detection (which refuses) or check `len(reader)`.
+
+### RESOLVED (b) — `strict_archive_eof` should assert "nothing but zeros from the trailer to EOF"
+
+Both reviews agreed, and it makes the knob mean what its documentation already promises
+("a provably complete listing"). Precisely:
+
+> With `strict_archive_eof=True`, after the two-block null trailer, every remaining byte
+> to EOF MUST be zero. Any non-zero byte raises. With `strict_archive_eof=False`,
+> behaviour is unchanged.
+
+- **Zero padding still passes** — writers pad routinely to 10 KiB and beyond, and that is
+  the overwhelmingly common case. This is why the rule is "nothing but zeros" rather than
+  "EOF immediately."
+- **The ISO case still passes**, and that is now a deliberate answer rather than an
+  oversight: an ISO's 32 KiB system area is zeros, so under this rule it is a valid empty
+  TAR with padding. The `EMPTY_ARCHIVE` diagnostic from (a) is what covers it.
+- **The trailing-junk case now fails**, which is the whole point — 4 KiB of arbitrary
+  bytes after the trailer means the file is not what the listing claims.
+- **Concatenated archives now fail under `strict`.** Accepted: they *are* multiple
+  archives, the reader only listed the first one, and a caller who asked for a provably
+  complete listing should be told. The knob is opt-in and off by default, which is the
+  argument for letting it mean the strong thing.
+
+**Cost to note for implementation:** the check must read to EOF, so `strict_archive_eof`
+becomes O(file size) on the tail rather than O(1). For a non-seekable source that is a
+real scan. Worth a sentence in the docstring.
 
 ---
 
@@ -571,19 +814,33 @@ to compare against.
 Not questions, but sequencing constraints that a reader of the decision list wouldn't
 otherwise see:
 
-1. **Three separate decisions all add diagnostic codes** (the ignored-`encoding=` one, the
-   wrong-`format=` one, and the bidi one). They share the taxonomy and the policy
-   plumbing — **land them as one change, not three.**
-2. **A drafted docstring paragraph must not ship before O1 is fixed.** It advertises that
+1. **Six separate decisions now add diagnostic codes** — the ignored-`encoding=` one, the
+   ignored-`password=` one (new, from O5), the wrong-`format=` one, the bidi one (O7),
+   `EMPTY_ARCHIVE` (O8a), and the extension-fallback-versus-detection one (O8a). They
+   share the taxonomy and the policy plumbing — **land them as one change, not six.**
+   Revision 1 said three; O5 and O8 added the rest, which strengthens the point.
+2. **Only one item is tag-gated:** O4's `required_source` field, because
+   `FormatAvailability` is a public frozen dataclass. Everything else here — including
+   O3, per the additivity argument — can land after `0.2.0` without cost. Sequence
+   accordingly rather than treating the whole list as pre-release work.
+3. **A drafted docstring paragraph must not ship before O1 is fixed.** It advertises that
    you can escalate the rewind diagnostic to an error — which is exactly the promise O1
    shows is currently unreliable. Ship the paragraph without that sentence, or ship it
    after.
-3. **One committed test will flip when either side of a spec-vs-code disagreement is
+4. **O1's record/escalate split touches shared machinery, not just this code.** "Record
+   once, evaluate the policy every time" is a change to how a deduplicated diagnostic
+   relates to its policy. Decide whether that is the rule for *all* once-per-stream
+   diagnostics or a local exception, and write it down either way — otherwise the next
+   deduplicated code inherits the question.
+5. **O8b makes `strict_archive_eof` cost O(tail length)**, because it must read to EOF to
+   prove there is nothing but zeros. Today it reads 512 bytes. On a non-seekable source
+   that is a real scan of the remainder — document it on the flag.
+6. **One committed test will flip when either side of a spec-vs-code disagreement is
    fixed.** A specification table claims the directory backend offers a cheap "peek" at
    its member list; the code returns nothing, consistent with its own cost receipt. The
    decision was to fix the *specification*. If that test starts passing before anyone
    edits the spec, it means someone changed the *code* instead — check which.
-4. **A measurement in the review is a hand count, not a metric.** "Format-conditionals per
+7. **A measurement in the review is a hand count, not a metric.** "Format-conditionals per
    documentation page" is useful as a direction (are we adding or removing caveats?), not
    as a threshold. Don't let it become a target.
 
@@ -615,3 +872,9 @@ Recorded so discussion doesn't circle back. Each was checked against running cod
 Stated so nobody assumes coverage: multi-volume archive joins beyond the entry-point
 argument checks, free-threaded/concurrent execution paths, and salvage-mode reads of
 damaged archives (a known, deliberate gap on the roadmap).
+
+**One of those gaps is now load-bearing.** O2c turns on how concurrent members hold
+decompression state, and the concurrency paths were never measured by this review.
+Nothing in O2c is backed by a probe — unlike everything else in this document. The
+"is it actually a non-issue?" check named there is the way to close that gap cheaply,
+and it should happen before the design discussion, not during it.

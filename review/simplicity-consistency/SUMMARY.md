@@ -16,8 +16,20 @@ resolution neither pass reached — the O-23 *rule* is under-evidenced, not the 
 a new `CONFIRMED` finding, **F19**, that the probe could not have found: the rewind
 diagnostic is silent for a degenerate seek index, which makes its one real job (the
 `RAISE` tripwire) unreliable. Drafts and evidence:
-[`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md). The O-23 `warnings.warn`
-sub-question inside Q13 is still formally open, with a recommendation attached.
+[`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md).
+
+**Round 2 (2026-08-07).** The residue of the sixteen was written up as
+[`open-questions-for-discussion.md`](open-questions-for-discussion.md) (O1–O8) and sent
+for outside comment; two independent reviews came back and **eight of the ten items are
+now resolved**, including the O-23 `warnings.warn` sub-question above (**O2a: no**). Two
+of this review's own round-1 leanings were **reversed on argument** — O1's threshold
+(relative → absolute, because relative goes quietest on the most expensive seek) and O8's
+empty-TAR question (open → definitely-not-raise, because a legitimately empty tar is
+10240 zero bytes, byte-identical to garbage, which also killed the middle option this
+review proposed). One genuinely new question surfaced and is the only unanswered item in
+the review: **O2c**, what decoder reuse means when members are opened concurrently.
+Resolutions are indexed in [`QUESTIONS.md`](QUESTIONS.md) §Round 2 and argued in full in
+the discussion document.
 
 > **This is a merge of two independent passes.** The brief was executed twice without
 > either agent seeing the other: **PR #230** and **PR #231**. Both built an expected
@@ -160,6 +172,15 @@ code matches it. Q16 exists only so the maintainer can confirm the spec still sa
 they want; it is not an open design question. *(The real problem with the flag is F1,
 not its name.)*
 
+**Round 2 (O3) — merged verdict upheld, for a better reason.** The maintainer initially
+overruled this and reopened it; two outside reviews then converged back on "keep both
+names." More usefully, they reframed the question from naming to **placement** — should
+it be `archive.open(member, seekable=True)`? — and answered *keep it per-archive*,
+because declaring seekability drives open-time work (index construction, accelerator
+selection). And the deadline dissolves: a per-`open()` flag is **purely additive** later,
+so nothing is foreclosed by deciding now. The spec citation above stands unedited, but
+now because it is right rather than because it is there.
+
 ### D3 — the RTL clause: spec fiction, or a vague clause? *(→ F10 / Q10)*
 
 - **#231:** spec fiction — `testing-contract` says "warns **or rejects**" and the code
@@ -172,6 +193,14 @@ not its name.)*
 worth ranking is the one underneath it: the bidi warning is the library's **only
 advisory with no `DiagnosticCode`**, which is the `VISION.md` warnings-as-data gap
 verbatim. F10 is filed that way.
+
+**Round 2 (O7) — the clause tightens to *both* branches, split by character class.**
+Reject **overrides and isolates** (U+202A–202E, U+2066–2069) in safe extraction; keep the
+**directional marks** (U+061C, U+200E, U+200F) warn-only, because those occur in
+legitimate Arabic and Hebrew filenames and do not reorder surrounding text. Note for
+whoever implements it: the reject set must be written out explicitly — the library's
+existing `_BIDI_CONTROLS` (`src/archivey/internal/naming.py:32`) is *broader* than the
+override set and reusing it would break legitimate RTL names.
 
 *(A fourth, minor: #231 wants the `rar_unrar` `RuntimeError` mapped defensively; #230
 recorded it as unreachable and not worth a change. Both are defensible — Q15, cheap
@@ -279,6 +308,10 @@ or version — all reproduce with the stdlib codecs plus `[recommended]`.
 - **Multi-volume** joins beyond the entry-point refusals in F3 — no corpus builds a
   volume set here.
 - **Free-threaded / concurrent** rows — `reader-concurrency` was treated as settled
-  ground (`brief.md` §E); only the single-live-stream gate was probed.
+  ground (`brief.md` §E); only the single-live-stream gate was probed. **This gap is now
+  load-bearing:** O2c (decoder reuse under concurrent members) is the review's one
+  unanswered question and nothing in it is backed by a measurement. The cheap first step
+  named there — check whether backends declaring `concurrent_members` already materialize
+  member data rather than holding N live decoders — would close the gap for this purpose.
 - **Damaged-input read salvage** — `VISION.md` records it as a known gap and `IDEAS.md`
   owns it; only the *listing* honesty contract was checked, and it holds.
