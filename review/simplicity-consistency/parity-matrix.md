@@ -12,8 +12,8 @@ does not hold; check the spec before calling it a docs bug*) for each disagreeme
 | | |
 |---|---|
 | Format keys measured | **24 of 25** (`FORMAT_KEYS`) |
-| Unmeasured | `rar` — the RARLAB `rar` **writer** is absent, so no RAR fixture is built. Deliberate (see SUMMARY F16), not an environment gap. Every RAR cell is `unmeasured`, never `N/A`. |
-| Rows | ~40 caller-visible operations × the format keys, plus source-shape crosses (Path / seekable `BytesIO` / non-seekable) where shape can change the answer |
+| Unmeasured **via the corpus** | `rar` — the RARLAB `rar` **writer** is absent, so no RAR corpus fixture is built. Deliberate (see SUMMARY F16), not an environment gap. Every RAR cell of *this* probe is `unmeasured`, never `N/A`. **RAR reading was measured separately** via the committed fixtures under `tests/fixtures/rar/` — see §RAR at the end of this file. |
+| Rows | ~45 caller-visible operations × the format keys, plus source-shape crosses (Path / seekable `BytesIO` / non-seekable) where shape can change the answer |
 | Cell provenance | Every cell in `repro/matrix.md` is **observed** (the probe performed the call) or explicitly `unmeasured` / `N/A`-with-reason. No cell is *read*-only; nothing was inferred from source. |
 | `N/A` reasons used | "directory pseudo-archive has no byte stream" (E2–E4 for `dir`), "not a single-file compressed stream" (X rows), "no FILE/DIRECTORY member in this corpus entry" |
 
