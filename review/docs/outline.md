@@ -157,8 +157,9 @@ what is inside.
 2. **Sources.** Paths, file objects, directories, byte sequences. Three things a
    signature does not say: a **seekable stream is assumed to start at its current
    `tell()`** (must-explain #12); **only 7z and RAR accept multi-volume
-   sequences**, a length-1 sequence is a scalar, and a directory path forces the
-   directory backend even when `format=` says otherwise (must-explain #25).
+   sequences**, a length-1 sequence is a scalar, and a directory path resolves to the
+   directory backend — with a conflicting `format=` *rejected* rather than overruled
+   (must-explain #25).
 3. **Detection.** `detect_format`, magic-before-extension, confidence and evidence.
    A conflict means **magic wins and `FORMAT_EXTENSION_CONFLICT` fires** — name the
    diagnostic (must-explain #22). `open_stream` vs `open_archive` on the same

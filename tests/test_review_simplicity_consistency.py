@@ -1,18 +1,22 @@
 """Guardrails for the simplicity & consistency review (`review/simplicity-consistency/`).
 
-Two kinds of test live here, and the difference is the point:
+The file started as two kinds of test: **guardrails** (plain assertions pinning a rule
+the review classified as *format law* or *settled*) and **red halves**
+(``@pytest.mark.xfail(strict=True)`` assertions of the behaviour the review argued was
+correct, failing on purpose until a fix landed).
 
-- **Guardrails** (plain assertions) pin a cross-format rule the review classified as
-  *format law* or *settled*, so it cannot silently change. Passing today, and expected
-  to keep passing.
-- **Red halves** (``@pytest.mark.xfail(strict=True)``) assert the behaviour the review
-  argues is *correct*, for divergences it classified as **accidents**. They fail today
-  on purpose. When a fix lands, the xfail turns into an XPASS and ``strict=True`` fails
-  the suite — that is the signal to delete the marker, not to widen it.
+**All sixteen red halves have now landed** (W1–W8), so what remains is one regression
+net, and it is deliberately kept in one file: each test names the finding it came from,
+so a future change that reintroduces a divergence fails against the argument that
+removed it rather than against a bare assertion. Where a fix went a different way than
+the review recommended — Q2 and Q7 chose a diagnostic over the refusal the red halves
+asserted — the test says so, because the *rejected* option is the one someone will
+propose again.
 
-Nothing here changes library behaviour: the review is analysis-only until the
-maintainer picks pay items (`brief.md` §Hard constraints). Pinning a divergence is
-**not** endorsing it.
+Several tests also pin the half of a fix that is easy to lose: a pipe still reports no
+cheap metadata (F1), a genuinely missing path still says "not found" (F11), a corrupt
+member offset is still corruption (F4), a *small* rewind still stays quiet (F19), and a
+directional bidi mark still extracts (O7).
 
 Every test names the merged finding id from
 `review/simplicity-consistency/SUMMARY.md` so the two stay linked. The review was
@@ -181,31 +185,20 @@ def test_gzip_crc32_is_not_gated_on_declared_seekability(tmp_path: Path) -> None
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_directory_report_peek_returns_none(streaming: bool, tmp_path: Path) -> None:
-    """F6 (pin): the directory backend has no upfront index to peek at."""
+    """F6 (fixed, spec side): the directory backend has no upfront index to peek at.
+
+    `access-mode-and-cost` used to list "Leading (directory, ISO)" as offering a complete
+    report in both modes, which the directory backend never did. The **spec** was the
+    thing that was wrong: a filesystem walk is not an index, and the backend's own
+    `listing_cost=REQUIRES_SCANNING` already said so. The table now has a scan-based row.
+    """
+    from archivey.cost import ListingCost
+
     path = _archive("basic", "dir", tmp_path)
     with open_archive(path, streaming=streaming) as reader:
         assert reader.members_report_if_available() is None
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="F6: access-mode-and-cost lists 'Leading (directory, ISO)' as a complete "
-    "report in both modes; the directory backend returns None",
-)
-@pytest.mark.parametrize("streaming", [False, True])
-def test_directory_report_peek_matches_index_topology_spec(
-    streaming: bool, tmp_path: Path
-) -> None:
-    """F6 (red half): spec and code disagree — which one is wrong is a maintainer call.
-
-    Recorded as a red half rather than a spec edit because `CONTRIBUTING.md` says to
-    pause and ask on a spec/design discrepancy instead of silently picking a winner.
-    """
-    path = _archive("basic", "dir", tmp_path)
-    with open_archive(path, streaming=streaming) as reader:
-        report = reader.members_report_if_available()
-        assert report is not None
-        assert report.error is None
+        # The receipt the spec now agrees with.
+        assert reader.cost.listing_cost is ListingCost.REQUIRES_SCANNING
 
 
 @pytest.mark.parametrize("key", ["iso", "zip", "7z"])
@@ -1006,3 +999,31 @@ def test_legitimately_empty_tar_stays_valid(tmp_path: Path) -> None:
     path.write_bytes(buf.getvalue())
     with open_archive(path, format=ArchiveFormat.TAR) as reader:
         assert reader.members() == []
+
+
+# ---------------------------------------------------------------------------
+# O2a — a solid out-of-order open() deliberately says nothing
+# ---------------------------------------------------------------------------
+
+
+def test_solid_out_of_order_open_emits_nothing(tmp_path: Path) -> None:
+    """O2a (guardrail): the silence is the decision, not an omission.
+
+    Three separate reviews have proposed adding a warning here. The answer is no, and
+    `access-mode-and-cost` now says so: `cost.access_cost == SOLID` is on the receipt at
+    open, before the caller does anything — a *better* signal than the rewind case gets,
+    and that one only emits because it has no open-time signal at all. Emitting per
+    `open()` would also produce one occurrence per member on exactly the workload that
+    provokes it.
+
+    Pinned so a fourth review that adds one breaks a test instead of a decision.
+    """
+    from archivey.cost import AccessCost
+
+    path = _archive("basic", "tar.gz", tmp_path)
+    with open_archive(path) as reader:
+        assert reader.cost.access_cost is AccessCost.SOLID  # the signal, at open
+        members = [m for m in reader.members() if m.type is _FILE]
+        for member in reversed(members):  # worst case: fully out of order
+            reader.read(member)
+        assert dict(reader.diagnostics.counts) == {}

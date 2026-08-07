@@ -337,11 +337,17 @@ members by `modified` raises or mis-orders across formats.
 
 Only 7z (concatenate) and RAR (open vol 1, unrar resolves siblings) accept
 multi-volume sequences (`core.py:202–216`). Length-1 sequences ≡ scalar
-(`core.py:144–146`). Directory path forces DIRECTORY even if `format=` says
-otherwise (`core.py:187–191`).
+(`core.py:144–146`). A directory path resolves to DIRECTORY, and a conflicting
+`format=` is **rejected for a directory path** with `ArchiveyUsageError` — it is not
+silently overruled (`#225`).
 
-**If undocumented:** `open_archive([a.tar, b.tar])` raises; `format=ZIP` on a
-directory path opens as a directory tree.
+Note the scope: "rejected" is specific to the directory case, where honouring the
+argument would hand back a reader over the wrong data. A wrong `format=` elsewhere is
+still an override that wins — that is what the argument is for, and F7's answer to it
+is a diagnostic on an empty listing, not a refusal.
+
+**If undocumented:** `open_archive([a.tar, b.tar])` raises; a caller expects
+`format=ZIP` on a directory path to be honoured or ignored, and gets neither.
 
 ---
 
