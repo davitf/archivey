@@ -262,20 +262,21 @@ def _check_single_file(entry: CorpusEntry, key: str, source: Path) -> None:
             assert member.raw_name == payload.name.encode()
             assert member.modified is not None
             assert int(member.modified.timestamp()) == payload.mtime
-        # Stored-digest parity: single-member gzip always (path source); lzip only with
-        # declared SEEKABLE (same gate as size); other codecs omit (zlib Adler-32 is
+        # Stored-digest parity: single-member gzip and lzip both surface CRC-32 from a
+        # bounded trailer/index peek on any seekable source — including this path source,
+        # with no seekable_members declaration. Other codecs omit (zlib Adler-32 is
         # checked by the decompressor, not surfaced on member.hashes).
-        if key in ("gz", "gz-meta"):
+        if key in ("gz", "gz-meta", "lz"):
             assert HashAlgorithm.CRC32 in member.hashes
-        elif key == "lz":
-            assert HashAlgorithm.CRC32 not in member.hashes
         else:
             assert HashAlgorithm.CRC32 not in member.hashes
             assert HashAlgorithm.BLAKE2SP not in member.hashes
             assert HashAlgorithm.ADLER32 not in member.hashes
     if key == "lz":
-        with open_archive(source, seekable_members=True) as ar:
-            member = ar.members()[0]
-            assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(
-                zlib.crc32(payload.contents)
-            )
+        # And the value is the same whether or not the caller declares seek demand.
+        for kwargs in ({}, {"seekable_members": True}):
+            with open_archive(source, **kwargs) as ar:  # type: ignore[arg-type]
+                member = ar.members()[0]
+                assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(
+                    zlib.crc32(payload.contents)
+                )

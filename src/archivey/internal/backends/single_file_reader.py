@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import struct
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO, Iterator, TypeVar
 
@@ -32,7 +33,7 @@ from archivey.cost import (
 )
 from archivey.exceptions import ArchiveyError, StreamNotSeekableError
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
-from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.config import AcceleratorMode, stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.naming import infer_member_name_from_archive
 from archivey.internal.open_site import OpenSite
@@ -137,6 +138,22 @@ class SingleFileReader(BaseArchiveReader):
             self._config,
             streaming=self._streaming or not self._seekable,
             seekable=seek_declared and self._seekable,
+        )
+
+        # Metadata probes answer a different question than member streams, so they get
+        # their own config. `seekable_members` declares what the caller wants to do with
+        # the *member stream*; the xz index and lzip trailer are bounded backward peeks
+        # that hand nobody a stream, so reading them is decided by the source's shape.
+        # Gating them on the declaration made the same .xz report size=None on a plain
+        # open and 44 with the flag — a capability flag changing metadata. Accelerators
+        # stay OFF: a probe reads no member data, so an accelerator's startup cost buys
+        # nothing the native index does not already have.
+        self._metadata_config = replace(
+            stream_config_from_archivey(
+                self._config, streaming=False, seekable=self._seekable
+            ),
+            use_rapidgzip=AcceleratorMode.OFF,
+            use_indexed_bzip2=AcceleratorMode.OFF,
         )
 
         # The compressed-source header, read at most once and cached (only the gzip metadata
@@ -299,14 +316,12 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_lzip_index(self) -> tuple[int, int] | None:
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.
 
-        Gated on declared SEEKABLE, which is what enables the index scan. The source
-        only has to *be* seekable, not be a path: ``_with_seekable_source`` gives the
-        probe a handle either way and returns ``None`` for a non-seekable source.
-        Returns ``None`` when the index is unavailable or corrupt.
+        The source only has to *be* seekable, not be a path and not have the caller's
+        ``seekable_members`` declaration: ``_with_seekable_source`` gives the probe a
+        handle either way and returns ``None`` for a non-seekable source, which is the
+        only gate this needs. Returns ``None`` when the index is unavailable or corrupt.
         """
         if self._codec is not Codec.LZIP:
-            return None
-        if not self._codec_config.seekable:
             return None
 
         def probe(f: BinaryIO) -> tuple[int, int] | None:
@@ -323,15 +338,17 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_decompressed_size(self) -> int | None:
         """Decompressed size from the stream index/trailer, when cheaply available.
 
-        Needs a seekable source, not a path: ``_with_seekable_source`` opens a fresh
-        handle for a path and restores a caller stream's position afterwards. The codec
-        is opened over a non-owning :class:`SlicingStream` view, so closing the probe's
-        decompressor never closes a stream the caller owns.
+        Needs a seekable source, not a path and not the caller's ``seekable_members``
+        declaration: ``_with_seekable_source`` opens a fresh handle for a path and
+        restores a caller stream's position afterwards, and ``_metadata_config`` asks the
+        codec for its index because the *source* can seek. The codec is opened over a
+        non-owning :class:`SlicingStream` view, so closing the probe's decompressor never
+        closes a stream the caller owns.
         """
 
         def probe(f: BinaryIO) -> int | None:
             try:
-                backend = resolve_codec(self._codec, self._codec_config)
+                backend = resolve_codec(self._codec, self._metadata_config)
                 stream = backend.open(SlicingStream(f, start=0))
             except (ArchiveyError, OSError, ValueError):
                 return None

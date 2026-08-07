@@ -102,63 +102,61 @@ class _NonSeekable(io.RawIOBase):
 
 
 @pytest.mark.parametrize("key", ["lz", "xz"])
-def test_declared_seekability_changes_member_size(key: str, tmp_path: Path) -> None:
-    """F1 (pin): ``member.size`` today depends on ``seekable_members``.
-
-    This pins the divergence as it is, so a change to it is visible in the diff.
-    ``seekable_members`` is documented as being about ``seek()`` on a member stream;
-    it also decides whether the xz index / lzip trailer is read for the size.
-    """
-    path = _archive("single-file", key, tmp_path)
-    with open_archive(path) as reader:
-        without = reader.members()[0].size
-    with open_archive(path, seekable_members=True) as reader:
-        with_flag = reader.members()[0].size
-
-    assert without is None
-    assert isinstance(with_flag, int)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="F1: seekable_members is a stream capability; it must not change metadata",
-)
-@pytest.mark.parametrize("key", ["lz", "xz"])
+@pytest.mark.parametrize("as_stream", [False, True], ids=["path", "bytesio"])
 def test_member_size_does_not_depend_on_declared_seekability(
-    key: str, tmp_path: Path
+    key: str, as_stream: bool, tmp_path: Path
 ) -> None:
-    """F1 (red half): the same archive should report the same ``size`` either way.
+    """F1 (fixed): the same archive reports the same ``size`` either way.
 
     The size comes from the xz index / lzip trailer — a bounded peek over a source that
-    is already seekable. Nothing about it needs the caller to want ``seek()``.
+    is already seekable. Nothing about it needs the caller to want ``seek()``, and
+    ``seekable_members`` is documented as a *member-stream* capability. Both source
+    shapes are checked because the divergence held for a `Path` and a `BytesIO` alike.
     """
     path = _archive("single-file", key, tmp_path)
-    with open_archive(path) as reader:
-        without = reader.members()[0].size
-    with open_archive(path, seekable_members=True) as reader:
-        with_flag = reader.members()[0].size
 
-    assert without == with_flag
+    def _size(**kwargs: object) -> int | None:
+        source = io.BytesIO(path.read_bytes()) if as_stream else path
+        with open_archive(source, **kwargs) as reader:  # type: ignore[arg-type]
+            return reader.members()[0].size
+
+    assert _size() == _size(seekable_members=True)
+    assert isinstance(_size(), int)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F1: VISION 'hashes without decompression' — lzip CRC-32 is a trailer read",
-)
 def test_lzip_surfaces_crc32_without_declaring_seekable_members(
     tmp_path: Path,
 ) -> None:
-    """F1 (red half): a dedupe caller doing a plain ``open_archive`` gets the CRC-32.
+    """F1 (fixed): a dedupe caller doing a plain ``open_archive`` gets the CRC-32.
 
-    ``format-single-file-compressors`` promises the lzip CRC-32 "when the seekable lzip
-    index is available"; today the gate is the caller's ``seekable_members`` flag, so
-    the founding dedupe use case (`VISION.md`) misses it on the default open.
+    ``format-single-file-compressors`` promises the lzip CRC-32 from the index on a
+    seekable source; the gate used to be the caller's ``seekable_members`` flag, so the
+    founding dedupe use case (`VISION.md` "hashes without decompression") missed it on
+    the default open.
     """
     from archivey.types import HashAlgorithm
 
     path = _archive("single-file", "lz", tmp_path)
     with open_archive(path) as reader:
         assert HashAlgorithm.CRC32 in reader.members()[0].hashes
+
+
+@pytest.mark.parametrize("key", ["lz", "xz"])
+def test_pipe_metadata_stays_absent_and_costs_no_decode(
+    key: str, tmp_path: Path
+) -> None:
+    """F1 (guardrail): the gate moved to the *source's* shape, not away entirely.
+
+    A non-seekable source has no cheap index read, so ``size`` stays ``None`` and no
+    digest appears — the fix must not turn the harvest into a decompression pass.
+    """
+    from archivey.types import HashAlgorithm
+
+    path = _archive("single-file", key, tmp_path)
+    with open_archive(_NonSeekable(path.read_bytes()), streaming=True) as reader:
+        member = next(iter(reader))
+        assert member.size is None
+        assert HashAlgorithm.CRC32 not in member.hashes
 
 
 def test_gzip_crc32_is_not_gated_on_declared_seekability(tmp_path: Path) -> None:

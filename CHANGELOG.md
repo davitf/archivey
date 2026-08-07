@@ -54,6 +54,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
 - `member.compressed_size` on a single-file compressed archive is filled from any
   **seekable** source, not only from a `Path` — the same rule the trailer/CRC probes
   beside it already used. A non-seekable source still reports `None`.
+- `seekable_members` no longer changes member **metadata** (review F1). The `.xz` stream
+  index and the `.lz` trailer are read from any seekable source, so `member.size` and
+  `member.hashes` are the same with and without the flag — `.lz` now reports its
+  whole-member CRC-32 on a plain `open_archive()`, which is what the dedupe use case
+  wanted. A pipe still reports `size=None` and no digest; nothing forces a decode pass.
 - Performance claims are **aspirational peer-ratio bands** with a published
   measured table in `docs/access-and-cost.md` / `VISION.md` (nightly realistic ratios;
   refresh at release time per the checklist).

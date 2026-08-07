@@ -98,6 +98,10 @@ With `seekable_members=True`:
 - otherwise a backward seek may **re-decompress from the start** (loud diagnostic, not
   silent)
 
+The flag changes what member streams can *do*, and nothing else. It does not change what
+`members()` reports: the xz index and lzip trailer are read from any seekable source, so
+`member.size` and `member.hashes` are the same with and without it.
+
 Under `ArchiveyConfig.use_rapidgzip=AUTO` (the default), rapidgzip is selected only when
 seekability is declared **and** the known compressed input is at least
 `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (1 MiB). Smaller members stay on stdlib `zlib`/`gzip`

@@ -145,9 +145,11 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   set `use_rapidgzip=OFF`. This caveat applies to **bare** `.gz` / `open_stream` (and
   bare zlib/raw deflate), not to ZIP/7z/… **members**: those already carry CRC/size and
   fail via `VerifyingStream` when the decoded payload is short or wrong.
-- `.lz` surfaces a whole-member CRC-32 the same way **size** is exposed: only when
-  `seekable_members=True` is declared, and the source can be seeked — a file path and
-  an in-memory stream both qualify, a pipe does not. For
+- `.lz` surfaces a whole-member CRC-32 the same way **size** is exposed: whenever the
+  source can be seeked — a file path and an in-memory stream both qualify, a pipe does
+  not. Declaring `seekable_members=True` is not required and makes no difference:
+  `seekable_members` is about `seek()` on a *member stream*, and the lzip trailer is a
+  bounded backward peek. Same for the `.xz` size, read from the stream index. For
   multi-member lzip the value is derived by combining per-trailer CRCs with each
   member's uncompressed size so it equals `crc32` of the concatenated payloads.
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
@@ -176,7 +178,7 @@ a full `read()` still verifies through the normal path.
 | 7z | FILE | `crc32` |
 | RAR5 | FILE with CRC32 and/or Blake2sp | `crc32` and/or `blake2sp` |
 | single-file `.gz` | single member, seekable/path | `crc32` |
-| single-file `.lz` | seekable path + `seekable_members=True` (one or many members; multi-member value is combined) | `crc32` |
+| single-file `.lz` | seekable source (one or many members; multi-member value is combined) | `crc32` |
 | `.bz2` / `.xz` / zlib / brotli / `.Z`, TAR, directory | — | none |
 
 ### Cheap dedupe with stored hashes
