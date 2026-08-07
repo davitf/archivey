@@ -1,5 +1,7 @@
 # archivey
 
+[![CI](https://github.com/davitf/archivey/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/davitf/archivey/actions/workflows/ci.yml?query=branch%3Amain)
+
 Python library for reading, streaming, and safely extracting archives (ZIP, TAR, RAR, 7z, ISO, and more) through a unified interface.
 
 This is the **v2** clean-slate implementation. The previous (v1) codebase is archived at
