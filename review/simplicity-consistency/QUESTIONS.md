@@ -1,5 +1,39 @@
 # QUESTIONS — maintainer decisions (merged)
 
+> ## Decisions — recorded 2026-08-07
+>
+> All sixteen were ruled on by the maintainer. This table is the authority; each
+> section below carries the same ruling inline with its evidence.
+>
+> | # | Finding | Decision |
+> |---|---|---|
+> | Q1 | F1 metadata gate | **A** — decouple; harvest regardless of the flag |
+> | Q2 | F2 `encoding=` discard | **C** — emit a diagnostic, do not raise |
+> | Q3 | F3 volume `ValueError` | **A** — `ArchiveyUsageError` + `StreamNotSeekableError` |
+> | Q4 | F4 ZIP closed→corruption | **A** — carve out `"already closed"` only |
+> | Q5 | F5 `compressed_size` Path gate | **A** — fill from `SEEK_END` |
+> | Q6 | F6 directory report peek | **A** — fix the spec |
+> | Q7 | F7 wrong explicit `format=` | **A** — diagnostic on empty listing |
+> | Q8 | F8 pipe capability | **A** — capability axis on `FormatAvailability` |
+> | Q9 | F9 laziness docs | **Add the caveat** |
+> | Q10 | F10 bidi warning | **Add `MEMBER_NAME_BIDI_CONTROL`** (+ tighten the spec clause) |
+> | Q11 | F16 RAR CI | **A** — make the sweep runnable on one leg |
+> | Q12 | F11 `open_stream(dir)` | **Split the predicate** |
+> | Q13 | F12 `STREAM_REWIND` | **Reopen placement** (overrides both passes' recommendation) |
+> | Q14 | F13 + F14 docs/imports | **Do both** |
+> | Q15 | F15 `unrar` `RuntimeError` | **Map it** |
+> | Q16 | C1 `seekable` vocabulary | **Revisit before the tag** (overrides the merged verdict) |
+>
+> **Two rulings go against this review's recommendation, deliberately** — Q13 and Q16.
+> Both are recorded as-decided; see those sections for what the decision now requires.
+>
+> **One thing stayed open**: the O-23 sub-question in Q13 (whether to `warnings.warn`
+> on a solid out-of-order `open()`) was not ruled on and remains undecided.
+>
+> The review itself remains **analysis-only** — nothing below is implemented in this
+> PR. The pay list at the foot of this file is re-ranked against these decisions.
+
+
 Sixteen decisions, merged from the two independent passes (PR #230 and PR #231). Each
 carries severity, the **fix vehicle** (which decides what is realistically payable before
 the tag), and a recommendation. Ranked by severity × confidence, then freeze-cost —
@@ -17,6 +51,10 @@ Q1–Q10 are the ones that change code or contracts. Q11–Q16 are cheap or info
 ---
 
 ## Q1 — `seekable_members` changes metadata. Decouple it? *(F1 · S1 · CONFIRMED)*
+
+> **DECIDED:** **A — decouple.** Harvest cheap trailer/index metadata at open regardless of `seekable_members` / `open_stream(seekable=)`; make xz and lzip behave like gzip. Fixes the unconditioned XZ spec row as a side effect.
+>
+> *Vehicle:* OpenSpec change + bugfix.
 
 **The question.** Should `member.size` and `member.hashes` be independent of
 `seekable_members` / `open_stream(seekable=)`?
@@ -56,6 +94,10 @@ callers depend on.
 
 ## Q2 — refuse arguments a backend cannot honour? *(F2 · S2 · CONFIRMED · both passes)*
 
+> **DECIDED:** **C — one diagnostic, do not raise.** Emit a diagnostic when `encoding=` is passed to a backend that ignores it (7z, RAR, ISO, directory, single-file). Keeps the uniform-passer working, makes the discard queryable per VISION. *Not* the general refuse-at-entry rule — the entry point stays permissive.
+>
+> *Vehicle:* OpenSpec change (diagnostics + a `format-*` note) + bugfix.
+
 **The question.** `encoding=` is honoured by ZIP and TAR and silently discarded by 7z
 (`sevenzip_reader.py:190` `del encoding`), RAR (`rar_reader.py:362` `del encoding`),
 directory, ISO and single-file. Should an argument the resolved backend cannot act on be
@@ -85,6 +127,10 @@ anyway. If only one backend changes, it should be ISO.
 
 ## Q3 — type the volume-sequence refusals *(F3 · S2 · CONFIRMED · PR #231)*
 
+> **DECIDED:** **A — type both.** `ArchiveyUsageError` for an empty sequence; `StreamNotSeekableError` for non-seekable volumes, matching the single-source spelling exactly.
+>
+> *Vehicle:* bugfix PR (red halves committed).
+
 `open_archive([])` and `open_archive([pipe, pipe])` both raise a bare `ValueError`.
 `resolve_source` runs at `core.py:194`, before format resolution and before any backend
 translator exists, so nothing on that path can type them.
@@ -103,6 +149,10 @@ mistake, two different error contracts depending on how it was written.
 ---
 
 ## Q4 — ZIP reports an already-closed handle as corruption *(F4 · S2 · CONFIRMED · PR #231)*
+
+> **DECIDED:** **A — carve out `"already closed"` only.** Map it to `ArchiveyUsageError` ahead of the blanket arm. The rest of ZIP's `ValueError` → `CorruptionError` mapping stays as-is.
+>
+> *Vehicle:* bugfix PR (pin + red half committed).
 
 Closing the underlying `ZipFile` while the reader is live yields
 `CorruptionError: Corrupt ZIP member offset/structure: ValueError('Attempt to use ZIP
@@ -127,6 +177,10 @@ damaged. It is not — the handle is. That sends someone hunting a bad file.
 
 ## Q5 — single-file `compressed_size` Path gate *(F5 · S2 · CONFIRMED · PR #231)*
 
+> **DECIDED:** **A — fill from `SEEK_END`** on any seekable source, mirroring the trailer/CRC probes on the same class.
+>
+> *Vehicle:* bugfix PR (pin + red half committed).
+
 `member.compressed_size` is filled from a `Path` and `None` from a seekable `BytesIO`,
 for **every** single-file codec. `single_file_reader.py:173` uses `os.path.getsize`
 behind an `isinstance(..., Path)` check with no seekable fallback — while
@@ -143,6 +197,10 @@ PR #230's "seed A2 is clean" verdict was wrong (SUMMARY §Corrections).
 ---
 
 ## Q6 — directory backend vs the index-topology table *(F6 · S2 · CONFIRMED · PR #230)*
+
+> **DECIDED:** **A — fix the spec.** Drop `directory` from the leading-index row of the topology table; the code and `listing_cost=REQUIRES_SCANNING` are already self-consistent.
+>
+> *Vehicle:* OpenSpec change on `access-mode-and-cost`.
 
 `access-mode-and-cost:96` lists **"Leading (directory, ISO) | Both modes, as complete
 report"**. The directory backend returns `None` from `members_report_if_available()` in
@@ -162,6 +220,10 @@ telling one story. **Vehicle:** OpenSpec change (A) or bugfix + spec touch (B).
 ---
 
 ## Q7 — must an asserted-but-wrong `format=` fail loudly? *(F7 · S2 · CONFIRMED · PR #230)*
+
+> **DECIDED:** **A — diagnostic, not refusal.** When an explicit `format=` yields an empty listing and magic detection would have said something else, emit a diagnostic. `format=` stays an override.
+>
+> *Vehicle:* OpenSpec change + bugfix.
 
 `open_archive(iso, format=ArchiveFormat.TAR)` opens, reports `format=TAR`, and lists
 **zero members** with no error and no diagnostic. `strict_archive_eof=True` does not
@@ -187,6 +249,10 @@ knob for "I need a provably complete listing" and does not fire here.
 
 ## Q8 — make pipe capability queryable before the surface freezes? *(F8 · S2 · CONFIRMED · PR #230)*
 
+> **DECIDED:** **A — add a capability axis to `FormatAvailability`**, reusing the existing `StreamCapability` vocabulary rather than inventing a second one. Decided before the dataclass freezes.
+>
+> *Vehicle:* OpenSpec change + implementation.
+
 Whether a format can be read from a non-seekable source is not exposed.
 `FormatAvailability` carries `format` / `support` / `missing`; the fact lives on
 `ReadBackend.SUPPORTS_STREAMING_NON_SEEKABLE`, which is `internal/`.
@@ -211,6 +277,10 @@ capability set?) gets harder once callers pattern-match the dataclass.
 
 ## Q9 — the guide says passwords are lazy; header encryption is not *(F9 · S2 · CONFIRMED · PR #231)*
 
+> **DECIDED:** **Add the caveat.** One sentence on `docs/reading-members.md`'s laziness bullet bounding it to *data* encryption, pointing at `formats.md` for the header cases.
+>
+> *Vehicle:* docs-only (coordinate with Topic 8).
+
 `docs/reading-members.md:74–77`:
 
 > **Nothing is decompressed until you read.** A member you skip is never opened, and no
@@ -229,6 +299,10 @@ listing itself is ciphertext. The loop that bullet describes never gets to exist
 ---
 
 ## Q10 — the bidi/RTL warning is the only advisory that is not data *(F10 · S2 · CONFIRMED)*
+
+> **DECIDED:** **Add the diagnostic.** Promote the bidi/RTL warning to a `MEMBER_NAME_BIDI_CONTROL` `DiagnosticCode` with a context dataclass, so it is queryable and escalatable like every other advisory. The `testing-contract` clause is tightened to what ships as part of the same change.
+>
+> *Vehicle:* diagnostics change + OpenSpec change on `testing-contract`.
 
 Two things, and the second is the rankable one.
 
@@ -259,6 +333,10 @@ diagnostics change. Guardrail committed.
 
 ## Q11 — the RAR corpus sweep runs nowhere *(F16 · S2 · deliberate · PR #230)*
 
+> **DECIDED:** **A — close the hole.** Make the RAR conformance sweep runnable on at least one CI leg (platform-independent digest expectations, or a committed fixture set).
+>
+> *Vehicle:* CI/testing change.
+
 **Not a defect** — surfaced because a review that silently omits it would be the third to
 rediscover it.
 
@@ -287,6 +365,10 @@ native RAR reader?
 
 ## Q12 — `open_stream` on a directory *(F11 · S3 · CONFIRMED · PR #230)*
 
+> **DECIDED:** **Split the predicate.** `FileNotFoundError` for genuinely missing paths; `ArchiveyUsageError` naming `open_archive` for a directory.
+>
+> *Vehicle:* bugfix PR (red half committed).
+
 `open_stream(directory)` raises `FileNotFoundError("Compressed stream not found: …")` for
 a path that exists, while `open_archive(same_path)` opens it. `core.py:332`
 (`if not path.is_file()`) collapses "absent" and "is a directory" and asserts the false
@@ -301,6 +383,12 @@ one.
 ---
 
 ## Q13 — `STREAM_REWIND_REDECOMPRESSES`, and the O-23 warning decision *(F12 · S3)*
+
+> **DECIDED:** **Reopen `STREAM_REWIND_REDECOMPRESSES`'s placement** — *against* both review passes' recommendation, which was to flag and not churn. This is design work: neither pass found a cleaner cut, so someone has to produce one (demote to logger-only, split archive-capability vs usage, or justify keeping it).
+
+> **Still open, deliberately:** the O-23 sub-question — whether to emit a plain `warnings.warn` on a solid out-of-order `open()` — was **not** ruled on. Code and spec currently agree on "no warning" and `VISION.md` argues against adding one, but the decision remains unrecorded and will resurface until it is written down.
+>
+> *Vehicle:* design work, then an OpenSpec change on `diagnostics`.
 
 **Both passes agree: flag, do not churn.** The code still describes the caller's seek
 rather than a property of the archive, which is the O-23 rule; neither pass found a
@@ -322,6 +410,10 @@ random `open()` — is verifiably still open: there is no `warnings.warn` anywhe
 
 ## Q14 — two docs/spelling cleanups *(F13 + F14 · S3)*
 
+> **DECIDED:** **Do both.** Fix `must-explain` #25 to match `#225` (wording: "rejected **for a directory path**", not "always rejected" — F7 is the case where a wrong `format=` still wins), and switch the two CLI imports to the public path.
+>
+> *Vehicle:* docs-only + 2-line import change.
+
 Bundled because they are minutes and neither has a design question.
 
 1. **F13** — `must-explain.md:331–335` still says a directory path forces `DIRECTORY`
@@ -339,6 +431,10 @@ Bundled because they are minutes and neither has a design question.
 
 ## Q15 — RAR stdout-pipe `RuntimeError` *(F15 · S3 · PLAUSIBLE)*
 
+> **DECIDED:** **Map it.** Translate the `unrar` stdout-pipe `RuntimeError` in the RAR translator or at the spawn site.
+>
+> *Vehicle:* bugfix PR.
+
 `rar_unrar.py:157` raises a raw `RuntimeError("unrar produced no stdout pipe")` from call
 sites outside `_translated_errors`; the RAR translator returns `None` for anything but
 `EOFError`, so it would escape untyped.
@@ -354,6 +450,10 @@ it"). No repro exists — the condition cannot be provoked.
 ---
 
 ## Q16 — confirm the `seekable_members` / `seekable` split is still wanted *(D2 · informational)*
+
+> **DECIDED:** **Revisit the naming before the tag** — *reversing* this review's merged verdict. PR #231's reading wins: the split is treated as a live pre-freeze question, not as settled by spec. Because `archive-reading` §"Declared member-stream capabilities" currently **mandates** the present spelling, any rename or alias requires changing that requirement first.
+>
+> *Vehicle:* OpenSpec change on `archive-reading`, then implementation.
 
 The two passes disagreed (SUMMARY §D2): one filed it as a live pre-freeze vocabulary
 question, the other found that `archive-reading` §"Declared member-stream capabilities"
@@ -387,19 +487,58 @@ review's only before/after metric.
 
 ---
 
-## Ranked pay list, if the answer is "pick a few"
+## Pay list, re-ranked against the decisions
 
-| Rank | Item | Why this order |
+Every question was answered, so this is no longer a "pick a few" list — it is the work
+the decisions imply, ordered by what unblocks what. **None of it is implemented in this
+PR**; the review stays analysis-only until each item gets its own change.
+
+### Tier 1 — bugfix PRs, red halves already committed
+
+| # | Work | Notes |
 |---|---|---|
-| 1 | **Q1** (F1 metadata gate) | Only finding touching a load-bearing VISION claim; a landed spec row is already wrong; freeze-cost is real |
-| 2 | **Q5** (F5 `compressed_size`) | Smallest diff in the review, finishes an already-90%-done #225 sweep |
-| 3 | **Q3** (F3 volume `ValueError`) | Cheap error-contract honesty; the inconsistent-spelling argument is unambiguous |
-| 4 | **Q4** (F4 ZIP closed→corruption) | Actively misleads a caller about their data |
-| 5 | **Q2** (F2 encoding policy) | One rule deletes a recurring failure mode — but needs the product call first |
-| 6 | **Q6** (F6 directory report peek) | Spec and code disagree today; cheapest of the three if the answer is "fix the spec" |
-| 7 | **Q9 + Q14** (docs) | Minutes each, and Q9's claim is currently false |
+| 1 | **Q5 / F5** — fill `compressed_size` from `SEEK_END` on any seekable source | Smallest diff in the review; finishes the `#225` Path/seekable sweep |
+| 2 | **Q3 / F3** — type the volume-sequence refusals | Two mappings in `resolve_source` |
+| 3 | **Q4 / F4** — carve `"already closed"` out of ZIP's `ValueError` arm | One condition, ahead of the blanket arm |
+| 4 | **Q12 / F11** — split `open_stream`'s `is_file()` predicate | `core.py:332` |
+| 5 | **Q15 / F15** — map the `unrar` stdout-pipe `RuntimeError` | One line, defensive |
 
-Q8 is the best next if the surface freeze is close — the only one whose cost genuinely
-rises after the tag. Q7 is the most interesting product question and the least urgent.
-Q10 splits into a free half and a follow-up. Q11 is a process decision. Q13 and Q16 are
-confirmations. Q15 is one defensive line.
+Each flips its `xfail(strict=True)` red half to XPASS, which fails the suite until the
+marker is removed — that is the signal the fix landed.
+
+### Tier 2 — needs an OpenSpec change first
+
+| # | Work | Spec touched |
+|---|---|---|
+| 6 | **Q1 / F1** — decouple metadata harvest from `seekable_members` | `format-single-file-compressors` (the XZ row is already wrong) |
+| 7 | **Q8 / F8** — capability axis on `FormatAvailability`, reusing `StreamCapability` | `backend-registry` / `packaging-and-extras` — do before the surface freezes |
+| 8 | **Q2 / F2** — diagnostic when `encoding=` is passed to a backend that ignores it | `diagnostics` + the affected `format-*` specs |
+| 9 | **Q7 / F7** — diagnostic when an explicit `format=` yields an empty listing | `archive-reading` / `format-detection` |
+| 10 | **Q10 / F10** — `MEMBER_NAME_BIDI_CONTROL` diagnostic, and tighten the RTL clause | `diagnostics` + `testing-contract` |
+
+Q2, Q7 and Q10 all add diagnostic codes; **worth landing as one `diagnostics` change**
+rather than three, since they share the taxonomy and the policy plumbing.
+
+### Tier 3 — spec-only, docs-only, and process
+
+| # | Work | Vehicle |
+|---|---|---|
+| 11 | **Q6 / F6** — drop `directory` from the leading-index row | OpenSpec change on `access-mode-and-cost`. Flips its red half; if that XPASSes *before* the change lands, the code moved instead — check which. |
+| 12 | **Q9 / F9** — caveat the laziness bullet in `reading-members.md` | docs-only; the published claim is currently false |
+| 13 | **Q14 / F13 + F14** — `must-explain` #25, and the two CLI imports | docs-only + 2-line import change |
+| 14 | **Q11 / F16** — make the RAR conformance sweep runnable on one CI leg | CI/testing change; touches `ci.yml`, possibly the RAR fixtures |
+
+### Tier 4 — design work the decisions opened
+
+Two rulings went against the review's recommendation and therefore create work rather
+than closing it:
+
+| # | Work | Why it is design, not a fix |
+|---|---|---|
+| 15 | **Q13 / F12** — reopen `STREAM_REWIND_REDECOMPRESSES`'s placement | Both passes looked and **neither found a cleaner cut**. Someone has to produce one: demote to logger-only, split into an archive-capability diagnostic plus a usage warning, or write down why keeping it on the usage side is right. Needs a `diagnostics` OpenSpec change once a shape exists. |
+| 16 | **Q16 / C1** — revisit `seekable_members` vs `open_stream(seekable=)` | `archive-reading` §"Declared member-stream capabilities" currently **mandates** the present spelling, so the spec has to change *before* any rename or alias. Free until the tag; not free after. |
+
+**Still undecided, and it will resurface unless written down:** the O-23 sub-question
+inside Q13 — whether a solid out-of-order `open()` should emit a plain `warnings.warn`.
+Code and spec agree on "no warning" today and `VISION.md` argues against adding one, but
+that has never been recorded as a decision.

@@ -2,8 +2,16 @@
 
 **Review of** `main` @ `2792f9c` (post-#225, post-#227/#228; the three #225 changes are
 archived, `seekable-gzip-and-block-writing` is the only live change).
-**Status:** analysis complete; **no library changes**. Artifacts here are evidence and
-guardrails only (`brief.md` §Hard constraints).
+**Status:** analysis complete, **all 16 questions decided** (2026-08-07 — see
+[`QUESTIONS.md`](QUESTIONS.md) for the rulings and the re-ranked pay list); **no library
+changes in this PR**. Artifacts here are evidence and guardrails only
+(`brief.md` §Hard constraints) — each decision lands as its own change.
+
+Two rulings went **against** this review's recommendation, deliberately: **Q13**
+(reopen `STREAM_REWIND_REDECOMPRESSES`'s placement, which both passes recommended
+leaving alone) and **Q16** (treat the `seekable` vocabulary split as live rather than
+settled by spec). Both create design work; both are recorded as decided. One item stayed
+open on purpose — the O-23 `warnings.warn` sub-question inside Q13.
 
 > **This is a merge of two independent passes.** The brief was executed twice without
 > either agent seeing the other: **PR #230** and **PR #231**. Both built an expected
@@ -227,7 +235,7 @@ uninformative — F10).
 | `parity-matrix.md` | expected vs observed, the diff, and the O-21 trace per divergence |
 | `silent-exceptions.md` | argument-discard / spec-honesty / error-translation sweeps |
 | `vocabulary.md` | surface-vocabulary leftovers that freeze at the tag |
-| `QUESTIONS.md` | **16 maintainer decisions**, each with severity, fix vehicle, and a recommendation |
+| `QUESTIONS.md` | 16 maintainer decisions — **all ruled on**, each with severity, evidence, fix vehicle, and the decision recorded inline; plus the pay list re-ranked against them |
 | `repro/probe_matrix.py` | the generator — runs the whole matrix by execution |
 | `repro/matrix.md`, `repro/matrix.json` | its output at this commit |
 | `tests/test_review_simplicity_consistency.py` | **54 guardrails + 15 strict-xfail red halves**, in `tests/` so CI runs them |
