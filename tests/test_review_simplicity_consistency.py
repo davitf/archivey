@@ -346,21 +346,18 @@ def test_front_indexed_formats_accept_a_pipe(key: str, tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_open_stream_reports_a_directory_as_not_found(tmp_path: Path) -> None:
-    """F11 (pin): ``open_stream`` says "not found" for a path that exists."""
-    d = tmp_path / "tree"
-    d.mkdir()
+def test_open_stream_missing_path_is_still_not_found(tmp_path: Path) -> None:
+    """F11 (guardrail): the genuinely-absent case keeps its ``FileNotFoundError``.
+
+    The fix below splits the old ``is_file()`` predicate; this pins the half that was
+    always right, so the split cannot swallow it.
+    """
     with pytest.raises(FileNotFoundError, match="Compressed stream not found"):
-        open_stream(d)
+        open_stream(tmp_path / "nothing-here.gz")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F11: the path exists and is a directory; 'not found' is the wrong story, "
-    "and open_archive opens the same path happily",
-)
 def test_open_stream_directory_error_names_the_real_problem(tmp_path: Path) -> None:
-    """F11 (red half): whatever the type, the message must not claim the path is absent.
+    """F11 (fixed): the message must not claim the path is absent.
 
     Asserted as the *absence* of "not found" rather than the presence of "directory":
     the message interpolates the path, and a pytest tmp dir carries the test's own name,
@@ -368,7 +365,7 @@ def test_open_stream_directory_error_names_the_real_problem(tmp_path: Path) -> N
     """
     d = tmp_path / "tree"
     d.mkdir()
-    with pytest.raises(Exception) as excinfo:  # noqa: B017 - type is the open question
+    with pytest.raises(ArchiveyUsageError) as excinfo:
         open_stream(d)
     message = str(excinfo.value).replace(str(d), "<path>").lower()
     assert "not found" not in message
@@ -480,45 +477,22 @@ def test_rar_column_is_unmeasured_without_the_rar_writer() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_empty_source_sequence_raises_raw_valueerror(tmp_path: Path) -> None:
-    """F3 (pin): `open_archive([])` raises a bare `ValueError`.
-
-    `resolve_source` runs at `core.py:194`, before any backend translator exists, so
-    nothing on that path can type the error.
-    """
-    with pytest.raises(ValueError) as excinfo:
-        open_archive([])
-    assert type(excinfo.value) is ValueError  # not an ArchiveyError/UsageError subclass
-
-
-def test_non_seekable_volume_sequence_raises_raw_valueerror() -> None:
-    """F3 (pin): a non-seekable volume stream raises a bare `ValueError` too.
-
-    Note the inconsistency this pins: the *single*-source version of the same refusal
-    is a typed `StreamNotSeekableError` (see the pipe guardrails above).
-    """
-    with pytest.raises(ValueError) as excinfo:
-        open_archive([_NonSeekable(b"x" * 100), _NonSeekable(b"y" * 100)])
-    assert type(excinfo.value) is ValueError
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="F3: caller misuse and capability refusal are both typed everywhere else",
-)
 def test_empty_source_sequence_is_a_usage_error() -> None:
-    """F3 (red half): an empty sequence is caller misuse, so `ArchiveyUsageError`."""
+    """F3 (fixed): an empty sequence is caller misuse, so `ArchiveyUsageError`.
+
+    `resolve_source` runs before any backend translator exists, so this had to be typed
+    at the raise site rather than by a translator.
+    """
     with pytest.raises(ArchiveyUsageError):
         open_archive([])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F3: a non-seekable volume is the same refusal as a non-seekable single "
-    "source, which is already StreamNotSeekableError",
-)
 def test_non_seekable_volume_sequence_is_a_stream_error() -> None:
-    """F3 (red half): match the single-source spelling of the same refusal."""
+    """F3 (fixed): match the single-source spelling of the same refusal.
+
+    The *single*-source version of this refusal is already `StreamNotSeekableError`
+    (see the pipe guardrails above); a volume sequence is the same refusal.
+    """
     with pytest.raises(StreamNotSeekableError):
         open_archive([_NonSeekable(b"x" * 100), _NonSeekable(b"y" * 100)])
 
@@ -537,34 +511,39 @@ def _zip_bytes() -> bytes:
     return buf.getvalue()
 
 
-def test_zip_underlying_close_is_reported_as_corruption() -> None:
-    """F4 (pin): closing the underlying `ZipFile` under a live reader reads as damage.
+def test_zip_underlying_close_is_a_usage_error() -> None:
+    """F4 (fixed): the archive bytes are fine — the handle is not.
 
     Distinct from the settled `#225` behaviour: a normal `reader.close()` followed by
     `open()` already raises `ArchiveyUsageError` (pinned by the uniform-surface test
-    above). Only this path — the underlying handle closed while the reader still
-    believes it is open — lands in the ZIP translator's blanket `ValueError` arm.
+    above). This path — the underlying handle closed while the reader still believes it
+    is open — used to land in the ZIP translator's blanket `ValueError` arm and report
+    `CorruptionError`, sending a caller hunting a bad file.
     """
-    from archivey import CorruptionError
-
     with open_archive(io.BytesIO(_zip_bytes())) as reader:
         member = next(m for m in reader.members() if m.type is _FILE)
         reader._archive.close()  # type: ignore[attr-defined]  # deliberate: simulate the fault
-        with pytest.raises(CorruptionError):
+        with pytest.raises(ArchiveyUsageError):
             reader.open(member)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F4: an already-closed handle is a lifecycle fault, not archive damage; "
-    "reporting it as CorruptionError sends a caller hunting a bad file",
-)
-def test_zip_underlying_close_is_a_usage_error() -> None:
-    """F4 (red half): the archive bytes are fine — the handle is not."""
-    with open_archive(io.BytesIO(_zip_bytes())) as reader:
+def test_zip_corrupt_member_offset_is_still_corruption(tmp_path: Path) -> None:
+    """F4 (guardrail): the blanket `ValueError` arm still means damage for real damage.
+
+    The closed-handle carve-out must not take the corrupt-local-header-offset case with
+    it — that one really is a bad file, and `CorruptionError` is the right answer.
+    """
+    from archivey import CorruptionError
+
+    data = bytearray(_zip_bytes())
+    # The central directory's local-header offset field, clobbered so zipfile seeks to a
+    # nonsense position when the member is opened.
+    cd_start = data.rindex(b"PK\x01\x02")
+    data[cd_start + 42 : cd_start + 46] = (0xFFFFFFF0).to_bytes(4, "little")
+
+    with open_archive(io.BytesIO(bytes(data))) as reader:
         member = next(m for m in reader.members() if m.type is _FILE)
-        reader._archive.close()  # type: ignore[attr-defined]
-        with pytest.raises(ArchiveyUsageError):
+        with pytest.raises(CorruptionError):
             reader.open(member)
 
 
@@ -576,13 +555,16 @@ _SINGLE_FILE_KEYS = ["gz", "bz2", "xz", "zst", "lz4", "lz", "zz", "br"]
 
 
 @pytest.mark.parametrize("key", _SINGLE_FILE_KEYS)
-def test_single_file_compressed_size_is_path_gated(key: str, tmp_path: Path) -> None:
-    """F5 (pin): `compressed_size` is filled for a Path and `None` for a `BytesIO`.
+def test_single_file_compressed_size_is_not_path_gated(
+    key: str, tmp_path: Path
+) -> None:
+    """F5 (fixed): source shape must not decide whether the field exists.
 
-    This is the residual the `#225` Path/seekable sweep did not reach, and it holds for
-    **every** single-file codec, not just gzip: `single_file_reader.py:173` uses
-    `os.path.getsize` behind an `isinstance(..., Path)` check with no seekable-stream
-    fallback, while the trailer/CRC probes beside it already handle both.
+    This was the residual the `#225` Path/seekable sweep did not reach, and it held for
+    **every** single-file codec, not just gzip: `_build_member` used `os.path.getsize`
+    behind an `isinstance(..., Path)` check with no seekable-stream fallback, while the
+    trailer/CRC probes beside it already handled both. Parametrized over all nine codecs
+    because the bug was in the shared shell, not in any one codec.
     """
     path = _archive("single-file", key, tmp_path)
     with open_archive(path) as reader:
@@ -590,27 +572,18 @@ def test_single_file_compressed_size_is_path_gated(key: str, tmp_path: Path) -> 
     with open_archive(io.BytesIO(path.read_bytes())) as reader:
         from_stream = reader.members()[0].compressed_size
 
-    assert isinstance(from_path, int)
-    assert from_stream is None
+    assert from_path == from_stream == path.stat().st_size
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F5: a seekable stream can answer this with one SEEK_END, exactly as the "
-    "trailer probes next to it already do",
-)
-@pytest.mark.parametrize("key", ["gz", "xz"])
-def test_single_file_compressed_size_is_not_path_gated(
-    key: str, tmp_path: Path
-) -> None:
-    """F5 (red half): source shape must not decide whether the field exists."""
-    path = _archive("single-file", key, tmp_path)
-    with open_archive(path) as reader:
-        from_path = reader.members()[0].compressed_size
-    with open_archive(io.BytesIO(path.read_bytes())) as reader:
-        from_stream = reader.members()[0].compressed_size
+def test_single_file_compressed_size_is_absent_for_a_pipe(tmp_path: Path) -> None:
+    """F5 (guardrail): a non-seekable source still reports `None` — no forced scan.
 
-    assert from_path == from_stream
+    The fix widens the gate from "is a Path" to "is seekable", not to "read it and
+    count", which would cost a whole pass at open on a pipe.
+    """
+    path = _archive("single-file", "gz", tmp_path)
+    with open_archive(_NonSeekable(path.read_bytes()), streaming=True) as reader:
+        assert next(iter(reader)).compressed_size is None
 
 
 def test_container_formats_report_compressed_size_from_either_shape(

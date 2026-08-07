@@ -43,6 +43,17 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- Four refusals that crossed the API untyped or mistyped now match the spelling the
+  rest of the library already uses (simplicity & consistency review, F3/F4/F11):
+  `open_archive([])` and an empty volume-path sequence raise `ArchiveyUsageError`
+  instead of a bare `ValueError`; a non-seekable volume in a sequence raises
+  `StreamNotSeekableError`, matching the single-source refusal; closing the handle
+  under a live ZIP reader raises `ArchiveyUsageError` instead of `CorruptionError`
+  (a lifecycle fault, not archive damage); and `open_stream()` on a directory says so
+  instead of `FileNotFoundError: Compressed stream not found`.
+- `member.compressed_size` on a single-file compressed archive is filled from any
+  **seekable** source, not only from a `Path` — the same rule the trailer/CRC probes
+  beside it already used. A non-seekable source still reports `None`.
 - Performance claims are **aspirational peer-ratio bands** with a published
   measured table in `docs/access-and-cost.md` / `VISION.md` (nightly realistic ratios;
   refresh at release time per the checklist).

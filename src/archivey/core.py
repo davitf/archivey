@@ -329,6 +329,14 @@ def open_stream(
 
     if isinstance(source, (str, Path)):
         path = Path(source)
+        if path.is_dir():
+            # Split out of the is_file() check: a directory exists, so "not found" sends
+            # the caller looking for a missing file. open_archive() reads the same path
+            # happily as a directory archive, which is the likely intent.
+            raise ArchiveyUsageError(
+                f"{path} is a directory, not a compressed stream; "
+                f"use open_archive() to read a directory tree"
+            )
         if not path.is_file():
             raise FileNotFoundError(f"Compressed stream not found: {path}")
         codec_input: Path | BinaryIO = path

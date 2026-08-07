@@ -18,7 +18,6 @@ codecs is tracked under Phase 8 in ``PLAN.md``.
 from __future__ import annotations
 
 import io
-import os
 import struct
 from collections.abc import Callable
 from pathlib import Path
@@ -170,17 +169,12 @@ class SingleFileReader(BaseArchiveReader):
             self._pending_stream = self._open_codec_stream()
 
     def _build_member(self, archive_name: str | None) -> ArchiveMember:
-        compressed_size = (
-            os.path.getsize(self._source)
-            if isinstance(self._source, Path) and self._source.exists()
-            else None
-        )
         member = ArchiveMember(
             type=MemberType.FILE,
             name=_infer_member_name(archive_name),
             raw_name=None,
             size=None,  # filled per-codec below where cheaply known
-            compressed_size=compressed_size,
+            compressed_size=self._probe_compressed_size(),
             modified=None,
         )
         # Per-codec metadata extraction lives on the codec object (gzip FNAME/mtime, xz/lzip
@@ -234,6 +228,17 @@ class SingleFileReader(BaseArchiveReader):
         except OSError:
             return None
         return None
+
+    def _probe_compressed_size(self) -> int | None:
+        """Byte length of the compressed source, when one ``SEEK_END`` can answer it.
+
+        Any seekable source answers this, which is the same rule the trailer/CRC probes
+        beside it already follow. Gating it on ``isinstance(source, Path)`` made the same
+        archive report an ``int`` from disk and ``None`` from an identical ``BytesIO``.
+        A missing path raises ``OSError`` inside ``_with_seekable_source`` and comes back
+        as ``None``, as before.
+        """
+        return self._with_seekable_source(lambda f: f.seek(0, io.SEEK_END))
 
     def _peek_trailer(self, length: int) -> bytes | None:
         """The last ``length`` bytes of the compressed source, when cheaply readable.
