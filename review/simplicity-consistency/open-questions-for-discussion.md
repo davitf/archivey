@@ -3,8 +3,9 @@
 **Written to be shared and read standalone.** No prior context needed; everything you
 need to form an opinion is inline. Dated 2026-08-07, against `main` @ `2792f9c`.
 
-If you only want to weigh in on one thing, **O1** is the one with real consequences and
-**O4** is the one with a deadline.
+If you only want to weigh in on one thing: **O1** and **O2b** are the two with real
+performance consequences, **O4** is the one with a deadline, and **O5** is the one where
+picking a principle would settle three separate arguments at once.
 
 ---
 
@@ -122,35 +123,107 @@ already committed.
 
 ---
 
-## O2 — Should opening members out of order on a solid archive warn?
+## O2 — Solid-archive re-decompression: the cost, and whether to warn
+
+Two questions here. The first was the one originally asked; the second is bigger, was
+raised in review of this document, and is **measured below** — the numbers move it from
+"maybe someday" to a live cross-backend inconsistency.
+
+### O2a — Should out-of-order `open()` on a solid archive warn?
 
 **Background.** In a *solid* archive (7z, RAR, any compressed TAR), members share one
-compression stream. Reading member #50 then member #10 can mean decompressing from the
-block start twice — an O(n²) trap if you loop that way.
+compression stream, so reaching member N may mean decompressing everything before it.
 
 The library used to have a specification clause promising a warning here. **No code ever
 implemented it**, and it was removed. During that removal the maintainer wrote down a new
-rule to justify the removal, and explicitly left one sub-question open: *should we emit a
+rule to justify the removal and explicitly left one sub-question open: *should we emit a
 plain Python `warnings.warn` instead?*
 
 **Status:** still open. Verified: there is no `warnings.warn` anywhere in the library, and
 the current specification says the opposite — "no diagnostic, no warning — discoverable
 via `reader.cost.access_cost` and the `open()` docstring."
 
-**Recommendation on the table: decide "no", and write it down.**
+**Recommendation on the table: decide "no", and write it down.** This case has a *better*
+signal than the seek case in O1: `cost.access_cost == SOLID` is right there in the cost
+receipt at open, before you do anything. If the rewind — which has no open-time signal at
+all — doesn't warrant an ambient warning, this one certainly doesn't.
 
-The argument, which is the same one that resolved O1's framing: this case has a *better*
-signal than the rewind does. `cost.access_cost == SOLID` is right there in the cost
-receipt, available at open, before you do anything wrong. Whereas nothing in the receipt
-tells you a codec lacks a seek index. If the rewind — with no open-time signal — doesn't
-warrant an ambient warning, this one certainly doesn't.
+It needs an explicit answer rather than drift: it has now been rediscovered by two
+separate reviews, and will be again until it is recorded.
 
-**Why it needs an explicit answer rather than drift:** it has now been rediscovered by
-two separate reviews. Until it's recorded as decided, it will be rediscovered again.
+### O2b — Should the reader hold the decompressor open across `open()` calls? *(new)*
+
+**The framing "member 50 then member 10" is misleading**, and the measurements show why:
+for 7z, **the order does not matter at all.**
+
+Setup: 8 members × 200 KB of incompressible data, so compressed size ≈ uncompressed and
+re-decode cost is directly visible. Counting bytes read from the compressed source.
+
+**Solid 7z** (`-ms=on`, compressed 1,600,339 bytes):
+
+| Access pattern | Compressed bytes read | vs. one pass |
+|---|---:|---:|
+| `stream_members()` — one forward pass | 1,608,739 | **1.0×** |
+| `read()` of only the **last** member | 1,608,739 | **1.0×** |
+| `read()` of all 8 **in archive order** | 7,236,643 | **4.5×** |
+| `read()` of all 8 **in reverse order** | 7,236,643 | **4.5×** |
+
+In-order and reverse-order are **identical**. The cost is not about ordering — every
+random `open()` on a solid folder restarts the decode from the folder start and stops at
+the target. For N members that is `1+2+…+N` over `N`, i.e. **(N+1)/2 × one pass**,
+whatever order you use. Here (8+1)/2 = 4.5, exactly the measured ratio.
+
+**Compressed TAR** (`.tar.gz`, same payload) behaves **differently**:
+
+| Access pattern | vs. one pass |
+|---|---:|
+| `stream_members()` — one forward pass | 1.0× |
+| `read()` of all 8 **in archive order** | **1.0×** |
+| `read()` of all 8 **in reverse order** | 2.4× |
+
+So on `.tar.gz` the reader *already* reuses decompression state for forward progress —
+in-order random `open()` is free. On 7z it does not.
+
+**That is the finding.** Two solid formats, one uniform interface, and the cost model for
+the identical caller code differs by 4.5×. It is not a hypothetical optimization: one
+backend already demonstrates the behaviour the other lacks.
+
+**What is worth deciding:**
+
+1. **Should the 7z reader hold its folder decoder open across `open()` calls**, so
+   in-order random access costs one pass, as `.tar.gz` already does? The maintainer's
+   own note is that this "opens a whole can of worms" — lifetime, when to discard,
+   interaction with the single-live-stream rule and with concurrent members. All true.
+   But the payoff is a 4.5× cost cliff on the founding use case (walk an archive, hash
+   every member), and closing a cross-backend inconsistency rather than inventing
+   something new.
+2. **Now or later?** Nothing about it is a public-API change, so it is not tag-gated —
+   which argues for later. Against: the current cost is the thing the documentation
+   currently tells users to work around by using `stream_members()`, and a caller who
+   reaches for `open()` because they want random access has no way to know 7z charges
+   4.5× where TAR charges 1×.
+3. **Either way, does this change the answer to O2a?** Arguably yes: if in-order random
+   access stops being expensive on 7z, the remaining expensive pattern is genuinely
+   out-of-order, and a warning for it becomes better-targeted — though the "the cost
+   receipt already told you" argument still stands.
+
+**Caveats on the numbers.** The 7z archive was written with `-mx1` by the system `7z`;
+solid-block layout varies with settings, and a multi-folder archive would show a smaller
+ratio. The `.tar.gz` one-pass baseline itself reads ~2.65× the compressed file, which is
+unexplained and was not chased — the *relative* comparisons above are the reliable part.
+Ratios are stated against each format's own one-pass cost for that reason. RAR was not
+measured (see O6 — the test corpus cannot build RAR here).
 
 ---
 
-## O3 — Two names for the same capability, and the deadline is the tag
+## O3 — Where should "I want to seek inside members" be expressed at all?
+
+This started as a naming question and is really a placement question. **Nothing here is
+locked** — every argument name in the library is still changeable before the tag, so the
+options are not limited to the two below, and a third name that reads well in both
+contexts is fair game.
+
+### The observation
 
 Two entry points express the same idea with different spellings:
 
@@ -159,28 +232,50 @@ open_archive(path, seekable_members=True)   # archives
 open_stream(path, seekable=True)            # a single compressed stream
 ```
 
-One review pass called this a live pre-freeze question — rename, alias both, or accept.
-The other found that the specification **already mandates the current spelling**:
+The specification currently **mandates** exactly this:
 
 > `open_stream` SHALL keep its `seekable: bool` parameter, and both entry points SHALL use
 > the same `seekable` vocabulary for the same concept; concurrency has no meaning for a
 > single standalone stream, so `open_stream` MUST NOT gain a concurrency parameter.
 
-The code matches that exactly. The maintainer has ruled to **revisit it before the tag**
-anyway — which is legitimate, but means the specification has to change *first*, since it
-currently forbids the alternatives.
+So any change starts by changing that requirement. The defence for today's spelling:
+`seekable_members` names *what it applies to*, `open_stream` has only one stream so
+`seekable` is unambiguous, and both spell the capability `seekable`.
 
-**The case for leaving it:** the difference is deliberate. `seekable_members` names *what
-it applies to* (the members), and `open_stream` has only one stream, so `seekable` is
-unambiguous there. Both spell the capability `seekable`.
+### The bigger question: is `open_archive` even the right place?
 
-**The case for changing it:** a caller moving between the two entry points has to
-remember two spellings for one concept, and renaming is free until the tag and expensive
-after.
+Today seekability is declared **per archive**. The alternative is per member:
 
-**Worth separating:** the genuinely bad thing about `seekable_members` was never its name
-— it was that the flag also silently changed which *metadata* you got back. That's a
-separate finding and has already been decided (it will be fixed).
+```python
+archive.open(member, seekable=True)
+```
+
+**A caller's actual need is usually per-member** — seek around inside one big member,
+stream the rest — and today that forces the whole archive into the seekable mode.
+
+**But the specification explicitly forecloses this**, in the same requirement:
+
+> Capabilities are per-archive intent only — no `ArchiveyConfig` equivalent, **no
+> per-`open()` flag**.
+
+And there is a real technical reason, which a separate finding in this review made
+concrete: **declaring seekability changes what the backend does at open time** — it drives
+whether a seek index gets built and whether an accelerator is selected. A per-`open()`
+flag would mean either building the index lazily on first seekable open (new state and
+lifetime questions), or building it always (paying for callers who never seek).
+
+That same finding — the flag also silently changing which *metadata* you get back — is
+already decided and being fixed. Worth separating: **the bad thing about
+`seekable_members` was never its name.**
+
+### What we need
+
+- Is the per-archive placement right, or should the capability move to (or also exist at)
+  the member level, accepting the spec change and the index-lifetime work?
+- If it stays per-archive, is there a name that reads correctly in both contexts, rather
+  than picking one of the two current ones?
+- If nothing changes, is the specification's current wording the reason, or just its
+  effect? (It is the only thing making this "settled".)
 
 ---
 
@@ -213,42 +308,69 @@ Options:
 
 ---
 
-## O5 — We declined a general rule. Is that right, or just deferred?
+## O5 — Three arguments, three behaviours. Which one is the model?
 
-There's a recurring shape in the library: **a caller passes an explicit argument, and the
-backend silently ignores it.**
+There's a recurring shape: **a caller passes an explicit argument, and the backend can't
+act on it.** The library currently does three different things.
 
-Known instances:
+| Argument | Behaviour when the backend can't use it |
+|---|---|
+| `encoding=` | **Silently ignored** by 7z, RAR, ISO, directory, single-file (honoured by ZIP and TAR) |
+| `format=` when wrong but plausible | Usually raises — but see O8 for the case where it silently succeeds on wrong data |
+| `password=` | **Raises** `UnsupportedOperationError` |
 
-| Argument | Honoured by | Silently ignored by |
-|---|---|---|
-| `encoding=` | ZIP, TAR | 7z, RAR, ISO, directory, single-file |
-| `format=` (when wrong but plausible) | fails loudly on most formats | see below |
+A previous fix established a principle for one case — `format=ZIP` on a directory path now
+raises rather than silently reading the directory — reasoning that *"silently overruling it
+returns a reader over the directory tree to a caller who asserted a different format."*
+That principle was never generalised.
 
-For contrast, a *third* argument is handled the opposite way: passing `password=` to a
-format that has no encryption raises an error, centrally.
+The review recommended generalising it (refuse anything the backend can't act on). **The
+maintainer chose the softer option for `encoding=`**: emit a diagnostic, keep the entry
+point permissive.
 
-A previous fix established the principle for one case — passing `format=ZIP` on a
-directory path now raises rather than silently reading the directory — with the reasoning
-*"silently overruling it returns a reader over the directory tree to a caller who asserted
-a different format."* That principle was never generalised.
+### The counter-proposal: maybe `password=` is the one that should change
 
-**The review recommended generalising it**: an explicit argument naming something the
-resolved backend cannot act on is refused at the entry point. One rule replacing three
-special cases, and covering the next knob by construction.
+`password=` is **already best-effort by design.** You can pass a whole list of candidates,
+and the library tries them in order per encrypted unit, keeping the ones that work. That is
+built for exactly the batch shape this library exists to serve: *"here are the twenty
+passwords we know about — open whatever you can."*
 
-**The maintainer chose the softer option instead**: emit a diagnostic when `encoding=` is
-ignored, and leave the entry point permissive. Reasonable — it doesn't break a caller who
-passes `encoding=` uniformly across a mixed batch of formats, and the discard becomes
-queryable.
+Under that reading, raising because one archive in a batch happens to be a plain `.tar` is
+the wrong behaviour. The caller isn't asserting "this archive is encrypted"; they're
+supplying a keyring.
 
-**The open question is whether that's the policy or just this instance.** As it stands,
-the *next* argument someone adds gets decided from scratch again, and the three cases
-above now have three different behaviours (raise / diagnostic / silent). Worth an explicit
-"yes, permissive-plus-diagnostic is the house rule" — or not.
+**And the library already half-agrees with that — measured:**
 
-**One consequence that's easy to miss:** the softer choice does not cover the `format=`
-case below (O8), which is being fixed separately.
+```
+A plain .tar (no encryption at all):
+  open_archive(tar, password="hunter2")            -> UnsupportedOperationError
+  open_archive(tar, password=["a", "b"])           -> UnsupportedOperationError
+  open_archive(tar, password=lambda req: "hunter2") -> opens fine
+```
+
+A *provider callable* is accepted and simply never consulted; a static list is refused.
+The permissive behaviour already exists — it's just reachable only by wrapping your
+password list in a lambda, which no one would guess.
+
+So the asymmetry isn't only across arguments; it's **inside `password=` itself**.
+
+### What we need decided
+
+Pick the model, then apply it to all three:
+
+- **Permissive + diagnostic** (what `encoding=` is getting, and what a password *provider*
+  already does): the entry point accepts, the backend ignores, the discard is queryable.
+  Best for batch/keyring callers. Weakest for the caller who typo'd an argument.
+- **Strict refusal** (what static `password=` does today, and what the directory `format=`
+  fix established): loud, catches mistakes immediately. Worst for mixed-format batches.
+- **Split by intent**: refuse when the argument is an *assertion about this archive*
+  (`format=` — "I claim this is a ZIP"), permit when it is a *resource offered for use if
+  needed* (`password=`, arguably `encoding=`). This is the most defensible line and the
+  one that explains why the existing static/provider split feels wrong — a list of
+  candidates is a keyring, not an assertion.
+
+Whatever the answer, the static-vs-provider inconsistency inside `password=` should
+probably stop existing either way.
 
 ---
 
