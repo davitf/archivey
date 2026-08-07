@@ -41,7 +41,12 @@ from archivey import (
     open_stream,
 )
 from archivey.types import MemberType
-from tests.sample_archives import CORPUS, FORMAT_KEYS, CorpusEntry, corpus_archive_path
+from tests.sample_archives import (
+    CORPUS,
+    CorpusEntry,
+    corpus_archive_path,
+    skip_unless_runnable,
+)
 
 _FILE = MemberType.FILE
 
@@ -55,18 +60,19 @@ def _entry(entry_id: str) -> CorpusEntry:
 def _archive(entry_id: str, key: str, tmp_path: Path) -> Path:
     """Build one corpus archive, skipping cleanly when this env cannot make it.
 
-    Mirrors ``test_corpus_sweep._skip_unless_runnable``'s intent without importing it:
-    a missing reader or a missing builder binary is an *unmeasured* cell, not a pass.
+    Uses the shared ``skip_unless_runnable`` gate rather than a local copy: a missing
+    reader *or a missing builder* is an **unmeasured** cell, not a pass. An earlier
+    hand-rolled version of this checked only reader availability, which is exactly
+    wrong for 7z — the reader is native, so it looked fine, while the corpus builder
+    needs ``py7zr`` and the ``core-only`` CI leg died on ``ModuleNotFoundError``.
     """
     entry = _entry(entry_id)
     if key not in entry.formats:
         pytest.skip(f"corpus entry {entry_id!r} is not built as {key!r}")
-    availability = format_availability(FORMAT_KEYS[key])
-    if availability.support is FormatSupport.NONE:
-        pytest.skip(f"format {key!r} not readable here: {availability.missing}")
+    skip_unless_runnable(entry, key)
     try:
         return corpus_archive_path(entry, key, tmp_path)
-    except FileNotFoundError as exc:  # a builder binary is missing
+    except FileNotFoundError as exc:  # a builder binary the tables do not name
         pytest.skip(f"builder for {key!r} unavailable: {exc}")
 
 
@@ -637,12 +643,7 @@ def test_header_encrypted_7z_needs_the_password_at_open(tmp_path: Path) -> None:
     from archivey import EncryptionError
 
     entry = _entry("encrypted-header")
-    if "7z" not in entry.formats:
-        pytest.skip("no header-encrypted 7z corpus entry")
-    availability = format_availability(FORMAT_KEYS["7z"])
-    if availability.support is FormatSupport.NONE:
-        pytest.skip(f"7z not readable here: {availability.missing}")
-    path = corpus_archive_path(entry, "7z", tmp_path)
+    path = _archive("encrypted-header", "7z", tmp_path)
 
     with pytest.raises(EncryptionError):
         open_archive(path)
@@ -656,10 +657,7 @@ def test_data_encrypted_members_still_list_without_a_password(tmp_path: Path) ->
     key = next((k for k in ("zip", "7z") if k in entry.formats), None)
     if key is None:
         pytest.skip("no data-encrypted corpus entry in a measurable format")
-    availability = format_availability(FORMAT_KEYS[key])
-    if availability.support is FormatSupport.NONE:
-        pytest.skip(f"{key} not readable here: {availability.missing}")
-    path = corpus_archive_path(entry, key, tmp_path)
+    path = _archive("encrypted", key, tmp_path)
 
     with open_archive(path) as reader:  # no password at all
         assert len(reader.members()) > 0

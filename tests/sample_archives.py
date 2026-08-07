@@ -708,6 +708,56 @@ READER_PACKAGES: dict[str, tuple[str, ...]] = {
 }
 
 
+def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
+    """Skip when this environment cannot *build or read* ``entry`` as ``key``.
+
+    Lives here, next to the three tables it consults, so every corpus-driven test
+    shares one gate. Reader availability alone is not enough: a format whose reader is
+    native still needs its **builder** — 7z reads natively but the corpus writes it
+    with ``py7zr``, so the ``core-only`` CI leg has a readable format it cannot write.
+    A hand-rolled gate that checks only the registry passes that check and then dies on
+    ``ModuleNotFoundError`` inside the builder.
+
+    ``pytest`` is imported lazily because this module is also imported by non-pytest
+    scripts (``review/simplicity-consistency/repro/probe_matrix.py``).
+    """
+    import importlib.util
+
+    import pytest
+
+    from archivey import FormatSupport, format_availability
+    from tests.conftest import _has_zstd_backend
+
+    availability = format_availability(FORMAT_KEYS[key])
+    if availability.support is FormatSupport.NONE:
+        pytest.skip(
+            f"format {key!r} not readable here: {availability.missing or 'no backend'}"
+        )
+    for package in READER_PACKAGES.get(key, ()):
+        if importlib.util.find_spec(package) is None:
+            pytest.skip(f"reader needs package {package!r}")
+    for package in BUILDER_PACKAGES.get(key, ()):
+        if package == "_zstd_backend":
+            if not _has_zstd_backend():
+                pytest.skip("no zstd backend to build with")
+        elif importlib.util.find_spec(package) is None:
+            pytest.skip(f"builder needs package {package!r}")
+    entry_binaries = entry.requires_binaries
+    if key == "7z":
+        # Encrypted ZIP corpus entries need the 7z CLI builder, but encrypted 7z entries
+        # are written directly by py7zr with a single archive password.
+        entry_binaries = tuple(b for b in entry_binaries if b != "7z")
+    for binary in (*BUILDER_BINARIES.get(key, ()), *entry_binaries):
+        if shutil.which(binary) is None:
+            pytest.skip(f"builder needs binary {binary!r}")
+    if (
+        os.name == "nt"
+        and any(m.type is MemberType.SYMLINK for m in entry.members)
+        and key in ("dir", "7z")
+    ):
+        pytest.skip("creating symlinks on Windows needs privileges")
+
+
 # ---------------------------------------------------------------------------
 # Generation cache (content-keyed, atomic, parallel-safe)
 # ---------------------------------------------------------------------------

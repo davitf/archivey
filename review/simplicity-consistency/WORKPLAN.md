@@ -41,10 +41,28 @@ uv run pyrefly check && uv run ty check
 openspec validate --all
 ```
 
-Three-config runs (`[all]`, `[recommended]`, bare stdlib) are required before pushing.
-*None of the review's findings depend on an optional library's presence* — all reproduce
-under stdlib + `[recommended]` — so the extra configs are a formality here, but the rule
-still applies.
+**Three-config runs (`[all]`, `[recommended]`, bare stdlib) are required before pushing,
+and they are not a formality.** An earlier revision of this file said they were, on the
+grounds that no *finding* depends on an optional library. That is true of the findings and
+irrelevant to the tests: the review's own guardrails broke the `core-only` and
+free-threaded legs, because **7z reads natively but the corpus writes it with `py7zr`** —
+so a format-availability check passes and the builder then dies on `ModuleNotFoundError`.
+`[all]` passed on every platform while three legs were red.
+
+Reproduce the reduced legs exactly as CI does:
+
+```bash
+uv sync --no-dev
+uv run --no-sync python tests/check_zero_dep_core.py
+uv run --no-sync --with pytest --with pytest-cov --with pytest-timeout pytest tests/ -q
+uv sync --group dev --extra all      # restore
+```
+
+**When a corpus-driven test needs an archive, call
+`tests.sample_archives.skip_unless_runnable(entry, key)`** — it consults
+`READER_PACKAGES`, `BUILDER_PACKAGES` and `BUILDER_BINARIES` together. Do not hand-roll a
+gate from `format_availability` alone; that is the mistake above, and it is invisible in
+the `[all]` leg.
 
 ---
 
