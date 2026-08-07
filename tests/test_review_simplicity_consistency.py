@@ -233,18 +233,20 @@ def test_tar_has_no_report_peek_before_a_pass(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("strict_eof", [False, True])
-def test_wrong_explicit_format_on_iso_yields_an_empty_listing(
-    strict_eof: bool, tmp_path: Path
-) -> None:
+def test_wrong_explicit_format_on_iso_yields_an_empty_listing(tmp_path: Path) -> None:
     """F7 (pin): ``format=TAR`` over an ISO opens and lists zero members.
 
     An ISO's first 32 KiB system area is zero-filled, which is byte-identical to a TAR
-    end-of-archive marker, so the TAR reader sees a valid empty archive.
-    ``strict_archive_eof=True`` does not catch it either.
+    end-of-archive marker, so the TAR reader sees a valid empty archive. It still opens
+    — `format=` is an override — and the disagreement is now reported as data rather
+    than nothing (see `test_wrong_explicit_format_does_not_silently_succeed`).
+
+    Only the default is pinned here; the ``strict_archive_eof=True`` half moved to
+    `test_wrong_explicit_format_on_iso_is_caught_by_strict_eof`, because that flag now
+    does catch it.
     """
     path = _archive("basic", "iso", tmp_path)
-    config = ArchiveyConfig(strict_archive_eof=strict_eof)
+    config = ArchiveyConfig(strict_archive_eof=False)
     with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
         assert reader.format == ArchiveFormat.TAR
         assert reader.members() == []
@@ -848,17 +850,7 @@ def test_zero_filled_dot_tar_opens_empty_via_extension(
         }
 
 
-@pytest.mark.parametrize("strict_eof", [False, True])
-def test_strict_archive_eof_ignores_trailing_junk(
-    strict_eof: bool, tmp_path: Path
-) -> None:
-    """F20 (pin): `strict_archive_eof` never looks past the second trailer block.
-
-    A valid one-member TAR with 4 KiB of arbitrary junk appended reads as one member with
-    no diagnostic, *including* under strict. Pinned because the knob is documented as
-    what you set for a "provably complete listing", and this is the gap between that
-    promise and what it checks.
-    """
+def _one_member_tar() -> bytes:
     import io
     import tarfile
 
@@ -867,13 +859,96 @@ def test_strict_archive_eof_ignores_trailing_junk(
         info = tarfile.TarInfo("a.txt")
         info.size = 3
         tar.addfile(info, io.BytesIO(b"abc"))
+    return buf.getvalue()
 
-    path = tmp_path / "with_junk.tar"
-    path.write_bytes(buf.getvalue() + b"JUNK" * 1024)
+
+@pytest.mark.parametrize(
+    ("tail", "tail_id"),
+    [
+        (b"JUNK" * 1024, "junk"),
+        (b"\x00" * 4096 + b"X" + b"\x00" * 512, "buried-byte"),
+        (_one_member_tar(), "concatenated"),
+    ],
+    ids=lambda v: v if isinstance(v, str) else "",
+)
+def test_strict_archive_eof_rejects_trailing_data(
+    tail: bytes, tail_id: str, tmp_path: Path
+) -> None:
+    """F20 (fixed): the knob now asserts what it documents.
+
+    It used to check exactly one thing — that the second null trailer block was present
+    — and never looked past it, so 4 KiB of arbitrary appended bytes passed silently
+    under the flag you set for a "provably complete listing". Now every byte from the
+    trailer to EOF must be zero.
+
+    The concatenated case is deliberate: two tars really are two archives and the reader
+    listed only the first.
+    """
+    from archivey import CorruptionError
+
+    path = tmp_path / f"{tail_id}.tar"
+    path.write_bytes(_one_member_tar() + tail)
+
+    # Unchanged without the flag — including the cost, since the scan does not run.
+    with open_archive(
+        path,
+        format=ArchiveFormat.TAR,
+        config=ArchiveyConfig(strict_archive_eof=False),
+    ) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+        assert dict(reader.diagnostics.counts) == {}
+
+    with pytest.raises(CorruptionError):
+        with open_archive(
+            path,
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(strict_archive_eof=True),
+        ) as reader:
+            reader.members()
+
+
+@pytest.mark.parametrize("strict_eof", [False, True])
+def test_zero_padding_after_the_trailer_still_passes(
+    strict_eof: bool, tmp_path: Path
+) -> None:
+    """F20 (guardrail): the case the "nothing but zeros" rule exists to preserve.
+
+    `tar` pads to 10 KiB records by default and other writers pad further, so "the file
+    ends at the trailer" would reject what `tar(1)` itself produces.
+    """
+    path = tmp_path / "padded.tar"
+    path.write_bytes(_one_member_tar() + b"\x00" * 4096)
     config = ArchiveyConfig(strict_archive_eof=strict_eof)
     with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
         assert [m.name for m in reader.members()] == ["a.txt"]
         assert dict(reader.diagnostics.counts) == {}
+
+
+def test_wrong_explicit_format_on_iso_is_caught_by_strict_eof(tmp_path: Path) -> None:
+    """F20: an ISO read as TAR now fails under strict — the review predicted otherwise.
+
+    O8b listed "the ISO case still passes" as a deliberate consequence, on the grounds
+    that its 32 KiB system area is zeros and therefore reads as a valid empty TAR with
+    padding. Measured, that describes only the first 32768 bytes: the zeros stop exactly
+    where the volume descriptors begin (``\\x01CD001``) and ~48 KiB of real data follows,
+    so the file is not zeros to EOF.
+
+    The outcome is the one a caller would want — someone who asserted `format=TAR` *and*
+    asked for a provably complete listing gets told — but it is not what the review
+    expected, so it is asserted here rather than left to be rediscovered.
+    """
+    from archivey import CorruptionError
+
+    path = _archive("basic", "iso", tmp_path)
+    data = path.read_bytes()
+    first_nonzero = next(i for i, byte in enumerate(data) if byte)
+    assert first_nonzero == 32768  # the system area ends; descriptors begin
+    assert len(data) > first_nonzero  # ...and the file continues
+
+    config = ArchiveyConfig(strict_archive_eof=True)
+    with pytest.raises(CorruptionError):
+        with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
+            reader.members()
 
 
 def test_legitimately_empty_tar_stays_valid(tmp_path: Path) -> None:

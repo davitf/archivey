@@ -79,6 +79,12 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
       boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,
       not raised. When a provably complete listing matters (inventory/dedupe sweeps), set
       `ArchiveyConfig(strict_archive_eof=True)` to escalate that warning to `TruncatedError`.
+    - `strict_archive_eof=True` additionally requires **every byte after the trailer to be
+      zero**, so trailing junk and concatenated archives raise `CorruptionError` instead
+      of passing silently. Zero padding still passes — `tar` writes 10 KiB records, so
+      "nothing but zeros" is the strongest rule that does not reject what `tar` itself
+      produces. The check reads to EOF, which is why it is opt-in: the flag costs
+      O(tail length), and on a compressed tar the tail is decompressed to inspect it.
     - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
       regardless of the flag.
   - **Streaming caveat:** a corrupt header as the *final* block is caught in random-access

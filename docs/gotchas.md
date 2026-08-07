@@ -72,6 +72,11 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   `strict_archive_eof=True` when you need a provably complete listing. And a corrupt
   **final** header is caught in random access but not in forward-only streaming.
   → [TAR](formats.md#tar-and-compressed-tar)
+- **`strict_archive_eof=True` reads to the end of the file.** It requires every byte
+  after the two-block trailer to be zero, so trailing junk and concatenated archives
+  raise instead of passing silently. Zero padding still passes — `tar` writes 10 KiB
+  records. The cost is the point of the flag being opt-in: the check is O(tail length),
+  and on a `.tar.gz` the tail is decompressed to inspect it.
 - **Truncation detection on bare gzip/zlib through rapidgzip is best-effort.**
   Upstream soft-EOFs by design and Archivey backstops it, but a residual hole
   remains. Use `use_rapidgzip=OFF` when you need certainty. This is about **bare**

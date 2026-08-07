@@ -69,6 +69,7 @@ class DiagnosticCode(str, Enum):
     SCAN_DIRECTORY_VANISHED = "scan_directory_vanished"
     SCAN_ENTRY_VANISHED = "scan_entry_vanished"
     ARCHIVE_EOF_MARKER_MISSING = "archive_eof_marker_missing"
+    ARCHIVE_TRAILING_DATA = "archive_trailing_data"
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
@@ -206,7 +207,17 @@ class ScanRaceContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class ArchiveEofContext(_JsonSafeContext):
-    """Expected end-of-archive marker missing, short, or non-null (e.g. TAR trailer)."""
+    """The end of the archive did not look the way the format says it should.
+
+    Two checks share this shape, told apart by ``expected_marker``:
+
+    - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
+      missing, short, or a non-null block.
+    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``, ``strict_archive_eof`` only) — the
+      trailer was complete but a non-zero byte follows it, so the file carries something
+      the listing did not account for. ``observed_bytes`` is that byte's offset past the
+      trailer.
+    """
 
     kind: Literal["archive_eof"] = "archive_eof"
     archive_name: str | None = None
@@ -356,6 +367,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.SCAN_DIRECTORY_VANISHED: "scan_race",
         DiagnosticCode.SCAN_ENTRY_VANISHED: "scan_race",
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: "archive_eof",
+        DiagnosticCode.ARCHIVE_TRAILING_DATA: "archive_eof",
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID: "member_timestamp",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",

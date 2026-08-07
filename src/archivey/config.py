@@ -134,7 +134,14 @@ class ArchiveyConfig:
     # Tri-state for rapidgzip's bundled bzip2 random-access backend.
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     # When True, a missing TAR (etc.) end-of-archive marker becomes TruncatedError
-    # instead of ARCHIVE_EOF_MARKER_MISSING (see gotchas / strict_archive_eof).
+    # instead of ARCHIVE_EOF_MARKER_MISSING, AND every byte from the trailer to EOF must
+    # be zero — a non-zero byte raises CorruptionError (trailing junk, or a second
+    # archive concatenated on). Zero padding still passes; `tar` writes 10 KiB records.
+    #
+    # COST: that second check reads to EOF, so this flag is O(tail length), not O(512
+    # bytes). On a non-seekable source it is a real scan, and on a compressed tar the
+    # tail is decompressed to inspect it. That cost is why the check is gated on the
+    # flag rather than emitted as an unconditional advisory.
     strict_archive_eof: bool = False
     # Legacy encoding for a ZIP member name stored without the UTF-8 flag whose bytes are
     # also not valid UTF-8 (the sniff prefers UTF-8 first). Default cp437 per APPNOTE; set a

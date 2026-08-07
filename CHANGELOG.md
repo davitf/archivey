@@ -52,6 +52,15 @@ promise with that line; treat `0.2.0` as the first release of this library.
   assertion that this archive is encrypted, and a batch caller passing one keyring
   across mixed input should not fail on the one plain `.tar`. A *wrong* password on an
   *encrypted* archive still raises `EncryptionError`.
+- **`strict_archive_eof=True` now asserts what it documents.** It used to check only
+  that the two-block TAR trailer was present, so 4 KiB of arbitrary appended bytes passed
+  silently under the flag you set for "a provably complete listing". Every byte from the
+  trailer to EOF must now be zero; the first non-zero one emits the new
+  `ARCHIVE_TRAILING_DATA` diagnostic and raises `CorruptionError`. Zero padding still
+  passes (`tar` writes 10 KiB records), and concatenated archives now fail — deliberately,
+  since they are two archives and only the first was listed. **The flag is now
+  O(tail length)** rather than O(512 bytes), and on a compressed tar the tail is
+  decompressed to inspect it; `strict_archive_eof=False` is unchanged, including the cost.
 - Six new diagnostic codes (simplicity & consistency review): `EMPTY_ARCHIVE`,
   `EXTENSION_FORMAT_UNCONFIRMED`, `EXPLICIT_FORMAT_LISTED_EMPTY`,
   `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED`, and
