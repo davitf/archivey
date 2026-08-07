@@ -26,9 +26,11 @@ The round commissioned 2026-07-17 — the **non-security** pass toward the first
 `0.2.0` — closed on 2026-07-28 when `debt-ledger/` and `performance/` were archived.
 Every finding there is fixed, accepted, or recorded as an explicit deferral.
 
-`backlog.md` holds what is left: Topic 6 (decode-engine perf, + parked stream-layering
-Q4), Topic 7 (outside-in adoption capstone — the **capstone**, meaningful only once
-everything else is addressed), and the parked-from-archive table.
+`backlog.md` holds what is left: Topic 8 (documentation *content*), Topic 6
+(decode-engine perf, + parked stream-layering Q4), Topic 7 (outside-in adoption
+capstone — the **capstone**, meaningful only once everything else is addressed), and
+the parked-from-archive table. Topic 9 is the in-flight `simplicity-consistency/` row
+above. `STATUS.md` records the intended ordering.
 
 Note that an empty `review/` does **not** mean `0.2.0` is ready: the release bundle
 (`PLAN.md` item 6 — packaging finalize, the free-threading support statement, the
