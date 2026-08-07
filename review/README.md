@@ -20,7 +20,7 @@ completed changes out of `changes/`.
 | Dir | Review | Status |
 |-----|--------|--------|
 | `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; phases 1–3 largely done (IA migrate + guide splits). Topic 8 content prose still open; see `STATUS.md`. |
-| `simplicity-consistency/` | Simplicity & consistency pass — uniform interface, accidental format/entry-point differences, spec honesty | Brief 2026-08-06; analysis-only until maintainer picks pay items. Prompted by docs cleanup / #225. |
+| `simplicity-consistency/` | Simplicity & consistency pass — uniform interface, accidental format/entry-point differences, spec honesty | Brief 2026-08-06; **findings delivered** (analysis-only until maintainer picks pay items). See `SUMMARY.md` / `QUESTIONS.md`. |
 
 The round commissioned 2026-07-17 — the **non-security** pass toward the first public
 `0.2.0` — closed on 2026-07-28 when `debt-ledger/` and `performance/` were archived.
