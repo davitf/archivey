@@ -752,6 +752,7 @@ class TarReadBackend(ReadBackend):
     # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True
+    USES_ENCODING = True  # passed to tarfile.open(encoding=...) for name decoding
 
     def open_read(
         self,

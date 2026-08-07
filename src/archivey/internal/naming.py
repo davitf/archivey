@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from archivey.diagnostics import (
     DiagnosticCode,
+    MemberNameControlsContext,
     NameNormalizationContext,
     raw_name_to_base64,
 )
@@ -35,22 +36,46 @@ _BIDI_CONTROLS = frozenset(
 )
 
 
-def _warn_for_bidirectional_controls(name: str) -> None:
-    """Warn once when a presented member name contains a bidi formatting control.
+def emit_member_name_bidi_control(
+    collector: DiagnosticCollector,
+    *,
+    member: ArchiveMember,
+    archive_name: str | None = None,
+) -> None:
+    """Emit ``MEMBER_NAME_BIDI_CONTROL`` when a presented name carries a bidi control.
 
     Called by ``BaseArchiveReader`` while assigning member identity, not by individual
-    decoders, so directory and inferred single-file names receive the same warning and a
-    backend that uses :func:`normalize_member_name` cannot emit a duplicate.
+    decoders, so directory and inferred single-file names receive the same diagnostic and
+    a backend that uses :func:`normalize_member_name` cannot emit a duplicate.
+
+    The context records *which* controls were found rather than just that there were
+    some: overrides and isolates reorder surrounding text and are what the ``…gnp.exe``
+    disguise needs, while the three directional marks occur in legitimate Arabic and
+    Hebrew filenames, and a caller (or a policy) may want to treat them differently.
 
     ASCII names cannot contain bidi controls — skip the per-character scan (listing
     hot path; perf review H3 / Q1).
     """
+    name = member.name
     if name.isascii():
         return
-    if any(char in _BIDI_CONTROLS for char in name):
-        logger.warning(
-            "Member name contains a bidirectional control character: %r", name
-        )
+    found = [char for char in name if char in _BIDI_CONTROLS]
+    if not found:
+        return
+    collector.emit(
+        code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+        message=f"Member name contains a bidirectional control character: {name!r}",
+        context=MemberNameControlsContext(
+            archive_name=archive_name,
+            member_name=name,
+            member_id=member._member_id,
+            raw_name_base64=raw_name_to_base64(member.raw_name),
+            controls=",".join(f"U+{ord(char):04X}" for char in found),
+        ),
+        member=member,
+        attach_to_member=True,
+        logger=logger,
+    )
 
 
 def infer_member_name_from_archive(

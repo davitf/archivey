@@ -33,7 +33,6 @@ from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     TruncatedError,
-    UnsupportedOperationError,
 )
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_zstd, zstd_backend
@@ -531,9 +530,11 @@ def test_unix_compress_seekable_reads(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_password_raises() -> None:
-    with pytest.raises(UnsupportedOperationError):
-        open_archive(io.BytesIO(gzip.compress(b"x")), password=b"secret")
+def test_password_is_accepted_and_recorded() -> None:
+    from archivey.diagnostics import DiagnosticCode
+
+    with open_archive(io.BytesIO(gzip.compress(b"x")), password=b"secret") as reader:
+        assert reader.diagnostics.counts[DiagnosticCode.PASSWORD_ARGUMENT_UNUSED] == 1
 
 
 # ---------------------------------------------------------------------------

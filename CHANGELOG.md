@@ -43,6 +43,23 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **`password=` no longer raises on a format with no encryption.** All three forms — a
+  single value, a list of candidates, a `PasswordProvider` — are now accepted, never
+  consulted, and recorded as a `PASSWORD_ARGUMENT_UNUSED` diagnostic. Previously a
+  static value or a list raised `UnsupportedOperationError` while a provider callable
+  opened fine; the permissive behaviour already existed and was reachable only by
+  wrapping your password list in a lambda. `password=` is a keyring offered, not an
+  assertion that this archive is encrypted, and a batch caller passing one keyring
+  across mixed input should not fail on the one plain `.tar`. A *wrong* password on an
+  *encrypted* archive still raises `EncryptionError`.
+- Six new diagnostic codes (simplicity & consistency review): `EMPTY_ARCHIVE`,
+  `EXTENSION_FORMAT_UNCONFIRMED`, `EXPLICIT_FORMAT_LISTED_EMPTY`,
+  `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED`, and
+  `MEMBER_NAME_BIDI_CONTROL` — which promotes the library's last log-only advisory to
+  queryable, escalatable data.
+- `encoding=` passed to a backend that decodes names another way (7z, RAR, ISO,
+  directory, single-file) is still accepted, but the discard is now recorded rather
+  than silent.
 - Four refusals that crossed the API untyped or mistyped now match the spelling the
   rest of the library already uses (simplicity & consistency review, F3/F4/F11):
   `open_archive([])` and an empty volume-path sequence raise `ArchiveyUsageError`

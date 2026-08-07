@@ -59,7 +59,13 @@ class DiagnosticCode(str, Enum):
 
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
     MEMBER_NAME_ENCODING_INFERRED = "member_name_encoding_inferred"
+    MEMBER_NAME_BIDI_CONTROL = "member_name_bidi_control"
     FORMAT_EXTENSION_CONFLICT = "format_extension_conflict"
+    EXPLICIT_FORMAT_LISTED_EMPTY = "explicit_format_listed_empty"
+    EXTENSION_FORMAT_UNCONFIRMED = "extension_format_unconfirmed"
+    EMPTY_ARCHIVE = "empty_archive"
+    ENCODING_ARGUMENT_UNUSED = "encoding_argument_unused"
+    PASSWORD_ARGUMENT_UNUSED = "password_argument_unused"
     SCAN_DIRECTORY_VANISHED = "scan_directory_vanished"
     SCAN_ENTRY_VANISHED = "scan_entry_vanished"
     ARCHIVE_EOF_MARKER_MISSING = "archive_eof_marker_missing"
@@ -116,6 +122,65 @@ class NameEncodingContext(_JsonSafeContext):
     raw_name_base64: str | None = None
     inferred_encoding: str = ""
     declared_encoding: str = ""
+
+
+@dataclass(frozen=True)
+class MemberNameControlsContext(_JsonSafeContext):
+    """Member name carries Unicode bidi formatting controls.
+
+    ``controls`` is the comma-joined ``U+XXXX`` spellings in the order they occur, so a
+    caller can tell an *override* (U+202A–202E, U+2066–2069 — the `…gnp.exe` disguise)
+    from a *directional mark* (U+061C, U+200E, U+200F, which occur in legitimate Arabic
+    and Hebrew filenames) without re-scanning the name.
+    """
+
+    kind: Literal["member_name_controls"] = "member_name_controls"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    raw_name_base64: str | None = None
+    controls: str = ""
+
+
+@dataclass(frozen=True)
+class UnusedArgumentContext(_JsonSafeContext):
+    """An explicit argument the resolved backend cannot act on, accepted anyway.
+
+    Carries no argument *value*: the password variant must never surface candidates
+    (``diagnostics`` §"No diagnostic surface SHALL contain passwords"), and the count
+    would leak a little of the same thing.
+    """
+
+    kind: Literal["unused_argument"] = "unused_argument"
+    archive_name: str | None = None
+    argument: Literal["encoding", "password"] = "encoding"
+    format: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class EmptyArchiveContext(_JsonSafeContext):
+    """A listing completed without error and contained no members."""
+
+    kind: Literal["empty_archive"] = "empty_archive"
+    archive_name: str | None = None
+    format: str = ""
+
+
+@dataclass(frozen=True)
+class UnconfirmedFormatContext(_JsonSafeContext):
+    """An empty listing under a format the archive's bytes never confirmed.
+
+    ``detected_format`` is what content detection says now — ``None`` when it refuses
+    the bytes outright, which is also the only possible value for the ``"extension"``
+    variant (the extension fallback runs *because* every content signal declined).
+    """
+
+    kind: Literal["unconfirmed_format"] = "unconfirmed_format"
+    archive_name: str | None = None
+    format: str = ""
+    chosen_by: Literal["argument", "extension"] = "argument"
+    detected_format: str | None = None
 
 
 @dataclass(frozen=True)
@@ -260,6 +325,10 @@ class NameSanitizedContext(_JsonSafeContext):
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
+    | MemberNameControlsContext
+    | UnusedArgumentContext
+    | EmptyArchiveContext
+    | UnconfirmedFormatContext
     | FormatConflictContext
     | ScanRaceContext
     | ArchiveEofContext
@@ -277,7 +346,13 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
     {
         DiagnosticCode.MEMBER_NAME_NORMALIZED: "name_normalization",
         DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: "name_encoding",
+        DiagnosticCode.MEMBER_NAME_BIDI_CONTROL: "member_name_controls",
         DiagnosticCode.FORMAT_EXTENSION_CONFLICT: "format_conflict",
+        DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY: "unconfirmed_format",
+        DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: "unconfirmed_format",
+        DiagnosticCode.EMPTY_ARCHIVE: "empty_archive",
+        DiagnosticCode.ENCODING_ARGUMENT_UNUSED: "unused_argument",
+        DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: "unused_argument",
         DiagnosticCode.SCAN_DIRECTORY_VANISHED: "scan_race",
         DiagnosticCode.SCAN_ENTRY_VANISHED: "scan_race",
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: "archive_eof",
@@ -471,10 +546,12 @@ __all__ = [
     "DiagnosticSeverity",
     "DiagnosticSummary",
     "DigestContext",
+    "EmptyArchiveContext",
     "ExtractionOutcomeContext",
     "ExtractionReport",
     "FormatConflictContext",
     "MemberListReport",
+    "MemberNameControlsContext",
     "MemberTimestampContext",
     "NameCollisionContext",
     "NameSanitizedContext",
@@ -485,6 +562,8 @@ __all__ = [
     "SeekIndexContext",
     "StreamRewindContext",
     "SymlinkTargetContext",
+    "UnconfirmedFormatContext",
+    "UnusedArgumentContext",
     "format_path_name",
     "raw_name_to_base64",
     "validate_code_context",

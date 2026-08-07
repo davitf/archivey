@@ -250,17 +250,41 @@ def test_wrong_explicit_format_on_iso_yields_an_empty_listing(
         assert reader.members() == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F7: same class as the directory format= override rejected in #225 — an "
-    "asserted format that is wrong should not succeed on the wrong data",
-)
 def test_wrong_explicit_format_does_not_silently_succeed(tmp_path: Path) -> None:
-    """F7 (red half): asserting the wrong format should not return a clean empty reader."""
+    """F7 (fixed): the empty reader is still returned, but the disagreement is data.
+
+    `format=` stays an override — wrong extensions are normal (`VISION.md`) and some
+    callers use `format=` precisely to overrule them, so refusing here would take away
+    the thing the argument is for. What was wrong was the *silence*: a clean empty
+    listing under an asserted format that the bytes contradict.
+    """
+    from archivey.diagnostics import DiagnosticCode
+
     path = _archive("basic", "iso", tmp_path)
-    with pytest.raises(Exception):  # noqa: B017 - shape is the open question, not the type
-        with open_archive(path, format=ArchiveFormat.TAR) as reader:
-            reader.members()
+    with open_archive(path, format=ArchiveFormat.TAR) as reader:
+        assert reader.members() == []
+        counts = reader.diagnostics.counts
+        assert counts[DiagnosticCode.EMPTY_ARCHIVE] == 1
+        assert counts[DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY] == 1
+        (record,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
+        ]
+        assert record.context.detected_format == "ISO"  # type: ignore[union-attr]
+
+
+def test_right_explicit_format_stays_silent(tmp_path: Path) -> None:
+    """F7 (guardrail): the check must cost nothing and say nothing on a real archive."""
+    from archivey.diagnostics import DiagnosticCode
+
+    path = _archive("basic", "tar", tmp_path)
+    with open_archive(path, format=ArchiveFormat.TAR) as reader:
+        assert reader.members()
+        assert DiagnosticCode.EMPTY_ARCHIVE not in reader.diagnostics.counts
+        assert (
+            DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY not in reader.diagnostics.counts
+        )
 
 
 def test_wrong_explicit_format_is_loud_for_most_formats(tmp_path: Path) -> None:
@@ -300,17 +324,32 @@ def test_encoding_argument_is_silently_discarded(key: str, tmp_path: Path) -> No
     assert base == alt
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2: same class as the directory format= override — an explicit argument "
-    "that cannot be honoured should be refused, not discarded",
-)
 @pytest.mark.parametrize("key", ["iso", "7z", "dir"])
-def test_unusable_encoding_argument_is_refused(key: str, tmp_path: Path) -> None:
-    """F2 (red half): ignoring an explicit caller assertion is the #225/P8 failure mode."""
+def test_unusable_encoding_argument_is_recorded(key: str, tmp_path: Path) -> None:
+    """F2 (fixed): the discard is queryable — but the entry point stays permissive.
+
+    The review recommended refusing (the `#225`/P8 rule generalised). The maintainer
+    chose the softer option, and O5 then supplied the principle behind it: `encoding=`
+    is a **resource offered for use if needed**, not an assertion about this archive,
+    and the batch caller who passes one configuration across heterogeneous input should
+    not have it fail on the ISO in the middle.
+    """
+    from archivey.diagnostics import DiagnosticCode
+
     path = _archive("basic", key, tmp_path)
-    with pytest.raises(ArchiveyUsageError):
-        open_archive(path, encoding="cp500").close()
+    with open_archive(path, encoding="cp500") as reader:
+        assert reader.diagnostics.counts[DiagnosticCode.ENCODING_ARGUMENT_UNUSED] == 1
+
+
+@pytest.mark.parametrize("key", ["zip", "tar"])
+def test_usable_encoding_argument_is_not_recorded(key: str, tmp_path: Path) -> None:
+    """F2 (guardrail): a backend that consumes `encoding=` must stay silent about it."""
+    from archivey.diagnostics import DiagnosticCode
+
+    path = _archive("basic", key, tmp_path)
+    with open_archive(path, encoding="cp500") as reader:
+        reader.members()
+        assert DiagnosticCode.ENCODING_ARGUMENT_UNUSED not in reader.diagnostics.counts
 
 
 # ---------------------------------------------------------------------------
@@ -639,20 +678,57 @@ def test_data_encrypted_members_still_list_without_a_password(tmp_path: Path) ->
 # ---------------------------------------------------------------------------
 
 
-def test_bidi_name_warning_has_no_diagnostic_code() -> None:
-    """F10 (pin): the RTL/bidi warning is a bare `logger.warning`, not queryable data.
+def test_bidi_name_warning_is_queryable_data(tmp_path: Path) -> None:
+    """F10 (fixed): the RTL/bidi advisory is a diagnostic, not a bare `logger.warning`.
 
     `VISION.md`: "anything the library can only *warn* about should ideally also be
     queryable as data — a logging warning most applications never see is a surprise
-    deferred, not avoided." Every other advisory in the library has a `DiagnosticCode`;
-    this one does not, which makes it the single ambient-only advisory.
+    deferred, not avoided." This was the library's single ambient-only advisory, while
+    its neighbour in the same helper (name normalization) already had a code.
+
+    The context records *which* controls were found, because the override/isolate set
+    (rejected during safe extraction) and the directional marks (legitimate in Arabic
+    and Hebrew filenames) are not the same category.
     """
+    import tarfile
+
     from archivey.diagnostics import DiagnosticCode
 
-    codes = {c.value for c in DiagnosticCode}
-    assert not any("bidi" in c or "bidirectional" in c or "rtl" in c for c in codes)
-    # ... while name *normalization*, its neighbour in the same helper, does have one.
-    assert "member_name_normalized" in codes
+    name = "invoice‮cod.exe"
+    path = tmp_path / "bidi.tar"
+    with tarfile.open(path, "w") as tar:
+        tar.addfile(tarfile.TarInfo(name), io.BytesIO(b""))
+
+    with open_archive(path) as reader:
+        assert [m.name for m in reader.members()] == [name]  # presented as stored
+        summary = reader.diagnostics
+        assert summary.counts[DiagnosticCode.MEMBER_NAME_BIDI_CONTROL] == 1
+        (record,) = [
+            d
+            for d in summary.retained
+            if d.code is DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
+        ]
+        assert record.context.controls == "U+202E"  # type: ignore[union-attr]
+
+
+def test_bidi_diagnostic_is_emitted_once_per_presentation(tmp_path: Path) -> None:
+    """F10 (guardrail): one member, one occurrence — listing twice must not double it.
+
+    The emission lives in `_register_member`, which runs once per member identity, so a
+    backend that also normalizes the name cannot add a second.
+    """
+    import tarfile
+
+    from archivey.diagnostics import DiagnosticCode
+
+    path = tmp_path / "bidi.tar"
+    with tarfile.open(path, "w") as tar:
+        tar.addfile(tarfile.TarInfo("a‮b.txt"), io.BytesIO(b""))
+
+    with open_archive(path) as reader:
+        reader.members()
+        reader.members()
+        assert reader.diagnostics.counts[DiagnosticCode.MEMBER_NAME_BIDI_CONTROL] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -751,16 +827,25 @@ def test_zero_filled_dot_tar_opens_empty_via_extension(
 
     This is the realistic form of the wrong-format problem: a zero-truncated file with a
     plausible extension is exactly the shape `VISION.md`'s founding corpus is full of.
-    The already-decided fix for an explicit ``format=`` does not reach this path, because
-    there is no explicit format to disagree with.
+    The fix for an explicit ``format=`` does not reach this path, because there is no
+    explicit format to disagree with — so this layer has its own code, keyed on the
+    format having been chosen by the extension after every content signal declined.
+
+    It still opens: a legitimately empty tar is byte-identical to this file, so no
+    predicate over the bytes can refuse one without refusing the other (O8a).
     """
+    from archivey.diagnostics import DiagnosticCode
+
     path = tmp_path / "z.tar"
     path.write_bytes(b"\x00" * 32768)
     config = ArchiveyConfig(strict_archive_eof=strict_eof)
     with open_archive(path, config=config) as reader:
         assert reader.format == ArchiveFormat.TAR
         assert reader.members() == []
-        assert dict(reader.diagnostics.counts) == {}
+        assert dict(reader.diagnostics.counts) == {
+            DiagnosticCode.EMPTY_ARCHIVE: 1,
+            DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: 1,
+        }
 
 
 @pytest.mark.parametrize("strict_eof", [False, True])

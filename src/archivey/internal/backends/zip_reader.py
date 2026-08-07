@@ -1446,6 +1446,7 @@ class ZipReadBackend(ReadBackend):
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
     # so even a forward-only pass needs a seekable source.
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
+    USES_ENCODING = True  # zipfile metadata_encoding for non-UTF-8 names
 
     def open_read(
         self,

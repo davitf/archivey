@@ -163,10 +163,10 @@ what is inside.
    A conflict means **magic wins and `FORMAT_EXTENSION_CONFLICT` fires** — name the
    diagnostic (must-explain #22). `open_stream` vs `open_archive` on the same
    `.gz`, and the inner-TAR upgrade (must-explain #21).
-4. **Passwords.** Single, list, `PasswordProvider`. Order matters. A static
-   password on a format without encryption raises `UnsupportedOperationError`
-   (must-explain #13); the ZipCrypto STORED trap is a `gotchas.md` line pointing at
-   `access-and-cost.md`.
+4. **Passwords.** Single, list, `PasswordProvider`. Order matters. A password on a
+   format without encryption is accepted and recorded as `PASSWORD_ARGUMENT_UNUSED`
+   rather than raising, in every form (must-explain #13); the ZipCrypto STORED trap is
+   a `gotchas.md` line pointing at `access-and-cost.md`.
 5. **Damaged archives.** `members()` / `scan_members()` complete-or-raise;
    `members_report()` for prefix + error; `__iter__` / `stream_members` yield then
    raise. Not salvage. Carries a "see Errors and diagnostics" callout, since that

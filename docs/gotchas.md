@@ -83,6 +83,15 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   installed inside pycdlib's namespace. Other code using pycdlib in the same process
   sees that guarded behaviour — a strict superset of correct results on valid trees.
   → [ISO 9660](formats.md#iso-9660)
+- **An empty listing is a diagnostic, never an error.** A legitimately empty tar is
+  10240 bytes, every one of them zero — byte-identical to a zero-filled junk file, so
+  no rule over the bytes can reject one without rejecting the other. Archivey opens it,
+  reports zero members, and emits `EMPTY_ARCHIVE` (plus
+  `EXTENSION_FORMAT_UNCONFIRMED` when the format came only from the filename, or
+  `EXPLICIT_FORMAT_LISTED_EMPTY` when you passed `format=` and detection disagrees).
+  If "0 members" would mean something is wrong for you, check the count or use
+  `detect_format()`, which does refuse zero-filled bytes.
+  → [Errors and diagnostics](errors-and-diagnostics.md)
 - **Prefer `reader.diagnostics` and the extraction report over logs.** Advisories are
   queryable data, not just log lines.
   → [Errors and diagnostics](errors-and-diagnostics.md)

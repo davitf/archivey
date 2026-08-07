@@ -166,9 +166,14 @@ to the embedded archive and parse the wrong bytes.
 
 ## 13. Passwords: wrong formats, candidate order, ZipCrypto STORED trap
 
-Static passwords on formats without encryption → `UnsupportedOperationError`
-(`core.py:221–229`). A `PasswordProvider` alone is fine (unused backends never
-call it). Candidate order matters — especially 7z key derivation cost
+A password on a format without encryption is **accepted, never consulted, and
+recorded as `PASSWORD_ARGUMENT_UNUSED`** — in every form (a single value, a list, a
+`PasswordProvider`). It is a keyring offered, not an assertion about this archive
+(`archive-reading` §assertion vs resource). This changed in the simplicity &
+consistency review batch; it used to raise `UnsupportedOperationError` for a static
+value while a provider callable opened fine, which was an asymmetry reachable only by
+wrapping your list in a lambda. A *wrong* password on an *encrypted* archive still
+fails loudly. Candidate order matters — especially 7z key derivation cost
 (`core.py:148–150`). For multi-candidate ZipCrypto **STORED** members, ~1/256
 wrong passwords pass the one-byte check and confirmation may CRC-scan the full
 member (`core.py:152–160`).
