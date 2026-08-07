@@ -189,6 +189,52 @@
   this); members *within* one solid block stay sequential. No benefit for a single-block
   solid archive. Misuse fails loudly (`ArchiveyUsageError` / `ConcurrentAccessError`).
 
+- **Hold the solid-block decoder open across `open()` calls — and decide what that means
+  under `concurrent_members`.** *(Status: **deferred on purpose**; direction agreed, the
+  concurrency half is unbrainstormed. From the 2026-08-07 simplicity & consistency review —
+  see `review/simplicity-consistency/open-questions-for-discussion.md` §O2b/§O2c for the
+  full argument and `QUESTIONS.md` pay-list rows 17–18.)*
+
+  **The cost, measured.** `SevenZipReader._open_member` calls `_open_folder_stream` →
+  `open_folder_pipeline` **every time**, so each random `open()` builds a fresh folder
+  decode pipeline and skips forward from the folder's start (`sevenzip_reader.py:535` and
+  the comment at `:554` already says so: *"each from-start folder decode counts"*). On a
+  single-folder solid 7z, walking every member via `open()` costs **4.5× one pass** —
+  and, because the underlying stream is not held, **in-order and reverse order cost the
+  same**; this is not a backward-seek problem, it is a no-reuse problem. `.tar.gz`, which
+  *does* hold its stream, costs 1.0× in order. So the gap is a cross-backend
+  inconsistency, not a property of solid formats.
+
+  **The shape everyone agreed on:** keep at most **one** decoder, positioned at or before
+  the requested member, and reuse it only when the target is at or ahead of the current
+  position; otherwise discard and restart. Forward reuse captures the entire 4.5× → 1.0×
+  win without a cache, an eviction policy, or a memory budget. Backward access stays as
+  expensive as today, which is honest. Not a public-API change, so not tag-gated.
+
+  **Why it is parked: the concurrency half.** With one member open at a time this is
+  simple — one stream, one position, one decision point. Under
+  `open_archive(concurrent_members=True)` it is not, and the "is it already a non-issue?"
+  hope is **disproved**: the CONCURRENT fan-out is over the *listing* snapshot, not member
+  data, so member reads are **not** materialized. Measured on a 6-member, single-folder
+  solid 7z (200 KB per member, 1.2 MB payload): opening members 1 and 4 *simultaneously*
+  succeeds, and `IoStats.bytes_decompressed` is **1 400 000** — 400 KB + 1 000 KB, i.e.
+  **two independent decodes, each from the folder's start, live at the same time.**
+  (Without `concurrent_members` the second `open()` raises `ConcurrentAccessError`.)
+
+  So N concurrent opens on one solid folder means N live LZMA states, each with its own
+  dictionary. The unanswered questions, and they need a real brainstorm rather than a
+  patch: when those N streams close, do we keep all of them so the next `open()` can pick
+  the closest preceding one (that is a cache, with an eviction rule and a memory budget),
+  or only one — and if one, the furthest-advanced or the most-recently-used? Does
+  "closest preceding" beat "restart" often enough to pay for the bookkeeping? Does a
+  reused decoder outlive the member stream that created it, and if so what owns it and
+  what must `close()` tear down? How does that interact with the single-live-stream gate
+  on non-CONCURRENT readers? Same question applies to RAR solid blocks (unmeasured — the
+  corpus cannot build RAR here, see `known-issues`/F16).
+
+  Promote by writing an `openspec` change; the review's pay list keeps rows 17 (the
+  optimization) and 18 (this brainstorm) with row 17 blocked on row 18.
+
 - **Efficient seekable zstd — probably a *native* frame-index reader, not `indexed_zstd`.**
   *(Status: **scheduled** — promoted to the rescoped Phase 8 in `PLAN.md`; the analysis
   below is the basis for that phase's benchmark-first task.)*

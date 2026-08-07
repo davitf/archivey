@@ -12,9 +12,7 @@ entries with no test changes.
 
 from __future__ import annotations
 
-import importlib.util
 import os
-import shutil
 import zlib
 from pathlib import Path
 
@@ -24,23 +22,17 @@ from archivey import (
     ArchiveyError,
     EncryptionError,
     ExtractionStatus,
-    FormatSupport,
     MemberType,
     OnError,
-    format_availability,
     open_archive,
 )
 from archivey.types import HashAlgorithm, crc32_digest
-from tests.conftest import _has_zstd_backend
 from tests.sample_archives import (
-    BUILDER_BINARIES,
-    BUILDER_PACKAGES,
     CORPUS,
-    FORMAT_KEYS,
-    READER_PACKAGES,
     CorpusEntry,
     Member,
     corpus_archive_path,
+    skip_unless_runnable,
 )
 
 # Formats where the reader reports Unix permission bits for our generated archives.
@@ -75,37 +67,6 @@ _PARAMS = [
     for entry in CORPUS
     for key in entry.formats
 ]
-
-
-def _skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
-    availability = format_availability(FORMAT_KEYS[key])
-    if availability.support is FormatSupport.NONE:
-        pytest.skip(
-            f"format {key!r} not readable here: {availability.missing or 'no backend'}"
-        )
-    for package in READER_PACKAGES.get(key, ()):
-        if importlib.util.find_spec(package) is None:
-            pytest.skip(f"reader needs package {package!r}")
-    for package in BUILDER_PACKAGES.get(key, ()):
-        if package == "_zstd_backend":
-            if not _has_zstd_backend():
-                pytest.skip("no zstd backend to build with")
-        elif importlib.util.find_spec(package) is None:
-            pytest.skip(f"builder needs package {package!r}")
-    entry_binaries = entry.requires_binaries
-    if key == "7z":
-        # Encrypted ZIP corpus entries need the 7z CLI builder, but encrypted 7z entries
-        # are written directly by py7zr with a single archive password.
-        entry_binaries = tuple(b for b in entry_binaries if b != "7z")
-    for binary in (*BUILDER_BINARIES.get(key, ()), *entry_binaries):
-        if shutil.which(binary) is None:
-            pytest.skip(f"builder needs binary {binary!r}")
-    if (
-        os.name == "nt"
-        and any(m.type is MemberType.SYMLINK for m in entry.members)
-        and key in ("dir", "7z")
-    ):
-        pytest.skip("creating symlinks on Windows needs privileges")
 
 
 def _expected_occurrences(entry: CorpusEntry) -> dict[str, list[Member]]:
@@ -258,7 +219,7 @@ def _check_extraction(tmp_path: Path, source, entry: CorpusEntry, key: str) -> N
 
 @pytest.mark.parametrize(("entry", "key"), _PARAMS)
 def test_corpus_conformance(entry: CorpusEntry, key: str, tmp_path: Path) -> None:
-    _skip_unless_runnable(entry, key)
+    skip_unless_runnable(entry, key)
     source = corpus_archive_path(entry, key, tmp_path)
 
     if key in _SINGLE_FILE_KEYS:

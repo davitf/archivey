@@ -27,10 +27,9 @@ from archivey import open_archive, open_stream
 from archivey.exceptions import ArchiveyError
 from archivey.internal.backends.rar_parser import parse_rar_archive
 from archivey.types import ContainerFormat, MemberType
-from tests.sample_archives import CORPUS, FORMAT_KEYS, CorpusEntry
+from tests.sample_archives import CORPUS, FORMAT_KEYS, CorpusEntry, skip_unless_runnable
 from tests.sample_archives import corpus_archive_path as _corpus_archive_path
 from tests.streams_util import ShortReadBytesIO
-from tests.test_corpus_sweep import _skip_unless_runnable
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -93,7 +92,7 @@ def _assert_short_read_parity(data: bytes, passwords: tuple[str, ...] = ()) -> N
 def test_corpus_archive_opens_from_short_read_source(
     entry: CorpusEntry, key: str, tmp_path: Path
 ) -> None:
-    _skip_unless_runnable(entry, key)
+    skip_unless_runnable(entry, key)
     data = _corpus_archive_path(entry, key, tmp_path).read_bytes()
     _assert_short_read_parity(data, entry.passwords)
 
@@ -117,7 +116,7 @@ def test_open_stream_decodes_from_short_read_source(
     ``CorruptionError`` on a short return.
     """
     entry = next(e for e in CORPUS if key in e.formats)
-    _skip_unless_runnable(entry, key)
+    skip_unless_runnable(entry, key)
     data = _corpus_archive_path(entry, key, tmp_path).read_bytes()
     with open_stream(io.BytesIO(data), seekable=seekable) as expected_stream:
         expected = expected_stream.read()

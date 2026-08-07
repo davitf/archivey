@@ -83,8 +83,8 @@ from tests.sample_archives import (
     CorpusEntry,
     F,
     corpus_archive_path,
+    skip_unless_runnable,
 )
-from tests.test_corpus_sweep import _skip_unless_runnable
 
 _RAR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rar"
 
@@ -530,7 +530,7 @@ def _exercise(
 def test_mutations_fail_typed_or_succeed(
     entry: CorpusEntry, key: str, kind: str, tmp_path: Path
 ) -> None:
-    _skip_unless_runnable(entry, key)
+    skip_unless_runnable(entry, key)
     source = corpus_archive_path(entry, key, tmp_path)
     data = source.read_bytes()
     seed = mutation_seed(entry, key)
