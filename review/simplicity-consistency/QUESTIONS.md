@@ -19,7 +19,7 @@
 > | Q10 | F10 bidi warning | **Add `MEMBER_NAME_BIDI_CONTROL`** (+ tighten the spec clause) |
 > | Q11 | F16 RAR CI | **A** — make the sweep runnable on one leg |
 > | Q12 | F11 `open_stream(dir)` | **Split the predicate** |
-> | Q13 | F12 `STREAM_REWIND` | **Reopen placement** (overrides both passes' recommendation) |
+> | Q13 | F12 `STREAM_REWIND` | **Reopened → worked.** Resolution + drafts in [`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md); spawned **F19** |
 > | Q14 | F13 + F14 docs/imports | **Do both** |
 > | Q15 | F15 `unrar` `RuntimeError` | **Map it** |
 > | Q16 | C1 `seekable` vocabulary | **Revisit before the tag** (overrides the merged verdict) |
@@ -28,7 +28,14 @@
 > Both are recorded as-decided; see those sections for what the decision now requires.
 >
 > **One thing stayed open**: the O-23 sub-question in Q13 (whether to `warnings.warn`
-> on a solid out-of-order `open()`) was not ruled on and remains undecided.
+> on a solid out-of-order `open()`). Still formally undecided, but Q13's working now
+> carries a recommendation — **decided-no**, because solid open has a *better* open-time
+> data signal (`cost.access_cost == SOLID`) than the rewind does, so if the rewind does
+> not warrant an ambient warning, solid open certainly does not.
+>
+> **Q13 vindicated its override.** Working it produced a resolution neither pass reached
+> and a new `CONFIRMED` finding (**F19**: the rewind predicate is silent for a degenerate
+> seek index, so the `RAISE` tripwire is unreliable where it would be depended on).
 >
 > The review itself remains **analysis-only** — nothing below is implemented in this
 > PR. The pay list at the foot of this file is re-ranked against these decisions.
@@ -382,29 +389,54 @@ one.
 
 ---
 
-## Q13 — `STREAM_REWIND_REDECOMPRESSES`, and the O-23 warning decision *(F12 · S3)*
+## Q13 — `STREAM_REWIND_REDECOMPRESSES`, and the O-23 warning decision *(F12)*
 
-> **DECIDED:** **Reopen `STREAM_REWIND_REDECOMPRESSES`'s placement** — *against* both review passes' recommendation, which was to flag and not churn. This is design work: neither pass found a cleaner cut, so someone has to produce one (demote to logger-only, split archive-capability vs usage, or justify keeping it).
-
-> **Still open, deliberately:** the O-23 sub-question — whether to emit a plain `warnings.warn` on a solid out-of-order `open()` — was **not** ruled on. Code and spec currently agree on "no warning" and `VISION.md` argues against adding one, but the decision remains unrecorded and will resurface until it is written down.
+> **DECIDED:** **Reopen placement** — and it was then worked through. Full resolution,
+> evidence and drafts: **[`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md)**.
 >
-> *Vehicle:* design work, then an OpenSpec change on `diagnostics`.
+> *Outcome:* the emission site **stays**; its stated job becomes the `DiagnosticPolicy`
+> `RAISE` tripwire, not informing. The defect is in the **O-23 rule**, which is
+> under-evidenced — the *extraction* codes do not fit its wording either, so
+> `STREAM_REWIND` was never the sole exception. Three drafts are ready: the
+> `seekable_members` docstring (which names the gate but not the trap), the reframed rule
+> plus a 14-code audit, and a normative admission rule for `diagnostics`.
+>
+> *Rejected along the way:* moving the informational half to `CostReceipt.notes` — a cost
+> note is exactly as unread as a diagnostic, and would populate a dead public field that
+> then freezes.
+>
+> *Spawned:* **F19**, a new `CONFIRMED` finding — the predicate is codec identity, so a
+> single-block `.xz` re-decodes its whole stream on a backward seek and emits nothing,
+> `RAISE` included. Behaviour change; separate OpenSpec change; does **not** block the
+> drafts.
+>
+> *Still open:* the solid-open `warnings.warn` sub-question, with a **decided-no**
+> recommendation attached.
+>
+> *Vehicle:* docs-only + observation edit + OpenSpec change on `diagnostics` (drafts
+> ready) · F19 separately on `seekable-decompressor-streams` + bugfix.
 
-**Both passes agree: flag, do not churn.** The code still describes the caller's seek
-rather than a property of the archive, which is the O-23 rule; neither pass found a
-cleaner cut. One datum if it is ever revisited: it is the only diagnostic whose trigger a
-caller can eliminate entirely by passing a flag, which is plausibly what makes it read as
-usage.
+**Both passes agreed** the code should be flagged and not churned, precisely because
+neither found a cleaner cut. Reopening was the right call anyway: the cleaner cut was not
+in the code.
 
-**The separate half O-23 left open** — whether to emit a plain `warnings.warn` on a solid
-random `open()` — is verifiably still open: there is no `warnings.warn` anywhere in
-`src/`, and `archive-reading:512` specifies the opposite ("no diagnostic, no warning").
+**The reopening argument** (maintainer): reaching this event already requires
+`seekable_members=True`, which is documented, so a diagnostic ends up invisible. Correct —
+and structurally so. `VISION.md`'s warnings-as-data argument is about *honesty* signals,
+things that change whether you trust the bytes. A rewind changes only how long it took,
+so nobody polls `reader.diagnostics` for it. What survives is the tripwire.
 
-- **Recommend:** record it as **decided-no**, and keep `STREAM_REWIND` for `0.2.0` with a
-  taxonomy note. `VISION.md` argues against adding an ambient warning, and the cost
-  receipt is the queryable channel the same paragraph asks for. Leaving it "undecided"
-  guarantees the next review re-derives it.
-- **Vehicle:** decision only — a line in `review/docs/observations.md` closing O-23.
+**What that leaves.** A tripwire is supposed to fire on what the caller did, so the O-23
+awkwardness largely dissolves; `from_offset`/`to_offset` become the useful payload rather
+than noise. And the rule itself needs fixing regardless, because its own enumeration
+omitted the extraction codes.
+
+**The wrinkle that produced F19** (maintainer): whether a backward seek requires
+re-decompression is not binary — bounded for accelerators, always true for some codecs,
+index-dependent for others. Measured answer: the predicate is codec identity decided at
+open, `DecompressorStream` already computes the honest quantity
+(`target - nearest_seek_point_before(target)`), and there is already precedent for a cost
+threshold in `_rapidgzip_rewind_warning`. Full working in the linked file.
 
 ---
 
@@ -535,7 +567,8 @@ than closing it:
 
 | # | Work | Why it is design, not a fix |
 |---|---|---|
-| 15 | **Q13 / F12** — reopen `STREAM_REWIND_REDECOMPRESSES`'s placement | Both passes looked and **neither found a cleaner cut**. Someone has to produce one: demote to logger-only, split into an archive-capability diagnostic plus a usage warning, or write down why keeping it on the usage side is right. Needs a `diagnostics` OpenSpec change once a shape exists. |
+| 15 | ~~**Q13 / F12**~~ — **done**: worked through in [`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md). Three drafts ready (docstring / O-23 reframe + audit / `diagnostics` admission rule), no behaviour change. Moved to Tier 3 in practice. | — |
+| 15b | **F19** — replace the rewind predicate with the seek's re-decode distance | Genuine design work, and the one item here that is a *behaviour* change. Open sub-questions in the linked file: threshold shape (absolute vs relative), whether "once per stream" still holds under a cost-based predicate, and whether `rapidgzip` exposes index spacing. OpenSpec change on `seekable-decompressor-streams` + bugfix; guardrails already committed. |
 | 16 | **Q16 / C1** — revisit `seekable_members` vs `open_stream(seekable=)` | `archive-reading` §"Declared member-stream capabilities" currently **mandates** the present spelling, so the spec has to change *before* any rename or alias. Free until the tag; not free after. |
 
 **Still undecided, and it will resurface unless written down:** the O-23 sub-question

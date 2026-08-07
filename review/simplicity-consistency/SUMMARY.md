@@ -8,10 +8,16 @@ changes in this PR**. Artifacts here are evidence and guardrails only
 (`brief.md` §Hard constraints) — each decision lands as its own change.
 
 Two rulings went **against** this review's recommendation, deliberately: **Q13**
-(reopen `STREAM_REWIND_REDECOMPRESSES`'s placement, which both passes recommended
-leaving alone) and **Q16** (treat the `seekable` vocabulary split as live rather than
-settled by spec). Both create design work; both are recorded as decided. One item stayed
-open on purpose — the O-23 `warnings.warn` sub-question inside Q13.
+(reopen `STREAM_REWIND_REDECOMPRESSES`'s placement) and **Q16** (treat the `seekable`
+vocabulary split as live rather than settled by spec).
+
+**Q13 has since been worked and vindicated the override.** Pursuing it produced a
+resolution neither pass reached — the O-23 *rule* is under-evidenced, not the code — plus
+a new `CONFIRMED` finding, **F19**, that the probe could not have found: the rewind
+diagnostic is silent for a degenerate seek index, which makes its one real job (the
+`RAISE` tripwire) unreliable. Drafts and evidence:
+[`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md). The O-23 `warnings.warn`
+sub-question inside Q13 is still formally open, with a recommendation attached.
 
 > **This is a merge of two independent passes.** The brief was executed twice without
 > either agent seeing the other: **PR #230** and **PR #231**. Both built an expected
@@ -46,8 +52,14 @@ One root cause, one fix.
 
 Below that, the accidents cluster into three recognisable shapes: **explicit caller
 input discarded rather than refused** (F2, F7), **error typing that stops at the entry
-point** (F3, F4, F15), and **a metadata field or capability gated on the wrong thing**
-(F1, F5, F8).
+point** (F3, F4, F15), and **a field, capability or signal gated on the wrong thing**
+(F1, F5, F8, F19).
+
+**F19 was found by working a decision, not by the probe.** Q13 was reopened against both
+passes' recommendation; pursuing it surfaced that the rewind diagnostic's predicate is
+codec identity, so a single-block `.xz` re-decodes its whole stream on a backward seek
+and says nothing — including to a caller who armed `DiagnosticPolicy` `RAISE` precisely
+to catch that. See [`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md).
 
 ---
 
@@ -70,7 +82,8 @@ Provenance: **230** = found by PR #230 · **231** = found by PR #231 · **both**
 | **F9** | Header-encrypted 7z and RAR require the password at **`open_archive()`** (format law — the listing is ciphertext), but `docs/reading-members.md` states the laziness rule without that bound: *"no password is requested for it"*. | **S2** | `CONFIRMED` | 231 *(230 stated the opposite — see §Corrections)* | **Format law + docs gap** | docs-only → **Q9** |
 | **F10** | The RTL/bidi name warning is a bare `logger.warning` with **no `DiagnosticCode`** — the only advisory in the library with no queryable counterpart. `testing-contract`'s clause ("rejected **or** exactly one warning") is permissive enough that a reader cannot tell which ships. | **S2** | `CONFIRMED` | 231 *(reframed — see §Disagreements)* | **VISION warnings-as-data gap** + a vague spec clause | spec change (+ optional diagnostic) → **Q10** |
 | **F11** | `open_stream(directory)` raises `FileNotFoundError("Compressed stream not found: …")` for a path that **exists**, while `open_archive(same_path)` opens it. | **S3** | `CONFIRMED` | 230 | **Accident** — one predicate collapses two situations and asserts the false one | bugfix → **Q12** |
-| **F12** | `STREAM_REWIND_REDECOMPRESSES` describes the caller's seek, not the archive — the O-23 rule's awkward residual. Both passes agree: **flag, do not churn**. | **S3** | `CONFIRMED` | **both** | **Open decision** | decision only → **Q13** |
+| **F12** | `STREAM_REWIND_REDECOMPRESSES` describes the caller's seek, not the archive — the O-23 rule's awkward residual. Both passes said flag-don't-churn; **Q13 was reopened and worked**, and the resolution is that the rule is under-evidenced, not the code: the *extraction* codes do not fit the O-23 wording either. Drafts in [`q13-rewind-diagnostic.md`](q13-rewind-diagnostic.md). | **S3** | `CONFIRMED` | **both** | **Rule defect**, not a code defect | docs + observation + spec note → **Q13** |
+| **F19** | The rewind predicate is **codec identity**, so a *degenerate* index is silent: a single-block `.xz` (what `lzma.compress` and un-threaded `xz` produce) has one seek point at the origin, re-decodes the whole stream on a backward seek, and emits nothing — so `DiagnosticPolicy` `RAISE` cannot fire either. The honest predicate is the seek's re-decode distance, and `DecompressorStream._seek_point_for()` already computes it. | **S2** | `CONFIRMED` | **Q13 follow-on** | **Accident** — the tripwire is unreliable where it would be depended on | OpenSpec change on `seekable-decompressor-streams` + bugfix → **Q13/F19** |
 | **F13** | `must-explain.md:331–335` still says a directory path forces `DIRECTORY` "even if `format=` says otherwise" — #225 made that an `ArchiveyUsageError`. | **S3** | `CONFIRMED` | 231 | **Stale docs** | docs-only → **Q14** |
 | **F14** | `cli/progress.py` and `cli/test_cmd.py` import `ExtractionProgress` from `internal/`; `cli/extract_cmd.py` uses the public path. Isolated — one type, no second instance. | **S3** | `CONFIRMED` | **both** | **Vocabulary leftover**, pre-answered by the brief | 2-line fix → **Q14** |
 | **F15** | `rar_unrar.py:157` raises a raw `RuntimeError("unrar produced no stdout pipe")` from call sites outside `_translated_errors`. Not reachable with a real `Popen(stdout=PIPE)`. | **S3** | `PLAUSIBLE` | 231 *(230 recorded it as "fine, noted")* | **Defensive gap** | bugfix → **Q15** |
@@ -235,6 +248,7 @@ uninformative — F10).
 | `parity-matrix.md` | expected vs observed, the diff, and the O-21 trace per divergence |
 | `silent-exceptions.md` | argument-discard / spec-honesty / error-translation sweeps |
 | `vocabulary.md` | surface-vocabulary leftovers that freeze at the tag |
+| `q13-rewind-diagnostic.md` | Q13 worked through: the resolution, three drafts (docstring / O-23 reframe + 14-code audit / spec note), and **F19** |
 | `QUESTIONS.md` | 16 maintainer decisions — **all ruled on**, each with severity, evidence, fix vehicle, and the decision recorded inline; plus the pay list re-ranked against them |
 | `repro/probe_matrix.py` | the generator — runs the whole matrix by execution |
 | `repro/matrix.md`, `repro/matrix.json` | its output at this commit |
