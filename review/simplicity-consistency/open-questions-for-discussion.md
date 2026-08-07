@@ -39,6 +39,43 @@ Two useful conventions from the project, referenced below:
 
 ---
 
+## Framing: who actually uses this, and why it changes the answers
+
+Several questions below turn on an unstated assumption about *who is on the other end*.
+Worth making explicit, because "add a diagnostic" is a good answer for one kind of caller
+and a non-answer for another. This is a sketch, not research — argue with it.
+
+| Caller | What they do | Do they read `reader.diagnostics`? |
+|---|---|---|
+| **Batch indexer / dedupe** — the founding use case | Long-running, unattended, over heterogeneous and often damaged input. Opens thousands of archives, hashes members, does not want one bad file to stop the run. | **Yes, programmatically.** This is the caller who sets a `DiagnosticPolicy`, inspects reports per archive, and logs an audit trail. |
+| **One-off script / notebook** | "Extract this thing." Runs once, a human is watching. | **No, never.** They see exceptions and printed output. |
+| **Server / pipeline over untrusted uploads** | Cares about the safety guarantees and resource limits; wraps calls in try/except. | **Sometimes** — as an audit trail, usually after the fact. |
+| **CLI users** | `archivey list \| test \| extract`. The wedge, and the maintainer's own tool. | **N/A** — never touch the API. |
+| **Library integrators** (fsspec adapter, data tooling) | Map archivey onto another abstraction, so they hit *every* format through one code path. | **Rarely** — but they are the ones most hurt by per-format divergence, because their code cannot special-case. |
+
+Three consequences that recur below:
+
+1. **Diagnostics reach group 1, and essentially nobody else.** So a diagnostic is the
+   right channel for something a *batch* caller would act on — integrity, damage, cost,
+   an audit trail — and the wrong channel for something a *one-off* caller needs to
+   notice. That second category needs an exception, a safe default, or a docstring.
+   This is the core of **O1** and **O2a**.
+2. **Groups 1 and 2 want opposite things from argument validation.** The batch caller
+   passes one configuration across heterogeneous input and wants it to apply where it
+   can ("here are the twenty passwords we know"). The one-off caller wants a typo to
+   fail loudly. That tension is exactly **O5**, and it is why "split by intent" —
+   assertions refuse, offered resources permit — looks better than picking one globally.
+3. **Only groups 1 and 3 ever notice performance** — but they are the target audience,
+   and they are the ones for whom a 4.5× cost cliff between two solid formats
+   (**O2b**) or a silent quadratic seek (**O1**) actually matters.
+
+A fourth, which cuts against several "just add data" answers: **groups 2, 4 and 5 are
+probably the majority of users, and none of them will ever look at a diagnostic.** If a
+behaviour matters to them, it has to be a default, an error, or a docstring — not a
+queryable field.
+
+---
+
 ## O1 — When should the library tell you a backward seek is going to be slow? *(biggest)*
 
 ### What's true today, measured
@@ -441,24 +478,91 @@ and the extraction policy already rejects other display-and-path tricks.
 
 ---
 
-## O8 — A knob that doesn't fire where you'd most want it
+## O8 — What does `strict_archive_eof` actually assert, and should an empty TAR raise?
 
-**Observed:** `open_archive(some_iso_file, format=TAR)` returns a working reader that
-reports its format as TAR and lists **zero members**, with no error and no warning.
+Originally filed as a small oddity. Two questions raised in review turned it into
+something with a wider blast radius, and both are now measured.
 
-**Why it's not a TAR bug:** an ISO image starts with 32 KiB of zeros, and two zero blocks
-are exactly a TAR end-of-archive marker. The TAR reader is correctly reading a valid,
-empty TAR archive.
+### What `strict_archive_eof` actually checks — precisely
 
-**Already decided:** emit a diagnostic when an explicitly-passed `format=` yields an empty
-listing and format detection would have said something else. `format=` stays an override —
-it exists because wrong file extensions are normal.
+A TAR archive ends with two 512-byte all-zero blocks (writers often pad further, to
+10 KiB). The library's check, in full:
 
-**The residue worth a look:** the library has a configuration knob, `strict_archive_eof`,
-documented as what you set when you need a *provably complete* listing. It does not fire
-here — the trailer is present and well-formed, so nothing is strictly wrong. Arguably
-that's the single case where a caller would most want it to. Not a decision anyone has
-made; just an oddity nobody has looked at.
+1. `tarfile` reads until it hits a null block and stops there, having consumed the
+   **first** trailer block.
+2. Archivey then reads the **next 512 bytes** and requires them to be 512 nulls.
+   - 512 nulls → **accept, and stop looking.**
+   - a full non-null block → `CorruptionError`, regardless of `strict_archive_eof`.
+   - short or empty read → advisory diagnostic; **`strict_archive_eof=True` turns this,
+     and only this, into `TruncatedError`.**
+
+So `strict_archive_eof` asserts exactly one thing: **"the two-block null trailer is
+present and complete."** It answers the specific question *"was this file truncated at a
+member boundary?"* — that shape is byte-identical to a legitimately-ended archive, which
+is why the knob exists.
+
+**It never looks past block 2.** Measured, and this is the part worth knowing:
+
+| Input | `strict=False` | `strict=True` |
+|---|---|---|
+| Legitimately empty tar (`tarfile`-written) | 0 members, no diagnostic | **same** |
+| 1 KiB of zeros | 0 members, no diagnostic | **same** |
+| 32 KiB of zeros (an ISO's system area) | 0 members, no diagnostic | **same** |
+| Valid tar, 1 member | 1 member | 1 member |
+| Valid tar **+ 4 KiB of trailing junk** | 1 member, no diagnostic | **1 member, no diagnostic** |
+| Valid tar + 4 KiB of trailing zeros | 1 member, no diagnostic | **same** |
+
+**So: yes, it accepts any archive whose two trailer blocks are present and ignores
+everything after them — including 4 KiB of arbitrary junk, under `strict`.** It does not
+check that the file ends there.
+
+**Should it already be firing on the ISO case? Under its current definition, no** — the
+trailer is genuinely present. Under a reading of its *documented promise* ("set this when
+you need a provably complete listing"), arguably yes: the file continues for another
+31 KiB and the reader silently ignored all of it. That gap between the definition and the
+promise is the finding.
+
+### The three-layer version of the wrong-format problem
+
+Reviewing this surfaced that the original `format=TAR`-on-an-ISO case was the *least*
+realistic of three layers. Measured, on a file of 32 KiB of zeros:
+
+| How the format is chosen | Result |
+|---|---|
+| **Content detection** (no extension) | `FormatDetectionError` — refuses. ✅ |
+| **Extension fallback** (file named `z.tar`) | **Opens as TAR. 0 members. No error, no diagnostic.** ⚠️ |
+| **Explicit `format=TAR`** | Opens as TAR. 0 members. No error, no diagnostic. ⚠️ |
+
+The middle row is the realistic one, and it was not previously identified. A zero-filled
+or zero-truncated file with a `.tar` extension is exactly the shape the project's founding
+use case is full of — "old downloads with wrong extensions, truncated files, archives
+produced by buggy tools." Content detection correctly refuses it; the extension path
+doesn't.
+
+**Already decided** for the explicit-`format=` layer: emit a diagnostic when an explicit
+`format=` yields an empty listing and detection would have said otherwise. That decision
+does **not** cover the extension-fallback layer, because there is no explicit `format=`
+to compare against.
+
+### The questions
+
+1. **Should a TAR that yields zero members raise?** It would close all three layers at
+   once, and "any zero-filled file is a valid tar" is a genuinely bad property. Against:
+   an empty tar is legal — `tar cf empty.tar --files-from /dev/null` is a real thing that
+   `tarfile` accepts — so this makes archivey stricter than the stdlib on valid input, and
+   the project's stated position is that damaged input should yield what is recoverable
+   plus an honest error, not a refusal. A middle option: raise only when the archive has
+   zero members **and** the file continues past the trailer.
+2. **Should `strict_archive_eof` also assert that nothing follows the trailer?** That
+   would make it match its documented promise, and would fire on both the ISO case and the
+   trailing-junk case. Costs: `tar` writers pad with zeros routinely (that is fine — they
+   are zeros), but concatenated archives and some tools append real data after a trailer,
+   so this could reject files that other tools read happily. It is opt-in, which is the
+   argument for making it mean the stronger thing.
+3. **Does the extension-fallback layer need its own answer?** Per the framing section,
+   the caller here is likely group 2 (one-off, human watching) or group 1 (batch over
+   messy input) — and a diagnostic reaches only the second. If the answer to (1) is "no",
+   this layer stays silent for the caller least equipped to notice.
 
 ---
 

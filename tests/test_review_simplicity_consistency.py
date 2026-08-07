@@ -748,3 +748,92 @@ def test_full_rewind_emits_regardless_of_codec(tmp_path: Path) -> None:
         assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES.value in dict(
             stream.diagnostics.counts
         )
+
+
+# ---------------------------------------------------------------------------
+# F20 — a zero-filled file with a .tar extension opens as an empty archive
+# ---------------------------------------------------------------------------
+
+
+def test_content_detection_refuses_a_zero_filled_file(tmp_path: Path) -> None:
+    """F20 (guardrail): magic-byte detection correctly declines to call zeros a TAR.
+
+    This is the layer that behaves well, and it is pinned so a future detection change
+    cannot quietly start accepting the shape the other two layers already accept.
+    """
+    from archivey import FormatDetectionError, detect_format
+
+    path = tmp_path / "zeros.bin"
+    path.write_bytes(b"\x00" * 32768)
+    with pytest.raises(FormatDetectionError):
+        detect_format(path)
+
+
+@pytest.mark.parametrize("strict_eof", [False, True])
+def test_zero_filled_dot_tar_opens_empty_via_extension(
+    strict_eof: bool, tmp_path: Path
+) -> None:
+    """F20 (pin): the *extension* path accepts what content detection refuses.
+
+    32 KiB of zeros named ``z.tar`` opens as TAR with zero members, no error and no
+    diagnostic — and ``strict_archive_eof=True`` does not change that, because the two
+    null trailer blocks really are present. The knob asserts "the trailer is complete",
+    not "the archive ends here".
+
+    This is the realistic form of the wrong-format problem: a zero-truncated file with a
+    plausible extension is exactly the shape `VISION.md`'s founding corpus is full of.
+    The already-decided fix for an explicit ``format=`` does not reach this path, because
+    there is no explicit format to disagree with.
+    """
+    path = tmp_path / "z.tar"
+    path.write_bytes(b"\x00" * 32768)
+    config = ArchiveyConfig(strict_archive_eof=strict_eof)
+    with open_archive(path, config=config) as reader:
+        assert reader.format == ArchiveFormat.TAR
+        assert reader.members() == []
+        assert dict(reader.diagnostics.counts) == {}
+
+
+@pytest.mark.parametrize("strict_eof", [False, True])
+def test_strict_archive_eof_ignores_trailing_junk(
+    strict_eof: bool, tmp_path: Path
+) -> None:
+    """F20 (pin): `strict_archive_eof` never looks past the second trailer block.
+
+    A valid one-member TAR with 4 KiB of arbitrary junk appended reads as one member with
+    no diagnostic, *including* under strict. Pinned because the knob is documented as
+    what you set for a "provably complete listing", and this is the gap between that
+    promise and what it checks.
+    """
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 3
+        tar.addfile(info, io.BytesIO(b"abc"))
+
+    path = tmp_path / "with_junk.tar"
+    path.write_bytes(buf.getvalue() + b"JUNK" * 1024)
+    config = ArchiveyConfig(strict_archive_eof=strict_eof)
+    with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+        assert dict(reader.diagnostics.counts) == {}
+
+
+def test_legitimately_empty_tar_stays_valid(tmp_path: Path) -> None:
+    """F20 (guardrail): an empty TAR is legal, and any "zero members raises" rule breaks it.
+
+    `tar cf empty.tar --files-from /dev/null` is a real thing and `tarfile` accepts it.
+    Pinned so the cost of the strictest option in O8 stays visible.
+    """
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    tarfile.open(fileobj=buf, mode="w").close()
+    path = tmp_path / "empty.tar"
+    path.write_bytes(buf.getvalue())
+    with open_archive(path, format=ArchiveFormat.TAR) as reader:
+        assert reader.members() == []
