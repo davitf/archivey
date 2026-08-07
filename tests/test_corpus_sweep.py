@@ -145,15 +145,26 @@ def _assert_stored_digest_parity(member, key: str) -> None:
         return
     if _base(key) == "rar":
         if member.type is MemberType.FILE:
+            if member.is_encrypted:
+                # RAR5 *tweaks* the stored CRC32/BLAKE2sp into a MAC when the member is
+                # encrypted (RAR5_XENC_TWEAKED). Those values are not the plaintext
+                # digest and must not be compared to one, so the reader deliberately
+                # keeps them out of `hashes` and verifies them by forward-transform
+                # once a password is available (`rar_reader._member_hashes`).
+                assert not digest_keys, (
+                    f"rar encrypted {member.name!r} surfaced a tweaked digest as "
+                    f"plaintext: {digest_keys}"
+                )
+                return
             # RAR5 may store Blake2sp instead of (or in addition to) CRC32.
             assert digest_keys, f"rar FILE {member.name!r} missing stored digest"
-            if HashAlgorithm.BLAKE2SP in keys and HashAlgorithm.CRC32 not in keys:
-                return
             assert HashAlgorithm.CRC32 in keys or HashAlgorithm.BLAKE2SP in keys
-        else:
+        elif member.type is MemberType.DIRECTORY:
             assert not digest_keys, (
                 f"rar {member.name!r} unexpected digests {digest_keys}"
             )
+        # SYMLINK / HARDLINK may carry a CRC of the stored link payload, exactly as 7z
+        # does above; do not require or forbid.
         return
     # TAR, directory, ISO, compressed-TAR: no cheap whole-member stored digest.
     assert not digest_keys, f"{key} {member.name!r} unexpected digests {digest_keys}"
