@@ -78,10 +78,14 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     """Enforce the non-bypassable universal path-safety constraints on ``member``.
 
     ``dest`` is the extraction root. Raises a :class:`FilterRejectionError` subclass
-    (``PathTraversalError`` / ``SymlinkEscapeError`` / ``SpecialFileError`` /
-    ``DeceptiveNameError``) on the first violation; returns ``None`` when the member is
-    safe to extract. Applied to the original member, before any policy transform,
-    regardless of the active policy.
+    (``PathTraversalError`` / ``SymlinkEscapeError`` / ``SpecialFileError``) on the
+    first violation; returns ``None`` when the member is safe to extract. Applied to the
+    original member, before any policy transform, regardless of the active policy.
+
+    Everything here makes the *write itself* dangerous or impossible — escaping the
+    destination, a NUL the OS truncates on, a device node. A name that is merely
+    *deceptive to read* does not belong in that set and is policy-keyed instead; see
+    ``apply_name_policy`` and ADR 0017.
     """
     name = member.name
 
@@ -113,7 +117,6 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
         raise PathTraversalError(
             f"Path traversal ('..') in member name: {name!r}", member_name=name
         )
-    _reject_bidi_override(name, member_name=name, what="member name")
 
     rel = name.rstrip("/")
     if member.type != MemberType.DIRECTORY and rel in ("", "."):
@@ -165,12 +168,6 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
                     f"{name!r} -> {target!r}",
                     member_name=name,
                 ) from exc
-            # A target carrying an override is the same disguise with an extra hop: the
-            # listing shows a plausible target and the link on disk points at something
-            # that reads differently.
-            _reject_bidi_override(
-                target, member_name=name, what=f"link target of {name!r}"
-            )
         if member.type == MemberType.SYMLINK:
             link_parent = (dest_root / name).parent
             resolved_target = (link_parent / member.link_target).resolve()
@@ -309,18 +306,35 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
 
     ``TRUSTED`` returns the member unchanged (faithful bytes, defer to the local OS).
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
-    names and ``:`` (NTFS alternate data stream) — and **rewrite** the merely-non-portable
-    ones: ``STRICT`` strips trailing dots/spaces (O3) and both levels normalize
-    non-representable bytes (O7). Rewriting (not rejecting) a legitimate-but-awkward name
-    keeps extraction working; refusal is reserved for structures that cannot be safely
-    written. Raises :class:`UnportableNameError` (a ``FilterRejectionError``, so the
-    coordinator records ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a
-    rewritten ``.replace()`` copy.
+    names, ``:`` (NTFS alternate data stream), and bidi overrides — and **rewrite** the
+    merely-non-portable ones: ``STRICT`` strips trailing dots/spaces (O3) and both levels
+    normalize non-representable bytes (O7). Rewriting (not rejecting) a
+    legitimate-but-awkward name keeps extraction working; refusal is reserved for
+    structures that cannot be safely written. Raises :class:`UnportableNameError` or
+    :class:`DeceptiveNameError` (both ``FilterRejectionError``, so the coordinator records
+    ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a rewritten
+    ``.replace()`` copy.
     """
     if policy is ExtractionPolicy.TRUSTED:
         return member
 
     name = member.name
+
+    # Bidi overrides are policy-keyed, not universal (ADR 0017). Unlike everything in
+    # ``check_universal``, the *write* is completely safe: the file lands inside the
+    # destination under exactly its stored bytes. What is unsafe is the name a person
+    # reads back afterwards, which is a presentation problem, and presentation is the
+    # axis this function owns. Running here rather than in ``check_universal`` also means
+    # a caller filter that renames the member rescues it — renaming a deceptive name is
+    # precisely the fix — and that ``TRUSTED`` returns above without reaching this.
+    _reject_bidi_override(name, member_name=name, what="member name")
+    if member.type in (MemberType.SYMLINK, MemberType.HARDLINK) and member.link_target:
+        # A target carrying an override is the same disguise with an extra hop: the
+        # listing shows a plausible target and the link on disk points at something that
+        # reads differently.
+        _reject_bidi_override(
+            member.link_target, member_name=name, what=f"link target of {name!r}"
+        )
     for segment in _SEP_SPLIT.split(name):
         if not segment:
             continue

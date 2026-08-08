@@ -2015,16 +2015,15 @@ def _tar_with_member(path: Path, name: str, *, link_target: str | None = None) -
     ["invoice‮cod.exe", "a⁦b.txt", "x‪y", "z‬.bin"],
     ids=["rlo", "lri", "lre", "pdf"],
 )
-@pytest.mark.parametrize("policy", list(ExtractionPolicy))
-def test_bidi_override_name_is_refused_under_every_policy(
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_bidi_override_name_is_refused_by_default(
     name: str, policy: ExtractionPolicy, tmp_path: Path
 ) -> None:
     """The reordering controls make a name display as something it is not.
 
-    Universal, so `TRUSTED` does not lift it: `TRUSTED` relaxes *portability*
-    transforms, and this is a safety constraint. Like every other universal rejection
-    it surfaces as a `BLOCKED` result rather than a raised error at the `extract()`
-    level — `OnError` governs failures, not blocks.
+    Refused at the default policy and at `STANDARD`. Like every other name rejection it
+    surfaces as a `BLOCKED` result rather than a raised error at the `extract()` level —
+    `OnError` governs failures, not blocks.
     """
     src = _tar_with_member(tmp_path / "a.tar", name)
     dest = tmp_path / "out"
@@ -2034,24 +2033,64 @@ def test_bidi_override_name_is_refused_under_every_policy(
     assert not list(dest.rglob("*"))
 
 
-@pytest.mark.parametrize("name", ["invoice‮cod.exe", "a⁦b.txt"], ids=["rlo", "lri"])
-def test_check_universal_raises_deceptive_name_error(name: str, tmp_path: Path) -> None:
-    """The typed error itself, at the boundary that produces it."""
-    from archivey.exceptions import DeceptiveNameError
+@pytest.mark.parametrize(
+    "name",
+    ["invoice\u202ecod.exe", "a\u2066b.txt", "x\u202ay", "z\u202c.bin"],
+    ids=["rlo", "lri", "lre", "pdf"],
+)
+def test_bidi_override_name_extracts_under_trusted(name: str, tmp_path: Path) -> None:
+    """`TRUSTED` lets a deceptive name through, deliberately (ADR 0017).
 
+    The rejection is **policy-keyed**, not universal, and this is the half that says so.
+    Unlike everything in `check_universal` — traversal, absolute paths, NUL, a device
+    node — the write itself is completely safe here: the file lands inside `dest` under
+    exactly its stored bytes, and only a human reading the directory afterwards is
+    misled. `ExtractionPolicy` is the axis that owns name rejection, and `TRUSTED`
+    already means "faithful bytes, no name rejection or rewrite".
+
+    Without this, a caller who genuinely wants the bytes — a mirroring tool, a format
+    converter, a forensic extract — has no route at any policy, which is what ADR 0013
+    rejected for unrepresentable names ("extracting beats refusing").
+    """
+    src = _tar_with_member(tmp_path / "a.tar", name)
+    dest = tmp_path / "out"
+    report = extract(src, dest, policy=ExtractionPolicy.TRUSTED, on_error=OnError.STOP)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.EXTRACTED
+    assert (dest / name).is_file()  # faithful bytes: stored name, unmodified
+
+
+@pytest.mark.parametrize("name", ["invoice‮cod.exe", "a⁦b.txt"], ids=["rlo", "lri"])
+def test_apply_name_policy_raises_deceptive_name_error(
+    name: str, tmp_path: Path
+) -> None:
+    """The typed error itself, at the boundary that produces it.
+
+    `apply_name_policy`, not `check_universal`: the check is policy-keyed (ADR 0017), so
+    it lives with the other name-safety rules rather than with the path-escape ones.
+    Pinned at this boundary so a move back to `check_universal` — which would silently
+    re-break `TRUSTED` — fails here.
+    """
+    from archivey.exceptions import DeceptiveNameError
+    from archivey.internal.filters import apply_name_policy
+
+    check_universal(_member(name), tmp_path)  # not a universal violation
     with pytest.raises(DeceptiveNameError):
-        check_universal(_member(name), tmp_path)
+        apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+    assert (
+        apply_name_policy(_member(name), ExtractionPolicy.TRUSTED).name == name
+    )  # unchanged
 
 
 def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
     """The same disguise with an extra hop: a plausible-looking target on disk."""
     from archivey.exceptions import DeceptiveNameError
+    from archivey.internal.filters import apply_name_policy
 
+    member = _member("link", type=MemberType.SYMLINK, link_target="rea‮dm.txt")
+    check_universal(member, tmp_path)  # not a universal violation
     with pytest.raises(DeceptiveNameError):
-        check_universal(
-            _member("link", type=MemberType.SYMLINK, link_target="rea‮dm.txt"),
-            tmp_path,
-        )
+        apply_name_policy(member, ExtractionPolicy.STRICT)
 
     src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea‮dm.txt")
     dest = tmp_path / "out"
