@@ -88,14 +88,19 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   installed inside pycdlib's namespace. Other code using pycdlib in the same process
   sees that guarded behaviour — a strict superset of correct results on valid trees.
   → [ISO 9660](formats.md#iso-9660)
-- **An empty listing is a diagnostic, never an error.** A legitimately empty tar is
-  10240 bytes, every one of them zero — byte-identical to a zero-filled junk file, so
-  no rule over the bytes can reject one without rejecting the other. Archivey opens it,
-  reports zero members, and emits `EMPTY_ARCHIVE` (plus
-  `EXTENSION_FORMAT_UNCONFIRMED` when the format came only from the filename, or
-  `EXPLICIT_FORMAT_LISTED_EMPTY` when you passed `format=` and detection disagrees).
-  If "0 members" would mean something is wrong for you, check the count or use
-  `detect_format()`, which does refuse zero-filled bytes.
+- **An empty listing is a diagnostic, never an error.** An empty tar is *all zeros*, so
+  no rule over the bytes can reject a zero-filled junk file without also rejecting a real
+  one — and not a length rule either: `tar`'s `-b` blocking factor makes every
+  block-aligned zero length legitimate (`tar -b 64` writes an empty archive that is
+  32768 zero bytes, byte-identical to a 32 KiB junk file). Empty tars are common in
+  practice: Docker and OCI images carry a 1024-byte one as the *empty layer* behind every
+  metadata-only instruction. Archivey opens it, reports zero members, and emits
+  `EMPTY_ARCHIVE` (plus `EXTENSION_FORMAT_UNCONFIRMED` when the format came only from the
+  filename, or `EXPLICIT_FORMAT_LISTED_EMPTY` when you passed `format=` and detection
+  disagrees). If "0 members" would mean something is wrong for you, check the count or
+  use `detect_format()`, which does refuse zero-filled bytes — a tar's `ustar` magic
+  lives inside a member header, so an empty one has nothing to match and reaches the TAR
+  reader only by file extension or an explicit `format=`.
   → [Errors and diagnostics](errors-and-diagnostics.md)
 - **Prefer `reader.diagnostics` and the extraction report over logs.** Advisories are
   queryable data, not just log lines.

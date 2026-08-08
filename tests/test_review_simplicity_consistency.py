@@ -290,6 +290,36 @@ def test_wrong_explicit_format_is_loud_for_most_formats(tmp_path: Path) -> None:
             reader.members()
 
 
+def test_empty_listing_check_never_decides_whether_listing_succeeded(
+    tmp_path: Path,
+) -> None:
+    """F7 (guardrail): the re-detection probe is an advisory, not a failure mode.
+
+    The explicit-`format=` arm is the only code that reopens the archive **by name**;
+    everything else works off the handle opened at `open_archive`, which is why a path
+    that disappears mid-read is otherwise survivable. Reported by an automated review
+    pass and confirmed: the probe caught only `ArchiveyError`, so a deleted path turned
+    a *successful* empty listing into `FileNotFoundError` — a diagnostic deciding
+    whether listing worked.
+
+    Guarded here rather than in the OSError arm itself because the invariant is the
+    point: whatever the probe cannot answer, it degrades to "unconfirmed" and the
+    listing still succeeds.
+    """
+    import tarfile
+
+    path = tmp_path / "empty.tar"
+    with tarfile.open(path, "w"):
+        pass
+
+    reader = open_archive(path, format=ArchiveFormat.TAR)
+    path.unlink()  # tmp cleanup, a stale mount, a caller that stages then deletes
+    try:
+        assert reader.members() == []
+    finally:
+        reader.close()
+
+
 # ---------------------------------------------------------------------------
 # F2 — encoding= is honoured by some backends and silently discarded by others
 # ---------------------------------------------------------------------------
@@ -707,23 +737,42 @@ def test_bidi_name_warning_is_queryable_data(tmp_path: Path) -> None:
         assert record.context.controls == "U+202E"  # type: ignore[union-attr]
 
 
-def test_bidi_diagnostic_is_emitted_once_per_presentation(tmp_path: Path) -> None:
-    """F10 (guardrail): one member, one occurrence — listing twice must not double it.
+@pytest.mark.parametrize("driver", ["members-twice", "extract_all"])
+def test_bidi_diagnostic_is_emitted_once_per_presentation(
+    driver: str, tmp_path: Path
+) -> None:
+    """F10 (guardrail): one member, one occurrence — however the list gets walked.
 
-    The emission lives in `_register_member`, which runs once per member identity, so a
-    backend that also normalizes the name cannot add a second.
+    The emission lives in `_register_member`, which runs once per member *identity*, so
+    a backend that also normalizes the name cannot add a second.
+
+    ``extract_all`` is the case that caught this out and is why the guard keys on the
+    member id rather than on the object: it walks the list twice —
+    ``_get_members_index_only`` for the extraction prep, then ``_materialize_members`` —
+    building *different* ArchiveMember objects for the same members, so an
+    ``is _member_id set?`` guard never sees the second pass. One member with one
+    deceptive name is one finding; counting it twice inflates the summary a caller
+    queries, burns a second retention slot and fires their callback again.
+
+    Deliberately a **ZIP**: only a backend with an upfront index answers
+    ``members_report_if_available`` during extraction prep, so only there does the
+    second pass happen. The same test over a TAR passes against the unfixed code and
+    would have pinned nothing.
     """
-    import tarfile
+    import zipfile
 
     from archivey.diagnostics import DiagnosticCode
 
-    path = tmp_path / "bidi.tar"
-    with tarfile.open(path, "w") as tar:
-        tar.addfile(tarfile.TarInfo("a‮b.txt"), io.BytesIO(b""))
+    path = tmp_path / "bidi.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a‮b.txt", b"x")
 
     with open_archive(path) as reader:
-        reader.members()
-        reader.members()
+        if driver == "members-twice":
+            reader.members()
+            reader.members()
+        else:
+            reader.extract_all(tmp_path / "out")
         assert reader.diagnostics.counts[DiagnosticCode.MEMBER_NAME_BIDI_CONTROL] == 1
 
 
@@ -998,6 +1047,34 @@ def test_legitimately_empty_tar_stays_valid(tmp_path: Path) -> None:
     tarfile.open(fileobj=buf, mode="w").close()
     path = tmp_path / "empty.tar"
     path.write_bytes(buf.getvalue())
+    assert set(buf.getvalue()) == {0}  # all zeros — the whole reason no rule works
+    with open_archive(path, format=ArchiveFormat.TAR) as reader:
+        assert reader.members() == []
+
+
+@pytest.mark.parametrize("blocks", [2, 5, 10, 20, 64, 128])
+def test_every_block_aligned_zero_length_is_a_valid_empty_tar(
+    blocks: int, tmp_path: Path
+) -> None:
+    """ADR 0015: no *length* rule works either, which is the third rejected fix.
+
+    After "raise on zero members" and "raise when the file continues past the trailer"
+    were both killed by an empty tar being all zeros, the surviving proposal was to
+    accept only the canonical sizes — 1024 (Go `archive/tar`, hence the Docker/OCI empty
+    layer) and 10240 (GNU tar default, Python `tarfile`) — and treat any other zero-filled
+    length as suspect.
+
+    GNU tar's `-b` blocking factor closes that door: each length below is exactly what
+    `tar -b <blocks> -cf e.tar --files-from /dev/null` writes, and `tar -tvf` lists every
+    one without error. The 64-block case is the punchline — 32768 zero bytes, *byte
+    identical* to the junk file that prompted the finding.
+
+    Constructed from bytes rather than by shelling out to `tar`, so the pin holds
+    everywhere; the equivalence was verified against the real binary when ADR 0015 was
+    written.
+    """
+    path = tmp_path / f"b{blocks}.tar"
+    path.write_bytes(b"\x00" * (blocks * 512))
     with open_archive(path, format=ArchiveFormat.TAR) as reader:
         assert reader.members() == []
 

@@ -329,6 +329,10 @@ class BaseArchiveReader(ArchiveReader):
             SeekCounter() if self._measure else None
         )
         self._materialized: _Materialized | None = None
+        # Member ids whose backend-independent presentation checks have already run, so a
+        # second listing pass over fresh ArchiveMember objects for the same members does
+        # not re-emit their diagnostics (see ``_register_member``).
+        self._presentation_checked: set[int] = set()
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
         self._format_provenance: FormatProvenance | None = None
@@ -836,8 +840,16 @@ class BaseArchiveReader(ArchiveReader):
 
         try:
             detected = detect_format(provenance.source).format
-        except _ArchiveyError:
-            detected = None  # detection refuses these bytes outright
+        except (_ArchiveyError, OSError, ValueError):
+            # Detection refuses these bytes outright — or cannot read them at all.
+            #
+            # OSError is not hypothetical: this is the only place that reopens the
+            # archive **by name**, and the reader is otherwise immune to the path
+            # changing under it because it holds an open handle. Without this arm a
+            # deleted/unreadable path turned a *successful* empty listing into
+            # FileNotFoundError, so a diagnostic decided whether listing worked. A
+            # probe that exists to add an advisory must never do that.
+            detected = None
         if detected is self._format:
             return
         self._emit_unconfirmed_format(
@@ -1071,11 +1083,22 @@ class BaseArchiveReader(ArchiveReader):
             return
         member._member_id = idx
         member._archive_id = self._archive_id
-        emit_member_name_bidi_control(
-            self._diagnostics_collector,
-            member=member,
-            archive_name=self._archive_name,
-        )
+        # Dedupe on the member *id*, not on this object. ``extract_all`` walks the list
+        # twice — ``_get_members_index_only`` for the extraction prep, then
+        # ``_materialize_members`` — and the two passes build *different* ArchiveMember
+        # objects for the same member, so the ``_member_id is not None`` guard above
+        # never sees the second one. The listing tracker wants that re-accounting (see
+        # its comment above); a presentation diagnostic does not: one member with one
+        # deceptive name is one finding, and counting it twice inflates
+        # ``DiagnosticSummary.counts``, burns two retention slots and fires the caller's
+        # callback twice.
+        if idx not in self._presentation_checked:
+            self._presentation_checked.add(idx)
+            emit_member_name_bidi_control(
+                self._diagnostics_collector,
+                member=member,
+                archive_name=self._archive_name,
+            )
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:

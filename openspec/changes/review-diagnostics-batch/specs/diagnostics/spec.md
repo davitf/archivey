@@ -127,9 +127,18 @@ still raises.
 
 When a member listing completes **without error** and contains **zero members**, the
 system SHALL emit `EMPTY_ARCHIVE` exactly once per reader, whatever the format. It MUST
-NOT raise: a legitimately empty tar is 10240 zero bytes, byte-identical to a zero-filled
-garbage file of the same length, so no predicate over the bytes can separate them and any
-"zero members is an error" rule would reject a file `tar(1)` itself produces.
+NOT raise: an empty tar is *all zeros*, so no predicate over the bytes separates one from
+a zero-filled junk file and any "zero members is an error" rule rejects a file `tar(1)`
+itself produces.
+
+The system SHALL NOT restrict the accepted lengths to the canonical ones either. GNU
+tar's `-b` blocking factor makes **every** block-aligned zero length a legitimate empty
+archive — `tar -b 64 -cf e.tar --files-from /dev/null` emits 32768 zero bytes,
+byte-identical to a 32 KiB junk file and listed by `tar -tvf` without error. The two
+sizes seen in practice are 1024 (Go `archive/tar`, hence the Docker/OCI empty layer) and
+10240 (GNU tar default, Python `tarfile`); a rule admitting only those would emit a false
+advisory against valid `-b` output while still being unable to refuse anything.
+See `dev-docs/decisions/0015-zero-filled-files-are-valid-empty-tars.md`.
 
 An incomplete listing (one published with an error) SHALL NOT emit it — the member count
 is not the archive's.
