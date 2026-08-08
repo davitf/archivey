@@ -254,6 +254,12 @@ class SingleFileReader(BaseArchiveReader):
         archive report an ``int`` from disk and ``None`` from an identical ``BytesIO``.
         A missing path raises ``OSError`` inside ``_with_seekable_source`` and comes back
         as ``None``, as before.
+
+        The absolute ``SEEK_END`` is the member's length, not the handle's, because the
+        source reaching a reader is already normalized to begin at offset 0 — a caller
+        stream handed in at its current ``tell()`` arrives here sliced. Worth stating:
+        read locally, ``seek(0, SEEK_END)`` on a "passed through" caller stream looks
+        like it would over-report by the start offset.
         """
         return self._with_seekable_source(lambda f: f.seek(0, io.SEEK_END))
 

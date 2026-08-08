@@ -185,27 +185,28 @@ jobs:
       # RAR *data* tests (and the structural gate's rar_* cases) need RARLAB unrar.
       # Listing works without it; with CI=true the gate fail-closes if data cases omit.
       #
-      # The `rar` WRITER additionally enables the corpus's 41 declarative RAR cases,
-      # which otherwise run on no leg at all. It is installed on Linux only. The
-      # previous comment here blamed "digest expectations [that] are
-      # Linux-fixture-oriented"; measured, that was not the blocker — the corpus makes
-      # no platform-dependent assertion about a RAR member (mode/uid/mtime are asserted
-      # only for tar, digest *values* never), and the sweep was failing on two wrong
-      # assertions in the test itself. See
-      # dev-docs/investigations/rar-corpus-sweep-diagnosis.md.
+      # Install *unrar only* — never the RARLAB `rar` writer, on any leg. The corpus's
+      # declarative RAR cases used to need it and so ran nowhere; their archives are now
+      # committed under tests/fixtures/corpus/rar/ and pinned to the entry definitions
+      # by a manifest (scripts/gen_corpus_rar_fixtures.py). That exercises the RAR
+      # column on *every* platform rather than only where a trialware writer happens to
+      # be installed, and keeps CI free of a licensing decision. See ADR 0016.
       #
-      # macOS keeps the writer off the PATH: nothing found is plausibly
-      # platform-specific, but that is an expectation, not a measurement, so the claim
-      # stays "the RAR column is exercised on Linux".
-      - name: Install unrar + rar writer (Linux)
+      # The sweep's earlier failures were never platform-dependence: the corpus makes no
+      # platform-dependent assertion about a RAR member (mode/uid/mtime are asserted
+      # only for tar, digest *values* never). Two assertion arms in the test were wrong.
+      # See dev-docs/investigations/rar-corpus-sweep-diagnosis.md.
+      - name: Install unrar (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y unrar rar
+        run: sudo apt-get update && sudo apt-get install -y unrar
       - name: Install unrar (macOS)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
         run: |
           brew install --cask rar
-          # Cask ships both rar + unrar; drop the writer — the corpus RAR column is
-          # claimed on Linux only (see the Linux step above).
+          # Cask ships both rar + unrar; drop the writer. Nothing in the suite needs
+          # it — corpus RAR archives are committed (see the Linux step above) — and
+          # removing it keeps the "no trialware on CI" property explicit rather than
+          # incidental.
           rm -f "$(brew --prefix)/bin/rar"
           command -v unrar
           command -v rar && exit 1 || true

@@ -118,10 +118,7 @@ import shutil
 
 from benchmarks.harness import missing_baseline_requirements
 
-# `rar` is the writer: without it the corpus's 41 declarative RAR cases skip
-# quietly and the sweep's RAR column is unexercised, which is exactly the kind of
-# silent gap this block exists to make visible.
-for tool in ("unrar", "rar", "7z"):
+for tool in ("unrar", "7z"):
     found = shutil.which(tool)
     print(f"{'ok  ' if found else 'MISSING'} {tool}{f': {found}' if found else ''}")
 

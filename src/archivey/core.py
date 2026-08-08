@@ -188,6 +188,15 @@ def open_archive(
     candidate in parallel) to decide. That full pass is rare in practice (multiple
     passwords *and* a colliding wrong candidate *and* a STORED member) but can matter
     for very large stored members.
+
+    A password supplied for an archive that carries no encryption is **accepted, not
+    refused** — it is a resource offered, not a claim about this archive — and recorded
+    as ``PASSWORD_ARGUMENT_UNUSED``. That is what lets a batch job pass one keyring at
+    every archive. Diagnostics also log at ``WARNING`` by default, so such a job will
+    log once per unencrypted archive; silence it with
+    ``ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(overrides={
+    DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: DiagnosticDisposition.IGNORE}))``, which
+    keeps the count without the log line.
     """
     # Safety net for `from archivey.core import open_archive` (package __init__ also
     # imports backends so list_supported_formats works on a bare `import archivey`).
