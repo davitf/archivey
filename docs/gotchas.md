@@ -72,6 +72,11 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   `strict_archive_eof=True` when you need a provably complete listing. And a corrupt
   **final** header is caught in random access but not in forward-only streaming.
   → [TAR](formats.md#tar-and-compressed-tar)
+- **`strict_archive_eof=True` reads to the end of the file.** It requires every byte
+  after the two-block trailer to be zero, so trailing junk and concatenated archives
+  raise instead of passing silently. Zero padding still passes — `tar` writes 10 KiB
+  records. The cost is the point of the flag being opt-in: the check is O(tail length),
+  and on a `.tar.gz` the tail is decompressed to inspect it.
 - **Truncation detection on bare gzip/zlib through rapidgzip is best-effort.**
   Upstream soft-EOFs by design and Archivey backstops it, but a residual hole
   remains. Use `use_rapidgzip=OFF` when you need certainty. This is about **bare**
@@ -83,6 +88,20 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   installed inside pycdlib's namespace. Other code using pycdlib in the same process
   sees that guarded behaviour — a strict superset of correct results on valid trees.
   → [ISO 9660](formats.md#iso-9660)
+- **An empty listing is a diagnostic, never an error.** An empty tar is *all zeros*, so
+  no rule over the bytes can reject a zero-filled junk file without also rejecting a real
+  one — and not a length rule either: `tar`'s `-b` blocking factor makes every
+  block-aligned zero length legitimate (`tar -b 64` writes an empty archive that is
+  32768 zero bytes, byte-identical to a 32 KiB junk file). Empty tars are common in
+  practice: Docker and OCI images carry a 1024-byte one as the *empty layer* behind every
+  metadata-only instruction. Archivey opens it, reports zero members, and emits
+  `EMPTY_ARCHIVE` (plus `EXTENSION_FORMAT_UNCONFIRMED` when the format came only from the
+  filename, or `EXPLICIT_FORMAT_LISTED_EMPTY` when you passed `format=` and detection
+  disagrees). If "0 members" would mean something is wrong for you, check the count or
+  use `detect_format()`, which does refuse zero-filled bytes — a tar's `ustar` magic
+  lives inside a member header, so an empty one has nothing to match and reaches the TAR
+  reader only by file extension or an explicit `format=`.
+  → [Errors and diagnostics](errors-and-diagnostics.md)
 - **Prefer `reader.diagnostics` and the extraction report over logs.** Advisories are
   queryable data, not just log lines.
   → [Errors and diagnostics](errors-and-diagnostics.md)
