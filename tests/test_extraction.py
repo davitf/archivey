@@ -1987,3 +1987,153 @@ def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> Non
             members=lambda m: m.name != "src.bin",
         )
     assert _collisions(report) == 0
+
+
+# ---------------------------------------------------------------------------
+# Bidi override/isolate names are refused; directional marks are not
+# ---------------------------------------------------------------------------
+
+
+def _tar_with_member(path: Path, name: str, *, link_target: str | None = None) -> Path:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        if link_target is None:
+            info = tarfile.TarInfo(name)
+            info.size = 3
+            tar.addfile(info, io.BytesIO(b"abc"))
+        else:
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = link_target
+            tar.addfile(info)
+    path.write_bytes(buf.getvalue())
+    return path
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["invoice‮cod.exe", "a⁦b.txt", "x‪y", "z‬.bin"],
+    ids=["rlo", "lri", "lre", "pdf"],
+)
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_bidi_override_name_is_refused_by_default(
+    name: str, policy: ExtractionPolicy, tmp_path: Path
+) -> None:
+    """The reordering controls make a name display as something it is not.
+
+    Refused at the default policy and at `STANDARD`. Like every other name rejection it
+    surfaces as a `BLOCKED` result rather than a raised error at the `extract()` level —
+    `OnError` governs failures, not blocks.
+    """
+    src = _tar_with_member(tmp_path / "a.tar", name)
+    dest = tmp_path / "out"
+    report = extract(src, dest, policy=policy, on_error=OnError.STOP)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.BLOCKED
+    assert not list(dest.rglob("*"))
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["invoice\u202ecod.exe", "a\u2066b.txt", "x\u202ay", "z\u202c.bin"],
+    ids=["rlo", "lri", "lre", "pdf"],
+)
+def test_bidi_override_name_extracts_under_trusted(name: str, tmp_path: Path) -> None:
+    """`TRUSTED` lets a deceptive name through, deliberately (ADR 0017).
+
+    The rejection is **policy-keyed**, not universal, and this is the half that says so.
+    Unlike everything in `check_universal` — traversal, absolute paths, NUL, a device
+    node — the write itself is completely safe here: the file lands inside `dest` under
+    exactly its stored bytes, and only a human reading the directory afterwards is
+    misled. `ExtractionPolicy` is the axis that owns name rejection, and `TRUSTED`
+    already means "faithful bytes, no name rejection or rewrite".
+
+    Without this, a caller who genuinely wants the bytes — a mirroring tool, a format
+    converter, a forensic extract — has no route at any policy, which is what ADR 0013
+    rejected for unrepresentable names ("extracting beats refusing").
+    """
+    src = _tar_with_member(tmp_path / "a.tar", name)
+    dest = tmp_path / "out"
+    report = extract(src, dest, policy=ExtractionPolicy.TRUSTED, on_error=OnError.STOP)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.EXTRACTED
+    assert (dest / name).is_file()  # faithful bytes: stored name, unmodified
+
+
+@pytest.mark.parametrize("name", ["invoice‮cod.exe", "a⁦b.txt"], ids=["rlo", "lri"])
+def test_apply_name_policy_raises_deceptive_name_error(
+    name: str, tmp_path: Path
+) -> None:
+    """The typed error itself, at the boundary that produces it.
+
+    `apply_name_policy`, not `check_universal`: the check is policy-keyed (ADR 0017), so
+    it lives with the other name-safety rules rather than with the path-escape ones.
+    Pinned at this boundary so a move back to `check_universal` — which would silently
+    re-break `TRUSTED` — fails here.
+    """
+    from archivey.exceptions import DeceptiveNameError
+    from archivey.internal.filters import apply_name_policy
+
+    check_universal(_member(name), tmp_path)  # not a universal violation
+    with pytest.raises(DeceptiveNameError):
+        apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+    assert (
+        apply_name_policy(_member(name), ExtractionPolicy.TRUSTED).name == name
+    )  # unchanged
+
+
+def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
+    """The same disguise with an extra hop: a plausible-looking target on disk."""
+    from archivey.exceptions import DeceptiveNameError
+    from archivey.internal.filters import apply_name_policy
+
+    member = _member("link", type=MemberType.SYMLINK, link_target="rea‮dm.txt")
+    check_universal(member, tmp_path)  # not a universal violation
+    with pytest.raises(DeceptiveNameError):
+        apply_name_policy(member, ExtractionPolicy.STRICT)
+
+    src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea‮dm.txt")
+    dest = tmp_path / "out"
+    report = extract(src, dest, on_error=OnError.STOP)
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert not list(dest.rglob("*"))
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["‏doc.pdf", "‎total-2024.txt", "؜فهرس.txt"],
+    ids=["rlm", "lrm", "alm"],
+)
+def test_bidi_directional_marks_still_extract(name: str, tmp_path: Path) -> None:
+    """The regression this change is most at risk of causing.
+
+    The library's advisory set contains all twelve bidi codepoints, marks included.
+    Rejecting *that* set would break legitimate Arabic and Hebrew filenames, which is
+    why the reject set is the two override/isolate ranges written out explicitly.
+    Marks reorder nothing; they only set the direction of one neutral character.
+    """
+    src = _tar_with_member(tmp_path / "a.tar", name)
+    dest = tmp_path / "out"
+    extract(src, dest, on_error=OnError.STOP)
+    assert [p.name for p in dest.iterdir()] == [name]
+
+
+def test_rtl_script_without_controls_extracts_silently(tmp_path: Path) -> None:
+    """RTL *script* is not a bidi control: the direction comes from the letters."""
+    name = "فهرس.txt"  # فهرس.txt
+    src = _tar_with_member(tmp_path / "a.tar", name)
+    dest = tmp_path / "out"
+    with open_archive(src) as reader:
+        reader.members()
+        assert DiagnosticCode.MEMBER_NAME_BIDI_CONTROL not in reader.diagnostics.counts
+    extract(src, dest, on_error=OnError.STOP)
+    assert [p.name for p in dest.iterdir()] == [name]
+
+
+def test_bidi_override_is_a_blocked_result_under_continue(tmp_path: Path) -> None:
+    """It inherits the whole `FilterRejectionError` lifecycle, which is what a batch wants."""
+    src = _tar_with_member(tmp_path / "a.tar", "invoice‮cod.exe")
+    report = extract(src, tmp_path / "out", on_error=OnError.CONTINUE)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.BLOCKED
+    assert result.path is None

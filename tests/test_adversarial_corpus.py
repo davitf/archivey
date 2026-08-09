@@ -16,6 +16,7 @@ import pytest
 from archivey import ExtractionPolicy, ExtractionStatus, open_archive
 from archivey.exceptions import (
     CorruptionError,
+    DeceptiveNameError,
     ExtractionError,
     PathTraversalError,
     SymlinkEscapeError,
@@ -207,6 +208,37 @@ def test_adversarial_extract_has_exact_outcome(
             assert len(results) == 1
             assert results[0].status is ExtractionStatus.BLOCKED
             assert isinstance(results[0].error, SymlinkEscapeError)
+        elif entry.extract_outcome == "deceptive_name":
+            # A bidi override/isolate in the name reorders the surrounding text, so the
+            # extracted file would display as something it is not.
+            #
+            # This is **policy-keyed**, not universal (ADR 0017): the write itself is
+            # perfectly safe — the file lands inside dest under exactly its stored
+            # bytes — so `TRUSTED`, which means "faithful bytes, no name rejection",
+            # extracts it, while the default `STRICT` and `STANDARD` refuse. This whole
+            # module drives extraction at `TRUSTED` to prove the *universal* checks hold
+            # at the most permissive policy, so both halves are asserted here rather than
+            # leaving the file's one policy-keyed case looking universal.
+            #
+            # The sibling case with a directional *mark* (which reorders nothing) is an
+            # ordinary "success" at every policy — that pair is the regression net for
+            # the reject set being the override ranges only.
+            trusted = archive.extract_all(
+                dest, members=[target], policy=ExtractionPolicy.TRUSTED
+            ).results
+            assert len(trusted) == 1
+            assert trusted[0].status is ExtractionStatus.EXTRACTED
+            for result in trusted:
+                if result.path is not None:
+                    returned_paths.append(result.path)
+
+            for policy in (ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD):
+                blocked = archive.extract_all(
+                    dest / policy.value, members=[target], policy=policy
+                ).results
+                assert len(blocked) == 1
+                assert blocked[0].status is ExtractionStatus.BLOCKED
+                assert isinstance(blocked[0].error, DeceptiveNameError)
         elif entry.extract_outcome == "filesystem_name_refusal":
             # A UTF-8-enforcing filesystem (e.g. APFS) refuses the surrogateescape
             # name with EILSEQ; the coordinator translates that to ExtractionError

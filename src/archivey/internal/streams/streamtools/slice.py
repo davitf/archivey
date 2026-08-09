@@ -187,6 +187,23 @@ class SlicingStream(ReadOnlyIOStream):
         self._check_open()
         return self._pos
 
+    def nearest_resume_offset(self, target: int) -> None:
+        """Decline the rewind-cost question: this view has its own offset space.
+
+        ``DelegatingStream`` forwards this inward so a decompressed stream can report
+        what a backward seek would re-decode (``ArchiveStream._maybe_warn_rewind``). A
+        slice must **not** forward it: offsets here are relative to ``start``, while an
+        inner seek-point table is in the inner's space, so passing one through would
+        report a distance computed against the wrong origin.
+
+        ``None`` means "no cost signal", which the caller treats as "say nothing" rather
+        than "free". Declared explicitly even though this class does not inherit the
+        forwarding — a future slice-like wrapper written as a ``DelegatingStream`` would
+        silently inherit it, and the intent belongs in the tree rather than in the
+        inheritance graph.
+        """
+        return
+
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._check_open()
         if not self._seekable:

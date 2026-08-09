@@ -46,6 +46,23 @@ archivey.extract("archive.zip", "out/")
   never leaves a half-written destination file.
 - **Special files** (devices, FIFOs, sockets) are always rejected; NTFS junctions are
   detected, flagged, and never traversed.
+- **Deceptive names:** a member name (or link target) containing a Unicode bidi
+  **override or isolate** — U+202A–202E, U+2066–2069 — is rejected with
+  `DeceptiveNameError` under `STRICT` (the default) and `STANDARD`. Those characters
+  reorder the surrounding text, which is how `evil‮gnp.exe` displays as `evil.png` in
+  every listing a person will see. The three *directional marks* (U+061C, U+200E,
+  U+200F) are **not** rejected: they reorder nothing and occur in legitimate Arabic and
+  Hebrew filenames. Right-to-left script itself is unaffected — `فهرس.txt` contains no
+  control character at all. Listing and reading always present either kind exactly as
+  stored, with a `MEMBER_NAME_BIDI_CONTROL` diagnostic.
+
+    Unlike the rules above, this one **is** lifted by `TRUSTED`, which extracts the
+    member under its stored name. The distinction is that nothing here is unsafe to
+    *write* — the file lands inside your destination under exactly its stored bytes; what
+    is misleading is the name you read back later. `TRUSTED` means "faithful bytes", and
+    faithful round-tripping (mirroring an archive, converting between formats) needs a
+    route that the default correctly refuses. A caller filter that renames the member
+    also works at any policy, since the check runs on the final name.
 - **Decompression bombs at extraction:** cumulative output cap, per-member ratio,
   archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
   count cap — the global guards halt even under `OnError.CONTINUE`.

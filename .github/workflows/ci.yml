@@ -184,8 +184,18 @@ jobs:
 
       # RAR *data* tests (and the structural gate's rar_* cases) need RARLAB unrar.
       # Listing works without it; with CI=true the gate fail-closes if data cases omit.
-      # Install *unrar only* — the ``rar`` writer enables corpus RAR builds whose
-      # digest expectations are Linux-fixture-oriented; keep writer off the PATH here.
+      #
+      # Install *unrar only* — never the RARLAB `rar` writer, on any leg. The corpus's
+      # declarative RAR cases used to need it and so ran nowhere; their archives are now
+      # committed under tests/fixtures/corpus/rar/ and pinned to the entry definitions
+      # by a manifest (scripts/gen_corpus_rar_fixtures.py). That exercises the RAR
+      # column on *every* platform rather than only where a trialware writer happens to
+      # be installed, and keeps CI free of a licensing decision. See ADR 0016.
+      #
+      # The sweep's earlier failures were never platform-dependence: the corpus makes no
+      # platform-dependent assertion about a RAR member (mode/uid/mtime are asserted
+      # only for tar, digest *values* never). Two assertion arms in the test were wrong.
+      # See dev-docs/investigations/rar-corpus-sweep-diagnosis.md.
       - name: Install unrar (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar
@@ -193,7 +203,10 @@ jobs:
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
         run: |
           brew install --cask rar
-          # Cask ships both rar + unrar; drop the writer so corpus builders skip.
+          # Cask ships both rar + unrar; drop the writer. Nothing in the suite needs
+          # it — corpus RAR archives are committed (see the Linux step above) — and
+          # removing it keeps the "no trialware on CI" property explicit rather than
+          # incidental.
           rm -f "$(brew --prefix)/bin/rar"
           command -v unrar
           command -v rar && exit 1 || true

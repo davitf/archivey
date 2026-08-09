@@ -173,8 +173,26 @@ def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
     plaintext digest. Those values are stashed in ``member.extra`` and verified via
     forward-transform when a password is available (see
     :meth:`RarReader._tweaked_verify_spec`).
+
+    A **RAR5 redirect** member (symlink, hard link, file copy) surfaces no digest at all.
+    It keeps its target in a header field and stores *no data stream*, so its CRC32 field
+    covers zero bytes — and ``crc32(b"") == 0``, which RARLAB duly writes. That value is
+    correct about nothing: every RAR5 symlink in existence carries ``0x00000000``, so it
+    neither describes the member (``size`` is the target's length while the digest covers
+    0 bytes) nor distinguishes one link from another. Reporting it would make
+    ``member.hashes`` mean something different in RAR than in every other format, against
+    the no-surprises rule — and the founding "hashes without decompression" use case
+    reads exactly this field.
+
+    **RAR4 is deliberately unaffected**, and the difference is why this keys on the
+    redirect rather than on the member type: RAR3/4 store a symlink's target *as the
+    member's data*, so ``compress_size`` is the target length and the CRC32 is a real
+    digest of it — the same thing ZIP and 7z record. Dropping that would lose a
+    meaningful value.
     """
     hashes: dict[HashAlgorithm, bytes] = {}
+    if info.file_redir is not None:
+        return hashes
     tweaked = _crc_is_tweaked(info)
     if info.crc32 is not None and not tweaked:
         hashes[HashAlgorithm.CRC32] = crc32_digest(info.crc32)

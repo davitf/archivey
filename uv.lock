@@ -119,14 +119,14 @@ dev = [
     { name = "pre-commit", specifier = ">=4.0.0" },
     { name = "py7zr", specifier = ">=1.0.0" },
     { name = "pycdlib", specifier = ">=1.16.0" },
-    { name = "pyrefly", specifier = ">=0.20.0" },
+    { name = "pyrefly", specifier = "==1.1.1" },
     { name = "pytest", specifier = ">=8.3.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
     { name = "pytest-timeout", specifier = ">=2.3.0" },
     { name = "rarfile", specifier = ">=4.2" },
-    { name = "ruff", specifier = ">=0.11.0" },
+    { name = "ruff", specifier = "==0.15.22" },
     { name = "tqdm", specifier = ">=4.67.0" },
-    { name = "ty", specifier = ">=0.0.1a13" },
+    { name = "ty", specifier = "==0.0.60" },
     { name = "urllib3", specifier = ">=2.0.0" },
 ]
 docs = [

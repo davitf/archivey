@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import random
 import shutil
@@ -707,6 +708,16 @@ READER_PACKAGES: dict[str, tuple[str, ...]] = {
     "zip-aes": ("cryptography",),
 }
 
+# External binaries the *reader* needs for member DATA, beyond what format availability
+# reports. RAR lists natively but reads member data through RARLAB ``unrar`` (only a
+# non-solid stored member takes the direct sliced view — see ``rar_reader``), and
+# ``format_availability(RAR)`` reports FULL without it because listing works. Unlike
+# BUILDER_BINARIES, a committed fixture does **not** substitute for these: it saves you
+# from writing the archive, not from reading it.
+READER_BINARIES: dict[str, tuple[str, ...]] = {
+    "rar": ("unrar",),
+}
+
 
 def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
     """Skip when this environment cannot *build or read* ``entry`` as ``key``.
@@ -736,6 +747,9 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
     for package in READER_PACKAGES.get(key, ()):
         if importlib.util.find_spec(package) is None:
             pytest.skip(f"reader needs package {package!r}")
+    for binary in READER_BINARIES.get(key, ()):
+        if shutil.which(binary) is None:
+            pytest.skip(f"reader needs binary {binary!r}")
     for package in BUILDER_PACKAGES.get(key, ()):
         if package == "_zstd_backend":
             if not _has_zstd_backend():
@@ -747,9 +761,13 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
         # Encrypted ZIP corpus entries need the 7z CLI builder, but encrypted 7z entries
         # are written directly by py7zr with a single archive password.
         entry_binaries = tuple(b for b in entry_binaries if b != "7z")
-    for binary in (*BUILDER_BINARIES.get(key, ()), *entry_binaries):
-        if shutil.which(binary) is None:
-            pytest.skip(f"builder needs binary {binary!r}")
+    # A committed fixture needs no builder at all — that is the whole point of having
+    # one. Checked before the binary gate so the RAR rows run on every platform rather
+    # than only where RARLAB `rar` happens to be installed.
+    if committed_fixture(entry, key) is None:
+        for binary in (*BUILDER_BINARIES.get(key, ()), *entry_binaries):
+            if shutil.which(binary) is None:
+                pytest.skip(f"builder needs binary {binary!r}")
     if (
         os.name == "nt"
         and any(m.type is MemberType.SYMLINK for m in entry.members)
@@ -766,6 +784,64 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
 def _cache_key(entry: CorpusEntry, key: str) -> str:
     blob = f"v{GENERATOR_VERSION}|{key}|{entry!r}".encode()
     return hashlib.sha256(blob).hexdigest()[:24]
+
+
+# ---------------------------------------------------------------------------
+# Committed corpus fixtures (RAR)
+# ---------------------------------------------------------------------------
+#
+# The corpus generates every archive on demand, which is what keeps it declarative — one
+# entry definition, N formats, no binaries to review. RAR is the exception, and not by
+# preference: writing it needs RARLAB ``rar``, which is trialware where ``unrar`` is
+# freeware. Building it in CI would make the RAR column a licensing decision, and it
+# would still only cover Linux (the macOS runner has no writer either), so the RAR rows
+# ran nowhere.
+#
+# So RAR archives are committed, and the staleness problem that creates is handled
+# explicitly rather than hoped away: each fixture is recorded in a manifest against the
+# ``_cache_key`` of the entry that produced it. Change a corpus entry and the key moves,
+# which is *detected* — rebuilt on a machine with ``rar``, and a hard error anywhere
+# else, never a silent test against stale bytes.
+CORPUS_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "corpus"
+CORPUS_FIXTURE_MANIFEST = CORPUS_FIXTURE_DIR / "manifest.json"
+COMMITTED_FIXTURE_KEYS = frozenset({"rar"})
+
+
+def _fixture_manifest() -> dict[str, str]:
+    """``"<key>/<entry id>" -> cache key`` for every committed corpus fixture."""
+    try:
+        with open(CORPUS_FIXTURE_MANIFEST, encoding="utf-8") as fh:
+            return json.load(fh)["fixtures"]
+    except FileNotFoundError:
+        return {}
+
+
+def committed_fixture(entry: CorpusEntry, key: str) -> Path | None:
+    """The committed archive for ``(entry, key)``, or ``None`` when there is none.
+
+    Raises ``StaleCorpusFixtureError`` when a fixture exists but was built from a
+    different definition of the entry, so an edited corpus cannot quietly keep testing
+    the old bytes. Callers that *can* rebuild (``rar`` on PATH) should catch it.
+    """
+    if key not in COMMITTED_FIXTURE_KEYS:
+        return None
+    path = CORPUS_FIXTURE_DIR / key / f"{entry.id}.{key}"
+    if not path.exists():
+        return None
+    recorded = _fixture_manifest().get(f"{key}/{entry.id}")
+    expected = _cache_key(entry, key)
+    if recorded != expected:
+        raise StaleCorpusFixtureError(
+            f"committed fixture {path.name!r} was built from a different definition of "
+            f"corpus entry {entry.id!r} (manifest {recorded}, current {expected}). "
+            f"Re-run `uv run python scripts/gen_corpus_rar_fixtures.py` on a machine "
+            f"with the RARLAB `rar` binary and commit the result."
+        )
+    return path
+
+
+class StaleCorpusFixtureError(RuntimeError):
+    """A committed corpus fixture no longer matches its entry definition."""
 
 
 def _filename(entry: CorpusEntry, key: str) -> str:
@@ -792,6 +868,18 @@ def corpus_archive_path(entry: CorpusEntry, key: str, tmp_path: Path) -> Path:
         target = tmp_path / entry.id
         build_archive(entry, key, target)
         return target
+
+    # A committed fixture wins over building, so the RAR rows run everywhere — including
+    # macOS and Windows, which no `rar` install would have covered. A *stale* one falls
+    # through to the builder when this machine can write RAR, and propagates otherwise.
+    try:
+        fixture = committed_fixture(entry, key)
+    except StaleCorpusFixtureError:
+        if any(shutil.which(b) is None for b in BUILDER_BINARIES.get(key, ())):
+            raise
+        fixture = None
+    if fixture is not None:
+        return fixture
 
     cache_dir = Path(ARCHIVEY_TEST_CACHE) / _cache_key(entry, key)
     final = cache_dir / _filename(entry, key)

@@ -40,10 +40,20 @@ class ExtractionPolicy(Enum):
     policies (see ``safe-extraction``). Beyond those, the policy governs two dimensions:
     the permission/ownership transform applied before a member is written, and the
     cross-platform name safety keyed off it — collision determinism (O2), reserved/mangled
-    name rejection (O3/O4), and portable-name normalization (O7). ``STRICT`` is
-    portable-by-default; ``TRUSTED`` defers to the local OS (faithful bytes, no name
-    rejection or rewrite). See
+    name rejection (O3/O4), portable-name normalization (O7), and rejection of
+    **deceptive** names (bidi overrides). ``STRICT`` is portable-by-default; ``TRUSTED``
+    defers to the local OS (faithful bytes, no name rejection or rewrite). See
     ``dev-docs/decisions/0013-cross-platform-name-safety-policies.md``.
+
+    What ``TRUSTED`` does **not** relax: anything where the write itself is unsafe — a
+    name that escapes the destination, carries a NUL, or names a device node. Those are
+    universal. It *does* extract a name built to display as something else
+    (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD`` refuse with
+    ``DeceptiveNameError``: such a member lands inside the destination under exactly its
+    stored bytes, so the risk is to a human reading the directory afterwards, not to the
+    filesystem. Choosing ``TRUSTED`` accepts that, which is what makes faithful
+    round-tripping possible. See
+    ``dev-docs/decisions/0017-bidi-override-rejection-is-policy-keyed.md``.
     """
 
     STRICT = "strict"  # default; untrusted archives

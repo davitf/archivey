@@ -52,7 +52,7 @@ enforced in each case. The required adversarial cases are:
 | Symlink escape: target `../../outside`, chained symlinks | `SymlinkEscapeError` |
 | Symlink loop: cyclic `a -> b`, `b -> a` | `SymlinkEscapeError`; no uncaught `OSError` or crash |
 | Corrupt archive: missing EOCD, truncated TAR, bad CRC | `CorruptionError` or `TruncatedError` with original cause attached |
-| Unicode bombs: null bytes, RTL override characters | Null bytes rejected as traversal; RTL warns or rejects |
+| Unicode bombs: null bytes, bidi control characters | Null bytes rejected as traversal; a bidi control emits exactly one `MEMBER_NAME_BIDI_CONTROL` on listing, and an **override/isolate** additionally raises `DeceptiveNameError` on extraction |
 | Giant claimed size: member claims 1 TiB while archive is 1 KiB | Extraction aborts cleanly before exhausting resources |
 
 Regenerable adversarial archives SHALL be generated deterministically in memory or on
@@ -61,9 +61,18 @@ cannot be generated in the test environment MAY be committed under
 `tests/fixtures/adversarial/` only with the fixture-policy JSON sidecar and an explicit
 rationale.
 
-The RTL warning/rejection outcome applies to every `ArchiveMember` presented by any
-backend, including directory and single-file pseudo-archives. A backend SHALL NOT emit
-duplicate warnings for one presentation of the same member.
+The bidi-control outcome applies to every `ArchiveMember` presented by any backend,
+including directory and single-file pseudo-archives. A backend SHALL NOT emit duplicate
+diagnostics for one presentation of the same member.
+
+**Listing and reading always present the name as stored.** Both branches are now
+implemented and are named separately; the corpus SHALL cover each, and SHALL include at
+least one **directional mark** case proving it is *not* rejected:
+
+| Layer | Overrides / isolates (U+202A–202E, U+2066–2069) | Directional marks (U+061C, U+200E, U+200F) |
+| --- | --- | --- |
+| Listing / reading | Presented as stored; one `MEMBER_NAME_BIDI_CONTROL` | Presented as stored; one `MEMBER_NAME_BIDI_CONTROL` |
+| Safe extraction | `DeceptiveNameError` from `check_universal`, hence a `BLOCKED` result, under every policy | Extracted normally |
 
 #### Scenario: adversarial-behavior matrix
 
@@ -76,7 +85,12 @@ duplicate warnings for one presentation of the same member.
 #### Scenario: RTL warning is backend-independent
 
 - **WHEN** any backend presents a member whose name contains U+202E RIGHT-TO-LEFT OVERRIDE
-- **THEN** the member is rejected or exactly one warning is emitted for that presentation
+- **THEN** the name is presented as stored and exactly one `MEMBER_NAME_BIDI_CONTROL` diagnostic is emitted for that presentation
+
+#### Scenario: directional marks are not swept into the rejection
+
+- **WHEN** a member named with U+200F RIGHT-TO-LEFT MARK (a legitimate Arabic/Hebrew filename shape) is extracted
+- **THEN** it extracts normally, proving the reject set is the override/isolate ranges and not the library's broader advisory set
 
 ### Requirement: Round-trip test for every writable format
 

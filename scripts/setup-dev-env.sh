@@ -49,8 +49,11 @@ install_linux_packages() {
     -o Acquire::Check-Valid-Until=false \
     update || echo "! apt-get update reported errors; continuing with cached indexes" >&2
   # unrar: RAR member-data tests (multiverse component).
+  # rar: the WRITER, which the declarative corpus needs to build its 41 RAR cases.
+  #   Without it they skip quietly and the RAR column of the conformance sweep is
+  #   unexercised (F16 / O6; see dev-docs/investigations/rar-corpus-sweep-diagnosis.md).
   # p7zip-full: encrypted ZIP fixtures built by shelling out to `7z`.
-  ${SUDO} apt-get install -y unrar p7zip-full
+  ${SUDO} apt-get install -y unrar rar p7zip-full
 }
 
 install_macos_packages() {

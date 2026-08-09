@@ -83,6 +83,22 @@ These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three mus
 green. (After the core-only leg, `uv sync --group dev --extra all` to restore your
 everyday environment.)
 
+> **`--resolution lowest-direct` rewrites `uv.lock`.** Leg 2 does not merely install
+> different versions — it *persists* them, so every later `uv sync --frozen` /
+> `uv run --no-sync` silently keeps the downgraded set until you re-lock, and `git status`
+> shows a few hundred lines of lockfile churn that is easy to commit by accident. After
+> leg 2, restore with:
+>
+> ```bash
+> git checkout -- uv.lock && uv sync --frozen --group dev --extra all
+> ```
+>
+> The **lint and type checkers are pinned exactly** (`ruff`, `pyrefly`, `ty` — see the
+> comment in `pyproject.toml`) precisely so this cannot change what the gates report:
+> before that, leg 2 resolved `ruff>=0.11.0` to 0.11.0, which flagged 367 "errors" on an
+> unchanged tree. Everything else keeps a floor, because exercising the *runtime*
+> libraries across their supported range is what leg 2 is for.
+
 CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 on
 macOS/Windows). Repo `.python-version` pins the default local env to 3.11, so the
 workflow must pass `--python <matrix>` (and `UV_PYTHON`) on every `uv sync` /

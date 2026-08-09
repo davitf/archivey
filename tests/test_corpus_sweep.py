@@ -145,12 +145,32 @@ def _assert_stored_digest_parity(member, key: str) -> None:
         return
     if _base(key) == "rar":
         if member.type is MemberType.FILE:
+            if member.is_encrypted:
+                # RAR5 *tweaks* the stored CRC32/BLAKE2sp into a MAC when the member is
+                # encrypted (RAR5_XENC_TWEAKED). Those values are not the plaintext
+                # digest and must not be compared to one, so the reader deliberately
+                # keeps them out of `hashes` and verifies them by forward-transform
+                # once a password is available (`rar_reader._member_hashes`).
+                assert not digest_keys, (
+                    f"rar encrypted {member.name!r} surfaced a tweaked digest as "
+                    f"plaintext: {digest_keys}"
+                )
+                return
             # RAR5 may store Blake2sp instead of (or in addition to) CRC32.
             assert digest_keys, f"rar FILE {member.name!r} missing stored digest"
-            if HashAlgorithm.BLAKE2SP in keys and HashAlgorithm.CRC32 not in keys:
-                return
             assert HashAlgorithm.CRC32 in keys or HashAlgorithm.BLAKE2SP in keys
         else:
+            # Directories, and RAR5 links. A RAR5 symlink/hardlink is a *redirect*: the
+            # target lives in a header field and no data stream is stored, so RARLAB
+            # writes crc32(b"") == 0 — a digest that is correct about nothing and
+            # identical for every link in every archive. The reader drops it, so nothing
+            # here should carry one. (RAR3/4 is the opposite — it stores the target as
+            # the member's data and its CRC is a real digest of it — but the corpus
+            # builder writes RAR5, so that case belongs to the targeted RAR4 fixtures.)
+            #
+            # This arm was briefly loosened to "may or may not carry one" when the sweep
+            # was first switched on. It was not a stale assertion: the sweep was
+            # correctly catching the zero digest above.
             assert not digest_keys, (
                 f"rar {member.name!r} unexpected digests {digest_keys}"
             )
@@ -262,20 +282,21 @@ def _check_single_file(entry: CorpusEntry, key: str, source: Path) -> None:
             assert member.raw_name == payload.name.encode()
             assert member.modified is not None
             assert int(member.modified.timestamp()) == payload.mtime
-        # Stored-digest parity: single-member gzip always (path source); lzip only with
-        # declared SEEKABLE (same gate as size); other codecs omit (zlib Adler-32 is
+        # Stored-digest parity: single-member gzip and lzip both surface CRC-32 from a
+        # bounded trailer/index peek on any seekable source — including this path source,
+        # with no seekable_members declaration. Other codecs omit (zlib Adler-32 is
         # checked by the decompressor, not surfaced on member.hashes).
-        if key in ("gz", "gz-meta"):
+        if key in ("gz", "gz-meta", "lz"):
             assert HashAlgorithm.CRC32 in member.hashes
-        elif key == "lz":
-            assert HashAlgorithm.CRC32 not in member.hashes
         else:
             assert HashAlgorithm.CRC32 not in member.hashes
             assert HashAlgorithm.BLAKE2SP not in member.hashes
             assert HashAlgorithm.ADLER32 not in member.hashes
     if key == "lz":
-        with open_archive(source, seekable_members=True) as ar:
-            member = ar.members()[0]
-            assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(
-                zlib.crc32(payload.contents)
-            )
+        # And the value is the same whether or not the caller declares seek demand.
+        for kwargs in ({}, {"seekable_members": True}):
+            with open_archive(source, **kwargs) as ar:  # type: ignore[arg-type]
+                member = ar.members()[0]
+                assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(
+                    zlib.crc32(payload.contents)
+                )

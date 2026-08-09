@@ -23,6 +23,9 @@ not fully recovered yet.
 | [0012](0012-usage-errors-outside-archiveyerror.md) | `ArchiveyUsageError` ≠ `ArchiveyError` | recorded |
 | [0013](0013-cross-platform-name-safety-policies.md) | Cross-platform extraction name-safety policies | recorded |
 | [0014](0014-integrity-verdicts-from-reads-not-close.md) | Integrity verdicts surface from reads, never `close()` | recorded |
+| [0015](0015-zero-filled-files-are-valid-empty-tars.md) | A zero-filled file is a valid empty TAR; report, never refuse | recorded |
+| [0016](0016-committed-rar-corpus-fixtures.md) | RAR corpus archives are committed, pinned by a manifest | recorded |
+| [0017](0017-bidi-override-rejection-is-policy-keyed.md) | Bidi-override rejection is policy-keyed; `TRUSTED` extracts | recorded |
 
 Related long-form material (not ADRs):
 

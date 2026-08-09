@@ -1,0 +1,13 @@
+{
+  "_comment": "Cache key of the corpus entry each committed fixture was built from. Regenerate with scripts/gen_corpus_rar_fixtures.py; a mismatch fails the suite rather than testing stale bytes.",
+  "fixtures": {
+    "rar/basic": "d222e6d49aa924218ee3a18e",
+    "rar/comments": "8980cb359fb2522854afdae0",
+    "rar/encoding": "0a9539e51b0fe6829909e2bc",
+    "rar/encrypted": "1f75562361730174fe14da8f",
+    "rar/encrypted-mixed": "5b875dc9c2a3eb62552e2207",
+    "rar/hardlinks": "fddc318e65b4962bf5664730",
+    "rar/large": "44bc155840e7a5431b55d5b6",
+    "rar/symlinks": "f954ca3ce4e08d17d9787621"
+  }
+}
