@@ -123,9 +123,20 @@ dev = [
     "pytest>=8.3.0",
     "pytest-cov>=6.0.0",
     "pytest-timeout>=2.3.0",
-    "pyrefly>=0.20.0",
-    "ty>=0.0.1a13",
-    "ruff>=0.11.0",
+    # Lint and type checkers are pinned EXACTLY, not floored. Their version decides
+    # what the gates *report*, so a floor makes two developers — or the same developer
+    # across dependency configs — disagree about whether the tree is clean. Concretely:
+    # `uv sync --resolution lowest-direct` (the [all-lowest] CI leg, and step 2 of
+    # CONTRIBUTING's three-config rule) resolved `ruff>=0.11.0` to 0.11.0, which reported
+    # 367 "errors" the current version does not, on an unchanged tree. `ruff format` also
+    # changes output between versions, so a floor lets one contributor reformat the repo
+    # just by having a newer one. Bump these deliberately, together, in their own commit.
+    #
+    # Keep `ruff` in step with the `rev:` in .pre-commit-config.yaml — the framework hook
+    # path resolves its own copy. tests/test_tooling_pins.py enforces that.
+    "pyrefly==1.1.1",
+    "ty==0.0.60",
+    "ruff==0.15.22",
     "pre-commit>=4.0.0",
     "coverage[toml]>=7.6.0",
     "py7zr>=1.0.0",
