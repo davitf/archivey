@@ -237,6 +237,20 @@ become naive `datetime` values, and RAR5 UTC/sub-second timestamps become
 timezone-aware UTC `datetime` values. RAR5 Blake2sp-only members SHALL store the
 digest bytes at `member.hashes["blake2sp"]` and omit `"crc32"`.
 
+A **RAR5 redirect** member — symlink, hard link, or file copy — SHALL surface **no**
+stored digest. Such a member keeps its target in a header field and stores no data
+stream, so its CRC32 field covers zero bytes and RARLAB writes `crc32(b"") == 0`. That
+value is correct about nothing: it does not describe the member (`size` is the target's
+length while the digest covers no bytes) and is identical for every redirect member in
+every archive. Surfacing it would make `member.hashes` mean something different in RAR
+than in every other format, and the value it would carry is the one a de-duplicating
+caller reads.
+
+**RAR3/4 is the opposite and is unaffected**: it stores a symlink's target *as the
+member's data*, so the stored CRC32 is a genuine digest of the target string — the same
+thing ZIP and 7z record. The rule therefore keys on the RAR5 redirect, never on the
+member type.
+
 #### Scenario: metadata matrix
 
 | Case | Expected |
@@ -245,6 +259,8 @@ digest bytes at `member.hashes["blake2sp"]` and omit `"crc32"`.
 | RAR4 timestamp | `ArchiveMember.modified` is naive local wall-clock time |
 | RAR5 timestamp | `ArchiveMember.modified` is timezone-aware UTC |
 | RAR5 member with Blake2sp only | `"blake2sp"` present as bytes; `"crc32"` absent |
+| RAR5 symlink / hard link / file copy | `member.hashes` empty — never `crc32 == 0` |
+| RAR4 symlink (target stored as data) | `"crc32"` present, equal to the target string's CRC32 |
 
 ### Requirement: Handle RAR5 redirect link types natively
 

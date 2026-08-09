@@ -159,12 +159,21 @@ def _assert_stored_digest_parity(member, key: str) -> None:
             # RAR5 may store Blake2sp instead of (or in addition to) CRC32.
             assert digest_keys, f"rar FILE {member.name!r} missing stored digest"
             assert HashAlgorithm.CRC32 in keys or HashAlgorithm.BLAKE2SP in keys
-        elif member.type is MemberType.DIRECTORY:
+        else:
+            # Directories, and RAR5 links. A RAR5 symlink/hardlink is a *redirect*: the
+            # target lives in a header field and no data stream is stored, so RARLAB
+            # writes crc32(b"") == 0 — a digest that is correct about nothing and
+            # identical for every link in every archive. The reader drops it, so nothing
+            # here should carry one. (RAR3/4 is the opposite — it stores the target as
+            # the member's data and its CRC is a real digest of it — but the corpus
+            # builder writes RAR5, so that case belongs to the targeted RAR4 fixtures.)
+            #
+            # This arm was briefly loosened to "may or may not carry one" when the sweep
+            # was first switched on. It was not a stale assertion: the sweep was
+            # correctly catching the zero digest above.
             assert not digest_keys, (
                 f"rar {member.name!r} unexpected digests {digest_keys}"
             )
-        # SYMLINK / HARDLINK may carry a CRC of the stored link payload, exactly as 7z
-        # does above; do not require or forbid.
         return
     # TAR, directory, ISO, compressed-TAR: no cheap whole-member stored digest.
     assert not digest_keys, f"{key} {member.name!r} unexpected digests {digest_keys}"

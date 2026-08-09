@@ -45,13 +45,47 @@ None of that is platform-dependent, and neither is anything else in the RAR path
 So the writer was withheld for a reason that had already stopped being true, if it ever
 was: the corpus makes no platform-dependent assertion about a RAR member.
 
-## The two real bugs, both in the test's expectations
+## The two failures — one stale assertion, one real bug
 
-1. **Link members legitimately carry a CRC.** RAR stores a checksum of the *link
-   payload* (the target string) for symlinks and hardlinks. The 7z arm of the same
-   function already tolerates exactly this — *"SYMLINK may carry a CRC of the stored
-   link payload; do not require or forbid"* — while the RAR arm forbade any digest on a
-   non-FILE member.
+> **Correction, 2026-08-08.** This section originally called both failures "bugs in the
+> test's expectations" and loosened the link arm to match the reader. A review of that
+> change measured the digests, and the first diagnosis was **wrong**: the assertion was
+> right and the reader was wrong. Both readings are kept below, because the mistake is
+> the instructive part — when a long-dormant test is switched on, some failures are the
+> test being stale and some are it finally doing its job, and the two look identical
+> until you check what the values actually are.
+
+1. ~~**Link members legitimately carry a CRC.**~~ **Wrong — the reader was surfacing a
+   digest of nothing.** The original reading was that RAR stores a checksum of the *link
+   payload* (the target string), as the 7z arm already tolerates, so the RAR arm's
+   blanket "no digest on a non-FILE member" was too strict.
+
+   Measured, RAR5 does not do that. A RAR5 symlink or hard link is a **redirect**: the
+   target lives in a header field and the member stores **no data stream** (`unrar lt`
+   reports `Packed size: 0`). Its CRC32 field therefore covers zero bytes, and
+   `crc32(b"") == 0` — which is exactly the value RARLAB writes and `unrar` reports:
+
+   | Format | symlink digest | equals `crc32(target)`? | bytes of data stored |
+   | --- | --- | --- | --- |
+   | ZIP | `0x2d212004` | yes | 9 |
+   | 7z | `0x2b4106af` | yes | 45 |
+   | TAR | *(none)* | — | — |
+   | **RAR5** | **`0x00000000`** | **no** | **0** |
+
+   So the 7z comparison did not hold: 7z tolerates a digest that *is* the link's
+   checksum, while the RAR arm was loosened to tolerate one that is not. Every RAR5
+   symlink in existence reported the same value — one that neither describes the member
+   (`size` is the target's length while the digest covers no bytes) nor distinguishes one
+   link from another, in the field `VISION.md`'s "hashes without decompression" use case
+   reads.
+
+   **Fixed in the reader** (`rar_reader._member_hashes`): a RAR5 redirect surfaces no
+   digest, and the corpus arm's original `assert not digest_keys` is restored.
+
+   **RAR3/4 is the opposite and must keep its digest**, which is why the fix keys on the
+   redirect and not on the member type: RAR4 stores the target *as the member's data*, so
+   `compress_size` is the target length and the CRC32 is a genuine digest of it. A
+   member-type check would have thrown that away.
 
 2. **Encrypted RAR5 members deliberately have no plaintext digest.** With
    `RAR5_XENC_TWEAKED` set, the stored CRC32 and BLAKE2sp are key-tweaked MACs
@@ -60,9 +94,10 @@ was: the corpus makes no platform-dependent assertion about a RAR member.
    forward-transform once a password is available. The reader is right; the assertion
    demanded a digest the format does not expose.
 
-Both are fixed in `tests/test_corpus_sweep.py`. With those two arms corrected and the
-writer present, **the whole suite runs 2326 passed / 23 skipped, against 2284 / 65
-without it — 42 tests that previously ran nowhere, all green.**
+Item 2 is fixed in `tests/test_corpus_sweep.py`; item 1 is fixed in the reader, with the
+test arm restored to what it always said. With both corrected, **the whole suite runs
+2326 passed / 23 skipped, against 2284 / 65 without the RAR rows — 42 tests that
+previously ran nowhere, all green.**
 
 ## What this leaves open
 

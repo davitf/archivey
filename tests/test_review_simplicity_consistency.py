@@ -44,7 +44,7 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.types import MemberType
+from archivey.types import HashAlgorithm, MemberType
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,
@@ -1105,3 +1105,80 @@ def test_solid_out_of_order_open_emits_nothing(tmp_path: Path) -> None:
         for member in reversed(members):  # worst case: fully out of order
             reader.read(member)
         assert dict(reader.diagnostics.counts) == {}
+
+
+# ---------------------------------------------------------------------------
+# F16 follow-up — a stored digest must describe the member, in every format
+# ---------------------------------------------------------------------------
+
+
+def test_symlink_digests_describe_the_link_in_every_format(tmp_path: Path) -> None:
+    """A `hashes` entry is a digest *of this member's content*, or it is absent.
+
+    Found while auditing the RAR conformance sweep this review switched on (F16). The
+    sweep's "links carry no digest" assertion was failing for RAR, and the first fix
+    loosened it to "may or may not". The assertion was right: **RAR5 stores a symlink's
+    target in a header field with no data stream**, so RARLAB writes ``crc32(b"") == 0``
+    into the CRC field, and the reader was surfacing that. Every RAR5 symlink in
+    existence therefore reported the same digest — one that neither describes the member
+    (``size`` is the target's length, the digest covers zero bytes) nor distinguishes one
+    link from another, in the field `VISION.md`'s "hashes without decompression" use case
+    reads.
+
+    So the rule is cross-format and this pins it: where a digest is present it equals the
+    checksum of what the member actually holds; where the format stores nothing to
+    checksum, the key is absent. Absence is the honest answer, not a zero.
+    """
+    import zlib
+
+    entry_id, key_of_interest = "symlinks", "rar"
+    expectations: dict[str, bool] = {  # format key -> does it store a link digest?
+        "zip": True,  # target stored as member data
+        "7z": True,  # target stored as member data
+        "tar": False,  # target lives in the header; nothing to checksum
+        key_of_interest: False,  # RAR5 redirect: header field, no data stream
+    }
+    for key, expects_digest in expectations.items():
+        path = _archive(entry_id, key, tmp_path)
+        with open_archive(path) as reader:
+            links = [m for m in reader.members() if m.type is MemberType.SYMLINK]
+            assert links, f"{key}: corpus entry should carry symlinks"
+            for member in links:
+                assert member.link_target is not None
+                if not expects_digest:
+                    assert not member.hashes, (
+                        f"{key} {member.name!r} surfaced {dict(member.hashes)} for a "
+                        f"link whose content is not stored as data"
+                    )
+                    continue
+                digest = member.hashes.get(HashAlgorithm.CRC32)
+                assert digest is not None, f"{key} {member.name!r} lost its digest"
+                assert int.from_bytes(digest, "big") == zlib.crc32(
+                    member.link_target.encode()
+                ), f"{key} {member.name!r} digest is not the target's checksum"
+
+
+def test_rar4_link_digests_survive_the_rar5_fix(tmp_path: Path) -> None:
+    """The regression the RAR5 fix is most at risk of causing.
+
+    RAR3/4 is the *opposite* of RAR5 here: it stores a symlink's target as the member's
+    data, so ``compress_size`` is the target length and the CRC32 is a genuine digest of
+    it — exactly what ZIP and 7z record. Keying the fix on the RAR5 *redirect* rather
+    than on "is a link" is what keeps this working; a member-type check would have
+    thrown away a meaningful value.
+    """
+    import zlib
+
+    fixture = Path(__file__).parent / "fixtures" / "rar" / "symlinks_solid__rar4.rar"
+    if not fixture.exists():  # pragma: no cover - fixture is committed
+        pytest.skip("RAR4 symlink fixture missing")
+    with open_archive(fixture) as reader:
+        links = [m for m in reader.members() if m.type is MemberType.SYMLINK]
+        assert links
+        for member in links:
+            assert member.link_target is not None
+            digest = member.hashes.get(HashAlgorithm.CRC32)
+            assert digest is not None, f"rar4 {member.name!r} lost its digest"
+            assert int.from_bytes(digest, "big") == zlib.crc32(
+                member.link_target.encode()
+            )
