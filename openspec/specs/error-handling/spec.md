@@ -38,7 +38,9 @@ ArchiveyError(Exception)
 │   └── FilterRejectionError
 │       ├── PathTraversalError
 │       ├── SymlinkEscapeError
-│       └── SpecialFileError
+│       ├── SpecialFileError
+│       ├── UnportableNameError
+│       └── DeceptiveNameError
 ├── ResourceLimitError
 ├── UnsupportedFeatureError
 ├── PackageNotInstalledError
@@ -62,17 +64,22 @@ trip during listing materialization or extraction bomb guarding; it is not an
 | `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement: unsupported ZIP method, AES ZIP entry, 7z BCJ2, unknown coder. |
 | `ResourceLimitError` | A configured listing or extraction resource limit was exceeded (`ListingLimits` / `ExtractionLimits` bomb guards). |
 
+The three name-related `FilterRejectionError` subclasses are kept apart because a caller
+triaging a batch of rejections acts differently on each:
+
+| Error split | Meaning |
+| --- | --- |
+| `PathTraversalError` | The name tries to reach **outside** the destination, or cannot name a path at all (`..`, absolute, NUL, unencodable). |
+| `UnportableNameError` | The name cannot be written **as spelled** on this platform, and the policy declined to rewrite it. |
+| `DeceptiveNameError` | The name is writable and stays inside the destination, but is built to **display as something other than what it is** — a bidi override or isolate. Nothing is wrong with the archive or the platform; the name is a lie. |
+
 #### Scenario: archive exception matrix
 
 | Case | Expected |
 | --- | --- |
 | Any open/read/extract/write failure detected by Archivey | Instance of `ArchiveyError`; `except ArchiveyError` catches it |
 | Diagnostic policy escalates | `DiagnosticRaisedError` is caught by `except ArchiveyError` |
-| Bad member CRC | `CorruptionError`, distinct from `EncryptionError` |
-| Missing codec/package/tool such as `pyppmd`, crypto backend, or `unrar` | `PackageNotInstalledError` names the missing component |
-| Recognized unsupported feature such as 7z BCJ2 | `UnsupportedFeatureError`; no incorrect output |
-| Listing `max_members` exceeded | `ResourceLimitError`, not `ExtractionError` |
-| Extraction `max_extracted_bytes` exceeded | `ResourceLimitError`, not `ExtractionError` |
+| Member name with a bidi override, extracted | `DeceptiveNameError`; caught by `except FilterRejectionError` and by `except ExtractionError` |
 
 ### Requirement: Caller misuse remains outside ArchiveyError
 

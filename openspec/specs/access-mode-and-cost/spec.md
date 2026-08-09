@@ -163,6 +163,7 @@ class AccessCost(Enum):
     DIRECT = "direct"  # member N independent of others
     SOLID = "solid"    # may need earlier bytes in the block
 
+@functools.total_ordering
 class StreamCapability(Enum):
     SEEKABLE = "seekable"        # source seekable
     FORWARD_ONLY = "forward_only"  # pipe/socket; revisit needs a new stream
@@ -182,6 +183,13 @@ class CostReceipt:
 | `access_cost` | Format layout — `DIRECT` vs `SOLID` (re-decompress cost lives here, not in seekability) |
 | `listing_cost` | Enumerating names+metadata |
 
+`StreamCapability` SHALL be **totally ordered by strength**, weakest first:
+`FORWARD_ONLY < SEEKABLE`. A seekable source can serve every read a forward-only one
+can, so the ordering is the "is at least as strong as" relation and comparing two
+capabilities SHALL answer whether one source shape satisfies a requirement stated as
+the other. `ListingCost` and `AccessCost` are **not** ordered: their members name
+kinds of work, not strengths of the same resource.
+
 Examples: ZIP file → `INDEXED`+`DIRECT`+`SEEKABLE`; plain tar file →
 `REQUIRES_SCANNING`+`DIRECT`+`SEEKABLE`; tar on pipe → same + `FORWARD_ONLY`;
 `.tar.gz` file → `REQUIRES_DECOMPRESSION`+`SOLID`+`SEEKABLE`; solid 7z →
@@ -196,6 +204,17 @@ Examples: ZIP file → `INDEXED`+`DIRECT`+`SEEKABLE`; plain tar file →
 | `.tar.gz` | `REQUIRES_DECOMPRESSION` + `SOLID` |
 | Same plain tar: file vs pipe | `stream_capability` SEEKABLE vs FORWARD_ONLY; `access_cost=DIRECT` both |
 | Solid 7z, multiple folders | `info.is_solid`, `access_cost=SOLID`, `solid_block_count` = folder count |
+
+#### Scenario: stream capability ordering matrix
+
+| Case | Expected |
+| --- | --- |
+| `FORWARD_ONLY < SEEKABLE` | `True` |
+| `SEEKABLE >= FORWARD_ONLY` | `True` |
+| `FORWARD_ONLY <= FORWARD_ONLY` | `True` |
+| `SEEKABLE < FORWARD_ONLY` | `False` |
+| Comparison against a non-`StreamCapability` | `TypeError` |
+| `sorted(StreamCapability)` | `[FORWARD_ONLY, SEEKABLE]` |
 
 ### Requirement: CostReceipt remains an immutable open-time cost description
 

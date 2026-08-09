@@ -41,7 +41,7 @@ Left unchecked on purpose: `scripts/check_openspec_archived.py` reads an all-com
 tasks list as "finished but unarchived" and fails on `main`, and archiving is a separate
 step from merging (`CONTRIBUTING.md`).
 
-- [ ] A.1 `openspec archive strict-archive-eof-trailing-bytes --yes`, then commit the resulting
+- [x] A.1 `openspec archive strict-archive-eof-trailing-bytes --yes`, then commit the resulting
       `openspec/specs/` diff.
 
 **Archive order matters.** Several of these changes modify the same requirement, so a
