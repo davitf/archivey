@@ -290,34 +290,44 @@ def test_wrong_explicit_format_is_loud_for_most_formats(tmp_path: Path) -> None:
             reader.members()
 
 
+@pytest.mark.parametrize(
+    "raised",
+    [FileNotFoundError("gone"), PermissionError("denied"), ValueError("odd")],
+    ids=["missing", "unreadable", "valueerror"],
+)
 def test_empty_listing_check_never_decides_whether_listing_succeeded(
-    tmp_path: Path,
+    raised: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """F7 (guardrail): the re-detection probe is an advisory, not a failure mode.
 
     The explicit-`format=` arm is the only code that reopens the archive **by name**;
     everything else works off the handle opened at `open_archive`, which is why a path
-    that disappears mid-read is otherwise survivable. Reported by an automated review
-    pass and confirmed: the probe caught only `ArchiveyError`, so a deleted path turned
-    a *successful* empty listing into `FileNotFoundError` — a diagnostic deciding
-    whether listing worked.
+    that vanishes mid-read is otherwise survivable. Reported by an automated review pass
+    and confirmed: the probe caught only `ArchiveyError`, so a deleted path turned a
+    *successful* empty listing into `FileNotFoundError` — a diagnostic deciding whether
+    listing worked.
 
-    Guarded here rather than in the OSError arm itself because the invariant is the
-    point: whatever the probe cannot answer, it degrades to "unconfirmed" and the
-    listing still succeeds.
+    The real-world trigger is `path.unlink()` (or a stale mount, or a caller that stages
+    then deletes) between `open_archive` and the listing. This raises from the probe
+    directly instead, for two reasons: it is portable — Windows refuses to unlink a file
+    the reader still holds open, so the natural repro cannot run there — and it states
+    the invariant rather than one route to it. Whatever the probe cannot answer, it
+    degrades to "unconfirmed" and the listing still succeeds.
     """
     import tarfile
+
+    import archivey.internal.detection as detection
 
     path = tmp_path / "empty.tar"
     with tarfile.open(path, "w"):
         pass
 
-    reader = open_archive(path, format=ArchiveFormat.TAR)
-    path.unlink()  # tmp cleanup, a stale mount, a caller that stages then deletes
-    try:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise raised
+
+    with open_archive(path, format=ArchiveFormat.TAR) as reader:
+        monkeypatch.setattr(detection, "detect_format", _boom)
         assert reader.members() == []
-    finally:
-        reader.close()
 
 
 # ---------------------------------------------------------------------------

@@ -708,6 +708,16 @@ READER_PACKAGES: dict[str, tuple[str, ...]] = {
     "zip-aes": ("cryptography",),
 }
 
+# External binaries the *reader* needs for member DATA, beyond what format availability
+# reports. RAR lists natively but reads member data through RARLAB ``unrar`` (only a
+# non-solid stored member takes the direct sliced view — see ``rar_reader``), and
+# ``format_availability(RAR)`` reports FULL without it because listing works. Unlike
+# BUILDER_BINARIES, a committed fixture does **not** substitute for these: it saves you
+# from writing the archive, not from reading it.
+READER_BINARIES: dict[str, tuple[str, ...]] = {
+    "rar": ("unrar",),
+}
+
 
 def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
     """Skip when this environment cannot *build or read* ``entry`` as ``key``.
@@ -737,6 +747,9 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
     for package in READER_PACKAGES.get(key, ()):
         if importlib.util.find_spec(package) is None:
             pytest.skip(f"reader needs package {package!r}")
+    for binary in READER_BINARIES.get(key, ()):
+        if shutil.which(binary) is None:
+            pytest.skip(f"reader needs binary {binary!r}")
     for package in BUILDER_PACKAGES.get(key, ()):
         if package == "_zstd_backend":
             if not _has_zstd_backend():
