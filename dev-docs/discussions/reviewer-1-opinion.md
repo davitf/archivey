@@ -1,12 +1,14 @@
 # Reviewer 1 opinion — diagnostics archive-vs-usage
 
 Response to [`diagnostics-archive-vs-usage.md`](diagnostics-archive-vs-usage.md).
-Read-only take on the discussion doc alone; the rest of the repo was not
-re-audited for this note.
 
 **Verdict:** reject the archive-vs-usage cut. Do **A** as the ceiling rule, plus
 a narrow **E** on extraction — not **B**, and not **C/D** unless callers later
 need axis-level policy.
+
+Originally written from the discussion doc alone. A follow-up pass against the
+tree is in [After reading the tree](#after-reading-the-tree); it **confirms** the
+verdict and slightly tightens the extraction sequencing.
 
 ---
 
@@ -40,8 +42,67 @@ proposal. That is the real admission rule; write it down (**A**).
 1. Normative knowability ceiling (**A**).
 2. A named “abort on first blocked member” knob.
 3. Then delete only `_BLOCKED` / `_FAILED` (**E**); keep the other six.
+   Move hardlink `failure_group_id` / `failure_group_size` onto
+   `ExtractionResult` (or equivalent) before dropping `_FAILED` — those fields
+   live only on the diagnostic today.
 
 Skip **B** — too blunt; it reopens silent overwrite and loses the seek
 tripwire. Skip **C/D** for now — they add public surface to encode a cut this
 note discards. **A** alone is cheap and not tag-gated; the extraction cleanup
 is what actually wants to land before the freeze.
+
+---
+
+## After reading the tree
+
+Checked against `src/archivey/diagnostics.py`,
+`src/archivey/internal/extraction.py`, `extraction_types.py`,
+`openspec/specs/{diagnostics,safe-extraction}/spec.md`,
+`docs/extracting.md`, `review/docs/observations.md` (O-23),
+`review/simplicity-consistency/q13-rewind-diagnostic.md`, and the matching
+tests. Counts: 22 codes in the enum; policy matches by code only.
+
+### Confirmed
+
+- **O-23 never described the library.** Its own prose says “every existing code
+  fits” while enumerating only archive-shaped codes and waving
+  `STREAM_REWIND_REDECOMPRESSES` through; the four extraction codes were already
+  present and unnoticed. The discussion’s dating claim holds.
+- **`RAISE` on `EXTRACTION_MEMBER_BLOCKED` already implements abort-on-blocked.**
+  Spec, `OnError` docstring, and `docs/extracting.md` all still call that a
+  “separate, future opt-in.” `test_raise_disposition_stops_despite_continue`
+  locks the accidental feature in.
+- **REPLACE collision is silent in `results`.** On a redirected REPLACE write,
+  the coordinator sets `requested_path = result.path` on purpose
+  (`extraction.py`), so both members look like ordinary `EXTRACTED`.
+  `EXTRACTION_NAME_COLLISION` is the audit trail; the O2 REPLACE test asserts
+  the diagnostic count, not a result-status change.
+- **Sanitize has the same shape.** Successful portable rewrite → `EXTRACTED`;
+  the presented→portable pair is only on the diagnostic.
+- **Rewind tripwire is cost-based and escalate-every-time.** Not a codec-name
+  nag; deleting it deletes the quadratic-seek guard.
+- **Option A’s wording is already drafted** in the q13 rewind note. This opinion
+  is converging on prior review work, not inventing a third cut.
+- **`DiagnosticPolicy` has no subject axis** — overrides are per-code only —
+  so C is additive API, not a missing field.
+
+### Refinements (do not change the verdict)
+
+- **The BLOCKED/FAILED dual channel is normative**, not drift:
+  `safe-extraction` requires exactly one matching diagnostic per continued
+  `BLOCKED`/`FAILED` result. **E is a deliberate spec change**, not a tidy-up.
+- **`_FAILED` is only a parallel channel under `OnError.CONTINUE`.** Under
+  `STOP`, failures raise and are not converted to advisories. That makes
+  deletion cheaper for the common path — but hardlink grouping
+  (`failure_group_id` / `failure_group_size`) exists only on
+  `ExtractionOutcomeContext`, so it must move before the code can go.
+- **`SUPERSEDED` is not a home for REPLACE collisions.** It means
+  last-entry-wins non-current members, not O2 overwrite resolution. Do not
+  overload it to avoid keeping the collision diagnostic.
+
+### Unchanged conclusion
+
+Still **A + named abort + narrow E**, still reject **B/C/D** for now. The tree
+pass mainly raises the cost of step 3: promote abort-on-blocked and migrate
+failure-group metadata *before* deleting the two outcome codes, and leave
+collision / sanitize / rewind / unused-arg codes alone.
