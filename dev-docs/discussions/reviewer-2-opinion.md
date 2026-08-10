@@ -132,3 +132,103 @@ docstring; check the `SUPERSEDED`-on-`REPLACE` question.
 
 Explicitly deferred: **B**, **C**, **D**. None of them are cheaper than the
 problem they solve.
+
+---
+
+## After reading the tree
+
+Added after reviewer 3's note landed, to settle the one claim this opinion
+flagged as unverified. Checked against `src/archivey/internal/extraction.py`,
+`extraction_types.py`, and `openspec/specs/safe-extraction/spec.md`; the
+`REPLACE` collision case was run, not just read.
+
+### Refuted — my own suggestion was wrong
+
+**`SUPERSEDED` is not a home for a `REPLACE` collision.** Part 4 above
+suggested it might be, marked *check this*. It is not, and reviewer 1's tree
+pass was right to say so. `SUPERSEDED` means a *non-current duplicate* —
+several archive entries under one name, only the last live — decided from
+`is_current` at listing time before any write is attempted
+(`extraction.py:365-370`), yielding `path=None, error=None`
+(`safe-extraction/spec.md:597-599`). A destination collision is a different
+event at a different stage: two *current* members whose resolved paths land on
+one key during the write walk. Same English word, unrelated conditions.
+
+Reviewer 3's parallel suggestion — that a portability rewrite show up as
+`requested_path != path`, "exactly as `RENAME` already is" — hits the same
+problem. `requested` is computed from the already-sanitized name
+(`extraction.py:565`, fed by `_transform` at 543-546), so the two are equal
+for a sanitized member today; and that signal is already spoken for, since
+`requested_path != path and status == EXTRACTED` is the defined marker for
+`OverwritePolicy.RENAME` (`safe-extraction/spec.md:603-606`). Reusing it would
+make one signal mean two things.
+
+So both of reviewer 3's relocations need a genuinely *new* signal plus a spec
+amendment. The structural argument survives; the "it already has a home"
+costing does not.
+
+### Confirmed
+
+**The `REPLACE` overwrite is silent in `results`, by design.** A ZIP holding
+`A.txt` and `a.txt` under `OverwritePolicy.REPLACE`:
+
+```
+member='A.txt'  status=extracted  path='A.txt'  requested='A.txt'
+member='a.txt'  status=extracted  path='A.txt'  requested='A.txt'
+on disk → 'A.txt': 'second member content'
+```
+
+The first member's content is gone and its result still reads plainly
+`EXTRACTED`. `extraction.py:591-597` sets the merged member's `requested_path`
+to the merged path deliberately, so a replace-merge does not masquerade as a
+rename.
+
+**Reviewer 1 is also right that the dual channel is normative**, not drift:
+`safe-extraction/spec.md:608-609` requires exactly one matching advisory per
+continued `BLOCKED`/`FAILED` result, and `:602` states the non-failure statuses
+emit none.
+
+### Corrections to all three notes, including this one
+
+**The collision is not *entirely* invisible in `results`.** Two `EXTRACTED`
+entries sharing one `path` is a detectable signature if the caller joins by
+path. What is unavailable is the *labelled* fact — that this was a replace,
+and which member lost. "The diagnostic is the entire audit trail" overstates
+it slightly; "the diagnostic is the only labelled record" is exact.
+
+**A caller `filter` rename produces three names, not two.** Archive name,
+filter output, portable rewrite. The advisory records the middle-to-final
+pair; the result carries only the archive name and the final path. For
+filtered members the pair is not reconstructible from the result at all, which
+raises the cost of relocating this one.
+
+### Unflagged by any of the three notes
+
+**Relocating a fact out of diagnostics removes its escalation.** Dispositions
+apply to diagnostics only, so moving the collision and sanitize records into
+`ExtractionResult` silently deletes the ability to say "raise if a member is
+silently overwritten." That is the same trade accepted for
+`EXTRACTION_MEMBER_BLOCKED` — but there a named knob replaces it, and for
+collision nobody has proposed a replacement. Whatever is decided, this should
+be decided rather than discovered.
+
+### Mechanics, for costing
+
+Retroactively marking the clobbered member is cheap: `collision_map` stores
+only a path (`extraction.py:337, 715`), so it would also need the prior
+writer's result index, and the coordinator already revises `results` by index
+(`_resolve_orphan`). A few lines. The expensive part is the new public signal
+and the spec amendment, not the plumbing.
+
+### Effect on this opinion
+
+The verdict above is unchanged on admission, but the placement argument moves.
+Reviewer 3's job-vs-stream clause is a better formulation than the
+one-authoritative-channel wording in Part 2, because it separates *what
+qualifies* from *where it lives* — and this note let escalation-worthiness
+override placement, which is what kept `EXTRACTION_MEMBER_BLOCKED` alive here.
+With a named abort knob in place, that objection falls, and this note concedes
+the blocked-member deletion. Reviewer 3's blanket-`RAISE` argument also
+defeats the "consequence 1 is overstated" claim in Part 4: per-code overrides
+are the rare path, so the coarse switch is where the conflation actually
+bites.
