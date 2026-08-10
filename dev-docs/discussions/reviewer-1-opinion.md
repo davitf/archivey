@@ -1,4 +1,4 @@
-# Cursor opinion — diagnostics archive-vs-usage
+# Reviewer 1 opinion — diagnostics archive-vs-usage
 
 Response to [`diagnostics-archive-vs-usage.md`](diagnostics-archive-vs-usage.md).
 Read-only take on the discussion doc alone; the rest of the repo was not
