@@ -165,6 +165,16 @@ the archive's own bytes or metadata as anomalous:
 | --- | --- |
 | `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `MEMBER_TIMESTAMP_INVALID`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES` |
 
+Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
+rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
+forbids treating zero members as an error; `ENCODING_ARGUMENT_UNUSED` and
+`PASSWORD_ARGUMENT_UNUSED` because they report argument hygiene, and a pipeline that
+speculatively passes a password to every call would otherwise raise on every
+unencrypted archive; `EXPLICIT_FORMAT_LISTED_EMPTY` because `format=` is an override
+and an override that halts the caller is not an override; and
+`STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
+than the archive, and is most useful as a deliberately targeted tripwire.
+
 Presets SHALL return ordinary frozen `DiagnosticPolicy` values with per-code
 overrides — no new resolution axis, and no field on `Diagnostic`. A caller MAY build
 its own policy from `ARCHIVE_INTEGRITY_CODES`.

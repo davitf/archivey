@@ -62,7 +62,10 @@
 - [ ] 6.2 Update `docs/errors-and-diagnostics.md` (four codes gone; presets; the
       taxonomy-growth note), `docs/safe-extraction.md` and `docs/extracting.md`
       (`abort_on`, the new status, the corrected "future opt-in" wording)
-- [ ] 6.3 Grep `docs/` and `openspec/specs/` for the four removed code names
+- [ ] 6.3 Grep `docs/` for the four removed code names
+- [ ] 6.4 Decide whether `abort_on` gets a CLI flag (`VISION` treats the CLI as the
+      first consumer, so a safety opt-in the CLI cannot reach is a wedge gap) — either
+      add the flag to `cli/extract_cmd.py` or record library-only as deliberate
 
 ## 7. Tests
 
@@ -85,4 +88,8 @@
 ## 8. Verify
 
 - [ ] 8.1 `openspec validate --strict extraction-results-authoritative`
-- [ ] 8.2 Sync main specs from this change's deltas (`diagnostics`, `safe-extraction`)
+- [ ] 8.2 Gate before archive: `rg 'EXTRACTION_MEMBER_|EXTRACTION_NAME_|ExtractionOutcomeContext|NameCollisionContext|NameSanitizedContext' openspec/specs/`
+      MUST return nothing once the deltas are applied. Archiving applies deltas only,
+      so any parent requirement naming a removed code must be MODIFIED here rather
+      than swept afterwards
+- [ ] 8.3 Sync main specs from this change's deltas (`diagnostics`, `safe-extraction`)
