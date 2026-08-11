@@ -5,6 +5,19 @@ deliberately did not use it for the original note below, by request, so the
 first pass is doc-only; the [addendum](#after-reading-the-tree) was written
 later with the tree open.*
 
+*The prompt, verbatim:*
+
+> please look at the doc dev-docs/discussions/diagnostics-archive-vs-usage.md in PR 233
+> and help me decide. what's your take? read only the doc for now, don't investigate the
+> rest of the repo. add your opinion as reviewer-2-opinion.md on the PR. DO NOT READ
+> reviewer-1-opinion.md to avoid biasing your opinion
+
+*Note what this prompt does and does not do, compared with
+[reviewer 3's](reviewer-3-opinion.md): it names no hypothesis, asks for no particular
+axis, and explicitly tries to prevent anchoring. The anti-anchoring instruction then
+failed in practice — reviewer 1's file arrived unbidden in a GitHub file listing before
+this note was written, which is disclosed below.*
+
 Response to [`diagnostics-archive-vs-usage.md`](diagnostics-archive-vs-usage.md).
 Based on the discussion doc only; the tree was not re-audited for this note, so
 anything below marked *check this* is a claim I could not verify.

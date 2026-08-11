@@ -30,15 +30,28 @@ want to check one. Dated 2026-08-10, against `main` @ `9b170c0`.
 > 1's pass against the tree established that two proposed relocations targeted
 > already-occupied signals.
 >
+> **The prompts differed, and that confounds the comparison.** Reviewers 2 and 3 quote
+> theirs in full; reviewer 1's was not recorded. Reviewer 3 was asked a *leading*
+> question — whether the system is over-engineered, and how real-world usage should
+> shape it — while reviewer 2 was asked only for its take, with no hypothesis named.
+> The usage-profile reasoning that most changed the outcome was therefore **solicited
+> from reviewer 3, not volunteered**, and the other two were never asked for it. The
+> argument is sound on its own merits, but this is not a clean natural experiment, and
+> the agreement between the three notes is worth less than it looks: they were not
+> answering the same question.
+>
 > **The tooling split shows in the results, in both directions.** The reviewer with no
-> repo access produced the argument that most changed the outcome — reasoning from who
-> would actually use the library, which needed no code — and also produced the only two
-> claims that failed verification, both of them assertions about what a slot in the code
-> already meant. The reviewers who could read the tree caught those, and reviewer 1's
-> second pass is what turned a plausible design into a costed one. Convergence across
-> three models is some evidence the archive-vs-usage cut was genuinely wrong rather than
-> an artifact of one model's priors; it is not evidence that any unverified claim in
-> those notes is true.
+> repo access produced both claims that failed verification, each an assertion about
+> what a slot in the code already meant — and also the two genuinely unprompted
+> contributions that survived, the job-versus-stream placement clause and
+> presets-over-a-field. The reviewers who could read the tree caught the bad claims, and
+> reviewer 1's second pass is what turned a plausible design into a costed one.
+>
+> **What the convergence is and is not worth.** Three models rejecting the
+> archive-vs-usage cut is some evidence it was genuinely wrong rather than one model's
+> priors — that conclusion, at least, was reached under three different promptings. It
+> is not evidence that any unverified claim in those notes is true: two of the three
+> assumed `SUPERSEDED` was available before anyone checked, and both were wrong.
 >
 > **Two claims below were checked against the code and did not survive.** `SUPERSEDED`
 > is not available for a `REPLACE` collision — it means a non-current duplicate decided
@@ -52,8 +65,8 @@ want to check one. Dated 2026-08-10, against `main` @ `9b170c0`.
 **How this document was meant to be read.** The concrete questions are at the end.
 Disagreeing with the framing was an explicitly useful answer — the archive-vs-usage cut
 was itself one of the things in question, and it is the thing that lost. If you only
-read one section, read [The conflation](#the-conflation) and then
-[The options](#the-options).
+read one section, read [Part 3 — The conflation](#part-3--the-conflation) and then
+[Part 5 — The options](#part-5--the-options).
 
 ---
 

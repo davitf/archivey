@@ -3,6 +3,10 @@
 *Written by Grok 4.5 via Cursor. Had repository access, and used it: the
 [tree pass](#after-reading-the-tree) below is this reviewer's own verification.*
 
+*The prompt for this one was not recorded. Reviewers 2 and 3 quote theirs, and the
+difference between those two turned out to matter, so treat this note's framing as
+having an unknown amount of prompt influence rather than assuming none.*
+
 Response to [`diagnostics-archive-vs-usage.md`](diagnostics-archive-vs-usage.md).
 
 **Verdict:** reject the archive-vs-usage cut. Do **A** as the ceiling rule, plus
