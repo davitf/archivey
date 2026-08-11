@@ -1,5 +1,8 @@
 # Reviewer 1 opinion — diagnostics archive-vs-usage
 
+*Written by Grok 4.5 via Cursor. Had repository access, and used it: the
+[tree pass](#after-reading-the-tree) below is this reviewer's own verification.*
+
 Response to [`diagnostics-archive-vs-usage.md`](diagnostics-archive-vs-usage.md).
 
 **Verdict:** reject the archive-vs-usage cut. Do **A** as the ceiling rule, plus

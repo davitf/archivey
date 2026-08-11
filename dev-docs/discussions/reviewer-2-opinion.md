@@ -1,5 +1,10 @@
 # Reviewer 2 opinion — diagnostics archive-vs-usage
 
+*Written by Claude Opus 5 via Claude Code. Had repository access but
+deliberately did not use it for the original note below, by request, so the
+first pass is doc-only; the [addendum](#after-reading-the-tree) was written
+later with the tree open.*
+
 Response to [`diagnostics-archive-vs-usage.md`](diagnostics-archive-vs-usage.md).
 Based on the discussion doc only; the tree was not re-audited for this note, so
 anything below marked *check this* is a claim I could not verify.

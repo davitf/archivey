@@ -20,12 +20,25 @@ want to check one. Dated 2026-08-10, against `main` @ `9b170c0`.
 > relocation would otherwise have deleted. Named `DiagnosticPolicy` presets replace
 > hand-curating overrides across the whole taxonomy.
 >
-> **Where the answers came from.** All three reviewer opinions
-> ([1](reviewer-1-opinion.md), [2](reviewer-2-opinion.md), [3](reviewer-3-opinion.md))
-> rejected the archive-vs-usage cut independently, and all three rejected options B, C
-> and D. They split on how much of extraction should leave the channel; reviewer 3's
-> job-versus-stream placement clause resolved it, and reviewer 1's pass against the
-> tree established that two proposed relocations targeted already-occupied signals.
+> **Where the answers came from.** Three reviewers, deliberately on different models
+> and different tooling: [1](reviewer-1-opinion.md) Grok 4.5 via Cursor,
+> [2](reviewer-2-opinion.md) Claude Opus 5 via Claude Code, and
+> [3](reviewer-3-opinion.md) Claude Fable 5 in a plain chat with no repository access
+> at all. All three rejected the archive-vs-usage cut independently, and all three
+> rejected options B, C and D. They split on how much of extraction should leave the
+> channel; reviewer 3's job-versus-stream placement clause resolved it, and reviewer
+> 1's pass against the tree established that two proposed relocations targeted
+> already-occupied signals.
+>
+> **The tooling split shows in the results, in both directions.** The reviewer with no
+> repo access produced the argument that most changed the outcome — reasoning from who
+> would actually use the library, which needed no code — and also produced the only two
+> claims that failed verification, both of them assertions about what a slot in the code
+> already meant. The reviewers who could read the tree caught those, and reviewer 1's
+> second pass is what turned a plausible design into a costed one. Convergence across
+> three models is some evidence the archive-vs-usage cut was genuinely wrong rather than
+> an artifact of one model's priors; it is not evidence that any unverified claim in
+> those notes is true.
 >
 > **Two claims below were checked against the code and did not survive.** `SUPERSEDED`
 > is not available for a `REPLACE` collision — it means a non-current duplicate decided

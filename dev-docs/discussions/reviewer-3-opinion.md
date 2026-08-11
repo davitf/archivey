@@ -1,4 +1,14 @@
-# Response: is the diagnostics system over-engineered, and what does real usage say?
+# Reviewer 3 opinion — Response: is the diagnostics system over-engineered, and what does real usage say?
+
+*Written by Claude Fable 5 in a plain chat, with no Claude Code environment and
+therefore no repository access — reasoning from the circulated brief alone. Worth
+knowing while reading: this is the only one of the three notes whose author could not
+check a claim against the code, and both of its proposed relocations
+(`SUPERSEDED` for a `REPLACE` collision, `requested_path != path` for a portability
+rewrite) turned out to target signals that are already occupied. The note's
+[reasoning from projected usage](#who-will-actually-use-this) — which needed no repo
+access — is the part that most shaped the outcome. Body added as received, apart from
+this header.*
 
 A response to *Diagnostics: are we conflating "something is odd about this archive" with "something is odd about your call"?* (2026-08-10, `main` @ `9b170c0`).
 
