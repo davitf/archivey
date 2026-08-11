@@ -13,6 +13,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | [Release-repo cutover](release-repo-cutover.md) | One-time rename / PyPI / Pages before the first public tag |
 | [Decision log](decisions/index.md) | ADR-style records of load-bearing choices |
 | [Investigations](investigations/) | Finished evidence: PPMd, pyppmd/rapidgzip upstream reports, parallel-reader |
+| [Discussions](discussions/) | Design questions written for circulation — context and options, no decision *at the time of writing*. Each entry carries a RESOLVED header once settled, pointing at the change that settled it; the body is left as circulated |
 | [History](history/index.md) | Superseded prose (SPEC / ARCHITECTURE / COMPARISON / ASYNC) |
 | [PLAN.md](PLAN.md) · [IDEAS.md](IDEAS.md) | Phase roadmap; speculative backlog |
 
