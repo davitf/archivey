@@ -6,6 +6,21 @@ Three reviewer responses to `dev-docs/discussions/diagnostics-archive-vs-usage.m
 agreed on more than they disagreed on. This change implements the union of what they
 agreed, plus the two proposals that survived a check against the tree.
 
+The circulated record, all under `dev-docs/discussions/`:
+
+| Document | Author | Prompt |
+| --- | --- | --- |
+| `diagnostics-archive-vs-usage.md` | the question as circulated, with a resolution banner pointing here | — |
+| `reviewer-1-opinion.md` | Grok 4.5 via Cursor | neutral, doc-only |
+| `reviewer-2-opinion.md` | Claude Opus 5 via Claude Code | neutral, doc-only — identical framing to reviewer 1 |
+| `reviewer-3-opinion.md` | Claude Fable 5, plain chat, no repo access | leading ("is this over-engineered?") |
+
+Reviewers 1 and 2 received the same neutral prompt, so their agreement is a paired
+comparison; reviewer 3's framing was solicited, so its agreement corroborates less.
+Each opinion file carries its own byline and verbatim prompt. Where the notes are
+cited below, the citation is to an argument that was checked against the tree, not to
+the fact that a reviewer made it.
+
 Verified before designing (repo at `9b170c0`):
 
 - `SUPERSEDED` means a non-current duplicate, decided from `is_current` at listing

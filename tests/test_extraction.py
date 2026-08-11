@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from archivey import (
+    AbortOn,
     ExtractionLimits,
     ExtractionPolicy,
     ExtractionStatus,
@@ -31,6 +32,8 @@ from archivey import (
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ExtractionError,
+    NameCollisionError,
+    NameRewrittenError,
     PathTraversalError,
     ResourceLimitError,
     SpecialFileError,
@@ -1623,8 +1626,13 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
 # ---------------------------------------------------------------------------
 
 
-def _collisions(report) -> int:
-    return report.diagnostics.counts.get(DiagnosticCode.EXTRACTION_NAME_COLLISION, 0)
+def _overwritten(report) -> list:
+    """Members a later REPLACE clobbered — the result-side record of a collision.
+
+    Collisions left the diagnostics channel: ``ExtractionResult`` is now the only
+    record, and a REPLACE merge shows up as the earlier member being revised to
+    ``OVERWRITTEN`` rather than as a diagnostic count."""
+    return [r for r in report.results if r.status is ExtractionStatus.OVERWRITTEN]
 
 
 def _surrogate_tar(stored_name: str, payload: bytes = b"abc") -> bytes:
@@ -1655,24 +1663,38 @@ def test_o2_casefold_collision_strict_error_is_deterministic(tmp_path: Path) -> 
     )
     statuses = [r.status for r in report.results]
     assert statuses == [ExtractionStatus.EXTRACTED, ExtractionStatus.FAILED]
-    assert _collisions(report) == 1
+    # The collision is recorded on the loser's own result: requested_path is the
+    # destination it intended *before* resolution (its own spelling), and the error says
+    # why it did not get it. path stays None — nothing of this member is on disk.
+    assert report.results[1].requested_path == dest / "readme"
+    assert report.results[1].path is None
+    assert report.results[1].error is not None
+    assert not _overwritten(report)  # ERROR never clobbers, so nothing is OVERWRITTEN
 
 
 def test_o2_casefold_collision_strict_replace_no_silent_merge(tmp_path: Path) -> None:
     # REPLACE must not silently merge into two files on a case-sensitive FS: the second
     # member deterministically overwrites the first at one path, and it is recorded.
+    # This is the case that was SILENT before extraction-results-authoritative — both
+    # members reported a plain EXTRACTED at the same path.
     archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
     dest = tmp_path / "out"
     report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
     on_disk = sorted(p.name for p in dest.iterdir())
     assert on_disk == ["README"]  # one file, not README + readme
     assert (dest / "README").read_bytes() == b"B"  # second member won
-    assert _collisions(report) == 1
+
+    first, second = report.results
+    assert first.status is ExtractionStatus.OVERWRITTEN
+    assert first.path is None  # nothing at that path is this member's content
+    assert first.requested_path == dest / "README"  # ...but it did write there
+    assert second.status is ExtractionStatus.EXTRACTED
+    assert second.path == first.requested_path  # the join between the pair
 
 
 def test_o2_collision_trusted_defers_to_local_os(tmp_path: Path) -> None:
     # TRUSTED keys on the exact path and never raises a collision event (it defers to the
-    # OS). The deterministic, OS-independent assertion is "no collision diagnostic".
+    # OS). The deterministic, OS-independent assertion is "no member was clobbered".
     archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
     dest = tmp_path / "out"
     report = extract(
@@ -1681,7 +1703,8 @@ def test_o2_collision_trusted_defers_to_local_os(tmp_path: Path) -> None:
         policy=ExtractionPolicy.TRUSTED,
         overwrite=OverwritePolicy.REPLACE,
     )
-    assert _collisions(report) == 0
+    assert not _overwritten(report)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
 
 
 def test_o2_nfc_nfd_collision_strict(tmp_path: Path) -> None:
@@ -1691,7 +1714,7 @@ def test_o2_nfc_nfd_collision_strict(tmp_path: Path) -> None:
     archive = _tar_bytes([("file", nfc, b"A"), ("file", nfd, b"B")])
     dest = tmp_path / "out"
     report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
-    assert _collisions(report) == 1
+    assert len(_overwritten(report)) == 1
     assert len(list(dest.iterdir())) == 1
 
 
@@ -1750,18 +1773,19 @@ def test_o3_trailing_dot_space_stripped_strict_kept_standard(
     )
     assert strict.results[0].status is ExtractionStatus.EXTRACTED
     assert sorted(p.name for p in (tmp_path / "strict").iterdir()) == [portable]
-    assert strict.diagnostics.counts.get(DiagnosticCode.EXTRACTION_NAME_SANITIZED) == 1
-    # STANDARD does NOT rewrite the name (no sanitize diagnostic) — it keeps it faithful.
+    # The rewrite is recorded on the result, not as a diagnostic: presented_name is the
+    # spelling before the rewrite, path.name is what landed.
+    assert strict.results[0].presented_name == name
+    assert strict.results[0].path is not None
+    assert strict.results[0].path.name == portable
+    # STANDARD does NOT rewrite the name (so no presented_name) — it keeps it faithful.
     # The on-disk name is then the OS's call: POSIX writes it verbatim; Windows itself trims
     # the trailing dot/space, so we only assert the faithful on-disk name off Windows.
     standard = extract(
         io.BytesIO(archive), tmp_path / "standard", policy=ExtractionPolicy.STANDARD
     )
     assert standard.results[0].status is ExtractionStatus.EXTRACTED
-    assert (
-        standard.diagnostics.counts.get(DiagnosticCode.EXTRACTION_NAME_SANITIZED)
-        is None
-    )
+    assert standard.results[0].presented_name is None
     if os.name != "nt":
         assert sorted(p.name for p in (tmp_path / "standard").iterdir()) == [name]
 
@@ -1917,7 +1941,7 @@ def test_o2_casefold_collision_standard_replace_no_silent_merge(tmp_path: Path) 
     )
     assert sorted(p.name for p in dest.iterdir()) == ["README"]
     assert (dest / "README").read_bytes() == b"B"
-    assert _collisions(report) == 1
+    assert len(_overwritten(report)) == 1
 
 
 def test_o7_sanitized_name_collides_with_literal_percent_name(tmp_path: Path) -> None:
@@ -1938,7 +1962,11 @@ def test_o7_sanitized_name_collides_with_literal_percent_name(tmp_path: Path) ->
         io.BytesIO(buf.getvalue()), dest, overwrite=OverwritePolicy.REPLACE
     )
     assert sorted(p.name for p in dest.iterdir()) == ["caf%E9.txt"]
-    assert _collisions(report) == 1
+    assert len(_overwritten(report)) == 1
+    # The member that won carries both signals: it was rewritten (presented_name is the
+    # surrogateescape spelling) and it clobbered the literal-percent member.
+    assert report.results[1].presented_name == surro
+    assert report.results[0].status is ExtractionStatus.OVERWRITTEN
 
 
 def test_o2_orphan_hardlink_honours_collision_map(tmp_path: Path) -> None:
@@ -1964,7 +1992,10 @@ def test_o2_orphan_hardlink_honours_collision_map(tmp_path: Path) -> None:
         )
     # One casefold-equivalent file, not README + readme.
     assert sorted(p.name for p in dest.iterdir()) == ["README"]
-    assert _collisions(report) >= 1
+    # The deferred link won the contested destination, so the first-pass writer is the
+    # one revised to OVERWRITTEN — the second pass revises results just like the first.
+    assert len(_overwritten(report)) == 1
+    assert _overwritten(report)[0].member.name == "README"
 
 
 def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> None:
@@ -1986,7 +2017,7 @@ def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> Non
             overwrite=OverwritePolicy.REPLACE,
             members=lambda m: m.name != "src.bin",
         )
-    assert _collisions(report) == 0
+    assert not _overwritten(report)
 
 
 # ---------------------------------------------------------------------------
@@ -2137,3 +2168,129 @@ def test_bidi_override_is_a_blocked_result_under_continue(tmp_path: Path) -> Non
     (result,) = report.results
     assert result.status is ExtractionStatus.BLOCKED
     assert result.path is None
+
+
+# ---------------------------------------------------------------------------
+# extraction-results-authoritative: results are the sole record, and abort_on
+# is the named replacement for the escalation that left with the diagnostics.
+# ---------------------------------------------------------------------------
+
+
+def test_three_spellings_filter_rename_then_portable_rewrite(tmp_path: Path) -> None:
+    """A caller filter rename followed by a portable rewrite produces three names.
+
+    ``member.name`` is the archive's, ``presented_name`` is the filter's output, and
+    ``path.name`` is what landed. Only ``presented_name`` records the middle one, which
+    is why the rewrite could not be expressed as ``requested_path != path``.
+    """
+    archive = _tar_bytes([("file", "orig.txt", b"x")])
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.STRICT,
+            filter=lambda m: m.replace(name="renamed."),  # trailing dot -> rewritten
+        )
+    (result,) = report.results
+    assert result.member.name == "orig.txt"
+    assert result.presented_name == "renamed."
+    assert result.path is not None
+    assert result.path.name == "renamed"
+    # The rewrite is independent of the rename marker: this member was not renamed by a
+    # collision, so requested_path still equals path.
+    assert result.requested_path == result.path
+
+
+def test_abort_on_name_collision_replace(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    with pytest.raises(NameCollisionError):
+        extract(
+            io.BytesIO(archive),
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            abort_on={AbortOn.NAME_COLLISION},
+        )
+    # Abort stops the run, it does not roll it back: the first member's bytes remain.
+    assert (dest / "README").read_bytes() == b"A"
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.ERROR,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_abort_on_name_collision_fires_on_every_resolution(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """The trigger is the collision, not its outcome — parity with the escalation this
+    replaces, which fired on all four resolutions."""
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    with pytest.raises(NameCollisionError):
+        extract(
+            io.BytesIO(archive),
+            tmp_path / "out",
+            overwrite=overwrite,
+            on_error=OnError.CONTINUE,
+            abort_on={AbortOn.NAME_COLLISION},
+        )
+
+
+def test_abort_on_name_collision_not_triggered_under_trusted(tmp_path: Path) -> None:
+    """TRUSTED keys on the exact path, so there is no collision event to abort on."""
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=OverwritePolicy.REPLACE,
+        abort_on={AbortOn.NAME_COLLISION},
+    )
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+
+
+def test_abort_on_name_sanitized(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "foo.", b"x"), ("file", "later.txt", b"y")])
+    dest = tmp_path / "out"
+    with pytest.raises(NameRewrittenError):
+        extract(
+            io.BytesIO(archive),
+            dest,
+            policy=ExtractionPolicy.STRICT,
+            abort_on={AbortOn.NAME_SANITIZED},
+        )
+    assert not (dest / "later.txt").exists()  # no later member processed
+
+
+def test_name_sanitized_without_opt_in_is_a_success(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "foo.", b"x")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+    assert report.results[0].presented_name == "foo."
+
+
+def test_abort_on_is_independent_of_on_error(tmp_path: Path) -> None:
+    """A blocked member aborts under either OnError when BLOCKED_MEMBER is set, and
+    never aborts when it is not."""
+    archive = _tar_bytes([("file", "NUL", b"x"), ("file", "ok.txt", b"y")])
+    for on_error in (OnError.STOP, OnError.CONTINUE):
+        dest = tmp_path / f"abort-{on_error.value}"
+        with pytest.raises(UnportableNameError):
+            extract(
+                io.BytesIO(archive),
+                dest,
+                on_error=on_error,
+                abort_on={AbortOn.BLOCKED_MEMBER},
+            )
+        assert not (dest / "ok.txt").exists()
+    for on_error in (OnError.STOP, OnError.CONTINUE):
+        dest = tmp_path / f"noabort-{on_error.value}"
+        report = extract(io.BytesIO(archive), dest, on_error=on_error)
+        assert report.results[0].status is ExtractionStatus.BLOCKED
+        assert (dest / "ok.txt").read_bytes() == b"y"

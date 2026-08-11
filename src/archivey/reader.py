@@ -10,6 +10,7 @@ from archivey.config import ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
 from archivey.internal.extraction_types import (
+    AbortOn,
     ExtractionPolicy,
     ExtractionProgress,
     MemberFilter,
@@ -180,6 +181,7 @@ class ArchiveReader(ABC):
         policy: ExtractionPolicy = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
         on_error: OnError = OnError.STOP,
+        abort_on: Collection[AbortOn] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
@@ -193,6 +195,10 @@ class ArchiveReader(ABC):
         config the reader was opened with; ``limits`` overrides its extraction limits for
         this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
         summary is the delta for this extraction call.
+
+        ``abort_on`` names events that end the whole call the first time they occur —
+        raising instead of returning a report. It is independent of ``on_error``: see
+        :class:`~archivey.AbortOn`.
         """
         ...
 

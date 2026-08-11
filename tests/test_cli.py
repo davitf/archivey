@@ -1316,3 +1316,67 @@ def test_members_for_include_check_skips_forward_only(
         # Sole pass still available for extract/test.
         pairs = list(reader.stream_members())
         assert [m.name for m, _ in pairs] == ["a.txt"]
+
+
+# --- --abort-on / OVERWRITTEN reporting -------------------------------------
+
+
+def _collide_zip(path: Path) -> Path:
+    """Two members whose names differ only by case — one destination, two members."""
+    return _zip(path, {"README": b"A", "readme": b"B"})
+
+
+def test_extract_reports_overwritten_member(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The REPLACE merge that used to be silent in the report is now reported."""
+    archive = _collide_zip(tmp_path / "c.zip")
+    dest = tmp_path / "out"
+    assert (
+        main(["x", str(archive), "-d", str(dest), "--overwrite", "replace"]) == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert "overwritten:" in err
+    assert sorted(p.name for p in dest.iterdir()) == ["README"]
+
+
+def test_extract_abort_on_name_collision(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive = _collide_zip(tmp_path / "c.zip")
+    dest = tmp_path / "out"
+    code = main(
+        [
+            "x",
+            str(archive),
+            "-d",
+            str(dest),
+            "--overwrite",
+            "replace",
+            "--abort-on",
+            "name-collision",
+        ]
+    )
+    assert code == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "Name collision" in err
+    assert "extraction stopped" in err
+
+
+def test_extract_abort_on_blocked_member(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive = _zip(tmp_path / "t.zip", {"../escape.txt": b"x", "ok.txt": b"y"})
+    dest = tmp_path / "out"
+    code = main(["x", str(archive), "-d", str(dest), "--abort-on", "blocked-member"])
+    assert code == EXIT_FAIL
+    assert "extraction stopped" in capsys.readouterr().err
+    assert not (dest / "ok.txt").exists()
+
+
+def test_extract_unknown_abort_on_event_is_usage_error(tmp_path: Path) -> None:
+    archive = _zip(tmp_path / "t.zip", {"a.txt": b"x"})
+    assert (
+        main(["x", str(archive), "-d", str(tmp_path / "o"), "--abort-on", "nonsense"])
+        == EXIT_USAGE
+    )

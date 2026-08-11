@@ -175,7 +175,9 @@ the last entry, which is the live one.
 
 `extract_all` also follows it. Superseded entries are skipped and reported as
 `ExtractionStatus.SUPERSEDED` (distinct from `NOT_OVERWRITTEN`, which is about files
-already on disk), so what lands on disk matches a fresh write.
+already on disk, and from `OVERWRITTEN`, which is a member that *was* written this run
+and then had its destination taken by a later one), so what lands on disk matches a
+fresh write.
 
 **Selecting members by name is the one place to be careful.** A name in a selector —
 `extract_all(members=["notes.txt"])`, `stream_members(members=["notes.txt"])` —

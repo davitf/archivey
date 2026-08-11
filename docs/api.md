@@ -57,6 +57,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.ExtractionPolicy
 ::: archivey.OverwritePolicy
 ::: archivey.OnError
+::: archivey.AbortOn
 ::: archivey.MemberFilter
 
 ## Configuration

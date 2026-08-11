@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TextIO
 
 from archivey import (
+    AbortOn,
     ExtractionPolicy,
     ExtractionProgress,
     ExtractionReport,
@@ -348,6 +349,21 @@ def _report_extraction(
                     f"extracted: {escape_member_name(result.member.name)}",
                     file=err,
                 )
+            # A portable rewrite is a different event from a collision rename: the member
+            # landed where it asked to, under a different spelling. Always reported, for
+            # the same reason as a rename — the on-disk name is not the archive's.
+            if result.presented_name is not None:
+                print(
+                    f"name rewritten: {escape_member_name(result.presented_name)} -> "
+                    f"{escape_member_name(Path(result.path).name) if result.path else ''}",
+                    file=err,
+                )
+        elif status is ExtractionStatus.OVERWRITTEN:
+            # Written, then clobbered by a later member. Not counted as extracted: its
+            # content is not what is on disk. Always reported — data was lost.
+            skipped += 1
+            where = result.requested_path or escape_member_name(result.member.name)
+            print(f"overwritten: {where}", file=err)
         elif status is ExtractionStatus.NOT_OVERWRITTEN:
             skipped += 1
             # Overwrite-skips change outcomes under --overwrite skip; always note.
@@ -409,6 +425,7 @@ def run_extract(
     hide_progress: bool,
     verbose: bool,
     stop_on_error: bool = False,
+    abort_on: list[str] | None = None,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
@@ -420,6 +437,10 @@ def run_extract(
     policy_enum = ExtractionPolicy(policy)
     overwrite_enum = OverwritePolicy(overwrite)
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
+    # CLI spells the events with dashes; the enum values use underscores.
+    abort_on_enum = frozenset(
+        AbortOn(name.replace("-", "_")) for name in (abort_on or ())
+    )
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
@@ -470,6 +491,7 @@ def run_extract(
                     policy=policy_enum,
                     overwrite=overwrite_enum,
                     on_error=on_error,
+                    abort_on=abort_on_enum,
                     on_progress=on_progress,
                 )
             except (ArchiveyError, OSError) as exc:

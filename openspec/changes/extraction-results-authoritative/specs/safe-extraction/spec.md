@@ -152,11 +152,11 @@ only `presented_name` records the middle one.
 
 `failure_group_id` / `failure_group_size` SHALL both be set only when one failed
 hardlink source causes `N` `FAILED` link results, which SHALL share one group id and
-`failure_group_size=N`; otherwise both are `None`. The id SHALL keep the shipped
-`str` shape and generation (`uuid.uuid4().hex`) it has on
-`ExtractionOutcomeContext` today — the field moves, its type does not change. It is
-opaque: callers MAY compare ids for equality to join a group, and SHALL NOT rely on
-ordering, format, or cross-run stability.
+`failure_group_size=N`; otherwise both are `None`. The id SHALL be a `str` generated
+as `uuid.uuid4().hex` — the shape and generation the field carried on the diagnostics
+channel before it moved here; relocating it did not change its type. It is opaque:
+callers MAY compare ids for equality to join a group, and SHALL NOT rely on ordering,
+format, or cross-run stability.
 
 `ExtractionResult` has no diagnostics field; `status`, `error` and the fields above
 are the per-result outcome.

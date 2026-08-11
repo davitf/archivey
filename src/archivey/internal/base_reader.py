@@ -13,6 +13,7 @@ from typing import (
     TYPE_CHECKING,
     BinaryIO,
     Callable,
+    Collection,
     ContextManager,
     Iterator,
     Literal,
@@ -49,6 +50,7 @@ from archivey.internal.diagnostics_collector import (
     collector_from_config,
 )
 from archivey.internal.extraction_types import (
+    AbortOn,
     ExtractionPolicy,
     ExtractionProgress,
     MemberFilter,
@@ -1722,6 +1724,7 @@ class BaseArchiveReader(ArchiveReader):
         policy: ExtractionPolicy = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
         on_error: OnError = OnError.STOP,
+        abort_on: Collection[AbortOn] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
@@ -1753,6 +1756,7 @@ class BaseArchiveReader(ArchiveReader):
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
+            abort_on=abort_on,
             on_progress=on_progress,
             members=members,
             filter=filter,

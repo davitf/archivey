@@ -108,10 +108,39 @@ with archivey.open_archive(
 `OnError` governs per-member **failures** (corrupt/truncated data, write errors,
 overwrite conflicts under `ERROR`). A policy **block** — an unsafe member refused by a
 universal path-safety check or a policy filter — is always recorded as `BLOCKED` and
-extraction continues, under either `STOP` or `CONTINUE`. Aborting the whole archive on
-the first unsafe member (fail-closed strict security) is a separate, future opt-in; until
-then, inspect the returned `ExtractionReport` for `BLOCKED` results if you need to raise
-yourself.
+extraction continues, under either `STOP` or `CONTINUE`.
+
+To abort the whole archive on the first unsafe member (fail-closed strict security),
+pass `abort_on`:
+
+```python
+from archivey import AbortOn
+
+archivey.extract("untrusted.zip", "out/", abort_on={AbortOn.BLOCKED_MEMBER})
+```
+
+`abort_on` is independent of `OnError` and names three events:
+
+| Member | Fires when | Raises |
+| --- | --- | --- |
+| `BLOCKED_MEMBER` | a member is refused by a path-safety check or a policy filter | the underlying `FilterRejectionError` |
+| `NAME_COLLISION` | a second member resolves to an already-written destination (non-`TRUSTED`) | `NameCollisionError` |
+| `NAME_SANITIZED` | a name is rewritten to its portable spelling | `NameRewrittenError` |
+
+An abort is immediate: no later member is processed and **no report is returned** — so
+handle the exception, not a return value. Output already written for earlier members
+stays on disk, exactly as with `OnError.STOP`; an abort stops the run, it does not roll
+it back.
+
+`NAME_COLLISION` fires on every collision whatever `OverwritePolicy` does with it —
+replaced, skipped, errored or renamed — because the trigger is the collision, not its
+resolution.
+
+`NAME_SANITIZED` is a **narrow escape hatch**, not part of ordinary strict extraction:
+it fires on a *successful* safety rewrite, and no policy or preset implies it. Set it
+only if any on-disk name differing from the archive's is unacceptable to you — a
+mirroring tool, a forensic extract, a byte-fidelity check. To merely *audit* rewrites,
+read `ExtractionResult.presented_name` and let extraction finish.
 
 | Policy | Intent |
 | --- | --- |
@@ -140,11 +169,11 @@ Archive order and identity matter more than “the” name.
 | Need to know | Detail |
 | --- | --- |
 | Safe ≠ unlimited | Traversal, symlink escapes, and bombs are blocked; huge/hostile archives can still raise `ResourceLimitError` unless you raise limits. |
-| STRICT rewrites some names | Trailing dots/spaces stripped; non-UTF-8 bytes percent-escaped. Disk path may differ from `member.name` — see `EXTRACTION_NAME_SANITIZED` / `requested_path`. |
-| Collisions are first-class | Under `STRICT`/`STANDARD`, `README`/`readme` (and NFC/NFD twins) collide on **all** platforms. `OverwritePolicy` applies; `REPLACE` is not a silent merge — a collision diagnostic fires. Use `OverwritePolicy.RENAME` (`photo (1).jpg`) for intentional duplicates. |
+| STRICT rewrites some names | Trailing dots/spaces stripped; non-UTF-8 bytes percent-escaped. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling. |
+| Collisions are first-class | Under `STRICT`/`STANDARD`, `README`/`readme` (and NFC/NFD twins) collide on **all** platforms. `OverwritePolicy` applies; `REPLACE` is not a silent merge — the clobbered member's result is revised to `OVERWRITTEN`. Use `OverwritePolicy.RENAME` (`photo (1).jpg`) for intentional duplicates. |
 | Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `file:ads`, …). |
 | `OnError.CONTINUE` ≠ ignore bombs | Per-member failures can continue; global bomb and listing guards still stop. |
-| `OnError.STOP` is failures-only | Policy blocks are always recorded and continued; inspect the report (or exit `3` on the CLI) for `BLOCKED`. Abort-on-unsafe is a separate future opt-in. |
+| `OnError.STOP` is failures-only | Policy blocks are always recorded and continued; inspect the report (or exit `3` on the CLI) for `BLOCKED`. To raise instead, pass `abort_on={AbortOn.BLOCKED_MEMBER}`. |
 | `TRUSTED` still won’t traverse | Ownership / sticky bits only when allowed; path safety stays on. |
 | Hardlinks + filters | Excluding a hardlink’s source can orphan the link (especially on streaming sources); `OnError` decides fail vs continue. |
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |

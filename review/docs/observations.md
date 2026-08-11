@@ -552,18 +552,34 @@ there is active intent to remove.
 
 ## O-23 — Diagnostics describe the archive, not the caller
 
+> **Retired by `extraction-results-authoritative`.** The rule this observation
+> proposed is no longer the admission test for a `DiagnosticCode`. The taxonomy's
+> ceiling now lives in `openspec/specs/diagnostics/spec.md` as two clauses —
+> **admission** (report only what the caller could not have determined from the
+> declared contract of the call, and can act on) and **placement** (when an operation
+> returns a structured per-item report, that report is the sole carrier of per-item
+> outcomes). The archive-versus-caller split below is **descriptive only**: it
+> accurately characterises the shapes most codes happen to have, and it decides
+> nothing. See `dev-docs/discussions/diagnostics-archive-vs-usage.md` and the three
+> reviewer opinions alongside it for why. The rest of this entry is kept as the
+> record of what was ruled at the time.
+
 **Maintainer ruling, deciding the solid-warning question from O-22.** The spec
 promised a warning on solid out-of-order `open()` that no backend implements. The
 resolution is not "add the diagnostic" but a boundary that was never written down:
 
 > Diagnostics are archive-related, not usage-related.
 
-Every existing code fits it — a normalized member name, an inferred encoding, a
-format/extension conflict, a missing EOF marker, an invalid timestamp, an
-unverifiable digest, a degraded seek index — each describes something true about the
+Every existing code was taken to fit it — a normalized member name, an inferred
+encoding, a format/extension conflict, a missing EOF marker, an invalid timestamp, an
+unverifiable digest, a degraded seek index — each describing something true about the
 bytes the caller was handed. "You opened members out of order" describes the program
 doing the reading. It belongs in the API documentation, and it is now in the
 `ArchiveReader.open()` and `.read()` docstrings, which render into `docs/api.md`.
+
+That outcome still stands; the *reason* is now the admission clause rather than the
+archive/usage cut. "You opened members out of order" is refused because it restates
+advice the API surface already carries, not because it describes the caller.
 
 `spec-drop-unimplemented-solid-warning` removes the clause from both places it
 appeared. A plain `warnings.warn` was left explicitly undecided.
@@ -576,6 +592,14 @@ rule is taken strictly, this is the one existing code that reports a usage patte
 Not raised as a question because nothing depends on it: it ships, it is documented on
 `gotchas.md` and `access-and-cost.md`, and renaming or recategorising it would be
 churn. Flagged so the rule is not later read as inconsistent by accident.
+
+*Resolved by the retirement above:* the code was never inconsistent, the rule was.
+`STREAM_REWIND_REDECOMPRESSES` passes admission (a caller cannot know from the
+declared contract that this particular backward seek will re-decompress) and has no
+return-value home, so it keeps its place in the taxonomy. Its usage-pattern character
+now decides only its *preset* membership — it is excluded from
+`ARCHIVE_INTEGRITY_CODES`, and so from `DiagnosticPolicy.strict()`, as a deliberately
+targeted tripwire rather than an archive-integrity fact.
 
 **Process note.** This is the second finding in two pages where writing user-facing
 prose caught a *spec* defect rather than a docs one. Both were invisible to
