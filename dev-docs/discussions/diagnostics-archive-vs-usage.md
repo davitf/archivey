@@ -30,15 +30,26 @@ want to check one. Dated 2026-08-10, against `main` @ `9b170c0`.
 > 1's pass against the tree established that two proposed relocations targeted
 > already-occupied signals.
 >
-> **The prompts differed, and that confounds the comparison.** Reviewers 2 and 3 quote
-> theirs in full; reviewer 1's was not recorded. Reviewer 3 was asked a *leading*
-> question — whether the system is over-engineered, and how real-world usage should
-> shape it — while reviewer 2 was asked only for its take, with no hypothesis named.
-> The usage-profile reasoning that most changed the outcome was therefore **solicited
-> from reviewer 3, not volunteered**, and the other two were never asked for it. The
-> argument is sound on its own merits, but this is not a clean natural experiment, and
-> the agreement between the three notes is worth less than it looks: they were not
-> answering the same question.
+> **Two of the three prompts were identical; the third was not.** All three are quoted
+> in the reviewer bylines. Reviewers 1 and 2 were asked the same question word for word
+> — "what's your take", no hypothesis named, read only the doc — so those two are a
+> clean paired comparison across models. Reviewer 3 was asked a *leading* question:
+> whether the system is over-engineered, and how real-world usage should shape it.
+>
+> That asymmetry has to be read into the results. The usage-profile reasoning that most
+> changed the outcome was **solicited from reviewer 3, not volunteered**, and the other
+> two were never asked for it — so its absence from their notes is not evidence they
+> missed it. The argument stands on its own merits, but reviewer 3's agreement on the
+> central question is worth less as corroboration than notes 1 and 2's, because it was
+> answering a different question. Its two genuinely unprompted contributions — the
+> job-versus-stream placement clause and presets-over-a-field — are the ones to credit
+> as independent.
+>
+> One further caveat on the clean pair: the prompts matched, but the *exposure* did not.
+> Reviewer 2 was explicitly told not to read reviewer 1, and that instruction failed —
+> reviewer 1's note reached it through a GitHub file listing before it wrote. The two
+> still disagree on both operative calls, which is some evidence the leak did not
+> flatten the comparison, but it is not a controlled result.
 >
 > **The tooling split shows in the results, in both directions.** The reviewer with no
 > repo access produced both claims that failed verification, each an assertion about
@@ -47,11 +58,13 @@ want to check one. Dated 2026-08-10, against `main` @ `9b170c0`.
 > presets-over-a-field. The reviewers who could read the tree caught the bad claims, and
 > reviewer 1's second pass is what turned a plausible design into a costed one.
 >
-> **What the convergence is and is not worth.** Three models rejecting the
-> archive-vs-usage cut is some evidence it was genuinely wrong rather than one model's
-> priors — that conclusion, at least, was reached under three different promptings. It
-> is not evidence that any unverified claim in those notes is true: two of the three
-> assumed `SUPERSEDED` was available before anyone checked, and both were wrong.
+> **What the convergence is and is not worth.** Rejecting the archive-vs-usage cut is
+> the one conclusion that holds up as corroborated: two different models reached it
+> from the same neutral prompt, and the third reached it from a different prompt
+> entirely. It is not evidence that any *unverified* claim in those notes is true —
+> two of the three assumed `SUPERSEDED` was available before anyone checked, and both
+> were wrong. Agreement between models tracked what the brief made salient, not what
+> the code said; only reading the code separated those.
 >
 > **Two claims below were checked against the code and did not survive.** `SUPERSEDED`
 > is not available for a `REPLACE` collision — it means a non-current duplicate decided

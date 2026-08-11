@@ -3,9 +3,19 @@
 *Written by Grok 4.5 via Cursor. Had repository access, and used it: the
 [tree pass](#after-reading-the-tree) below is this reviewer's own verification.*
 
-*The prompt for this one was not recorded. Reviewers 2 and 3 quote theirs, and the
-difference between those two turned out to matter, so treat this note's framing as
-having an unknown amount of prompt influence rather than assuming none.*
+*The prompt, verbatim:*
+
+> please look at the doc dev-docs/discussions/diagnostics-archive-vs-usage.md in PR 233
+> and help me decide. what's your take? read only the doc for now, don't investigate the
+> rest of the repo
+
+*This is the same framing [reviewer 2](reviewer-2-opinion.md) was given, word for word —
+reviewer 2's prompt adds only a filing instruction and an anti-anchoring one. So these
+two notes are a clean paired comparison: same neutral question, same doc-only
+constraint, different models. [Reviewer 3](reviewer-3-opinion.md) was asked something
+materially different, and its byline says so.*
+
+*This note was written first, so nothing existed to anchor it.*
 
 Response to [`diagnostics-archive-vs-usage.md`](diagnostics-archive-vs-usage.md).
 

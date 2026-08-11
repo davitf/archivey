@@ -12,11 +12,17 @@ later with the tree open.*
 > rest of the repo. add your opinion as reviewer-2-opinion.md on the PR. DO NOT READ
 > reviewer-1-opinion.md to avoid biasing your opinion
 
-*Note what this prompt does and does not do, compared with
-[reviewer 3's](reviewer-3-opinion.md): it names no hypothesis, asks for no particular
-axis, and explicitly tries to prevent anchoring. The anti-anchoring instruction then
-failed in practice — reviewer 1's file arrived unbidden in a GitHub file listing before
-this note was written, which is disclosed below.*
+*The framing here is word-for-word identical to [reviewer 1's](reviewer-1-opinion.md);
+the only additions are a filing instruction and an anti-anchoring one. That makes these
+two notes a clean paired comparison — same neutral question, same doc-only constraint,
+different models — and neither names a hypothesis or asks for a particular axis.
+[Reviewer 3](reviewer-3-opinion.md) was asked something materially different.*
+
+*The anti-anchoring instruction then failed in practice: reviewer 1's file arrived
+unbidden in a GitHub file listing before this note was written, which is disclosed
+below. So the pairing is clean on prompt and unclean on exposure — treat agreement
+between notes 1 and 2 with that in mind, and note that they still disagree on the two
+operative calls.*
 
 Response to [`diagnostics-archive-vs-usage.md`](diagnostics-archive-vs-usage.md).
 Based on the discussion doc only; the tree was not re-audited for this note, so
