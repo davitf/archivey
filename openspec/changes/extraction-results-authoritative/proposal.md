@@ -75,7 +75,11 @@ hit occupied slots: `SUPERSEDED` already means *non-current duplicate* (decided 
 - Tests: the extraction/diagnostic suites assert the pairing that this change removes;
   `test_raise_disposition_stops_despite_continue` locks the accidental abort behaviour
   and becomes an `abort_on` test.
-- **Out of scope, surfaced not fixed:** `MEMBER_NAME_ENCODING_INFERRED` exists in the
-  `DiagnosticCode` enum but has no row in the `diagnostics` spec's context table. That
-  is a pre-existing spec/code drift; per `AGENTS.md` it is reported rather than silently
-  resolved here.
+- **Pre-existing drift, folded in:** `MEMBER_NAME_ENCODING_INFERRED` had no row in the
+  `diagnostics` spec's context table, though the code, `NameEncodingContext`, the
+  kind-map entry and the ZIP emission site all ship. The row is added here rather than
+  deferred, because this change names the code in `ARCHIVE_INTEGRITY_CODES` and would
+  otherwise ship a preset contradicting its own "closed" table. Adding it records
+  shipped reality; it does not pick a winner between competing designs, so
+  `AGENTS.md`'s pause-and-ask rule is satisfied by the disclosure rather than by
+  deferral.

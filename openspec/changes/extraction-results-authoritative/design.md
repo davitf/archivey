@@ -145,9 +145,24 @@ honest response is to write it down: new codes MAY appear in minor releases, so
 `default=RAISE` is not version-stable and the presets — whose membership is versioned
 alongside the taxonomy — are the documented strict mode.
 
-## Open discrepancy (not resolved here)
+### D7 — Fold in the `MEMBER_NAME_ENCODING_INFERRED` drift rather than defer it
 
-`DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED` exists in the enum but has no row in
-the `diagnostics` spec's context table, and no `MODIFIED` block here touches it.
-Per `AGENTS.md`, a spec/code disagreement is surfaced to the maintainer rather than
-silently resolved. It needs its own change.
+`DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED` had no row in the `diagnostics` spec's
+context table, although the enum member (`diagnostics.py:61`), `NameEncodingContext`
+(`:116`), the kind-map entry (`:359`) and the emission site
+(`internal/backends/zip_reader.py:695`) all ship.
+
+Surfacing alone stopped being sufficient once this change named the code in
+`ARCHIVE_INTEGRITY_CODES`: the preset and the same capability's "closed" table would
+have contradicted each other on the day they landed, recreating in miniature exactly
+the rule-versus-taxonomy debt this change exists to pay off.
+
+The row is therefore added here. `AGENTS.md`'s pause-and-ask rule guards against
+silently choosing between competing designs; there is no competition here — the
+implementation is complete and consistent, and the spec simply omitted a row. The
+discrepancy was disclosed to the maintainer and the fix was chosen deliberately, which
+is what the rule asks for. Adding the row records shipped reality.
+
+Rejected: excluding the code from the preset (ships a knowingly incomplete `strict()`,
+when an inferred name encoding is precisely an archive-integrity fact); a separate
+prerequisite change (correct sequencing, but a round trip for one table row).
