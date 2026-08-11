@@ -320,6 +320,13 @@ class AbortOn(str, Enum):
 | `NAME_COLLISION` | a second member resolves to an already-written collision key (non-`TRUSTED`) | `NameCollisionError` |
 | `NAME_SANITIZED` | a name is rewritten to its portable spelling | `NameRewrittenError` |
 
+`NAME_COLLISION` SHALL fire on **every** non-`TRUSTED` collision event, whatever
+`OverwritePolicy` resolution follows — replaced, skipped, errored or renamed. The
+trigger is the collision itself, not its outcome. This is deliberate parity with the
+escalation this change relocates: the removed diagnostic fired on all four
+resolutions, so escalating it stopped the caller on all four. `TRUSTED` keys on the
+exact path and produces no collision event, so it never aborts.
+
 `NameCollisionError` and `NameRewrittenError` SHALL subclass `ExtractionError`.
 `BLOCKED_MEMBER` SHALL propagate the original rejection unchanged, matching
 `OnError.STOP`'s propagate-the-original behaviour.
@@ -328,6 +335,16 @@ Abort SHALL be immediate: partial output for the triggering member is removed, n
 later member is processed, and no `ExtractionReport` is returned. `abort_on` SHALL be
 independent of `OnError` and of `DiagnosticPolicy` — a blocked member aborts under
 either `OnError` value when `BLOCKED_MEMBER` is set, and never aborts when it is not.
+
+Output written for **earlier** members SHALL remain on disk, matching `OnError.STOP`:
+abort stops the run, it does not roll it back. For a collision abort this means the
+first member's bytes are typically still present at the contested path, since that
+member completed normally before the collision was detected.
+
+Because no report is returned, an abort SHALL have no observable result-side effect:
+in particular the earlier member is not revised to `OVERWRITTEN` anywhere the caller
+can see. `OVERWRITTEN` is a property of a completed report, and `abort_on` and
+`OVERWRITTEN` are therefore mutually exclusive for the same collision.
 
 `AbortOn` SHALL NOT carry a member for extraction *failures*: `OnError.STOP` already
 expresses "raise on the first failure", and a second spelling of one behaviour is
@@ -339,7 +356,11 @@ what this change exists to remove.
 | --- | --- |
 | Absolute-path member, `abort_on={BLOCKED_MEMBER}`, `OnError.CONTINUE` | `FilterRejectionError` raised at that member; no report; later members untouched |
 | Same archive, `abort_on=()` | `BLOCKED` result; extraction completes; report returned |
-| `REPLACE` collision, `abort_on={NAME_COLLISION}` | `NameCollisionError` at the second member; no report |
+| `REPLACE` collision, `abort_on={NAME_COLLISION}` | `NameCollisionError` at the second member; no report; first member's bytes remain on disk |
+| `SKIP` collision, `abort_on={NAME_COLLISION}` | Aborts — the trigger is the collision, not the resolution |
+| `RENAME` collision, `abort_on={NAME_COLLISION}` | Aborts, even though the rename loses nothing; parity with the escalation this replaces |
+| `ERROR` collision, `abort_on={NAME_COLLISION}` | Aborts with `NameCollisionError`, not the overwrite error |
+| Any aborted collision | No result is observable; the earlier member is never seen as `OVERWRITTEN` |
 | Trailing-dot name under `STRICT`, `abort_on={NAME_SANITIZED}` | `NameRewrittenError` at that member; no report |
 | Collision under `TRUSTED`, `abort_on={NAME_COLLISION}` | No collision event, so no abort |
 | `abort_on={BLOCKED_MEMBER}` with `OnError.STOP` and a corrupt member | Failure still raises via `OnError`; abort applies only to blocks |
