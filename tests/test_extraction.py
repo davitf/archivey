@@ -2395,3 +2395,34 @@ def test_progress_extracted_tally_follows_a_retroactive_overwrite(
     )
     assert extracted_rows == 1
     assert seen[-1] == (2, 1)
+
+
+def test_failed_replace_that_destroyed_content_marks_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A REPLACE that cleared the destination and *then* failed still loses the earlier
+    member's content, so that member must stop advertising a live path.
+
+    Only reachable on the non-atomic write paths (symlink here): a FILE write lands via
+    os.replace and never destroys the destination up front.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("sym", "readme", "elsewhere.txt")])
+    dest = tmp_path / "out"
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("forced failure after the destination was cleared")
+
+    monkeypatch.setattr("archivey.internal.extraction.os.symlink", boom)
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=OverwritePolicy.REPLACE,
+        on_error=OnError.CONTINUE,
+    )
+    first, second = report.results
+    assert second.status is ExtractionStatus.FAILED
+    # The first member's bytes were unlinked to make room for a write that never landed.
+    assert not (dest / "README").exists()
+    assert first.status is ExtractionStatus.OVERWRITTEN
+    assert first.path is None
+    assert first.requested_path == dest / "README"

@@ -287,6 +287,12 @@ class ExtractionCoordinator:
         # raises out of the write, which is exactly the case where the spec still requires
         # ``requested_path`` set with ``path=None``.
         self._requested_path: Path | None = None
+        # Set by ``_prepare_destination`` when it removes an existing entry to make room.
+        # Only the non-atomic paths (DIR / SYMLINK / HARDLINK) do that — a FILE write
+        # lands via os.replace and never destroys the destination up front — so this is
+        # how the write path knows a failure afterwards left a hole rather than the old
+        # content. Read and reset per member.
+        self._removed_existing = False
         # Running count of EXTRACTED results, on the coordinator rather than in the pass
         # loop because a REPLACE collision revises an *earlier* member's result and must
         # correct the tally with it (progress reports tallies of results, not of writes
@@ -673,19 +679,31 @@ class ExtractionCoordinator:
         )
         redirected = prior is not None
 
-        result = self._dispatch_write(
-            original,
-            transformed,
-            stream,
-            dest_path,
-            dest_root,
-            tracker,
-            source_paths,
-            written_paths,
-            orphans,
-            forward_only,
-            result_index,
-        )
+        self._removed_existing = False
+        try:
+            result = self._dispatch_write(
+                original,
+                transformed,
+                stream,
+                dest_path,
+                dest_root,
+                tracker,
+                source_paths,
+                written_paths,
+                orphans,
+                forward_only,
+                result_index,
+            )
+        except (ArchiveyError, OSError):
+            # The write failed *after* clearing the destination to make room for it (only
+            # reachable on the non-atomic DIR/SYMLINK/HARDLINK paths). The earlier
+            # member's content is gone either way, so its result must stop advertising a
+            # live path — reporting EXTRACTED for bytes that no longer exist is exactly
+            # the defect this change exists to remove. This member's own FAILED result is
+            # recorded by the caller's handler.
+            if self._removed_existing:
+                self._mark_overwritten(results, prior)
+            raise
 
         # Record the intended destination. A REPLACE merge into a prior path is not a
         # rename, so it reports the actual (merged) path; every other outcome reports the
@@ -698,7 +716,8 @@ class ExtractionCoordinator:
         # A REPLACE that actually landed leaves the earlier member's content gone. Revise
         # that member's already-recorded result to OVERWRITTEN so the merge is visible in
         # ``results`` instead of two members both reporting EXTRACTED at one path.
-        self._mark_overwritten(results, prior, result)
+        if result.status is ExtractionStatus.EXTRACTED:
+            self._mark_overwritten(results, prior)
 
         self._register_collision_key(
             collision_map, dest, transformed, result, result_index
@@ -1220,7 +1239,8 @@ class ExtractionCoordinator:
             ),
         )
         self._revise_result(results, writer.result_index, result)
-        self._mark_overwritten(results, writer_prior, result)
+        if result.status is ExtractionStatus.EXTRACTED:
+            self._mark_overwritten(results, writer_prior)
         self._register_collision_key(
             collision_map, dest, writer.transformed, result, writer.result_index
         )
@@ -1297,7 +1317,8 @@ class ExtractionCoordinator:
                 requested_path=resolved if prior is not None else orphan.dest_path,
             )
             self._revise_result(results, orphan.result_index, result)
-            self._mark_overwritten(results, prior, result)
+            if result.status is ExtractionStatus.EXTRACTED:
+                self._mark_overwritten(results, prior)
             self._register_collision_key(
                 collision_map, dest, orphan.transformed, result, orphan.result_index
             )
@@ -1306,17 +1327,15 @@ class ExtractionCoordinator:
         self,
         results: list[ExtractionResult],
         prior: _Claim | None,
-        result: ExtractionResult,
     ) -> None:
-        """Revise a clobbered member's result to OVERWRITTEN after a REPLACE landed.
+        """Revise a clobbered member's result to OVERWRITTEN: its content is gone.
 
-        Shared by the main pass and the orphan second pass: a deferred hardlink can be the
-        member that replaces an earlier write just as a first-pass member can."""
-        if (
-            prior is None
-            or self._overwrite is not OverwritePolicy.REPLACE
-            or result.status is not ExtractionStatus.EXTRACTED
-        ):
+        Called once the caller knows the earlier member lost its destination — either
+        because a later REPLACE landed on it, or because a REPLACE cleared it and then
+        failed. Shared by the main pass and the orphan second pass: a deferred hardlink
+        can be the member that replaces an earlier write just as a first-pass member
+        can."""
+        if prior is None or self._overwrite is not OverwritePolicy.REPLACE:
             return
         clobbered = results[prior.result_index]
         results[prior.result_index] = replace(
@@ -1401,8 +1420,10 @@ class ExtractionCoordinator:
         # and rmtree a real directory tree.
         if dest_path.is_dir() and not dest_path.is_symlink():
             shutil.rmtree(dest_path)
+            self._removed_existing = True
         elif not atomic:
             dest_path.unlink()
+            self._removed_existing = True
         return True
 
     def _write_file_atomic(
