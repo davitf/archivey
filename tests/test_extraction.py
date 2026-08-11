@@ -2294,3 +2294,104 @@ def test_abort_on_is_independent_of_on_error(tmp_path: Path) -> None:
         report = extract(io.BytesIO(archive), dest, on_error=on_error)
         assert report.results[0].status is ExtractionStatus.BLOCKED
         assert (dest / "ok.txt").read_bytes() == b"y"
+
+
+def test_hardlink_failure_group_is_recorded_on_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One failed source, N failed links: the fan-out correlation lives on the results.
+
+    Previously carried by ``ExtractionOutcomeContext``; after the move, results are the
+    only place a caller can tell "N separate failures" from "one failure seen N times".
+    ``requested_path`` must survive the second-pass rebuild too — the first pass set it.
+    """
+    archive = _tar_bytes(
+        [
+            ("file", "src.bin", b"data"),
+            ("hard", "link1", "src.bin"),
+            ("hard", "link2", "src.bin"),
+        ]
+    )
+    dest = tmp_path / "out"
+
+    def boom(self, *args: object, **kwargs: object) -> None:
+        raise ExtractionError("forced second-pass failure")
+
+    monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", boom)
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            on_error=OnError.CONTINUE,
+            members=lambda m: m.name != "src.bin",  # orphan both links
+        )
+    failed = [r for r in report.results if r.status is ExtractionStatus.FAILED]
+    assert len(failed) == 2
+    assert failed[0].failure_group_id is not None
+    assert failed[0].failure_group_id == failed[1].failure_group_id
+    assert [r.failure_group_size for r in failed] == [2, 2]
+    # The destination each link intended survives the rebuild.
+    assert [r.requested_path for r in failed] == [dest / "link1", dest / "link2"]
+
+
+def test_failure_group_fields_are_both_or_neither(tmp_path: Path) -> None:
+    """An ordinary failure is not a group of one."""
+    archive = _tar_bytes([("file", "a.txt", b"x")])
+    report = extract(io.BytesIO(archive), tmp_path / "out")
+    (result,) = report.results
+    assert result.failure_group_id is None
+    assert result.failure_group_size is None
+
+
+def test_failed_replace_does_not_mark_earlier_member_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OVERWRITTEN means "written, then lost to a later REPLACE that landed".
+
+    If the replacing write fails, the earlier member keeps its content and its
+    EXTRACTED result — the revision is gated on the new write succeeding.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+
+    original = ExtractionCoordinator._write_file_atomic
+    calls = {"n": 0}
+
+    def fail_second(self, *args: object, **kwargs: object) -> None:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise ExtractionError("forced failure on the replacing write")
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", fail_second)
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=OverwritePolicy.REPLACE,
+        on_error=OnError.CONTINUE,
+    )
+    first, second = report.results
+    assert first.status is ExtractionStatus.EXTRACTED  # not OVERWRITTEN
+    assert second.status is ExtractionStatus.FAILED
+    # The atomic write means the first member's bytes were never at risk.
+    assert (dest / "README").read_bytes() == b"A"
+
+
+def test_progress_extracted_tally_follows_a_retroactive_overwrite(
+    tmp_path: Path,
+) -> None:
+    """``members_extracted`` is a tally of EXTRACTED *results*, so it has to follow a
+    result that is revised to OVERWRITTEN — otherwise the final progress report claims
+    more extracted members than the report contains."""
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    seen: list[tuple[int, int]] = []
+    report = extract(
+        io.BytesIO(archive),
+        tmp_path / "out",
+        overwrite=OverwritePolicy.REPLACE,
+        on_progress=lambda p: seen.append((p.members_done, p.members_extracted)),
+    )
+    extracted_rows = sum(
+        1 for r in report.results if r.status is ExtractionStatus.EXTRACTED
+    )
+    assert extracted_rows == 1
+    assert seen[-1] == (2, 1)

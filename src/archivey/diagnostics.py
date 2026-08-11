@@ -369,8 +369,8 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
     """Reject unregistered or mismatched code→context pairings.
 
     Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``. A few
-    codes share a kind and need an extra field check so blocked≠failed, directory
-    vanish≠entry vanish, etc. — those guards live below the kind match.
+    codes share a kind and need an extra field check so directory vanish≠entry
+    vanish — those guards live below the kind match.
     """
     expected = _CODE_CONTEXT_KINDS.get(code)
     if expected is None:

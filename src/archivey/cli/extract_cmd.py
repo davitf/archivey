@@ -353,9 +353,12 @@ def _report_extraction(
             # landed where it asked to, under a different spelling. Always reported, for
             # the same reason as a rename — the on-disk name is not the archive's.
             if result.presented_name is not None:
+                # ``presented_name`` is the full relative name, so the arrow's other side
+                # must be too: a basename would print ``dir/foo. -> foo`` and invent a
+                # destination the member never had.
                 print(
                     f"name rewritten: {escape_member_name(result.presented_name)} -> "
-                    f"{escape_member_name(Path(result.path).name) if result.path else ''}",
+                    f"{escape_member_name(_relative_name(result.path, target))}",
                     file=err,
                 )
         elif status is ExtractionStatus.OVERWRITTEN:
@@ -400,6 +403,20 @@ def _report_extraction(
         file=err,
     )
     return blocked, failed
+
+
+def _relative_name(path: Path | None, target: Path) -> str:
+    """The on-disk name relative to the extraction root, for reporting.
+
+    Falls back to the full path when the member landed outside ``target`` (the hoist
+    moves content after extraction, so the report's paths and the final target can
+    disagree) and to ``""`` when nothing was written."""
+    if path is None:
+        return ""
+    try:
+        return path.relative_to(target).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:

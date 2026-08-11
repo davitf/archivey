@@ -42,10 +42,17 @@ systems only.
 **Implemented** (`cross-platform-name-safety` / ADR 0013 / PR #109): the coordinator
 tracks a casefolded+NFC key per written path and, under `STRICT`/`STANDARD`, treats a
 collision as a first-class event on **all platforms** (`TRUSTED` keys on the exact path
-and defers to the local OS): apply the `OverwritePolicy` deliberately, record
-`requested_path` on the `ExtractionResult` plus an `EXTRACTION_NAME_COLLISION`
-diagnostic, and support `OverwritePolicy.RENAME` (extract as `photo (1).jpg`, counter
-before the suffix). Only content-bearing members (file/symlink/hardlink, including the
+and defers to the local OS): apply the `OverwritePolicy` deliberately, record the
+outcome on the `ExtractionResult`, and support `OverwritePolicy.RENAME` (extract as
+`photo (1).jpg`, counter before the suffix). Since
+`extraction-results-authoritative`, `results` is the **sole** record — there is no
+collision diagnostic. A `REPLACE` merge revises the clobbered member's result to
+`ExtractionStatus.OVERWRITTEN` (`path=None`, `requested_path` kept as the join to the
+member that took the destination), so the case-insensitive merge is observable rather
+than two members both reporting `EXTRACTED` at one path; a `RENAME` shows as
+`requested_path != path`. A caller who wants a collision to be **fatal** passes
+`abort_on={AbortOn.NAME_COLLISION}`, which fires on every non-`TRUSTED` collision
+whatever resolution follows. Only content-bearing members (file/symlink/hardlink, including the
 deferred orphan-hardlink pass) are tracked; **directories are intentionally untracked**
 (they merge structurally), so a *file* `Foo` vs a *directory* `foo/` collision stays
 OS-dependent — a known, deferred residual (ADR 0013).
@@ -59,9 +66,14 @@ Win32 to `foo` (silent clobber / mismatch between reported and actual path).
 `:` are *unsafe* (device capture / NTFS ADS) → rejected under `STRICT` and `STANDARD` on
 every platform. A trailing dot/space is a *legitimate* macOS/Linux name Win32 merely
 trims → `STRICT` **strips** it to the portable spelling (`stuff_etc.` → `stuff_etc`),
-deterministic per-OS, collision-tracked, and surfaced as an `EXTRACTION_NAME_SANITIZED`
-diagnostic (an all-dots segment like `...` has no portable spelling and is still
-rejected); `STANDARD`/`TRUSTED` keep it faithful.
+deterministic per-OS, collision-tracked, and recorded as
+`ExtractionResult.presented_name` — the full relative name *before* the rewrite, which
+is the only signal that survives a caller `filter` rename (archive name, filter output,
+and on-disk spelling are three different strings). An all-dots segment like `...` has
+no portable spelling and is still rejected; `STANDARD`/`TRUSTED` keep it faithful. A
+caller who refuses any rewritten on-disk name passes
+`abort_on={AbortOn.NAME_SANITIZED}`, documented as a narrow escape hatch rather than
+part of ordinary strict extraction.
 
 ### O4. NTFS alternate data streams — implemented (folded into O3)
 

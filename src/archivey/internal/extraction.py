@@ -44,7 +44,6 @@ from archivey.exceptions import (
     ResourceLimitError,
     SymlinkEscapeError,
 )
-from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.extraction_types import (
     AbortOn,
     ExtractionPolicy,
@@ -280,9 +279,6 @@ class ExtractionCoordinator:
         self._members = members
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
-        # Set for the duration of ``run()``; diagnostic emission reads these.
-        self._diagnostics_collector: DiagnosticCollector
-        self._archive_name: str | None = None
         # Intra-member progress emit while copying a FILE (None when on_progress is unset
         # or the current member has no streamed body). Built by ``run()`` per member.
         self._emit_progress: Callable[[], None] | None = None
@@ -291,6 +287,11 @@ class ExtractionCoordinator:
         # raises out of the write, which is exactly the case where the spec still requires
         # ``requested_path`` set with ``path=None``.
         self._requested_path: Path | None = None
+        # Running count of EXTRACTED results, on the coordinator rather than in the pass
+        # loop because a REPLACE collision revises an *earlier* member's result and must
+        # correct the tally with it (progress reports tallies of results, not of writes
+        # attempted). Reset per ``run()``.
+        self._members_extracted = 0
 
     # --- entry point ---------------------------------------------------------------
 
@@ -301,8 +302,6 @@ class ExtractionCoordinator:
         self._ensure_dest_root(dest)
         dest_root = dest.resolve()
         forward_only = reader._streaming
-        self._diagnostics_collector = reader._diagnostics_collector
-        self._archive_name = reader._archive_name
 
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -422,8 +421,8 @@ class ExtractionCoordinator:
         discards it rather than returning it.
         """
         members_done = 0
-        members_extracted = 0
         members_blocked = 0
+        self._members_extracted = 0
 
         for original, stream in reader.stream_members(stream_selector):
             member_started = False
@@ -481,7 +480,7 @@ class ExtractionCoordinator:
                             # Capture counters for intra-member reports: members_done is
                             # members fully completed *before* this one.
                             done_so_far = members_done
-                            extracted_so_far = members_extracted
+                            extracted_so_far = self._members_extracted
                             blocked_so_far = members_blocked
                             current = original
 
@@ -578,7 +577,7 @@ class ExtractionCoordinator:
             if results and results[-1].member is original:
                 status = results[-1].status
                 if status is ExtractionStatus.EXTRACTED:
-                    members_extracted += 1
+                    self._members_extracted += 1
                 elif status is ExtractionStatus.BLOCKED:
                     members_blocked += 1
             members_done += 1
@@ -589,7 +588,7 @@ class ExtractionCoordinator:
                 members_done,
                 members_total,
                 member_bytes_written=(tracker.member_bytes if member_started else 0),
-                members_extracted=members_extracted,
+                members_extracted=self._members_extracted,
                 members_blocked=members_blocked,
             )
             if selected_total is not None and members_done >= selected_total:
@@ -1139,13 +1138,19 @@ class ExtractionCoordinator:
     def _revise_result(
         results: list[ExtractionResult], index: int, new: ExtractionResult
     ) -> None:
-        """Overwrite a recorded result, carrying forward its name-rewrite record.
+        """Overwrite a recorded result, carrying forward first-pass facts it omits.
 
-        The second pass rebuilds a result from scratch, but ``presented_name`` was decided
-        in the first pass (before the member was deferred) and is still true."""
+        The second pass rebuilds a result from scratch, but two fields were decided in
+        the first pass (before the member was deferred) and are still true: the
+        ``presented_name`` rewrite, and the ``requested_path`` the member asked for. A
+        rebuild that does not supply them must not erase them — results are the sole
+        record, so a dropped field is a fact lost rather than a fact reported elsewhere.
+        """
         prior = results[index]
         if prior.presented_name is not None and new.presented_name is None:
             new = replace(new, presented_name=prior.presented_name)
+        if prior.requested_path is not None and new.requested_path is None:
+            new = replace(new, requested_path=prior.requested_path)
         results[index] = new
 
     def _materialize_orphan_source(
@@ -1324,6 +1329,12 @@ class ExtractionCoordinator:
                 else clobbered.path
             ),
         )
+        # The clobbered member was tallied as EXTRACTED when it completed. It is no
+        # longer an EXTRACTED result, and ``members_extracted`` is defined as a tally of
+        # results — so the progress counter has to follow the revision, or the final
+        # report would claim more extracted members than ``results`` contains.
+        if clobbered.status is ExtractionStatus.EXTRACTED:
+            self._members_extracted -= 1
 
     # --- filesystem helpers --------------------------------------------------------
 

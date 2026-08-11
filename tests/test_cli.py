@@ -1380,3 +1380,25 @@ def test_extract_unknown_abort_on_event_is_usage_error(tmp_path: Path) -> None:
         main(["x", str(archive), "-d", str(tmp_path / "o"), "--abort-on", "nonsense"])
         == EXIT_USAGE
     )
+
+
+def test_extract_abort_on_name_sanitized(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive = _zip(tmp_path / "t.zip", {"foo.": b"x", "later.txt": b"y"})
+    dest = tmp_path / "out"
+    code = main(["x", str(archive), "-d", str(dest), "--abort-on", "name-sanitized"])
+    assert code == EXIT_FAIL
+    assert "extraction stopped" in capsys.readouterr().err
+    assert not (dest / "later.txt").exists()
+
+
+def test_extract_reports_nested_rewrite_with_full_relative_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both sides of the arrow are full relative names — a basename would print
+    'dir/foo. -> foo' and invent a destination the member never had."""
+    archive = _zip(tmp_path / "t.zip", {"dir/foo.": b"x", "dir/keep.txt": b"y"})
+    dest = tmp_path / "out"
+    assert main(["x", str(archive), "-d", str(dest)]) == EXIT_OK
+    assert "name rewritten: dir/foo. -> dir/foo" in capsys.readouterr().err
