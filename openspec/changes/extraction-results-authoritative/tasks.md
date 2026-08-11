@@ -62,6 +62,9 @@
 - [ ] 6.2 Update `docs/errors-and-diagnostics.md` (four codes gone; presets; the
       taxonomy-growth note), `docs/safe-extraction.md` and `docs/extracting.md`
       (`abort_on`, the new status, the corrected "future opt-in" wording)
+- [ ] 6.5 Document `AbortOn.NAME_SANITIZED` as a narrow escape hatch for callers who
+      refuse any rewritten on-disk name — never as part of ordinary strict extraction.
+      Point auditing callers at `presented_name` instead
 - [ ] 6.3 Grep `docs/` for the four removed code names
 - [ ] 6.4 Decide whether `abort_on` gets a CLI flag (`VISION` treats the CLI as the
       first consumer, so a safety opt-in the CLI cannot reach is a wedge gap) — either

@@ -320,6 +320,16 @@ class AbortOn(str, Enum):
 | `NAME_COLLISION` | a second member resolves to an already-written collision key (non-`TRUSTED`) | `NameCollisionError` |
 | `NAME_SANITIZED` | a name is rewritten to its portable spelling | `NameRewrittenError` |
 
+`NAME_SANITIZED` is deliberately unlike the other two: it fires on a **successful**
+safety rewrite rather than on a refusal or an ambiguity. It SHALL ship anyway,
+because dropping it is the only place this change would remove escalation that
+exists today, and preserving escalation is why `abort_on` exists. It SHALL be
+documented as a narrow escape hatch for callers who refuse any on-disk name
+differing from the archive's — mirroring tools, forensic extracts, byte-fidelity
+checks — and SHALL NOT be presented as part of ordinary strict extraction or implied
+by any preset or policy level. A caller wanting to *audit* rewrites reads
+`presented_name`; only a caller who wants them to be **fatal** sets this.
+
 `NAME_COLLISION` SHALL fire on **every** non-`TRUSTED` collision event, whatever
 `OverwritePolicy` resolution follows — replaced, skipped, errored or renamed. The
 trigger is the collision itself, not its outcome. This is deliberate parity with the
