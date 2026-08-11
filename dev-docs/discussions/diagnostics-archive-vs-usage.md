@@ -4,13 +4,43 @@
 assumed; every fact you need to form an opinion is inline, with file references if you
 want to check one. Dated 2026-08-10, against `main` @ `9b170c0`.
 
-**Nothing is decided.** This document exists to get argument onto a question that has now
-been half-answered three times by three different reviews, each time by rediscovering the
-same reasoning from scratch. If you only read one section, read
-[The conflation](#the-conflation) and then [The options](#the-options).
+> **RESOLVED — 2026-08-11.** This brief did its job and the question is settled. The
+> text below is preserved exactly as circulated; it is the record of what was known
+> and argued at the time, not a description of current behaviour. **Do not treat any
+> statement below as the present contract.**
+>
+> **What was decided.** The archive-versus-usage cut is rejected as an admission rule
+> and retired as doctrine; it survives only as prose describing the taxonomy's shapes.
+> It is replaced by two written clauses — an *admission* rule (report only what the
+> caller could not determine from the declared contract and can act on) and a
+> *placement* rule (when an operation returns a structured per-item report, that report
+> is the sole carrier of per-item outcomes). Applying placement, extraction leaves the
+> diagnostics channel: the four `EXTRACTION_*` codes go, their facts move onto
+> `ExtractionResult`, and a named `abort_on` opt-in preserves the escalation that
+> relocation would otherwise have deleted. Named `DiagnosticPolicy` presets replace
+> hand-curating overrides across the whole taxonomy.
+>
+> **Where the answers came from.** All three reviewer opinions
+> ([1](reviewer-1-opinion.md), [2](reviewer-2-opinion.md), [3](reviewer-3-opinion.md))
+> rejected the archive-vs-usage cut independently, and all three rejected options B, C
+> and D. They split on how much of extraction should leave the channel; reviewer 3's
+> job-versus-stream placement clause resolved it, and reviewer 1's pass against the
+> tree established that two proposed relocations targeted already-occupied signals.
+>
+> **Two claims below were checked against the code and did not survive.** `SUPERSEDED`
+> is not available for a `REPLACE` collision — it means a non-current duplicate decided
+> at listing time. And `requested_path != path` is already the defined `RENAME` marker,
+> so it cannot also carry a portability rewrite. Both relocations use new signals
+> instead. See the addendum in [reviewer 2's opinion](reviewer-2-opinion.md).
+>
+> **Where it went.** OpenSpec change `extraction-results-authoritative` (PR #234).
+> The six questions at the end are answered there, not here.
 
-**How to respond.** The concrete questions are at the end. Disagreeing with the framing is
-a useful answer — the archive-vs-usage cut is itself one of the things in question.
+**How this document was meant to be read.** The concrete questions are at the end.
+Disagreeing with the framing was an explicitly useful answer — the archive-vs-usage cut
+was itself one of the things in question, and it is the thing that lost. If you only
+read one section, read [The conflation](#the-conflation) and then
+[The options](#the-options).
 
 ---
 
