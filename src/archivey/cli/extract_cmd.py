@@ -14,6 +14,7 @@ from archivey import (
     ExtractionPolicy,
     ExtractionProgress,
     ExtractionReport,
+    ExtractionResult,
     ExtractionStatus,
     OnError,
     OverwritePolicy,
@@ -200,7 +201,11 @@ def _merge_move(
         free = _free_name(dest, is_dir=src_is_dir)
         os.rename(src, free)
         result.renamed += 1
-        print(f"renamed: {dest} -> {free}", file=err)
+        print(
+            f"renamed: {escape_member_name(str(dest))} -> "
+            f"{escape_member_name(str(free))}",
+            file=err,
+        )
         return
     if overwrite is OverwritePolicy.REPLACE and not src_is_dir and not dest_is_dir:
         os.replace(src, dest)  # replaces exactly the file being extracted
@@ -208,7 +213,7 @@ def _merge_move(
     if overwrite is OverwritePolicy.SKIP and not src_is_dir:
         src.unlink()
         result.skipped += 1
-        print(f"skipped: {dest}", file=err)
+        print(f"skipped: {escape_member_name(str(dest))}", file=err)
         return
     # ERROR policy — or a dir-vs-file shape that REPLACE/SKIP cannot express
     # without deleting pre-existing data. Stop; the caller keeps the remainder
@@ -263,13 +268,16 @@ def maybe_hoist_single_root(
             _merge_move(child, dest, overwrite, result, err)
             wrapper.rmdir()
     except _HoistConflict as conflict:
-        print(f"Destination already exists: {conflict.dest}", file=err)
+        print(
+            f"Destination already exists: {escape_member_name(str(conflict.dest))}",
+            file=err,
+        )
         print(f"hoist stopped; remaining files left in {wrapper}/", file=err)
         return _HoistResult(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
         )
     except OSError as exc:
-        print(f"hoist failed: {exc}", file=err)
+        print(f"hoist failed: {escape_member_name(str(exc))}", file=err)
         print(f"files left in {wrapper}/", file=err)
         return _HoistResult(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
@@ -341,7 +349,8 @@ def _report_extraction(
                 renamed += 1
                 # Renames change where data lives — always report them.
                 print(
-                    f"renamed: {result.requested_path} -> {result.path}",
+                    f"renamed: {escape_member_name(str(result.requested_path))} -> "
+                    f"{escape_member_name(str(result.path))}",
                     file=err,
                 )
             elif verbose:
@@ -365,12 +374,12 @@ def _report_extraction(
             # Written, then clobbered by a later member. Not counted as extracted: its
             # content is not what is on disk. Always reported — data was lost.
             skipped += 1
-            where = result.requested_path or escape_member_name(result.member.name)
+            where = _escaped_where(result)
             print(f"overwritten: {where}", file=err)
         elif status is ExtractionStatus.NOT_OVERWRITTEN:
             skipped += 1
             # Overwrite-skips change outcomes under --overwrite skip; always note.
-            where = result.requested_path or escape_member_name(result.member.name)
+            where = _escaped_where(result)
             print(f"not overwritten: {where}", file=err)
         elif status is ExtractionStatus.SUPERSEDED:
             skipped += 1  # count superseded entries alongside skipped in summary
@@ -381,14 +390,22 @@ def _report_extraction(
                 )
         elif status is ExtractionStatus.BLOCKED:
             blocked += 1
-            detail = f": {result.error}" if result.error is not None else ""
+            detail = (
+                f": {escape_member_name(str(result.error))}"
+                if result.error is not None
+                else ""
+            )
             print(
                 f"blocked: {escape_member_name(result.member.name)}{detail}",
                 file=err,
             )
         elif status is ExtractionStatus.FAILED:
             failed += 1
-            detail = f": {result.error}" if result.error is not None else ""
+            detail = (
+                f": {escape_member_name(str(result.error))}"
+                if result.error is not None
+                else ""
+            )
             print(
                 f"failed: {escape_member_name(result.member.name)}{detail}",
                 file=err,
@@ -403,6 +420,18 @@ def _report_extraction(
         file=err,
     )
     return blocked, failed
+
+
+def _escaped_where(result: ExtractionResult) -> str:
+    """The destination to report for a member that did not keep it, terminal-safe.
+
+    ``requested_path`` is built from the member's own name, so it carries whatever
+    control bytes the archive chose — the portable rewrite does not strip them under any
+    policy. Printing it raw is the line-spoofing vector ``escape_member_name`` exists to
+    close, so both the path and the name fallback go through it."""
+    if result.requested_path is not None:
+        return escape_member_name(str(result.requested_path))
+    return escape_member_name(result.member.name)
 
 
 def _relative_name(path: Path | None, target: Path) -> str:

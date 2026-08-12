@@ -1402,3 +1402,63 @@ def test_extract_reports_nested_rewrite_with_full_relative_names(
     dest = tmp_path / "out"
     assert main(["x", str(archive), "-d", str(dest)]) == EXIT_OK
     assert "name rewritten: dir/foo. -> dir/foo" in capsys.readouterr().err
+
+
+# A member name carrying an ANSI erase-line plus a CR: printed raw, everything before
+# the CR is wiped and the archive gets to author the whole terminal line.
+_SPOOF = "ev\x1b[2Kil\rSUCCESS.txt"
+
+
+@pytest.mark.parametrize(
+    "overwrite,marker",
+    [("replace", "overwritten:"), ("skip", "not overwritten:")],
+)
+def test_extract_escapes_member_paths_in_overwrite_reports(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], overwrite: str, marker: str
+) -> None:
+    """These lines print ``requested_path``, which is built from the member's own name.
+
+    The portable rewrite does not strip control bytes under any policy, so an unescaped
+    path here is the line-spoofing vector ``escape_member_name`` exists to close.
+    """
+    archive = _zip(tmp_path / "c.zip", {_SPOOF: b"A", _SPOOF.upper(): b"B"})
+    dest = tmp_path / "out"
+    main(["x", str(archive), "-d", str(dest), "--overwrite", overwrite])
+    err = capsys.readouterr().err
+    assert marker in err
+    assert "\x1b" not in err  # no raw escape sequence
+    assert "\r" not in err  # no carriage-return line rewrite
+    assert "\\x1b[2K" in err  # …shown losslessly instead
+
+
+def test_extract_escapes_member_paths_in_rename_reports(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ``renamed:`` line prints both sides as paths; both come from the member."""
+    archive = _zip(tmp_path / "c.zip", {_SPOOF: b"A", _SPOOF.upper(): b"B"})
+    dest = tmp_path / "out"
+    main(["x", str(archive), "-d", str(dest), "--overwrite", "rename"])
+    err = capsys.readouterr().err
+    assert "renamed:" in err
+    assert "\x1b" not in err
+    assert "\r" not in err
+
+
+def test_extract_escapes_error_detail(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``failed:`` appends the error, whose message embeds the destination path.
+
+    Scoped to the CLI's own line: the library also emits a ``logger.warning`` carrying
+    the same raw path, which reaches the same terminal through the CLI's stderr handler.
+    That is a separate layer (a log formatter concern, not a print site) and is not what
+    this test covers.
+    """
+    archive = _zip(tmp_path / "c.zip", {_SPOOF: b"A", _SPOOF.upper(): b"B"})
+    dest = tmp_path / "out"
+    main(["x", str(archive), "-d", str(dest), "--overwrite", "error"])
+    err = capsys.readouterr().err
+    failed_lines = [ln for ln in err.splitlines() if ln.startswith("failed:")]
+    assert failed_lines
+    assert all("\x1b" not in ln and "\r" not in ln for ln in failed_lines)
+    assert any("\\x1b[2K" in ln for ln in failed_lines)
