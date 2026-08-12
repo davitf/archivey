@@ -2529,3 +2529,106 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
 
     assert pre_existing.read_bytes() == b"not ours"  # never ours to delete
     assert collision_map == {"other.txt": _Claim(other, 0)}
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.ERROR,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_collided_with_names_the_blocking_path_for_a_this_run_collision(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """Under every resolution, a member blocked by a member of THIS run says so.
+
+    This is the fact the removed EXTRACTION_NAME_COLLISION diagnostic carried
+    (``prior_path``). It is set for all four resolutions because the collision, not its
+    outcome, is what happened.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=overwrite,
+        on_error=OnError.CONTINUE,
+    )
+    blocked = report.results[-1]
+    assert blocked.collided_with == dest / "README"
+    # The member that got there first collided with nothing.
+    assert report.results[0].collided_with is None
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.ERROR,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_collided_with_is_none_for_a_pre_existing_destination(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """An obstacle that was on disk before extraction is not a collision event.
+
+    Same statuses as the this-run cases above under every policy, so without this field
+    the two are indistinguishable from a single result. The diagnostic was silent here
+    too, so ``None`` is parity rather than lost information.
+    """
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.txt").write_bytes(b"already here")
+    report = extract(
+        io.BytesIO(_tar_bytes([("file", "a.txt", b"X")])),
+        dest,
+        overwrite=overwrite,
+        on_error=OnError.CONTINUE,
+    )
+    assert report.results[-1].collided_with is None
+    assert report.results[-1].requested_path == dest / "a.txt"
+
+
+def test_collided_with_is_not_set_under_trusted(tmp_path: Path) -> None:
+    """TRUSTED defers to the local OS: no collision *event*, so nothing to record.
+
+    Mirrors the condition the removed diagnostic fired under, which excluded TRUSTED.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert all(r.collided_with is None for r in report.results)
+
+
+def test_collided_with_joins_to_the_blocking_member_by_path_equality(
+    tmp_path: Path,
+) -> None:
+    """The point of carrying a path: finding *who* blocked you needs no collision keys.
+
+    Under REPLACE the blocking member is revised to OVERWRITTEN and no longer holds a
+    live ``path``, so the join falls back to its ``requested_path`` — the one wrinkle,
+    and far smaller than re-deriving NFC+casefold collision keys across the report.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    blocked = report.results[-1]
+    assert blocked.collided_with is not None
+
+    blocker = next(
+        r
+        for r in report.results
+        if r is not blocked and (r.path or r.requested_path) == blocked.collided_with
+    )
+    assert blocker.member.name == "README"
+    assert blocker.status is ExtractionStatus.OVERWRITTEN

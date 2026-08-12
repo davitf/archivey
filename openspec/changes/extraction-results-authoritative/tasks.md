@@ -108,6 +108,10 @@
 - [x] 9.7 Maintainer decision: an anti-item delete releases the collision claim, so the
       map cannot advertise content this run already removed. `Anti-item extraction`
       MODIFIED to say the claim and the on-disk entry are cleared together
+- [x] 9.8 Maintainer decision: add `ExtractionResult.collided_with: Path | None`,
+      carrying the already-written path a member collided with (`None` when the obstacle
+      predates the run). Closes the one fact of the removed diagnostic that D2 wrongly
+      claimed was derivable; D2 corrected and D2a added
 - [x] 9.6 Tests for the failure-group fields, the failed-clobber cases, hardlink
       atomicity, and the CLI cases that had none
 

@@ -287,6 +287,7 @@ class ExtractionCoordinator:
         # raises out of the write, which is exactly the case where the spec still requires
         # ``requested_path`` set with ``path=None``.
         self._requested_path: Path | None = None
+        self._collided_with: Path | None = None
         # Set by ``_prepare_destination`` when it removes an existing entry to make room.
         # Only the non-atomic paths (DIR / SYMLINK / HARDLINK) do that — a FILE write
         # lands via os.replace and never destroys the destination up front — so this is
@@ -436,6 +437,7 @@ class ExtractionCoordinator:
             presented_name: str | None = None
             self._emit_progress = None
             self._requested_path = None
+            self._collided_with = None
             try:
                 # User filter sees every selected member (including non-current); the
                 # is_current skip is hardwired after the filter and does not force a write
@@ -543,7 +545,12 @@ class ExtractionCoordinator:
                     else ExtractionStatus.FAILED
                 )
                 result = ExtractionResult(
-                    original, None, status, error, requested_path=self._requested_path
+                    original,
+                    None,
+                    status,
+                    error,
+                    requested_path=self._requested_path,
+                    collided_with=self._collided_with,
                 )
                 if results and results[-1].member is original:
                     recorded_index = len(results) - 1
@@ -676,10 +683,13 @@ class ExtractionCoordinator:
                 requested_path=requested,
             )
 
-        dest_path, prior = self._resolve_collision(
+        dest_path, prior, collided_with = self._resolve_collision(
             original, transformed, requested, collision_map, dest
         )
         redirected = prior is not None
+        # Stashed for the failure handler: an ERROR-policy collision becomes a FAILED
+        # result built there, and it has to carry the collision too.
+        self._collided_with = collided_with
 
         self._removed_existing = False
         try:
@@ -711,9 +721,13 @@ class ExtractionCoordinator:
         # rename, so it reports the actual (merged) path; every other outcome reports the
         # member's own intended destination, so RENAME shows up as requested_path != path.
         if redirected and result.status is ExtractionStatus.EXTRACTED:
-            result = replace(result, requested_path=result.path)
+            result = replace(
+                result, requested_path=result.path, collided_with=collided_with
+            )
         else:
-            result = replace(result, requested_path=requested)
+            result = replace(
+                result, requested_path=requested, collided_with=collided_with
+            )
 
         # A REPLACE that actually landed leaves the earlier member's content gone. Revise
         # that member's already-recorded result to OVERWRITTEN so the merge is visible in
@@ -794,12 +808,21 @@ class ExtractionCoordinator:
         requested: Path,
         collision_map: dict[str, _Claim],
         dest: Path,
-    ) -> tuple[Path, _Claim | None]:
-        """Resolve an O2 name collision, returning ``(dest_path, redirected_from)``.
+    ) -> tuple[Path, _Claim | None, Path | None]:
+        """Resolve an O2 name collision, returning
+        ``(dest_path, redirected_from, collided_with)``.
 
         ``redirected_from`` is the prior claim when this member was routed onto an
         already-written destination (so the caller can revise that member's result), and
         ``None`` otherwise — including under RENAME, which writes somewhere fresh.
+
+        ``collided_with`` is the prior path whenever a collision *event* occurred, which
+        is the wider set: RENAME collides and then avoids the destination, so it reports
+        a path here while reporting no redirection. It is set under exactly the condition
+        the removed ``EXTRACTION_NAME_COLLISION`` diagnostic fired on — a claim held by
+        this run, outside TRUSTED — so the result carries the fact the diagnostic used to
+        carry. A pre-existing on-disk obstacle is not a collision event and reports
+        ``None``, as the diagnostic was also silent for it.
 
         Directories are structural (parents recur, entries merge) and are not tracked as
         content collisions. For a tracked member whose key is already claimed THIS run, a
@@ -811,22 +834,30 @@ class ExtractionCoordinator:
         honour the map too.
         """
         if transformed.type == MemberType.DIRECTORY:
-            return requested, None
+            return requested, None, None
         key = collision_key(self._rel_name(dest, requested), self._policy)
         prior = collision_map.get(key)
+        collided = (
+            prior.path
+            if prior is not None and self._policy is not ExtractionPolicy.TRUSTED
+            else None
+        )
         if self._overwrite is OverwritePolicy.RENAME:
             if prior is not None or os.path.lexists(requested):
-                if prior is not None and self._policy is not ExtractionPolicy.TRUSTED:
+                if collided is not None:
+                    assert prior is not None
                     self._check_collision_abort(original, transformed, prior)
                 return (
                     self._derive_free_name(requested, transformed, collision_map, dest),
                     None,
+                    collided,
                 )
-            return requested, None
-        if prior is not None and self._policy is not ExtractionPolicy.TRUSTED:
+            return requested, None, None
+        if collided is not None:
+            assert prior is not None
             self._check_collision_abort(original, transformed, prior)
-            return prior.path, prior
-        return requested, None
+            return prior.path, prior, collided
+        return requested, None, None
 
     def _check_collision_abort(
         self, original: ArchiveMember, transformed: ArchiveMember, prior: _Claim
@@ -1218,12 +1249,13 @@ class ExtractionCoordinator:
         writer: _Orphan | None = None
         writer_path: Path | None = None
         writer_prior: _Claim | None = None
+        writer_collided: Path | None = None
         remaining: list[_Orphan] = []
         for orphan in group:
             if writer is not None:
                 remaining.append(orphan)
                 continue
-            resolved, prior = self._resolve_collision(
+            resolved, prior, collided_with = self._resolve_collision(
                 orphan.original,
                 orphan.transformed,
                 orphan.dest_path,
@@ -1232,6 +1264,7 @@ class ExtractionCoordinator:
             )
             if self._prepare_destination(orphan.transformed, resolved, atomic=True):
                 writer, writer_path, writer_prior = orphan, resolved, prior
+                writer_collided = collided_with
             else:
                 self._revise_result(
                     results,
@@ -1242,6 +1275,7 @@ class ExtractionCoordinator:
                         ExtractionStatus.NOT_OVERWRITTEN,
                         None,
                         requested_path=orphan.dest_path,
+                        collided_with=collided_with,
                     ),
                 )
         if writer is None or writer_path is None:
@@ -1258,6 +1292,7 @@ class ExtractionCoordinator:
             requested_path=(
                 writer_path if writer_prior is not None else writer.dest_path
             ),
+            collided_with=writer_collided,
         )
         self._revise_result(results, writer.result_index, result)
         if result.status is ExtractionStatus.EXTRACTED:
@@ -1288,7 +1323,7 @@ class ExtractionCoordinator:
         resolved against the map) and recording per-link results; failures follow
         ``OnError``."""
         for orphan in group:
-            resolved, prior = self._resolve_collision(
+            resolved, prior, collided_with = self._resolve_collision(
                 orphan.original,
                 orphan.transformed,
                 orphan.dest_path,
@@ -1308,6 +1343,7 @@ class ExtractionCoordinator:
                             ExtractionStatus.NOT_OVERWRITTEN,
                             None,
                             requested_path=orphan.dest_path,
+                            collided_with=collided_with,
                         ),
                     )
                     continue
@@ -1325,6 +1361,7 @@ class ExtractionCoordinator:
                         ExtractionStatus.FAILED,
                         exc,
                         requested_path=orphan.dest_path,
+                        collided_with=collided_with,
                     ),
                 )
                 if self._on_error is OnError.STOP:
@@ -1338,6 +1375,7 @@ class ExtractionCoordinator:
                 ExtractionStatus.EXTRACTED,
                 None,
                 requested_path=resolved if prior is not None else orphan.dest_path,
+                collided_with=collided_with,
             )
             self._revise_result(results, orphan.result_index, result)
             if result.status is ExtractionStatus.EXTRACTED:

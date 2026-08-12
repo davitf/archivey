@@ -612,6 +612,7 @@ class ExtractionResult:
     presented_name: str | None = None
     failure_group_id: str | None = None
     failure_group_size: int | None = None
+    collided_with: Path | None = None
 
 class ExtractionStatus(str, Enum):
     EXTRACTED = "extracted"
@@ -650,6 +651,21 @@ rewriting, and SHALL be `None` when no rewrite occurred. It is distinct from
 a caller `filter` rename followed by a portable rewrite produces three spellings, and
 only `presented_name` records the middle one.
 
+`collided_with` SHALL carry the already-written destination this member collided
+with, and SHALL be `None` when nothing this run held the name. It SHALL be set under
+exactly the condition that constitutes a collision *event* — a destination claimed by
+a member of this same run, under a non-`TRUSTED` policy — and therefore for **every**
+resolution: `SKIP`, `ERROR`, a `REPLACE` merge, and `RENAME` alike. An obstacle that
+was already on disk before extraction started is not a collision event and SHALL
+leave the field `None`; the destination is recorded in `requested_path` regardless.
+
+This is what makes the collision *cause* a property of the result rather than an
+inference over the report: without it, a member blocked by another member of this run
+and a member blocked by a pre-existing file produce identical results under every
+policy. Callers MAY join to the blocking member by plain path equality against another
+result's `path`, or its `requested_path` when that member was itself later revised to
+`OVERWRITTEN` and no longer holds a live path.
+
 `failure_group_id` / `failure_group_size` SHALL both be set only when one failed
 hardlink source causes `N` `FAILED` link results, which SHALL share one group id and
 `failure_group_size=N`; otherwise both are `None`. The id SHALL be a `str` generated
@@ -660,6 +676,15 @@ format, or cross-run stability.
 
 `ExtractionResult` has no diagnostics field; `status`, `error` and the fields above
 are the per-result outcome.
+
+#### Scenario: collision cause is recorded on the result
+
+| Case | `collided_with` |
+| --- | --- |
+| Blocked by a member of this run (`SKIP` / `ERROR` / `REPLACE` / `RENAME`) | the prior member's written path |
+| Blocked by an entry already on disk before extraction | `None` |
+| No collision at all | `None` |
+| Any collision under `ExtractionPolicy.TRUSTED` | `None` (no collision event) |
 
 #### Scenario: result/status matrix
 

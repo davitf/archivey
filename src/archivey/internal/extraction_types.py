@@ -205,3 +205,13 @@ class ExtractionResult:
     # cross-run stability.
     failure_group_id: str | None = None
     failure_group_size: int | None = None
+    # The already-written destination this member collided with, or ``None`` when nothing
+    # this run held the name. Set for every resolution — SKIP, ERROR, RENAME and a
+    # REPLACE merge alike — so "was this a collision, and with what?" is answered by the
+    # result itself rather than reconstructed by re-deriving collision keys across the
+    # report. Only a collision with a member of THIS run is recorded: an obstacle that was
+    # already on disk before extraction started leaves this ``None`` (the destination is
+    # still in ``requested_path``). Join to the blocking member by plain path equality
+    # against another result's ``path`` — or its ``requested_path`` when that member was
+    # itself later revised to ``OVERWRITTEN`` and no longer holds a live path.
+    collided_with: Path | None = None
