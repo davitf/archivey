@@ -1024,7 +1024,7 @@ class ExtractionCoordinator:
             )
 
         if source.member_id in source_paths:
-            if not self._prepare_destination(transformed, dest_path):
+            if not self._prepare_destination(transformed, dest_path, atomic=True):
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
@@ -1275,7 +1275,9 @@ class ExtractionCoordinator:
                 dest,
             )
             try:
-                if not self._prepare_destination(orphan.transformed, resolved):
+                if not self._prepare_destination(
+                    orphan.transformed, resolved, atomic=True
+                ):
                     self._revise_result(
                         results,
                         orphan.result_index,
@@ -1386,13 +1388,15 @@ class ExtractionCoordinator:
         skip (SKIP over an existing entry). Raises ExtractionError under ERROR when the
         entry exists. Uses lstat semantics so a dangling symlink counts as existing.
 
-        ``atomic=True`` is used for FILE writes, which land via ``os.replace()`` over the
-        destination (see ``_write_file_atomic``): under REPLACE this leaves an existing
-        **file or symlink** in place for that atomic swap (so the old data survives until
-        the new file is fully written, and a symlink is replaced, never written through),
-        removing only an existing **directory** first — ``os.replace`` cannot overwrite a
-        directory with a file. ``atomic=False`` (DIR / SYMLINK / HARDLINK) keeps the plain
-        unlink-then-create."""
+        ``atomic=True`` is used for FILE and HARDLINK writes, which land via
+        ``os.replace()`` over the destination (see ``_write_file_atomic`` /
+        ``_place_link``): under REPLACE this leaves an existing **file or symlink** in
+        place for that atomic swap (so the old data survives until the new entry is fully
+        built, and a symlink is replaced, never written through), removing only an
+        existing **directory** first — ``os.replace`` cannot overwrite a directory.
+        ``atomic=False`` (DIR / SYMLINK) keeps the plain unlink-then-create: a symlink
+        must be created at its final name for the escape re-validation's cycle check, and
+        a directory cannot be renamed over a file at all."""
         exists = os.path.lexists(dest_path)
         if not exists:
             return True
@@ -1504,24 +1508,52 @@ class ExtractionCoordinator:
     ) -> None:
         """Create ``new_path`` as a hardlink to the source's content, trying each recorded
         on-disk path in turn; on all-cross-device (EXDEV), copy from an existing path.
-        Appends ``new_path`` so a later same-device link can reuse it."""
+        Appends ``new_path`` so a later same-device link can reuse it.
+
+        The link is built at a temp sibling and ``os.replace``d into place, the same way
+        a FILE write lands: ``os.link`` needs a free name, so the alternative is to
+        unlink an existing destination first and leave a hole if the link then fails.
+        ``os.replace`` moves the link itself and never follows the entry it replaces, so
+        a destination symlink is replaced rather than written through."""
         existing = source_paths[source_id]
-        copied = False
-        for candidate in existing:
-            try:
-                os.link(candidate, new_path)
-                break
-            except OSError as exc:
-                if exc.errno == errno.EXDEV:
-                    continue
-                raise
-        else:
-            # Every recorded path is cross-device: fall back to a copy from the first.
-            shutil.copy2(existing[0], new_path)
-            copied = True
+        tmp = self._temp_sibling(new_path.parent)
+        try:
+            copied = False
+            for candidate in existing:
+                try:
+                    os.link(candidate, tmp)
+                    break
+                except OSError as exc:
+                    if exc.errno == errno.EXDEV:
+                        continue
+                    raise
+            else:
+                # Every recorded path is cross-device: fall back to a copy from the first.
+                shutil.copy2(existing[0], tmp)
+                copied = True
+            if copied:
+                # Applied before the swap, so the final name never appears with the
+                # source's metadata instead of this member's.
+                self._apply_metadata(tmp, member)
+            os.replace(tmp, new_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
         existing.append(new_path)
-        if copied:
-            self._apply_metadata(new_path, member)
+
+    @staticmethod
+    def _temp_sibling(parent: Path) -> Path:
+        """A free ``.archivey-tmp-*`` name in ``parent`` for an atomic swap.
+
+        Unlike ``_write_file_atomic`` this cannot use ``mkstemp``: ``os.link`` needs a
+        name that does *not* exist. The destination is trusted at rest (see the threat
+        model), and ``os.link`` / ``os.replace`` fail loudly on a name that appeared
+        underneath us, so a uuid4 name is enough."""
+        while True:
+            candidate = parent / f"{_TMP_PREFIX}{uuid.uuid4().hex}"
+            if not os.path.lexists(candidate):
+                return candidate
 
     def _apply_metadata(self, path: Path, member: ArchiveMember) -> None:
         """Best-effort mode / mtime / ownership. Failures are swallowed (best-effort)."""

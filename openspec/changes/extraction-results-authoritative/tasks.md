@@ -91,6 +91,23 @@
 - [x] 7.7 `uv run --no-sync pytest`; `ruff format` / `ruff check`;
       `uv run --no-sync pyrefly check` and `uv run --no-sync ty check`
 
+## 9. Follow-ups found in review (PR #235)
+
+- [x] 9.1 `members_extracted` follows a result revised to `OVERWRITTEN` (progress
+      defines the tally as counting `EXTRACTED` *results*)
+- [x] 9.2 `_revise_result` carries `requested_path` forward, not just `presented_name`
+- [x] 9.3 CLI prints full relative names on both sides of the `name rewritten:` arrow
+- [x] 9.4 `dev-docs/threat-model.md` and `review/docs/outline.md` repointed off the
+      removed `EXTRACTION_NAME_*` diagnostics
+- [x] 9.5 Maintainer decision: a `REPLACE` that clears a this-run destination and then
+      fails revises the earlier member to `OVERWRITTEN`. HARDLINK writes made atomic
+      (temp link + `os.replace`) so the window closes for that member type; SYMLINK
+      keeps unlink-then-create because the escape check's cycle detection needs the link
+      at its final name, and DIRECTORY-over-file cannot be renamed at all. `Overwrite
+      Policy` MODIFIED to match
+- [x] 9.6 Tests for the failure-group fields, the failed-clobber cases, hardlink
+      atomicity, and the CLI cases that had none
+
 ## 8. Verify
 
 - [x] 8.1 `openspec validate --strict extraction-results-authoritative`

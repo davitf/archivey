@@ -2426,3 +2426,52 @@ def test_failed_replace_that_destroyed_content_marks_overwritten(
     assert first.status is ExtractionStatus.OVERWRITTEN
     assert first.path is None
     assert first.requested_path == dest / "README"
+
+
+def test_hardlink_write_is_atomic_over_an_existing_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed hardlink write must not have already destroyed the destination.
+
+    The link is built at a temp sibling and os.replace'd in, so a failure leaves the
+    previous entry intact — the same guarantee FILE writes have always had.
+    """
+    archive = _tar_bytes([("file", "src.bin", b"data"), ("hard", "README", "src.bin")])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "README").write_bytes(b"pre-existing")
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("forced failure while placing the link")
+
+    monkeypatch.setattr("archivey.internal.extraction.os.replace", boom)
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=OverwritePolicy.REPLACE,
+        on_error=OnError.CONTINUE,
+    )
+    assert report.results[-1].status is ExtractionStatus.FAILED
+    # The destination survived the failed replacement...
+    assert (dest / "README").read_bytes() == b"pre-existing"
+    # ...and no staging file was left behind.
+    assert not [p for p in dest.iterdir() if p.name.startswith(".archivey-tmp-")]
+
+
+def test_hardlink_replaces_a_destination_symlink_without_following_it(
+    tmp_path: Path,
+) -> None:
+    """os.replace moves the link itself, so the atomic swap keeps the never-write-through
+    guarantee that the previous unlink-then-link had."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"must not be touched")
+    (dest / "README").symlink_to(outside)
+
+    archive = _tar_bytes([("file", "src.bin", b"data"), ("hard", "README", "src.bin")])
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert not (dest / "README").is_symlink()
+    assert (dest / "README").read_bytes() == b"data"
+    assert outside.read_bytes() == b"must not be touched"

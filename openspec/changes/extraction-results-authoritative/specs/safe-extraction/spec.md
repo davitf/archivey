@@ -300,6 +300,59 @@ rewritten name then collides and is renamed).
 | `RENAME` with a collision (case/NFC or exact) | Second entry written as `name (1)` before the suffix; `requested_path` = intended name | Same |
 | Filter rename, then a portable rewrite | `member.name`, `presented_name`, and `path.name` are all three spellings | Faithful bytes attempted |
 
+### Requirement: Overwrite Policy
+
+The system SHALL enforce `OverwritePolicy` whenever a destination entry already
+exists at the transformed member path:
+
+```python
+class OverwritePolicy(Enum):
+    ERROR = "error"
+    SKIP = "skip"
+    REPLACE = "replace"
+    RENAME = "rename"
+```
+
+`ERROR` raises a per-member `ExtractionError` governed by `OnError`; `SKIP`
+records a `NOT_OVERWRITTEN` result and is not a failure. Existence checks SHALL use
+`lstat` semantics so dangling symlinks count as existing entries. `REPLACE` SHALL
+be atomic wherever the platform permits, and SHALL never write through a symlink.
+
+FILE and HARDLINK replacement SHALL be atomic: the new entry is built beside the
+destination (a temp file for FILE data, a temp link for HARDLINK), metadata is
+applied to it, and `os.replace()` moves it onto the destination. A failure part-way
+through preserves the existing entry and discards only the temp. `os.replace()`
+moves the entry itself, so a destination symlink is replaced rather than followed.
+
+SYMLINK and DIRECTORY replacement SHALL remove the existing entry and create fresh,
+because neither can be staged: a symlink MUST be created at its final name for the
+escape re-validation's cycle check to resolve, and a directory cannot be renamed
+over a non-directory at all. Replacing an existing directory with any member type
+removes the directory first.
+
+Where `REPLACE` removes an existing entry that a **member of this same run** wrote,
+and the replacing write then fails, that earlier member's content is gone. Its
+`ExtractionResult` SHALL be revised to `ExtractionStatus.OVERWRITTEN` even though no
+member ended up holding the destination — a result SHALL NOT report `EXTRACTED` for
+content that no longer exists.
+
+`RENAME` writes a colliding entry under a deterministic derived name (`name (1)`,
+inserted before the final suffix) rather than overwriting — see the cross-platform
+name-safety requirement.
+
+#### Scenario: overwrite matrix
+
+| Case | Expected |
+| --- | --- |
+| Existing path under `ERROR` | `ExtractionError`; existing entry unmodified |
+| Existing path under `SKIP` | `ExtractionResult.status == NOT_OVERWRITTEN`, `path=None`, no exception |
+| Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
+| Existing entry replaced by a HARDLINK under `REPLACE` | Link is built at a temp sibling and `os.replace()`d in; a failure leaves the existing entry intact |
+| Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
+| `REPLACE` fails mid-stream | Existing file remains unchanged; temp is discarded |
+| `REPLACE` clears a this-run destination and then fails | The earlier member is revised to `OVERWRITTEN`; no result claims `EXTRACTED` at the emptied path |
+| Dangling symlink under `ERROR` or `SKIP` | Treated as existing; no write-through to target |
+
 ## ADDED Requirements
 
 ### Requirement: Abort-on-event opt-in for extraction
