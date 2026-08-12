@@ -670,7 +670,9 @@ class ExtractionCoordinator:
 
         if original.is_anti:
             return replace(
-                self._apply_anti_item(original, requested, written_paths),
+                self._apply_anti_item(
+                    original, requested, written_paths, collision_map, dest
+                ),
                 requested_path=requested,
             )
 
@@ -903,6 +905,8 @@ class ExtractionCoordinator:
         original: ArchiveMember,
         dest_path: Path,
         written_paths: set[Path],
+        collision_map: dict[str, _Claim],
+        dest: Path,
     ) -> ExtractionResult:
         if dest_path not in written_paths:
             return ExtractionResult(
@@ -912,6 +916,7 @@ class ExtractionCoordinator:
             st = os.lstat(dest_path)
         except FileNotFoundError:
             written_paths.discard(dest_path)
+            self._release_claim(collision_map, dest, dest_path)
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
@@ -920,7 +925,23 @@ class ExtractionCoordinator:
         else:
             os.unlink(dest_path)
         written_paths.discard(dest_path)
+        self._release_claim(collision_map, dest, dest_path)
         return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
+
+    def _release_claim(
+        self, collision_map: dict[str, _Claim], dest: Path, path: Path
+    ) -> None:
+        """Drop the collision claim on ``path`` once its content is gone.
+
+        ``written_paths`` and ``collision_map`` both track what this run put on disk, so
+        an anti-item delete has to clear both or the map keeps advertising a claim for
+        content that no longer exists — which a later same-key member would see as a
+        collision, aborting under ``AbortOn.NAME_COLLISION`` against an empty destination
+        or revising an already-deleted member to ``OVERWRITTEN``."""
+        key = collision_key(self._rel_name(dest, path), self._policy)
+        claim = collision_map.get(key)
+        if claim is not None and claim.path == path:
+            del collision_map[key]
 
     def _write_file(
         self,

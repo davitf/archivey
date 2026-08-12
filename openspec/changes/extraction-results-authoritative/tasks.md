@@ -105,6 +105,9 @@
       keeps unlink-then-create because the escape check's cycle detection needs the link
       at its final name, and DIRECTORY-over-file cannot be renamed at all. `Overwrite
       Policy` MODIFIED to match
+- [x] 9.7 Maintainer decision: an anti-item delete releases the collision claim, so the
+      map cannot advertise content this run already removed. `Anti-item extraction`
+      MODIFIED to say the claim and the on-disk entry are cleared together
 - [x] 9.6 Tests for the failure-group fields, the failed-clobber cases, hardlink
       atomicity, and the CLI cases that had none
 

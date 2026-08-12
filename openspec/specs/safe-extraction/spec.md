@@ -291,12 +291,20 @@ destination only if this same extraction wrote that path (file or empty dir via
 out-of-root paths MUST NOT be deleted. `MemberType.ANTI` SHALL NOT raise
 `SpecialFileError` (only `OTHER` does).
 
+A delete SHALL also release the destination's collision claim, so a later member
+resolving to the same key does not collide against content that no longer exists.
+The claim and the on-disk entry are two records of the same fact and SHALL be
+cleared together; a stale claim would otherwise abort under `AbortOn.NAME_COLLISION`
+with the destination empty, or revise an already-deleted member to `OVERWRITTEN`.
+
 #### Scenario: anti extraction matrix
 
 | Case | Expected |
 | --- | --- |
 | Anti path missing / pre-existing not written this run | Success no-op; pre-existing untouched |
 | Earlier member this run wrote the path, then anti | Just-created file/empty dir removed |
+| Same case, then a later member with the same collision key | No collision: the delete released the claim |
+| Anti no-op (nothing written this run at that path) | Unrelated claims untouched |
 | `check_universal` on `ANTI` | No `SpecialFileError` for type alone |
 | `MemberType.OTHER` | Still `SpecialFileError` under all policies |
 

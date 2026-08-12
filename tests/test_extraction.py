@@ -2475,3 +2475,57 @@ def test_hardlink_replaces_a_destination_symlink_without_following_it(
     assert not (dest / "README").is_symlink()
     assert (dest / "README").read_bytes() == b"data"
     assert outside.read_bytes() == b"must not be touched"
+
+
+def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
+    """An anti-item delete must clear the collision map, not just ``written_paths``.
+
+    Both track what this run put on disk. Leaving a claim behind means a later member
+    resolving to the same key collides against content that no longer exists — a
+    spurious ``NameCollisionError`` under ``abort_on``, or an ``OVERWRITTEN`` revision
+    of a member that was already deleted.
+
+    Exercised at the coordinator level: reaching it through a backend needs two members
+    with the same collision key both marked current, which last-entry-wins prevents.
+    """
+    from archivey.internal.extraction import _Claim
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    written = dest / "README"
+    written.write_bytes(b"A")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
+    written_paths = {written}
+    # The claim the earlier FILE member left behind, keyed casefold(NFC(...)).
+    collision_map = {"readme": _Claim(written, 0)}
+    anti = ArchiveMember(type=MemberType.ANTI, name="README")
+
+    result = coordinator._apply_anti_item(
+        anti, written, written_paths, collision_map, dest
+    )
+
+    assert result.status is ExtractionStatus.EXTRACTED
+    assert not written.exists()
+    assert written_paths == set()
+    assert collision_map == {}  # the claim went with the content
+
+
+def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
+    """A no-op anti (nothing written this run at that path) releases nothing."""
+    from archivey.internal.extraction import _Claim
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    pre_existing = dest / "README"
+    pre_existing.write_bytes(b"not ours")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
+    other = dest / "other.txt"
+    collision_map = {"other.txt": _Claim(other, 0)}
+    anti = ArchiveMember(type=MemberType.ANTI, name="README")
+
+    coordinator._apply_anti_item(anti, pre_existing, set(), collision_map, dest)
+
+    assert pre_existing.read_bytes() == b"not ours"  # never ours to delete
+    assert collision_map == {"other.txt": _Claim(other, 0)}
