@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import sys
 import zipfile
 from pathlib import Path
 
@@ -1404,9 +1405,34 @@ def test_extract_reports_nested_rewrite_with_full_relative_names(
     assert "name rewritten: dir/foo. -> dir/foo" in capsys.readouterr().err
 
 
+def _report_lines(err: str, marker: str) -> list[str]:
+    """Stderr lines starting with ``marker``, split on ``\\n`` only.
+
+    ``str.splitlines()`` is wrong here: it also splits on ``\\r`` and U+2028 — the exact
+    characters under test — so an unescaped line would be broken in two and every "raw
+    character absent" assertion would pass vacuously. A trailing ``\\r`` is stripped so a
+    CRLF line ending does not read as an embedded CR.
+    """
+    return [
+        ln[:-1] if ln.endswith("\r") else ln
+        for ln in err.split("\n")
+        if ln.startswith(marker)
+    ]
+
+
 # A member name carrying an ANSI erase-line plus a CR: printed raw, everything before
-# the CR is wiped and the archive gets to author the whole terminal line.
-_SPOOF = "ev\x1b[2Kil\rSUCCESS.txt"
+# the CR is wiped and the archive gets to author the whole terminal line. Windows cannot
+# hold such a name at all (control bytes are illegal in NTFS names, WinError 123), so
+# tests using it are Unix-only — the write fails there before any report line is reached.
+_SPOOF_ANSI = "ev\x1b[2Kil\rSUCCESS.txt"
+_ANSI_ONLY = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="control bytes are illegal in Windows filenames; the member cannot be written",
+)
+
+# U+2028 LINE SEPARATOR: non-printable (so it still must be escaped) but legal in a
+# Windows filename, which keeps the escaping itself covered on every platform.
+_SPOOF_PORTABLE = "ev\u2028il.txt"
 
 
 @pytest.mark.parametrize(
@@ -1418,30 +1444,57 @@ def test_extract_escapes_member_paths_in_overwrite_reports(
 ) -> None:
     """These lines print ``requested_path``, which is built from the member's own name.
 
-    The portable rewrite does not strip control bytes under any policy, so an unescaped
-    path here is the line-spoofing vector ``escape_member_name`` exists to close.
+    The portable rewrite does not strip non-printable characters under any policy, so an
+    unescaped path here is the display-spoofing vector ``escape_member_name`` closes.
     """
-    archive = _zip(tmp_path / "c.zip", {_SPOOF: b"A", _SPOOF.upper(): b"B"})
+    archive = _zip(
+        tmp_path / "c.zip", {_SPOOF_PORTABLE: b"A", _SPOOF_PORTABLE.upper(): b"B"}
+    )
     dest = tmp_path / "out"
     main(["x", str(archive), "-d", str(dest), "--overwrite", overwrite])
     err = capsys.readouterr().err
-    assert marker in err
-    assert "\x1b" not in err  # no raw escape sequence
-    assert "\r" not in err  # no carriage-return line rewrite
-    assert "\\x1b[2K" in err  # …shown losslessly instead
+    # Scoped to the line under test: a stray library log line carrying the same raw path
+    # would otherwise fail this for a reason it does not cover.
+    lines = _report_lines(err, marker)
+    assert lines
+    assert all("\u2028" not in ln for ln in lines)  # not the raw separator
+    assert any("\\u2028" in ln for ln in lines)  # …shown losslessly instead
 
 
 def test_extract_escapes_member_paths_in_rename_reports(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The ``renamed:`` line prints both sides as paths; both come from the member."""
-    archive = _zip(tmp_path / "c.zip", {_SPOOF: b"A", _SPOOF.upper(): b"B"})
+    archive = _zip(
+        tmp_path / "c.zip", {_SPOOF_PORTABLE: b"A", _SPOOF_PORTABLE.upper(): b"B"}
+    )
     dest = tmp_path / "out"
     main(["x", str(archive), "-d", str(dest), "--overwrite", "rename"])
     err = capsys.readouterr().err
-    assert "renamed:" in err
-    assert "\x1b" not in err
-    assert "\r" not in err
+    lines = _report_lines(err, "renamed:")
+    assert lines
+    assert all("\u2028" not in ln for ln in lines)
+    assert any("\\u2028" in ln for ln in lines)
+
+
+@_ANSI_ONLY
+@pytest.mark.parametrize(
+    "overwrite,marker",
+    [("replace", "overwritten:"), ("skip", "not overwritten:")],
+)
+def test_extract_escapes_ansi_spoof_in_overwrite_reports(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], overwrite: str, marker: str
+) -> None:
+    """The real spoof: ESC[2K + CR would erase the line and rewrite it."""
+    archive = _zip(tmp_path / "c.zip", {_SPOOF_ANSI: b"A", _SPOOF_ANSI.upper(): b"B"})
+    dest = tmp_path / "out"
+    main(["x", str(archive), "-d", str(dest), "--overwrite", overwrite])
+    err = capsys.readouterr().err
+    lines = _report_lines(err, marker)
+    assert lines
+    assert all("\x1b" not in ln for ln in lines)  # no raw escape sequence
+    assert all("\r" not in ln for ln in lines)  # no carriage-return line rewrite
+    assert any("\\x1b[2K" in ln for ln in lines)  # …shown losslessly instead
 
 
 def test_extract_escapes_error_detail(
@@ -1454,11 +1507,13 @@ def test_extract_escapes_error_detail(
     That is a separate layer (a log formatter concern, not a print site) and is not what
     this test covers.
     """
-    archive = _zip(tmp_path / "c.zip", {_SPOOF: b"A", _SPOOF.upper(): b"B"})
+    archive = _zip(
+        tmp_path / "c.zip", {_SPOOF_PORTABLE: b"A", _SPOOF_PORTABLE.upper(): b"B"}
+    )
     dest = tmp_path / "out"
     main(["x", str(archive), "-d", str(dest), "--overwrite", "error"])
     err = capsys.readouterr().err
-    failed_lines = [ln for ln in err.splitlines() if ln.startswith("failed:")]
+    failed_lines = _report_lines(err, "failed:")
     assert failed_lines
-    assert all("\x1b" not in ln and "\r" not in ln for ln in failed_lines)
-    assert any("\\x1b[2K" in ln for ln in failed_lines)
+    assert all("\u2028" not in ln for ln in failed_lines)
+    assert any("\\u2028" in ln for ln in failed_lines)
