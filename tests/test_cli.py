@@ -1517,3 +1517,21 @@ def test_extract_escapes_error_detail(
     assert failed_lines
     assert all("\u2028" not in ln for ln in failed_lines)
     assert any("\\u2028" in ln for ln in failed_lines)
+
+
+def test_report_lines_do_not_double_path_separators(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Escaping must not turn a native path's separators into ``\\\\``.
+
+    ``escape_member_name`` escapes backslashes, so feeding it a Windows path would double
+    every separator. Report lines render relative to the extraction root (POSIX
+    separators) first, so this holds on every platform — and this test would catch the
+    regression on Linux, where the doubling is otherwise invisible.
+    """
+    archive = _zip(tmp_path / "c.zip", {"dir/README": b"A", "dir/readme": b"B"})
+    dest = tmp_path / "out"
+    main(["x", str(archive), "-d", str(dest), "--overwrite", "replace"])
+    lines = _report_lines(capsys.readouterr().err, "overwritten:")
+    assert lines == ["overwritten: dir/README"]
+    assert "\\\\" not in lines[0]

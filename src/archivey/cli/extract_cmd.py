@@ -349,8 +349,9 @@ def _report_extraction(
                 renamed += 1
                 # Renames change where data lives — always report them.
                 print(
-                    f"renamed: {escape_member_name(str(result.requested_path))} -> "
-                    f"{escape_member_name(str(result.path))}",
+                    f"renamed: "
+                    f"{escape_member_name(_relative_name(result.requested_path, target))}"
+                    f" -> {escape_member_name(_relative_name(result.path, target))}",
                     file=err,
                 )
             elif verbose:
@@ -374,12 +375,12 @@ def _report_extraction(
             # Written, then clobbered by a later member. Not counted as extracted: its
             # content is not what is on disk. Always reported — data was lost.
             skipped += 1
-            where = _escaped_where(result)
+            where = _escaped_where(result, target)
             print(f"overwritten: {where}", file=err)
         elif status is ExtractionStatus.NOT_OVERWRITTEN:
             skipped += 1
             # Overwrite-skips change outcomes under --overwrite skip; always note.
-            where = _escaped_where(result)
+            where = _escaped_where(result, target)
             print(f"not overwritten: {where}", file=err)
         elif status is ExtractionStatus.SUPERSEDED:
             skipped += 1  # count superseded entries alongside skipped in summary
@@ -422,15 +423,21 @@ def _report_extraction(
     return blocked, failed
 
 
-def _escaped_where(result: ExtractionResult) -> str:
+def _escaped_where(result: ExtractionResult, target: Path) -> str:
     """The destination to report for a member that did not keep it, terminal-safe.
 
     ``requested_path`` is built from the member's own name, so it carries whatever
     control bytes the archive chose — the portable rewrite does not strip them under any
     policy. Printing it raw is the line-spoofing vector ``escape_member_name`` exists to
-    close, so both the path and the name fallback go through it."""
+    close, so both the path and the name fallback go through it.
+
+    Rendered relative to the extraction root first, matching ``name rewritten:``. That is
+    not only for brevity: ``escape_member_name`` escapes backslashes, so handing it a
+    native Windows path would double every separator (``C:\\Users\\...``). The relative
+    name is ``/``-separated, so a backslash surviving into it is a real character in a
+    member name — which is exactly what should be escaped."""
     if result.requested_path is not None:
-        return escape_member_name(str(result.requested_path))
+        return escape_member_name(_relative_name(result.requested_path, target))
     return escape_member_name(result.member.name)
 
 
