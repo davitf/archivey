@@ -55,6 +55,7 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import (
+    ARCHIVE_INTEGRITY_CODES,
     # Context payloads: importable for isinstance/match; omitted from __all__.
     ArchiveEofContext,  # noqa: F401
     Diagnostic,
@@ -66,16 +67,13 @@ from archivey.diagnostics import (
     DiagnosticSummary,
     DigestContext,  # noqa: F401
     EmptyArchiveContext,  # noqa: F401
-    ExtractionOutcomeContext,  # noqa: F401
     ExtractionReport,
     FormatConflictContext,  # noqa: F401
     MemberListReport,
     MemberNameControlsContext,  # noqa: F401
     MemberTimestampContext,  # noqa: F401
-    NameCollisionContext,  # noqa: F401
     NameEncodingContext,  # noqa: F401
     NameNormalizationContext,  # noqa: F401
-    NameSanitizedContext,  # noqa: F401
     OnDiagnostic,
     ScanRaceContext,  # noqa: F401
     SeekIndexContext,  # noqa: F401
@@ -96,6 +94,8 @@ from archivey.exceptions import (
     FilterRejectionError,
     FormatDetectionError,
     LinkTargetNotFoundError,
+    NameCollisionError,
+    NameRewrittenError,
     OpenError,
     PackageNotInstalledError,
     PathTraversalError,
@@ -112,6 +112,7 @@ from archivey.exceptions import (
     WriteError,  # noqa: F401 — write API not shipped yet; kept importable
 )
 from archivey.internal.extraction_types import (
+    AbortOn,
     ExtractionPolicy,
     ExtractionProgress,
     ExtractionResult,
@@ -155,6 +156,7 @@ __all__ = [
     "ExtractionPolicy",
     "OverwritePolicy",
     "OnError",
+    "AbortOn",
     "ExtractionStatus",
     "ExtractionProgress",
     "ExtractionResult",
@@ -198,6 +200,7 @@ __all__ = [
     "DiagnosticDisposition",
     "DiagnosticPolicy",
     "DiagnosticSummary",
+    "ARCHIVE_INTEGRITY_CODES",
     "DiagnosticRaisedError",
     "ArchiveyError",
     "ArchiveyUsageError",
@@ -218,6 +221,8 @@ __all__ = [
     "SpecialFileError",
     "UnportableNameError",
     "DeceptiveNameError",
+    "NameCollisionError",
+    "NameRewrittenError",
     "ResourceLimitError",
     "UnsupportedFeatureError",
     "PackageNotInstalledError",

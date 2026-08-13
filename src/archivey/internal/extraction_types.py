@@ -87,11 +87,45 @@ class OnError(Enum):
     write ``OSError``, overwrite ``ERROR``, etc.). A policy ``BLOCKED`` outcome
     (``FilterRejectionError`` from a universal path-safety check or a policy
     filter) is always recorded and continued, under either value. Aborting the
-    whole extraction on the first unsafe member is a separate future opt-in.
+    whole extraction on the first unsafe member is ``AbortOn.BLOCKED_MEMBER``,
+    an independent opt-in that applies under either ``OnError`` value.
     """
 
     STOP = "stop"  # default: raise the first member failure and halt
     CONTINUE = "continue"  # record the failure, clean up, proceed to the next member
+
+
+class AbortOn(str, Enum):
+    """Events that abort the whole extraction the first time they occur.
+
+    Passed as ``abort_on=`` to ``extract()`` / ``extract_all()`` (a collection; empty by
+    default). Independent of :class:`OnError` and of ``DiagnosticPolicy``: an event named
+    here aborts whatever those are set to, and one not named here never aborts.
+
+    Abort is immediate — the triggering member's partial output is removed, no later
+    member is processed, and **no** ``ExtractionReport`` is returned. Output already
+    written for earlier members stays on disk, matching ``OnError.STOP``: an abort stops
+    the run, it does not roll it back.
+
+    There is deliberately no member for extraction *failures*: ``OnError.STOP`` already
+    means "raise on the first failure".
+    """
+
+    # A member blocked by a universal path-safety check or a policy filter. Re-raises the
+    # underlying FilterRejectionError, matching OnError.STOP's propagate-the-original.
+    BLOCKED_MEMBER = "blocked_member"
+    # A second member resolving to an already-written collision key (non-TRUSTED only).
+    # Fires on EVERY such collision, whatever OverwritePolicy resolution follows —
+    # replaced, skipped, errored or renamed. The trigger is the collision, not its
+    # outcome. Raises NameCollisionError.
+    NAME_COLLISION = "name_collision"
+    # A name rewritten to its portable spelling. A narrow escape hatch for callers who
+    # refuse any on-disk name differing from the archive's — mirroring tools, forensic
+    # extracts, byte-fidelity checks — and NOT part of ordinary strict extraction: no
+    # preset or policy level implies it. To *audit* rewrites read
+    # ``ExtractionResult.presented_name``; set this only to make them fatal. Raises
+    # NameRewrittenError.
+    NAME_SANITIZED = "name_sanitized"
 
 
 class ExtractionStatus(str, Enum):
@@ -100,6 +134,13 @@ class ExtractionStatus(str, Enum):
     EXTRACTED = "extracted"
     NOT_OVERWRITTEN = "not_overwritten"  # existing dest left under OverwritePolicy.SKIP
     SUPERSEDED = "superseded"  # non-current entry (a later same-name entry overwrites)
+    # Written, then its destination was replaced by a LATER member under
+    # OverwritePolicy.REPLACE. Revised retroactively when the collision is detected, so
+    # a case-insensitive merge is visible in ``results`` instead of two members both
+    # reporting EXTRACTED at one path. Completes the family: NOT_OVERWRITTEN kept an
+    # existing destination and never wrote; SUPERSEDED never wrote; OVERWRITTEN wrote
+    # and lost the destination afterwards.
+    OVERWRITTEN = "overwritten"
     BLOCKED = "blocked"  # blocked by a safety filter (universal or policy check)
     FAILED = "failed"  # error while extracting (corrupt data, ratio bomb, write error)
 
@@ -149,4 +190,28 @@ class ExtractionResult:
     # is written to a derived name, so ``requested_path != path and status == EXTRACTED``
     # marks the rename; a collision resolved by SKIP/ERROR sets ``requested_path`` with
     # ``path=None``. ``None`` for members that never reached destination resolution.
+    # On an OVERWRITTEN result it retains the destination the member did write to, so a
+    # caller can join the pair to the replacing member's ``path``.
     requested_path: Path | None = None
+    # The member's full relative name BEFORE the portable-name rewrite (O3 trailing
+    # dot/space strip, O7 percent-escape), or ``None`` when no rewrite occurred. Distinct
+    # from ``member.name`` (the archive's spelling) and from ``path`` (the final on-disk
+    # spelling): a caller ``filter`` rename followed by a portable rewrite produces three
+    # spellings, and only this field records the middle one.
+    presented_name: str | None = None
+    # Set together, and only when one failed hardlink source causes N FAILED link results:
+    # those N results share one group id and carry ``failure_group_size=N``. The id is
+    # opaque — compare for equality to join a group; do not rely on ordering, format, or
+    # cross-run stability.
+    failure_group_id: str | None = None
+    failure_group_size: int | None = None
+    # The already-written destination this member collided with, or ``None`` when nothing
+    # this run held the name. Set for every resolution — SKIP, ERROR, RENAME and a
+    # REPLACE merge alike — so "was this a collision, and with what?" is answered by the
+    # result itself rather than reconstructed by re-deriving collision keys across the
+    # report. Only a collision with a member of THIS run is recorded: an obstacle that was
+    # already on disk before extraction started leaves this ``None`` (the destination is
+    # still in ``requested_path``). Join to the blocking member by plain path equality
+    # against another result's ``path`` — or its ``requested_path`` when that member was
+    # itself later revised to ``OVERWRITTEN`` and no longer holds a live path.
+    collided_with: Path | None = None

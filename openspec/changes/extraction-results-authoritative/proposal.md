@@ -48,6 +48,13 @@ hit occupied slots: `SUPERSEDED` already means *non-current duplicate* (decided 
   releases, so a bare `default=RAISE` is not version-stable and the presets are the
   documented strict mode.
 - **Retire the O-23 sentence** so in-flight work stops citing it as settled.
+- **Close the failed-clobber hole in `OverwritePolicy.REPLACE`.** A `REPLACE` that
+  clears a this-run destination and then fails leaves the earlier member's content gone
+  while its result still reads `EXTRACTED` — the same class of dishonesty this change
+  exists to remove. That result is now revised to `OVERWRITTEN`. HARDLINK writes also
+  become atomic (temp link + `os.replace`, as FILE writes already were), which removes
+  the window entirely for that member type; SYMLINK and DIRECTORY cannot be staged and
+  keep unlink-then-create.
 
 ## Capabilities
 
@@ -57,7 +64,8 @@ hit occupied slots: `SUPERSEDED` already means *non-current duplicate* (decided 
   ceiling; named presets and the taxonomy-growth contract
 - `safe-extraction` — `ExtractionStatus.OVERWRITTEN`; `presented_name` and
   failure-group fields on `ExtractionResult`; `abort_on` opt-in; collision and
-  sanitize recorded in results rather than diagnostics
+  sanitize recorded in results rather than diagnostics; atomic HARDLINK replacement and
+  the failed-clobber revision in `Overwrite Policy`
 
 ## Impact
 

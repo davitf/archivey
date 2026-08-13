@@ -9,7 +9,7 @@ backend capability gates (password / seekability) → normalize stream origin �
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable
+from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -34,6 +34,7 @@ from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.extraction_types import (
+    AbortOn,
     ExtractionPolicy,
     ExtractionProgress,
     OnError,
@@ -491,6 +492,7 @@ def extract(
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
     on_error: OnError = OnError.STOP,
+    abort_on: Collection[AbortOn] = (),
     format: ArchiveFormat | None = None,
     password: PasswordInput = None,
     encoding: str | None = None,
@@ -511,6 +513,11 @@ def extract(
     failing fast would reject a source it can perfectly well consume. A seekable source
     keeps random-access mode — that preserves the re-readable second pass that recovers a
     hardlink whose target failed or preceded it in archive order.
+
+    ``abort_on`` names events that end the whole call the first time they occur — a
+    blocked member, a name collision, a portable-name rewrite — raising instead of
+    returning a report. It is independent of ``on_error``; see
+    :class:`~archivey.AbortOn`.
 
     Returns an :class:`~archivey.ExtractionReport` whose diagnostic summary spans
     detection, open, and extraction for this call.
@@ -533,6 +540,7 @@ def extract(
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
+            abort_on=abort_on,
             on_progress=on_progress,
             limits=limits,
         )

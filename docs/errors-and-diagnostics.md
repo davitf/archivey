@@ -27,6 +27,7 @@ React to specific cases with the subtypes:
 | `CorruptionError` / `TruncatedError` | the archive is malformed or cut short |
 | `PackageNotInstalledError` | an optional package or tool is absent (e.g. the `unrar` binary for RAR data) |
 | `FilterRejectionError` | extraction blocked an unsafe member — `PathTraversalError`, `SymlinkEscapeError`, `SpecialFileError` |
+| `NameCollisionError` / `NameRewrittenError` | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
 | `ResourceLimitError` | a listing/extraction safety limit (member count, size) was exceeded |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
@@ -58,6 +59,51 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | `PASSWORD_ARGUMENT_UNUSED` | You passed `password=` to a format with no encryption. Passing a keyring across a batch of mixed archives is the intended use, so it is accepted and simply never consulted. |
 | `ENCODING_ARGUMENT_UNUSED` | You passed `encoding=` to a backend that decodes names another way — 7z stores UTF-16, RAR decodes in its own parser, directory and single-file names come from the filesystem. |
 | `MEMBER_NAME_BIDI_CONTROL` | A member name contains a Unicode bidi formatting control. The context names the exact codepoints, because an *override* (U+202A–202E, U+2066–2069 — how `evil‮gnp.exe` displays as a `.png`) is a different thing from a *directional mark* (U+061C, U+200E, U+200F), which appears in ordinary Arabic and Hebrew filenames. |
+
+#### What is *not* here: per-member extraction outcomes
+
+Extraction is the one operation that returns a structured per-item report, so
+[`ExtractionReport.results`][archivey.ExtractionReport] is the **sole** record of what
+happened to each member — blocked, failed, collided, renamed, rewritten. None of it is
+also a diagnostic. A fact has exactly one authoritative channel, and when a return value
+can carry it, the return value wins.
+
+Practically: to find out what extraction did, read `results`, not
+`report.diagnostics`. The summary still carries what was observed while *reading* the
+archive during extraction (invalid timestamps, unresolvable symlinks, unverifiable
+digests, stream rewinds) — those have no per-member result to live on.
+
+Escalation is not lost with the codes: `abort_on` (see
+[Safe extraction](extracting.md)) is the named opt-in for being stopped by a blocked
+member, a collision, or a name rewrite.
+
+### Named policy presets
+
+Hand-curating a disposition per code means re-reading the whole taxonomy every release.
+Two constructors do it for you:
+
+```python
+from archivey import ArchiveyConfig, DiagnosticPolicy, ARCHIVE_INTEGRITY_CODES
+
+config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+```
+
+- **`DiagnosticPolicy.strict()`** raises on `ARCHIVE_INTEGRITY_CODES` — the codes that
+  report the archive's own bytes or metadata as anomalous — and collects the rest.
+- **`DiagnosticPolicy.pedantic()`** raises on everything.
+
+Five codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive is
+legitimate), `PASSWORD_ARGUMENT_UNUSED` and `ENCODING_ARGUMENT_UNUSED` (argument
+hygiene — a pipeline passing a password to every call would otherwise raise on every
+unencrypted archive), `EXPLICIT_FORMAT_LISTED_EMPTY` (an override that halts you is not
+an override), and `STREAM_REWIND_REDECOMPRESSES` (your access pattern, not the archive
+— most useful as a targeted tripwire). `ARCHIVE_INTEGRITY_CODES` is exported, so you can
+build your own policy from it.
+
+**New codes may appear in minor releases.** A policy with `default=RAISE` is therefore
+not version-stable: an upgrade can start raising on events your working program never
+produced. `strict()`, whose membership is versioned alongside the taxonomy, is the
+recommended strict mode. Removing a code stays a breaking change.
 
 ## When an archive is damaged
 

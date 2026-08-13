@@ -281,6 +281,21 @@ def build_parser() -> argparse.ArgumentParser:
             "default: continue and report)"
         ),
     )
+    p_extract.add_argument(
+        "--abort-on",
+        action="append",
+        choices=["blocked-member", "name-collision", "name-sanitized"],
+        default=None,
+        metavar="EVENT",
+        dest="abort_on",
+        help=(
+            "abort the whole extraction the first time EVENT occurs, instead of "
+            "recording it and continuing; repeatable. blocked-member is the "
+            "fail-closed choice for untrusted archives. name-sanitized is a narrow "
+            "escape hatch for byte-fidelity work, not part of ordinary strict "
+            "extraction"
+        ),
+    )
     _add_filter_args(p_extract)
     p_extract.set_defaults(_run="extract")
 
@@ -386,6 +401,7 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
             salvage=False,
             hide_progress=bool(args.hide_progress),
             stop_on_error=bool(getattr(args, "stop_on_error", False)),
+            abort_on=list(getattr(args, "abort_on", None) or ()),
             out=out,
             err=err,
         )

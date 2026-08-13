@@ -190,8 +190,13 @@ nor `DIRECTORY`. Original write-up below.
 
 - **Today:** nothing warns. `reader.cost.access_cost == SOLID` is the queryable signal,
   and `ArchiveReader.open()` / `.read()` docstrings carry the cost (#225).
-- **Decided already:** it is **not** a diagnostic. Diagnostics describe the archive, not
-  the caller's usage pattern — see the docs/specs row below.
+- **Decided already:** it is **not** a diagnostic. The reason is the taxonomy's
+  **admission** clause (`openspec/specs/diagnostics`): a diagnostic must report
+  something the caller could not have determined from the declared contract of the
+  call, and out-of-order solid access is already carried by `reader.cost.access_cost`
+  and the `open()` / `.read()` docstrings. (The older "diagnostics describe the archive,
+  not the caller" phrasing was retired with O-23 — the outcome is unchanged, the test
+  behind it is not.)
 - **Open question:** whether a plain `warnings.warn` is worth it. Arguments for: a
   quadratic read is a real footgun and nothing surfaces it at runtime. Against: it fires
   on a legitimate access pattern the caller may have chosen knowingly, and per-call

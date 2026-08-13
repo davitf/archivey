@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from archivey import (
+    ARCHIVE_INTEGRITY_CODES,
+    AbortOn,
     ArchiveMember,
     ArchiveyConfig,
     Diagnostic,
@@ -31,7 +33,11 @@ from archivey.diagnostics import (
     NameNormalizationContext,
     ScanRaceContext,
 )
-from archivey.exceptions import TruncatedError, UnsupportedOperationError
+from archivey.exceptions import (
+    PathTraversalError,
+    TruncatedError,
+    UnsupportedOperationError,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.types import MemberType
 
@@ -417,7 +423,12 @@ def test_directory_scan_race_diagnostic(
 
 
 @pytest.mark.parametrize("on_error", [OnError.CONTINUE, OnError.STOP])
-def test_extraction_blocked_emits_diagnostic(tmp_path: Path, on_error: OnError) -> None:
+def test_extraction_blocked_is_result_only(tmp_path: Path, on_error: OnError) -> None:
+    """A blocked member is recorded in ``results`` and nowhere else.
+
+    The placement clause: extraction returns a per-item report, so the outcome has no
+    second home in the diagnostics channel.
+    """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("../escape.txt", b"x")
@@ -430,27 +441,72 @@ def test_extraction_blocked_emits_diagnostic(tmp_path: Path, on_error: OnError) 
     )
     blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
     assert blocked
-    assert DiagnosticCode.EXTRACTION_MEMBER_BLOCKED in report.diagnostics.counts
-    outcome = next(
-        d
-        for d in report.diagnostics.retained
-        if d.code is DiagnosticCode.EXTRACTION_MEMBER_BLOCKED
-    )
-    assert outcome.context.status == "blocked"
+    assert isinstance(blocked[0].error, PathTraversalError)
+    # No extraction-outcome code exists to be counted.
+    assert not [
+        code
+        for code in report.diagnostics.counts
+        if code.value.startswith("extraction_")
+    ]
 
 
-def test_raise_disposition_stops_despite_continue(tmp_path: Path) -> None:
+def test_abort_on_blocked_member_stops_despite_continue(tmp_path: Path) -> None:
+    """The named replacement for RAISE-on-EXTRACTION_MEMBER_BLOCKED.
+
+    Same behaviour the disposition used to give by accident — abort on the first unsafe
+    member, under ``OnError.CONTINUE`` — now spelled out, and raising the underlying
+    rejection rather than a ``DiagnosticRaisedError``.
+    """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("../escape.txt", b"x")
         zf.writestr("ok.txt", b"y")
     dest = tmp_path / "out"
     dest.mkdir()
+    with pytest.raises(PathTraversalError):
+        extract(
+            io.BytesIO(buf.getvalue()),
+            dest,
+            on_error=OnError.CONTINUE,
+            abort_on={AbortOn.BLOCKED_MEMBER},
+        )
+    # No report is returned, and the later member was never processed.
+    assert not (dest / "ok.txt").exists()
+
+
+def test_blocked_member_does_not_abort_without_opt_in(tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../escape.txt", b"x")
+        zf.writestr("ok.txt", b"y")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    report = extract(io.BytesIO(buf.getvalue()), dest, on_error=OnError.CONTINUE)
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (dest / "ok.txt").read_bytes() == b"y"
+
+
+def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None:
+    """Dispositions stay authoritative for the diagnostics that still fire while
+    extracting: per-member outcomes left the channel, reading events did not."""
+    import tarfile
+    import time
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 1
+        info.mtime = -(2**40)  # far outside the representable range
+        tf.addfile(info, io.BytesIO(b"x"))
+    dest = tmp_path / "out"
+    dest.mkdir()
     policy = DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.EXTRACTION_MEMBER_BLOCKED: DiagnosticDisposition.RAISE
-        }
+        overrides={DiagnosticCode.MEMBER_TIMESTAMP_INVALID: DiagnosticDisposition.RAISE}
     )
+    del time
     with pytest.raises(DiagnosticRaisedError) as ei:
         extract(
             io.BytesIO(buf.getvalue()),
@@ -458,7 +514,7 @@ def test_raise_disposition_stops_despite_continue(tmp_path: Path) -> None:
             on_error=OnError.CONTINUE,
             config=ArchiveyConfig(diagnostic_policy=policy),
         )
-    assert ei.value.diagnostic.code is DiagnosticCode.EXTRACTION_MEMBER_BLOCKED
+    assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
 
 
 def test_strict_eof_precedence_over_raise() -> None:
@@ -618,3 +674,99 @@ def test_unused_argument_context_carries_no_password_material() -> None:
         serialized = json.dumps(record.to_dict())
         assert "hunter2" not in serialized
         assert record.context.argument == "password"  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Named policy presets
+# ---------------------------------------------------------------------------
+
+
+def test_strict_preset_equals_hand_built_policy() -> None:
+    """Presets add no resolution axis — they are ordinary frozen policy values."""
+    hand_built = DiagnosticPolicy(
+        default=DiagnosticDisposition.COLLECT,
+        overrides=dict.fromkeys(ARCHIVE_INTEGRITY_CODES, DiagnosticDisposition.RAISE),
+    )
+    assert DiagnosticPolicy.strict() == hand_built
+    assert DiagnosticPolicy.pedantic() == DiagnosticPolicy(
+        default=DiagnosticDisposition.RAISE
+    )
+
+
+def test_strict_preset_raises_on_archive_integrity() -> None:
+    from archivey.types import ArchiveFormat
+    from tests.test_tar import _tar_missing_eof_block
+
+    with pytest.raises(DiagnosticRaisedError) as ei:
+        with open_archive(
+            io.BytesIO(_tar_missing_eof_block()),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+        ) as ar:
+            ar.members()
+    assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+
+
+def test_strict_preset_does_not_raise_on_argument_hygiene(tmp_path: Path) -> None:
+    """The pipeline case: a password passed speculatively to every call must not make
+    every unencrypted archive raise under a policy named 'strict'."""
+    import tarfile
+
+    from archivey.types import ArchiveFormat
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 1
+        tf.addfile(info, io.BytesIO(b"x"))
+    data = buf.getvalue()
+    with open_archive(
+        io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        password="unused",
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+    ) as ar:
+        ar.members()
+        assert DiagnosticCode.PASSWORD_ARGUMENT_UNUSED in ar.diagnostics.counts
+    # pedantic() is the preset that does raise on it.
+    with pytest.raises(DiagnosticRaisedError) as ei:
+        with open_archive(
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            password="unused",
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic()),
+        ) as ar:
+            ar.members()
+    assert ei.value.diagnostic.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED
+
+
+def test_strict_preset_does_not_raise_on_empty_archive() -> None:
+    """An empty archive is legitimate; the diagnostics spec forbids treating zero
+    members as an error, so strict() must not turn it into one."""
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w"):
+        pass
+    from archivey.types import ArchiveFormat
+
+    with open_archive(
+        io.BytesIO(buf.getvalue()),
+        format=ArchiveFormat.TAR,
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+    ) as ar:
+        assert ar.members() == []
+        assert DiagnosticCode.EMPTY_ARCHIVE in ar.diagnostics.counts
+
+
+def test_archive_integrity_codes_are_all_real_codes() -> None:
+    """The preset and the taxonomy cannot drift apart silently."""
+    assert ARCHIVE_INTEGRITY_CODES <= set(DiagnosticCode)
+    excluded = set(DiagnosticCode) - ARCHIVE_INTEGRITY_CODES
+    assert excluded == {
+        DiagnosticCode.EMPTY_ARCHIVE,
+        DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY,
+        DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
+        DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
+        DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+    }

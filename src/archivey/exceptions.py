@@ -137,6 +137,27 @@ class DeceptiveNameError(FilterRejectionError):
     """
 
 
+class NameCollisionError(ExtractionError):
+    """A member resolved to a destination another member of this run already claimed.
+
+    Raised only when the caller opted in with ``AbortOn.NAME_COLLISION``; without that
+    opt-in a collision is not an error at all — ``OverwritePolicy`` resolves it and both
+    members' ``ExtractionResult`` records the outcome. It is raised for *every*
+    non-``TRUSTED`` collision regardless of how the policy would have resolved it, since
+    the trigger is the collision itself, not its resolution.
+    """
+
+
+class NameRewrittenError(ExtractionError):
+    """A member name was rewritten to its portable spelling.
+
+    Raised only when the caller opted in with ``AbortOn.NAME_SANITIZED`` — a narrow
+    escape hatch for callers who require the on-disk name to match the archive's byte
+    for byte. Without the opt-in the rewrite is a success, recorded as
+    ``ExtractionResult.presented_name``.
+    """
+
+
 class ResourceLimitError(ArchiveyError):
     """A configured listing or extraction resource limit was exceeded.
 

@@ -112,6 +112,7 @@ class ExtractionResult:
     presented_name: str | None = None
     failure_group_id: str | None = None
     failure_group_size: int | None = None
+    collided_with: Path | None = None
 
 class ExtractionStatus(str, Enum):
     EXTRACTED = "extracted"
@@ -150,16 +151,40 @@ rewriting, and SHALL be `None` when no rewrite occurred. It is distinct from
 a caller `filter` rename followed by a portable rewrite produces three spellings, and
 only `presented_name` records the middle one.
 
+`collided_with` SHALL carry the already-written destination this member collided
+with, and SHALL be `None` when nothing this run held the name. It SHALL be set under
+exactly the condition that constitutes a collision *event* — a destination claimed by
+a member of this same run, under a non-`TRUSTED` policy — and therefore for **every**
+resolution: `SKIP`, `ERROR`, a `REPLACE` merge, and `RENAME` alike. An obstacle that
+was already on disk before extraction started is not a collision event and SHALL
+leave the field `None`; the destination is recorded in `requested_path` regardless.
+
+This is what makes the collision *cause* a property of the result rather than an
+inference over the report: without it, a member blocked by another member of this run
+and a member blocked by a pre-existing file produce identical results under every
+policy. Callers MAY join to the blocking member by plain path equality against another
+result's `path`, or its `requested_path` when that member was itself later revised to
+`OVERWRITTEN` and no longer holds a live path.
+
 `failure_group_id` / `failure_group_size` SHALL both be set only when one failed
 hardlink source causes `N` `FAILED` link results, which SHALL share one group id and
-`failure_group_size=N`; otherwise both are `None`. The id SHALL keep the shipped
-`str` shape and generation (`uuid.uuid4().hex`) it has on
-`ExtractionOutcomeContext` today — the field moves, its type does not change. It is
-opaque: callers MAY compare ids for equality to join a group, and SHALL NOT rely on
-ordering, format, or cross-run stability.
+`failure_group_size=N`; otherwise both are `None`. The id SHALL be a `str` generated
+as `uuid.uuid4().hex` — the shape and generation the field carried on the diagnostics
+channel before it moved here; relocating it did not change its type. It is opaque:
+callers MAY compare ids for equality to join a group, and SHALL NOT rely on ordering,
+format, or cross-run stability.
 
 `ExtractionResult` has no diagnostics field; `status`, `error` and the fields above
 are the per-result outcome.
+
+#### Scenario: collision cause is recorded on the result
+
+| Case | `collided_with` |
+| --- | --- |
+| Blocked by a member of this run (`SKIP` / `ERROR` / `REPLACE` / `RENAME`) | the prior member's written path |
+| Blocked by an entry already on disk before extraction | `None` |
+| No collision at all | `None` |
+| Any collision under `ExtractionPolicy.TRUSTED` | `None` (no collision event) |
 
 #### Scenario: result/status matrix
 
@@ -299,6 +324,84 @@ rewritten name then collides and is renamed).
 | `REPLACE` with a casefold collision | Not a silent merge; earlier member revised to `OVERWRITTEN` | Local OS behavior |
 | `RENAME` with a collision (case/NFC or exact) | Second entry written as `name (1)` before the suffix; `requested_path` = intended name | Same |
 | Filter rename, then a portable rewrite | `member.name`, `presented_name`, and `path.name` are all three spellings | Faithful bytes attempted |
+
+### Requirement: Overwrite Policy
+
+The system SHALL enforce `OverwritePolicy` whenever a destination entry already
+exists at the transformed member path:
+
+```python
+class OverwritePolicy(Enum):
+    ERROR = "error"
+    SKIP = "skip"
+    REPLACE = "replace"
+    RENAME = "rename"
+```
+
+`ERROR` raises a per-member `ExtractionError` governed by `OnError`; `SKIP`
+records a `NOT_OVERWRITTEN` result and is not a failure. Existence checks SHALL use
+`lstat` semantics so dangling symlinks count as existing entries. `REPLACE` SHALL
+be atomic wherever the platform permits, and SHALL never write through a symlink.
+
+FILE and HARDLINK replacement SHALL be atomic: the new entry is built beside the
+destination (a temp file for FILE data, a temp link for HARDLINK), metadata is
+applied to it, and `os.replace()` moves it onto the destination. A failure part-way
+through preserves the existing entry and discards only the temp. `os.replace()`
+moves the entry itself, so a destination symlink is replaced rather than followed.
+
+SYMLINK and DIRECTORY replacement SHALL remove the existing entry and create fresh,
+because neither can be staged: a symlink MUST be created at its final name for the
+escape re-validation's cycle check to resolve, and a directory cannot be renamed
+over a non-directory at all. Replacing an existing directory with any member type
+removes the directory first.
+
+Where `REPLACE` removes an existing entry that a **member of this same run** wrote,
+and the replacing write then fails, that earlier member's content is gone. Its
+`ExtractionResult` SHALL be revised to `ExtractionStatus.OVERWRITTEN` even though no
+member ended up holding the destination — a result SHALL NOT report `EXTRACTED` for
+content that no longer exists.
+
+`RENAME` writes a colliding entry under a deterministic derived name (`name (1)`,
+inserted before the final suffix) rather than overwriting — see the cross-platform
+name-safety requirement.
+
+#### Scenario: overwrite matrix
+
+| Case | Expected |
+| --- | --- |
+| Existing path under `ERROR` | `ExtractionError`; existing entry unmodified |
+| Existing path under `SKIP` | `ExtractionResult.status == NOT_OVERWRITTEN`, `path=None`, no exception |
+| Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
+| Existing entry replaced by a HARDLINK under `REPLACE` | Link is built at a temp sibling and `os.replace()`d in; a failure leaves the existing entry intact |
+| Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
+| `REPLACE` fails mid-stream | Existing file remains unchanged; temp is discarded |
+| `REPLACE` clears a this-run destination and then fails | The earlier member is revised to `OVERWRITTEN`; no result claims `EXTRACTED` at the emptied path |
+| Dangling symlink under `ERROR` or `SKIP` | Treated as existing; no write-through to target |
+
+### Requirement: Anti-item extraction is delete-only-if-written
+
+For `is_anti` members, extraction SHALL NOT write payload. It SHALL delete the
+destination only if this same extraction wrote that path (file or empty dir via
+`lstat`/`unlink`); otherwise it is a success no-op. Pre-existing, populated, or
+out-of-root paths MUST NOT be deleted. `MemberType.ANTI` SHALL NOT raise
+`SpecialFileError` (only `OTHER` does).
+
+A delete SHALL also release the destination's collision claim, so a later member
+resolving to the same key does not collide against content that no longer exists.
+The claim and the on-disk entry are two records of the same fact and SHALL be
+cleared together; a stale claim would otherwise abort under `AbortOn.NAME_COLLISION`
+with the destination empty, or revise an already-deleted member to `OVERWRITTEN`.
+
+#### Scenario: anti extraction matrix
+
+| Case | Expected |
+| --- | --- |
+| Anti path missing / pre-existing not written this run | Success no-op; pre-existing untouched |
+| Earlier member this run wrote the path, then anti | Just-created file/empty dir removed |
+| Same case, then a later member with the same collision key | No collision: the delete released the claim |
+| Anti no-op (nothing written this run at that path) | Unrelated claims untouched |
+| `check_universal` on `ANTI` | No `SpecialFileError` for type alone |
+| `MemberType.OTHER` | Still `SpecialFileError` under all policies |
 
 ## ADDED Requirements
 

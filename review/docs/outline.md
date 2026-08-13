@@ -293,8 +293,9 @@ trust boundaries is a link *out of the guide*.
    misread knob on the page (must-explain #6).
 6. **Names change on disk.** `STRICT` strips trailing dots and spaces and
    percent-escapes non-UTF-8 bytes; reserved names and `:` are rejected on **every**
-   OS; case and NFC/NFD collisions are deliberate on every OS. `requested_path` and
-   `EXTRACTION_NAME_SANITIZED` are how you see it.
+   OS; case and NFC/NFD collisions are deliberate on every OS. `presented_name` (the
+   pre-rewrite spelling), `requested_path`, and `ExtractionStatus.OVERWRITTEN` are how
+   you see it — all on the result, since extraction emits no diagnostics.
 7. **Overwrite.** `ERROR` / `REPLACE` / `SKIP` / `RENAME`. `REPLACE` unlinks then
    creates — it **never writes through** a pre-existing symlink.
 8. **Limits and bombs.** `ExtractionLimits` vs `ListingLimits`, the actual defaults
@@ -515,8 +516,9 @@ Diagnostics have a 181-line spec and, on the site, two lines at the bottom of
 5. **The codes worth knowing** — the ones a user should act on:
    `FORMAT_EXTENSION_CONFLICT`, `STREAM_REWIND_REDECOMPRESSES`,
    `ARCHIVE_EOF_MARKER_MISSING`, `DIGEST_UNVERIFIABLE`,
-   `EXTRACTION_NAME_SANITIZED`, `member_name_encoding_inferred`. Not the full
-   catalogue — `api.md` has that.
+   `member_name_encoding_inferred`. Not the full catalogue — `api.md` has that.
+   Per-member extraction outcomes are deliberately absent: they live on
+   `ExtractionResult`, never in this channel.
 6. **Policy.** `IGNORE` / `COLLECT` / `RAISE`, and `DiagnosticRaisedError` as the
    always-stop path.
 7. **Limits vs filters.** `ResourceLimitError` (a bomb or a cap) versus

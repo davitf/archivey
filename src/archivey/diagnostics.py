@@ -75,10 +75,9 @@ class DiagnosticCode(str, Enum):
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
-    EXTRACTION_MEMBER_BLOCKED = "extraction_member_blocked"
-    EXTRACTION_MEMBER_FAILED = "extraction_member_failed"
-    EXTRACTION_NAME_COLLISION = "extraction_name_collision"
-    EXTRACTION_NAME_SANITIZED = "extraction_name_sanitized"
+    # No per-member extraction outcome has a code here. Extraction returns a structured
+    # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
+    # the placement clause in ``openspec/specs/diagnostics``.
 
 
 class DiagnosticSeverity(str, Enum):
@@ -291,48 +290,6 @@ class StreamRewindContext(_JsonSafeContext):
     accelerator: str | None = None
 
 
-@dataclass(frozen=True)
-class ExtractionOutcomeContext(_JsonSafeContext):
-    """Per-member extraction blocked by policy or failed with an error."""
-
-    kind: Literal["extraction_outcome"] = "extraction_outcome"
-    archive_name: str | None = None
-    member_name: str = ""
-    member_id: int | None = None
-    status: Literal["blocked", "failed"] = "failed"
-    error_type: str = ""
-    failure_group_id: str | None = None
-    failure_group_size: int | None = None
-
-
-@dataclass(frozen=True)
-class NameCollisionContext(_JsonSafeContext):
-    """A member whose casefold/NFC (or exact, under TRUSTED) name key clashed with an
-    earlier written member this run — the O2 audit trail. ``prior_path`` is the path the
-    earlier member claimed; ``resolution`` records how ``OverwritePolicy`` handled it."""
-
-    kind: Literal["name_collision"] = "name_collision"
-    archive_name: str | None = None
-    member_name: str = ""
-    member_id: int | None = None
-    prior_path: str = ""
-    resolution: Literal["renamed", "replaced", "skipped", "errored"] = "errored"
-
-
-@dataclass(frozen=True)
-class NameSanitizedContext(_JsonSafeContext):
-    """A member whose name was rewritten to a portable spelling under STRICT/STANDARD — a
-    trailing dot/space stripped (O3) or a non-representable byte percent-escaped (O7). The
-    member still extracts; ``portable_name`` is what landed on disk."""
-
-    kind: Literal["name_sanitized"] = "name_sanitized"
-    archive_name: str | None = None
-    member_name: str = ""
-    member_id: int | None = None
-    presented_name: str = ""
-    portable_name: str = ""
-
-
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -348,9 +305,6 @@ DiagnosticContext = (
     | DigestContext
     | SeekIndexContext
     | StreamRewindContext
-    | ExtractionOutcomeContext
-    | NameCollisionContext
-    | NameSanitizedContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -373,20 +327,50 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
-        DiagnosticCode.EXTRACTION_MEMBER_BLOCKED: "extraction_outcome",
-        DiagnosticCode.EXTRACTION_MEMBER_FAILED: "extraction_outcome",
-        DiagnosticCode.EXTRACTION_NAME_COLLISION: "name_collision",
-        DiagnosticCode.EXTRACTION_NAME_SANITIZED: "name_sanitized",
     }
 )
+
+
+ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
+    {
+        DiagnosticCode.MEMBER_NAME_NORMALIZED,
+        DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
+        DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+        DiagnosticCode.FORMAT_EXTENSION_CONFLICT,
+        DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
+        DiagnosticCode.SCAN_DIRECTORY_VANISHED,
+        DiagnosticCode.SCAN_ENTRY_VANISHED,
+        DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
+        DiagnosticCode.ARCHIVE_TRAILING_DATA,
+        DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+        DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
+        DiagnosticCode.DIGEST_UNVERIFIABLE,
+        DiagnosticCode.SEEK_INDEX_DEGRADED,
+    }
+)
+"""Codes reporting the archive's own bytes or metadata as anomalous.
+
+The membership of :meth:`DiagnosticPolicy.strict`. Five codes are deliberately **out**,
+and the reasons are part of the contract rather than an oversight:
+
+- ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
+  treating zero members as an error.
+- ``ENCODING_ARGUMENT_UNUSED`` / ``PASSWORD_ARGUMENT_UNUSED`` — argument hygiene. A
+  pipeline that speculatively passes a password to every call would otherwise raise on
+  every unencrypted archive.
+- ``EXPLICIT_FORMAT_LISTED_EMPTY`` — ``format=`` is an override, and an override that
+  halts the caller is not an override.
+- ``STREAM_REWIND_REDECOMPRESSES`` — reports the caller's access pattern rather than the
+  archive, and is most useful as a deliberately targeted tripwire.
+"""
 
 
 def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> None:
     """Reject unregistered or mismatched code→context pairings.
 
     Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``. A few
-    codes share a kind and need an extra field check so blocked≠failed, directory
-    vanish≠entry vanish, etc. — those guards live below the kind match.
+    codes share a kind and need an extra field check so directory vanish≠entry
+    vanish — those guards live below the kind match.
     """
     expected = _CODE_CONTEXT_KINDS.get(code)
     if expected is None:
@@ -405,21 +389,6 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
         not isinstance(context, ScanRaceContext) or context.entry_kind != "entry"
     ):
         raise ValueError("SCAN_ENTRY_VANISHED requires entry_kind='entry'")
-    if code is DiagnosticCode.EXTRACTION_MEMBER_BLOCKED and (
-        not isinstance(context, ExtractionOutcomeContext) or context.status != "blocked"
-    ):
-        raise ValueError("EXTRACTION_MEMBER_BLOCKED requires status='blocked'")
-    if code is DiagnosticCode.EXTRACTION_MEMBER_FAILED and (
-        not isinstance(context, ExtractionOutcomeContext) or context.status != "failed"
-    ):
-        raise ValueError("EXTRACTION_MEMBER_FAILED requires status='failed'")
-    if isinstance(context, ExtractionOutcomeContext):
-        # Group metadata is all-or-nothing so partial fills cannot look like a group.
-        group_id, group_size = context.failure_group_id, context.failure_group_size
-        if (group_id is None) ^ (group_size is None):
-            raise ValueError(
-                "failure_group_id and failure_group_size must both be set or both None"
-            )
 
 
 @dataclass(frozen=True)
@@ -475,6 +444,35 @@ class DiagnosticPolicy:
 
     def resolve(self, code: DiagnosticCode) -> DiagnosticDisposition:
         return self.overrides.get(code, self.default)
+
+    @staticmethod
+    def strict() -> DiagnosticPolicy:
+        """RAISE on :data:`ARCHIVE_INTEGRITY_CODES`, COLLECT on everything else.
+
+        The recommended strict mode. Unlike a bare ``default=RAISE`` policy it is
+        version-stable in the way that matters: new codes MAY be added in a minor
+        release, and a ``default=RAISE`` caller starts raising on events their working
+        program never produced, whereas this set's membership is versioned alongside the
+        taxonomy and each addition is a deliberate decision.
+
+        Adds no resolution axis — the value is an ordinary frozen policy with per-code
+        overrides, and equals the same policy built by hand.
+        """
+        return DiagnosticPolicy(
+            default=DiagnosticDisposition.COLLECT,
+            overrides=dict.fromkeys(
+                ARCHIVE_INTEGRITY_CODES, DiagnosticDisposition.RAISE
+            ),
+        )
+
+    @staticmethod
+    def pedantic() -> DiagnosticPolicy:
+        """RAISE on every code, including the argument-hygiene and access-pattern ones.
+
+        See the taxonomy-growth note on :meth:`strict`: this policy raises on codes added
+        after the caller wrote it, by construction.
+        """
+        return DiagnosticPolicy(default=DiagnosticDisposition.RAISE)
 
 
 @dataclass(frozen=True)
@@ -549,6 +547,7 @@ def format_path_name(path: str | Path | None) -> str | None:
 
 
 __all__ = [
+    "ARCHIVE_INTEGRITY_CODES",
     "ArchiveEofContext",
     "Diagnostic",
     "DiagnosticCode",
@@ -559,14 +558,11 @@ __all__ = [
     "DiagnosticSummary",
     "DigestContext",
     "EmptyArchiveContext",
-    "ExtractionOutcomeContext",
     "ExtractionReport",
     "FormatConflictContext",
     "MemberListReport",
     "MemberNameControlsContext",
     "MemberTimestampContext",
-    "NameCollisionContext",
-    "NameSanitizedContext",
     "NameEncodingContext",
     "NameNormalizationContext",
     "OnDiagnostic",

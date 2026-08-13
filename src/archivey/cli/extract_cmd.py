@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import TextIO
 
 from archivey import (
+    AbortOn,
     ExtractionPolicy,
     ExtractionProgress,
     ExtractionReport,
+    ExtractionResult,
     ExtractionStatus,
     OnError,
     OverwritePolicy,
@@ -199,7 +201,11 @@ def _merge_move(
         free = _free_name(dest, is_dir=src_is_dir)
         os.rename(src, free)
         result.renamed += 1
-        print(f"renamed: {dest} -> {free}", file=err)
+        print(
+            f"renamed: {escape_member_name(str(dest))} -> "
+            f"{escape_member_name(str(free))}",
+            file=err,
+        )
         return
     if overwrite is OverwritePolicy.REPLACE and not src_is_dir and not dest_is_dir:
         os.replace(src, dest)  # replaces exactly the file being extracted
@@ -207,7 +213,7 @@ def _merge_move(
     if overwrite is OverwritePolicy.SKIP and not src_is_dir:
         src.unlink()
         result.skipped += 1
-        print(f"skipped: {dest}", file=err)
+        print(f"skipped: {escape_member_name(str(dest))}", file=err)
         return
     # ERROR policy — or a dir-vs-file shape that REPLACE/SKIP cannot express
     # without deleting pre-existing data. Stop; the caller keeps the remainder
@@ -262,13 +268,16 @@ def maybe_hoist_single_root(
             _merge_move(child, dest, overwrite, result, err)
             wrapper.rmdir()
     except _HoistConflict as conflict:
-        print(f"Destination already exists: {conflict.dest}", file=err)
+        print(
+            f"Destination already exists: {escape_member_name(str(conflict.dest))}",
+            file=err,
+        )
         print(f"hoist stopped; remaining files left in {wrapper}/", file=err)
         return _HoistResult(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
         )
     except OSError as exc:
-        print(f"hoist failed: {exc}", file=err)
+        print(f"hoist failed: {escape_member_name(str(exc))}", file=err)
         print(f"files left in {wrapper}/", file=err)
         return _HoistResult(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
@@ -340,7 +349,9 @@ def _report_extraction(
                 renamed += 1
                 # Renames change where data lives — always report them.
                 print(
-                    f"renamed: {result.requested_path} -> {result.path}",
+                    f"renamed: "
+                    f"{escape_member_name(_relative_name(result.requested_path, target))}"
+                    f" -> {escape_member_name(_relative_name(result.path, target))}",
                     file=err,
                 )
             elif verbose:
@@ -348,10 +359,28 @@ def _report_extraction(
                     f"extracted: {escape_member_name(result.member.name)}",
                     file=err,
                 )
+            # A portable rewrite is a different event from a collision rename: the member
+            # landed where it asked to, under a different spelling. Always reported, for
+            # the same reason as a rename — the on-disk name is not the archive's.
+            if result.presented_name is not None:
+                # ``presented_name`` is the full relative name, so the arrow's other side
+                # must be too: a basename would print ``dir/foo. -> foo`` and invent a
+                # destination the member never had.
+                print(
+                    f"name rewritten: {escape_member_name(result.presented_name)} -> "
+                    f"{escape_member_name(_relative_name(result.path, target))}",
+                    file=err,
+                )
+        elif status is ExtractionStatus.OVERWRITTEN:
+            # Written, then clobbered by a later member. Not counted as extracted: its
+            # content is not what is on disk. Always reported — data was lost.
+            skipped += 1
+            where = _escaped_where(result, target)
+            print(f"overwritten: {where}", file=err)
         elif status is ExtractionStatus.NOT_OVERWRITTEN:
             skipped += 1
             # Overwrite-skips change outcomes under --overwrite skip; always note.
-            where = result.requested_path or escape_member_name(result.member.name)
+            where = _escaped_where(result, target)
             print(f"not overwritten: {where}", file=err)
         elif status is ExtractionStatus.SUPERSEDED:
             skipped += 1  # count superseded entries alongside skipped in summary
@@ -362,14 +391,22 @@ def _report_extraction(
                 )
         elif status is ExtractionStatus.BLOCKED:
             blocked += 1
-            detail = f": {result.error}" if result.error is not None else ""
+            detail = (
+                f": {escape_member_name(str(result.error))}"
+                if result.error is not None
+                else ""
+            )
             print(
                 f"blocked: {escape_member_name(result.member.name)}{detail}",
                 file=err,
             )
         elif status is ExtractionStatus.FAILED:
             failed += 1
-            detail = f": {result.error}" if result.error is not None else ""
+            detail = (
+                f": {escape_member_name(str(result.error))}"
+                if result.error is not None
+                else ""
+            )
             print(
                 f"failed: {escape_member_name(result.member.name)}{detail}",
                 file=err,
@@ -384,6 +421,38 @@ def _report_extraction(
         file=err,
     )
     return blocked, failed
+
+
+def _escaped_where(result: ExtractionResult, target: Path) -> str:
+    """The destination to report for a member that did not keep it, terminal-safe.
+
+    ``requested_path`` is built from the member's own name, so it carries whatever
+    control bytes the archive chose — the portable rewrite does not strip them under any
+    policy. Printing it raw is the line-spoofing vector ``escape_member_name`` exists to
+    close, so both the path and the name fallback go through it.
+
+    Rendered relative to the extraction root first, matching ``name rewritten:``. That is
+    not only for brevity: ``escape_member_name`` escapes backslashes, so handing it a
+    native Windows path would double every separator (``C:\\Users\\...``). The relative
+    name is ``/``-separated, so a backslash surviving into it is a real character in a
+    member name — which is exactly what should be escaped."""
+    if result.requested_path is not None:
+        return escape_member_name(_relative_name(result.requested_path, target))
+    return escape_member_name(result.member.name)
+
+
+def _relative_name(path: Path | None, target: Path) -> str:
+    """The on-disk name relative to the extraction root, for reporting.
+
+    Falls back to the full path when the member landed outside ``target`` (the hoist
+    moves content after extraction, so the report's paths and the final target can
+    disagree) and to ``""`` when nothing was written."""
+    if path is None:
+        return ""
+    try:
+        return path.relative_to(target).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
@@ -409,6 +478,7 @@ def run_extract(
     hide_progress: bool,
     verbose: bool,
     stop_on_error: bool = False,
+    abort_on: list[str] | None = None,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
@@ -420,6 +490,10 @@ def run_extract(
     policy_enum = ExtractionPolicy(policy)
     overwrite_enum = OverwritePolicy(overwrite)
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
+    # CLI spells the events with dashes; the enum values use underscores.
+    abort_on_enum = frozenset(
+        AbortOn(name.replace("-", "_")) for name in (abort_on or ())
+    )
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
@@ -470,6 +544,7 @@ def run_extract(
                     policy=policy_enum,
                     overwrite=overwrite_enum,
                     on_error=on_error,
+                    abort_on=abort_on_enum,
                     on_progress=on_progress,
                 )
             except (ArchiveyError, OSError) as exc:

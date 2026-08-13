@@ -6,6 +6,21 @@ Three reviewer responses to `dev-docs/discussions/diagnostics-archive-vs-usage.m
 agreed on more than they disagreed on. This change implements the union of what they
 agreed, plus the two proposals that survived a check against the tree.
 
+The circulated record, all under `dev-docs/discussions/`:
+
+| Document | Author | Prompt |
+| --- | --- | --- |
+| `diagnostics-archive-vs-usage.md` | the question as circulated, with a resolution banner pointing here | — |
+| `reviewer-1-opinion.md` | Grok 4.5 via Cursor | neutral, doc-only |
+| `reviewer-2-opinion.md` | Claude Opus 5 via Claude Code | neutral, doc-only — identical framing to reviewer 1 |
+| `reviewer-3-opinion.md` | Claude Fable 5, plain chat, no repo access | leading ("is this over-engineered?") |
+
+Reviewers 1 and 2 received the same neutral prompt, so their agreement is a paired
+comparison; reviewer 3's framing was solicited, so its agreement corroborates less.
+Each opinion file carries its own byline and verbatim prompt. Where the notes are
+cited below, the citation is to an argument that was checked against the tree, not to
+the fact that a reviewer made it.
+
 Verified before designing (repo at `9b170c0`):
 
 - `SUPERSEDED` means a non-current duplicate, decided from `is_current` at listing
@@ -68,12 +83,57 @@ exists. Result order stays member-processing order.
 
 The other three resolutions need no new signal: `RENAME` is the existing
 `requested_path != path` marker, `SKIP` yields `NOT_OVERWRITTEN` with `requested_path`
-set, `ERROR` yields `FAILED` with the error. So the full `{renamed, replaced, skipped,
-errored}` vocabulary the diagnostic carried is derivable from results once
-`OVERWRITTEN` exists.
+set, `ERROR` yields `FAILED` with the error. So the `{renamed, replaced, skipped,
+errored}` **resolution** vocabulary is derivable from results once `OVERWRITTEN`
+exists.
+
+The diagnostic carried a second fact, and an earlier draft of this section wrongly
+folded it into the sentence above: it fired *only* when a claim was held by this run
+(`prior is not None`), and it named that claim's `prior_path`. The resolutions are
+derivable; **which obstacle you hit is not**. A member blocked by another member of
+this run and a member blocked by a file that was already on disk produce identical
+results under all four policies — same status, same `path`, same `requested_path`.
+
+That gap is closed by `collided_with: Path | None` (D2a), not by widening the status
+enum. See D2a for why.
 
 Rejected: reusing `SUPERSEDED` (occupied — reviewer 1 checked and is right); a
 `replaced_by` member reference (heavier, and the path join already answers it).
+
+### D2a — `collided_with` carries the collision cause, as a path
+
+The distinction *is* recoverable from the whole report, by matching a blocked
+member's `requested_path` against other results under the same collision key. That is
+not a reason to leave it out. Derivable is not reported — `OVERWRITTEN` is derivable
+by the same argument, and this change adds it anyway. Two things make the derivation
+unfit to hand to callers:
+
+- the join key is `collision_key(rel_name, policy)` (NFC + casefold + policy-keyed),
+  which is internal; and
+- it needs a second branch for `REPLACE`, where the blocking member has been revised
+  to `OVERWRITTEN` and its `path` is now `None`, so only its `requested_path` matches.
+  The first draft of this derivation missed that branch.
+
+The coordinator already holds the answer at `_resolve_collision`. Recording it there
+is O(1) and exact.
+
+**Not a status.** "Who blocked me" is a relation between two results, not a property
+of one outcome. As enum values it would have to double four statuses, not one —
+`NOT_OVERWRITTEN`, `FAILED`, and both `EXTRACTED` variants (renamed, merged) carry the
+same ambiguity — and under `REPLACE` the informative row is the *other* member's, so
+the blocked member's own status has nothing to say.
+
+**A path, not an `ArchiveMember`.** The collision is decided on the *transformed*
+member, but results expose *originals* and the transformed copy is transient, so a
+member field has no single correct referent — while "which path" has exactly one.
+`ArchiveMember` is also a mutable, unhashable `slots` dataclass that backends fill in
+place after extraction, so embedding one would make result equality a deep compare of
+an object that changes underneath it. A path is immutable, hashable, and joins back to
+the member by plain equality. Under `RENAME` or a portable rewrite the blocker's
+`name` is not where it landed, so the path is also the more direct answer.
+
+`None` covers both "no collision" and "the obstacle predates the run". That is exact
+parity with the diagnostic, which was silent in both cases — not a lossy merge.
 
 ### D3 — `presented_name` for portable rewrites
 

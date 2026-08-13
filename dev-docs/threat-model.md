@@ -42,10 +42,17 @@ systems only.
 **Implemented** (`cross-platform-name-safety` / ADR 0013 / PR #109): the coordinator
 tracks a casefolded+NFC key per written path and, under `STRICT`/`STANDARD`, treats a
 collision as a first-class event on **all platforms** (`TRUSTED` keys on the exact path
-and defers to the local OS): apply the `OverwritePolicy` deliberately, record
-`requested_path` on the `ExtractionResult` plus an `EXTRACTION_NAME_COLLISION`
-diagnostic, and support `OverwritePolicy.RENAME` (extract as `photo (1).jpg`, counter
-before the suffix). Only content-bearing members (file/symlink/hardlink, including the
+and defers to the local OS): apply the `OverwritePolicy` deliberately, record the
+outcome on the `ExtractionResult`, and support `OverwritePolicy.RENAME` (extract as
+`photo (1).jpg`, counter before the suffix). Since
+`extraction-results-authoritative`, `results` is the **sole** record — there is no
+collision diagnostic. A `REPLACE` merge revises the clobbered member's result to
+`ExtractionStatus.OVERWRITTEN` (`path=None`, `requested_path` kept as the join to the
+member that took the destination), so the case-insensitive merge is observable rather
+than two members both reporting `EXTRACTED` at one path; a `RENAME` shows as
+`requested_path != path`. A caller who wants a collision to be **fatal** passes
+`abort_on={AbortOn.NAME_COLLISION}`, which fires on every non-`TRUSTED` collision
+whatever resolution follows. Only content-bearing members (file/symlink/hardlink, including the
 deferred orphan-hardlink pass) are tracked; **directories are intentionally untracked**
 (they merge structurally), so a *file* `Foo` vs a *directory* `foo/` collision stays
 OS-dependent — a known, deferred residual (ADR 0013).
@@ -59,9 +66,14 @@ Win32 to `foo` (silent clobber / mismatch between reported and actual path).
 `:` are *unsafe* (device capture / NTFS ADS) → rejected under `STRICT` and `STANDARD` on
 every platform. A trailing dot/space is a *legitimate* macOS/Linux name Win32 merely
 trims → `STRICT` **strips** it to the portable spelling (`stuff_etc.` → `stuff_etc`),
-deterministic per-OS, collision-tracked, and surfaced as an `EXTRACTION_NAME_SANITIZED`
-diagnostic (an all-dots segment like `...` has no portable spelling and is still
-rejected); `STANDARD`/`TRUSTED` keep it faithful.
+deterministic per-OS, collision-tracked, and recorded as
+`ExtractionResult.presented_name` — the full relative name *before* the rewrite, which
+is the only signal that survives a caller `filter` rename (archive name, filter output,
+and on-disk spelling are three different strings). An all-dots segment like `...` has
+no portable spelling and is still rejected; `STANDARD`/`TRUSTED` keep it faithful. A
+caller who refuses any rewritten on-disk name passes
+`abort_on={AbortOn.NAME_SANITIZED}`, documented as a narrow escape hatch rather than
+part of ordinary strict extraction.
 
 ### O4. NTFS alternate data streams — implemented (folded into O3)
 
@@ -224,6 +236,53 @@ consume the entire decoded buffer (reject trailing bytes), stricter property
 bounds, and upstream py7zr writing `kCRC` for the encoded-header folder remain
 optional hardenings. See `format-7z` ("never a silent empty listing") and
 `test_header_encrypted_empty_decoded_header_rejected`.
+
+### O9. Attacker-controlled bytes reaching the terminal via log records — open
+
+Member names are attacker-controlled, and a name may carry ANSI control sequences: a
+`README\x1b[2K\rSUCCESS.txt` printed raw lets the archive erase the line it is being
+reported on and author what the operator sees in its place. `cli/format.py`'s
+`escape_member_name` exists for this (GNU `ls` / `tar` quote for the same reason), and as
+of PR #235 every CLI **print site** routes member names *and* the paths derived from them
+through it — the report lines, the error detail appended to `failed:` / `blocked:`, and
+the hoist's messages.
+
+**Open:** the library's own `logging` records bypass that. `extraction.py` emits
+
+```python
+logger.warning("Skipping %s %r: %s", original.type.value, original.name, error)
+```
+
+and `cli/logging_config.py` attaches a `StreamHandler` to the same stderr the reports go
+to. The name is safe there by accident — `%r` makes Python's `repr` escape it — but the
+**third** field is not: an `ExtractionError` message embeds the destination path, and that
+path is built from the member's name. Reproduced on `main`:
+
+```
+WARNING: Skipping file 'EV\x1b[2KIL\rHARMLESS.TXT': Destination already exists: /…/out/ev<ESC>[2Kil<CR>HARMLESS.txt
+failed: EV\x1b[2KIL\rHARMLESS.TXT: Destination already exists: /…/out/ev\x1b[2Kil\rHARMLESS.txt
+```
+
+The second line is the fixed print site; the first is the same fact, unescaped, one line
+earlier. Any library log record or exception message embedding a member-derived path has
+the same shape — this is not specific to that one call.
+
+**Not platform-specific, and not gated on the write succeeding.** Windows refuses control
+bytes in filenames (`WinError 123`), but the failure path *is* a reporting path: the name
+still reaches stderr, in the log line reporting that it could not be written. The same
+holds for any member that is blocked, superseded, or listed rather than extracted.
+
+*Fix direction (not chosen yet):* escaping at the `logger.warning` call sites pushes CLI
+presentation into library logging, and library logs may go somewhere a terminal escape is
+harmless or even wanted. The narrower fix is a `logging.Formatter` in
+`cli/logging_config.py` that escapes the rendered message — the CLI decides how its own
+terminal is protected, and the library keeps emitting structured records unchanged.
+Escaping the formatted message wholesale would also escape the level/logger text, which is
+archivey's own and safe, so that is a cosmetic concern only.
+
+Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Those use a
+Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a
+Unix-only test, because a name containing control bytes cannot be created on NTFS.
 
 ## OPEN gaps — compatibility
 
