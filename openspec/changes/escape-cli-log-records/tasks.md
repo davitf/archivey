@@ -21,11 +21,25 @@
 - [x] 3.3 The formatter does not alter the record other handlers see
 - [x] 3.4 Ordinary messages are unchanged (no separator doubling, no cosmetic churn)
 
-## 4. Close the gap register
+## 4. Review follow-ups (PR #236)
 
-- [x] 4.1 Flip threat-model O9 to implemented, naming the formatter and the tests
+- [x] 4.1 The new SHALL overclaimed: `archivey test`'s `FAIL` detail, the extract abort
+      notice, and `main()`'s three top-level handlers printed the exception unescaped.
+      Reproduced a live spoof via `x --abort-on name-collision`. Maintainer decision:
+      finish the sites rather than narrow the requirement
+- [x] 4.2 Drop the false "a traceback is archivey's own text" rationale from the formatter
+      docstring and the spec — the final line is the exception's message, which may be the
+      archive's. Maintainer decision: record as an accepted residual (no call site passes
+      `exc_info`), not escape it
+- [x] 4.3 Record the two residuals O9 omitted: `exc_info` exception lines, and native
+      Windows paths doubling their separators in log messages
+- [x] 4.4 Disambiguate the PR #235 cross-reference rather than removing it
 
-## 5. Verify
+## 5. Close the gap register
 
-- [x] 5.1 Full suite in all three dependency configurations
-- [x] 5.2 `openspec validate --all --strict`
+- [x] 5.1 Flip threat-model O9 to implemented, naming the formatter and the tests
+
+## 6. Verify
+
+- [x] 6.1 Full suite in all three dependency configurations
+- [x] 6.2 `openspec validate --all --strict`

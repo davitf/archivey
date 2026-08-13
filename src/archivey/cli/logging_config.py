@@ -33,8 +33,16 @@ class _EscapingFormatter(logging.Formatter):
     record in place, even with a restore afterwards, would corrupt what they see.
 
     Only the message is escaped. An ``exc_info`` traceback is rendered by the base class
-    from the untouched record and is archivey's own text, not the archive's: escaping its
-    newlines would collapse a traceback onto one unreadable line.
+    from the untouched record, so escaping its newlines cannot collapse it onto one
+    unreadable line.
+
+    **Accepted residual:** that leaves the traceback's final line — the exception's own
+    message — unescaped, and *that* line can be the archive's text rather than archivey's
+    (an ``ExtractionError`` message embeds the destination path). No archivey logging call
+    site passes ``exc_info`` today, so the path is latent rather than live; escaping it
+    would mean parsing rendered traceback text to escape some lines and not others, for a
+    case nothing currently reaches. Recorded in threat-model O9. If a call site ever does
+    pass ``exc_info``, override ``formatException`` before it ships.
     """
 
     def format(self, record: logging.LogRecord) -> str:

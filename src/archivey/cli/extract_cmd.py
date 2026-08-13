@@ -553,7 +553,7 @@ def run_extract(
                 # the stop notice. Exit 1 always on abort (Q8 Option A): exit 3
                 # is reserved for a *completed* run with policy blocks and safe
                 # members on disk (blocks never abort under STOP).
-                print(exc, file=err)
+                print(escape_member_name(str(exc)), file=err)
                 parts: list[str] = []
                 if members_extracted:
                     parts.append(f"{members_extracted} member(s) extracted")

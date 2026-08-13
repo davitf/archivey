@@ -1607,3 +1607,53 @@ def test_log_escaping_leaves_ordinary_messages_alone() -> None:
     """No cosmetic churn for the overwhelmingly common case."""
     out = _log_through_cli_handler("Skipping file %r: plain reason", "dir/file.txt")
     assert out == "WARNING: Skipping file 'dir/file.txt': plain reason\n"
+
+
+def test_abort_notice_escapes_the_error_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The abort path prints the exception itself, not a report line.
+
+    ``NameCollisionError``'s message embeds the already-written path, which is built
+    from the member name — the same spoof class as the log path, reached through a
+    different print site.
+    """
+    archive = _zip(tmp_path / "c.zip", {_SPOOF_ANSI: b"A", _SPOOF_ANSI.upper(): b"B"})
+    dest = tmp_path / "out"
+    main(["x", str(archive), "-d", str(dest), "--abort-on", "name-collision"])
+    err = capsys.readouterr().err
+    assert "Name collision" in err
+    assert "\x1b" not in err
+    assert "\r" not in err
+
+
+def test_test_verb_escapes_failure_detail(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``archivey test`` appends the exception to its FAIL line; that is a print site too.
+
+    Driven through the real verb: the member read raises an ``ArchiveyError`` whose
+    message embeds a member-derived path, which is how a hostile name reaches this line.
+    """
+    from archivey.exceptions import ArchiveyError
+
+    archive = _zip(tmp_path / "t.zip", {"a.txt": b"A"})
+
+    def boom(*_args: object, **_kwargs: object):
+        # Raise from the iterator, not the call: the FAIL branch wraps ``next(it)``,
+        # while a call-time raise lands in main()'s top-level handler instead.
+        def _gen():
+            raise ArchiveyError(f"Error reading member: /out/{_SPOOF_ANSI}")
+            yield  # pragma: no cover - unreachable, makes this a generator
+
+        return _gen()
+
+    monkeypatch.setattr(
+        "archivey.internal.base_reader.BaseArchiveReader.stream_members", boom
+    )
+    main(["test", str(archive)])
+    err = capsys.readouterr().err
+    lines = _report_lines(err, "FAIL")
+    assert lines, err
+    assert all("\x1b" not in ln for ln in lines)
+    assert any("\\x1b[2K" in ln for ln in lines)

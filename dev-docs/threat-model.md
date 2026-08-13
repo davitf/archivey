@@ -242,15 +242,18 @@ optional hardenings. See `format-7z` ("never a silent empty listing") and
 Member names are attacker-controlled, and a name may carry ANSI control sequences: a
 `README\x1b[2K\rSUCCESS.txt` printed raw lets the archive erase the line it is being
 reported on and author what the operator sees in its place. `cli/format.py`'s
-`escape_member_name` exists for this (GNU `ls` / `tar` quote for the same reason), and as
-of PR #235 every CLI **print site** routes member names *and* the paths derived from them
-through it — the report lines, the error detail appended to `failed:` / `blocked:`, and
-the hoist's messages.
+`escape_member_name` exists for this (GNU `ls` / `tar` quote for the same reason). PR #235
+(whose subject is `extraction-results-authoritative` — the escaping rode in on it) routed
+the **report-line** print sites through it: the report lines themselves, the error detail
+appended to `failed:` / `blocked:`, and the hoist's messages.
 
 **Implemented** (`escape-cli-log-records`): `cli/logging_config.py` installs an
 escaping `logging.Formatter`, so the log path is covered by the same guarantee as the
 print path, now written down as the `cli` requirement *"Archive-derived text is escaped
-before terminal display"*. The gap it closed is below.
+before terminal display"*. The same change escaped the print sites that render an
+**exception** rather than a report line — `archivey test`'s `FAIL` detail, the extract
+abort notice, and `main()`'s top-level handlers — which the report-line pass had left
+raw. The gap it closed is below.
 
 The library's own `logging` records used to bypass the print-site escaping.
 `extraction.py` emits
@@ -285,6 +288,19 @@ somewhere a control byte is harmless or wanted (a file, a structured sink, a tes
 `caplog`), so the records themselves are left unaltered and the CLI escapes only what it
 renders. The formatter copies the record rather than mutating it, because other handlers
 format the same one.
+
+*Accepted residual — `exc_info` tracebacks.* The formatter escapes the message and
+leaves the rendered traceback alone, so a traceback's **final line** (the exception's own
+message, which may embed a member-derived path) is not escaped. No archivey logging call
+site passes `exc_info`, so this is latent, not live; closing it means parsing rendered
+traceback text to escape some lines and not others. A call site that starts passing
+`exc_info` must override `formatException` first.
+
+*Accepted residual — native paths in log messages.* Escaping is lossless, so a backslash
+becomes `\\`. Report lines avoid this by rendering relative to the extraction root with
+`/` separators before escaping, but a log message carries whatever the library
+interpolated: a Windows path logs as `C:\\Users\\out\\a.txt`. Cosmetic, lossless, and
+Windows-only.
 
 *Accepted residual (cosmetic):* a name interpolated with `%r` is escaped twice — `repr`
 quotes it, then the formatter escapes the backslashes `repr` introduced — so a hostile

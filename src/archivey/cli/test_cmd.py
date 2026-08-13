@@ -83,11 +83,11 @@ def run_test(
                     break
                 except ArchiveyError as exc:
                     failed += 1
-                    print(f"FAIL: {exc}", file=err)
+                    print(f"FAIL: {escape_member_name(str(exc))}", file=err)
                     continue
                 except OSError as exc:
                     failed += 1
-                    print(f"FAIL: {exc}", file=err)
+                    print(f"FAIL: {escape_member_name(str(exc))}", file=err)
                     continue
 
                 saw_selected = True
@@ -139,10 +139,18 @@ def run_test(
                         print(f"OK   {escape_member_name(member.name)}", file=err)
                 except ArchiveyError as exc:
                     failed += 1
-                    print(f"FAIL {escape_member_name(member.name)}: {exc}", file=err)
+                    print(
+                        f"FAIL {escape_member_name(member.name)}: "
+                        f"{escape_member_name(str(exc))}",
+                        file=err,
+                    )
                 except OSError as exc:
                     failed += 1
-                    print(f"FAIL {escape_member_name(member.name)}: {exc}", file=err)
+                    print(
+                        f"FAIL {escape_member_name(member.name)}: "
+                        f"{escape_member_name(str(exc))}",
+                        file=err,
+                    )
         finally:
             if on_progress is not None:
                 on_progress.close()
