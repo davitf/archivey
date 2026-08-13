@@ -237,7 +237,7 @@ bounds, and upstream py7zr writing `kCRC` for the encoded-header folder remain
 optional hardenings. See `format-7z` ("never a silent empty listing") and
 `test_header_encrypted_empty_decoded_header_rejected`.
 
-### O9. Attacker-controlled bytes reaching the terminal via log records — open
+### O9. Attacker-controlled bytes reaching the terminal via log records — implemented
 
 Member names are attacker-controlled, and a name may carry ANSI control sequences: a
 `README\x1b[2K\rSUCCESS.txt` printed raw lets the archive erase the line it is being
@@ -247,7 +247,13 @@ of PR #235 every CLI **print site** routes member names *and* the paths derived 
 through it — the report lines, the error detail appended to `failed:` / `blocked:`, and
 the hoist's messages.
 
-**Open:** the library's own `logging` records bypass that. `extraction.py` emits
+**Implemented** (`escape-cli-log-records`): `cli/logging_config.py` installs an
+escaping `logging.Formatter`, so the log path is covered by the same guarantee as the
+print path, now written down as the `cli` requirement *"Archive-derived text is escaped
+before terminal display"*. The gap it closed is below.
+
+The library's own `logging` records used to bypass the print-site escaping.
+`extraction.py` emits
 
 ```python
 logger.warning("Skipping %s %r: %s", original.type.value, original.name, error)
@@ -272,13 +278,19 @@ bytes in filenames (`WinError 123`), but the failure path *is* a reporting path:
 still reaches stderr, in the log line reporting that it could not be written. The same
 holds for any member that is blocked, superseded, or listed rather than extracted.
 
-*Fix direction (not chosen yet):* escaping at the `logger.warning` call sites pushes CLI
-presentation into library logging, and library logs may go somewhere a terminal escape is
-harmless or even wanted. The narrower fix is a `logging.Formatter` in
-`cli/logging_config.py` that escapes the rendered message — the CLI decides how its own
-terminal is protected, and the library keeps emitting structured records unchanged.
-Escaping the formatted message wholesale would also escape the level/logger text, which is
-archivey's own and safe, so that is a cosmetic concern only.
+*Why the handler and not the call sites:* a call site would have to remember, once per
+message, for every message that might carry a member-derived path — the class of bug this
+closes is exactly one that is missed a site at a time. Library records may also be routed
+somewhere a control byte is harmless or wanted (a file, a structured sink, a test's
+`caplog`), so the records themselves are left unaltered and the CLI escapes only what it
+renders. The formatter copies the record rather than mutating it, because other handlers
+format the same one.
+
+*Accepted residual (cosmetic):* a name interpolated with `%r` is escaped twice — `repr`
+quotes it, then the formatter escapes the backslashes `repr` introduced — so a hostile
+name displays as `EV\\x1b[2KIL\\rHARMLESS.TXT`. Lossless and unambiguous, and it only
+appears for names that are already hostile; removing it would mean either a second
+escaping vocabulary or dropping `%r`, which non-terminal sinks benefit from.
 
 Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Those use a
 Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a

@@ -1535,3 +1535,75 @@ def test_report_lines_do_not_double_path_separators(
     lines = _report_lines(capsys.readouterr().err, "overwritten:")
     assert lines == ["overwritten: dir/README"]
     assert "\\\\" not in lines[0]
+
+
+# --- O9: archive-derived text on the LOG path, not just the print path -------------
+
+
+def _log_through_cli_handler(msg: str, *args: object, **kwargs: object) -> str:
+    """Emit one record through the handler ``cli_logging`` installs, return the output."""
+    import logging
+
+    from archivey.cli.logging_config import cli_logging
+
+    err = io.StringIO()
+    with cli_logging(verbose=False, err=err):
+        logging.getLogger("archivey.test").warning(msg, *args, **kwargs)
+    return err.getvalue()
+
+
+def test_log_records_escape_archive_derived_text() -> None:
+    """The print sites escape; without this the log path is the way around them.
+
+    A library WARNING interpolates the destination path, which is built from the member
+    name, so an unescaped record lets the archive erase and rewrite the line reporting it.
+    """
+    out = _log_through_cli_handler(
+        "Skipping file: %s", "Destination already exists: /out/ev\x1b[2Kil\rSPOOF.txt"
+    )
+    assert "\x1b" not in out  # no raw escape sequence
+    assert "\r" not in out.rstrip("\n")  # no carriage-return line rewrite
+    assert "\\x1b[2K" in out  # …shown losslessly instead
+
+
+def test_log_records_keep_tracebacks_readable() -> None:
+    """Only the message is escaped: a traceback is archivey's own text, not the archive's.
+
+    Escaping its newlines would collapse a multi-line traceback onto one line.
+    """
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        out = _log_through_cli_handler("failed", exc_info=True)
+    assert "Traceback (most recent call last):" in out
+    assert out.count("\n") > 2  # still multi-line
+    assert "\\n" not in out  # newlines not escaped away
+
+
+def test_log_escaping_does_not_alter_the_shared_record(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Other handlers format the same record; the formatter must copy, not mutate.
+
+    ``cli_logging`` deliberately leaves ``propagate`` alone so library records still reach
+    root handlers — an embedding app's, or caplog here. Escaping in place would corrupt
+    what they see, and a restore-afterwards would still race them.
+    """
+    import logging
+
+    from archivey.cli.logging_config import cli_logging
+
+    err = io.StringIO()
+    with caplog.at_level(logging.WARNING, logger="archivey.test"):
+        with cli_logging(verbose=False, err=err):
+            logging.getLogger("archivey.test").warning("name: %s", "ev\x1b[2Kil.txt")
+
+    assert "\\x1b[2K" in err.getvalue()  # escaped for the terminal…
+    assert caplog.records[-1].getMessage() == "name: ev\x1b[2Kil.txt"  # …not for caplog
+    assert caplog.records[-1].args == ("ev\x1b[2Kil.txt",)
+
+
+def test_log_escaping_leaves_ordinary_messages_alone() -> None:
+    """No cosmetic churn for the overwhelmingly common case."""
+    out = _log_through_cli_handler("Skipping file %r: plain reason", "dir/file.txt")
+    assert out == "WARNING: Skipping file 'dir/file.txt': plain reason\n"
