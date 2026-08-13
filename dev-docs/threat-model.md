@@ -237,6 +237,53 @@ bounds, and upstream py7zr writing `kCRC` for the encoded-header folder remain
 optional hardenings. See `format-7z` ("never a silent empty listing") and
 `test_header_encrypted_empty_decoded_header_rejected`.
 
+### O9. Attacker-controlled bytes reaching the terminal via log records — open
+
+Member names are attacker-controlled, and a name may carry ANSI control sequences: a
+`README\x1b[2K\rSUCCESS.txt` printed raw lets the archive erase the line it is being
+reported on and author what the operator sees in its place. `cli/format.py`'s
+`escape_member_name` exists for this (GNU `ls` / `tar` quote for the same reason), and as
+of PR #235 every CLI **print site** routes member names *and* the paths derived from them
+through it — the report lines, the error detail appended to `failed:` / `blocked:`, and
+the hoist's messages.
+
+**Open:** the library's own `logging` records bypass that. `extraction.py` emits
+
+```python
+logger.warning("Skipping %s %r: %s", original.type.value, original.name, error)
+```
+
+and `cli/logging_config.py` attaches a `StreamHandler` to the same stderr the reports go
+to. The name is safe there by accident — `%r` makes Python's `repr` escape it — but the
+**third** field is not: an `ExtractionError` message embeds the destination path, and that
+path is built from the member's name. Reproduced on `main`:
+
+```
+WARNING: Skipping file 'EV\x1b[2KIL\rHARMLESS.TXT': Destination already exists: /…/out/ev<ESC>[2Kil<CR>HARMLESS.txt
+failed: EV\x1b[2KIL\rHARMLESS.TXT: Destination already exists: /…/out/ev\x1b[2Kil\rHARMLESS.txt
+```
+
+The second line is the fixed print site; the first is the same fact, unescaped, one line
+earlier. Any library log record or exception message embedding a member-derived path has
+the same shape — this is not specific to that one call.
+
+**Not platform-specific, and not gated on the write succeeding.** Windows refuses control
+bytes in filenames (`WinError 123`), but the failure path *is* a reporting path: the name
+still reaches stderr, in the log line reporting that it could not be written. The same
+holds for any member that is blocked, superseded, or listed rather than extracted.
+
+*Fix direction (not chosen yet):* escaping at the `logger.warning` call sites pushes CLI
+presentation into library logging, and library logs may go somewhere a terminal escape is
+harmless or even wanted. The narrower fix is a `logging.Formatter` in
+`cli/logging_config.py` that escapes the rendered message — the CLI decides how its own
+terminal is protected, and the library keeps emitting structured records unchanged.
+Escaping the formatted message wholesale would also escape the level/logger text, which is
+archivey's own and safe, so that is a cosmetic concern only.
+
+Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Those use a
+Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a
+Unix-only test, because a name containing control bytes cannot be created on NTFS.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed
