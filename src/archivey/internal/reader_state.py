@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from archivey.escaping import quoted
 from archivey.exceptions import ArchiveyUsageError, ConcurrentAccessError
 from archivey.types import MemberStreams
 
@@ -133,12 +134,12 @@ class ReaderState:
                 return child
             if self._root is not None:
                 raise ArchiveyUsageError(
-                    f"Cannot start {name!r}: another reader operation "
-                    f"({self._root.name!r}) is already active."
+                    f"Cannot start {quoted(name)}: another reader operation "
+                    f"({quoted(self._root.name)}) is already active."
                 )
             if self._workers:
                 raise ArchiveyUsageError(
-                    f"Cannot start {name!r}: a concurrent open()/read() call is still "
+                    f"Cannot start {quoted(name)}: a concurrent open()/read() call is still "
                     "in progress."
                 )
             token = OperationToken(name=name, kind="root")
@@ -161,7 +162,7 @@ class ReaderState:
         with self._lock:
             if root._released or self._root is not root:
                 raise ArchiveyUsageError(
-                    f"Cannot enter child scope {name!r}: root operation is not active."
+                    f"Cannot enter child scope {quoted(name)}: root operation is not active."
                 )
             child = OperationToken(name=name, parent=root, kind="child")
             self._children.add(child)
@@ -186,8 +187,8 @@ class ReaderState:
             internal = self._internal_opens_active_locked()
             if self._root is not None and not internal:
                 raise ArchiveyUsageError(
-                    f"Cannot call {name!r}: another reader operation "
-                    f"({self._root.name!r}) is already active."
+                    f"Cannot call {quoted(name)}: another reader operation "
+                    f"({quoted(self._root.name)}) is already active."
                 )
             # Under an internal library owner (extract_all), the OWNING THREAD's worker
             # opens are admitted as children of that root; other threads are rejected
@@ -331,7 +332,7 @@ class ReaderState:
             if self._root is not None:
                 raise ArchiveyUsageError(
                     "Cannot close the archive reader while another reader operation "
-                    f"({self._root.name!r}) is active."
+                    f"({quoted(self._root.name)}) is active."
                 )
             if self._workers and not self.concurrent:
                 raise ArchiveyUsageError(

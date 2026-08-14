@@ -50,6 +50,7 @@ from archivey.diagnostics import (
     SymlinkTargetContext,
     raw_name_to_base64,
 )
+from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -282,7 +283,7 @@ def _zip_timestamps(
                     source="dos",
                     value_repr=repr(info.date_time),
                     message=(
-                        f"Invalid ZIP date_time for {info.filename!r}: "
+                        f"Invalid ZIP date_time for {quoted(info.filename)}: "
                         f"{info.date_time!r}"
                     ),
                 )
@@ -367,7 +368,7 @@ def _zip_timestamps(
                             value_repr=repr(ts),
                             message=(
                                 f"Invalid ZIP extended timestamp for "
-                                f"{info.filename!r}: {ts!r}"
+                                f"{quoted(info.filename)}: {ts!r}"
                             ),
                         )
                     )
@@ -695,7 +696,7 @@ class ZipReader(BaseArchiveReader):
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
                 message=(
                     f"ZIP member name decoded as {inferred_encoding!r} rather than the "
-                    f"cp437 default (UTF-8 flag not set): {member.name!r}"
+                    f"cp437 default (UTF-8 flag not set): {quoted(member.name)}"
                 ),
                 context=NameEncodingContext(
                     archive_name=self._archive_name,

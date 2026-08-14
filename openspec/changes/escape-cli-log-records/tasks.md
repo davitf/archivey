@@ -76,3 +76,30 @@ longer hold. The unchecked boxes below supersede the checked ones above.
       interpolates `{name!r}` or `{exc}`, and Windows separators doubling in messages
 - [x] 7.11 Re-verify: full suite in all three dependency configurations,
       `openspec validate --all --strict`, and the live spoof reproduction
+
+## 8. Review follow-ups, round 2 (PR #236)
+
+- [x] 8.1 `escape_control_chars`: astral code points emitted a 5-hex-digit `\uXXXXX`
+      that reads back as a different character (955,086 code points affected). Rendering
+      now delegates to `repr`, whose escape set is exactly `not str.isprintable()`
+- [x] 8.2 Narrow the surrogateescape range to `U+DC80`–`U+DCFF`; `U+DC00`–`U+DFFF`
+      reversed 768 code points into bytes they never came from
+- [x] 8.3 The docstring's losslessness claim was false (`U+009B` vs surrogateescaped
+      byte `0x9B` collide). Narrowed to inertness, which is what is actually guaranteed
+- [x] 8.4 Audit the doubling residual rather than accepting it: 52 message sites
+      interpolated an archive-derived name with `!r`. Added `quoted()` and converted
+      them all
+- [x] 8.5 Audit whether a message ever wraps an archivey exception: two broad
+      `except Exception` sites in `rar_parser.py`. Added `raw_message` /
+      `raw_message_of()` and converted them
+- [x] 8.6 Confirm the inverse rule for `logger.*`: the 9 `%r` log sites are now
+      load-bearing, since the CLI handler no longer escapes. Kept, and guarded by a test
+- [x] 8.7 Static tests for both rules, so a future call site cannot reintroduce either
+      failure silently
+- [x] 8.8 Rewrite the `Diagnostic` docstring: lead with the field contract rather than
+      the CLI, name what "every call site" means, and say what a future `{name}` would
+      undo. Record why `__post_init__` rather than a hand-written `__init__`
+- [x] 8.9 Spec the escape-exactly-once rule in `error-handling`, referenced from
+      `diagnostics`
+- [x] 8.10 Re-verify: full suite in all three dependency configurations,
+      `openspec validate --all --strict`, and the live spoof reproduction

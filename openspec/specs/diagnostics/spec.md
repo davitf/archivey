@@ -392,10 +392,14 @@ construction, losslessly, on the same terms as an exception message.
 and its siblings, surfaced through `to_dict()` — and a caller routing diagnostics to a
 JSON sink needs the real values, not a display rendering.
 
-Escaping SHALL NOT be left to the fact that message call sites happen to interpolate
-through `!r`, which escapes as a side effect. That property holds today, but one new
-`{name}` would undo it silently, and the resulting gap would appear only for a hostile
-archive.
+Escaping SHALL NOT be left to the sites that build diagnostic messages. Every one of
+them interpolates through `quoted()` today, so the text would be inert either way — but
+that is a property of the current call sites, not of the type: a future message written
+as `f"...{name}"` would look exactly like its neighbours and emit raw control bytes, and
+only for a hostile archive.
+
+`Diagnostic.message` is subject to the escape-exactly-once rule in `error-handling`:
+values interpolated into it SHALL be raw, via `quoted()` rather than `!r`.
 
 #### Scenario: a diagnostic message cannot spoof a terminal line
 

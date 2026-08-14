@@ -313,13 +313,29 @@ becomes `\\`. Report lines avoid this by rendering relative to the extraction ro
 interpolated: a Windows path renders as `C:\\Users\\out\\a.txt`. Cosmetic, lossless,
 and Windows-only.
 
-*Accepted residual (cosmetic).* A message that interpolates an already-escaped string
-escapes it again: `{name!r}` (`repr` escapes first) or `{exc}` of another `ArchiveyError`.
-A hostile name displays as `EV\\x1b[2KIL\\rHARMLESS.TXT`, next to a `member=` field on
-the same line rendering the raw attribute as `EV\x1b[2KIL\rHARMLESS.TXT`. Lossless and
-unambiguous, and only visible for names that are already hostile; removing it means
-auditing interpolation call sites one at a time, which is what escaping centrally exists
-to avoid.
+*Escape exactly once.* Escaping already-escaped text doubles the backslashes the first
+escape wrote. Review found this was not a rare cosmetic edge: **52 message sites**
+interpolated an archive-derived name with `{name!r}`, which `repr` escapes before the
+message escape escapes its backslashes — essentially every safety error in `filters.py`,
+`extraction.py`, `base_reader.py` and `reader_state.py`. `escaping.quoted()` supplies the
+delimiting quotes without escaping, and all 52 were converted; `raw_message` /
+`raw_message_of()` do the same job for a caught exception embedded in a new message (two
+broad `except Exception` sites in `rar_parser.py` can catch an `ArchiveyError`). `!r`
+stays where the value is not archive-derived.
+
+The **inverse** rule applies to `logger.*` call sites: the CLI handler no longer escapes,
+so `%r` is what makes an interpolated name inert there and must be kept. Both rules are
+guarded by static tests in `tests/test_escaping.py`, since either failure is invisible
+except against a hostile archive.
+
+*Escaping correctness.* Rendering delegates to `repr`, whose escape set is exactly
+`not str.isprintable()` (verified across the whole code space), after review found three
+bugs in the hand-rolled table: astral code points emitted a five-hex-digit `\uXXXXX` that
+reads back as a different character (955,086 code points affected); the surrogateescape
+range was `U+DC00`–`U+DFFF` rather than the `U+DC80`–`U+DCFF` that `surrogateescape`
+actually produces, reversing 768 code points into bytes they never came from; and the
+losslessness claim was false, since `U+009B` and a surrogateescaped byte `0x9B` both
+render `\x9b`. The guarantee is now stated as inertness, not unique recoverability.
 
 Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Those use a
 Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a

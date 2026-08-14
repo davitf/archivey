@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
 
 from archivey.config import ExtractionLimits
+from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     DiagnosticRaisedError,
@@ -194,7 +195,7 @@ class BombTracker:
             if ratio > self._max_ratio:
                 raise ResourceLimitError(
                     f"Decompression ratio {ratio:.0f}:1 exceeds limit "
-                    f"max_ratio={self._max_ratio:.0f}:1 for {member.name!r}"
+                    f"max_ratio={self._max_ratio:.0f}:1 for {quoted(member.name)}"
                 )
 
         # Archive-wide ratio: activates on CUMULATIVE output; a whole-archive bomb signal
@@ -536,7 +537,7 @@ class ExtractionCoordinator:
                 if isinstance(exc, OSError) and exc.errno == errno.EILSEQ:
                     error = ExtractionError(
                         "Member name cannot be represented on the destination "
-                        f"filesystem: {original.name!r}"
+                        f"filesystem: {quoted(original.name)}"
                     )
                     error.__cause__ = exc
                 status = (
@@ -647,8 +648,8 @@ class ExtractionCoordinator:
         if AbortOn.NAME_SANITIZED in self._abort_on:
             raise _AbortExtraction(
                 NameRewrittenError(
-                    f"Name rewritten for portability: {transformed.name!r} -> "
-                    f"{portable.name!r}",
+                    f"Name rewritten for portability: {quoted(transformed.name)} -> "
+                    f"{quoted(portable.name)}",
                     member_name=original.name,
                 )
             )
@@ -798,7 +799,7 @@ class ExtractionCoordinator:
 
         # MemberType.OTHER is rejected by check_universal; nothing else should reach here.
         raise ExtractionError(
-            f"Unsupported member type {transformed.type!r} for {transformed.name!r}"
+            f"Unsupported member type {transformed.type!r} for {quoted(transformed.name)}"
         )
 
     def _resolve_collision(
@@ -873,7 +874,7 @@ class ExtractionCoordinator:
             return
         raise _AbortExtraction(
             NameCollisionError(
-                f"Name collision for {transformed.name!r} with already-written "
+                f"Name collision for {quoted(transformed.name)} with already-written "
                 f"{prior.path}",
                 member_name=original.name,
             )
@@ -1011,7 +1012,7 @@ class ExtractionCoordinator:
         target = transformed.link_target
         if target is None:
             raise LinkTargetNotFoundError(
-                f"Symlink {transformed.name!r} has no target",
+                f"Symlink {quoted(transformed.name)} has no target",
                 member_name=transformed.name,
             )
 
@@ -1051,7 +1052,7 @@ class ExtractionCoordinator:
                 pass
             raise SymlinkEscapeError(
                 f"Symlink target escapes destination: "
-                f"{transformed.name!r} -> {target!r}",
+                f"{quoted(transformed.name)} -> {quoted(target)}",
                 member_name=transformed.name,
             )
 
@@ -1071,7 +1072,7 @@ class ExtractionCoordinator:
         if source is None:
             raise LinkTargetNotFoundError(
                 f"Hardlink target {original.link_target!r} not found for "
-                f"{transformed.name!r}",
+                f"{quoted(transformed.name)}",
                 member_name=transformed.name,
             )
 
@@ -1094,7 +1095,7 @@ class ExtractionCoordinator:
             # Forward-only: the source's bytes already streamed past — unrecoverable. Per
             # spec this is a per-member ExtractionError handled by OnError.
             raise ExtractionError(
-                f"Hardlink source {source.name!r} for {transformed.name!r} was excluded "
+                f"Hardlink source {quoted(source.name)} for {quoted(transformed.name)} was excluded "
                 f"and cannot be recovered on a forward-only stream",
                 member_name=transformed.name,
             )

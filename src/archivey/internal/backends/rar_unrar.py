@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import BinaryIO, cast
 
+from archivey.escaping import quoted
 from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
@@ -96,7 +97,7 @@ def _member_include_switch(member: str) -> str:
     """
     if "*" in member or "?" in member:
         raise UnsupportedFeatureError(
-            f"Cannot read RAR member {member!r} via unrar: its name contains a wildcard "
+            f"Cannot read RAR member {quoted(member)} via unrar: its name contains a wildcard "
             "character ('*' or '?') that unrar interprets as a match pattern with no "
             "escape, so it cannot be addressed unambiguously."
         )

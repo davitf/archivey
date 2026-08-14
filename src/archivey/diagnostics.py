@@ -396,16 +396,35 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
 class Diagnostic:
     """One immutable advisory occurrence.
 
-    ``message`` is the human rendering and is **escaped**, on the same terms as
-    :class:`~archivey.exceptions.ArchiveyError`'s: it interpolates archive-derived
-    values, and it is logged straight to the CLI's stderr by
-    ``diagnostics_collector`` (``log.warning("%s", message)``). Today every call site
-    happens to interpolate through ``!r``, which escapes — but that is an accident one
-    new ``{name}`` would undo silently, which is the shape of bug this closes.
+    The two fields carry the same facts for different audiences, and that is why they
+    are treated differently:
 
-    ``context`` stays **raw**: it is the structured channel (``member_name`` and
-    friends, surfaced through :meth:`to_dict`), and callers routing diagnostics to a
-    JSON sink need the real values, not a display rendering.
+    - ``message`` is **display text**, and is stored **escaped**. It interpolates
+      archive-derived values — member names, link targets, paths — which are
+      attacker-controlled, and a name carrying ``\\x1b[2K\\r`` in text that reaches a
+      terminal can erase the line reporting it and write something else in its place.
+      Escaping happens at construction so it holds for every consumer, whatever it
+      does with the text.
+    - ``context`` is the **structured channel** (``member_name`` and its siblings,
+      surfaced through :meth:`to_dict`) and stays **raw**. A caller routing diagnostics
+      to a JSON sink, or matching on a name, needs the real value.
+
+    This mirrors :class:`~archivey.exceptions.ArchiveyError`, which escapes its
+    ``message`` and keeps ``member_name`` raw for the same reason.
+
+    Escaping here rather than trusting the sites that build messages: every one of them
+    today interpolates through :func:`~archivey.escaping.quoted` or ``!r``, so the text
+    would be inert either way — but that is a property of the current call sites, not of
+    the type. A future message written as ``f"...{name}"`` would pass review looking
+    exactly like its neighbours while emitting raw control bytes, and only for a hostile
+    archive.
+
+    Escaping runs in ``__post_init__``: on a frozen dataclass that is the hook that
+    covers every construction path. (A hand-written ``__init__`` would survive the
+    decorator — it does not overwrite one defined in the class body — but with no
+    dataclass base to delegate to it would mean spelling out all five fields and keeping
+    them in step with the declarations above.) Nothing reconstructs a ``Diagnostic``
+    with :func:`dataclasses.replace`, which would escape a second time.
     """
 
     occurrence_id: str

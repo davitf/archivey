@@ -42,17 +42,26 @@ class ArchiveyError(Exception):
     configure; escaping here protects all of them, with no configuration.
 
     So ``message`` is stored escaped, and that escaped form is what
-    :meth:`__str__`, ``args[0]`` and ``repr()`` all render. The escaping is lossless
-    (see :func:`~archivey.escaping.escape_control_chars`), so nothing is hidden —
-    only made inert.
+    :meth:`__str__`, ``args[0]`` and ``repr()`` all render. ``raw_message`` keeps the
+    text as the call site wrote it, for the one job the escaped form cannot do: being
+    embedded in *another* message that will escape it in turn.
 
-    ``archive_name``, ``member_name`` and ``source_format`` stay **raw**, for callers
-    that need the real value to act on rather than to print. :meth:`__str__` renders
-    the two names through ``!r``, which escapes them for display in turn.
+    ``archive_name``, ``member_name`` and ``source_format`` stay **raw** too, for
+    callers that need the real value to act on rather than to print. :meth:`__str__`
+    renders the two names through ``!r``, which escapes them for display in turn.
 
-    One sharp edge: a message that interpolates another ``ArchiveyError`` escapes an
-    already-escaped string, doubling its backslashes. Wrap with ``{exc!r}``, or reach
-    for the structured fields, rather than ``{exc}``.
+    **Escape exactly once, at the outermost message.** Everything a message
+    interpolates should therefore be raw when it goes in — which is what the two
+    helpers are for, and why neither of them is a matter of taste:
+
+    - a member name, link target or path → :func:`~archivey.escaping.quoted`, not
+      ``!r``. ``!r`` escapes first, and this escapes the backslashes it introduced.
+    - a caught exception that might be one of ours → :func:`raw_message_of`, not
+      ``{exc}`` or ``{exc!r}``.
+
+    Note this is the opposite of the rule for ``logger.*`` calls, whose records the CLI
+    does **not** escape: there, ``%r`` is what makes an interpolated name inert and must
+    stay.
     """
 
     def __init__(
@@ -63,6 +72,7 @@ class ArchiveyError(Exception):
         archive_name: str | None = None,
         member_name: str | None = None,
     ) -> None:
+        self.raw_message = message
         message = escape_control_chars(message)
         super().__init__(message)
         self.message = message
@@ -229,6 +239,7 @@ class ArchiveyUsageError(Exception):
     """
 
     def __init__(self, message: str) -> None:
+        self.raw_message = message
         message = escape_control_chars(message)
         super().__init__(message)
         self.message = message
@@ -268,3 +279,21 @@ class DiagnosticRaisedError(ArchiveyError):
             member_name=member_name,
         )
         self.diagnostic = diagnostic
+
+
+def raw_message_of(exc: BaseException) -> str:
+    """The text of ``exc`` as its call site wrote it, for embedding in a new message.
+
+    Interpolating a caught exception into a message that will itself be escaped needs
+    the *unescaped* text, or the outer escape doubles the backslashes the inner one
+    wrote. Archivey's exceptions keep that text on ``raw_message``; everything else was
+    never escaped and is already raw.
+
+    Needed only where the caught type is broad enough to include one of ours — a
+    ``except Exception`` around a call that may raise an ``ArchiveyError``. A handler
+    catching only third-party types (``lzma.LZMAError``, ``zipfile.BadZipFile``) can
+    interpolate the exception directly.
+    """
+    if isinstance(exc, (ArchiveyError, ArchiveyUsageError)):
+        return exc.raw_message
+    return str(exc)

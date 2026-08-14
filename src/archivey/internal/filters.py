@@ -20,6 +20,7 @@ import unicodedata
 from pathlib import Path
 from typing import Callable
 
+from archivey.escaping import quoted
 from archivey.exceptions import (
     DeceptiveNameError,
     PathTraversalError,
@@ -96,7 +97,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     # one. (A future opt-in SANITIZE policy may re-root such names instead of rejecting.)
     if "\x00" in name:
         raise PathTraversalError(
-            f"Null byte in member name: {name!r}", member_name=name
+            f"Null byte in member name: {quoted(name)}", member_name=name
         )
     # A name the platform filesystem encoding cannot represent (a lone surrogate outside
     # the surrogateescape range, on POSIX) can never be materialized under dest — and it
@@ -106,27 +107,28 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
         os.fsencode(name)
     except UnicodeEncodeError as exc:
         raise PathTraversalError(
-            f"Member name cannot be encoded for the filesystem: {name!r}",
+            f"Member name cannot be encoded for the filesystem: {quoted(name)}",
             member_name=name,
         ) from exc
     if _is_absolute(name):
         raise PathTraversalError(
-            f"Absolute path not allowed: {name!r}", member_name=name
+            f"Absolute path not allowed: {quoted(name)}", member_name=name
         )
     if ".." in _SEP_SPLIT.split(name):
         raise PathTraversalError(
-            f"Path traversal ('..') in member name: {name!r}", member_name=name
+            f"Path traversal ('..') in member name: {quoted(name)}", member_name=name
         )
 
     rel = name.rstrip("/")
     if member.type != MemberType.DIRECTORY and rel in ("", "."):
         raise PathTraversalError(
-            f"Member name refers to the extraction root: {name!r}", member_name=name
+            f"Member name refers to the extraction root: {quoted(name)}",
+            member_name=name,
         )
 
     if member.type == MemberType.OTHER:
         raise SpecialFileError(
-            f"Special file (device/FIFO/socket) not allowed: {name!r}",
+            f"Special file (device/FIFO/socket) not allowed: {quoted(name)}",
             member_name=name,
         )
 
@@ -141,7 +143,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
         parent = (dest_root / rel).parent.resolve()
         if not _within(parent, dest_root):
             raise PathTraversalError(
-                f"Member {name!r} resolves outside the destination root",
+                f"Member {quoted(name)} resolves outside the destination root",
                 member_name=name,
             )
 
@@ -157,7 +159,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
             # raw ValueError / UnicodeEncodeError instead of a typed rejection.
             if "\x00" in target:
                 raise SymlinkEscapeError(
-                    f"Null byte in link target: {name!r} -> {target!r}",
+                    f"Null byte in link target: {quoted(name)} -> {quoted(target)}",
                     member_name=name,
                 )
             try:
@@ -165,7 +167,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
             except UnicodeEncodeError as exc:
                 raise SymlinkEscapeError(
                     f"Link target cannot be encoded for the filesystem: "
-                    f"{name!r} -> {target!r}",
+                    f"{quoted(name)} -> {quoted(target)}",
                     member_name=name,
                 ) from exc
         if member.type == MemberType.SYMLINK:
@@ -174,7 +176,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
             if not _within(resolved_target, dest_root):
                 raise SymlinkEscapeError(
                     f"Symlink target escapes destination: "
-                    f"{name!r} -> {member.link_target!r}",
+                    f"{quoted(name)} -> {quoted(member.link_target)}",
                     member_name=name,
                 )
         elif member.type == MemberType.HARDLINK:
@@ -182,7 +184,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
             if not _within(resolved_target, dest_root):
                 raise SymlinkEscapeError(
                     f"Hardlink target escapes destination: "
-                    f"{name!r} -> {member.link_target!r}",
+                    f"{quoted(name)} -> {quoted(member.link_target)}",
                     member_name=name,
                 )
 

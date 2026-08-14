@@ -32,12 +32,41 @@ have it. `__str__` renders the two names through `!r`, which escapes them for di
 | `ArchiveyUsageError` | Escaped on the same terms, though its text is usually archivey's own |
 | A message with no control bytes | Unchanged |
 
+### Requirement: Archive-derived text is escaped exactly once
+
+Escaping composes badly: escaping already-escaped text doubles the backslashes the first
+escape wrote, so a hostile name renders as `EV\\x1b[2KIL` where `EV\x1b[2KIL` was meant.
+The escape SHALL therefore happen once, at the outermost message, and everything a
+message interpolates SHALL be raw when it goes in.
+
+Two helpers exist so that call sites do not each have to reason about it, and using them
+is a requirement rather than a style preference:
+
+- A member name, link target or member-derived path SHALL be interpolated with
+  `escaping.quoted()`, which supplies the delimiting quotes **without** escaping. `!r`
+  SHALL NOT be used: it escapes first, and the message escape then escapes the
+  backslashes it introduced.
+- A caught exception that may be an archivey exception SHALL be interpolated with
+  `raw_message_of()`, which yields `raw_message` for archivey exceptions and `str(exc)`
+  for any other. A handler catching only third-party types MAY interpolate directly.
+
+`ArchiveyError` and `ArchiveyUsageError` SHALL expose `raw_message` — the text as the
+call site wrote it — alongside the escaped `message`, since the escaped form cannot be
+embedded in another message without doubling.
+
+The inverse rule holds for `logger.*` call sites, whose records the CLI does **not**
+escape: there `%r` is what makes an interpolated name inert and SHALL be kept.
+
 #### Scenario: escaping composes predictably
 
 | Case | Expected |
 | --- | --- |
-| A message interpolating a name with `{name!r}` | Lossless but doubly-escaped (`\\x1b`): `repr` escapes, then the message escape escapes the backslash |
-| A message interpolating another `ArchiveyError` with `{exc}` | Same doubling; call sites SHOULD use `{exc!r}` or the structured fields |
+| A message interpolating a name with `quoted(name)` | Escaped once: `'ev\x1b[2Kil.txt'` |
+| A message interpolating a name with `{name!r}` | Doubly-escaped — the form this requirement forbids |
+| Wrapping an archivey exception with `raw_message_of(exc)` | Escaped once |
+| Wrapping a third-party exception directly | Escaped once — it was never escaped |
+| `exc.raw_message` | The unescaped text the call site wrote |
+| A log record interpolating a name with `%r` | Inert; the CLI handler does not escape it |
 | A native Windows path in a message | Separators doubled by the backslash escape — lossless, and the reason print sites render member-derived paths `/`-separated first |
 
 ## MODIFIED Requirements
@@ -49,6 +78,7 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 | Attribute | Type | Contract |
 | --- | --- | --- |
 | `message` | `str` | Human-readable explanation, stored **escaped** for terminal safety |
+| `raw_message` | `str` | The same text as the call site wrote it, unescaped; for embedding in a message that will escape it |
 | `source_format` | `ArchiveFormat | None` | Format being processed, if known |
 | `archive_name` | `str | None` | Path or source stream `name`; `None` for anonymous streams; never fabricated; **raw** |
 | `member_name` | `str | None` | Member in context, if any; **raw** |

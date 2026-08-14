@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from archivey.escaping import quoted
+
 # Seconds between the NTFS FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
 NTFS_EPOCH_OFFSET = 11_644_473_600
 
@@ -55,5 +57,5 @@ def filetime_to_datetime(
             field=field,
             source=source,
             value_repr=repr(value),
-            message=f"Invalid NTFS timestamp for {filename!r}: {value!r}",
+            message=f"Invalid NTFS timestamp for {quoted(filename)}: {value!r}",
         )

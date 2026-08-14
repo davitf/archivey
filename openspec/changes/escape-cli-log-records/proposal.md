@@ -74,14 +74,42 @@ routing its logs to a file or a structured sink still receives them verbatim.
 - `src/archivey/cli/` — `format_error_detail`; no formatter; no double escaping
 - `dev-docs/threat-model.md` — O9 open → implemented
 
-## Accepted residuals
+## Escape exactly once
 
-- A message that interpolates an already-escaped string — `{name!r}` (repr escapes
-  first) or `{exc}` of another `ArchiveyError` — renders doubly-escaped: `\\x1b`
-  where `\x1b` would do. Lossless and safe, but visibly inconsistent with the
-  `member=` field on the same line, which renders from the raw attribute. Fixing it
-  means auditing call sites one at a time, which is the burden this design exists to
-  avoid.
+Review found the doubling this originally listed as a cosmetic residual was not rare:
+**52 message sites** interpolated an archive-derived name with `{name!r}`, which escapes
+first and then has its backslashes escaped by the message — essentially every safety
+error in `filters.py`, `extraction.py`, `base_reader.py` and `reader_state.py`. So it is
+fixed rather than accepted:
+
+- `escaping.quoted()` supplies the delimiting quotes **without** escaping, so the
+  message escapes once. All 52 sites converted; `!r` stays where the value is not
+  archive-derived (a format, a code, an exception type).
+- `raw_message` on both exception roots, and `raw_message_of()`, do the same job for a
+  caught exception embedded in a new message. Two sites needed it, both broad
+  `except Exception` handlers in `rar_parser.py` that can catch an `ArchiveyError`.
+- Two static tests keep both rules true for future call sites — one rejecting `!r` on
+  archive-derived text in a self-escaping message, one rejecting `%s` for a name in a
+  `logger.*` call, which is the **inverse** rule: log records are not escaped by the CLI,
+  so `%r` is what makes a name inert there.
+
+## Escaping correctness
+
+Review of `escape_control_chars` found three bugs, all fixed, and rendering is now
+delegated to `repr` (whose escape set is exactly `not str.isprintable()` — verified
+across the whole code space) rather than hand-rolled:
+
+- **Astral code points produced a malformed escape.** `\u{code:04x}` emits five hex
+  digits above `U+FFFF`, so `\U0001D173` rendered as `ᴗ3`, which reads back as
+  `ᴗ` followed by `3`. 955,086 code points were affected.
+- **The surrogate range was too wide.** `surrogateescape` only ever produces
+  `U+DC80`–`U+DCFF`, but `U+DC00`–`U+DFFF` was reversed into a byte, so 768 code points
+  arriving by another route were reported as characters the name never contained.
+- **The losslessness claim was false.** `U+009B` and a surrogateescaped byte `0x9B` both
+  render `\x9b`. The docstring now claims inertness rather than unique recoverability.
+
+## Accepted residual
+
 - A native Windows path in an exception message has its separators doubled by the
   backslash escape. Print sites avoid this by rendering member-derived paths relative
   and `/`-separated first; exception messages do not.

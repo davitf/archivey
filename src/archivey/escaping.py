@@ -12,42 +12,74 @@ has to sit below both without importing either.
 
 from __future__ import annotations
 
-# C0 controls, DEL, and C1 controls — never emit raw into a terminal.
-_CONTROL_ESCAPE = {
-    "\n": "\\n",
-    "\r": "\\r",
-    "\t": "\\t",
-    "\\": "\\\\",
-}
+# surrogateescape maps an undecodable byte 0xNN to U+DCNN, and only ever lands in this
+# range. A lone surrogate arriving by any other route is escaped as itself, not reversed
+# into a byte it never came from.
+_SURROGATE_ESCAPE_START = 0xDC80
+_SURROGATE_ESCAPE_END = 0xDCFF
 
 
 def escape_control_chars(text: str) -> str:
-    """Backslash-escape control bytes in attacker-controlled text.
+    """Backslash-escape non-printable characters in attacker-controlled text.
 
-    The escaping is **lossless** — every escape names the byte it replaced, so the
-    original is recoverable by eye — rather than eliding the offending characters.
-    Style follows the cli-product recommendation (Q4 lean): escape everywhere,
-    lossless backslash form, no ``--raw`` yet.
+    Rendering of each escape is delegated to :func:`repr`, whose escape set is exactly
+    ``not str.isprintable()`` (verified across the whole code space) and whose spellings
+    — ``\\n``, ``\\x1b``, ``\\u202e``, ``\\U0001d173`` — are the ones a Python developer
+    already reads. Only two characters are handled here: backslash, which ``repr`` would
+    escape but which we must escape ourselves since we are not emitting quotes, and a
+    surrogateescaped byte, which is the one place we deliberately differ.
 
-    Backslash itself is escaped, without which the form would be ambiguous: a member
-    literally named ``a\\nb`` would render identically to one containing a newline.
-    The cost is that a native Windows path passed through this doubles its
-    separators; callers holding a path should render it ``/``-separated first.
+    A surrogateescaped byte renders as the **underlying octet** (``\\x80``) rather than
+    ``repr``'s ``\\udc80``: the name never contained U+DC80: that code point is an
+    artifact of decoding a byte that was not valid in the declared encoding, and the
+    operator cares about the byte.
+
+    Printable characters pass through, so ordinary ``café`` and ``日本語.txt`` member
+    names stay readable — which rules out :func:`ascii` and the ``unicode_escape`` codec,
+    and ``str.encode(errors="backslashreplace")`` is unusable here for the opposite
+    reason: error handlers fire only on *unencodable* characters, so ``\\x1b`` — the byte
+    this exists to defend against — would pass through raw.
+
+    Backslash is escaped, without which the form would be ambiguous: a member literally
+    named ``a\\nb`` would render identically to one containing a newline. The cost is
+    that a native Windows path passed through this doubles its separators; callers
+    holding a path should render it ``/``-separated first.
+
+    **Not fully lossless.** A real C1 character and a surrogateescaped byte of the same
+    value collide: both ``U+009B`` and ``U+DC9B`` render as ``\\x9b``, as do ``U+00A0``
+    and byte ``0xA0``. Distinguishing them needs a separate notation for
+    surrogateescaped bytes; the guarantee here is that the output is **inert** and that
+    no character is silently dropped, not that the input is uniquely recoverable.
     """
     out: list[str] = []
     for ch in text:
-        if ch in _CONTROL_ESCAPE:
-            out.append(_CONTROL_ESCAPE[ch])
-            continue
-        if ch.isprintable():
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch.isprintable():
             out.append(ch)
-            continue
-        code = ord(ch)
-        if 0xDC00 <= code <= 0xDFFF:
-            # surrogateescape of a single byte — show the underlying octet.
-            out.append(f"\\x{code & 0xFF:02x}")
-        elif code <= 0xFF:
-            out.append(f"\\x{code:02x}")
+        elif _SURROGATE_ESCAPE_START <= ord(ch) <= _SURROGATE_ESCAPE_END:
+            out.append(f"\\x{ord(ch) & 0xFF:02x}")
         else:
-            out.append(f"\\u{code:04x}")
+            # repr of a single non-printable char is always single-quoted (both quote
+            # characters are printable, so its quote-escaping never fires): strip them.
+            out.append(repr(ch)[1:-1])
     return "".join(out)
+
+
+def quoted(text: str) -> str:
+    """Delimit archive-derived text in a message **without** escaping it.
+
+    ``f"...{name!r}..."`` in a message would escape the name, and then the message's own
+    escaping (:class:`~archivey.exceptions.ArchiveyError`, :class:`
+    ~archivey.diagnostics.Diagnostic`) would escape the backslashes ``repr`` introduced,
+    rendering a hostile name doubly-escaped: ``EV\\\\x1b[2KIL`` where ``EV\\x1b[2KIL`` was
+    meant. Quoting here and letting the message escape once produces the delimiters
+    without the doubling.
+
+    Use this — not ``!r`` — for member names, link targets and paths interpolated into a
+    message that escapes itself. ``!r`` remains correct for values that are not
+    archive-derived (a format, a code, an exception type) and for ``logger.*`` call
+    sites, whose records are **not** escaped by the CLI and where ``%r`` is what makes an
+    interpolated name inert.
+    """
+    return f"'{text}'"
