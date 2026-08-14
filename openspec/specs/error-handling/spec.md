@@ -217,10 +217,10 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 
 | Attribute | Type | Contract |
 | --- | --- | --- |
-| `message` | `str` | Human-readable explanation |
+| `message` | `str` | Human-readable explanation, stored **escaped** for terminal safety |
 | `source_format` | `ArchiveFormat | None` | Format being processed, if known |
-| `archive_name` | `str | None` | Path or source stream `name`; `None` for anonymous streams; never fabricated |
-| `member_name` | `str | None` | Member in context, if any |
+| `archive_name` | `str | None` | Path or source stream `name`; `None` for anonymous streams; never fabricated; **raw** |
+| `member_name` | `str | None` | Member in context, if any; **raw** |
 | `__cause__` | `BaseException | None` | Original exception via `raise ... from exc` when wrapping |
 
 #### Scenario: context attribute matrix
@@ -229,6 +229,7 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 | --- | --- |
 | `CorruptionError` while reading ZIP member `"data/file.txt"` | `source_format == ArchiveFormat.ZIP`; `member_name == "data/file.txt"` |
 | `FormatDetectionError` before any member | `member_name is None` |
+| Member named `ev\x1b[2Kil.txt` | `member_name` is the raw name; a message embedding it is escaped |
 
 ### Requirement: Original cause and traceback are preserved centrally
 
@@ -267,3 +268,42 @@ be converted into `CorruptionError`, `TruncatedError`, or another `ArchiveyError
 | Underlying file read raises `OSError` mid-member | Original `OSError` propagates unchanged |
 | Source bytes are readable but decoder reports corrupt/truncated data | `CorruptionError` / `TruncatedError` because the failure is decoding-origin |
 
+### Requirement: Exception messages are inert for terminal display
+
+Exception messages interpolate archive-derived text — a member name, or a destination
+path built from one — and that text is attacker-controlled. Both exception roots
+(`ArchiveyError` and `ArchiveyUsageError`) SHALL escape their `message` at construction,
+losslessly, so the stored message carries no control sequence that could rewrite or spoof
+a terminal line.
+
+The escaped form SHALL be what `message`, `args[0]`, `str(exc)` and `repr(exc)` all
+render, so no accessor hands a caller the raw form by accident.
+
+Escaping SHALL happen at construction rather than at any display site. An exception
+message reaches a terminal by routes no single consumer configures — `print(exc)`,
+`logging.exception`, a third-party error reporter, and an uncaught exception whose
+traceback the interpreter writes itself, whose final line is `str(exc)`. A display-side
+escape protects only the routes someone remembered to wire up; the last of these has no
+display site to wire.
+
+The structured attributes (`archive_name`, `member_name`, `source_format`) SHALL remain
+**raw**, so callers that need the real value to act on — rather than to print — still
+have it. `__str__` renders the two names through `!r`, which escapes them for display.
+
+#### Scenario: an exception message cannot spoof a terminal line
+
+| Case | Expected |
+| --- | --- |
+| `ExtractionError` whose message embeds `/out/ev\x1b[2Kil\rSPOOF.txt` | `str(exc)` and `exc.message` carry `\x1b` as four literal characters; no raw ESC |
+| The same exception propagating uncaught | The traceback's final line is escaped; no display site was involved |
+| `exc.member_name` for a member named `ev\x1b[2Kil.txt` | The raw name, unescaped — it is data, not display |
+| `ArchiveyUsageError` | Escaped on the same terms, though its text is usually archivey's own |
+| A message with no control bytes | Unchanged |
+
+#### Scenario: escaping composes predictably
+
+| Case | Expected |
+| --- | --- |
+| A message interpolating a name with `{name!r}` | Lossless but doubly-escaped (`\\x1b`): `repr` escapes, then the message escape escapes the backslash |
+| A message interpolating another `ArchiveyError` with `{exc}` | Same doubling; call sites SHOULD use `{exc!r}` or the structured fields |
+| A native Windows path in a message | Separators doubled by the backslash escape — lossless, and the reason print sites render member-derived paths `/`-separated first |

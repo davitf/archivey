@@ -8,8 +8,7 @@ is being reported on and author what the operator reads in its place. GNU `ls` /
 PR #235 closed every CLI **print site** — the report lines, the error detail appended
 to `failed:` / `blocked:`, and the hoist's messages. It did not close the library's
 `logging` records, which reach the same stderr through the handler
-`cli/logging_config.py` installs. Registered as threat-model **O9**; this change is
-that item being tackled.
+`cli/logging_config.py` installs. Registered as threat-model **O9**.
 
 The exposure is one field wide and reproducible on the branch that fixed the print
 sites:
@@ -22,33 +21,67 @@ failed:  EV\x1b[2KIL\rHARMLESS.TXT: Destination already exists: /…/out/ev\x1b[
 Same fact, one line apart: the second is the fixed print site, the first is the log
 record. In `logger.warning("Skipping %s %r: %s", type, name, error)` the *name* is
 safe by accident — `%r` makes `repr` escape it — while the *error* is not, because its
-message embeds a destination path built from that same name. Any library log record or
-exception message carrying a member-derived path has this shape, so fixing the one
-call site would not close the class.
+message embeds a destination path built from that same name.
 
-Escaping is also **unspecified**: no requirement in `cli`, `logging`, or anywhere else
-says CLI output escapes attacker-controlled text, even though the behavior ships and
-carries a security rationale in its docstring. A fix with no requirement behind it is
-one refactor away from silently regressing — which is exactly what happened to the
-print sites.
+**The first attempt at this change escaped at the CLI's log handler, and that was the
+wrong layer.** A formatter only guards records that reach a handler someone configured.
+It does nothing for the route an archivey exception is most likely to take to a
+terminal: propagating uncaught, with the interpreter printing the traceback — whose
+final line is `str(exc)`, and never passes through a handler at all. The same gap
+applies to `print(exc)` in embedding code and to third-party error reporters.
+
+The text is dangerous because of where it *comes from*, not where it is displayed, so
+that is where it should be made inert.
 
 ## What Changes
 
-- **Escape at the CLI's log handler, not at the library's call sites.** A
-  `logging.Formatter` in `cli/logging_config.py` escapes the record's *message*. The
-  library keeps emitting structured records unchanged, and the CLI decides how its own
-  terminal is protected.
-- **Write the requirement** into `cli`: output to a terminal escapes archive-derived
-  text, on both the print path and the log path, so the guarantee has a spec to hold it
-  rather than living only in a helper's docstring.
-- **Close threat-model O9.**
+- **Exceptions escape their own message at construction.** One place in
+  `ArchiveyError.__init__` covers all 26 subclasses, and `ArchiveyUsageError` matches
+  it. `message`, `args[0]`, `str()` and `repr()` all render the escaped form; the
+  structured attributes (`archive_name`, `member_name`, `source_format`) stay raw for
+  callers that need the value to act on rather than to print.
+- **Diagnostics do the same for `Diagnostic.message`**, which
+  `diagnostics_collector` logs verbatim — the one library log site that interpolates
+  neither an exception nor `%r`. `Diagnostic.context` stays raw as the structured
+  channel.
+- **The escaping primitive moves to `archivey/escaping.py`**, below both
+  `exceptions` and `cli`, which cannot import from `archivey.cli`.
+- **The CLI stops escaping what already escaped itself.** `format_error_detail`
+  decides once, by type, so no call site has to know whether it is holding an
+  archivey exception or an `OSError`.
+- **No escaping formatter.** It would double every backslash an exception already
+  wrote, on top of guarding the weaker of the two paths.
+- **Write the requirement** into `error-handling` and `diagnostics` (messages are
+  inert at construction) and `cli` (what reaches a terminal), so the guarantee has a
+  spec to hold it rather than living only in a helper's docstring.
+- **Close threat-model O9**, including the `exc_info` residual the handler-side
+  design had to accept: the traceback's final line is the exception's message, which
+  is now escaped at the source.
 
-Not changed: `escape_member_name` itself, the print sites (already correct), and the
-records the library emits — a caller embedding archivey and routing its logs to a file
-or a structured sink is unaffected.
+Not changed: `escape_member_name`'s behavior, the print sites for member names
+(already correct), and the records the library emits — a caller embedding archivey and
+routing its logs to a file or a structured sink still receives them verbatim.
 
 ## Impact
 
-- `cli` — new requirement: attacker-controlled text is escaped before terminal display
-- `src/archivey/cli/logging_config.py` — the escaping formatter
+- `error-handling` — new requirement: exception messages are inert; `message` is
+  documented escaped in the standard-attributes table
+- `diagnostics` — new requirement: diagnostic messages are inert, context stays raw
+- `cli` — new requirement: archive-derived text is escaped before terminal display,
+  at the message source rather than the display site
+- `src/archivey/escaping.py` — new home for the escaping primitive
+- `src/archivey/exceptions.py`, `src/archivey/diagnostics.py` — escape at construction
+- `src/archivey/cli/` — `format_error_detail`; no formatter; no double escaping
 - `dev-docs/threat-model.md` — O9 open → implemented
+
+## Accepted residuals
+
+- A message that interpolates an already-escaped string — `{name!r}` (repr escapes
+  first) or `{exc}` of another `ArchiveyError` — renders doubly-escaped: `\\x1b`
+  where `\x1b` would do. Lossless and safe, but visibly inconsistent with the
+  `member=` field on the same line, which renders from the raw attribute. Fixing it
+  means auditing call sites one at a time, which is the burden this design exists to
+  avoid.
+- A native Windows path in an exception message has its separators doubled by the
+  backslash escape. Print sites avoid this by rendering member-derived paths relative
+  and `/`-separated first; exception messages do not.

@@ -10,11 +10,19 @@ Two roots (intentional):
 
 Under ``ArchiveyError``, names track the failing phase: open → read → extract,
 plus feature/package/resource limits.
+
+Both roots **escape their message** at construction: the text call sites build
+interpolates attacker-controlled member names and the paths derived from them, and
+an exception message reaches a terminal by routes no single consumer configures —
+including a traceback the interpreter prints on its own. See
+:class:`ArchiveyError` for what stays raw and why.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+from archivey.escaping import escape_control_chars
 
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
@@ -22,7 +30,30 @@ if TYPE_CHECKING:
 
 
 class ArchiveyError(Exception):
-    """Root of all Archivey exceptions."""
+    """Root of all Archivey exceptions.
+
+    **The message is escaped.** Call sites build messages by interpolating
+    archive-derived text — a member name, or a destination path built from one — and
+    those are attacker-controlled. An exception message reaches a terminal by more
+    routes than any one consumer controls: ``print(e)``, ``logging.exception``, a
+    third-party error reporter, and above all an uncaught exception whose traceback
+    the interpreter prints itself, whose final line is ``str(e)``. Escaping in the
+    handler that displays it protects only the routes someone remembered to
+    configure; escaping here protects all of them, with no configuration.
+
+    So ``message`` is stored escaped, and that escaped form is what
+    :meth:`__str__`, ``args[0]`` and ``repr()`` all render. The escaping is lossless
+    (see :func:`~archivey.escaping.escape_control_chars`), so nothing is hidden —
+    only made inert.
+
+    ``archive_name``, ``member_name`` and ``source_format`` stay **raw**, for callers
+    that need the real value to act on rather than to print. :meth:`__str__` renders
+    the two names through ``!r``, which escapes them for display in turn.
+
+    One sharp edge: a message that interpolates another ``ArchiveyError`` escapes an
+    already-escaped string, doubling its backslashes. Wrap with ``{exc!r}``, or reach
+    for the structured fields, rather than ``{exc}``.
+    """
 
     def __init__(
         self,
@@ -32,6 +63,7 @@ class ArchiveyError(Exception):
         archive_name: str | None = None,
         member_name: str | None = None,
     ) -> None:
+        message = escape_control_chars(message)
         super().__init__(message)
         self.message = message
         self.source_format = source_format
@@ -189,9 +221,15 @@ class ArchiveyUsageError(Exception):
 
     ``except ArchiveyError`` wraps archive/environment problems; usage errors indicate
     a bug in calling code and must not be swallowed by those handlers.
+
+    The message is escaped on the same terms as :class:`ArchiveyError`'s. A usage
+    error's text is mostly archivey's own, so the escaping is usually a no-op — but
+    "mostly" is not a property worth carving an exception into, and a usage error is
+    free to name the member that provoked it.
     """
 
     def __init__(self, message: str) -> None:
+        message = escape_control_chars(message)
         super().__init__(message)
         self.message = message
 

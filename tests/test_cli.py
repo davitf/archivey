@@ -11,6 +11,7 @@ import pytest
 
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.main import _inject_default_list, main
+from archivey.exceptions import ArchiveyError
 
 
 def _zip(path: Path, entries: dict[str, bytes]) -> Path:
@@ -1553,41 +1554,72 @@ def _log_through_cli_handler(msg: str, *args: object, **kwargs: object) -> str:
 
 
 def test_log_records_escape_archive_derived_text() -> None:
-    """The print sites escape; without this the log path is the way around them.
+    """The log path carries archive text too, and reaches the same stderr.
 
-    A library WARNING interpolates the destination path, which is built from the member
-    name, so an unescaped record lets the archive erase and rewrite the line reporting it.
+    It is closed at the source rather than at the handler: the exception escapes its own
+    message, so interpolating it into a record cannot reintroduce the spoof. This is the
+    real shape of the only library site that logs one (``extraction.py``'s
+    ``"Skipping %s %r: %s"``).
     """
-    out = _log_through_cli_handler(
-        "Skipping file: %s", "Destination already exists: /out/ev\x1b[2Kil\rSPOOF.txt"
-    )
+    exc = ArchiveyError("Destination already exists: /out/ev\x1b[2Kil\rSPOOF.txt")
+    out = _log_through_cli_handler("Skipping file %r: %s", "ev\x1b[2Kil.txt", exc)
     assert "\x1b" not in out  # no raw escape sequence
     assert "\r" not in out.rstrip("\n")  # no carriage-return line rewrite
     assert "\\x1b[2K" in out  # …shown losslessly instead
 
 
-def test_log_records_keep_tracebacks_readable() -> None:
-    """Only the message is escaped: a traceback is archivey's own text, not the archive's.
+def test_log_records_escape_diagnostic_messages() -> None:
+    """``diagnostics_collector`` logs ``"%s"`` of a diagnostic message verbatim.
 
-    Escaping its newlines would collapse a multi-line traceback onto one line.
+    That is the one library log site whose interpolation is not an exception and not
+    ``%r``, so the diagnostic escapes its own message for the same reason an exception
+    does.
+    """
+    from archivey.diagnostics import (
+        Diagnostic,
+        DiagnosticCode,
+        DiagnosticSeverity,
+        MemberNameControlsContext,
+    )
+
+    diagnostic = Diagnostic(
+        occurrence_id="1",
+        code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+        severity=DiagnosticSeverity.WARNING,
+        message="Member name has controls: /out/ev\x1b[2Kil\rSPOOF.txt",
+        context=MemberNameControlsContext(member_name="ev\x1b[2Kil.txt"),
+    )
+    out = _log_through_cli_handler("%s", diagnostic.message)
+    assert "\x1b" not in out
+    assert "\\x1b[2K" in out
+    # …while the structured channel keeps the real value for a JSON sink.
+    assert diagnostic.context.member_name == "ev\x1b[2Kil.txt"
+
+
+def test_log_records_keep_tracebacks_readable() -> None:
+    """Escaping the message must not collapse a multi-line traceback onto one line.
+
+    The traceback is rendered by the stdlib from the exception, not escaped as a block —
+    and its final line is safe on its own, because it is the exception's escaped message.
     """
     try:
-        raise ValueError("boom")
-    except ValueError:
+        raise ArchiveyError("boom: /out/ev\x1b[2Kil\rSPOOF.txt")
+    except ArchiveyError:
         out = _log_through_cli_handler("failed", exc_info=True)
     assert "Traceback (most recent call last):" in out
     assert out.count("\n") > 2  # still multi-line
-    assert "\\n" not in out  # newlines not escaped away
+    assert "\x1b" not in out  # …and the final line carries no raw escape
+    assert "\\x1b[2K" in out
 
 
-def test_log_escaping_does_not_alter_the_shared_record(
+def test_library_log_records_reach_other_handlers_unescaped(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Other handlers format the same record; the formatter must copy, not mutate.
+    """``cli_logging`` leaves ``propagate`` alone, and no longer rewrites records.
 
-    ``cli_logging`` deliberately leaves ``propagate`` alone so library records still reach
-    root handlers — an embedding app's, or caplog here. Escaping in place would corrupt
-    what they see, and a restore-afterwards would still race them.
+    Escaping moved to the message's source, so the CLI handler is an ordinary
+    ``logging.Formatter`` again — an embedding app's handler, or caplog here, sees
+    exactly the record the library emitted, args included.
     """
     import logging
 
@@ -1596,11 +1628,31 @@ def test_log_escaping_does_not_alter_the_shared_record(
     err = io.StringIO()
     with caplog.at_level(logging.WARNING, logger="archivey.test"):
         with cli_logging(verbose=False, err=err):
-            logging.getLogger("archivey.test").warning("name: %s", "ev\x1b[2Kil.txt")
+            logging.getLogger("archivey.test").warning("name: %r", "ev\x1b[2Kil.txt")
 
-    assert "\\x1b[2K" in err.getvalue()  # escaped for the terminal…
-    assert caplog.records[-1].getMessage() == "name: ev\x1b[2Kil.txt"  # …not for caplog
+    assert caplog.records[-1].getMessage() == "name: 'ev\\x1b[2Kil.txt'"
     assert caplog.records[-1].args == ("ev\x1b[2Kil.txt",)
+
+
+def test_uncaught_exception_traceback_reaches_stderr_inert() -> None:
+    """The route that no display site can guard: the interpreter prints the traceback.
+
+    A formatter never sees this, and neither does a print site — the interpreter renders
+    the exception itself, and its final line is ``str(exc)``. This is why the escaping
+    lives at construction rather than at the CLI's handler. Run out-of-process so the
+    real ``sys.excepthook`` path is exercised, not a captured string.
+    """
+    import subprocess
+
+    code = (
+        "from archivey.exceptions import ExtractionError\n"
+        "raise ExtractionError('Destination exists: /out/ev\\x1b[2Kil\\rSPOOF.txt')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert proc.returncode != 0
+    assert "\x1b" not in proc.stderr  # no raw escape sequence reached the terminal
+    assert "\\x1b[2K" in proc.stderr  # …shown losslessly on the traceback's last line
+    assert "Traceback (most recent call last):" in proc.stderr
 
 
 def test_log_escaping_leaves_ordinary_messages_alone() -> None:

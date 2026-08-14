@@ -237,7 +237,7 @@ bounds, and upstream py7zr writing `kCRC` for the encoded-header folder remain
 optional hardenings. See `format-7z` ("never a silent empty listing") and
 `test_header_encrypted_empty_decoded_header_rejected`.
 
-### O9. Attacker-controlled bytes reaching the terminal via log records — implemented
+### O9. Attacker-controlled bytes reaching the terminal via messages — implemented
 
 Member names are attacker-controlled, and a name may carry ANSI control sequences: a
 `README\x1b[2K\rSUCCESS.txt` printed raw lets the archive erase the line it is being
@@ -247,13 +247,16 @@ reported on and author what the operator sees in its place. `cli/format.py`'s
 the **report-line** print sites through it: the report lines themselves, the error detail
 appended to `failed:` / `blocked:`, and the hoist's messages.
 
-**Implemented** (`escape-cli-log-records`): `cli/logging_config.py` installs an
-escaping `logging.Formatter`, so the log path is covered by the same guarantee as the
-print path, now written down as the `cli` requirement *"Archive-derived text is escaped
-before terminal display"*. The same change escaped the print sites that render an
-**exception** rather than a report line — `archivey test`'s `FAIL` detail, the extract
-abort notice, and `main()`'s top-level handlers — which the report-line pass had left
-raw. The gap it closed is below.
+**Implemented** (`escape-cli-log-records`): archive-derived text is escaped where it
+**becomes a message**, not where a message is displayed. `ArchiveyError` and
+`ArchiveyUsageError` escape their `message` at construction, `Diagnostic` escapes its
+`message`, and the primitive moved to `archivey/escaping.py` so both can reach it. The
+guarantee is written down as the `error-handling` and `diagnostics` requirements
+*"… messages are inert for terminal display"* and the `cli` requirement *"Archive-derived
+text is escaped before terminal display"*. The same change escaped the print sites that
+render an **exception** rather than a report line — `archivey test`'s `FAIL` detail, the
+extract abort notice, and `main()`'s top-level handlers — which the report-line pass had
+left raw. The gap it closed is below.
 
 The library's own `logging` records used to bypass the print-site escaping.
 `extraction.py` emits
@@ -281,32 +284,42 @@ bytes in filenames (`WinError 123`), but the failure path *is* a reporting path:
 still reaches stderr, in the log line reporting that it could not be written. The same
 holds for any member that is blocked, superseded, or listed rather than extracted.
 
-*Why the handler and not the call sites:* a call site would have to remember, once per
-message, for every message that might carry a member-derived path — the class of bug this
-closes is exactly one that is missed a site at a time. Library records may also be routed
-somewhere a control byte is harmless or wanted (a file, a structured sink, a test's
-`caplog`), so the records themselves are left unaltered and the CLI escapes only what it
-renders. The formatter copies the record rather than mutating it, because other handlers
-format the same one.
+*Why the message and not the handler.* The first attempt escaped in a `logging.Formatter`
+installed by the CLI. That guards only records reaching a handler someone configured, and
+the likeliest route an archivey message takes to a terminal has no handler at all: an
+uncaught exception, with the interpreter printing the traceback whose final line is
+`str(exc)`. `print(exc)` in embedding code and third-party error reporters are the same
+shape. Escaping at construction covers every route with no configuration, and it needs one
+place — `ArchiveyError.__init__` — rather than one per call site.
 
-*Accepted residual — `exc_info` tracebacks.* The formatter escapes the message and
-leaves the rendered traceback alone, so a traceback's **final line** (the exception's own
-message, which may embed a member-derived path) is not escaped. No archivey logging call
-site passes `exc_info`, so this is latent, not live; closing it means parsing rendered
-traceback text to escape some lines and not others. A call site that starts passing
-`exc_info` must override `formatException` first.
+The two layers cannot coexist: a formatter escaping an already-escaped message doubles
+every backslash in it. The formatter was removed, and `format_error_detail` in the CLI
+decides by type in one place, so a call site holding an `ArchiveyError | OSError` union
+(`ExtractionResult.error`) does not have to. Only non-archivey exceptions are escaped at
+the display site, because only they arrive unescaped.
 
-*Accepted residual — native paths in log messages.* Escaping is lossless, so a backslash
+*What stays raw.* The exceptions' `archive_name` / `member_name` / `source_format` and
+`Diagnostic.context` — the structured channels, for callers acting on a value rather than
+printing it. Library log records are likewise unaltered, so an embedding app's handler or
+a test's `caplog` still sees exactly what was emitted.
+
+*Closed residual — `exc_info` tracebacks.* The handler-side design had to accept that a
+rendered traceback's final line is the exception's message and may be archive-derived.
+Escaping at construction closes it: that line is the escaped message.
+
+*Accepted residual — native paths in messages.* Escaping is lossless, so a backslash
 becomes `\\`. Report lines avoid this by rendering relative to the extraction root with
-`/` separators before escaping, but a log message carries whatever the library
-interpolated: a Windows path logs as `C:\\Users\\out\\a.txt`. Cosmetic, lossless, and
-Windows-only.
+`/` separators before escaping, but an exception message carries whatever the library
+interpolated: a Windows path renders as `C:\\Users\\out\\a.txt`. Cosmetic, lossless,
+and Windows-only.
 
-*Accepted residual (cosmetic):* a name interpolated with `%r` is escaped twice — `repr`
-quotes it, then the formatter escapes the backslashes `repr` introduced — so a hostile
-name displays as `EV\\x1b[2KIL\\rHARMLESS.TXT`. Lossless and unambiguous, and it only
-appears for names that are already hostile; removing it would mean either a second
-escaping vocabulary or dropping `%r`, which non-terminal sinks benefit from.
+*Accepted residual (cosmetic).* A message that interpolates an already-escaped string
+escapes it again: `{name!r}` (`repr` escapes first) or `{exc}` of another `ArchiveyError`.
+A hostile name displays as `EV\\x1b[2KIL\\rHARMLESS.TXT`, next to a `member=` field on
+the same line rendering the raw attribute as `EV\x1b[2KIL\rHARMLESS.TXT`. Lossless and
+unambiguous, and only visible for names that are already hostile; removing it means
+auditing interpolation call sites one at a time, which is what escaping centrally exists
+to avoid.
 
 Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Those use a
 Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a

@@ -13,7 +13,11 @@ from archivey import format_availability, list_known_formats
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import run_extract
-from archivey.cli.format import escape_member_name, format_format_label
+from archivey.cli.format import (
+    escape_member_name,
+    format_error_detail,
+    format_format_label,
+)
 from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
 from archivey.cli.logging_config import cli_logging
@@ -491,12 +495,13 @@ def main(
         with cli_logging(verbose=bool(getattr(args, "verbose", False)), err=err_stream):
             return _dispatch(args, out=out_stream, err=err_stream)
     except CliError as exc:
-        # Escaped like every other terminal write: an archive-derived name reaches these
-        # top-level handlers inside the error's message, not as a separate argument.
+        # CliError is a plain Exception, outside the archivey hierarchy, so it does not
+        # escape its own message the way ArchiveyError does — and an archive-derived name
+        # reaches here inside that message, not as a separate argument.
         print(escape_member_name(exc.message), file=err_stream)
         return exc.code
     except ArchiveyError as exc:
-        print(escape_member_name(str(exc)), file=err_stream)
+        print(format_error_detail(exc), file=err_stream)
         return EXIT_FAIL
     except BrokenPipeError:
         # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2).

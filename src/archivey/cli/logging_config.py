@@ -2,54 +2,10 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TextIO
-
-from archivey.cli.format import escape_member_name
-
-
-class _EscapingFormatter(logging.Formatter):
-    """A formatter that escapes the record's message for safe terminal display.
-
-    Library log messages interpolate archive-derived text — member names directly, and
-    destination paths (built from those names) via the errors they embed. Those reach the
-    same stderr the CLI's own report lines go to, so a name carrying ``\x1b[2K\r`` could
-    erase the log line reporting it and author what the operator reads instead. The print
-    sites escape; without this the log path is the way around them.
-
-    Escaping happens **here**, at the CLI's handler, rather than at the library's
-    ``logger.*`` call sites. Two reasons: a call site would have to remember, once per
-    message, for every message that might carry a member-derived path — the class of bug
-    this closes is precisely one that is missed one site at a time — and library records
-    may be routed somewhere a control byte is harmless or wanted (a file, a structured
-    sink, a test's ``caplog``). Presentation is the CLI's decision about its own terminal.
-
-    The record is **copied** before its message is replaced. Other handlers format the
-    same record — pytest's ``caplog``, an embedding application's — and ``cli_logging``
-    below is explicit that library records must still reach them; mutating the shared
-    record in place, even with a restore afterwards, would corrupt what they see.
-
-    Only the message is escaped. An ``exc_info`` traceback is rendered by the base class
-    from the untouched record, so escaping its newlines cannot collapse it onto one
-    unreadable line.
-
-    **Accepted residual:** that leaves the traceback's final line — the exception's own
-    message — unescaped, and *that* line can be the archive's text rather than archivey's
-    (an ``ExtractionError`` message embeds the destination path). No archivey logging call
-    site passes ``exc_info`` today, so the path is latent rather than live; escaping it
-    would mean parsing rendered traceback text to escape some lines and not others, for a
-    case nothing currently reaches. Recorded in threat-model O9. If a call site ever does
-    pass ``exc_info``, override ``formatException`` before it ships.
-    """
-
-    def format(self, record: logging.LogRecord) -> str:
-        escaped = copy.copy(record)
-        escaped.msg = escape_member_name(record.getMessage())
-        escaped.args = ()
-        return super().format(escaped)
 
 
 @contextmanager
@@ -65,10 +21,17 @@ def cli_logging(*, verbose: bool, err: TextIO) -> Iterator[None]:
     keeping a process-global handler would leak state into everything else in
     the process — on pytest 8.3 (the supported floor) it silently blinds every
     later caplog-based warning assertion.
+
+    The handler does **not** escape. Archive-derived text is escaped where it becomes
+    a message — exceptions escape their own (:mod:`archivey.exceptions`), and log call
+    sites interpolate member names with ``%r`` — so escaping again here would double
+    every backslash the exception already wrote. It would also be the weaker place to
+    do it: a formatter only guards records reaching a handler the CLI installed, and
+    an uncaught exception's traceback never passes through one.
     """
     root = logging.getLogger("archivey")
     handler: logging.StreamHandler[TextIO] = logging.StreamHandler(err)
-    handler.setFormatter(_EscapingFormatter("%(levelname)s: %(message)s"))
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     old_level = root.level
     root.addHandler(handler)
     root.setLevel(logging.INFO if verbose else logging.WARNING)

@@ -24,6 +24,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, TypeVar
 
+from archivey.escaping import escape_control_chars
 from archivey.internal.extraction_types import ExtractionResult
 
 if TYPE_CHECKING:
@@ -393,13 +394,29 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
 
 @dataclass(frozen=True)
 class Diagnostic:
-    """One immutable advisory occurrence."""
+    """One immutable advisory occurrence.
+
+    ``message`` is the human rendering and is **escaped**, on the same terms as
+    :class:`~archivey.exceptions.ArchiveyError`'s: it interpolates archive-derived
+    values, and it is logged straight to the CLI's stderr by
+    ``diagnostics_collector`` (``log.warning("%s", message)``). Today every call site
+    happens to interpolate through ``!r``, which escapes — but that is an accident one
+    new ``{name}`` would undo silently, which is the shape of bug this closes.
+
+    ``context`` stays **raw**: it is the structured channel (``member_name`` and
+    friends, surfaced through :meth:`to_dict`), and callers routing diagnostics to a
+    JSON sink need the real values, not a display rendering.
+    """
 
     occurrence_id: str
     code: DiagnosticCode
     severity: DiagnosticSeverity
     message: str
     context: DiagnosticContext
+
+    def __post_init__(self) -> None:
+        # frozen dataclass — the escape has to go in through the back door.
+        object.__setattr__(self, "message", escape_control_chars(self.message))
 
     def to_dict(self) -> dict[str, object]:
         return {

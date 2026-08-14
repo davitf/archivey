@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
+from archivey.escaping import escape_control_chars
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.types import ArchiveFormat, ArchiveMember, MemberType
 
 _TYPE_MARK = {
@@ -14,14 +16,6 @@ _TYPE_MARK = {
     MemberType.HARDLINK: "h",
     MemberType.ANTI: "A",
     MemberType.OTHER: "?",
-}
-
-# C0 controls, DEL, and C1 controls — never emit raw into a terminal.
-_CONTROL_ESCAPE = {
-    "\n": "\\n",
-    "\r": "\\r",
-    "\t": "\\t",
-    "\\": "\\\\",
 }
 
 
@@ -36,28 +30,29 @@ def format_format_label(fmt: ArchiveFormat) -> str:
 def escape_member_name(name: str) -> str:
     """Backslash-escape control bytes in a member name for safe terminal display.
 
-    Archive member names are attacker-controlled; raw ANSI / ``\\r`` would let a
-    hostile archive spoof listing lines. GNU ``ls`` / ``tar`` quote for the same
-    reason. Style follows the cli-product recommendation (Q4 lean): escape
-    everywhere, lossless backslash form, no ``--raw`` yet.
+    A thin alias over :func:`archivey.escaping.escape_control_chars`, kept because
+    every CLI call site is escaping a member name (or a path built from one) and
+    reads better for saying so. Exception messages escape themselves; the CLI does
+    not escape them again, or the backslashes would double.
     """
-    out: list[str] = []
-    for ch in name:
-        if ch in _CONTROL_ESCAPE:
-            out.append(_CONTROL_ESCAPE[ch])
-            continue
-        if ch.isprintable():
-            out.append(ch)
-            continue
-        code = ord(ch)
-        if 0xDC00 <= code <= 0xDFFF:
-            # surrogateescape of a single byte — show the underlying octet.
-            out.append(f"\\x{code & 0xFF:02x}")
-        elif code <= 0xFF:
-            out.append(f"\\x{code:02x}")
-        else:
-            out.append(f"\\u{code:04x}")
-    return "".join(out)
+    return escape_control_chars(name)
+
+
+def format_error_detail(exc: BaseException) -> str:
+    """Render an exception for terminal display, escaping only what has not been.
+
+    Archivey's own exceptions escape their message at construction, so escaping them
+    again here would double every backslash they wrote. Anything else — an ``OSError``
+    carrying a destination filename, a third-party error — has had nothing done to it
+    and still needs escaping.
+
+    Call sites should not have to know which of the two they are holding; several hold
+    a union (``ExtractionResult.error`` is ``ArchiveyError | OSError``). This is the
+    one place that decides.
+    """
+    if isinstance(exc, (ArchiveyError, ArchiveyUsageError)):
+        return str(exc)
+    return escape_control_chars(str(exc))
 
 
 def format_mode(mode: int | None) -> str:
