@@ -14,14 +14,34 @@ the *design* lives elsewhere and is authoritative:
 - `openspec/changes/<change>/` — in-flight proposals (propose changes here, don't
   edit shipped specs ad hoc). Default schema is `library` (compact library-style
   deltas); see `openspec/schemas/library/README.md` and `openspec/config.yaml`.
-- `CLAUDE.md` — orientation for AI agents working in this repo.
+- `AGENTS.md` — orientation for AI agents working in this repo (`CLAUDE.md` points at it).
 
-**Merging a change does not apply it.** A proposal's deltas reach the authoritative
-specs only when someone runs `openspec archive <change> --yes` and commits the
-resulting `openspec/specs/` updates — normally a small follow-up PR after the
-implementation merges. Skipping it leaves the authority describing something that no
-longer ships, which happened three times running; CI now fails on `main` if a change
-is complete but unarchived (`scripts/check_openspec_archived.py`).
+### Archiving an OpenSpec change
+
+**Merging a change does not apply it.** A proposal's deltas reach the authoritative specs
+only when someone runs `openspec archive <change> --yes` and commits the resulting
+`openspec/specs/` updates.
+
+**Archive in the PR that finishes the change.** Most changes here are proposed,
+implemented, and finished in one PR, and that PR is where the archive belongs — the
+deltas are what make `openspec/specs/` describe what actually ships. Treating the archive
+as a follow-up produced both halves of the problem it was meant to avoid: a window on
+`main` where the authority was wrong (three times running — #212, #213, #214) and a
+steady stream of PRs whose entire content was `openspec archive` (#214, #215, #222, #227,
+#238). CI enforces this on pull requests and on `main`
+(`scripts/check_openspec_archived.py`).
+
+Practically, make the archive the change's **last task**, so checking the final box and
+applying the deltas are the same act. Most of the archived corpus is already written this
+way.
+
+**When the change genuinely is not finished, leave the trailing task unchecked.** That is
+the escape hatch, and it costs one character. Use it when the design is still moving under
+review (archiving early is what turns a review round into a revert-and-rework), or when an
+archive is deliberately batched with a sibling change. The gate reads finished-ness from
+the checkboxes: an unchecked box is an honest "not done yet", while a checked one is a
+claim that the change has landed in the specs. Do not check the last box to make a
+progress report look tidy.
 
 ## Getting started
 

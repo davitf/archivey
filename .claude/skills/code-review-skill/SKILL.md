@@ -34,7 +34,7 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 > VISION tie-breakers, CONTRIBUTING contracts, and `review/` deep-review norms.
 > **Read that addendum first** when reviewing changes in this repository.
 >
-> **Cursor entrypoint:** project command [`.cursor/commands/code-review.md`](../../.cursor/commands/code-review.md)
+> **Cursor entrypoint:** project command [`.cursor/commands/code-review.md`](../../../.cursor/commands/code-review.md)
 > wires `/code-review` to this skill + addendum (findings-first defaults + archivey
 > process). Invoking `/code-review-skill` also loads this skill directly.
 >
@@ -48,6 +48,12 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 > (Cursor command or `Skill`). Reviewing an OpenSpec proposal rather than code? Use
 > [addendum §9](reference/archivey-review-addendum.md) (values-first), not the code-first
 > order — same three-block output.
+>
+> **Posting the review to a PR?** See [addendum §10](reference/archivey-review-addendum.md)
+> — stable finding IDs, inline anchoring, re-review status tables, attribution footer.
+> The implementing agent then works through it with
+> [`address-review-findings`](../address-review-findings/SKILL.md); these two skills are
+> the two halves of one loop.
 
 ## When to Use This Skill
 

@@ -78,23 +78,32 @@ jobs:
         run: uv run --python 3.12 --group docs mkdocs build --strict
 
   # The specs under `openspec/specs/` are the authority, but a change only reaches them
-  # when someone runs `openspec archive` — a step that happens after the PR merges, and
-  # was missed three times in a row (#212, #213, #214), each time leaving the authority
-  # describing an API or a set of extras that no longer shipped.
+  # when someone runs `openspec archive` — a step that was missed three times in a row
+  # (#212, #213, #214), each time leaving the authority describing an API or a set of
+  # extras that no longer shipped.
   #
-  # Skipped on `pull_request` by design. The implementing PR is *meant* to tick its last
-  # task while the change is still unarchived, so running this there would fail the very
-  # workflow it protects. On main there is no such excuse: anything finished here should
-  # already be applied.
+  # Runs on pull requests too, since 2026-08. It originally did not, on the reasoning
+  # that an implementing PR is *meant* to tick its last task while still unarchived — but
+  # that reasoning assumed archiving is a separate step by nature. It is not: most changes
+  # here are proposed and implemented in one PR, where archiving in that same PR is simply
+  # the right move. Deferring it instead produced a steady stream of bookkeeping PRs whose
+  # entire content was `openspec archive` (#214, #215, #222, #227, #238 — five of the
+  # thirty-seven merges in three weeks) and a window on main where the authority was wrong.
   #
-  # Expressed as "not a PR" rather than "is a push" so a manual `workflow_dispatch` still
-  # runs the gate — dispatch is how you ask main for a verdict when the push event never
-  # produced a run, and a gate silently missing from that answer would defeat the point.
+  # The escape hatch is unchanged and costs one character: a change that is complete but
+  # deliberately *not* being archived yet (design still moving under review, or the archive
+  # is deliberately batched with a sibling change) leaves its trailing task unchecked. The
+  # gate reads finished-ness from the checkboxes, so an unchecked box is an honest
+  # "not done yet" rather than a suppression. See CONTRIBUTING.md §"Archiving an OpenSpec
+  # change".
+  #
+  # Expressed as a plain job rather than an `if:` so a manual `workflow_dispatch` also runs
+  # it — dispatch is how you ask main for a verdict when the push event never produced a
+  # run, and a gate silently missing from that answer would defeat the point.
   openspec:
     name: OpenSpec changes archived
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
       # Stdlib-only script, so no uv sync — the runner's python3 is enough.

@@ -18,23 +18,35 @@ single-file-compressed (gz/bz2/xz/lzip/zstd/lz4/.Z).
 
 ## Where things live
 
+**Start with [`dev-docs/code-map.md`](dev-docs/code-map.md)** when the question is *where
+in the source do I make this change* — it carries the tree shape, the call path through a
+read, a task→files index, and a "which doc answers which kind of question" table. The list
+below is the document map; that one is the code map.
+
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
   strategy; the tie-breaker when trade-offs conflict. End-user distill:
   `docs/philosophy.md`.
 - `dev-docs/PLAN.md` — phased implementation roadmap (resequenced 2026-07: native
-  7z/RAR before CLI before writing). `dev-docs/IDEAS.md` — speculative backlog.
-- `docs/` — the **published** end-user guide, and nothing else: `install`,
-  `opening-and-listing`, `reading-members`, `gotchas`, `safe-extraction`,
-  `access-and-cost`, `formats`, `errors-and-diagnostics`, `cli`, `migrating`,
-  `support-matrix`, `philosophy`, `api`, `acknowledgements`. Every file under `docs/`
-  has a nav entry in `mkdocs.yml` and `scripts/check_docs_nav.py` fails CI otherwise.
-  Placement rule for a new doc: `CONTRIBUTING.md` §"Where does a new doc go?".
-- `dev-docs/` — **unpublished** maintainer material: `decisions/` (the ADR log),
-  threat model, codec analysis, known issues, `investigations/` (finished evidence),
-  `history/` (superseded `SPEC` / `ARCHITECTURE` / `COMPARISON` / `ASYNC` prose, not
-  normative).
+  7z/RAR before CLI before writing). `dev-docs/IDEAS.md` — speculative future/backlog
+  ideas (not committed, not in `PLAN.md`).
+- `docs/` — the **published** end-user guide, and nothing else: `index`, `install`,
+  `opening-and-listing`, `reading-members`, `extracting`, `gotchas`, `access-and-cost`,
+  `formats`, `errors-and-diagnostics`, `cli`, `migrating`, `support-matrix`, `philosophy`,
+  `api`, `acknowledgements`. Every file under `docs/` has a nav entry in `mkdocs.yml` and
+  `scripts/check_docs_nav.py` fails CI otherwise. Placement rule for a new doc:
+  `CONTRIBUTING.md` §"Where does a new doc go?".
+- `dev-docs/` — **unpublished** maintainer material: `code-map.md`, `decisions/` (the ADR
+  log), threat model, codec analysis, known issues, `investigations/` (finished evidence),
+  `discussions/` (design questions written for circulation; each gets a RESOLVED header
+  once settled), `history/` (superseded `SPEC` / `ARCHITECTURE` / `COMPARISON` / `ASYNC`
+  prose, not normative). Index: `dev-docs/index.md`.
 - `dev-docs/threat-model.md` — trust boundaries + the open security/compat gap
   register (each open item becomes an OpenSpec change when tackled).
+- `review/` — the **deep-review program**: `README.md` (conventions, ranking, deliverable
+  shape), `STATUS.md` (live triage of in-flight rounds — read this before starting a
+  review), `backlog.md` (deferred topics with reasons), and `archive/<date>-<topic>/` for
+  finished rounds. Findings in an archived area are **re-reviews**: check the archive
+  tables before spending budget re-litigating settled ground.
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs
   (OpenSpec format: requirements + WHEN/THEN scenarios). The specs are authoritative,
   but when they disagree with the prose docs (or with each other), **pause and surface
@@ -45,8 +57,6 @@ single-file-compressed (gz/bz2/xz/lzip/zstd/lz4/.Z).
 - `openspec/changes/<change>/` — in-flight change proposals (proposal/tasks).
 - `CONTRIBUTING.md` — coding/testing standards (type-checking, exception translation,
   behaviour-focused tests, red-green TDD, the pause-and-ask-on-discrepancies rule).
-- `dev-docs/IDEAS.md` — speculative future/backlog ideas (not committed, not in
-  `dev-docs/PLAN.md`).
 
 ## Session setup (`unrar`, `7z`, `openspec`, deps)
 
@@ -145,6 +155,30 @@ Non-obvious gotchas:
   3.11. The free-threaded and atheris jobs already did this; the main `test` job must too.
 
 
+## Cross-platform traps (you develop on Linux; CI runs Windows and macOS)
+
+The test matrix covers Linux, macOS and Windows, but your container is Linux — so this
+class of failure lands *after* you push, and it has repeatedly cost a review round. Check
+new tests and new message-formatting code for all four:
+
+- **`read_text()` / `open()` without `encoding="utf-8"`.** Python's default encoding on
+  Windows is the ANSI code page (cp1252), not UTF-8. Any test that reads a repo source
+  file — static/AST guards especially — will raise `UnicodeDecodeError` there the moment a
+  source file contains a curly quote or an accented character. Always pass
+  `encoding="utf-8"` explicitly.
+- **Control characters and `:*?"<>|` in on-disk filenames.** Windows rejects them with
+  `WinError 123` at *creation* time, so a test that writes a hostile member name to disk
+  fails before it reaches the behaviour it meant to assert. Use a Windows-legal spoof
+  (U+2028 and friends) for the portable case, and mark the ANSI variant with the repo's
+  existing `_ANSI_ONLY` marker.
+- **Path separators in compared strings.** A native `Path` interpolated into a message
+  renders `C:\Users\…` on Windows, and backslashes double once the text is escaped for
+  terminal display. Render paths through `escaping.display_path()` before they enter a
+  message, and compare against `as_posix()` rather than `str(path)`.
+- **Filesystem case-insensitivity.** macOS and Windows collapse `A.txt` / `a.txt`, which
+  changes name-collision behaviour. If a test depends on two members differing only by
+  case, it is testing something different on each platform.
+
 ## OpenSpec CLI
 
 Installed by the setup script above. If you need it manually, it ships as the npm
@@ -168,11 +202,18 @@ openspec validate --strict <item-name>
 openspec archive <change> --yes   # apply the deltas to openspec/specs/
 ```
 
-**Archiving is a separate step from merging**, and forgetting it is the most common
-failure mode here: a merged-but-unarchived change leaves the authoritative specs
-describing something that no longer ships. Once a change's tasks are all done and its
-PR has merged, archive it and commit the resulting `openspec/specs/` diff. CI enforces
-this on `main` (`scripts/check_openspec_archived.py`).
+**Archive in the PR that finishes the change.** A merged-but-unarchived change leaves the
+authoritative specs describing something that no longer ships, and deferring the archive to
+a follow-up PR is what caused that three times running. Most changes here are proposed,
+implemented, and finished in a single PR — so run `openspec archive <change> --yes` in that
+same PR and commit the resulting `openspec/specs/` diff. Make it the change's **last task**,
+so checking the final box and applying the deltas are one act.
+
+CI enforces this **on pull requests and on `main`** (`scripts/check_openspec_archived.py`).
+If a change really is not finished — the design is still moving under review, or the archive
+is deliberately batched with a sibling change — **leave its trailing task unchecked**. That
+is the escape hatch, and it is honest: a checked last box is a claim that the change has
+landed in the specs. Details: `CONTRIBUTING.md` §"Archiving an OpenSpec change".
 
 Note `openspec validate --strict` does **not** check that a `MODIFIED` header names a
 requirement that actually exists in the parent spec, so a mis-targeted delta can
@@ -224,6 +265,34 @@ Notes:
 See `openspec/specs/format-7z/spec.md`, `format-rar/spec.md`,
 `packaging-and-extras/spec.md`, and `testing-contract/spec.md`.
 
+## Review workflow (two agents, two skills)
+
+PR review here is a **handoff between two agents**, and each half has a skill:
+
+1. **A separate agent reviews** the PR with `code-review-skill` (Cursor: `/code-review`)
+   and posts the findings to the PR. Rules for the review itself are in
+   `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`; **§10 covers
+   posting** — stable finding IDs (`F1`, `F2`, … kept across re-reviews), located findings
+   as inline comments so they can be resolved individually, blocks 1 and 3 in the body,
+   and a status table over the previous IDs when re-reviewing.
+2. **The implementing agent works through them** with `address-review-findings`
+   (Cursor: `/address-review`). Every finding gets an explicit disposition — fixed,
+   disproven, escalated, or deferred-with-a-written-home. Nothing is dropped silently, and
+   nothing is "fixed" without being reproduced first.
+
+Two things about this repo make the handoff sharper than it looks:
+
+- **Agents post through the maintainer's GitHub account.** A comment by `davitf` with a
+  `_Generated by [Claude Code](https://claude.ai/code)_` footer is an agent; the same login
+  *without* that footer is the human. Always end your own PR comments with the footer, and
+  read inline threads carefully — the maintainer's own questions arrive that way and carry
+  more weight than an automated finding.
+- **Escalate one question at a time.** The maintainer is usually deciding without having
+  read the diff or the docs, and does not know the identifiers. Expand every name, quote
+  the actual code, show what you measured, give options with consequences and a labelled
+  recommendation. A batched list of five numbered decisions pushes the work back onto the
+  person you are asking.
+
 ## Conventions
 
 - Python 3.11+, zero-dependency core, sync-only API for v1.
@@ -231,9 +300,11 @@ See `openspec/specs/format-7z/spec.md`, `format-rar/spec.md`,
   `uv run pytest`, `uv run ruff`. Type-checking is **Pyrefly + ty** (the library stays
   clean on both); mypy is not used. The package stays pip-installable (standard PEP 621
   metadata, `hatchling`).
-
-  git hook with `./scripts/install-git-hooks.sh` (see `AGENTS.md` / `CONTRIBUTING.md`);
-  otherwise run `uv run ruff format` yourself before committing.
+- Install the format-on-commit git hook with `./scripts/install-git-hooks.sh` (the setup
+  script does this for you); otherwise run `uv run ruff format` yourself before committing.
+- **Both type checkers, every time.** `ruff` passing is not the gate. Running `ruff` alone
+  and pushing is the most common self-inflicted CI failure here — `pyrefly` and `ty` are
+  separate checks and either one can be red on a tree ruff calls clean.
 - **Before pushing, run the test suite in all three dependency configurations** — current
   versions (`[all]`), minimum versions (`[all-lowest]`), and the zero-dep core
   (`[core-only]`) — since optional libraries change behaviour by both presence and version.

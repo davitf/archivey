@@ -33,6 +33,11 @@ Output stays **markdown prose** (portable across Cursor / Claude Code / others).
 route findings through a host-specific findings tool — the two-axis + reclassification
 model below is richer than those schemas, and prose is the source of truth.
 
+**Posting this review to a PR? Read §10 as well** — stable finding IDs, inline anchoring,
+re-review status tables, and the attribution footer. The implementing agent picks the
+review up from there (`.claude/skills/address-review-findings/`), and those rules are what
+make finding-by-finding disposition possible.
+
 ### Output shape — three blocks (required)
 
 Write the review as **exactly three top-level sections**, in this order. The maintainer
@@ -381,18 +386,21 @@ For commissioned deep reviews (not ordinary PR review), inherit
 7. **Archive lifecycle** — only move a review to `review/archive/` when every
    actionable item is fixed or consciously deferred (`STATUS.md` / `backlog.md`).
 
-Review themes to know. **All are archived** as of 2026-07-28 — nothing is in flight, so
-findings in these areas are re-reviews: check the archive tables first (`STATUS.md`
-records what closed the round and what comes next).
+Review themes to know. **`review/STATUS.md` is the live index — read it rather than this
+table**, which records lenses, not state. A theme listed as archived means findings in
+that area are *re-reviews*: check the archive tables first so you do not re-litigate
+settled ground (`review/backlog.md` carries the deferred topics and their reasons).
 
-| Review | Lens |
-|--------|------|
-| `api-coherence/` | Uniform interface, surface size, CLI-as-consumer gaps |
-| `performance/` | ≤1.3× budget, gate efficacy, solid/listing hotspots |
-| `debt-ledger/` | Freeze-cost debt; corpus matrix (`corpus-matrix.md`) |
-| `stream-layering/` | Wrapper correctness + collapse (largely done) |
-| `cli-product/` | CLI UX / grammar / exit codes (product, not correctness) |
-| Archived security round | Hostile input, crypto, RAR, stream decoder |
+| Review | Lens | State |
+|--------|------|-------|
+| `docs/` | Documentation IA, then content accuracy/gaps (Topic 8) | **In flight** — see `STATUS.md` |
+| `api-coherence/` | Uniform interface, surface size, CLI-as-consumer gaps | Archived |
+| `performance/` | ≤1.3× budget, gate efficacy, solid/listing hotspots | Archived |
+| `debt-ledger/` | Freeze-cost debt; corpus matrix (`corpus-matrix.md`) | Archived |
+| `stream-layering/` | Wrapper correctness + collapse | Archived |
+| `cli-product/` | CLI UX / grammar / exit codes (product, not correctness) | Archived |
+| `simplicity-consistency/` | Topic 9 — duplicated concepts, inconsistent surfaces | Archived 2026-08-15 |
+| Security round | Hostile input, crypto, RAR, stream decoder | Archived |
 
 ---
 
@@ -565,7 +573,65 @@ three-block output shape (§0).
 
 ---
 
-## 10. Out of scope for *this* addendum
+## 10. Posting the review to a pull request
+
+The usual workflow here is that **a second agent posts this review to the PR, and the
+implementing agent then works through it** (`.claude/skills/address-review-findings/`).
+That handoff is the reason for the rules below: a review that reads well in a terminal but
+cannot be dispositioned finding-by-finding costs the next round more than it saved.
+
+### Stable IDs, one thread per finding
+
+- **Give every block-2 finding a stable ID** (`F1`, `F2`, …) and keep those IDs across
+  re-reviews — a re-review of `F3` says `F3`, not `2`. The responder's status table and the
+  maintainer's memory both key on them; renumbering between rounds silently breaks both.
+- **Post each block-2 finding that has a `file:line` as an inline review comment** anchored
+  there, not buried in one long top-level wall. Inline findings can be replied to and
+  resolved individually, which is what makes the state of a round visible later.
+- **Post blocks 1 and 3 as the review body** (or a top-level comment): the maintainer
+  briefing and the decisions are about the change as a whole and have no line to anchor to.
+- Findings without a location — process, missing coverage, contract drift across documents
+  — stay in the top-level body, still with IDs.
+
+Where the host cannot post inline comments, one top-level comment is acceptable, but the
+IDs are not optional.
+
+### Re-reviews state what happened to the last round
+
+A second pass on the same PR opens with a **status table over the previous IDs** — fixed /
+still open / superseded — before any new findings. Say which HEAD you reviewed. If a rework
+made an earlier review obsolete, say so explicitly rather than leaving two contradictory
+reviews for the responder to reconcile.
+
+### Say what you actually ran
+
+Gates get **re-run, not copied from the PR body**, and the review says which. "CI green on
+the PR" and "I ran `[all]` locally and got 2334/23" are different claims; conflating them
+is how a review inherits a failure it could have caught. The same applies to a "does not
+reproduce" — show what you ran.
+
+### Attribution
+
+Agents post through the maintainer's account, so **every posted comment ends with the
+attribution footer**:
+
+```
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+```
+
+Without it, an agent's review is indistinguishable from the maintainer's own comment, and
+the next agent cannot tell which feedback is the human's. That distinction changes how the
+feedback is weighted — see the responder skill's "Who actually said this".
+
+### Do not fix while reviewing
+
+`/code-review` reports; it does not edit (SKILL.md, repo default). Leaving the fix to the
+implementing agent is what keeps the review a second opinion rather than a self-graded one.
+
+---
+
+## 11. Out of scope for *this* addendum
 
 Generic SOLID, Python footguns, and review etiquette stay in the skill’s existing
 docs (`architecture-review-guide.md`, `python.md`, `code-review-best-practices.md`,

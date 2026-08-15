@@ -24,3 +24,11 @@ specific to Claude Code; everything else would drift if it were duplicated here.
 - **`archivey-dev` is not in the GitHub-tool scope** of a Claude Code session. Plain
   HTTPS `git clone` works; the GitHub API returns 403 for unauthenticated calls, which
   is rate limiting rather than a private repo. See `AGENTS.md` §Reference repository.
+- **A fresh container has no memory of earlier sessions.** Transcripts do not survive; the
+  durable record is the repo plus the PR history. Before re-deriving something that feels
+  like it should already be settled, check `dev-docs/code-map.md` §"Where the answers
+  live" — ADRs, `review/STATUS.md`, `dev-docs/discussions/`, and the threat-model register
+  exist precisely so questions get answered once.
+- **Skills for the review loop:** `code-review-skill` produces findings,
+  `address-review-findings` dispositions them. `AGENTS.md` §Review workflow has the
+  handoff, including why agent-authored PR comments must carry the Claude Code footer.
