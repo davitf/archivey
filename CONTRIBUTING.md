@@ -48,18 +48,40 @@ progress report look tidy.
 Python **3.11+**. Tooling runs through [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
-uv sync                       # create/refresh the dev environment
+uv sync                         # create/refresh the dev environment
 ./scripts/install-git-hooks.sh  # required: auto ruff fix+format on commit
-uv run pytest                 # run the test suite
-uv run ruff check             # lint
-uv run ruff format            # format (apply; CI uses `ruff format --check`)
-uv run pre-commit run --all-files  # optional: run the framework hooks on the whole tree
-uv run pyrefly check          # type-check (Pyrefly)
-uv run ty check               # type-check (ty)
+```
+
+Then two scripts cover the gates, split by how long they take and how often you run them:
+
+```bash
+./scripts/check.sh --fix   # seconds — every fast gate; --fix applies ruff first
+./scripts/test.sh          # minutes — the everyday [all] test leg
+```
+
+`check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs — `ruff check`,
+`ruff format --check`, **`pyrefly`**, **`ty`**, `check_openspec_archived.py`,
+`openspec validate --all`, `check_docs_nav.py`, and the strict docs build. It runs every
+gate even after one fails and lists what failed at the end, so a single run tells you
+everything that is wrong. Without `--fix` it writes nothing and answers "will CI pass?".
+
+`test.sh` passes extra arguments through to pytest (`./scripts/test.sh tests/test_zip.py
+-k roundtrip`), and `--all-configs` runs the full before-pushing gate described below.
+
+Run the underlying commands directly when you want one in isolation:
+
+```bash
+uv run pytest                      # test suite
+uv run ruff check                  # lint
+uv run ruff format                 # format (apply; CI uses `ruff format --check`)
+uv run pyrefly check               # type-check (Pyrefly)
+uv run ty check                    # type-check (ty)
+uv run pre-commit run --all-files  # optional: framework hooks over the whole tree
 ```
 
 Pyrefly and ty are scoped to `src/`, so every command above runs clean with no extra
-path arguments.
+path arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
+and running it alone is the most common self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
 `src/ tests/ scripts/ benchmarks/` and will fail on drift. Installing the git hook
@@ -81,7 +103,13 @@ environments run it automatically at session start.
 **Before pushing, run the suite in all three dependency configurations CI runs** —
 optional libraries change behaviour by their presence *and* their version, so a change
 that passes one way can break another (a codec that's absent, a floor-version library bug,
-an accelerator that's only installed at current versions). Run:
+an accelerator that's only installed at current versions):
+
+```bash
+./scripts/check.sh && ./scripts/test.sh --all-configs
+```
+
+The three legs, which `--all-configs` runs in order:
 
 ```bash
 # 1. Current versions, all extras — the everyday leg.
@@ -100,14 +128,15 @@ uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
-green. (After the core-only leg, `uv sync --group dev --extra all` to restore your
-everyday environment.)
+green.
 
 > **`--resolution lowest-direct` rewrites `uv.lock`.** Leg 2 does not merely install
 > different versions — it *persists* them, so every later `uv sync --frozen` /
 > `uv run --no-sync` silently keeps the downgraded set until you re-lock, and `git status`
-> shows a few hundred lines of lockfile churn that is easy to commit by accident. After
-> leg 2, restore with:
+> shows a few hundred lines of lockfile churn that is easy to commit by accident.
+> **`./scripts/test.sh --all-configs` handles this for you** — it restores `uv.lock` and
+> the everyday environment on exit, including on failure or Ctrl-C. Running the legs by
+> hand, restore with:
 >
 > ```bash
 > git checkout -- uv.lock && uv sync --frozen --group dev --extra all

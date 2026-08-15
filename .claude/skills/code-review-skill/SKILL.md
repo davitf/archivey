@@ -2,14 +2,14 @@
 name: code-review-skill
 description: |
   Provides comprehensive code review guidance for Python, plus an archivey-specific
-  addendum (VISION, CONTRIBUTING, review/ standards). Wired from Cursor `/code-review`
-  via `.cursor/commands/code-review.md`.
+  addendum (VISION, CONTRIBUTING, review/ standards). Also reachable from Cursor via the
+  project command in `.cursor/commands/code-review.md`.
   Covers architecture review, performance review, security audit, code quality anti-patterns,
   and common bugs.
   Use when: reviewing pull requests, conducting PR reviews, code review, reviewing code changes,
     establishing review standards, mentoring developers, architecture reviews, security audits,
     performance reviews, checking code quality, finding bugs, giving feedback on code,
-    or when the user invokes /code-review.
+    or when the user invokes /code-review-skill.
 allowed-tools:
   - Read
   - Grep
@@ -34,12 +34,16 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 > VISION tie-breakers, CONTRIBUTING contracts, and `review/` deep-review norms.
 > **Read that addendum first** when reviewing changes in this repository.
 >
-> **Cursor entrypoint:** project command [`.cursor/commands/code-review.md`](../../../.cursor/commands/code-review.md)
-> wires `/code-review` to this skill + addendum (findings-first defaults + archivey
-> process). Invoking `/code-review-skill` also loads this skill directly.
+> **How to invoke it — the name matters.** This skill is **`/code-review-skill`**. Do not
+> reach for a bare `/code-review`: both Claude Code and Cursor ship a *builtin* skill under
+> that name, and it is not this one — it has its own output shape and will happily edit
+> code. In Cursor the project command
+> [`.cursor/commands/code-review.md`](../../../.cursor/commands/code-review.md) points at
+> this skill + addendum, so `/code-review` there lands in the right place; everywhere else,
+> ask for `/code-review-skill` explicitly.
 >
-> **Repo default — three-block report, no edits:** in archivey, `/code-review` and
-> `/code-review-skill` **report findings**; they do **not** modify code unless you
+> **Repo default — three-block report, no edits:** in archivey,
+> `/code-review-skill` **reports findings**; it does **not** modify code unless you
 > explicitly ask. Emit the addendum **§0 output shape**: (1) maintainer briefing,
 > (2) copy-paste implementor handoff with findings ranked by **severity × confidence**,
 > (3) maintainer decisions. **Brevity is presentation-only** for blocks 1 and 3 — do not

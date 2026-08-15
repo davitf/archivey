@@ -76,11 +76,23 @@ extract(path, dest)                                  core.py → internal/extrac
 
 Three things about this path are worth knowing before you debug it:
 
-- **Listing can happen twice.** Backends with an upfront index take an index-only pass
-  before materialization, so per-member work on the listing path may run twice with two
-  different member objects. Dedupe on the **member id**, which is stable across both
-  passes, never on object identity. A guardrail test that lists a TAR will not exercise
-  this at all — TAR has no upfront index.
+- **Listing can happen twice, and the two passes build different member objects.**
+  Backends that declare `_MEMBER_LIST_UPFRONT` take an index-only pass
+  (`_get_members_index_only`) before materialization (`_materialize_members`). Both call
+  `_iter_members()` afresh, and the index-only pass's list is never stored in
+  `self._materialized` — so the backend re-walks and constructs new `ArchiveMember`
+  instances the second time.
+
+  **This is an artifact of the two passes, not a design choice, and it is not a
+  frozen-object decision.** `ArchiveMember` is a *mutable* dataclass the library fills in
+  place — ADR 0007, explicitly "reversed from an earlier frozen draft". Nothing decided
+  that the second pass should build fresh objects; it falls out of the index-only result
+  not being cached. Whether it *should* be is an open question, recorded in `IDEAS.md`.
+
+  Consequence, and the reason this is worth knowing: **dedupe per-member work on the
+  member id, never on object identity** — the id is stable across both passes, the object
+  is not. A guardrail test that lists a TAR will not exercise this at all, because TAR has
+  no upfront index. Getting this wrong emitted one diagnostic twice per member (#232).
 - **Exceptions are translated per backend**, through that backend's translator, into
   `ArchiveyError` subclasses. Unknown exceptions return `None` from the translator and
   propagate; there is no catch-all.
