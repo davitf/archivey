@@ -560,8 +560,8 @@ there is active intent to remove.
 > returns a structured per-item report, that report is the sole carrier of per-item
 > outcomes). The archive-versus-caller split below is **descriptive only**: it
 > accurately characterises the shapes most codes happen to have, and it decides
-> nothing. See `dev-docs/discussions/diagnostics-archive-vs-usage.md` and the three
-> reviewer opinions alongside it for why. The rest of this entry is kept as the
+> nothing. See `dev-docs/discussions/2026-08-diagnostics/diagnostics-archive-vs-usage.md`
+> and the three reviewer opinions alongside it for why. The rest of this entry is kept as the
 > record of what was ruled at the time.
 
 **Maintainer ruling, deciding the solid-warning question from O-22.** The spec
