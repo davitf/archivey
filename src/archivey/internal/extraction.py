@@ -1476,7 +1476,8 @@ class ExtractionCoordinator:
 
         if self._overwrite is OverwritePolicy.ERROR:
             raise ExtractionError(
-                f"Destination already exists: {dest_path}", member_name=member.name
+                f"Destination already exists: {display_path(dest_path)}",
+                member_name=member.name,
             )
         if self._overwrite is OverwritePolicy.SKIP:
             return False

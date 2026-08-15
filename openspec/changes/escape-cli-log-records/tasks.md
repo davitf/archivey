@@ -1,3 +1,7 @@
+> **§§1–6 are superseded by §7 and later — do not implement them.** They describe the
+> handler-side `_EscapingFormatter` design, which review replaced with escaping at
+> message construction. Kept as the record of what was tried and why it was wrong.
+
 ## 1. Specify the guarantee
 
 - [x] 1.1 Add the escaping requirement to `openspec/specs/cli/spec.md` (via the delta),
@@ -158,3 +162,21 @@ the 36 name-bearing messages were reducible, most of them printing the name twic
       matched nothing there and the check fired on `reader_state`. Compare via
       `as_posix()`, and assert each exemption names a real file, since one that matches
       nothing looks like coverage while providing none
+
+## 11. Review round 3 (PR #236, cursor bot at f5f4376)
+
+Findings 1–3 were the CI failures already fixed in §10. The rest:
+
+- [x] 11.1 `Destination already exists: {dest_path}` still interpolated a native path
+      while its siblings used `display_path()` — the one message the whole change was
+      reproduced on. Missed because that audit matched `\bdest\b`, which does not fire
+      inside `dest_path`: the same word-boundary trap as §9.7, in a second script
+- [x] 11.2 Replace both one-off audits with static tests, so "no native paths in
+      messages" and "no `!r` on archive-derived text" are checked every run rather than
+      resting on a sweep nobody re-runs
+- [x] 11.3 Reconcile the residual story, which disagreed across four documents: the
+      proposal claimed closure while `dev-docs/threat-model.md` and the `error-handling`
+      scenario table still described it as accepted. Now closed everywhere, with the
+      positive rule written into `error-handling` as a SHALL
+- [x] 11.4 Banner over §§1–6 marking them superseded, so the checklist is not read as
+      current work

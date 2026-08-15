@@ -126,6 +126,12 @@ there is no name left in the message to escape. Four are irreducible and documen
 
 ## Accepted residual
 
-None outstanding. The Windows separator-doubling residual is closed: member-derived
-paths in messages are rendered `/`-separated by `display_path()` before escaping, the
-same rule the CLI's print sites already followed.
+None outstanding. The Windows separator-doubling residual is closed: paths in messages
+are rendered `/`-separated by `display_path()` before escaping, the same rule the CLI's
+print sites already followed.
+
+The first pass at that closure missed `Destination already exists` — the very message
+this change was reproduced on — because the audit behind it matched `\bdest\b`, which
+does not fire inside `dest_path`. Same word-boundary trap as the call-site guard, in a
+second script. Both are now static tests rather than one-off sweeps, so the claim is
+checked on every run instead of resting on an audit nobody re-runs.

@@ -410,3 +410,68 @@ def test_names_are_not_rendered_twice() -> None:
 
     rendered = str(PathTraversalError("Null byte in member name", member_name="a.txt"))
     assert rendered.count("a.txt") == 1
+
+
+def test_the_o9_signature_message_renders_its_path_posix() -> None:
+    """`Destination already exists` is the message the whole change was reproduced on.
+
+    It was the last site still interpolating a native path, missed because the audit
+    that found the others matched ``\\bdest\\b``, which does not fire inside
+    ``dest_path`` — the same word-boundary trap as the call-site guard above.
+    """
+    from pathlib import Path
+
+    from archivey.escaping import display_path
+
+    dest = Path("out") / "sub" / "a.txt"
+    message = ExtractionError(
+        f"Destination already exists: {display_path(dest)}"
+    ).message
+    assert message.endswith("out/sub/a.txt")
+    assert "\\" not in message
+
+
+def test_no_message_interpolates_a_native_path() -> None:
+    """Every path in a message goes through display_path(), so nothing doubles.
+
+    A static sweep rather than a per-site test: the failure is invisible on Linux, where
+    a native path has no backslashes to double.
+    """
+    path_words = {"dest", "path", "target", "dir", "root", "destination", "wrapper"}
+    offenders: list[str] = []
+    for path in sorted(_SRC.rglob("*.py")):
+        module = path.relative_to(_SRC).as_posix()
+        if module in _NON_ARCHIVE_MODULES:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fname = (
+                getattr(node.func, "id", None) or getattr(node.func, "attr", None) or ""
+            )
+            if fname in _FOREIGN or not _ESCAPING_CALL.search(fname):
+                continue
+            targets = list(node.args[:1]) + [
+                k.value for k in node.keywords if k.arg == "message"
+            ]
+            for target in targets:
+                if not isinstance(target, ast.JoinedStr):
+                    continue
+                for value in target.values:
+                    if not isinstance(value, ast.FormattedValue):
+                        continue
+                    expr = ast.unparse(value.value)
+                    if value.conversion == ord("r") or "display_path(" in expr:
+                        continue
+                    if "quoted(" in expr or re.fullmatch(r"exc|e|err|error", expr):
+                        continue
+                    if any(
+                        tok.lower() in path_words
+                        for tok in re.split(r"[^A-Za-z]+", expr)
+                    ):
+                        offenders.append(f"{module}:{node.lineno} {{{expr}}}")
+    assert not offenders, (
+        "wrap paths in display_path() so Windows separators are not doubled by the "
+        "escape:\n  " + "\n  ".join(offenders)
+    )

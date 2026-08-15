@@ -62,6 +62,11 @@ is a requirement rather than a style preference:
 call site wrote it — alongside the escaped `message`, since the escaped form cannot be
 embedded in another message without doubling.
 
+A filesystem path interpolated into a message SHALL be rendered `/`-separated first
+(`escaping.display_path()`). Escaping doubles a backslash, so a native Windows path
+would otherwise have every separator doubled; after this rendering a surviving
+backslash is a character in a *name*, which is what the escape is for.
+
 The inverse rule holds for `logger.*` call sites, whose records the CLI does **not**
 escape: there `%r` is what makes an interpolated name inert and SHALL be kept.
 
@@ -75,7 +80,7 @@ escape: there `%r` is what makes an interpolated name inert and SHALL be kept.
 | Wrapping a third-party exception directly | Escaped once — it was never escaped |
 | `exc.raw_message` | The unescaped text the call site wrote |
 | A log record interpolating a name with `%r` | Inert; the CLI handler does not escape it |
-| A native Windows path in a message | Separators doubled by the backslash escape — lossless, and the reason print sites render member-derived paths `/`-separated first |
+| A native Windows path in a message | Rendered `/`-separated by `display_path()` first, so the escape has no separators to double |
 
 ## MODIFIED Requirements
 

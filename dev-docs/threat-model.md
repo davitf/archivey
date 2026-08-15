@@ -307,11 +307,12 @@ a test's `caplog` still sees exactly what was emitted.
 rendered traceback's final line is the exception's message and may be archive-derived.
 Escaping at construction closes it: that line is the escaped message.
 
-*Accepted residual — native paths in messages.* Escaping is lossless, so a backslash
-becomes `\\`. Report lines avoid this by rendering relative to the extraction root with
-`/` separators before escaping, but an exception message carries whatever the library
-interpolated: a Windows path renders as `C:\\Users\\out\\a.txt`. Cosmetic, lossless,
-and Windows-only.
+*Native paths in messages.* Escaping doubles a backslash, so a native Windows path
+interpolated raw would render `C:\\Users\\out\\a.txt`. Every path in a message is
+rendered `/`-separated first by `escaping.display_path()`, leaving the escape nothing to
+double; a backslash that survives is then a character in a *name*, which is what the
+escape is for. Print sites already followed this rule by rendering relative to the
+extraction root. Guarded by a static sweep, since the failure is invisible on Linux.
 
 *Escape exactly once.* Escaping already-escaped text doubles the backslashes the first
 escape wrote. Review found this was not a rare cosmetic edge: **52 message sites**
