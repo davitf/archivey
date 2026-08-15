@@ -103,3 +103,40 @@ longer hold. The unchecked boxes below supersede the checked ones above.
       `diagnostics`
 - [x] 8.10 Re-verify: full suite in all three dependency configurations,
       `openspec validate --all --strict`, and the live spoof reproduction
+
+## 9. Message shape: names live in structured fields (PR #236)
+
+Review asked whether the constructor could append the member name so messages never
+carry it. An inventory of all 418 exception sites said: not as a general mechanism —
+`__str__` already renders `member=`, and 9 two-name messages cannot use it. But 31 of
+the 36 name-bearing messages were reducible, most of them printing the name twice.
+
+- [x] 9.1 Add `link_target` to `ArchiveyError` (+ `DiagnosticRaisedError` passthrough),
+      rendered by `__str__` as `target=`. Six two-name messages become prose
+- [x] 9.2 Convert the single-name messages that already set `member_name=` — the name
+      was being printed twice, once in the text and once by `__str__`
+- [x] 9.3 Fix `base_reader.py`'s mislabeled link-target message: it named the target in
+      the text while passing the *member* name as `member_name=`
+- [x] 9.4 Convert the four `zip_reader` `EncryptionError` sites — `_stamp_error_context`
+      sets `member_name` after construction, which a constructor-kwarg audit cannot see
+- [x] 9.5 Revert `quoted()` on the ~8 values that are not archive-derived (operation
+      names in `reader_state`, an enum value in `base_reader`) back to `!r`
+- [x] 9.6 `quoted()` chooses its delimiter (`"` when the text holds `'` and no `"`)
+      rather than escaping it, which would reintroduce the doubling
+- [x] 9.7 Fix the guard's own blind spots found on the way: `\b` never matched inside
+      `member_name` (underscore is a word character), and non-f-string re-wraps
+      (`SomeError(exc.message)`) were invisible to it. Third static test added
+- [x] 9.8 Render member-derived paths `/`-separated in messages (`display_path`), closing
+      the Windows separator-doubling residual at its 4 sites
+- [x] 9.9 Re-verify: full suite in all three dependency configurations,
+      `openspec validate --all --strict`, live spoof reproduction
+
+**Irreducible (4 sites), left interpolating by hand:**
+
+- `rar_parser.py:606` — two RAR *volume* filenames (`{new} does not continue {old}`);
+  neither is a member, and `archive_name` holds only one
+- `extraction.py:652` `NameRewrittenError` — `{transformed} -> {portable}`; the rewritten
+  spelling has no structured field (`ExtractionResult.presented_name` is the result-side
+  equivalent)
+- `base_reader.py:1625`, `base_reader.py:1679` — `ArchiveyUsageError`, whose root has no
+  structured attributes at all, unlike `ArchiveyError`

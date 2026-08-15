@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
 
 from archivey.config import ExtractionLimits
-from archivey.escaping import quoted
+from archivey.escaping import display_path, quoted
 from archivey.exceptions import (
     ArchiveyError,
     DiagnosticRaisedError,
@@ -195,7 +195,8 @@ class BombTracker:
             if ratio > self._max_ratio:
                 raise ResourceLimitError(
                     f"Decompression ratio {ratio:.0f}:1 exceeds limit "
-                    f"max_ratio={self._max_ratio:.0f}:1 for {quoted(member.name)}"
+                    f"max_ratio={self._max_ratio:.0f}:1",
+                    member_name=member.name,
                 )
 
         # Archive-wide ratio: activates on CUMULATIVE output; a whole-archive bomb signal
@@ -537,7 +538,8 @@ class ExtractionCoordinator:
                 if isinstance(exc, OSError) and exc.errno == errno.EILSEQ:
                     error = ExtractionError(
                         "Member name cannot be represented on the destination "
-                        f"filesystem: {quoted(original.name)}"
+                        "filesystem",
+                        member_name=original.name,
                     )
                     error.__cause__ = exc
                 status = (
@@ -799,7 +801,8 @@ class ExtractionCoordinator:
 
         # MemberType.OTHER is rejected by check_universal; nothing else should reach here.
         raise ExtractionError(
-            f"Unsupported member type {transformed.type!r} for {quoted(transformed.name)}"
+            f"Unsupported member type {transformed.type!r}",
+            member_name=transformed.name,
         )
 
     def _resolve_collision(
@@ -874,8 +877,7 @@ class ExtractionCoordinator:
             return
         raise _AbortExtraction(
             NameCollisionError(
-                f"Name collision for {quoted(transformed.name)} with already-written "
-                f"{prior.path}",
+                f"Name collision with already-written {display_path(prior.path)}",
                 member_name=original.name,
             )
         )
@@ -1012,7 +1014,7 @@ class ExtractionCoordinator:
         target = transformed.link_target
         if target is None:
             raise LinkTargetNotFoundError(
-                f"Symlink {quoted(transformed.name)} has no target",
+                "Symlink has no target",
                 member_name=transformed.name,
             )
 
@@ -1051,9 +1053,9 @@ class ExtractionCoordinator:
             except OSError:
                 pass
             raise SymlinkEscapeError(
-                f"Symlink target escapes destination: "
-                f"{quoted(transformed.name)} -> {quoted(target)}",
+                "Symlink target escapes destination",
                 member_name=transformed.name,
+                link_target=target,
             )
 
         return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
@@ -1071,9 +1073,9 @@ class ExtractionCoordinator:
         source = original.link_target_member
         if source is None:
             raise LinkTargetNotFoundError(
-                f"Hardlink target {original.link_target!r} not found for "
-                f"{quoted(transformed.name)}",
+                "Hardlink target not found",
                 member_name=transformed.name,
+                link_target=original.link_target,
             )
 
         if source.member_id in source_paths:
@@ -1095,8 +1097,9 @@ class ExtractionCoordinator:
             # Forward-only: the source's bytes already streamed past — unrecoverable. Per
             # spec this is a per-member ExtractionError handled by OnError.
             raise ExtractionError(
-                f"Hardlink source {quoted(source.name)} for {quoted(transformed.name)} was excluded "
-                f"and cannot be recovered on a forward-only stream",
+                "Hardlink source was excluded and cannot be recovered on a "
+                "forward-only stream",
+                link_target=source.name,
                 member_name=transformed.name,
             )
         # Re-readable: resolve in the second pass.
@@ -1438,7 +1441,9 @@ class ExtractionCoordinator:
         # ``lexists`` (not ``exists``) so a dangling symlink is caught here rather than
         # surfacing as a raw FileExistsError from ``mkdir`` below.
         if os.path.lexists(dest):
-            raise ExtractionError(f"Destination exists and is not a directory: {dest}")
+            raise ExtractionError(
+                f"Destination exists and is not a directory: {display_path(dest)}"
+            )
         dest.mkdir(parents=True, exist_ok=True)
 
     def _prepare_destination(

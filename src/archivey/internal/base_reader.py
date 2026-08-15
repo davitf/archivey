@@ -1640,7 +1640,7 @@ class BaseArchiveReader(ArchiveReader):
         if member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
             if member._member_id is None:
                 raise LinkTargetNotFoundError(
-                    f"Link target for {quoted(member.name)} is unknown",
+                    "Link target is unknown",
                     member_name=member.name,
                 )
             member_id = member._member_id
@@ -1656,7 +1656,7 @@ class BaseArchiveReader(ArchiveReader):
                 self._ensure_link_target(member)
             if member.link_target is None:
                 raise LinkTargetNotFoundError(
-                    f"Link target for {quoted(member.name)} is unknown",
+                    "Link target is unknown",
                     member_name=member.name,
                 )
             materialized = self._materialized
@@ -1670,13 +1670,14 @@ class BaseArchiveReader(ArchiveReader):
             )
             if target is None:
                 raise LinkTargetNotFoundError(
-                    f"Link target {quoted(member.link_target)} not found in archive",
+                    "Link target not found in archive",
                     member_name=member.name,
+                    link_target=member.link_target,
                 )
             return self._open_with_link_follow(target, visited)
         if member.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
             raise ArchiveyUsageError(
-                f"Cannot open member {quoted(member.name)}: type is {quoted(member.type.value)} "
+                f"Cannot open member {quoted(member.name)}: type is {member.type.value!r} "
                 f"(not a file)"
             )
         return self._open_member(member)

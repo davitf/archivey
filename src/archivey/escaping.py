@@ -8,9 +8,20 @@ instead. GNU ``ls`` and ``tar`` quote for the same reason.
 This module is deliberately dependency-free: :mod:`archivey.exceptions` escapes its
 own messages with it, and ``archivey.cli`` escapes member names for display, so it
 has to sit below both without importing either.
+
+**Internal by convention.** Nothing here is exported from :mod:`archivey`, and none of
+it carries a stability promise — :func:`quoted` and :func:`display_path` in particular
+are call-site discipline for archivey's own messages (see
+:class:`~archivey.exceptions.ArchiveyError`) rather than an API for callers. If you are
+embedding archivey and need to render a member name safely in your own output,
+:func:`escape_control_chars` is the one to ask for; say so on the tracker and it can be
+promoted deliberately, with a requirement behind it.
 """
 
 from __future__ import annotations
+
+import os
+from pathlib import PurePath
 
 # surrogateescape maps an undecodable byte 0xNN to U+DCNN, and only ever lands in this
 # range. A lone surrogate arriving by any other route is escaped as itself, not reversed
@@ -66,6 +77,22 @@ def escape_control_chars(text: str) -> str:
     return "".join(out)
 
 
+def display_path(path: object) -> str:
+    """Render a filesystem path for a message, ``/``-separated.
+
+    Escaping doubles backslashes, so a native Windows path interpolated raw comes out
+    as ``C:\\\\Users\\\\out\\\\a.txt`` — lossless, but harder to read and to paste back.
+    Rendering ``/``-separated first leaves the escape nothing to double, and any
+    backslash that does survive into the output is then a character in a *name*, which
+    is exactly what should be escaped.
+
+    This is the message-side counterpart of the rule the CLI's print sites already
+    follow (`cli` spec: member-derived paths are rendered relative and ``/``-separated
+    before escaping).
+    """
+    return PurePath(os.fspath(path)).as_posix()
+
+
 def quoted(text: str) -> str:
     """Delimit archive-derived text in a message **without** escaping it.
 
@@ -81,5 +108,14 @@ def quoted(text: str) -> str:
     archive-derived (a format, a code, an exception type) and for ``logger.*`` call
     sites, whose records are **not** escaped by the CLI and where ``%r`` is what makes an
     interpolated name inert.
+
+    The delimiter is **chosen**, the way ``repr`` chooses it, rather than escaped: a
+    name may legitimately contain a quote, and ``'it's'`` leaves a reader unable to see
+    where the name ends. Choosing costs nothing, whereas escaping the quote would write
+    a backslash for the message escape to double — the failure this helper exists to
+    avoid. A name containing *both* quote characters falls back to ``'`` and stays
+    ambiguous; that tail is unreachable without escaping.
     """
+    if "'" in text and '"' not in text:
+        return f'"{text}"'
     return f"'{text}'"

@@ -20,7 +20,6 @@ import unicodedata
 from pathlib import Path
 from typing import Callable
 
-from archivey.escaping import quoted
 from archivey.exceptions import (
     DeceptiveNameError,
     PathTraversalError,
@@ -96,9 +95,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     # rejected (escaping and internal alike): a well-formed archive has no reason to carry
     # one. (A future opt-in SANITIZE policy may re-root such names instead of rejecting.)
     if "\x00" in name:
-        raise PathTraversalError(
-            f"Null byte in member name: {quoted(name)}", member_name=name
-        )
+        raise PathTraversalError("Null byte in member name", member_name=name)
     # A name the platform filesystem encoding cannot represent (a lone surrogate outside
     # the surrogateescape range, on POSIX) can never be materialized under dest — and it
     # would otherwise crash the parent-resolution below with a raw UnicodeEncodeError.
@@ -107,28 +104,26 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
         os.fsencode(name)
     except UnicodeEncodeError as exc:
         raise PathTraversalError(
-            f"Member name cannot be encoded for the filesystem: {quoted(name)}",
+            "Member name cannot be encoded for the filesystem",
             member_name=name,
         ) from exc
     if _is_absolute(name):
-        raise PathTraversalError(
-            f"Absolute path not allowed: {quoted(name)}", member_name=name
-        )
+        raise PathTraversalError("Absolute path not allowed", member_name=name)
     if ".." in _SEP_SPLIT.split(name):
         raise PathTraversalError(
-            f"Path traversal ('..') in member name: {quoted(name)}", member_name=name
+            "Path traversal ('..') in member name", member_name=name
         )
 
     rel = name.rstrip("/")
     if member.type != MemberType.DIRECTORY and rel in ("", "."):
         raise PathTraversalError(
-            f"Member name refers to the extraction root: {quoted(name)}",
+            "Member name refers to the extraction root",
             member_name=name,
         )
 
     if member.type == MemberType.OTHER:
         raise SpecialFileError(
-            f"Special file (device/FIFO/socket) not allowed: {quoted(name)}",
+            "Special file (device/FIFO/socket) not allowed",
             member_name=name,
         )
 
@@ -143,7 +138,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
         parent = (dest_root / rel).parent.resolve()
         if not _within(parent, dest_root):
             raise PathTraversalError(
-                f"Member {quoted(name)} resolves outside the destination root",
+                "Member resolves outside the destination root",
                 member_name=name,
             )
 
@@ -159,33 +154,34 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
             # raw ValueError / UnicodeEncodeError instead of a typed rejection.
             if "\x00" in target:
                 raise SymlinkEscapeError(
-                    f"Null byte in link target: {quoted(name)} -> {quoted(target)}",
+                    "Null byte in link target",
                     member_name=name,
+                    link_target=target,
                 )
             try:
                 os.fsencode(target)
             except UnicodeEncodeError as exc:
                 raise SymlinkEscapeError(
-                    f"Link target cannot be encoded for the filesystem: "
-                    f"{quoted(name)} -> {quoted(target)}",
+                    "Link target cannot be encoded for the filesystem",
                     member_name=name,
+                    link_target=target,
                 ) from exc
         if member.type == MemberType.SYMLINK:
             link_parent = (dest_root / name).parent
             resolved_target = (link_parent / member.link_target).resolve()
             if not _within(resolved_target, dest_root):
                 raise SymlinkEscapeError(
-                    f"Symlink target escapes destination: "
-                    f"{quoted(name)} -> {quoted(member.link_target)}",
+                    "Symlink target escapes destination",
                     member_name=name,
+                    link_target=member.link_target,
                 )
         elif member.type == MemberType.HARDLINK:
             resolved_target = (dest_root / member.link_target).resolve()
             if not _within(resolved_target, dest_root):
                 raise SymlinkEscapeError(
-                    f"Hardlink target escapes destination: "
-                    f"{quoted(name)} -> {quoted(member.link_target)}",
+                    "Hardlink target escapes destination",
                     member_name=name,
+                    link_target=member.link_target,
                 )
 
 

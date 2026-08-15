@@ -108,8 +108,24 @@ across the whole code space) rather than hand-rolled:
 - **The losslessness claim was false.** `U+009B` and a surrogateescaped byte `0x9B` both
   render `\x9b`. The docstring now claims inertness rather than unique recoverability.
 
+## Names live in structured fields, not message text
+
+An inventory of all 418 exception construction sites found 36 putting a name into the
+message, **20 of them printing it twice** — once in the text and once via `__str__`'s
+`member=`. A general "constructor appends the name" mechanism does not fit (9 messages
+carry two names), but the roles separate cleanly:
+
+- `link_target` joins `member_name` as a structured attribute, rendered as `target=`.
+  That covers the six `{name} -> {target}` messages.
+- The single-name duplications drop the name from the text entirely.
+
+31 of the 36 are now prose plus attributes, which also makes escaping moot for them —
+there is no name left in the message to escape. Four are irreducible and documented in
+`tasks.md`: two RAR volume filenames, a portability rewrite (`old -> new`), and two
+`ArchiveyUsageError` messages, whose root has no structured attributes.
+
 ## Accepted residual
 
-- A native Windows path in an exception message has its separators doubled by the
-  backslash escape. Print sites avoid this by rendering member-derived paths relative
-  and `/`-separated first; exception messages do not.
+None outstanding. The Windows separator-doubling residual is closed: member-derived
+paths in messages are rendered `/`-separated by `display_path()` before escaping, the
+same rule the CLI's print sites already followed.

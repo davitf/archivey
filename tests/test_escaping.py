@@ -8,6 +8,7 @@ is delegated to ``repr`` and is not a documented CPython guarantee.
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 import re
 
@@ -151,11 +152,44 @@ def test_diagnostic_message_is_escaped_and_context_is_raw() -> None:
 # --- the rule holds for future call sites too --------------------------------------
 
 _SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "archivey"
-_ARCHIVE_ISH = re.compile(
-    r"\b(name|filename|path|member|entry|target|directory)\b", re.I
-)
 _ESCAPING_CALL = re.compile(r"Error$|^emit$|Issue$")
 _FOREIGN = {"FileNotFoundError", "KeyError", "TypeError", "ValueError", "OSError"}
+_ARCHIVE_WORDS = {
+    "name",
+    "filename",
+    "path",
+    "member",
+    "entry",
+    "target",
+    "directory",
+    "dest",
+    "link",
+}
+
+
+# Modules whose "names" are archivey's own vocabulary, not the archive's.
+# ``reader_state`` is the concurrency state machine: its ``name`` is an
+# ``OperationToken.name`` — an API operation such as ``"members"`` or ``"open"`` — so
+# ``!r`` there is correct and ``quoted()`` would be actively misleading.
+_NON_ARCHIVE_MODULES = {"internal/reader_state.py"}
+
+
+def _is_archive_derived(expr: str, module: str) -> bool:
+    """Does this interpolated expression carry archive-controlled text?
+
+    Splits on non-letters rather than matching with ``\\b``: an underscore is a *word*
+    character, so ``\\bmember\\b`` does not match inside ``member_name`` — which is how
+    five sites and two whole files slipped past the first version of this check.
+
+    The exemptions are deliberately narrow and named. This is a spelling heuristic: it
+    cannot tell an operation name from a member name, so anything it lets through has
+    to be justified here rather than by loosening the word list.
+    """
+    if module in _NON_ARCHIVE_MODULES:
+        return False
+    if expr.endswith(".value"):
+        return False  # an enum member's value, e.g. member.type.value
+    return any(tok.lower() in _ARCHIVE_WORDS for tok in re.split(r"[^A-Za-z]+", expr))
 
 
 def test_no_message_site_interpolates_an_archive_derived_name_with_repr() -> None:
@@ -185,7 +219,9 @@ def test_no_message_site_interpolates_an_archive_derived_name_with_repr() -> Non
                     if (
                         isinstance(value, ast.FormattedValue)
                         and value.conversion == ord("r")
-                        and _ARCHIVE_ISH.search(ast.unparse(value.value))
+                        and _is_archive_derived(
+                            ast.unparse(value.value), str(path.relative_to(_SRC))
+                        )
                         and not re.fullmatch(
                             r"exc|e|err|error", ast.unparse(value.value)
                         )
@@ -224,7 +260,9 @@ def test_library_log_sites_still_escape_interpolated_names() -> None:
                 continue
             fmt = str(node.args[0].value)
             for spec, arg in zip(re.findall(r"%[sr]", fmt), node.args[1:]):
-                if spec == "%s" and _ARCHIVE_ISH.search(ast.unparse(arg)):
+                if spec == "%s" and _is_archive_derived(
+                    ast.unparse(arg), str(path.relative_to(_SRC))
+                ):
                     bad.append(f"{path.relative_to(_SRC)}:{node.lineno} {fmt!r}")
     assert not bad, (
         "interpolate names into log records with %r, not %s:\n  " + "\n  ".join(bad)
@@ -236,3 +274,124 @@ def test_uncaught_exception_message_is_inert() -> None:
     exc = ArchiveyError("boom: /out/ev\x1b[2Kil\rSPOOF.txt")
     rendered = f"{type(exc).__name__}: {exc}"
     assert not any(ch in rendered for ch in _DANGEROUS)
+
+
+def test_paths_in_messages_do_not_double_their_separators() -> None:
+    """A native path would have every separator doubled by the backslash escape.
+
+    Rendering ``/``-separated first leaves the escape nothing to double. Building the
+    path with ``/`` rather than a literal makes this meaningful on both platforms: it
+    is ``out\\sub\\a.txt`` on Windows and ``out/sub/a.txt`` here, and the assertion is
+    the same either way.
+    """
+    from pathlib import Path
+
+    from archivey.escaping import display_path
+
+    nested = Path("out") / "sub" / "a.txt"
+    assert display_path(nested) == "out/sub/a.txt"
+    assert "\\" not in ExtractionError(f"Destination: {display_path(nested)}").message
+
+
+def test_display_path_uses_the_native_flavour_so_names_keep_their_backslashes() -> None:
+    """A backslash is a legal filename character on POSIX, and must stay escaped.
+
+    ``display_path`` converts *separators*, which means using the running platform's
+    path flavour. Rewriting every backslash unconditionally would corrupt a legitimate
+    POSIX member named ``a\\b`` into a two-segment path — turning a display fix into a
+    correctness bug, and hiding exactly the character the escaping exists to show.
+    """
+    from archivey.escaping import display_path
+
+    if os.sep == "/":
+        rendered = display_path("a\\b")
+        assert rendered == "a\\b"
+        assert "\\\\" in ExtractionError(f"Blocked: {rendered}").message
+
+
+def test_open_site_location_is_posix_rendered() -> None:
+    """The breadcrumb exists to be pasted back; doubled separators defeat that."""
+    from archivey.internal.open_site import OpenSite
+
+    assert OpenSite(filename="/src/app.py", lineno=12).location == "/src/app.py:12"
+
+
+def test_no_message_site_rewraps_an_already_escaped_message() -> None:
+    """``SomeError(exc.message)`` re-escapes text that was escaped once already.
+
+    Not an f-string, so the interpolation guards above never see it — this pattern is
+    how two sites (`zip_reader`, `sevenzip_reader`) kept doubling after the first sweep.
+    ``raw_message_of(exc)`` is the form.
+    """
+    offenders: list[str] = []
+    for path in sorted(_SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            fname = (
+                getattr(node.func, "id", None) or getattr(node.func, "attr", None) or ""
+            )
+            if fname in _FOREIGN or not _ESCAPING_CALL.search(fname):
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Attribute) and arg.attr == "message":
+                offenders.append(
+                    f"{path.relative_to(_SRC)}:{node.lineno} "
+                    f"{fname}({ast.unparse(arg)})"
+                )
+    assert not offenders, (
+        "use raw_message_of(exc) — passing an escaped .message into a new message "
+        "escapes it twice:\n  " + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("plain.txt", "'plain.txt'"),
+        ("it's.txt", '"it\'s.txt"'),  # switch, rather than escape
+        ('say "hi".txt', "'say \"hi\".txt'"),
+        ("", "''"),
+    ],
+)
+def test_quoted_chooses_a_delimiter_that_does_not_appear_inside(
+    name: str, expected: str
+) -> None:
+    """Escaping the quote would write a backslash for the message escape to double."""
+    assert quoted(name) == expected
+
+
+def test_quoted_never_introduces_a_backslash() -> None:
+    """The escape-once property: quoted() must add delimiters and nothing else.
+
+    Checked against a name containing both quote characters — the ambiguous fallback —
+    because that is where an implementation would be tempted to escape.
+    """
+    both = "a'b\"c"
+    assert "\\" not in quoted(both)
+    assert "\\\\" not in ExtractionError(f"Blocked: {quoted(both)}").message
+
+
+def test_link_target_is_a_structured_field_not_message_text() -> None:
+    """Six two-name messages became prose; the target renders once, escaped, in __str__."""
+    from archivey.exceptions import SymlinkEscapeError
+
+    exc = SymlinkEscapeError(
+        "Symlink target escapes destination",
+        member_name="ev\x1b[2Kil",
+        link_target="../etc/pa\x1b[2Ksswd",
+    )
+    assert exc.link_target == "../etc/pa\x1b[2Ksswd"  # raw, for acting on
+    rendered = str(exc)
+    assert "\x1b" not in rendered
+    assert "target=" in rendered and "member=" in rendered
+    assert "\\\\x1b" not in rendered  # escaped once
+
+
+def test_names_are_not_rendered_twice() -> None:
+    """The message no longer repeats what member= already shows."""
+    from archivey.exceptions import PathTraversalError
+
+    rendered = str(PathTraversalError("Null byte in member name", member_name="a.txt"))
+    assert rendered.count("a.txt") == 1

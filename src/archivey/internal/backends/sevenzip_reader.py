@@ -41,6 +41,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
+    raw_message_of,
 )
 from archivey.internal.backends.sevenzip_methods import is_aes
 from archivey.internal.backends.sevenzip_parser import (
@@ -627,7 +628,7 @@ class SevenZipReader(BaseArchiveReader):
         try:
             password = self._passwords.attempt(member, confirm)
         except _PasswordCandidatesExhausted as exc:
-            raise EncryptionError(exc.message) from exc
+            raise EncryptionError(raw_message_of(exc)) from exc
         self._folder_passwords[folder_index] = password
         return password
 

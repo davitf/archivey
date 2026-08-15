@@ -222,6 +222,7 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 | `source_format` | `ArchiveFormat | None` | Format being processed, if known |
 | `archive_name` | `str | None` | Path or source stream `name`; `None` for anonymous streams; never fabricated; **raw** |
 | `member_name` | `str | None` | Member in context, if any; **raw** |
+| `link_target` | `str | None` | Symlink/hardlink target in context, if any; **raw** |
 | `__cause__` | `BaseException | None` | Original exception via `raise ... from exc` when wrapping |
 
 #### Scenario: context attribute matrix
@@ -287,9 +288,15 @@ traceback the interpreter writes itself, whose final line is `str(exc)`. A displ
 escape protects only the routes someone remembered to wire up; the last of these has no
 display site to wire.
 
-The structured attributes (`archive_name`, `member_name`, `source_format`) SHALL remain
-**raw**, so callers that need the real value to act on — rather than to print — still
-have it. `__str__` renders the two names through `!r`, which escapes them for display.
+The structured attributes (`archive_name`, `member_name`, `link_target`,
+`source_format`) SHALL remain **raw**, so callers that need the real value to act on —
+rather than to print — still have it. `__str__` renders the names through `!r`, which
+escapes them for display.
+
+A name that is available as a structured attribute SHALL NOT also be interpolated into
+the message text: `__str__` already renders it, so doing both prints the same name twice
+in one line. Messages carrying a member name and its link target SHALL pass both as
+attributes and keep the message itself prose.
 
 #### Scenario: an exception message cannot spoof a terminal line
 
@@ -314,7 +321,9 @@ is a requirement rather than a style preference:
 - A member name, link target or member-derived path SHALL be interpolated with
   `escaping.quoted()`, which supplies the delimiting quotes **without** escaping. `!r`
   SHALL NOT be used: it escapes first, and the message escape then escapes the
-  backslashes it introduced.
+  backslashes it introduced. `quoted()` SHALL *choose* its delimiter (`"` when the text
+  contains `'` and no `"`) rather than escape one, since escaping would reintroduce the
+  doubling.
 - A caught exception that may be an archivey exception SHALL be interpolated with
   `raw_message_of()`, which yields `raw_message` for archivey exceptions and `str(exc)`
   for any other. A handler catching only third-party types MAY interpolate directly.

@@ -46,9 +46,13 @@ class ArchiveyError(Exception):
     text as the call site wrote it, for the one job the escaped form cannot do: being
     embedded in *another* message that will escape it in turn.
 
-    ``archive_name``, ``member_name`` and ``source_format`` stay **raw** too, for
-    callers that need the real value to act on rather than to print. :meth:`__str__`
-    renders the two names through ``!r``, which escapes them for display in turn.
+    ``archive_name``, ``member_name``, ``link_target`` and ``source_format`` stay
+    **raw** too, for callers that need the real value to act on rather than to print.
+    :meth:`__str__` renders the names through ``!r``, which escapes them for display in
+    turn — so a name available as an attribute should **not** also be interpolated into
+    the message, or it prints twice. Prefer prose plus attributes:
+    ``SymlinkEscapeError("Symlink target escapes destination", member_name=name,
+    link_target=target)``.
 
     **Escape exactly once, at the outermost message.** Everything a message
     interpolates should therefore be raw when it goes in — which is what the two
@@ -71,6 +75,7 @@ class ArchiveyError(Exception):
         source_format: "ArchiveFormat | None" = None,
         archive_name: str | None = None,
         member_name: str | None = None,
+        link_target: str | None = None,
     ) -> None:
         self.raw_message = message
         message = escape_control_chars(message)
@@ -79,6 +84,7 @@ class ArchiveyError(Exception):
         self.source_format = source_format
         self.archive_name = archive_name
         self.member_name = member_name
+        self.link_target = link_target
 
     def __str__(self) -> str:
         parts = [self.message]
@@ -86,6 +92,8 @@ class ArchiveyError(Exception):
             parts.append(f"archive={self.archive_name!r}")
         if self.member_name:
             parts.append(f"member={self.member_name!r}")
+        if self.link_target:
+            parts.append(f"target={self.link_target!r}")
         if self.source_format:
             # Human label (ZIP / TAR_GZ / SEVEN_Z), not ArchiveFormat.ZIP repr.
             parts.append(f"format={self.source_format.display_name}")
@@ -271,12 +279,14 @@ class DiagnosticRaisedError(ArchiveyError):
         source_format: "ArchiveFormat | None" = None,
         archive_name: str | None = None,
         member_name: str | None = None,
+        link_target: str | None = None,
     ) -> None:
         super().__init__(
             message,
             source_format=source_format,
             archive_name=archive_name,
             member_name=member_name,
+            link_target=link_target,
         )
         self.diagnostic = diagnostic
 

@@ -24,6 +24,7 @@ from archivey.diagnostics import (
     ExtractionReport,
     UnusedArgumentContext,
 )
+from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyUsageError,
     StreamNotSeekableError,
@@ -405,7 +406,7 @@ def open_stream(
             # the caller looking for a missing file. open_archive() reads the same path
             # happily as a directory archive, which is the likely intent.
             raise ArchiveyUsageError(
-                f"{path} is a directory, not a compressed stream; "
+                f"{display_path(path)} is a directory, not a compressed stream; "
                 f"use open_archive() to read a directory tree"
             )
         if not path.is_file():
