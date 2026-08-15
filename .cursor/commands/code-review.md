@@ -90,3 +90,16 @@ nothing needs a decision: `None.` Do not invent filler questions; when unsure wh
 something needs a human call, include it.
 
 Skip formatting/lint nits that `ruff` / type-checkers already own.
+
+## Posting to a PR
+
+If the review is being posted to a pull request rather than printed here, follow addendum
+**§10**: give every block-2 finding a **stable ID** (`F1`, `F2`, … — kept across
+re-reviews), post located findings as **inline comments** so they can be replied to and
+resolved individually, put blocks 1 and 3 in the review body, open a re-review with a
+**status table over the previous IDs**, say which gates you re-ran yourself, and make every
+comment identifiable as agent-authored — a distinct bot identity if your host posts under
+one, otherwise an attribution footer naming the tool that wrote it.
+
+The implementing agent then works through it with `/address-review`
+([`.claude/skills/address-review-findings/`](../../.claude/skills/address-review-findings/SKILL.md)).

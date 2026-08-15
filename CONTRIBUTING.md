@@ -14,32 +14,74 @@ the *design* lives elsewhere and is authoritative:
 - `openspec/changes/<change>/` — in-flight proposals (propose changes here, don't
   edit shipped specs ad hoc). Default schema is `library` (compact library-style
   deltas); see `openspec/schemas/library/README.md` and `openspec/config.yaml`.
-- `CLAUDE.md` — orientation for AI agents working in this repo.
+- `AGENTS.md` — orientation for AI agents working in this repo (`CLAUDE.md` points at it).
 
-**Merging a change does not apply it.** A proposal's deltas reach the authoritative
-specs only when someone runs `openspec archive <change> --yes` and commits the
-resulting `openspec/specs/` updates — normally a small follow-up PR after the
-implementation merges. Skipping it leaves the authority describing something that no
-longer ships, which happened three times running; CI now fails on `main` if a change
-is complete but unarchived (`scripts/check_openspec_archived.py`).
+### Archiving an OpenSpec change
+
+**Merging a change does not apply it.** A proposal's deltas reach the authoritative specs
+only when someone runs `openspec archive <change> --yes` and commits the resulting
+`openspec/specs/` updates.
+
+**Archive in the PR that finishes the change.** Most changes here are proposed,
+implemented, and finished in one PR, and that PR is where the archive belongs — the
+deltas are what make `openspec/specs/` describe what actually ships. Treating the archive
+as a follow-up produced both halves of the problem it was meant to avoid: a window on
+`main` where the authority was wrong (three times running — #212, #213, #214) and a
+steady stream of PRs whose entire content was `openspec archive` (#214, #215, #222, #227,
+#238). CI enforces this on pull requests and on `main`
+(`scripts/check_openspec_archived.py`).
+
+Practically, make the archive the change's **last task**, so checking the final box and
+applying the deltas are the same act. Most of the archived corpus is already written this
+way.
+
+**When the change genuinely is not finished, leave the trailing task unchecked.** That is
+the escape hatch, and it costs one character. Use it when the design is still moving under
+review (archiving early is what turns a review round into a revert-and-rework), or when an
+archive is deliberately batched with a sibling change. The gate reads finished-ness from
+the checkboxes: an unchecked box is an honest "not done yet", while a checked one is a
+claim that the change has landed in the specs. Do not check the last box to make a
+progress report look tidy.
 
 ## Getting started
 
 Python **3.11+**. Tooling runs through [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
-uv sync                       # create/refresh the dev environment
+uv sync                         # create/refresh the dev environment
 ./scripts/install-git-hooks.sh  # required: auto ruff fix+format on commit
-uv run pytest                 # run the test suite
-uv run ruff check             # lint
-uv run ruff format            # format (apply; CI uses `ruff format --check`)
-uv run pre-commit run --all-files  # optional: run the framework hooks on the whole tree
-uv run pyrefly check          # type-check (Pyrefly)
-uv run ty check               # type-check (ty)
+```
+
+Then two scripts cover the gates, split by how long they take and how often you run them:
+
+```bash
+./scripts/check.sh --fix   # seconds — every fast gate; --fix applies ruff first
+./scripts/test.sh          # minutes — the everyday [all] test leg
+```
+
+`check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs — `ruff check`,
+`ruff format --check`, **`pyrefly`**, **`ty`**, `check_openspec_archived.py`,
+`openspec validate --all`, `check_docs_nav.py`, and the strict docs build. It runs every
+gate even after one fails and lists what failed at the end, so a single run tells you
+everything that is wrong. Without `--fix` it writes nothing and answers "will CI pass?".
+
+`test.sh` passes extra arguments through to pytest (`./scripts/test.sh tests/test_zip.py
+-k roundtrip`), and `--all-configs` runs the full before-pushing gate described below.
+
+Run the underlying commands directly when you want one in isolation:
+
+```bash
+uv run pytest                      # test suite
+uv run ruff check                  # lint
+uv run ruff format                 # format (apply; CI uses `ruff format --check`)
+uv run pyrefly check               # type-check (Pyrefly)
+uv run ty check                    # type-check (ty)
+uv run pre-commit run --all-files  # optional: framework hooks over the whole tree
 ```
 
 Pyrefly and ty are scoped to `src/`, so every command above runs clean with no extra
-path arguments.
+path arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
+and running it alone is the most common self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
 `src/ tests/ scripts/ benchmarks/` and will fail on drift. Installing the git hook
@@ -61,7 +103,13 @@ environments run it automatically at session start.
 **Before pushing, run the suite in all three dependency configurations CI runs** —
 optional libraries change behaviour by their presence *and* their version, so a change
 that passes one way can break another (a codec that's absent, a floor-version library bug,
-an accelerator that's only installed at current versions). Run:
+an accelerator that's only installed at current versions):
+
+```bash
+./scripts/check.sh && ./scripts/test.sh --all-configs
+```
+
+The three legs, which `--all-configs` runs in order:
 
 ```bash
 # 1. Current versions, all extras — the everyday leg.
@@ -80,14 +128,15 @@ uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
-green. (After the core-only leg, `uv sync --group dev --extra all` to restore your
-everyday environment.)
+green.
 
 > **`--resolution lowest-direct` rewrites `uv.lock`.** Leg 2 does not merely install
 > different versions — it *persists* them, so every later `uv sync --frozen` /
 > `uv run --no-sync` silently keeps the downgraded set until you re-lock, and `git status`
-> shows a few hundred lines of lockfile churn that is easy to commit by accident. After
-> leg 2, restore with:
+> shows a few hundred lines of lockfile churn that is easy to commit by accident.
+> **`./scripts/test.sh --all-configs` handles this for you** — it restores `uv.lock` and
+> the everyday environment on exit, including on failure or Ctrl-C. Running the legs by
+> hand, restore with:
 >
 > ```bash
 > git checkout -- uv.lock && uv sync --frozen --group dev --extra all
