@@ -1668,7 +1668,30 @@ def test_abort_notice_escapes_the_error_message(
 
     ``NameCollisionError``'s message embeds the already-written path, which is built
     from the member name — the same spoof class as the log path, reached through a
-    different print site.
+    different print site. Uses the Windows-legal spoof so the print site is covered on
+    every platform; the ANSI variant below is the real erase-and-rewrite sequence.
+    """
+    archive = _zip(
+        tmp_path / "c.zip", {_SPOOF_PORTABLE: b"A", _SPOOF_PORTABLE.upper(): b"B"}
+    )
+    dest = tmp_path / "out"
+    main(["x", str(archive), "-d", str(dest), "--abort-on", "name-collision"])
+    err = capsys.readouterr().err
+    assert "Name collision" in err
+    assert " " not in err
+    assert "\\u2028" in err
+
+
+@_ANSI_ONLY
+def test_abort_notice_escapes_an_ansi_spoof(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The real spoof through the abort print site.
+
+    Unix-only: on Windows the member cannot be written at all (WinError 123), so the
+    run fails before two names ever collide. The name still reaches stderr there, in
+    the WARNING reporting that it could not be written — escaped by ``%r``, which
+    ``test_log_records_escape_archive_derived_text`` covers.
     """
     archive = _zip(tmp_path / "c.zip", {_SPOOF_ANSI: b"A", _SPOOF_ANSI.upper(): b"B"})
     dest = tmp_path / "out"

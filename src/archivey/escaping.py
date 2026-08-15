@@ -77,7 +77,7 @@ def escape_control_chars(text: str) -> str:
     return "".join(out)
 
 
-def display_path(path: object) -> str:
+def display_path(path: str | os.PathLike[str]) -> str:
     """Render a filesystem path for a message, ``/``-separated.
 
     Escaping doubles backslashes, so a native Windows path interpolated raw comes out

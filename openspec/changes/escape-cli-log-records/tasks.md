@@ -140,3 +140,16 @@ the 36 name-bearing messages were reducible, most of them printing the name twic
   equivalent)
 - `base_reader.py:1625`, `base_reader.py:1679` — `ArchiveyUsageError`, whose root has no
   structured attributes at all, unlike `ArchiveyError`
+
+## 10. CI failures (PR #236)
+
+- [x] 10.1 `display_path(path: object)` was too loose for `os.fspath`; typed as
+      `str | os.PathLike[str]`. Caught by `pyrefly`, which I had not run locally —
+      `ruff` alone does not cover it
+- [x] 10.2 The three static tests read source with `Path.read_text()`, which uses the
+      locale encoding: `UnicodeDecodeError` under cp1252 on Windows. Pinned to UTF-8
+- [x] 10.3 `test_abort_notice_escapes_the_error_message` used the ANSI spoof without the
+      repo's `_ANSI_ONLY` guard. Control bytes are illegal in NTFS names, so the member
+      is never written and no collision occurs. Split: the portable U+2028 spoof covers
+      the abort print site everywhere, and the ANSI variant is Unix-only, matching the
+      existing pairing for the overwrite reports

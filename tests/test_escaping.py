@@ -200,7 +200,7 @@ def test_no_message_site_interpolates_an_archive_derived_name_with_repr() -> Non
     """
     offenders: list[str] = []
     for path in sorted(_SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -246,7 +246,7 @@ def test_library_log_sites_still_escape_interpolated_names() -> None:
     for path in sorted(_SRC.rglob("*.py")):
         if "cli" in path.parts:
             continue
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -325,7 +325,7 @@ def test_no_message_site_rewraps_an_already_escaped_message() -> None:
     """
     offenders: list[str] = []
     for path in sorted(_SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
