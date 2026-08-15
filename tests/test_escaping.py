@@ -171,7 +171,20 @@ _ARCHIVE_WORDS = {
 # ``reader_state`` is the concurrency state machine: its ``name`` is an
 # ``OperationToken.name`` — an API operation such as ``"members"`` or ``"open"`` — so
 # ``!r`` there is correct and ``quoted()`` would be actively misleading.
+#
+# Keys are POSIX-spelled, and the scans below compare against ``as_posix()``: comparing
+# against ``str(path)`` matched nothing on Windows, where the separator is a backslash.
 _NON_ARCHIVE_MODULES = {"internal/reader_state.py"}
+
+
+def test_module_exemptions_name_real_files() -> None:
+    """An exemption that matches nothing is worse than none — it looks like coverage.
+
+    A misspelling, a moved module, or a platform separator mismatch would all silently
+    re-arm the checks below rather than failing here.
+    """
+    for module in _NON_ARCHIVE_MODULES:
+        assert (_SRC / module).is_file(), module
 
 
 def _is_archive_derived(expr: str, module: str) -> bool:
@@ -220,14 +233,14 @@ def test_no_message_site_interpolates_an_archive_derived_name_with_repr() -> Non
                         isinstance(value, ast.FormattedValue)
                         and value.conversion == ord("r")
                         and _is_archive_derived(
-                            ast.unparse(value.value), str(path.relative_to(_SRC))
+                            ast.unparse(value.value), path.relative_to(_SRC).as_posix()
                         )
                         and not re.fullmatch(
                             r"exc|e|err|error", ast.unparse(value.value)
                         )
                     ):
                         offenders.append(
-                            f"{path.relative_to(_SRC)}:{node.lineno} "
+                            f"{path.relative_to(_SRC).as_posix()}:{node.lineno} "
                             f"{{{ast.unparse(value.value)}!r}} in {fname}(...)"
                         )
     assert not offenders, (
@@ -261,9 +274,11 @@ def test_library_log_sites_still_escape_interpolated_names() -> None:
             fmt = str(node.args[0].value)
             for spec, arg in zip(re.findall(r"%[sr]", fmt), node.args[1:]):
                 if spec == "%s" and _is_archive_derived(
-                    ast.unparse(arg), str(path.relative_to(_SRC))
+                    ast.unparse(arg), path.relative_to(_SRC).as_posix()
                 ):
-                    bad.append(f"{path.relative_to(_SRC)}:{node.lineno} {fmt!r}")
+                    bad.append(
+                        f"{path.relative_to(_SRC).as_posix()}:{node.lineno} {fmt!r}"
+                    )
     assert not bad, (
         "interpolate names into log records with %r, not %s:\n  " + "\n  ".join(bad)
     )
@@ -337,7 +352,7 @@ def test_no_message_site_rewraps_an_already_escaped_message() -> None:
             arg = node.args[0]
             if isinstance(arg, ast.Attribute) and arg.attr == "message":
                 offenders.append(
-                    f"{path.relative_to(_SRC)}:{node.lineno} "
+                    f"{path.relative_to(_SRC).as_posix()}:{node.lineno} "
                     f"{fname}({ast.unparse(arg)})"
                 )
     assert not offenders, (

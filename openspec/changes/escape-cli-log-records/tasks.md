@@ -153,3 +153,8 @@ the 36 name-bearing messages were reducible, most of them printing the name twic
       is never written and no collision occurs. Split: the portable U+2028 spoof covers
       the abort print site everywhere, and the ANSI variant is Unix-only, matching the
       existing pairing for the overwrite reports
+- [x] 10.4 The `_NON_ARCHIVE_MODULES` exemption was keyed on a POSIX-spelled path but
+      compared against `str(path)`, which uses backslashes on Windows — so the exemption
+      matched nothing there and the check fired on `reader_state`. Compare via
+      `as_posix()`, and assert each exemption names a real file, since one that matches
+      nothing looks like coverage while providing none
