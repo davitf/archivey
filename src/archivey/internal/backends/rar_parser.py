@@ -39,12 +39,14 @@ from datetime import datetime, timezone
 from hashlib import pbkdf2_hmac
 from typing import BinaryIO, Protocol
 
+from archivey.escaping import quoted
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
+    raw_message_of,
 )
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
@@ -603,7 +605,7 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     if not old.split_after or old.filename != new.filename:
         raise CorruptionError(
             "Mismatched RAR split continuation: "
-            f"{new.filename!r} does not continue {old.filename!r}"
+            f"{quoted(new.filename)} does not continue {quoted(old.filename)}"
         )
     old.compress_size += new.compress_size
     if new.crc32 is not None:
@@ -908,7 +910,9 @@ def _parse_rar3(
             except PackageNotInstalledError:
                 raise
             except Exception as exc:
-                raise EncryptionError(f"Failed to decrypt RAR3 headers: {exc}") from exc
+                raise EncryptionError(
+                    f"Failed to decrypt RAR3 headers: {raw_message_of(exc)}"
+                ) from exc
 
         try:
             header_offset = header_fd.tell()
@@ -1309,7 +1313,9 @@ def _parse_rar5(
             except EncryptionError:
                 raise
             except Exception as exc:
-                raise EncryptionError(f"Failed to decrypt RAR5 headers: {exc}") from exc
+                raise EncryptionError(
+                    f"Failed to decrypt RAR5 headers: {raw_message_of(exc)}"
+                ) from exc
 
         # A wrong password produces a garbage decrypted header that fails the block CRC
         # (or advertises an absurd size). Without a check value to prove the key, that is

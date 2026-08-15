@@ -23,6 +23,7 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import DiagnosticCode, ScanRaceContext
+from archivey.escaping import quoted
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
@@ -121,7 +122,7 @@ class DirectoryReader(BaseArchiveReader):
             relative = rel_prefix.rstrip("/") or "."
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.SCAN_DIRECTORY_VANISHED,
-                message=f"Directory vanished during scan, skipping: {str(directory)!r}",
+                message=f"Directory vanished during scan, skipping: {quoted(str(directory))}",
                 context=ScanRaceContext(
                     archive_name=self._archive_name,
                     relative_path=relative,
@@ -142,7 +143,7 @@ class DirectoryReader(BaseArchiveReader):
             except FileNotFoundError:
                 self._diagnostics_collector.emit(
                     code=DiagnosticCode.SCAN_ENTRY_VANISHED,
-                    message=f"Entry vanished during scan, skipping: {entry.path!r}",
+                    message=f"Entry vanished during scan, skipping: {quoted(entry.path)}",
                     context=ScanRaceContext(
                         archive_name=self._archive_name,
                         relative_path=rel_path,

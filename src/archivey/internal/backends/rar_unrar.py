@@ -96,9 +96,10 @@ def _member_include_switch(member: str) -> str:
     """
     if "*" in member or "?" in member:
         raise UnsupportedFeatureError(
-            f"Cannot read RAR member {member!r} via unrar: its name contains a wildcard "
+            "Cannot read this RAR member via unrar: its name contains a wildcard "
             "character ('*' or '?') that unrar interprets as a match pattern with no "
-            "escape, so it cannot be addressed unambiguously."
+            "escape, so it cannot be addressed unambiguously.",
+            member_name=member,
         )
     return "-n./" + member
 

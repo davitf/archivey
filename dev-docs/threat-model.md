@@ -237,17 +237,29 @@ bounds, and upstream py7zr writing `kCRC` for the encoded-header folder remain
 optional hardenings. See `format-7z` ("never a silent empty listing") and
 `test_header_encrypted_empty_decoded_header_rejected`.
 
-### O9. Attacker-controlled bytes reaching the terminal via log records — open
+### O9. Attacker-controlled bytes reaching the terminal via messages — implemented
 
 Member names are attacker-controlled, and a name may carry ANSI control sequences: a
 `README\x1b[2K\rSUCCESS.txt` printed raw lets the archive erase the line it is being
 reported on and author what the operator sees in its place. `cli/format.py`'s
-`escape_member_name` exists for this (GNU `ls` / `tar` quote for the same reason), and as
-of PR #235 every CLI **print site** routes member names *and* the paths derived from them
-through it — the report lines, the error detail appended to `failed:` / `blocked:`, and
-the hoist's messages.
+`escape_member_name` exists for this (GNU `ls` / `tar` quote for the same reason). PR #235
+(whose subject is `extraction-results-authoritative` — the escaping rode in on it) routed
+the **report-line** print sites through it: the report lines themselves, the error detail
+appended to `failed:` / `blocked:`, and the hoist's messages.
 
-**Open:** the library's own `logging` records bypass that. `extraction.py` emits
+**Implemented** (`escape-cli-log-records`): archive-derived text is escaped where it
+**becomes a message**, not where a message is displayed. `ArchiveyError` and
+`ArchiveyUsageError` escape their `message` at construction, `Diagnostic` escapes its
+`message`, and the primitive moved to `archivey/escaping.py` so both can reach it. The
+guarantee is written down as the `error-handling` and `diagnostics` requirements
+*"… messages are inert for terminal display"* and the `cli` requirement *"Archive-derived
+text is escaped before terminal display"*. The same change escaped the print sites that
+render an **exception** rather than a report line — `archivey test`'s `FAIL` detail, the
+extract abort notice, and `main()`'s top-level handlers — which the report-line pass had
+left raw. The gap it closed is below.
+
+The library's own `logging` records used to bypass the print-site escaping.
+`extraction.py` emits
 
 ```python
 logger.warning("Skipping %s %r: %s", original.type.value, original.name, error)
@@ -272,13 +284,59 @@ bytes in filenames (`WinError 123`), but the failure path *is* a reporting path:
 still reaches stderr, in the log line reporting that it could not be written. The same
 holds for any member that is blocked, superseded, or listed rather than extracted.
 
-*Fix direction (not chosen yet):* escaping at the `logger.warning` call sites pushes CLI
-presentation into library logging, and library logs may go somewhere a terminal escape is
-harmless or even wanted. The narrower fix is a `logging.Formatter` in
-`cli/logging_config.py` that escapes the rendered message — the CLI decides how its own
-terminal is protected, and the library keeps emitting structured records unchanged.
-Escaping the formatted message wholesale would also escape the level/logger text, which is
-archivey's own and safe, so that is a cosmetic concern only.
+*Why the message and not the handler.* The first attempt escaped in a `logging.Formatter`
+installed by the CLI. That guards only records reaching a handler someone configured, and
+the likeliest route an archivey message takes to a terminal has no handler at all: an
+uncaught exception, with the interpreter printing the traceback whose final line is
+`str(exc)`. `print(exc)` in embedding code and third-party error reporters are the same
+shape. Escaping at construction covers every route with no configuration, and it needs one
+place — `ArchiveyError.__init__` — rather than one per call site.
+
+The two layers cannot coexist: a formatter escaping an already-escaped message doubles
+every backslash in it. The formatter was removed, and `format_error_detail` in the CLI
+decides by type in one place, so a call site holding an `ArchiveyError | OSError` union
+(`ExtractionResult.error`) does not have to. Only non-archivey exceptions are escaped at
+the display site, because only they arrive unescaped.
+
+*What stays raw.* The exceptions' `archive_name` / `member_name` / `source_format` and
+`Diagnostic.context` — the structured channels, for callers acting on a value rather than
+printing it. Library log records are likewise unaltered, so an embedding app's handler or
+a test's `caplog` still sees exactly what was emitted.
+
+*Closed residual — `exc_info` tracebacks.* The handler-side design had to accept that a
+rendered traceback's final line is the exception's message and may be archive-derived.
+Escaping at construction closes it: that line is the escaped message.
+
+*Native paths in messages.* Escaping doubles a backslash, so a native Windows path
+interpolated raw would render `C:\\Users\\out\\a.txt`. Every path in a message is
+rendered `/`-separated first by `escaping.display_path()`, leaving the escape nothing to
+double; a backslash that survives is then a character in a *name*, which is what the
+escape is for. Print sites already followed this rule by rendering relative to the
+extraction root. Guarded by a static sweep, since the failure is invisible on Linux.
+
+*Escape exactly once.* Escaping already-escaped text doubles the backslashes the first
+escape wrote. Review found this was not a rare cosmetic edge: **52 message sites**
+interpolated an archive-derived name with `{name!r}`, which `repr` escapes before the
+message escape escapes its backslashes — essentially every safety error in `filters.py`,
+`extraction.py`, `base_reader.py` and `reader_state.py`. `escaping.quoted()` supplies the
+delimiting quotes without escaping, and all 52 were converted; `raw_message` /
+`raw_message_of()` do the same job for a caught exception embedded in a new message (two
+broad `except Exception` sites in `rar_parser.py` can catch an `ArchiveyError`). `!r`
+stays where the value is not archive-derived.
+
+The **inverse** rule applies to `logger.*` call sites: the CLI handler no longer escapes,
+so `%r` is what makes an interpolated name inert there and must be kept. Both rules are
+guarded by static tests in `tests/test_escaping.py`, since either failure is invisible
+except against a hostile archive.
+
+*Escaping correctness.* Rendering delegates to `repr`, whose escape set is exactly
+`not str.isprintable()` (verified across the whole code space), after review found three
+bugs in the hand-rolled table: astral code points emitted a five-hex-digit `\uXXXXX` that
+reads back as a different character (955,086 code points affected); the surrogateescape
+range was `U+DC00`–`U+DFFF` rather than the `U+DC80`–`U+DCFF` that `surrogateescape`
+actually produces, reversing 768 code points into bytes they never came from; and the
+losslessness claim was false, since `U+009B` and a surrogateescaped byte `0x9B` both
+render `\x9b`. The guarantee is now stated as inertness, not unique recoverability.
 
 Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Those use a
 Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a

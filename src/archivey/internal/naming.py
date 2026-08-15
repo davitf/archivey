@@ -22,6 +22,7 @@ from archivey.diagnostics import (
     NameNormalizationContext,
     raw_name_to_base64,
 )
+from archivey.escaping import quoted
 from archivey.internal.logs import normalization as logger
 from archivey.types import MemberType
 
@@ -80,7 +81,7 @@ def emit_member_name_bidi_control(
         return
     collector.emit(
         code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
-        message=f"Member name contains a bidirectional control character: {name!r}",
+        message=f"Member name contains a bidirectional control character: {quoted(name)}",
         context=MemberNameControlsContext(
             archive_name=archive_name,
             member_name=name,

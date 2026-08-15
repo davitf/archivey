@@ -28,7 +28,7 @@ from archivey.cli.filters import (
     unmatched_include_patterns,
     warn_unmatched_includes,
 )
-from archivey.cli.format import escape_member_name
+from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
@@ -277,7 +277,7 @@ def maybe_hoist_single_root(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
         )
     except OSError as exc:
-        print(f"hoist failed: {escape_member_name(str(exc))}", file=err)
+        print(f"hoist failed: {format_error_detail(exc)}", file=err)
         print(f"files left in {wrapper}/", file=err)
         return _HoistResult(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
@@ -392,7 +392,7 @@ def _report_extraction(
         elif status is ExtractionStatus.BLOCKED:
             blocked += 1
             detail = (
-                f": {escape_member_name(str(result.error))}"
+                f": {format_error_detail(result.error)}"
                 if result.error is not None
                 else ""
             )
@@ -403,7 +403,7 @@ def _report_extraction(
         elif status is ExtractionStatus.FAILED:
             failed += 1
             detail = (
-                f": {escape_member_name(str(result.error))}"
+                f": {format_error_detail(result.error)}"
                 if result.error is not None
                 else ""
             )
@@ -553,7 +553,7 @@ def run_extract(
                 # the stop notice. Exit 1 always on abort (Q8 Option A): exit 3
                 # is reserved for a *completed* run with policy blocks and safe
                 # members on disk (blocks never abort under STOP).
-                print(exc, file=err)
+                print(format_error_detail(exc), file=err)
                 parts: list[str] = []
                 if members_extracted:
                     parts.append(f"{members_extracted} member(s) extracted")

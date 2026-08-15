@@ -7,6 +7,8 @@ import traceback
 from dataclasses import dataclass
 from types import FrameType
 
+from archivey.escaping import display_path
+
 
 @dataclass(frozen=True)
 class OpenSite:
@@ -25,7 +27,13 @@ class OpenSite:
 
     @property
     def location(self) -> str:
-        return f"{self.filename}:{self.lineno}"
+        """``file:line``, ``/``-separated.
+
+        This lands in a ``ConcurrentAccessError`` message, which escapes itself, and a
+        native Windows filename would have every separator doubled by that escape — in
+        the one string whose whole job is to be read and pasted back to find the call.
+        """
+        return f"{display_path(self.filename)}:{self.lineno}"
 
 
 def capture_open_site(

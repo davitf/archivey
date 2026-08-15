@@ -50,6 +50,7 @@ from archivey.diagnostics import (
     SymlinkTargetContext,
     raw_name_to_base64,
 )
+from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -59,6 +60,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
+    raw_message_of,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
@@ -282,7 +284,7 @@ def _zip_timestamps(
                     source="dos",
                     value_repr=repr(info.date_time),
                     message=(
-                        f"Invalid ZIP date_time for {info.filename!r}: "
+                        f"Invalid ZIP date_time for {quoted(info.filename)}: "
                         f"{info.date_time!r}"
                     ),
                 )
@@ -367,7 +369,7 @@ def _zip_timestamps(
                             value_repr=repr(ts),
                             message=(
                                 f"Invalid ZIP extended timestamp for "
-                                f"{info.filename!r}: {ts!r}"
+                                f"{quoted(info.filename)}: {ts!r}"
                             ),
                         )
                     )
@@ -695,7 +697,7 @@ class ZipReader(BaseArchiveReader):
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
                 message=(
                     f"ZIP member name decoded as {inferred_encoding!r} rather than the "
-                    f"cp437 default (UTF-8 flag not set): {member.name!r}"
+                    f"cp437 default (UTF-8 flag not set): {quoted(member.name)}"
                 ),
                 context=NameEncodingContext(
                     archive_name=self._archive_name,
@@ -1189,8 +1191,7 @@ class ZipReader(BaseArchiveReader):
             except _ZIP_MEMBER_READ_ERRORS as exc:
                 if _is_candidate_integrity_failure(exc):
                     failure = EncryptionError(
-                        f"Password candidate failed integrity validation for ZIP "
-                        f"member {member_name!r}"
+                        "Password candidate failed integrity validation for this ZIP member"
                     )
                     if not ambiguous_holder:
                         ambiguous_holder.append(failure)
@@ -1250,8 +1251,7 @@ class ZipReader(BaseArchiveReader):
             winner = first_crc_match(expected_crc, crcs)
             if winner is None:
                 failure = EncryptionError(
-                    f"Password candidate failed integrity validation for ZIP "
-                    f"member {member_name!r}"
+                    "Password candidate failed integrity validation for this ZIP member"
                 )
                 if ambiguous_failure is None:
                     ambiguous_failure = failure
@@ -1294,8 +1294,8 @@ class ZipReader(BaseArchiveReader):
 
         if ambiguous_failure is not None:
             ambiguous = EncryptionError(
-                f"No password candidate produced integrity-verified data for "
-                f"ZIP member {member_name!r}; the password(s) may be wrong, or "
+                "No password candidate produced integrity-verified data for "
+                "this ZIP member; the password(s) may be wrong, or "
                 "the encrypted member may be corrupt"
             )
             self._stamp_error_context(ambiguous, member_name)
@@ -1325,8 +1325,8 @@ class ZipReader(BaseArchiveReader):
             ambiguous_failure = ambiguous_holder[0] if ambiguous_holder else None
             if ambiguous_failure is not None:
                 ambiguous = EncryptionError(
-                    f"No password candidate produced integrity-verified data for "
-                    f"ZIP member {member_name!r}; the password(s) may be wrong, or "
+                    "No password candidate produced integrity-verified data for "
+                    "this ZIP member; the password(s) may be wrong, or "
                     "the encrypted member may be corrupt"
                 )
                 self._stamp_error_context(ambiguous, member_name)
@@ -1335,7 +1335,7 @@ class ZipReader(BaseArchiveReader):
                 last_error = exc.last_error
                 self._stamp_error_context(last_error, member_name)
                 raise last_error from last_error.__cause__
-            required = EncryptionError(exc.message)
+            required = EncryptionError(raw_message_of(exc))
             self._stamp_error_context(required, member_name)
             raise required from None
         except EncryptionError as exc:

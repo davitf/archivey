@@ -48,6 +48,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     MemberTimestampContext,
 )
+from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -736,7 +737,7 @@ class TarReader(BaseArchiveReader):
         if mtime_invalid:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                message=f"Invalid TAR mtime for {info.name!r}: {info.mtime!r}",
+                message=f"Invalid TAR mtime for {quoted(info.name)}: {info.mtime!r}",
                 context=MemberTimestampContext(
                     archive_name=self._archive_name,
                     member_name=member.name,

@@ -10,11 +10,19 @@ Two roots (intentional):
 
 Under ``ArchiveyError``, names track the failing phase: open → read → extract,
 plus feature/package/resource limits.
+
+Both roots **escape their message** at construction: the text call sites build
+interpolates attacker-controlled member names and the paths derived from them, and
+an exception message reaches a terminal by routes no single consumer configures —
+including a traceback the interpreter prints on its own. See
+:class:`ArchiveyError` for what stays raw and why.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+from archivey.escaping import escape_control_chars
 
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
@@ -22,7 +30,43 @@ if TYPE_CHECKING:
 
 
 class ArchiveyError(Exception):
-    """Root of all Archivey exceptions."""
+    """Root of all Archivey exceptions.
+
+    **The message is escaped.** Call sites build messages by interpolating
+    archive-derived text — a member name, or a destination path built from one — and
+    those are attacker-controlled. An exception message reaches a terminal by more
+    routes than any one consumer controls: ``print(e)``, ``logging.exception``, a
+    third-party error reporter, and above all an uncaught exception whose traceback
+    the interpreter prints itself, whose final line is ``str(e)``. Escaping in the
+    handler that displays it protects only the routes someone remembered to
+    configure; escaping here protects all of them, with no configuration.
+
+    So ``message`` is stored escaped, and that escaped form is what
+    :meth:`__str__`, ``args[0]`` and ``repr()`` all render. ``raw_message`` keeps the
+    text as the call site wrote it, for the one job the escaped form cannot do: being
+    embedded in *another* message that will escape it in turn.
+
+    ``archive_name``, ``member_name``, ``link_target`` and ``source_format`` stay
+    **raw** too, for callers that need the real value to act on rather than to print.
+    :meth:`__str__` renders the names through ``!r``, which escapes them for display in
+    turn — so a name available as an attribute should **not** also be interpolated into
+    the message, or it prints twice. Prefer prose plus attributes:
+    ``SymlinkEscapeError("Symlink target escapes destination", member_name=name,
+    link_target=target)``.
+
+    **Escape exactly once, at the outermost message.** Everything a message
+    interpolates should therefore be raw when it goes in — which is what the two
+    helpers are for, and why neither of them is a matter of taste:
+
+    - a member name, link target or path → :func:`~archivey.escaping.quoted`, not
+      ``!r``. ``!r`` escapes first, and this escapes the backslashes it introduced.
+    - a caught exception that might be one of ours → :func:`raw_message_of`, not
+      ``{exc}`` or ``{exc!r}``.
+
+    Note this is the opposite of the rule for ``logger.*`` calls, whose records the CLI
+    does **not** escape: there, ``%r`` is what makes an interpolated name inert and must
+    stay.
+    """
 
     def __init__(
         self,
@@ -31,12 +75,16 @@ class ArchiveyError(Exception):
         source_format: "ArchiveFormat | None" = None,
         archive_name: str | None = None,
         member_name: str | None = None,
+        link_target: str | None = None,
     ) -> None:
+        self.raw_message = message
+        message = escape_control_chars(message)
         super().__init__(message)
         self.message = message
         self.source_format = source_format
         self.archive_name = archive_name
         self.member_name = member_name
+        self.link_target = link_target
 
     def __str__(self) -> str:
         parts = [self.message]
@@ -44,6 +92,8 @@ class ArchiveyError(Exception):
             parts.append(f"archive={self.archive_name!r}")
         if self.member_name:
             parts.append(f"member={self.member_name!r}")
+        if self.link_target:
+            parts.append(f"target={self.link_target!r}")
         if self.source_format:
             # Human label (ZIP / TAR_GZ / SEVEN_Z), not ArchiveFormat.ZIP repr.
             parts.append(f"format={self.source_format.display_name}")
@@ -189,9 +239,16 @@ class ArchiveyUsageError(Exception):
 
     ``except ArchiveyError`` wraps archive/environment problems; usage errors indicate
     a bug in calling code and must not be swallowed by those handlers.
+
+    The message is escaped on the same terms as :class:`ArchiveyError`'s. A usage
+    error's text is mostly archivey's own, so the escaping is usually a no-op — but
+    "mostly" is not a property worth carving an exception into, and a usage error is
+    free to name the member that provoked it.
     """
 
     def __init__(self, message: str) -> None:
+        self.raw_message = message
+        message = escape_control_chars(message)
         super().__init__(message)
         self.message = message
 
@@ -222,11 +279,31 @@ class DiagnosticRaisedError(ArchiveyError):
         source_format: "ArchiveFormat | None" = None,
         archive_name: str | None = None,
         member_name: str | None = None,
+        link_target: str | None = None,
     ) -> None:
         super().__init__(
             message,
             source_format=source_format,
             archive_name=archive_name,
             member_name=member_name,
+            link_target=link_target,
         )
         self.diagnostic = diagnostic
+
+
+def raw_message_of(exc: BaseException) -> str:
+    """The text of ``exc`` as its call site wrote it, for embedding in a new message.
+
+    Interpolating a caught exception into a message that will itself be escaped needs
+    the *unescaped* text, or the outer escape doubles the backslashes the inner one
+    wrote. Archivey's exceptions keep that text on ``raw_message``; everything else was
+    never escaped and is already raw.
+
+    Needed only where the caught type is broad enough to include one of ours — a
+    ``except Exception`` around a call that may raise an ``ArchiveyError``. A handler
+    catching only third-party types (``lzma.LZMAError``, ``zipfile.BadZipFile``) can
+    interpolate the exception directly.
+    """
+    if isinstance(exc, (ArchiveyError, ArchiveyUsageError)):
+        return exc.raw_message
+    return str(exc)

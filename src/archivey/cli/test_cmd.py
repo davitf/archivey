@@ -15,7 +15,7 @@ from archivey.cli.filters import (
     unmatched_include_patterns,
     warn_unmatched_includes,
 )
-from archivey.cli.format import escape_member_name
+from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
@@ -81,13 +81,9 @@ def run_test(
                     member, stream = next(it)
                 except StopIteration:
                     break
-                except ArchiveyError as exc:
+                except (ArchiveyError, OSError) as exc:
                     failed += 1
-                    print(f"FAIL: {exc}", file=err)
-                    continue
-                except OSError as exc:
-                    failed += 1
-                    print(f"FAIL: {exc}", file=err)
+                    print(f"FAIL: {format_error_detail(exc)}", file=err)
                     continue
 
                 saw_selected = True
@@ -137,12 +133,13 @@ def run_test(
                         )
                     if verbose:
                         print(f"OK   {escape_member_name(member.name)}", file=err)
-                except ArchiveyError as exc:
+                except (ArchiveyError, OSError) as exc:
                     failed += 1
-                    print(f"FAIL {escape_member_name(member.name)}: {exc}", file=err)
-                except OSError as exc:
-                    failed += 1
-                    print(f"FAIL {escape_member_name(member.name)}: {exc}", file=err)
+                    print(
+                        f"FAIL {escape_member_name(member.name)}: "
+                        f"{format_error_detail(exc)}",
+                        file=err,
+                    )
         finally:
             if on_progress is not None:
                 on_progress.close()

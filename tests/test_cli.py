@@ -11,6 +11,7 @@ import pytest
 
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.main import _inject_default_list, main
+from archivey.exceptions import ArchiveyError
 
 
 def _zip(path: Path, entries: dict[str, bytes]) -> Path:
@@ -1535,3 +1536,199 @@ def test_report_lines_do_not_double_path_separators(
     lines = _report_lines(capsys.readouterr().err, "overwritten:")
     assert lines == ["overwritten: dir/README"]
     assert "\\\\" not in lines[0]
+
+
+# --- O9: archive-derived text on the LOG path, not just the print path -------------
+
+
+def _log_through_cli_handler(msg: str, *args: object, **kwargs: object) -> str:
+    """Emit one record through the handler ``cli_logging`` installs, return the output."""
+    import logging
+
+    from archivey.cli.logging_config import cli_logging
+
+    err = io.StringIO()
+    with cli_logging(verbose=False, err=err):
+        logging.getLogger("archivey.test").warning(msg, *args, **kwargs)
+    return err.getvalue()
+
+
+def test_log_records_escape_archive_derived_text() -> None:
+    """The log path carries archive text too, and reaches the same stderr.
+
+    It is closed at the source rather than at the handler: the exception escapes its own
+    message, so interpolating it into a record cannot reintroduce the spoof. This is the
+    real shape of the only library site that logs one (``extraction.py``'s
+    ``"Skipping %s %r: %s"``).
+    """
+    exc = ArchiveyError("Destination already exists: /out/ev\x1b[2Kil\rSPOOF.txt")
+    out = _log_through_cli_handler("Skipping file %r: %s", "ev\x1b[2Kil.txt", exc)
+    assert "\x1b" not in out  # no raw escape sequence
+    assert "\r" not in out.rstrip("\n")  # no carriage-return line rewrite
+    assert "\\x1b[2K" in out  # …shown losslessly instead
+
+
+def test_log_records_escape_diagnostic_messages() -> None:
+    """``diagnostics_collector`` logs ``"%s"`` of a diagnostic message verbatim.
+
+    That is the one library log site whose interpolation is not an exception and not
+    ``%r``, so the diagnostic escapes its own message for the same reason an exception
+    does.
+    """
+    from archivey.diagnostics import (
+        Diagnostic,
+        DiagnosticCode,
+        DiagnosticSeverity,
+        MemberNameControlsContext,
+    )
+
+    diagnostic = Diagnostic(
+        occurrence_id="1",
+        code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+        severity=DiagnosticSeverity.WARNING,
+        message="Member name has controls: /out/ev\x1b[2Kil\rSPOOF.txt",
+        context=MemberNameControlsContext(member_name="ev\x1b[2Kil.txt"),
+    )
+    out = _log_through_cli_handler("%s", diagnostic.message)
+    assert "\x1b" not in out
+    assert "\\x1b[2K" in out
+    # …while the structured channel keeps the real value for a JSON sink.
+    assert diagnostic.context.member_name == "ev\x1b[2Kil.txt"
+
+
+def test_log_records_keep_tracebacks_readable() -> None:
+    """Escaping the message must not collapse a multi-line traceback onto one line.
+
+    The traceback is rendered by the stdlib from the exception, not escaped as a block —
+    and its final line is safe on its own, because it is the exception's escaped message.
+    """
+    try:
+        raise ArchiveyError("boom: /out/ev\x1b[2Kil\rSPOOF.txt")
+    except ArchiveyError:
+        out = _log_through_cli_handler("failed", exc_info=True)
+    assert "Traceback (most recent call last):" in out
+    assert out.count("\n") > 2  # still multi-line
+    assert "\x1b" not in out  # …and the final line carries no raw escape
+    assert "\\x1b[2K" in out
+
+
+def test_library_log_records_reach_other_handlers_unescaped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``cli_logging`` leaves ``propagate`` alone, and no longer rewrites records.
+
+    Escaping moved to the message's source, so the CLI handler is an ordinary
+    ``logging.Formatter`` again — an embedding app's handler, or caplog here, sees
+    exactly the record the library emitted, args included.
+    """
+    import logging
+
+    from archivey.cli.logging_config import cli_logging
+
+    err = io.StringIO()
+    with caplog.at_level(logging.WARNING, logger="archivey.test"):
+        with cli_logging(verbose=False, err=err):
+            logging.getLogger("archivey.test").warning("name: %r", "ev\x1b[2Kil.txt")
+
+    assert caplog.records[-1].getMessage() == "name: 'ev\\x1b[2Kil.txt'"
+    assert caplog.records[-1].args == ("ev\x1b[2Kil.txt",)
+
+
+def test_uncaught_exception_traceback_reaches_stderr_inert() -> None:
+    """The route that no display site can guard: the interpreter prints the traceback.
+
+    A formatter never sees this, and neither does a print site — the interpreter renders
+    the exception itself, and its final line is ``str(exc)``. This is why the escaping
+    lives at construction rather than at the CLI's handler. Run out-of-process so the
+    real ``sys.excepthook`` path is exercised, not a captured string.
+    """
+    import subprocess
+
+    code = (
+        "from archivey.exceptions import ExtractionError\n"
+        "raise ExtractionError('Destination exists: /out/ev\\x1b[2Kil\\rSPOOF.txt')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert proc.returncode != 0
+    assert "\x1b" not in proc.stderr  # no raw escape sequence reached the terminal
+    assert "\\x1b[2K" in proc.stderr  # …shown losslessly on the traceback's last line
+    assert "Traceback (most recent call last):" in proc.stderr
+
+
+def test_log_escaping_leaves_ordinary_messages_alone() -> None:
+    """No cosmetic churn for the overwhelmingly common case."""
+    out = _log_through_cli_handler("Skipping file %r: plain reason", "dir/file.txt")
+    assert out == "WARNING: Skipping file 'dir/file.txt': plain reason\n"
+
+
+def test_abort_notice_escapes_the_error_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The abort path prints the exception itself, not a report line.
+
+    ``NameCollisionError``'s message embeds the already-written path, which is built
+    from the member name — the same spoof class as the log path, reached through a
+    different print site. Uses the Windows-legal spoof so the print site is covered on
+    every platform; the ANSI variant below is the real erase-and-rewrite sequence.
+    """
+    archive = _zip(
+        tmp_path / "c.zip", {_SPOOF_PORTABLE: b"A", _SPOOF_PORTABLE.upper(): b"B"}
+    )
+    dest = tmp_path / "out"
+    main(["x", str(archive), "-d", str(dest), "--abort-on", "name-collision"])
+    err = capsys.readouterr().err
+    assert "Name collision" in err
+    assert " " not in err
+    assert "\\u2028" in err
+
+
+@_ANSI_ONLY
+def test_abort_notice_escapes_an_ansi_spoof(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The real spoof through the abort print site.
+
+    Unix-only: on Windows the member cannot be written at all (WinError 123), so the
+    run fails before two names ever collide. The name still reaches stderr there, in
+    the WARNING reporting that it could not be written — escaped by ``%r``, which
+    ``test_log_records_escape_archive_derived_text`` covers.
+    """
+    archive = _zip(tmp_path / "c.zip", {_SPOOF_ANSI: b"A", _SPOOF_ANSI.upper(): b"B"})
+    dest = tmp_path / "out"
+    main(["x", str(archive), "-d", str(dest), "--abort-on", "name-collision"])
+    err = capsys.readouterr().err
+    assert "Name collision" in err
+    assert "\x1b" not in err
+    assert "\r" not in err
+
+
+def test_test_verb_escapes_failure_detail(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``archivey test`` appends the exception to its FAIL line; that is a print site too.
+
+    Driven through the real verb: the member read raises an ``ArchiveyError`` whose
+    message embeds a member-derived path, which is how a hostile name reaches this line.
+    """
+    from archivey.exceptions import ArchiveyError
+
+    archive = _zip(tmp_path / "t.zip", {"a.txt": b"A"})
+
+    def boom(*_args: object, **_kwargs: object):
+        # Raise from the iterator, not the call: the FAIL branch wraps ``next(it)``,
+        # while a call-time raise lands in main()'s top-level handler instead.
+        def _gen():
+            raise ArchiveyError(f"Error reading member: /out/{_SPOOF_ANSI}")
+            yield  # pragma: no cover - unreachable, makes this a generator
+
+        return _gen()
+
+    monkeypatch.setattr(
+        "archivey.internal.base_reader.BaseArchiveReader.stream_members", boom
+    )
+    main(["test", str(archive)])
+    err = capsys.readouterr().err
+    lines = _report_lines(err, "FAIL")
+    assert lines, err
+    assert all("\x1b" not in ln for ln in lines)
+    assert any("\\x1b[2K" in ln for ln in lines)

@@ -24,6 +24,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, TypeVar
 
+from archivey.escaping import escape_control_chars
 from archivey.internal.extraction_types import ExtractionResult
 
 if TYPE_CHECKING:
@@ -393,13 +394,48 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
 
 @dataclass(frozen=True)
 class Diagnostic:
-    """One immutable advisory occurrence."""
+    """One immutable advisory occurrence.
+
+    The two fields carry the same facts for different audiences, and that is why they
+    are treated differently:
+
+    - ``message`` is **display text**, and is stored **escaped**. It interpolates
+      archive-derived values — member names, link targets, paths — which are
+      attacker-controlled, and a name carrying ``\\x1b[2K\\r`` in text that reaches a
+      terminal can erase the line reporting it and write something else in its place.
+      Escaping happens at construction so it holds for every consumer, whatever it
+      does with the text.
+    - ``context`` is the **structured channel** (``member_name`` and its siblings,
+      surfaced through :meth:`to_dict`) and stays **raw**. A caller routing diagnostics
+      to a JSON sink, or matching on a name, needs the real value.
+
+    This mirrors :class:`~archivey.exceptions.ArchiveyError`, which escapes its
+    ``message`` and keeps ``member_name`` raw for the same reason.
+
+    Escaping here rather than trusting the sites that build messages: every one of them
+    today interpolates through :func:`~archivey.escaping.quoted` or ``!r``, so the text
+    would be inert either way — but that is a property of the current call sites, not of
+    the type. A future message written as ``f"...{name}"`` would pass review looking
+    exactly like its neighbours while emitting raw control bytes, and only for a hostile
+    archive.
+
+    Escaping runs in ``__post_init__``: on a frozen dataclass that is the hook that
+    covers every construction path. (A hand-written ``__init__`` would survive the
+    decorator — it does not overwrite one defined in the class body — but with no
+    dataclass base to delegate to it would mean spelling out all five fields and keeping
+    them in step with the declarations above.) Nothing reconstructs a ``Diagnostic``
+    with :func:`dataclasses.replace`, which would escape a second time.
+    """
 
     occurrence_id: str
     code: DiagnosticCode
     severity: DiagnosticSeverity
     message: str
     context: DiagnosticContext
+
+    def __post_init__(self) -> None:
+        # frozen dataclass — the escape has to go in through the back door.
+        object.__setattr__(self, "message", escape_control_chars(self.message))
 
     def to_dict(self) -> dict[str, object]:
         return {
