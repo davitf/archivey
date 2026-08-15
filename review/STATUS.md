@@ -4,7 +4,8 @@
 
 | Review | State |
 |---|---|
-| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 (audit) delivered** — [`SUMMARY.md`](docs/SUMMARY.md), [`inventory.md`](docs/inventory.md) (all 549 prose files assigned), [`QUESTIONS.md`](docs/QUESTIONS.md), [`observations.md`](docs/observations.md). Headline: the site is 73% maintainer material, and `safe-extraction.md` is its thinnest page. **Phase 2 (decide) complete** — D1–D11 in [`DECISIONS.md`](docs/DECISIONS.md), no questions open. **Phase 3 (migrate) done** — `docs-ia-unpublish-maintainer-tree` landed in #221 and archived in #222; `docs-ia-split-user-guide` is implemented in #223. Phase 4's guardrails shipped with the first change. Bias control pass delivered earlier (#208, `docs/independent/`); code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). Writing the guide kept finding *library* defects (#225); that class was absorbed by Topic 9, now archived. |
+| [`docs-content/`](docs-content/brief.md) — documentation **content** (Topic 8) | **Commissioned 2026-08-15** at `d4668c3`, once the library churn the prose was waiting on had landed (`#225`, `#232`, `#233`–`#236`). Four passes ranked: accuracy vs the code → gaps → register (O-16/O-17) → quality. Starts from `docs/observations.md` and `docs/outline.md`; the outline's "~455 lines outstanding" needs re-tallying first (~226 lines landed opportunistically since). Writes prose directly — a library defect found becomes a separate fix PR, never an edit inside a docs PR. |
+| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 (audit) delivered** — [`SUMMARY.md`](docs/SUMMARY.md), [`inventory.md`](docs/inventory.md) (all 549 prose files assigned), [`QUESTIONS.md`](docs/QUESTIONS.md), [`observations.md`](docs/observations.md). Headline: the site is 73% maintainer material, and `safe-extraction.md` is its thinnest page. **Phase 2 (decide) complete** — D1–D11 in [`DECISIONS.md`](docs/DECISIONS.md), no questions open. **Phase 3 (migrate) done** — `docs-ia-unpublish-maintainer-tree` landed in #221 and archived in #222; `docs-ia-split-user-guide` is implemented in #223. Phase 4's guardrails shipped with the first change. Bias control pass delivered earlier (#208, `docs/independent/`); code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). Writing the guide kept finding *library* defects (#225); that class was absorbed by Topic 9, now archived. **The prose half is now [`docs-content/`](docs-content/brief.md)** (row above); this review stays open only for `how-it-works.md`, which D2 assigns there. |
 
 ### Phase 3, split in two
 
@@ -113,18 +114,17 @@ Ranked, from `backlog.md` and `PLAN.md`:
    `docs/migrating.md`, #206) and the PyPI metadata (#207). **Remaining:** drop the
    `0.2.0.dev0` suffix when cutting the tag, and the repo-cutover leftovers
    (`dev-docs/release-repo-cutover.md`: discovery metadata, Pages settings).
-2. **Docs full review** (in flight above) — IA largely done; remaining Topic 8 prose
-   and accuracy. Best finished **before** more releases ship more permanent URLs.
-3. **Topic 8** — documentation *content* (accuracy vs the code, then gaps, then
-   quality). Separate from the IA review by design: that one decides where pages live,
-   this one whether they are right. Starts from the IA review's `observations.md`
-   and `outline.md`. Library defects found while writing prose become fix PRs
-   (Topic 9's class is closed).
-4. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
+2. **Topic 8 — documentation *content*** (`docs-content/`, commissioned above). Separate
+   from the IA review by design: that one decides where pages live, this one whether
+   they are right. Best finished **before** more releases ship more permanent URLs.
+   Library defects found while writing prose become fix PRs (Topic 9's class is closed).
+   The docs IA review stays in flight alongside it — its last deliverable,
+   `how-it-works.md`, is D2's and therefore Topic 8's; both archive together.
+3. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
    Absorbs parked stream-layering Q4 and Topic 9's solid-decoder-hold idea (O2b/O2c
    in `IDEAS.md`).
-5. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
-   library, and items 1–4 are exactly the gaps it would otherwise re-find. The docs
+4. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
+   library, and items 1–3 are exactly the gaps it would otherwise re-find. The docs
    reviews deliberately hand persuasion/adoption findings to it rather than acting on
    them.
 

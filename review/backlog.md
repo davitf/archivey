@@ -21,7 +21,8 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
   *after everything else is fully addressed*; it judges the finished library, not a
   work in progress.
 - **Topic 8** (documentation *content*) — accuracy / gaps / quality of the prose, after
-  the in-flight docs IA review has settled where each page lives.
+  the in-flight docs IA review has settled where each page lives. **Commissioned
+  2026-08-15** as [`docs-content/brief.md`](docs-content/brief.md).
 - **Topic 9** (simplicity & consistency) — **done**, archived as
   [`archive/2026-08-15-simplicity-consistency/`](archive/2026-08-15-simplicity-consistency/)
   (findings #230/#231; W1–W9 paid in #232; Q13 expansions #233–#236).
@@ -165,7 +166,12 @@ fully addressed. Two framings, usable together:
 This is judgement + gap analysis, not a bug hunt — closer to a product/positioning audit
 grounded in the code and docs. It likely produces roadmap items, not fixes.
 
-## Topic 8 — Documentation *content* (after the IA pass)
+## Topic 8 — Documentation *content* (after the IA pass) — **COMMISSIONED**
+
+**Commissioned 2026-08-15** as [`docs-content/brief.md`](docs-content/brief.md), at
+`d4668c3` — once the library churn the prose was waiting on had landed (`#225`,
+`#232`, `#233`–`#236`). The brief carries the measured surface, the seed list, and the
+four-pass ranking below. What follows is the original sketch, kept as provenance.
 
 **Why separate from the docs IA review** (`docs/brief.md`, in flight): that one decides
 where prose *lives*; this one judges whether the prose is *right*. Keeping them apart is
