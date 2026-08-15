@@ -22,20 +22,15 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
   work in progress.
 - **Topic 8** (documentation *content*) — accuracy / gaps / quality of the prose, after
   the in-flight docs IA review has settled where each page lives.
-- **Topic 9** (simplicity & consistency) — **brief in flight** as
-  [`simplicity-consistency/`](simplicity-consistency/brief.md) (2026-08-06).
-  Behavioural uniformity across formats/entry points, accidental complexity, and
-  spec↔code honesty before `0.2.0`. Prompted by the docs cleanup / #225 pattern:
-  writing user prose keeps finding library surprises that are not docs bugs.
-  Distinct from Topic 5 (structural debt, paid) and api-coherence (surface shape,
-  archived): this one asks whether remaining *behaviour* differences are format
-  law or accretion.
+- **Topic 9** (simplicity & consistency) — **done**, archived as
+  [`archive/2026-08-15-simplicity-consistency/`](archive/2026-08-15-simplicity-consistency/)
+  (findings #230/#231; W1–W9 paid in #232; Q13 expansions #233–#236).
+  **O2b/O2c** (solid decoder hold under concurrency) parked → `IDEAS.md`.
 
 **Topic numbers are IDs, not an order.** Current intended sequence: docs IA (in
-flight) → **Topic 9** (overlap OK with Topic 8) → **Topic 8** → **Topic 6** →
-**Topic 7** last. See [`STATUS.md`](STATUS.md).
+flight) → **Topic 8** → **Topic 6** → **Topic 7** last. See [`STATUS.md`](STATUS.md).
 
-## Parked from archived deep reviews (2026-07)
+## Parked from archived deep reviews (2026-07 / 2026-08)
 
 Items consciously deferred when archiving deep reviews. Do not re-open those
 review directories for these.
@@ -48,14 +43,13 @@ review directories for these.
 | CLI **P4** `--json` (wait for `hash` / member schema) | cli-product Q2 | `IDEAS.md` (CLI follow-ups) / debt-ledger DD7 |
 | CLI **Q4** `--raw` / TTY-only quoting remainder | cli-product Q4 | debt-ledger DD8 (additive; recommended style already applied) |
 | `SlicingStream.readinto` (**Q4**) + optional `VerifyingStream` delete | stream-layering | Topic 6 adjacency above |
+| Solid-block decoder hold across `open()` + concurrency (**O2b/O2c**) | simplicity-consistency | `IDEAS.md` §Performance |
 
 The **docs full review** is in flight as of 2026-07-29 ([`docs/brief.md`](docs/brief.md)) —
 an information-architecture pass separating user / contributor / design-record / history,
 commissioned ahead of Topic 7 because it decides where docs *live*, not whether they
-persuade. **Topic 9** ([`simplicity-consistency/brief.md`](simplicity-consistency/brief.md))
-was commissioned 2026-08-06 from the same docs work: writing the guide kept finding
-library surprises that are not content bugs. [`STATUS.md`](STATUS.md) records the
-current ordering.
+persuade. Topic 9 is archived; library surprises found while writing guide prose become
+fix PRs. [`STATUS.md`](STATUS.md) records the current ordering.
 
 When commissioned, each gets its own top-level directory with a `brief.md` and
 archives when addressed (see `README.md`).
@@ -216,26 +210,17 @@ alone: an inaccurate doc is a bug, an unpolished one is not.
 snippets file) turn accuracy from a recurring manual review into a CI failure. That is
 the difference between doing this pass once and doing it every release.
 
-## Topic 9 — Simplicity & consistency (behavioural uniformity)
+## Topic 9 — Simplicity & consistency (behavioural uniformity) — **DONE**
 
-**Why separate from Topic 5 / api-coherence:** Topic 5 was a *debt ledger*
-(shortcuts, duplication, pay/keep) and is archived — S2/S3 paid. api-coherence
-judged public surface shape and the member model at freeze (P1 duplicate names
-fixed). Neither asked the question the docs cleanup keeps answering empirically:
-*for the same call, do two formats or two entry points still disagree for no
-good reason?*
+**Archived 2026-08-15** as
+[`archive/2026-08-15-simplicity-consistency/`](archive/2026-08-15-simplicity-consistency/).
+Findings from two independent passes (#230/#231); pay list W1–W9 implemented in
+#232; Q13/O-23 expansions in #233–#236. The only deliberate park is **O2b/O2c**
+(hold solid-block decoder across `open()`, concurrency lifetime) →
+[`IDEAS.md`](../dev-docs/IDEAS.md) §Performance.
 
-**Why now:** writing user prose (O-21–O-26) produced four library fixes in #225
-and a repeatable method (find the implementing line; check the failing branch;
-check the spec before rewriting the sentence). Run that method across the
-uniform-interface matrix before `0.2.0` freezes accidents into Gotchas bullets.
-
-**Owns:** cross-format / cross-entry-point behavioural parity; silent exceptions;
-spec fiction; pre-freeze vocabulary leftovers (`MemberStreams` vs
-`open_stream(seekable=)`). **Does not own:** Topic 8 prose, Topic 6 perf,
-Topic 7 adoption, salvage/native-ZIP features, debt-ledger KEEPs, settled ADRs.
-
-Brief and seeds: [`simplicity-consistency/brief.md`](simplicity-consistency/brief.md).
+Brief and seeds (historical):
+[`archive/2026-08-15-simplicity-consistency/brief.md`](archive/2026-08-15-simplicity-consistency/brief.md).
 
 ## Not a review — a feature gap to track separately
 

@@ -20,17 +20,17 @@ completed changes out of `changes/`.
 | Dir | Review | Status |
 |-----|--------|--------|
 | `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; phases 1–3 largely done (IA migrate + guide splits). Topic 8 content prose still open; see `STATUS.md`. |
-| `simplicity-consistency/` | Simplicity & consistency pass — uniform interface, accidental format/entry-point differences, spec honesty | Brief 2026-08-06; **findings delivered 2026-08-07** (`SUMMARY.md` + `QUESTIONS.md`, 16 decisions). Executed twice independently (PRs #230/#231) and merged; the two passes found largely disjoint defects and disagreed on three verdicts — both recorded in `SUMMARY.md`. Analysis-only — no library changes until the maintainer picks pay items. |
 
 The round commissioned 2026-07-17 — the **non-security** pass toward the first public
 `0.2.0` — closed on 2026-07-28 when `debt-ledger/` and `performance/` were archived.
-Every finding there is fixed, accepted, or recorded as an explicit deferral.
+Topic 9 (`simplicity-consistency`) closed on 2026-08-15 after `#232` paid W1–W9 and
+the diagnostics follow-ons (`#233`–`#236`) landed. Every finding there is fixed,
+accepted, or recorded as an explicit deferral.
 
 `backlog.md` holds what is left: Topic 8 (documentation *content*), Topic 6
 (decode-engine perf, + parked stream-layering Q4), Topic 7 (outside-in adoption
 capstone — the **capstone**, meaningful only once everything else is addressed), and
-the parked-from-archive table. Topic 9 is the in-flight `simplicity-consistency/` row
-above. `STATUS.md` records the intended ordering.
+the parked-from-archive table. `STATUS.md` records the intended ordering.
 
 Note that an empty `review/` does **not** mean `0.2.0` is ready: the release bundle
 (`PLAN.md` item 6 — packaging finalize, the free-threading support statement, the
@@ -50,6 +50,7 @@ migration guide) was never a review item and is still outstanding.
 | `archive/2026-07-20-cli-product/` | The CLI as a **product** (UX / grammar / exit codes / output) | P1–P3/P5–P14/D1 done (#144 + #163/#165); **P4/`--json`** → `IDEAS.md` / DD7; **Q4/`--raw`** → DD8. |
 | `archive/2026-07-28-debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5) | Whole pay list paid: D1–D7, DD1/DD4, S2/S3, T1/T2/T3/T7, T4 half-test, Q1–Q5. Remaining items are explicit KEEPs. T7 audit: [`corpus-matrix.md`](archive/2026-07-28-debt-ledger/corpus-matrix.md). |
 | `archive/2026-07-28-performance/` | The ≤1.3× stdlib perf budget — gate efficacy + traps | P1/P3/P4/P5/P6 fixed; P2/P7 partial with bands **accepted aspirational** (#191); Q1–Q6 all decided (Q4 → no verify-skip knob, 2026-07-28); P8/P9 + L4/L5 → tracked follow-ups. |
+| `archive/2026-08-15-simplicity-consistency/` | Simplicity & consistency (Topic 9) | Findings #230/#231; W1–W9 paid in #232 (six OpenSpec changes archived 2026-08-09); Q13 expansions #233–#236. **O2b/O2c** decoder-hold under concurrency → `IDEAS.md`. |
 
 ## Conventions every brief inherits
 

@@ -1,4 +1,4 @@
-"""Guardrails for the simplicity & consistency review (`review/simplicity-consistency/`).
+"""Guardrails for the simplicity & consistency review (`review/archive/2026-08-15-simplicity-consistency/`).
 
 The file started as two kinds of test: **guardrails** (plain assertions pinning a rule
 the review classified as *format law* or *settled*) and **red halves**
@@ -19,11 +19,11 @@ member offset is still corruption (F4), a *small* rewind still stays quiet (F19)
 directional bidi mark still extracts (O7).
 
 Every test names the merged finding id from
-`review/simplicity-consistency/SUMMARY.md` so the two stay linked. The review was
+`review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` so the two stay linked. The review was
 delivered twice independently (PR #230 and PR #231) and merged; findings carried over
 from the second pass are marked in the SUMMARY's provenance column and their guardrails
-were moved here from `review/simplicity-consistency/tests/`, which `testpaths =
-["tests"]` never collected — a guardrail CI does not run guards nothing.
+were moved here from `review/simplicity-consistency/tests/` (pre-archive path), which
+`testpaths = ["tests"]` never collected — a guardrail CI does not run guards nothing.
 """
 
 from __future__ import annotations

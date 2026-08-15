@@ -730,7 +730,7 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
     ``ModuleNotFoundError`` inside the builder.
 
     ``pytest`` is imported lazily because this module is also imported by non-pytest
-    scripts (``review/simplicity-consistency/repro/probe_matrix.py``).
+    scripts (``review/archive/2026-08-15-simplicity-consistency/repro/probe_matrix.py``).
     """
     import importlib.util
 

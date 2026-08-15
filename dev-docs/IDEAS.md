@@ -192,7 +192,7 @@
 - **Hold the solid-block decoder open across `open()` calls — and decide what that means
   under `concurrent_members`.** *(Status: **deferred on purpose**; direction agreed, the
   concurrency half is unbrainstormed. From the 2026-08-07 simplicity & consistency review —
-  see `review/simplicity-consistency/open-questions-for-discussion.md` §O2b/§O2c for the
+  see `review/archive/2026-08-15-simplicity-consistency/open-questions-for-discussion.md` §O2b/§O2c for the
   full argument and `QUESTIONS.md` pay-list rows 17–18.)*
 
   **The cost, measured.** `SevenZipReader._open_member` calls `_open_folder_stream` →
