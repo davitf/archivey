@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-08-08 (PR #232, review finding F16 / Q11 / O6)
-- **Provenance:** `review/simplicity-consistency/` (F16); OpenSpec `testing-contract`
+- **Provenance:** `review/archive/2026-08-15-simplicity-consistency/` (F16); OpenSpec `testing-contract`
   (corpus conformance sweep); `CONTRIBUTING.md` (three-config gate, no committed
   binaries by default)
 

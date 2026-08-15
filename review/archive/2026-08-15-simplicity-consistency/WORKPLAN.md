@@ -1,10 +1,16 @@
 # Work plan — turning the simplicity & consistency review into changes
 
+> **Implemented.** W1–W9 landed in **#232** (2026-08-09). The six OpenSpec changes
+> are under `openspec/changes/archive/2026-08-09-*`; ADRs 0015–0017 record the
+> empty-TAR, RAR-fixture, and bidi-policy decisions. Q13 follow-ons continued as
+> `#233`–`#236`. This file is kept as the historical worklist — do not re-open it
+> as a TODO. The review directory was archived 2026-08-15.
+
 **What this is.** [`QUESTIONS.md`](QUESTIONS.md) ranks the review's outcomes by *what
 unblocks what*. This file is the other axis: **the concrete units of work**, each one a
 single PR or a single `openspec` change, with the files it touches, the spec deltas it
-needs, and the committed tests that prove it landed. Nothing here is implemented — the
-review is analysis-only by its brief.
+needs, and the committed tests that prove it landed. *(Originally analysis-only; the
+paragraph below described the pre-implementation state.)*
 
 **How to use it.** Take a deliverable, do it end to end (code + spec + docs in one change,
 per `CONTRIBUTING.md` §"Don't accumulate debt"), and tick it off. The deliverables are

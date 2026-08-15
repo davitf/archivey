@@ -1,11 +1,18 @@
 # Simplicity & consistency pass — SUMMARY (merged)
 
+> **Archived 2026-08-15** as `review/archive/2026-08-15-simplicity-consistency/`.
+> All actionable findings addressed or consciously deferred: Q1–Q16 decided;
+> W1–W9 paid in **#232** (six OpenSpec changes archived 2026-08-09 + ADRs
+> 0015–0017); Q13/O-23 expansions in **#233–#236**. **O2b/O2c** (solid decoder
+> hold under concurrency) → `dev-docs/IDEAS.md`. Guardrails live in
+> `tests/test_review_simplicity_consistency.py`.
+
 **Review of** `main` @ `2792f9c` (post-#225, post-#227/#228; the three #225 changes are
 archived, `seekable-gzip-and-block-writing` is the only live change).
-**Status:** analysis complete, **all 16 questions decided** (2026-08-07 — see
+**Status at delivery:** analysis complete, **all 16 questions decided** (2026-08-07 — see
 [`QUESTIONS.md`](QUESTIONS.md) for the rulings and the re-ranked pay list); **no library
-changes in this PR**. Artifacts here are evidence and guardrails only
-(`brief.md` §Hard constraints) — each decision lands as its own change.
+changes in the findings PR**. Artifacts here are evidence and guardrails only
+(`brief.md` §Hard constraints) — each decision landed as its own later change.
 
 Two rulings went **against** this review's recommendation, deliberately: **Q13**
 (reopen `STREAM_REWIND_REDECOMPRESSES`'s placement) and **Q16** (treat the `seekable`

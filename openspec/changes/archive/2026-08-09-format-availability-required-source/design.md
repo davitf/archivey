@@ -14,7 +14,7 @@ Three shapes were considered for "can this format be read from a pipe?".
 
 ### `StreamCapability` had no ordering, and the decision requires one
 
-The resolution that picked this shape (`review/simplicity-consistency/open-questions-for-discussion.md`
+The resolution that picked this shape (`review/archive/2026-08-15-simplicity-consistency/open-questions-for-discussion.md`
 §O4) asserts that "`StreamCapability` is **ordered** — `FORWARD_ONLY` is weaker than
 `SEEKABLE`". It was not: `StreamCapability` is a plain `Enum` with two string members and
 no comparison operators, so `required_source <= cost.stream_capability` raised

@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-08-08 (PR #232, review finding F10 / O7)
-- **Provenance:** `review/simplicity-consistency/` (O7); OpenSpec `safe-extraction`;
+- **Provenance:** `review/archive/2026-08-15-simplicity-consistency/` (O7); OpenSpec `safe-extraction`;
   [ADR 0013](0013-cross-platform-name-safety-policies.md) (the axis this restores);
   `VISION.md` (safe by default); Trojan Source (CVE-2021-42574)
 

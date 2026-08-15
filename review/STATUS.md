@@ -1,11 +1,10 @@
-# In-flight review status (2026-08-06)
+# In-flight review status (2026-08-15)
 
 ## In flight
 
 | Review | State |
 |---|---|
-| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 (audit) delivered** — [`SUMMARY.md`](docs/SUMMARY.md), [`inventory.md`](docs/inventory.md) (all 549 prose files assigned), [`QUESTIONS.md`](docs/QUESTIONS.md), [`observations.md`](docs/observations.md). Headline: the site is 73% maintainer material, and `safe-extraction.md` is its thinnest page. **Phase 2 (decide) complete** — D1–D11 in [`DECISIONS.md`](docs/DECISIONS.md), no questions open. **Phase 3 (migrate) done** — `docs-ia-unpublish-maintainer-tree` landed in #221 and archived in #222; `docs-ia-split-user-guide` is implemented in #223. Phase 4's guardrails shipped with the first change. Bias control pass delivered earlier (#208, `docs/independent/`); code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). Writing the guide keeps finding *library* defects (#225); those are out of Topic 8's scope and feed the new review below. |
-| [`simplicity-consistency/`](simplicity-consistency/brief.md) — simplicity & consistency | **Brief written 2026-08-06** against `main` @ `a1cbf2a`. Analysis-only: ranked focus map for accidental format/entry-point differences, spec↔code honesty, and pre-`0.2.0` vocabulary leftovers. Light recon seeded from docs observations O-21–O-26, `#225`, `open-issues.md`, and a short backend/`core.py` pass — treated as a floor, with the matrix's *expected* column written from VISION + specs alone as the anti-anchoring counterweight. Delivers a **checkpoint** (drawn matrix) before deepening. Analysis-only covers *library behaviour*: probe scripts and assertions pinning current behaviour are wanted, fixes are not. Does **not** re-open debt-ledger KEEPs, settled ADRs, Topic 6/7, Topic 8 prose rewrites, or specs for unlanded phases (`archive-writing`, Phase 8). |
+| [`docs/`](docs/brief.md) — documentation full review | Brief written 2026-07-29. Four-phase process (audit → decide → migrate → guardrail). **Phase 1 (audit) delivered** — [`SUMMARY.md`](docs/SUMMARY.md), [`inventory.md`](docs/inventory.md) (all 549 prose files assigned), [`QUESTIONS.md`](docs/QUESTIONS.md), [`observations.md`](docs/observations.md). Headline: the site is 73% maintainer material, and `safe-extraction.md` is its thinnest page. **Phase 2 (decide) complete** — D1–D11 in [`DECISIONS.md`](docs/DECISIONS.md), no questions open. **Phase 3 (migrate) done** — `docs-ia-unpublish-maintainer-tree` landed in #221 and archived in #222; `docs-ia-split-user-guide` is implemented in #223. Phase 4's guardrails shipped with the first change. Bias control pass delivered earlier (#208, `docs/independent/`); code-shaped findings filtered into [`code-self-documentation.md`](docs/code-self-documentation.md). Writing the guide kept finding *library* defects (#225); that class was absorbed by Topic 9, now archived. |
 
 ### Phase 3, split in two
 
@@ -91,17 +90,19 @@ it. Both fixed here.
 
 `debt-ledger/` and `performance/` were archived on 2026-07-28 after the last two ledger
 items (**T7** corpus-matrix audit, **T4** half-test) landed and **performance Q4** was
-decided.
+decided. Topic 9 (`simplicity-consistency`) was archived on **2026-08-15** after `#232`
+paid W1–W9 and the Q13/O-23 follow-ons (`#233`–`#236`) landed.
 
-## What closed the round
+## What closed
 
 | Review | Archived as | Closing work |
 |--------|-------------|--------------|
+| `simplicity-consistency/` (Topic 9) | [`archive/2026-08-15-simplicity-consistency/`](archive/2026-08-15-simplicity-consistency/) | Findings #230/#231; W1–W9 in **#232** (six OpenSpec changes + ADRs 0015–0017); expansions **#233–#236**. Guardrails in `tests/test_review_simplicity_consistency.py`. **O2b/O2c** → `IDEAS.md`. |
 | `debt-ledger/` | `archive/2026-07-28-debt-ledger/` | T7 audit ([`corpus-matrix.md`](archive/2026-07-28-debt-ledger/corpus-matrix.md)) + T4 `members_report_if_available` multithread tests |
 | `performance/` | `archive/2026-07-28-performance/` | Q4 decided: verification stays unconditional, no skip knob |
 
-Every other item on both reviews is fixed, accepted (bands aspirational, #191), or an
-explicit KEEP with a recorded justification — see each review's `SUMMARY.md`.
+Every other item on those reviews is fixed, accepted (bands aspirational, #191), or an
+explicit KEEP / park with a recorded justification — see each review's `SUMMARY.md`.
 
 ## What is next
 
@@ -114,17 +115,16 @@ Ranked, from `backlog.md` and `PLAN.md`:
    (`dev-docs/release-repo-cutover.md`: discovery metadata, Pages settings).
 2. **Docs full review** (in flight above) — IA largely done; remaining Topic 8 prose
    and accuracy. Best finished **before** more releases ship more permanent URLs.
-3. **Simplicity & consistency** (in flight above) — behavioural uniformity and
-   accidental complexity before the public API freezes. Can overlap Topic 8: docs
-   writing feeds seeds; this review owns library/spec fixes.
-4. **Topic 8** — documentation *content* (accuracy vs the code, then gaps, then
+3. **Topic 8** — documentation *content* (accuracy vs the code, then gaps, then
    quality). Separate from the IA review by design: that one decides where pages live,
    this one whether they are right. Starts from the IA review's `observations.md`
-   and `outline.md`. Library defects found while writing prose go to
-   `simplicity-consistency/` (or a fix PR), not into Topic 8's rewrite budget.
-5. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
-6. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
-   library, and items 1–5 are exactly the gaps it would otherwise re-find. The docs
+   and `outline.md`. Library defects found while writing prose become fix PRs
+   (Topic 9's class is closed).
+4. **Topic 6** — decode-engine performance (`backlog.md`); unblocked since #137.
+   Absorbs parked stream-layering Q4 and Topic 9's solid-decoder-hold idea (O2b/O2c
+   in `IDEAS.md`).
+5. **Topic 7** — outside-in adoption capstone. Run **last**: it judges the finished
+   library, and items 1–4 are exactly the gaps it would otherwise re-find. The docs
    reviews deliberately hand persuasion/adoption findings to it rather than acting on
    them.
 
@@ -136,6 +136,7 @@ Ranked, from `backlog.md` and `PLAN.md`:
 | DD5–DD12, T5/T6, N1 (`pyppmd`), DD6 salvage | `archive/2026-07-28-debt-ledger/` — explicit KEEPs |
 | P8/P9, L4/L5 listing/accelerator follow-ups | `archive/2026-07-28-performance/` |
 | CLI `--json` / `--raw` | `dev-docs/IDEAS.md` (DD7/DD8) |
+| Solid-block decoder hold across `open()` + concurrency (O2b/O2c) | `dev-docs/IDEAS.md` §Performance — from Topic 9 |
 
 ## Notes
 

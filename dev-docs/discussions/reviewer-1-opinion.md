@@ -76,7 +76,7 @@ Checked against `src/archivey/diagnostics.py`,
 `src/archivey/internal/extraction.py`, `extraction_types.py`,
 `openspec/specs/{diagnostics,safe-extraction}/spec.md`,
 `docs/extracting.md`, `review/docs/observations.md` (O-23),
-`review/simplicity-consistency/q13-rewind-diagnostic.md`, and the matching
+`review/archive/2026-08-15-simplicity-consistency/q13-rewind-diagnostic.md`, and the matching
 tests. Counts: 22 codes in the enum; policy matches by code only.
 
 ### Confirmed

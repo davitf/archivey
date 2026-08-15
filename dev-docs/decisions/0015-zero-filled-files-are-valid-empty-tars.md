@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-08-08 (`strict-archive-eof-trailing-bytes`, PR #232; review finding F20 / O8)
-- **Provenance:** `review/simplicity-consistency/` (F20, O8a/O8b); OpenSpec `format-tar`,
+- **Provenance:** `review/archive/2026-08-15-simplicity-consistency/` (F20, O8a/O8b); OpenSpec `format-tar`,
   `format-detection`, `diagnostics`; `VISION.md` (damaged input is first-class; no
   silent success; no quirk-driven architecture)
 
