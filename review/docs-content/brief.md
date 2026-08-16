@@ -350,6 +350,18 @@ that is itself a finding — either the claim is wrong or the page is documentin
 - **Workers verify; they do not edit pages.** A verification worker returns verdicts and
   evidence. It never touches `docs/`, and it never fixes a library defect (§Hard
   constraints).
+- **Workers harvest problems as a byproduct.** Each capability worker returns one extra
+  section: the non-trivial *problems* it met in that subsystem — format quirks, upstream
+  library defects, hostile-input hazards, usage traps — stated so that someone who has
+  never seen archivey could understand them, with evidence. The coordinator files these
+  under [`../problem-catalogue/harvest/`](../problem-catalogue/brief.md); the schema and
+  the neutrality rule are that brief's, not this one's.
+  **Why here:** most of this residue exists only as a comment or a branch and was never
+  written to a register — a grep for `workaround|quirk` across `src/` finds four sites,
+  while 136 comments name an upstream library. It is not keyword-findable, so it is
+  reachable only by someone already reading the subsystem. That is these workers, once.
+  **Cap it:** a bounded list per capability, no investigation, no chasing. A worker that
+  starts researching a problem has stopped doing pass 1.
 - **The step-3 checkpoint is the fan-in.** A wrong split is cheap to correct there and
   expensive to correct after the prose is written.
 - **The cross-page consistency pass is mandatory, whatever the topology.** #223's round-2
@@ -414,6 +426,7 @@ Then `docs-content/` and `../docs/` archive together (§Provenance sequencing no
 | `QUESTIONS.md` | Maintainer decisions with fix vehicle: the §D API-reference shape, O-12 (should an error message cite a document), anything where the code/spec/prose winner is not obvious |
 | Page PRs | One page or coupled pair each, against the re-tallied `outline.md` worklist |
 | Fix findings | For each library defect: `file:line`, the input that triggers it, the config it reproduces in, and a proposed vehicle. Not fixed here |
+| `../problem-catalogue/harvest/` | The per-capability problem harvest (§How to run this). Belongs to [Topic 10](../problem-catalogue/brief.md); produced here because these workers are the only readers who will be inside those subsystems |
 | **Guardrail** | Executable examples — doctest or a tested snippets file over the 35 `python` blocks, plus whatever the §D decision implies (e.g. an assertion that every `__all__` name has a reference entry). This is the difference between doing this pass once and doing it every release, and the docs review's own conclusion was that the guardrail phase decides whether a review has to be run twice |
 
 ## Provenance / do not resurface

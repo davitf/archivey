@@ -28,8 +28,13 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
   (findings #230/#231; W1–W9 paid in #232; Q13 expansions #233–#236).
   **O2b/O2c** (solid decoder hold under concurrency) parked → `IDEAS.md`.
 
+- **Topic 10** (the problem catalogue) — **commissioned 2026-08-15** as
+  [`problem-catalogue/brief.md`](problem-catalogue/brief.md). Not a review; runs in
+  parallel with Topic 8 on disjoint sources.
+
 **Topic numbers are IDs, not an order.** Current intended sequence: docs IA (in
-flight) → **Topic 8** → **Topic 6** → **Topic 7** last. See [`STATUS.md`](STATUS.md).
+flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. See
+[`STATUS.md`](STATUS.md).
 
 ## Parked from archived deep reviews (2026-07 / 2026-08)
 
@@ -227,6 +232,30 @@ Findings from two independent passes (#230/#231); pay list W1–W9 implemented i
 
 Brief and seeds (historical):
 [`archive/2026-08-15-simplicity-consistency/brief.md`](archive/2026-08-15-simplicity-consistency/brief.md).
+
+## Topic 10 — The problem catalogue — **COMMISSIONED**
+
+**Commissioned 2026-08-15** as [`problem-catalogue/brief.md`](problem-catalogue/brief.md),
+at `d4668c3`. **Not a review** — an extraction and normalization pass over what the
+project already knows: one entry per non-trivial problem archivey has had to solve
+(format quirks, upstream library defects, security hazards, platform traps, usage
+patterns), stated so that someone who has never seen archivey could design against them.
+
+The material is already written across ~180 documents — 72 archived change proposals with
+a `## Why`, 57 `design.md` files, 18 ADRs, 11 review summaries, 8 investigations, the
+threat model, `known-issues.md`, `library-analysis.md`, and `dev-docs/history/`. Nothing
+collects them, so one problem is restated in three vocabularies and cannot be counted.
+
+**Problems, not decisions.** Each entry links to the decision that resolved it, in a
+separate strippable field — because the catalogue's second consumer is a **fresh-design
+comparison**: hand a frontier model the problems alone, ask for an architecture, and
+compare. That only works if the problems are stated without our vocabulary, so
+"how do we avoid copying bytes twice in the decoder stack" fails the test and
+"verifying a checksum and delivering bytes are the same read" passes.
+
+Runs **in parallel with Topic 8** — disjoint sources (that one reads `docs/` and `src/`,
+this one `dev-docs/` and the archives) — and takes the code-comment residue from Topic 8's
+capability workers, which is the only way to reach problems that never entered a register.
 
 ## Not a review — a feature gap to track separately
 

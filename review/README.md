@@ -21,6 +21,7 @@ completed changes out of `changes/`.
 |-----|--------|--------|
 | `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; phases 1–4 done (IA migrate, guide splits, guardrails). Stays in flight until `docs-content/` lands: its remaining deliverable is `how-it-works.md`, which D2 assigns to Topic 8. |
 | `docs-content/` | Documentation **content** (Topic 8) — accuracy vs the code, then gaps, then register | Brief 2026-08-15 at `d4668c3`. Commissioned once the library churn the prose was waiting on (`#225`, `#232`, `#233`–`#236`) had landed. |
+| `problem-catalogue/` | The **problem catalogue** (Topic 10) — every non-trivial problem the project has had to solve, stated solution-neutrally | Brief 2026-08-15 at `d4668c3`. Extraction and normalization over ~180 existing documents, not a new review. Runs in parallel with Topic 8 (disjoint sources) and feeds a later fresh-design comparison. |
 
 The round commissioned 2026-07-17 — the **non-security** pass toward the first public
 `0.2.0` — closed on 2026-07-28 when `debt-ledger/` and `performance/` were archived.
