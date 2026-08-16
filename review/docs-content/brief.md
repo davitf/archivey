@@ -256,6 +256,9 @@ spans instead. That is also why the gap stays invisible until someone counts.
 
 ## Suggested process
 
+The steps below say *what* to do; §How to run this says how to decompose them across
+sessions and workers, and which splits are unsafe.
+
 1. **Baseline.** `scripts/check.sh` plus `uv run --group docs python scripts/check_docs_nav.py`,
    recorded. **Check the environment before trusting green:** missing `unrar` / `7z`
    makes ~109 tests skip quietly (`CLAUDE.md`); run `scripts/setup-dev-env.sh` and read
@@ -284,6 +287,84 @@ spans instead. That is also why the gap stays invisible until someone counts.
 8. **Ship page-sized PRs throughout.** One page, or one closely-coupled pair, per PR. A
    move-plus-rewrite diff is unreviewable — that argument is why this topic exists at
    all, and it applies just as much to a rewrite-plus-rewrite diff.
+
+## How to run this — decomposition and agent topology
+
+The pass is too large for one context window, and the obvious split is wrong. Written
+down because it would otherwise be re-derived at the start of every session
+(`dev-docs/code-map.md` §"Where the answers live" is the rule this obeys).
+
+### The unit changes between passes
+
+**Pass 1 splits by *capability*, never by page.** A single behaviour appears on several
+pages — extraction results touch `extracting`, `errors-and-diagnostics`, `gotchas`,
+`index` and `cli`. One worker per page would re-derive the same subsystem several times
+and can reach *different* answers about the same behaviour. That is exactly O-2: the
+rapidgzip caveat existed four times and had drifted in two, because each copy was checked
+against its neighbour rather than the spec. Splitting pass 1 by page reproduces the defect
+the review exists to remove.
+
+**Passes 2–4 split by *page*,** which §Suggested process step 8 already requires for
+reviewable diffs.
+
+### What to fan out
+
+The test is input size against output size, not task size:
+
+| Work | Input | Output | Where it runs |
+|---|---|---|---|
+| Verifying one capability's claims against `src/` + `openspec/specs/` | Whole subsystems read to settle a dozen questions; throwaway | A dozen rows with `file:line` and a verdict | **Sub-agent.** The shape fan-out is good at |
+| Building the claim inventory (step 2) | All 15 pages at once | `claims.md` | **Coordinator.** Its value *is* seeing the same claim in four places; a worker holding one page cannot dedupe |
+| Writing or rewriting a page | The page, its verified claims, the O-17 rules | The page | **Coordinator**, or one worker per page cluster. Context-light, and voice is what fan-out damages first |
+| The cross-page consistency check | The finished guide | A short findings list | **Coordinator**, and see below |
+
+### Capability clusters for pass 1
+
+Seven or eight workers, each owning specs and reporting against the shared claim table:
+
+| Cluster | Specs | Pages its claims land on |
+|---|---|---|
+| Opening, detection, sources | `format-detection`, `archive-reading`, `compressed-streams` | `opening-and-listing`, `install`, `formats` |
+| Reading, member lifetime, concurrency | `archive-reading`, `reader-concurrency`, `archive-data-model` | `reading-members`, `access-and-cost`, `gotchas` |
+| Extraction, policies, results | `safe-extraction` | `extracting`, `index`, `cli`, `gotchas` |
+| Errors, diagnostics, translation | `error-handling`, `diagnostics`, `logging` | `errors-and-diagnostics`, `extracting`, `gotchas` |
+| Formats, codecs, stored digests | the seven `format-<name>` specs (7z, directory, ISO, RAR, single-file, TAR, ZIP), `archive-data-model` | `formats`, `install`, `support-matrix` |
+| Cost, accelerators, measurement | `access-mode-and-cost`, `seekable-decompressor-streams` | `access-and-cost`, `gotchas`, `formats` |
+| Packaging and platform | `packaging-and-extras` | `install`, `support-matrix`, `migrating` |
+| Command line | `cli` | `cli` |
+
+That accounts for 20 of the 24 capability specs. The other four are deliberate, not
+gaps: **`documentation`** is the coordinator's own — it governs the guide's shape, and a
+delta against it is how `how-it-works.md` ships; **`archive-writing`** is out of scope
+(Phase 9, unlanded); **`backend-registry`** and **`testing-contract`** describe internal
+machinery with no user-facing claim on any page, so a cluster owning them would have
+nothing to verify. If a worker finds a guide claim that traces to one of the last two,
+that is itself a finding — either the claim is wrong or the page is documenting internals.
+
+### What makes the split safe
+
+- **`claims.md` is committed before any fan-out.** It is the shared state; without it the
+  workers have nothing to report against and the results cannot be merged. A container
+  keeps no memory between sessions, so every unit of work must leave a committed artifact
+  — page PRs included.
+- **Workers verify; they do not edit pages.** A verification worker returns verdicts and
+  evidence. It never touches `docs/`, and it never fixes a library defect (§Hard
+  constraints).
+- **The step-3 checkpoint is the fan-in.** A wrong split is cheap to correct there and
+  expensive to correct after the prose is written.
+- **The cross-page consistency pass is mandatory, whatever the topology.** #223's round-2
+  re-review found four contradictions the splits change had created *in a single pass by a
+  single agent* — `access-and-cost.md` said accelerator faults abort the process while the
+  rewritten `gotchas.md` said they are contained. Full context did not prevent drift, so
+  fan-out will not either; budget the pass rather than hoping.
+- **Independent duplicate passes are for bias control, not throughput.** #208's
+  code-derived outline and Topic 9's two passes (#230/#231) were isolated deliberately so
+  that agreement carried information — and both briefs warn that convergence between
+  passes with shared priors is weak evidence. Use that pattern on a judgement call worth
+  a second opinion, not to go faster.
+- **Fan-out is the expensive path.** A fresh worker re-derives context from cold. Worth it
+  where the throwaway input dwarfs the output — the capability clusters — and not worth it
+  for a 34-line `install.md`.
 
 ## Hard constraints
 
