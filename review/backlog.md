@@ -27,7 +27,6 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
   [`archive/2026-08-15-simplicity-consistency/`](archive/2026-08-15-simplicity-consistency/)
   (findings #230/#231; W1–W9 paid in #232; Q13 expansions #233–#236).
   **O2b/O2c** (solid decoder hold under concurrency) parked → `IDEAS.md`.
-
 - **Topic 10** (the problem catalogue) — **commissioned 2026-08-15** as
   [`problem-catalogue/brief.md`](problem-catalogue/brief.md). Not a review; runs in
   parallel with Topic 8 on disjoint sources.
@@ -242,7 +241,7 @@ project already knows: one entry per non-trivial problem archivey has had to sol
 patterns), stated so that someone who has never seen archivey could design against them.
 
 The material is already written across ~180 documents — 72 archived change proposals with
-a `## Why`, 57 `design.md` files, 18 ADRs, 11 review summaries, 8 investigations, the
+a `## Why`, 57 `design.md` files, 17 ADRs, 11 review summaries, 8 investigations, the
 threat model, `known-issues.md`, `library-analysis.md`, and `dev-docs/history/`. Nothing
 collects them, so one problem is restated in three vocabularies and cannot be counted.
 

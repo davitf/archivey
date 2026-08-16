@@ -13,7 +13,7 @@ it.
 
 | Label | Means | Defined in |
 |---|---|---|
-| **Topic 4–9** | Review *topics* — IDs, not an order. This review is Topic 8 | [`../backlog.md`](../backlog.md) — one `## Topic N` section each; Topic 8 at [`:169`](../backlog.md) |
+| **Topic 4–10** | Review *topics* — IDs, not an order. This review is Topic 8; the problem catalogue is Topic 10 | [`../backlog.md`](../backlog.md) — grep `^## Topic ` for the section of any one |
 | **phase 1–4** | The docs IA review's process: audit → decide → execute → guardrail. All four are done | [`../docs/brief.md` §Suggested process](../docs/brief.md) (`:233-257`) |
 | **Phase 8, Phase 9** | *Capability implementation* phases — a different scheme entirely, about what the library builds and when, not about this review | [`openspec/project.md` §Implementation order](../../openspec/project.md) (`:83`) |
 | **D1–D11** | The IA review's maintainer decisions (unpublish `docs/internal/`, the ADR summary page, the Gotchas rule, `AGENTS`/`CLAUDE`, `dev-docs/` …) | [`../docs/DECISIONS.md`](../docs/DECISIONS.md) — one `## DN` section each |
@@ -182,7 +182,7 @@ paragraph is true.
 | **Diagnostics gained a written ceiling** (`#234`/`#235`, O-23 retired) | Admission ("only what the caller could not determine and can act on") and placement ("a structured per-item report is the sole carrier of per-item outcomes"). Any guide sentence implying diagnostics report caller usage is now contradicted by spec. | Rule is settled; prose unchecked |
 | **Topic 9's W1–W9** (`#232`, six changes + ADRs 0015–0017) | Six behavioural contracts changed at once — `format_availability().required_source`, metadata decoupled from declared seekability, bidi override rejection, strict archive EOF + trailing bytes, rewind redecode diagnostic. Each has a page that should mention it. | Method proven; unchecked page by page |
 | **`#225`'s four fixes** | Solid-archive password laziness, `format=` rejected on a directory, seekable (non-`Path`) size/CRC probes, close-on-reader-close. `formats.md` / `access-and-cost.md` describe all four areas. | Re-verify |
-| **Terminal escaping and [threat-model O9](../../dev-docs/threat-model.md)** (`#236`) | CLI print sites escape archive-derived text; library log records still do not, registered as O9. `cli.md` (48 lines) is the thinnest page against the largest recent change to CLI output. | Unchecked |
+| **Terminal escaping — did the guide catch up to `#236`?** | Archive-derived text is now escaped **where it becomes a message**: `ArchiveyError` / `ArchiveyUsageError` escape at construction, `Diagnostic` escapes its `message`, and the primitive lives in `archivey/escaping.py`. That is a caller-visible contract — `error-handling` and `diagnostics` both require messages to be *"inert for terminal display"* — and no page states it. `cli.md` (48 lines) is the thinnest page against the largest recent change to CLI output. **[Threat-model O9](../../dev-docs/threat-model.md) is closed by that change, not open** (§Provenance); the question here is documentation coverage, not whether a gap remains. | Unchecked |
 | **Every `python` block should run** | 35 blocks, none executed by CI. This is mechanically checkable and doubles as the pass-1 method: a block that no longer imports is an accuracy finding with a zero-judgement repro. | Ripe; see §Deliverables guardrail |
 
 **Apply the [O-21](../docs/observations.md) method to each claim, not each page:** find the line that implements the
@@ -354,7 +354,7 @@ that is itself a finding — either the claim is wrong or the page is documentin
   section: the non-trivial *problems* it met in that subsystem — format quirks, upstream
   library defects, hostile-input hazards, usage traps — stated so that someone who has
   never seen archivey could understand them, with evidence. The coordinator files these
-  under [`../problem-catalogue/harvest/`](../problem-catalogue/brief.md); the schema and
+  under [`../problem-catalogue/harvest/`](../problem-catalogue/harvest/README.md); the schema and
   the neutrality rule are that brief's, not this one's.
   **Why here:** most of this residue exists only as a comment or a branch and was never
   written to a register — a grep for `workaround|quirk` across `src/` finds four sites,
@@ -407,7 +407,7 @@ pause, and the record has to say which. The review is done when **all** of these
 |---|---|
 | 1 | **Every checkable claim on every page is marked** verified / wrong / unverifiable in `claims.md`. No bare gaps. *Unverifiable* names its reason — format unavailable in the session, behaviour genuinely undecided, a spec question raised in `QUESTIONS.md` — and never means "not checked" |
 | 2 | **Every §B worklist row is written**, or dropped with a recorded reason that *supersedes* it — a decision, a duplicate, a page that turned out not to need it. "Ran out of time" is not one of those reasons |
-| 3 | **The guide is complete against `outline.md`**: 16 pages, `how-it-works.md` among them with its `documentation` spec delta, and the nav matching |
+| 3 | **The guide is complete against `outline.md`**: 16 pages, `how-it-works.md` among them with its `documentation` spec delta, and the nav matching. **It does not wait on [Topic 10](../problem-catalogue/brief.md)** — D2 already names a source for each of its six sections (`VISION.md`, ADRs 0001/0002/0003/0006, `library-analysis.md`, the `backend-registry` spec, `dev-docs/decisions/`), and none of them is the catalogue. Cite whatever catalogue rows exist when the page is written; anything that lands later is a follow-up edit, not a blocker |
 | 4 | **Every page carrying promoted maintainer prose has had the register pass**, with the O-16 safety-claim class fixed first |
 | 5 | **Pass 4 is recorded per page** as done or deliberately skipped, with the reason. Silence about a page is not an outcome |
 | 6 | **The registers are triaged** — O-15 (`known-issues.md`) and O-9 (`open-issues.md`), both required follow-ups rather than optional ones |
@@ -437,6 +437,12 @@ Settled or already fixed — cite and move on:
   `seekable-decompressor-streams/spec.md`. The four-copy drift is closed.
 - **O-23 is retired** (`#235`) — the diagnostics admission and placement clauses replaced
   it; the outcome it decided is unchanged.
+- **Threat-model O9 is closed.** Registered inside `#235` as the unescaped-log-record gap,
+  then **implemented by `#236`** (`escape-cli-log-records`) — escaping moved to message
+  construction, which covers log records and uncaught tracebacks alike, and the CLI-side
+  `logging.Formatter` was removed because two layers would double every backslash.
+  `dev-docs/threat-model.md` titles it *implemented*. Do not re-open it; the only live
+  question is whether the guide says so (§A).
 - **O-19** — anchor checking now ships in `check_docs_nav.py`; broken anchors fail CI.
 - **O-1** — the `AGENTS`/`CLAUDE` merge landed (D6), and `#239` corrected the residue.
 - **D1–D11** (`DECISIONS.md`), **D-a–D-e** (`outline.md`), and #223's two review rounds.

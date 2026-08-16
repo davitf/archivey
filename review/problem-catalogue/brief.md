@@ -78,7 +78,7 @@ Denominators, so coverage is checkable rather than asserted.
 |---|---:|---|
 | `openspec/changes/archive/*/proposal.md` with a `## Why` | 72 | The problem that motivated each landed change |
 | …of those, with a `design.md` | 57 | Forces, alternatives considered, and why they lost |
-| `dev-docs/decisions/` (ADRs) | 18 | Context sections — the problem half of each decision |
+| `dev-docs/decisions/` (ADRs) | 17 | Context sections — the problem half of each decision. `index.md` is the 18th file in the directory but a router, not a source |
 | `review/archive/*/SUMMARY.md` | 11 | Every finding from 11 completed reviews, already severity-ranked |
 | `dev-docs/investigations/` | 8 | The expensive ones: rapidgzip truncation, pyppmd native crashes, RAR corpus sweep, parallel reader |
 | `dev-docs/threat-model.md` | 9 `O` entries | Security hazards, mitigated and open |
@@ -205,7 +205,11 @@ is a defect in the catalogue, not in the experiment.
 
 - **Topic 8 (`../docs-content/`)** — runs in parallel; disjoint sources (that one reads
   `docs/` and `src/`, this one reads `dev-docs/` and the archives). It supplies the code
-  residue and consumes the catalogue for `how-it-works.md` and the rationale gaps.
+  residue, and it *may* consume the catalogue for `how-it-works.md` and the 32 rationale
+  gaps. **It does not gate either.** D2 names a source for each of that page's six
+  sections and none is the catalogue, so Topic 8 writes the page when it reaches it and
+  cites whatever rows exist; catalogue material arriving afterwards is a follow-up edit.
+  Nothing here may be written so as to block Topic 8's §Definition of done.
 - **Topic 7** (adoption capstone) — a consumer. "What problems does this library solve
   that a naive one does not?" is its question, and this is the evidence.
 - **Topic 6** (decode performance) — a consumer for the performance category.
