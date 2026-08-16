@@ -49,7 +49,7 @@ PRs, not only findings. The one hard exception is §Hard constraints' first rule
 **library** defect found while writing is never fixed inside a docs PR.
 
 **No budget, no target date** (maintainer, 2026-08-15: *"we'll do everything and take as
-long as needed"*). All four passes run to completion; §Definition of done says what that
+long as needed"*). All five passes run to completion; §Definition of done says what that
 means concretely. The ranking below is a **sequence**, not a triage — it says what to do
 first because each pass makes the next one cheaper, never what to drop.
 
@@ -105,8 +105,8 @@ conflict, prefer the reading below.
 
 ### Documentation addenda (not in VISION, but decide most calls here)
 
-- **An inaccurate doc is a bug; an unpolished one is not.** That is what orders the four
-  passes; it is not permission to stop after the first. `backlog.md`'s "if time forces a
+- **An inaccurate doc is a bug; an unpolished one is not.** That is what orders passes
+  1–4; it is not permission to stop after the first. `backlog.md`'s "if time forces a
   choice, do (1) alone" was written when this topic might have been squeezed against the
   release — it is not, so the fallback does not apply.
 - **Three outcomes, only one is a docs fix** ([O-26](../docs/observations.md)). When prose and behaviour disagree,
@@ -148,12 +148,33 @@ Denominators, not targets.
 Baseline is green at commission: `uv run --group docs python scripts/check_docs_nav.py`
 reports *15 pages, all in nav; repo, site and anchor links all resolve*.
 
-## The four passes, ranked
+## The passes, ranked
 
-`backlog.md:168` ranks these and the ranking is the plan. All four run (§Definition of
-done). Do not bundle them: each one makes the next cheaper, and running them together is
-how a rewrite ends up arguing about a paragraph's structure before knowing whether the
-paragraph is true.
+`backlog.md:168` ranks passes 1–4 and that ranking is the plan; **pass 0 was added
+2026-08-16** by [`../docs/outline.md` D-f](../docs/outline.md). All of them run
+(§Definition of done). Do not bundle them: each one makes the next cheaper, and running
+them together is how a rewrite ends up arguing about a paragraph's structure before
+knowing whether the paragraph is true.
+
+0. **Scope — decide each page's depth before writing a line of it.** The guide's problem
+   is not only accuracy: it **proves claims where it should state them**. `extracting.md`
+   is 228 lines of which 6 are how to extract safely; §What is enforced is 56 lines of
+   threat-model inventory citing `internal/filters.py`, ADR 0013 and PR numbers, and
+   §Policies gives the default two table rows against ~30 lines for an escape hatch the
+   page itself calls narrow. Writing more prose against that outline makes a bigger
+   version of the same document.
+
+   For every block already on a page, and every row of the §B worklist, apply D-f's test —
+   **does the reader do something differently after reading it?** Yes → the guide; only
+   changes how impressed they are → `dev-docs/threat-model.md`; it is a lookup → the
+   **docstring**, surfaced through `api.md`. The docstring leg is not mere relocation:
+   `ExtractionStatus` has a **1-line** docstring against ~30 guide lines for `abort_on`
+   alone, so the reference is thin exactly where the prose is thick.
+
+   Output: one paragraph per page saying what its job is and what is explicitly out, plus
+   a re-derived worklist. D-f carries worked rulings and the `extracting.md` 228 → ~110–130
+   target so the test has calibration, not just a definition. **It does not reopen
+   D-a–D-e** — those settled page *boundaries*; depth within a page had never been decided.
 
 1. **Accuracy vs the code.** Highest value; it is the pass this review exists for.
 2. **Gaps.** What does an adopting engineer look for and not find? Coordinate with
@@ -259,32 +280,38 @@ spans instead. That is also why the gap stays invisible until someone counts.
 The steps below say *what* to do; §How to run this says how to decompose them across
 sessions and workers, and which splits are unsafe.
 
-1. **Baseline.** `scripts/check.sh` plus `uv run --group docs python scripts/check_docs_nav.py`,
+1. **Scope each page (pass 0).** Before the claim inventory, apply
+   [`../docs/outline.md` D-f](../docs/outline.md) to all 16 pages: one paragraph each on
+   what the page is for and what is explicitly out, and a re-derived §B worklist with every
+   row routed to the guide, the threat model, or a docstring. Commit it as `scope.md`.
+   Doing this after the claim table would verify claims on blocks that are about to move;
+   doing it after the writing would cut prose just written.
+2. **Baseline.** `scripts/check.sh` plus `uv run --group docs python scripts/check_docs_nav.py`,
    recorded. **Check the environment before trusting green:** missing `unrar` / `7z`
    makes ~109 tests skip quietly (`CLAUDE.md`); run `scripts/setup-dev-env.sh` and read
    its closing verification block. Record `format_availability()` output — a page claiming
    a format works is unverifiable if that format is unavailable in the session.
-2. **Claim inventory, then the diff.** Walk all 15 pages and extract every *checkable
+3. **Claim inventory, then the diff.** Walk all 15 pages and extract every *checkable
    claim* (a behavioural assertion, a code block, a table row, a default value) into one
    table with `page:line` and the `src/` or `openspec/specs/` line that would settle it.
    Then work §A's diff window first — those are the claims most likely already wrong.
    Every claim ends as **verified** / **wrong** / **unverifiable**; a bare gap is an
    unfinished row, and "unverifiable" is a legitimate outcome that names why.
-3. **Checkpoint — hand over the claim table before writing anything.** The pass is wide
+4. **Checkpoint — hand over the claim table before writing anything.** The pass is wide
    enough that a mid-point re-aim is cheap and a wrong aim discovered at delivery is not.
    Report which pages the errors cluster on. Continue on the maintainer's steer, or after
    a short wait if none comes.
-4. **Classify each disagreement before fixing it** (O-26): code wrong → finding + separate
+5. **Classify each disagreement before fixing it** (O-26): code wrong → finding + separate
    fix PR; spec wrong → OpenSpec change; prose wrong → fix here. Never pick a winner
    silently on a spec/design discrepancy — pause and ask (`CONTRIBUTING.md`).
-5. **Then write the missing prose**, against the re-tallied §B worklist, `how-it-works.md`
+6. **Then write the missing prose**, against the re-tallied §B worklist, `how-it-works.md`
    last of the large rows — it is the page whose absence keeps the docs review open.
-6. **Then the register pass** (O-17 rules) across every page carrying promoted maintainer
+7. **Then the register pass** (O-17 rules) across every page carrying promoted maintainer
    prose, then pass 4 across every page, load-bearing ones first.
-7. **Close the registers** — the O-15 `known-issues.md` triage and the O-9
+8. **Close the registers** — the O-15 `known-issues.md` triage and the O-9
    `open-issues.md` refresh. They are the review's last unwritten deliverable and the
    easiest to forget, because neither is a published page.
-8. **Ship page-sized PRs throughout.** One page, or one closely-coupled pair, per PR. A
+9. **Ship page-sized PRs throughout.** One page, or one closely-coupled pair, per PR. A
    move-plus-rewrite diff is unreviewable — that argument is why this topic exists at
    all, and it applies just as much to a rewrite-plus-rewrite diff.
 
@@ -304,7 +331,7 @@ rapidgzip caveat existed four times and had drifted in two, because each copy wa
 against its neighbour rather than the spec. Splitting pass 1 by page reproduces the defect
 the review exists to remove.
 
-**Passes 2–4 split by *page*,** which §Suggested process step 8 already requires for
+**Passes 2–4 split by *page*,** which §Suggested process step 9 already requires for
 reviewable diffs.
 
 ### What to fan out
@@ -314,7 +341,7 @@ The test is input size against output size, not task size:
 | Work | Input | Output | Where it runs |
 |---|---|---|---|
 | Verifying one capability's claims against `src/` + `openspec/specs/` | Whole subsystems read to settle a dozen questions; throwaway | A dozen rows with `file:line` and a verdict | **Sub-agent.** The shape fan-out is good at |
-| Building the claim inventory (step 2) | All 15 pages at once | `claims.md` | **Coordinator.** Its value *is* seeing the same claim in four places; a worker holding one page cannot dedupe |
+| Building the claim inventory (step 3) | All 15 pages at once | `claims.md` | **Coordinator.** Its value *is* seeing the same claim in four places; a worker holding one page cannot dedupe |
 | Writing or rewriting a page | The page, its verified claims, the O-17 rules | The page | **Coordinator**, or one worker per page cluster. Context-light, and voice is what fan-out damages first |
 | The cross-page consistency check | The finished guide | A short findings list | **Coordinator**, and see below |
 
@@ -362,7 +389,7 @@ that is itself a finding — either the claim is wrong or the page is documentin
   reachable only by someone already reading the subsystem. That is these workers, once.
   **Cap it:** a bounded list per capability, no investigation, no chasing. A worker that
   starts researching a problem has stopped doing pass 1.
-- **The step-3 checkpoint is the fan-in.** A wrong split is cheap to correct there and
+- **The step-4 checkpoint is the fan-in.** A wrong split is cheap to correct there and
   expensive to correct after the prose is written.
 - **The cross-page consistency pass is mandatory, whatever the topology.** #223's round-2
   re-review found four contradictions the splits change had created *in a single pass by a
@@ -405,6 +432,7 @@ pause, and the record has to say which. The review is done when **all** of these
 
 | # | Done means |
 |---|---|
+| 0 | **`scope.md` exists**: every page has a stated job and an explicit out-of-scope list, and every §B worklist row is routed to the guide, the threat model, or a docstring (D-f) |
 | 1 | **Every checkable claim on every page is marked** verified / wrong / unverifiable in `claims.md`. No bare gaps. *Unverifiable* names its reason — format unavailable in the session, behaviour genuinely undecided, a spec question raised in `QUESTIONS.md` — and never means "not checked" |
 | 2 | **Every §B worklist row is written**, or dropped with a recorded reason that *supersedes* it — a decision, a duplicate, a page that turned out not to need it. "Ran out of time" is not one of those reasons |
 | 3 | **The guide is complete against `outline.md`**: 16 pages, `how-it-works.md` among them with its `documentation` spec delta, and the nav matching. **It does not wait on [Topic 10](../problem-catalogue/brief.md)** — D2 already names a source for each of its six sections (`VISION.md`, ADRs 0001/0002/0003/0006, `library-analysis.md`, the `backend-registry` spec, `dev-docs/decisions/`), and none of them is the catalogue. Cite whatever catalogue rows exist when the page is written; anything that lands later is a follow-up edit, not a blocker |
@@ -422,7 +450,8 @@ Then `docs-content/` and `../docs/` archive together (§Provenance sequencing no
 | File | Contents |
 |---|---|
 | `SUMMARY.md` | Headline, ranked findings (severity / page / status / disposition), and "what is actually fine" — including seeds that were non-issues and pages verified clean, so the next pass skips them |
-| `claims.md` | The step-2 claim table: every checkable claim, its `page:line`, the `src/`–`spec` line that settles it, and verified / wrong / unverifiable. This is the review's real artifact — the prose fixes are downstream of it |
+| `scope.md` | Pass 0's output: per-page job + explicit non-coverage, and the §B worklist re-derived under D-f with each row routed to guide / threat model / docstring. Written **before** `claims.md`, because a claim on a block that is about to move is not worth verifying |
+| `claims.md` | The step-3 claim table: every checkable claim, its `page:line`, the `src/`–`spec` line that settles it, and verified / wrong / unverifiable. This is the review's real artifact — the prose fixes are downstream of it |
 | `QUESTIONS.md` | Maintainer decisions with fix vehicle: the §D API-reference shape, O-12 (should an error message cite a document), anything where the code/spec/prose winner is not obvious |
 | Page PRs | One page or coupled pair each, against the re-tallied `outline.md` worklist |
 | Fix findings | For each library defect: `file:line`, the input that triggers it, the config it reproduces in, and a proposed vehicle. Not fixed here |
