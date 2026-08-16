@@ -5,6 +5,29 @@ and the diagnostics follow-ons `#233`–`#236` landed). The counterpart to the d
 review: that one decided **where each page lives**, this one decides **whether the page
 is right**.
 
+## Where the labels are defined
+
+This brief inherits five separate numbering schemes from four programmes. None of them
+is self-explanatory, and two of them collide, so look a label up rather than inferring
+it.
+
+| Label | Means | Defined in |
+|---|---|---|
+| **Topic 4–9** | Review *topics* — IDs, not an order. This review is Topic 8 | [`../backlog.md`](../backlog.md) — one `## Topic N` section each; Topic 8 at [`:169`](../backlog.md) |
+| **phase 1–4** | The docs IA review's process: audit → decide → execute → guardrail. All four are done | [`../docs/brief.md` §Suggested process](../docs/brief.md) (`:233-257`) |
+| **Phase 8, Phase 9** | *Capability implementation* phases — a different scheme entirely, about what the library builds and when, not about this review | [`openspec/project.md` §Implementation order](../../openspec/project.md) (`:83`) |
+| **D1–D11** | The IA review's maintainer decisions (unpublish `docs/internal/`, the ADR summary page, the Gotchas rule, `AGENTS`/`CLAUDE`, `dev-docs/` …) | [`../docs/DECISIONS.md`](../docs/DECISIONS.md) — one `## DN` section each |
+| **D-a–D-e** | Five later page-shape decisions taken *while* the splits were implemented (nav order, the `reading.md` split, the config screen, `extracting.md`'s name, the damage contract's home) | [`../docs/outline.md` §Decided](../docs/outline.md) (`:719-840`) |
+| **O-1–O-26** | Content observations recorded by the IA audit and handed here — **hyphenated** | [`../docs/observations.md`](../docs/observations.md) |
+| **O1–O9** | Threat-model residuals — the security gap register, **no hyphen**. O6 is nested-archive amplification, O9 is attacker-controlled bytes reaching the terminal | [`dev-docs/threat-model.md`](../../dev-docs/threat-model.md) (`:18-344`) |
+| **W1–W9** | Topic 9's pay list, all landed in #232 | [`../archive/2026-08-15-simplicity-consistency/WORKPLAN.md`](../archive/2026-08-15-simplicity-consistency/WORKPLAN.md) |
+| **finding N** | Numbered items in the two automated review rounds on #223, with their dispositions | [`../docs/outline.md` §Review disposition](../docs/outline.md) (`:669-718`, two rounds) |
+
+> **The collision worth knowing:** `O-16` is a *documentation* observation and `O6` is a
+> *threat-model* residual. The hyphen is the whole distinction, and this brief uses both.
+> Likewise "phase 3" is the IA review's execute phase while "Phase 8" is a capability
+> implementation phase — same word, unrelated schemes.
+
 ## The ask
 
 Judge the published guide against the code and fix it. The question is:
@@ -56,11 +79,11 @@ first because each pass makes the next one cheaper, never what to drop.
 | This review | Not this review |
 |---|---|
 | Accuracy of published prose vs shipped code and specs | Where pages live / nav shape (settled: [`../docs/DECISIONS.md`](../docs/DECISIONS.md) D1–D11, `outline.md` D-a–D-e) |
-| Writing the prose `outline.md` specifies and no merge could supply | Library behaviour changes (Topic 9 closed that class; new defects → separate PR) |
-| Register and concision on migrated maintainer prose (O-16 / O-17) | Decode-engine performance (Topic 6) |
-| Reference completeness — what a user cannot look up | Whether the docs *persuade* (Topic 7, the capstone) |
-| Triaging the maintainer registers the IA move left stale (O-9, O-15) | Re-litigating settled ADRs or archived review KEEPs |
-| A guardrail that makes accuracy a CI failure rather than a review | Feature work (salvage mode, `archive-writing`, Phase 8 blocked gzip) |
+| Writing the prose `outline.md` specifies and no merge could supply | Library behaviour changes ([Topic 9](../archive/2026-08-15-simplicity-consistency/brief.md) closed that class; new defects → separate PR) |
+| Register and concision on migrated maintainer prose ([O-16 / O-17](../docs/observations.md)) | Decode-engine performance ([Topic 6](../backlog.md)) |
+| Reference completeness — what a user cannot look up | Whether the docs *persuade* ([Topic 7](../backlog.md), the capstone) |
+| Triaging the maintainer registers the IA move left stale ([O-9, O-15](../docs/observations.md)) | Re-litigating settled ADRs or archived review KEEPs |
+| A guardrail that makes accuracy a CI failure rather than a review | Feature work (salvage mode, `archive-writing`, [Phase 8](../../openspec/project.md) blocked gzip) |
 
 ## Values (tie-breakers)
 
@@ -86,22 +109,24 @@ conflict, prefer the reading below.
   passes; it is not permission to stop after the first. `backlog.md`'s "if time forces a
   choice, do (1) alone" was written when this topic might have been squeezed against the
   release — it is not, so the fallback does not apply.
-- **Three outcomes, only one is a docs fix** (O-26). When prose and behaviour disagree,
+- **Three outcomes, only one is a docs fix** ([O-26](../docs/observations.md)). When prose and behaviour disagree,
   the code may be wrong, the spec may be wrong, or the prose may be wrong. Check the
   spec before rewriting the sentence. Softening the guide to match buggy code is the
   wrong half of the time — `#225` exists because four of these went the other way.
 - **The reader is a working developer, not an archive-format specialist.** Prose
   promoted from a threat model, an ADR or a capability spec is accurate and carries the
   wrong register. Plainer is not vaguer: "we can't tell which bytes are good" is both
-  plainer and more precise than "the prefix is best-effort salvageable" (O-17).
+  plainer and more precise than "the prefix is best-effort salvageable"
+  ([O-17](../docs/observations.md)).
 - **Silence is a claim too.** A behaviour a competent user will hit and the signature
   does not reveal is a documentation defect whether or not any sentence is wrong —
-  that is what `independent/must-explain.md` measures.
+  that is what [`../docs/independent/must-explain.md`](../docs/independent/must-explain.md)
+  measures.
 - **Write the record after the work, never before.** Three of the four findings in
-  #223's round-2 re-review were the same mistake: a decision recorded in the present
+  [#223's round-2 re-review](../docs/outline.md) were the same mistake: a decision recorded in the present
   tense ahead of the prose it depended on. A worklist and a record are different
   documents.
-- **Do not document an accident you could delete.** Topic 9's rule still applies; the
+- **Do not document an accident you could delete.** [Topic 9](../archive/2026-08-15-simplicity-consistency/brief.md)'s rule still applies; the
   vehicle is now a separate fix PR rather than this review.
 
 ## The surface being reviewed (measured at `d4668c3`)
@@ -157,10 +182,10 @@ paragraph is true.
 | **Diagnostics gained a written ceiling** (`#234`/`#235`, O-23 retired) | Admission ("only what the caller could not determine and can act on") and placement ("a structured per-item report is the sole carrier of per-item outcomes"). Any guide sentence implying diagnostics report caller usage is now contradicted by spec. | Rule is settled; prose unchecked |
 | **Topic 9's W1–W9** (`#232`, six changes + ADRs 0015–0017) | Six behavioural contracts changed at once — `format_availability().required_source`, metadata decoupled from declared seekability, bidi override rejection, strict archive EOF + trailing bytes, rewind redecode diagnostic. Each has a page that should mention it. | Method proven; unchecked page by page |
 | **`#225`'s four fixes** | Solid-archive password laziness, `format=` rejected on a directory, seekable (non-`Path`) size/CRC probes, close-on-reader-close. `formats.md` / `access-and-cost.md` describe all four areas. | Re-verify |
-| **Terminal escaping and threat-model O9** (`#236`) | CLI print sites escape archive-derived text; library log records still do not, registered as O9. `cli.md` (48 lines) is the thinnest page against the largest recent change to CLI output. | Unchecked |
+| **Terminal escaping and [threat-model O9](../../dev-docs/threat-model.md)** (`#236`) | CLI print sites escape archive-derived text; library log records still do not, registered as O9. `cli.md` (48 lines) is the thinnest page against the largest recent change to CLI output. | Unchecked |
 | **Every `python` block should run** | 35 blocks, none executed by CI. This is mechanically checkable and doubles as the pass-1 method: a block that no longer imports is an accuracy finding with a zero-judgement repro. | Ripe; see §Deliverables guardrail |
 
-**Apply the O-21 method to each claim, not each page:** find the line that implements the
+**Apply the [O-21](../docs/observations.md) method to each claim, not each page:** find the line that implements the
 behavioural claim, then check the branch where it does not hold. That method produced
 `#225`; reading pages for plausibility does not.
 
@@ -178,7 +203,7 @@ Verified still open at `d4668c3`:
 | `how-it-works.md` (~150, all six D2 sections) | **Does not exist.** The only page in the outline with no file, and the reason nav is 15 where the outline says 16 |
 | `install.md` (~45) | 34 lines, two sections; no `format_availability()` section, matrix not re-cut by extra |
 | `access-and-cost.md` (~55) | Has the AUTO threshold; **no measurement section** (`enable_measurement` / `IoStats` are public and unexplained), and §Checklist is a situation→API table, not the config-at-a-glance screen finding 4 asked for |
-| `extracting.md` (~90) | "What `TRUSTED` does not relax" **is** covered; the bounded-recursion **worked recipe** (O6) is still a one-paragraph pointer under Limits |
+| `extracting.md` (~90) | "What `TRUSTED` does not relax" **is** covered; the bounded-recursion **worked recipe** ([threat-model O6](../../dev-docs/threat-model.md), not observation O-6) is still a one-paragraph pointer under Limits |
 | `errors-and-diagnostics.md` (~55) | Grew +61 in `#235`; **no error-translation narrative** — `CONTRIBUTING.md`'s boundary contract (raw library/`OSError` translated, unrecognized propagate raw, `ArchiveyUsageError` deliberately outside the tree) is a user-facing promise the guide never states |
 | `opening-and-listing.md` / `reading-members.md` (~25 / ~35) | Largely written in `#224`; confirm the remainders (sources, `stream_members` lifetime, the `extract()` pipe note) rather than assuming |
 
