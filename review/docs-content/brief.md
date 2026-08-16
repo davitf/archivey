@@ -25,6 +25,11 @@ and the specification for most of it already exists in
 PRs, not only findings. The one hard exception is §Hard constraints' first rule — a
 **library** defect found while writing is never fixed inside a docs PR.
 
+**No budget, no target date** (maintainer, 2026-08-15: *"we'll do everything and take as
+long as needed"*). All four passes run to completion; §Definition of done says what that
+means concretely. The ranking below is a **sequence**, not a triage — it says what to do
+first because each pass makes the next one cheaper, never what to drop.
+
 ## Why now
 
 1. **The work stopped on purpose, and the reason has cleared.** Writing the guide kept
@@ -38,12 +43,13 @@ PRs, not only findings. The one hard exception is §Hard constraints' first rule
    bounded starting point — `fe6d4a7..d4668c3` — instead of "reread everything and
    hope". The pages were kept in sync opportunistically as those PRs landed (+226/−27
    lines across 9 files), but only on the surfaces each PR happened to touch.
-3. **Permanent URLs are the deadline.** `PLAN.md` item 6 (the `0.2.0` release bundle) is
-   the critical path, and `STATUS.md` ranks this review *before* more releases ship more
-   permanent URLs. Renaming or merging a page is free today and a redirect forever after.
+3. **Ordering against the release — not a deadline.** `STATUS.md` ranks this review
+   before more releases ship more permanent URLs: renaming or merging a page is free
+   today and a redirect forever after. That is an argument about *sequence*, and it is
+   not a reason to hurry or to cut a pass short.
 4. **Topic 7 is the capstone and should not re-find this.** The adoption review judges
-   whether the docs persuade. Every inaccuracy it would otherwise rediscover is budget
-   spent twice.
+   whether the docs persuade. Every inaccuracy it would otherwise rediscover is work
+   done twice.
 
 ## What this is / is not
 
@@ -76,8 +82,10 @@ conflict, prefer the reading below.
 
 ### Documentation addenda (not in VISION, but decide most calls here)
 
-- **An inaccurate doc is a bug; an unpolished one is not.** If budget forces a choice,
-  pass (1) alone is the review (`backlog.md`).
+- **An inaccurate doc is a bug; an unpolished one is not.** That is what orders the four
+  passes; it is not permission to stop after the first. `backlog.md`'s "if time forces a
+  choice, do (1) alone" was written when this topic might have been squeezed against the
+  release — it is not, so the fallback does not apply.
 - **Three outcomes, only one is a docs fix** (O-26). When prose and behaviour disagree,
   the code may be wrong, the spec may be wrong, or the prose may be wrong. Check the
   spec before rewriting the sentence. Softening the guide to match buggy code is the
@@ -117,18 +125,22 @@ reports *15 pages, all in nav; repo, site and anchor links all resolve*.
 
 ## The four passes, ranked
 
-`backlog.md:168` ranks these and the ranking is the plan. Do not bundle them — they have
-different value, different reviewers' instincts, and pass 4 is the one that expands to
-fill whatever budget is left.
+`backlog.md:168` ranks these and the ranking is the plan. All four run (§Definition of
+done). Do not bundle them: each one makes the next cheaper, and running them together is
+how a rewrite ends up arguing about a paragraph's structure before knowing whether the
+paragraph is true.
 
 1. **Accuracy vs the code.** Highest value; it is the pass this review exists for.
 2. **Gaps.** What does an adopting engineer look for and not find? Coordinate with
    Topic 7 (it asks whether the docs persuade; this asks whether they answer).
 3. **Register and concision.** Promoted, not polish — the material most needing it is
    the material carrying the safety claims (O-16 / O-17).
-4. **Remaining quality: examples, within-page structure.** Genuinely bikeshed-prone. Do
-   it last, and only on load-bearing pages (`index`, `extracting`, `formats`,
-   `opening-and-listing`, `reading-members`).
+4. **Remaining quality: examples, within-page structure.** Genuinely bikeshed-prone, and
+   in scope for **every** page. It goes last because on a page whose claims are still
+   unverified a structure argument is unfalsifiable — you are rearranging something you
+   do not yet know to be true. Start with the load-bearing pages (`index`, `extracting`,
+   `formats`, `opening-and-listing`, `reading-members`), where a wrong call costs most,
+   then finish the rest.
 
 ## Known seeds (light recon — deepen, do not re-derive from zero)
 
@@ -239,9 +251,12 @@ spans instead. That is also why the gap stays invisible until someone counts.
    silently on a spec/design discrepancy — pause and ask (`CONTRIBUTING.md`).
 5. **Then write the missing prose**, against the re-tallied §B worklist, `how-it-works.md`
    last of the large rows — it is the page whose absence keeps the docs review open.
-6. **Then the register pass** (O-17 rules), then quality (pass 4) only where budget
-   remains and the page is load-bearing.
-7. **Ship page-sized PRs.** One page, or one closely-coupled pair, per PR. A
+6. **Then the register pass** (O-17 rules) across every page carrying promoted maintainer
+   prose, then pass 4 across every page, load-bearing ones first.
+7. **Close the registers** — the O-15 `known-issues.md` triage and the O-9
+   `open-issues.md` refresh. They are the review's last unwritten deliverable and the
+   easiest to forget, because neither is a published page.
+8. **Ship page-sized PRs throughout.** One page, or one closely-coupled pair, per PR. A
    move-plus-rewrite diff is unreviewable — that argument is why this topic exists at
    all, and it applies just as much to a rewrite-plus-rewrite diff.
 
@@ -264,6 +279,25 @@ spans instead. That is also why the gap stays invisible until someone counts.
 - **Every claim removed from a page must land somewhere or be recorded as dropped.** The
   IA move lost facts twice (the ZIP UTF-8 bit-11 row, the `dev-docs/internal/` references)
   because "it is covered elsewhere" was asserted rather than checked.
+
+## Definition of done
+
+There is no budget and no date, so "we stopped here" is not a completion state — it is a
+pause, and the record has to say which. The review is done when **all** of these hold:
+
+| # | Done means |
+|---|---|
+| 1 | **Every checkable claim on every page is marked** verified / wrong / unverifiable in `claims.md`. No bare gaps. *Unverifiable* names its reason — format unavailable in the session, behaviour genuinely undecided, a spec question raised in `QUESTIONS.md` — and never means "not checked" |
+| 2 | **Every §B worklist row is written**, or dropped with a recorded reason that *supersedes* it — a decision, a duplicate, a page that turned out not to need it. "Ran out of time" is not one of those reasons |
+| 3 | **The guide is complete against `outline.md`**: 16 pages, `how-it-works.md` among them with its `documentation` spec delta, and the nav matching |
+| 4 | **Every page carrying promoted maintainer prose has had the register pass**, with the O-16 safety-claim class fixed first |
+| 5 | **Pass 4 is recorded per page** as done or deliberately skipped, with the reason. Silence about a page is not an outcome |
+| 6 | **The registers are triaged** — O-15 (`known-issues.md`) and O-9 (`open-issues.md`), both required follow-ups rather than optional ones |
+| 7 | **Every open observation** in `../docs/observations.md` is closed, transferred with a pointer, or parked with a recorded justification |
+| 8 | **The guardrail is in CI** — the 35 `python` blocks execute, and the §D API-reference decision has become a test rather than a preference |
+| 9 | **`SUMMARY.md` lists every page verified clean** under "what is actually fine", so the next review skips them instead of re-deriving them |
+
+Then `docs-content/` and `../docs/` archive together (§Provenance sequencing note).
 
 ## Deliverables
 
