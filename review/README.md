@@ -20,7 +20,7 @@ completed changes out of `changes/`.
 | Dir | Review | Status |
 |-----|--------|--------|
 | `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; phases 1–4 done (IA migrate, guide splits, guardrails). Stays in flight until `docs-content/` lands: its remaining deliverable is `how-it-works.md`, which D2 assigns to Topic 8. |
-| `docs-content/` | Documentation **content** (Topic 8) — accuracy vs the code, then gaps, then register | Brief 2026-08-15 at `d4668c3`. Commissioned once the library churn the prose was waiting on (`#225`, `#232`, `#233`–`#236`) had landed. |
+| `docs-content/` | Documentation **content** (Topic 8) — accuracy vs the code, then gaps, then register | Brief 2026-08-15 at `d4668c3`. Commissioned once the library churn the prose was waiting on (`#225`, `#232`, `#233`–`#236`) had landed. Pass 0 done: [`scope.md`](docs-content/scope.md) routes all 16 pages under D-f and re-derives the worklist (~455 → ~177 lines). Awaiting the step-4 steer before the claim inventory. |
 | `problem-catalogue/` | The **problem catalogue** (Topic 10) — every non-trivial problem the project has had to solve, stated solution-neutrally | Brief 2026-08-15 at `d4668c3`. Extraction and normalization over ~180 existing documents, not a new review. Runs in parallel with Topic 8 (disjoint sources) and feeds a later fresh-design comparison. |
 
 The round commissioned 2026-07-17 — the **non-security** pass toward the first public
