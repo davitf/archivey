@@ -65,6 +65,14 @@ Projected sizes, for sequencing rather than as targets:
 | `api.md` | 90 | 90 | unchanged |
 | `acknowledgements.md` | 98 | 98 | unchanged |
 
+> **Superseded in part by [D-f](#d-f--depth-within-a-page-is-a-decision-not-a-default-2026-08-16)
+> (2026-08-16).** These projections were built by asking what each page must *cover*, with no
+> rule for how deep to go — so they are ceilings derived from an unbounded premise, and the
+> `extracting.md` ~280 row is the clearest case: D-f targets **~110–130** for it, with the
+> adversarial rationale moving to `dev-docs/threat-model.md` and the lookups to docstrings.
+> Read this table as the *shape* of the guide (which pages exist, which grow, which shrink),
+> not as line targets. Re-derive the numbers under D-f before planning against them.
+
 ---
 
 ## 1. `index.md` — Home
@@ -837,6 +845,69 @@ footgun, not depth.
 Sizes: `reading-members` 129 → 84, `opening-and-listing` 90 → 76,
 `errors-and-diagnostics` 43 → 140. The third was the thinnest new page and its target
 was ~90; it is now filled with material that belongs on it rather than padding.
+
+### D-f — Depth within a page is a decision, not a default. **2026-08-16.**
+
+> *Maintainer: "this planned documentation, as described in the outline, is too large…
+> what actually affects the users, and what's just spelling out corner cases or
+> adversarial cases that most users don't need to know?"*
+
+**The diagnosis: the guide proves claims where it should state them.** `extracting.md` is
+228 lines, of which **6** are how to extract safely. §What is enforced is 56 lines and 11
+bullets citing `internal/filters.py`, `check_universal`, ADR 0013 and PRs #109/#123 — a
+threat-model inventory rendered as user documentation. §Policies is 70 lines in which the
+default `STRICT` gets two table rows while `abort_on` gets ~30, including `NAME_SANITIZED`,
+which the page itself calls *"a narrow escape hatch, not part of ordinary strict
+extraction"*. The escape hatch outweighs the default.
+
+D-d already supplied the principle and stopped one step short of applying it:
+`philosophy.md` says safety is *"a contract, not a marketing flag"*, and D-d removed the
+flag from the **filename**. A contract is **stated**; the evidence for it belongs where
+evidence lives. D4 made the same ruling once already — Gotchas is *"a footgun digest, not
+a format encyclopaedia."* This extends that rule to every page.
+
+**The test.** For each block: *does the reader do something differently after reading it?*
+
+| Answer | Destination |
+|---|---|
+| Yes — it changes what they write, configure, or expect | **The guide** |
+| No — it changes only how impressed they are | **`dev-docs/threat-model.md`** (or the spec / the test that already proves it) |
+| It is a lookup — a field, an enum member, a signature | **The docstring**, surfaced through `api.md` |
+
+**Why the docstring leg is not just relocation.** The types the guide explains at length
+have the thinnest docstrings: `ExtractionStatus` **1 line**, `ExtractionLimits` 3,
+`ExtractionResult` 5, `OverwritePolicy` 6, `AbortOn` 13 — against ~30 guide lines for
+`abort_on` alone. Moving a lookup to its docstring fills a real reference gap while
+draining a prose one, and it drifts less: a docstring sits beside the code, and O-2 is the
+standing proof that one fact written in four prose places goes stale in two.
+
+**Worked rulings**, so the test has calibration rather than only a definition:
+
+| Block | Ruling |
+|---|---|
+| "Path traversal, absolute paths, UNC, null bytes are rejected" | **Guide, as one clause** in the contract sentence. Not three lines with module paths |
+| "Symlink escapes, three layers"; "hardlinks resolved positionally"; "casefold+NFC tracking… ADR 0013 / PRs #109/#123" | **Threat model.** Nobody acts on the layer count |
+| Bidi overrides rejected, directional *marks* not, so Arabic/Hebrew names work | **Guide, shorter.** Someone with those filenames acts on it |
+| Leftover `.archivey-tmp-*` files are safe to delete | **Guide.** Operational, actionable, surprising |
+| `NAME_SANITIZED`, `abort_on` members, `ExtractionStatus` values | **Docstrings**, with the guide naming that `abort_on` exists and linking |
+| The 30-line `hashlib` dedupe loop in `formats.md` §Stored digests | **Cut to ~8.** The *matrix* is archivey knowledge and stays; the loop demonstrates that Python has `for`. Keep the use case visible via a Home recipe — VISION's founding use case is deduplicating messy backups, and visible ≠ a worked implementation |
+| `support-matrix.md` §Free-threaded Python, **105 lines — the guide's largest section** | **Not ruled here.** Flagged for the same test; it serves a small minority today |
+| `errors-and-diagnostics.md` §When an archive is damaged, 93 lines | **Keep.** D-e deliberately made this page the damage contract's home; the depth split is the point |
+
+**Targets.** `extracting.md` 228 → ~110–130. `formats.md` §Stored digests 49 → ~20. The
+guide as a whole lands nearer **~1 600–1 800** lines than the ~2 500 the worklist implied.
+
+**What this does and does not reopen.** D-a–D-e settled page *boundaries* — nav order, the
+`reading.md` split, `extracting.md`'s name, the damage contract's home. Those stand.
+**Depth within a page had never been decided by anything**, which is why the worklist grew
+by accretion: every true sentence had a claim on the page. This fills that gap rather than
+reversing a decision.
+
+**Consequence for §What merging cannot supply.** Its per-page estimates become **ceilings
+to re-derive, not floors to fill**. Several rows shrink or dissolve — a row whose content
+is a lookup is now a docstring task, and a row that is adversarial rationale is a
+threat-model task. Re-tally under D-f before planning against it (Topic 8 §Suggested
+process step 1).
 
 ## Still open
 

@@ -21,14 +21,19 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
   *after everything else is fully addressed*; it judges the finished library, not a
   work in progress.
 - **Topic 8** (documentation *content*) — accuracy / gaps / quality of the prose, after
-  the in-flight docs IA review has settled where each page lives.
+  the in-flight docs IA review has settled where each page lives. **Commissioned
+  2026-08-15** as [`docs-content/brief.md`](docs-content/brief.md).
 - **Topic 9** (simplicity & consistency) — **done**, archived as
   [`archive/2026-08-15-simplicity-consistency/`](archive/2026-08-15-simplicity-consistency/)
   (findings #230/#231; W1–W9 paid in #232; Q13 expansions #233–#236).
   **O2b/O2c** (solid decoder hold under concurrency) parked → `IDEAS.md`.
+- **Topic 10** (the problem catalogue) — **commissioned 2026-08-15** as
+  [`problem-catalogue/brief.md`](problem-catalogue/brief.md). Not a review; runs in
+  parallel with Topic 8 on disjoint sources.
 
 **Topic numbers are IDs, not an order.** Current intended sequence: docs IA (in
-flight) → **Topic 8** → **Topic 6** → **Topic 7** last. See [`STATUS.md`](STATUS.md).
+flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. See
+[`STATUS.md`](STATUS.md).
 
 ## Parked from archived deep reviews (2026-07 / 2026-08)
 
@@ -165,7 +170,12 @@ fully addressed. Two framings, usable together:
 This is judgement + gap analysis, not a bug hunt — closer to a product/positioning audit
 grounded in the code and docs. It likely produces roadmap items, not fixes.
 
-## Topic 8 — Documentation *content* (after the IA pass)
+## Topic 8 — Documentation *content* (after the IA pass) — **COMMISSIONED**
+
+**Commissioned 2026-08-15** as [`docs-content/brief.md`](docs-content/brief.md), at
+`d4668c3` — once the library churn the prose was waiting on had landed (`#225`,
+`#232`, `#233`–`#236`). The brief carries the measured surface, the seed list, and the
+four-pass ranking below. What follows is the original sketch, kept as provenance.
 
 **Why separate from the docs IA review** (`docs/brief.md`, in flight): that one decides
 where prose *lives*; this one judges whether the prose is *right*. Keeping them apart is
@@ -221,6 +231,30 @@ Findings from two independent passes (#230/#231); pay list W1–W9 implemented i
 
 Brief and seeds (historical):
 [`archive/2026-08-15-simplicity-consistency/brief.md`](archive/2026-08-15-simplicity-consistency/brief.md).
+
+## Topic 10 — The problem catalogue — **COMMISSIONED**
+
+**Commissioned 2026-08-15** as [`problem-catalogue/brief.md`](problem-catalogue/brief.md),
+at `d4668c3`. **Not a review** — an extraction and normalization pass over what the
+project already knows: one entry per non-trivial problem archivey has had to solve
+(format quirks, upstream library defects, security hazards, platform traps, usage
+patterns), stated so that someone who has never seen archivey could design against them.
+
+The material is already written across ~180 documents — 72 archived change proposals with
+a `## Why`, 57 `design.md` files, 17 ADRs, 11 review summaries, 8 investigations, the
+threat model, `known-issues.md`, `library-analysis.md`, and `dev-docs/history/`. Nothing
+collects them, so one problem is restated in three vocabularies and cannot be counted.
+
+**Problems, not decisions.** Each entry links to the decision that resolved it, in a
+separate strippable field — because the catalogue's second consumer is a **fresh-design
+comparison**: hand a frontier model the problems alone, ask for an architecture, and
+compare. That only works if the problems are stated without our vocabulary, so
+"how do we avoid copying bytes twice in the decoder stack" fails the test and
+"verifying a checksum and delivering bytes are the same read" passes.
+
+Runs **in parallel with Topic 8** — disjoint sources (that one reads `docs/` and `src/`,
+this one `dev-docs/` and the archives) — and takes the code-comment residue from Topic 8's
+capability workers, which is the only way to reach problems that never entered a register.
 
 ## Not a review — a feature gap to track separately
 

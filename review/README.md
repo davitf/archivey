@@ -19,7 +19,9 @@ completed changes out of `changes/`.
 
 | Dir | Review | Status |
 |-----|--------|--------|
-| `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; phases 1–3 largely done (IA migrate + guide splits). Topic 8 content prose still open; see `STATUS.md`. |
+| `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; phases 1–4 done (IA migrate, guide splits, guardrails). Stays in flight until `docs-content/` lands: its remaining deliverable is `how-it-works.md`, which D2 assigns to Topic 8. |
+| `docs-content/` | Documentation **content** (Topic 8) — accuracy vs the code, then gaps, then register | Brief 2026-08-15 at `d4668c3`. Commissioned once the library churn the prose was waiting on (`#225`, `#232`, `#233`–`#236`) had landed. |
+| `problem-catalogue/` | The **problem catalogue** (Topic 10) — every non-trivial problem the project has had to solve, stated solution-neutrally | Brief 2026-08-15 at `d4668c3`. Extraction and normalization over ~180 existing documents, not a new review. Runs in parallel with Topic 8 (disjoint sources) and feeds a later fresh-design comparison. |
 
 The round commissioned 2026-07-17 — the **non-security** pass toward the first public
 `0.2.0` — closed on 2026-07-28 when `debt-ledger/` and `performance/` were archived.
@@ -27,10 +29,11 @@ Topic 9 (`simplicity-consistency`) closed on 2026-08-15 after `#232` paid W1–W
 the diagnostics follow-ons (`#233`–`#236`) landed. Every finding there is fixed,
 accepted, or recorded as an explicit deferral.
 
-`backlog.md` holds what is left: Topic 8 (documentation *content*), Topic 6
-(decode-engine perf, + parked stream-layering Q4), Topic 7 (outside-in adoption
-capstone — the **capstone**, meaningful only once everything else is addressed), and
-the parked-from-archive table. `STATUS.md` records the intended ordering.
+Topic 8 (documentation *content*) was commissioned 2026-08-15 as `docs-content/`.
+`backlog.md` holds what is left after it: Topic 6 (decode-engine perf, + parked
+stream-layering Q4), Topic 7 (outside-in adoption capstone — the **capstone**,
+meaningful only once everything else is addressed), and the parked-from-archive
+table. `STATUS.md` records the intended ordering.
 
 Note that an empty `review/` does **not** mean `0.2.0` is ready: the release bundle
 (`PLAN.md` item 6 — packaging finalize, the free-threading support statement, the
