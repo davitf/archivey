@@ -35,31 +35,29 @@ which means the document does not state a problem at all.
 | 1. `dev-docs/history/` (5 files) | **complete** |
 | 2. `dev-docs/investigations/` (8) | **6 of 8** — three read in full; `adr-0014-investigation` and `ppmd-native-investigation-results` read selectively (the sections carrying problems not already in a register), with the method in their rows. Two PPMd files remain `unread — attributed`: headings scanned, every problem they state is carried by `known-issues.md`, but that is a summary's word rather than the primary document |
 | 3. Standing registers (4) | **complete** |
-| 4. Unsettled / parked (5) | **unread** |
+| 4. Unsettled / parked (5) | **complete** |
 | 5. `dev-docs/decisions/` (17 ADRs) | **complete** |
 | 6. `review/archive/*/SUMMARY.md` (11) | **complete** |
 | 7a. Archived proposal `## Why` blocks (72) | **complete** |
-| 7b. `design.md` files (57) | **unread** |
+| 7b. `design.md` files (57) | **unread** — the only §Sources group not yet opened |
 | 8. Topic 8 harvest | **outstanding** — see §8 |
 
-**Catalogue at this point: 140 entries**, with 462 entry-source attributions across 97
+**Catalogue at this point: 144 entries**, with 480 entry-source attributions across 100
 documents (3.3 documents per problem).
 
-**Next actions**, in order: the 57 `design.md` files (group 7b), the five parked/unsettled
-documents (group 4), and the two remaining PPMd investigations.
+**Next actions**, in order: the 57 `design.md` files (group 7b), then the two remaining PPMd
+investigations (group 2), then the harvest when it exists.
 
-**What group 7a confirmed about the prediction.** Reading all 72 `## Why` blocks added **12**
-entries and **41** new sources to entries that already existed — the dedupe working as
-predicted, and the reason those rows carry entry ids. The 12 new entries were concentrated in
-exactly the places a register summarises away: a codec's block structure defeating a bounded
-content probe (`FQ-27`), the ratio guard's denominator being absent in the configuration an
-attacker picks (`SEC-26`), and a short read being legal on a raw stream while every in-memory
-test double is full-count (`API-26`).
+**What the completed groups tell us about 7b.** The prediction recorded here before group 7a
+was read — that a group summarised by a register yields **more sources per existing entry than
+new entries** — held exactly: 72 `## Why` blocks produced 12 new entries and 41 new sources on
+existing ones. Group 4 then produced 4 entries from 5 documents, all of them *parked* problems
+that no register states as problems because the registers file them as ideas.
 
-**Group 7b (`design.md`) is expected to behave the same way**, and more so: a design document
-is downstream of its own proposal's `## Why`, so its forces are the ones just mined. Read it
-for *alternatives considered and why they lost*, which is where a problem the `## Why` stated
-loosely gets measured.
+Group 7b should behave like 7a, more so: a `design.md` sits downstream of its own proposal's
+`## Why`, so its forces are the ones already mined. Read it for **alternatives considered and
+why they lost** — that is where a problem the `## Why` stated loosely gets measured, and it is
+the one thing in the tree that records a force *against* a decision rather than for it.
 
 ---
 
@@ -70,10 +68,10 @@ so its problem statements are natively neutral.
 
 | Document | State | Entries |
 |---|---|---|
-| `history/ARCHITECTURE.md` | mined | `FQ-01`, `FQ-03`, `FQ-04`, `FQ-05`, `FQ-06`, `FQ-14`, `FQ-15`, `FQ-16`, `FQ-17`, `FQ-18`, `FQ-19`, `FQ-26`, `FQ-28`, `UL-20`, `SEC-01`, `SEC-02`, `SEC-03`, `SEC-04`, `SEC-20`, `SEC-25`, `SEC-26`, `PLAT-01`, `PLAT-02`, `PERF-01`, `PERF-02`, `PERF-07`, `API-03`, `API-04`, `API-06`, `API-07`, `API-08`, `API-10`, `API-11`, `API-28`, `PKG-01`, `PKG-04`, `PKG-05`, `PKG-09`, `CONC-02`, `CONC-04` |
+| `history/ARCHITECTURE.md` | mined | `FQ-01`, `FQ-03`, `FQ-04`, `FQ-05`, `FQ-06`, `FQ-14`, `FQ-15`, `FQ-16`, `FQ-17`, `FQ-18`, `FQ-19`, `FQ-26`, `FQ-28`, `UL-20`, `SEC-01`, `SEC-02`, `SEC-03`, `SEC-04`, `SEC-20`, `SEC-25`, `SEC-26`, `PLAT-01`, `PLAT-02`, `PLAT-07`, `PERF-01`, `PERF-02`, `PERF-07`, `PERF-12`, `API-03`, `API-04`, `API-06`, `API-07`, `API-08`, `API-10`, `API-11`, `API-28`, `PKG-01`, `PKG-04`, `PKG-05`, `PKG-09`, `CONC-02`, `CONC-04` |
 | `history/ASYNC.md` | mined | `PERF-06`, `API-10` |
 | `history/COMPARISON.md` | mined | `FQ-01`, `FQ-03`, `FQ-05`, `FQ-06`, `FQ-07`, `FQ-08`, `FQ-09`, `FQ-10`, `FQ-11`, `FQ-12`, `FQ-13`, `FQ-14`, `FQ-15`, `FQ-19`, `SEC-01`, `SEC-03`, `PLAT-03`, `PERF-01`, `PERF-02`, `API-02`, `API-03`, `API-04`, `API-05`, `API-08`, `PKG-06`, `PKG-07`, `CONC-02` |
-| `history/SPEC.md` | mined | `FQ-01`, `FQ-02`, `FQ-03`, `FQ-04`, `FQ-05`, `FQ-06`, `FQ-07`, `FQ-08`, `FQ-09`, `FQ-10`, `FQ-11`, `FQ-13`, `FQ-14`, `FQ-15`, `FQ-16`, `FQ-17`, `FQ-18`, `FQ-19`, `FQ-20`, `FQ-21`, `FQ-26`, `FQ-27`, `FQ-28`, `SEC-01`, `SEC-02`, `SEC-03`, `SEC-04`, `SEC-25`, `SEC-26`, `PLAT-01`, `PLAT-02`, `PLAT-03`, `PERF-01`, `API-01`, `API-02`, `API-03`, `API-04`, `API-05`, `API-06`, `API-07`, `API-08`, `API-10`, `API-11`, `API-12`, `PKG-01` |
+| `history/SPEC.md` | mined | `FQ-01`, `FQ-02`, `FQ-03`, `FQ-04`, `FQ-05`, `FQ-06`, `FQ-07`, `FQ-08`, `FQ-09`, `FQ-10`, `FQ-11`, `FQ-13`, `FQ-14`, `FQ-15`, `FQ-16`, `FQ-17`, `FQ-18`, `FQ-19`, `FQ-20`, `FQ-21`, `FQ-26`, `FQ-27`, `FQ-28`, `FQ-30`, `SEC-01`, `SEC-02`, `SEC-03`, `SEC-04`, `SEC-25`, `SEC-26`, `PLAT-01`, `PLAT-02`, `PLAT-03`, `PERF-01`, `API-01`, `API-02`, `API-03`, `API-04`, `API-05`, `API-06`, `API-07`, `API-08`, `API-10`, `API-11`, `API-12`, `PKG-01` |
 | `history/index.md` | no problem statement — triage router: a status table pointing at the four documents above, with a suggested-triage list. States no problem of its own |  |
 
 ## 2. `dev-docs/investigations/` — 8 files
@@ -81,7 +79,7 @@ so its problem statements are natively neutral.
 | Document | State | Entries |
 |---|---|---|
 | `investigations/adr-0014-investigation.md` | mined — §Seek and §`read_exact` read in full; the rest via headings, its conclusions already carried by ADR 0014 | `UL-06`, `API-16`, `API-17`, `API-18`, `API-19`, `API-26` |
-| `investigations/parallel-reader.md` | mined | `FQ-06`, `UL-03`, `PERF-06`, `CONC-01`, `CONC-03`, `CONC-04`, `CONC-05`, `CONC-06` |
+| `investigations/parallel-reader.md` | mined | `FQ-06`, `UL-03`, `PERF-06`, `PERF-12`, `CONC-01`, `CONC-03`, `CONC-04`, `CONC-05`, `CONC-06` |
 | `investigations/ppmd-exit-after-green-exploration.md` | unread — attributed; headings scanned, no problem absent from `known-issues.md` §exit-after-green found | `FQ-23`, `UL-08`, `UL-10` |
 | `investigations/ppmd-native-investigation-brief.md` | unread — attributed; headings scanned, no problem absent from `known-issues.md` §PPMd found | `FQ-23`, `UL-08` |
 | `investigations/ppmd-native-investigation-results.md` | mined — §B read in full; the rest via headings + `known-issues.md`, which carries its conclusions verbatim | `FQ-23`, `UL-08`, `UL-09`, `UL-10`, `UL-18` |
@@ -93,7 +91,7 @@ so its problem statements are natively neutral.
 
 | Document | State | Entries |
 |---|---|---|
-| `dev-docs/threat-model.md` (9 `O` entries) | mined | `FQ-17`, `UL-02`, `UL-14`, `SEC-01`, `SEC-03`, `SEC-05`, `SEC-06`, `SEC-07`, `SEC-08`, `SEC-09`, `SEC-10`, `SEC-11`, `SEC-12`, `SEC-13`, `SEC-18`, `SEC-23`, `SEC-24`, `PLAT-05`, `PERF-06`, `API-09`, `PKG-04`, `PKG-08`, `PKG-11`, `CONC-01`, `CONC-03`, `CONC-04`, `CONC-05` |
+| `dev-docs/threat-model.md` (9 `O` entries) | mined | `FQ-17`, `UL-02`, `UL-14`, `SEC-01`, `SEC-03`, `SEC-05`, `SEC-06`, `SEC-07`, `SEC-08`, `SEC-09`, `SEC-10`, `SEC-11`, `SEC-12`, `SEC-13`, `SEC-18`, `SEC-23`, `SEC-24`, `PLAT-05`, `PERF-06`, `API-09`, `API-29`, `PKG-04`, `PKG-08`, `PKG-11`, `CONC-01`, `CONC-03`, `CONC-04`, `CONC-05` |
 | `dev-docs/known-issues.md` (6 sections / 709 lines) | mined | `FQ-02`, `FQ-20`, `FQ-23`, `UL-01`, `UL-02`, `UL-03`, `UL-04`, `UL-05`, `UL-06`, `UL-07`, `UL-08`, `UL-09`, `UL-10`, `UL-15`, `UL-18`, `PKG-03`, `PKG-08`, `CONC-05` |
 | `dev-docs/library-analysis.md` (362 lines) | mined | `FQ-02`, `FQ-12`, `FQ-25`, `FQ-27`, `FQ-29`, `UL-04`, `UL-06`, `UL-07`, `UL-11`, `UL-12`, `UL-13`, `UL-19`, `PERF-02`, `PERF-03`, `PERF-04`, `PERF-05`, `PERF-11`, `PKG-02`, `PKG-03`, `PKG-06`, `PKG-07`, `PKG-10`, `PKG-11` |
 | `dev-docs/open-issues.md` (310 lines) | mined | `FQ-02`, `FQ-04`, `FQ-06`, `FQ-07`, `FQ-08`, `FQ-16`, `FQ-17`, `FQ-21`, `FQ-22`, `FQ-24`, `UL-01`, `UL-02`, `UL-05`, `UL-06`, `UL-08`, `UL-16`, `UL-17`, `UL-18`, `SEC-11`, `SEC-13`, `SEC-14`, `SEC-15`, `SEC-16`, `SEC-17`, `SEC-18`, `PLAT-03`, `PLAT-04`, `PLAT-05`, `PERF-02`, `PERF-04`, `PERF-05`, `API-01`, `API-04`, `API-06`, `API-13`, `API-14`, `API-21`, `API-22`, `PKG-04`, `PKG-08`, `CONC-02`, `CONC-03` |
@@ -102,11 +100,11 @@ so its problem statements are natively neutral.
 
 | Document | State | Entries |
 |---|---|---|
-| `dev-docs/IDEAS.md` | unread — attributed | `PLAT-05` |
-| `discussions/2026-08-diagnostics/diagnostics-archive-vs-usage.md` | unread — attributed | `API-09` |
-| `discussions/2026-08-diagnostics/reviewer-1-opinion.md` | unread — attributed |  |
-| `discussions/2026-08-diagnostics/reviewer-2-opinion.md` | unread — attributed |  |
-| `discussions/2026-08-diagnostics/reviewer-3-opinion.md` | unread — attributed |  |
+| `dev-docs/IDEAS.md` | mined | `FQ-30`, `PLAT-03`, `PLAT-05`, `PLAT-07`, `PERF-12` |
+| `discussions/2026-08-diagnostics/diagnostics-archive-vs-usage.md` | mined | `API-29` |
+| `discussions/2026-08-diagnostics/reviewer-1-opinion.md` | mined — outside comment on the document above; cited as its co-sources, states no further problem of its own | `API-29` |
+| `discussions/2026-08-diagnostics/reviewer-2-opinion.md` | mined — outside comment on the document above; cited as its co-sources, states no further problem of its own | `API-29` |
+| `discussions/2026-08-diagnostics/reviewer-3-opinion.md` | mined — outside comment on the document above; cited as its co-sources, states no further problem of its own | `API-29` |
 
 ## 5. `dev-docs/decisions/` — 17 ADRs
 
@@ -151,7 +149,7 @@ the other topics).
 | `2026-07-20-cli-product/SUMMARY.md` | mined — findings table + headline read; the per-theme files are not §Sources rows | `PLAT-06`, `API-22`, `API-23`, `API-27`, `API-28` |
 | `2026-07-28-debt-ledger/SUMMARY.md` | mined — findings table + headline read; the per-theme files are not §Sources rows | `PERF-09` |
 | `2026-07-28-performance/SUMMARY.md` | mined | `PERF-07`, `PERF-08`, `PERF-09`, `PERF-10` |
-| `2026-08-15-simplicity-consistency/SUMMARY.md` | mined | `FQ-20`, `FQ-26`, `UL-20`, `SEC-09`, `SEC-10`, `SEC-19`, `SEC-27`, `PERF-11`, `API-14`, `API-20`, `API-21`, `API-24`, `API-25`, `PKG-05`, `PKG-09` |
+| `2026-08-15-simplicity-consistency/SUMMARY.md` | mined | `FQ-20`, `FQ-26`, `UL-20`, `SEC-09`, `SEC-10`, `SEC-19`, `SEC-27`, `PERF-11`, `PERF-12`, `API-14`, `API-20`, `API-21`, `API-24`, `API-25`, `PKG-05`, `PKG-09` |
 
 ## 7. `openspec/changes/archive/*/` — 72 proposals with a `## Why`, 57 with a `design.md`
 
@@ -189,13 +187,13 @@ one. `n/a` in the design column means the change has no `design.md` — that is 
 | `2026-07-12-phase-4-tar-streaming` | mined | n/a |  |
 | `2026-07-12-promote-concurrent-member-streams` | mined | unread | `API-15` |
 | `2026-07-12-shared-source-streams` | mined | unread | `CONC-01` |
-| `2026-07-14-adversarial-string-corpus-contract` | mined | unread | `SEC-19` |
+| `2026-07-14-adversarial-string-corpus-contract` | mined | unread | `FQ-30`, `SEC-19` |
 | `2026-07-14-decompressor-stream-composition` | mined | unread | `UL-22` |
 | `2026-07-14-rar-blake2sp-verification` | mined | unread | `FQ-29`, `SEC-15` |
 | `2026-07-14-refactor-sevenzip-reader` | mined | unread |  |
 | `2026-07-14-stored-digest-dedupe-parity` | mined | unread |  |
 | `2026-07-14-vendor-unix-compress-lzw` | mined | unread | `PERF-05` |
-| `2026-07-14-zip-name-encoding-sniffing` | mined | unread | `FQ-07` |
+| `2026-07-14-zip-name-encoding-sniffing` | mined | unread | `FQ-07`, `FQ-30` |
 | `2026-07-15-atheris-harness-depth` | mined | unread | `SEC-18`, `SEC-23` |
 | `2026-07-15-benchmark-gate` | mined | unread | `PERF-09` |
 | `2026-07-15-extraction-progress-in-file` | mined | unread | `API-28` |
@@ -205,7 +203,7 @@ one. `n/a` in the design column means the change has no `design.md` — that is 
 | `2026-07-15-zip-native-codec-streams` | mined | unread |  |
 | `2026-07-16-cross-platform-name-safety` | mined | unread | `SEC-06`, `SEC-07` |
 | `2026-07-17-cli-v1` | mined | unread | `UL-21`, `API-23` |
-| `2026-07-18-partial-members-and-errors` | mined | unread | `FQ-28`, `PERF-04`, `API-16`, `API-22` |
+| `2026-07-18-partial-members-and-errors` | mined | unread | `FQ-28`, `PLAT-07`, `PERF-04`, `API-16`, `API-22` |
 | `2026-07-18-sevenzip-header-cursor-parse` | mined | unread |  |
 | `2026-07-19-clarify-extraction-status-names` | mined | unread | `FQ-24`, `API-27` |
 | `2026-07-19-decide-strict-archive-eof-default` | mined | unread | `UL-01`, `SEC-27` |
@@ -227,11 +225,11 @@ one. `n/a` in the design column means the change has no `design.md` — that is 
 | `2026-08-09-decouple-member-metadata-from-declared-seekability` | mined | unread | `PLAT-01`, `API-20` |
 | `2026-08-09-format-availability-required-source` | mined | unread | `API-25`, `PKG-01` |
 | `2026-08-09-reject-bidi-overrides-in-safe-extraction` | mined | unread | `SEC-19` |
-| `2026-08-09-review-diagnostics-batch` | mined | unread | `API-09` |
+| `2026-08-09-review-diagnostics-batch` | mined | unread | `API-09`, `API-29` |
 | `2026-08-09-rewind-diagnostic-redecode-cost` | mined | unread | `PERF-11`, `API-17` |
 | `2026-08-09-strict-archive-eof-trailing-bytes` | mined | unread | `FQ-20`, `SEC-27` |
 | `2026-08-15-escape-cli-log-records` | mined | n/a | `SEC-09` |
-| `2026-08-15-extraction-results-authoritative` | mined | unread | `API-09`, `API-22`, `API-27` |
+| `2026-08-15-extraction-results-authoritative` | mined | unread | `API-09`, `API-22`, `API-27`, `API-29` |
 
 ### Archived changes with no `proposal.md` — outside the denominator
 

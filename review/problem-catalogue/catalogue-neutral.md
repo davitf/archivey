@@ -633,6 +633,39 @@ algorithm is BLAKE2sp, the parallel tree mode of BLAKE2s.
 
 ---
 
+### FQ-30 — A name that is not valid UTF-8 and carries no encoding marker cannot be decoded correctly by any means
+
+**Problem.** FQ-07 is that formats do not dependably say what encoding a name is in. This is
+why that cannot be worked around. UTF-8 is self-checking: most byte sequences are not valid
+UTF-8, so a successful decode is near-conclusive evidence, and validating it is not a guess.
+Every legacy single-byte codepage is the opposite — latin-1, cp1252, cp437, cp850, the
+ISO-8859 family are all *total functions* over bytes. Each one decodes *any* input, just to
+different characters. There is no signal to prefer one over another, and the usual fallback,
+statistical detection, needs far more text than a filename provides: the non-ASCII portion is
+often one or two bytes.
+
+So for the genuinely legacy tail there is no oracle, and the choice is between an honest,
+visibly-undecodable, byte-exact rendering and a plausible-looking name that may be silently
+wrong and may not round-trip. The wrong guess is strictly worse than the garble, because the
+garble tells the user something is wrong and preserves the bytes.
+
+**Symptom.** A filename from an old archive renders with visible replacement characters or
+escapes, and there is no setting that fixes it — only settings that change which wrong name
+appears. Two different tools show two different plausible names for the same bytes and neither
+is verifiable.
+
+**Evidence.** `dev-docs/IDEAS.md` §"Opt-in legacy name-encoding detection", which states the
+undecidability directly: "Legacy detection has **no oracle**: latin-1 / cp1252 / cp437 /
+cp850 / ISO-8859-x are all total functions over bytes (each decodes *any* input, just to
+different characters), and filenames are far too short for statistical detectors
+(chardet / charset-normalizer) to be reliable — often 1–2 non-ASCII bytes." The three affected
+format families are enumerated there, including one whose header format "has no charset field
+at all". Contrast with the shipped case: the UTF-8 sniff "is *validation*, not guessing —
+UTF-8 is self-checking, so a clean decode is near-conclusive"
+(`2026-07-14-zip-name-encoding-sniffing`).
+
+---
+
 
 ## Security / hostile input
 
@@ -1256,7 +1289,9 @@ different filesystem than the archive described.
 
 **Evidence.** `dev-docs/history/SPEC.md:932` ("If hardlink creation fails (cross-device),
 fall back to copying"); `history/COMPARISON.md:180` (cross-device fallback to copy);
-`dev-docs/open-issues.md:236` ("Symlink-unsupported FS ≠ `tarfile` copy-through").
+`dev-docs/open-issues.md:236` ("Symlink-unsupported FS ≠ `tarfile` copy-through");
+`dev-docs/IDEAS.md` §"Configurable symlink-extraction behavior", naming the platforms (FAT,
+Windows without the privilege) and the established tool's silent copy-through.
 
 ---
 
@@ -1310,6 +1345,32 @@ successful command.
 **Evidence.** `review/archive/2026-07-17-cli/SUMMARY.md` finding F2: "piping `list` into
 `head` exits 1 with `[Errno 32] Broken pipe` noise — the `except BrokenPipeError` handler is
 dead code behind `except OSError`."
+
+---
+
+### PLAT-07 — How much space an extraction needs is not knowable, and how much is available is not stable
+
+**Problem.** Failing an extraction partway leaves a half-written tree, so knowing in advance
+whether it will fit is worth wanting. Neither side of the comparison is solid. The required
+side comes from declared uncompressed sizes, which are absent for some formats, and are
+attacker-controlled everywhere (SEC-22) — so a check built on them cannot be a safety control,
+only a convenience against an honest mistake. The available side is worse than approximate: it
+is racy and can be wrong in both directions. Transparent filesystem compression, sparse files,
+reflinks and block-level deduplication all mean the written bytes may consume less than their
+size; quotas and other writers mean the free figure moves between the check and the writes.
+Replacing existing files also changes the *net* delta, which a sum of member sizes does not
+model.
+
+**Symptom.** An extraction dies partway with the disk full, leaving a partial tree the caller
+has to clean up. Or a pre-flight check refuses an extraction that would have fit, or admits one
+that does not.
+
+**Evidence.** `dev-docs/IDEAS.md` §"Opt-in free-space pre-flight for extraction", which
+enumerates each reason it must be advisory: declared sizes "can be absent, wrong, or
+adversarial"; free space is "**approximate and racy**: transparent FS compression (btrfs/zfs),
+sparse files, reflink/dedupe, quotas, and other writers all move the target (TOCTOU)"; the
+total is "unknowable" for a single-file compressor with no reliable stored size or a piped
+archive; and overwrite changes the net delta.
 
 ---
 
@@ -2011,6 +2072,39 @@ distance".
 
 ---
 
+### PERF-12 — Reusing a decoder across accesses and serving concurrent accesses pull against each other on a solid block
+
+**Problem.** FQ-06 is that a solid block must be decoded from its start. This is the part that
+is a *choice* rather than a consequence. If the decoder is discarded after each access, then
+every access starts over, and in-order access costs exactly as much as reverse order — so what
+looks like a solid-format penalty is really a no-reuse penalty, and a format that happens to
+hold its stream open pays nothing for the same in-order walk. If instead one decoder is held and
+reused when the next request is at or ahead of its position, in-order walking becomes a single
+pass.
+
+But that is only simple while one access is live at a time. Serving two accesses into one solid
+block concurrently requires two decoder states, each with its own dictionary, each decoding
+from the block's start — so concurrency multiplies exactly the work reuse was introduced to
+avoid, and there is no configuration that gives both. Deciding what to keep when those accesses
+finish is a cache-design question (how many, which one, evicted how, owned by what, torn down
+when) that the single-access version does not have.
+
+**Symptom.** Walking every member of a solid archive by name costs several times a single
+sequential pass, and reversing the order changes nothing — which rules out "backward seeks are
+expensive" as the explanation. Meanwhile allowing two concurrent reads of one solid block
+silently doubles the bytes decompressed.
+
+**Evidence.** `dev-docs/IDEAS.md` §"Hold the solid-block decoder open across `open()` calls",
+both halves measured. The cost: on a single-folder solid 7z, "walking every member via `open()`
+costs **4.5× one pass** — and, because the underlying stream is not held, **in-order and reverse
+order cost the same**; this is not a backward-seek problem, it is a no-reuse problem", against a
+compressed tar which "*does* hold its stream" and "costs 1.0× in order". The concurrency half,
+on a 6-member single-folder solid 7z with a 1.2 MB payload: opening members 1 and 4
+simultaneously reports **1 400 000** bytes decompressed — "400 KB + 1 000 KB, i.e. **two
+independent decodes, each from the folder's start, live at the same time**".
+
+---
+
 
 ## API and usage pattern
 
@@ -2632,6 +2726,33 @@ progress "fires **once per member**, after the member is fully written … extra
 member shows a frozen bar that jumps by the whole member size in a single step at completion",
 and "the data to do better already exists" — the ratio guard is fed per copy chunk and
 maintains the running in-member figure "because the per-member ratio check needs" it.
+
+---
+
+### API-29 — Advisory events have two different subjects, and one escalation switch cannot serve both
+
+**Problem.** API-09 establishes that advisory conditions should be data rather than log lines.
+This is the distinction that emerges once they are: some advisories are about *the archive* —
+its name needed rewriting, its trailer was missing, its digest could not be checked — and some
+are about *the caller's request* — you passed an argument this format cannot use, the access
+pattern you chose is expensive. They are unrelated facts with unrelated audiences. A single
+channel with a single per-code escalation setting therefore makes "treat this as an error" mean
+two different things, and a caller who escalates broadly to catch damaged archives also
+escalates their own harmless argument choices.
+
+The problem compounds where an advisory duplicates a value the call already returns: the same
+fact then has two channels, and escalating the advisory turns a per-item outcome the caller was
+going to inspect into an exception that ends the operation.
+
+**Symptom.** Turning on strict handling to catch bad archives makes ordinary calls raise for
+reasons that are about the call, not the archive. And an event that also appears as a returned
+per-member result raises instead, so the caller's own handling of that result never runs.
+
+**Evidence.** `dev-docs/discussions/2026-08-diagnostics/diagnostics-archive-vs-usage.md`, whose
+title is the question — written to be read standalone, with the count: "**Eight of the
+twenty-two break it**", the taxonomy having grown from 15 codes to 22, and the consequence
+stated as "**`RAISE` means two unrelated things**" plus "Extraction has two parallel channels
+for the same facts". Three independent outside reviews of it are in the same directory.
 
 ---
 

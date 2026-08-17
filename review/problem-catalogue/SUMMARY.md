@@ -4,11 +4,11 @@
 > 2026-08-15 against `d4668c3` ([`brief.md`](brief.md)); §Sources' counts were verified
 > mechanically at the start of this pass and not re-derived.
 >
-> Seven of the nine source groups are complete. [`sources.md`](sources.md) records exactly
+> Eight of the nine source groups are complete; only the 57 `design.md` files remain unopened. [`sources.md`](sources.md) records exactly
 > where the pass stopped, and is the handoff — a fresh container keeps no memory of the
 > session.
 
-**140 entries**, one per non-trivial problem, each stated so that someone who has never seen
+**144 entries**, one per non-trivial problem, each stated so that someone who has never seen
 archivey could design against it.
 
 ## Headline
@@ -18,8 +18,8 @@ these problems, and nothing collected them — so one problem was restated in a 
 an ADR context section and a change proposal, in three vocabularies, and could not be counted.
 The dedupe is real and measurable: **FQ-01** (a member's true size is knowable only after its
 bytes are read) was stated in four documents and an ADR, in four vocabularies, and is now one
-row with five sources. Across the catalogue, the read sources supply **462 entry-source
-attributions for 140 entries** — an average of 3.3 documents per problem.
+row with five sources. Across the catalogue, the read sources supply **480 entry-source
+attributions for 144 entries** — an average of 3.3 documents per problem.
 
 What was *not* already written down anywhere is the **neutral phrasing**. Every source
 except `dev-docs/history/` describes problems in terms of the answer archivey built, and
@@ -39,15 +39,15 @@ Two things the extraction produced that were not asked for and are worth keeping
 
 | Category | Entries | The shape of what is in it |
 |---|---:|---|
-| Format quirk | 29 | What the formats specify and cannot express: late-bound sizes, indexes at the end or absent, solid compression, names with no declared encoding, duplicate and superseded names, zeros as a valid archive |
+| Format quirk | 30 | What the formats specify and cannot express: late-bound sizes, indexes at the end or absent, solid compression, names with no declared encoding, duplicate and superseded names, zeros as a valid archive |
 | Security / hostile input | 27 | Traversal and link escape, bombs and their false positives, listing-time exhaustion, name deception on the terminal and in display order, formats with no password verifier, argument injection into an external tool |
-| API and usage pattern | 28 | Where a uniform interface over unlike formats leaks: cost that varies by orders of magnitude, capabilities that are traps on some formats, verdicts delivered where nobody can act on them, partial failure |
+| API and usage pattern | 29 | Where a uniform interface over unlike formats leaks: cost that varies by orders of magnitude, capabilities that are traps on some formats, verdicts delivered where nobody can act on them, partial failure |
 | Upstream library defect | 22 | Silent truncation, infinite loops, process aborts, use-after-free in a codec's worker thread, one broad exception type for unrelated conditions, a finalizer that can never run |
-| Performance & memory | 11 | Solid re-decode, rewinds without an index, verification fused into the delivering read, bounded memory versus boundary-crossing cost, guards that measure the wrong quantity |
+| Performance & memory | 12 | Solid re-decode, rewinds without an index, verification fused into the delivering read, bounded memory versus boundary-crossing cost, guards that measure the wrong quantity |
 | Packaging & dependency | 11 | Optional native wheels, a codec's provider moving into the standard library, an external tool that may be a different program of the same name, a test corpus needing trialware |
-| Platform & filesystem | 6 | A stream that lies about seekability, path resolution that raises, links that cannot be made, metadata with no portable form |
+| Platform & filesystem | 7 | A stream that lies about seekability, path resolution that raises, links that cannot be made, metadata with no portable form |
 | Concurrency & lifetime | 6 | One byte source and two readers, one pipe carrying every member, streams outliving their reader, archive-wide limits versus workers |
-| **Total** | **140** | |
+| **Total** | **144** | |
 
 ## Coverage against §Sources
 
@@ -58,9 +58,9 @@ Two things the extraction produced that were not asked for and are worth keeping
 | `dev-docs/decisions/` | 17 | **complete** |
 | `review/archive/*/SUMMARY.md` | 11 | **complete** |
 | Archived proposals (`## Why`) | 72 | **complete** |
+| Unsettled / parked (`IDEAS.md`, `discussions/`) | 5 | **complete** |
 | `dev-docs/investigations/` | 8 | **6 of 8** — two read selectively, two `unread — attributed` |
-| Unsettled / parked (`IDEAS.md`, `discussions/`) | 5 | unread |
-| `design.md` files | 57 | unread |
+| `design.md` files | 57 | unread — the only §Sources group not yet opened |
 | Code residue (Topic 8's harvest) | — | **outstanding** (§Outstanding) |
 
 [`sources.md`](sources.md) carries the per-document state and, for each document, the entry
@@ -79,9 +79,16 @@ already existed. The 12 were concentrated exactly where a register summarises th
 away: a codec's block structure defeating a bounded content probe (**FQ-27**), a ratio guard
 whose denominator is absent in the configuration an attacker picks (**SEC-26**), and a short
 read being legal on a raw stream while every in-memory test double is full-count (**API-26**).
-The same is expected of the 57 `design.md` files, which are downstream of the `## Why` blocks
-just mined; they are worth reading for *alternatives considered and why they lost*, which is
-where a problem the `## Why` stated loosely gets measured.
+Group 4 then produced 4 entries from 5 documents, all of them **parked** problems that no
+register states *as problems*, because the registers file them as ideas — the undecidability of
+legacy name encodings (**FQ-30**), the tension between reusing a decoder and serving concurrent
+access on a solid block (**PERF-12**), the unknowability of how much space an extraction needs
+(**PLAT-07**), and advisory events having two different subjects (**API-29**).
+
+The 57 `design.md` files should behave like the proposals, more so: a design sits downstream of
+its own proposal's `## Why`, so its forces are the ones already mined. They are worth reading
+for **alternatives considered and why they lost** — the one place in the tree that records a
+force *against* a decision rather than for it.
 
 ## What the sources turned out **not** to contain
 
@@ -95,7 +102,7 @@ where a problem the `## Why` stated loosely gets measured.
   claim carries a measurement, an upstream citation, a pinning test or a `file:line`. The
   **unverified list is empty** — no entry had to be excluded for want of evidence, and no
   recollection needed recording separately. This is the single most useful property the
-  sources had, and it is why 140 entries could be admitted without a judgement call about
+  sources had, and it is why 144 entries could be admitted without a judgement call about
   any of them.
 - **Cross-format comparison is rare.** Problems are almost always recorded per format. Four
   entries exist only because a source happened to measure across formats at once —
@@ -143,7 +150,7 @@ spending a run.
 
 ## Unresolved problems
 
-Eleven entries record their answer as unresolved or partly unresolved, per §Definition of
+Fourteen entries record their answer as unresolved or partly unresolved, per §Definition of
 done #2. They are not new findings — each is already registered somewhere — but the catalogue
 is the first place they are visible together:
 
@@ -158,6 +165,9 @@ is the first place they are visible together:
 | **PKG-05** | A format's test column depends on a tool that cannot be shipped; the licensing call is the maintainer's |
 | **API-24** | The verify-everything primitive the library's own front-end hand-rolls |
 | **PERF-10** | Per-open fixed cost at 5–8× the standard library; the member-model build is recorded as actionable |
+| **PERF-12** | Holding a solid-block decoder open would turn a measured 4.5× walk into 1.0×, but two concurrent reads of one block mean two live decodes from its start. Direction agreed; the concurrency half is explicitly unbrainstormed |
+| **FQ-30** | Legacy single-byte name encodings have no oracle — every candidate decodes every input. The honest garble is the default and detection stays post-1.0 opt-in |
+| **PLAT-07** | How much space an extraction needs, and how much is available, are both unknowable enough that a pre-flight check can only ever be advisory |
 
 ## Outstanding
 
@@ -169,8 +179,9 @@ is the first place they are visible together:
    only by someone already reading the subsystem. Nothing here gates Topic 8, and Topic 8
    does not gate this — but this catalogue is incomplete without that group, and the
    capabilities are named in the harvest README.
-2. **Three source groups** (§Coverage), in order: the 57 `design.md` files, the five
-   parked/unsettled documents, and the two remaining PPMd investigations.
+2. **Two source groups** (§Coverage), in order: the 57 `design.md` files — the only §Sources
+   group not yet opened — and the two remaining PPMd investigations, whose problems reached
+   the catalogue through `known-issues.md` rather than from the primary documents.
 3. **The experiment has not been run.** [`experiment.md`](experiment.md) is the protocol and
    the grading rubric, written whether or not it is ever run (Definition of done #6). Its
    §Cheaper variants names the two subsets worth running on their own — the coverage probe is
@@ -181,7 +192,7 @@ is the first place they are visible together:
 | File | State |
 |---|---|
 | [`sources.md`](sources.md) | The inventory and coverage proof; the resumability record |
-| [`catalogue.md`](catalogue.md) | 140 entries, all four fields |
+| [`catalogue.md`](catalogue.md) | 144 entries, all four fields |
 | [`catalogue-neutral.md`](catalogue-neutral.md) | Fields 1–3, **derived** by `scripts/derive_neutral_catalogue.py` |
 | [`experiment.md`](experiment.md) | The protocol and rubric; not run |
 | [`harvest/`](harvest/) | Outstanding — README only |
