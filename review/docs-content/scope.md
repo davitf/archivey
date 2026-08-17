@@ -263,10 +263,17 @@ This page is D-f's worked case, so the routing is given block by block.
 | `218-223` external `unrar` is in your trust boundary; extract-then-promote | **Keep** | Both operational |
 | `225-228` §Diagnostics pointer | **Keep** | |
 
-**Where the 108 lines go.** ~46 → `dev-docs/threat-model.md` (verify each has a home there
-before deleting — hard constraint); ~26 → docstrings; ~10 → `errors-and-diagnostics.md`;
-~14 dropped as duplicates with the receiving home named above; ~12 added back as the
-recursion recipe.
+**Where the lines go.** Summed from the per-block rulings above, ~**82** lines leave their
+current form: ~32 → `dev-docs/threat-model.md` (verify each has a home there before
+deleting — hard constraint); ~25 → docstrings; ~2 → `errors-and-diagnostics.md`; ~8 dropped
+as duplicates with the receiving home named above; ~15 absorbed into the one-clause
+rewrites that stay on the page. Nothing comes back — the recursion recipe I had routed
+inbound is dropped by Q5.
+
+**So routing alone lands the page at ~145, not inside D-f's ~110–130.** Said plainly rather
+than rounded away: the band is reached once pass 3 runs O-17 on what survives, and this page
+carries more promoted maintainer prose than any other. Pass 0 must not pre-spend that — the
+same reasoning as §Arithmetic below, applied to the page D-f measured.
 
 ---
 
@@ -354,7 +361,7 @@ per-field lookups (→ docstrings, once §D is settled); the trap digest (→ `g
 
 | Block | Ruling | Note |
 |---|---|---|
-| `6-32` §The exception tree — the `except ArchiveyError` example + 7-row subtype table | **Keep** | It reads like a lookup, and §D is why it is not: 21 of the 25 exception types have **no `api.md` entry**, so this table is the only reference that exists. **Coupled to §D** — if §D enumerates the exception tree in `api.md`, revisit this table then, and not before |
+| `6-32` §The exception tree — the `except ArchiveyError` example + 7-row subtype table | **Keep** | It reads like a lookup, and §D is why it is not: 21 of the 26 exception types have **no `api.md` entry** (counted: 27 `*Error` names in `__all__`, less `OnError`, which is an enum; `api.md` lists five), so this table is the only reference that exists. **Coupled to §D** — if §D enumerates the exception tree in `api.md`, revisit this table then, and not before |
 | `33-39` `ArchiveyUsageError` is outside the tree | **Keep** | must-explain #1. The single most consequential fact about the hierarchy |
 | `41-46` §Diagnostics intro — queryable, not log-only | **Keep** | |
 | `48-62` the 7-row "said with a diagnostic" table | **Keep the table; trim the cells** | **Softened after #241**, which ruled it Keep outright on the ground that each code changes whether a caller escalates or ignores. That is right about the *table* — it is the escalation decision surface, not a glossary — so it stays. What still leaves is the multi-sentence justification inside three cells (`EMPTY_ARCHIVE`'s tar-is-all-zeros argument is written in three places: here, `gotchas.md:91-104`, and the code); reference-grade wording for each code belongs on `DiagnosticCode`'s members, which `api.md` renders |
@@ -638,11 +645,15 @@ became negative is exactly the stale-worklist failure #223's round-2 finding 5 n
 **Row 2 half-dissolves.** The `format_availability()` work split in two when `#232` landed
 `required_source`: the comparison recipe is written, on `opening-and-listing.md:70-85`, and
 must not be written a second time here. What is left is the support level — FULL / PARTIAL /
-NONE and `missing` (must-explain #15), ~10 lines. The second half, **"matrix not re-cut by
-extra", dissolves outright**: `formats.md:8-20` already carries Core?/Extra columns and
-`acknowledgements.md:63-68` already carries extra→packages. A third cut of the same data is
-the O-2 shape — one fact in four places, stale in two — and this pass is supposed to be
-removing those, not adding one.
+NONE and `missing` (must-explain #15), ~10 lines.
+
+The second half — "matrix not re-cut by extra" — **I had dissolved, and the maintainer
+restored it** (Q4). My argument was that `formats.md:8-20` already carries Core?/Extra
+columns and `acknowledgements.md:63-68` already carries extra→packages, so a third cut is
+the O-2 shape: one fact in several places, stale in two. The decision accepts a **bounded**
+version of that duplication because neither existing table is organised by what the reader
+types, which is `install.md`'s whole job. **Outstanding work: a four-row extra → formats
+re-index, ~12 lines**, with no capability columns and `formats.md` still authoritative.
 
 **Row 3 splits three ways.** ON-vs-AUTO **shipped** (`access-and-cost.md:118-123`, the
 `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` threshold). Measurement stays **guide**, ~8 lines,
@@ -654,13 +665,14 @@ for "a configuration reference home"; under D-f that home is the class, not a sc
 prose page. The situation→API checklist already on the page (`179-188`) is the actionable
 half and stays.
 
-**Row 4 loses its largest sub-row.** "What `TRUSTED` does not relax" is **written twice** —
-`extracting.md:59-65` and, better, `ExtractionPolicy.__doc__:47-56`. The row is closed; the
-open work is the bounded-recursion worked recipe (threat-model O6 — still a one-paragraph
-pointer at `203-206`) and the config-ceiling rule (must-explain #8: `extract_all(config=)`
-cannot raise the listing ceiling set at open time), ~3 lines. Note the asymmetry this row
-now carries: `extracting.md` is simultaneously the **largest cut** on the guide (−108) and a
-row that still adds ~15.
+**Row 4 loses two of its three sub-rows.** "What `TRUSTED` does not relax" is **written
+twice** — `extracting.md:59-65` and, better, `ExtractionPolicy.__doc__:48-56` — so that
+sub-row is closed. The bounded-recursion worked recipe is **dropped by decision** (Q5): the
+paragraph at `203-206` plus `gotchas.md:41-44` is the guide's coverage, and the
+amplification analysis stays threat-model O6's. **All that remains is the config-ceiling
+rule** (must-explain #8: `extract_all(config=)` cannot raise the listing ceiling set at open
+time), **~3 lines**. Note the asymmetry: `extracting.md` is the **largest cut** on the guide
+(~−82) and still adds those three lines.
 
 **Row 5 keeps one clause of five.** Diagnostics-as-data **shipped** (`41-46`); policy
 **shipped** (`80-107`, `strict()` / `pedantic()` and the five exclusions); limits-vs-filters
@@ -670,27 +682,32 @@ knowing" **dissolves to → DS** — a per-code "what this means" table is a loo
 user-facing promise: `CONTRIBUTING.md:221-230`'s boundary contract appears in no published
 sentence, and a caller writing `except` clauses acts on every part of it.
 
-**Three rows are new**, and two of them were reachable only by doing this pass. Row 7 sits in
-`outline.md` §10 but never reached the §B table, so a worklist-driven writer would have
-missed it. Row 8 exists *because* D-f cuts the `formats.md` loop and names Home as the
-receiver — the cut is not complete without it. Row 9 comes from §A's `#236` seed: a
-caller-visible contract that two specs require and no page states.
+**Four rows are new**, and three of them were reachable only by doing this pass. Row 7 sits
+in `outline.md` §10 but never reached the §B table, so a worklist-driven writer would have
+missed it. Row 8 was proposed *because* D-f cuts the `formats.md` loop and names Home as the
+receiver; **it is dropped by decision** (Q6) and stays in the table at zero rather than
+disappearing, so the drop is visible rather than silent. Row 9 comes from §A's `#236` seed:
+a caller-visible contract that two specs require and no page states. Row 10 came from the
+second pass (#241): `gotchas.md:90` links to `formats.md#iso-9660` for the process-global
+pycdlib patch, and the landing is silent.
 
 ## Arithmetic, stated honestly
+
+Summed from the per-page rulings, not from a computed diff — every figure below is an
+estimate carrying the tolerance of ~40 blocks ruled *trim* without a line count:
 
 | | Lines |
 |---|---:|
 | Guide today | 2 108 |
 | New prose (the re-derived worklist) | +174 |
-| Routed out — → TM, → DS, → page, Cut | ≈ −300 |
-| **After pass 0's routing** | **≈ 1 982** |
+| Routed out — → TM, → DS, → page, Cut | ≈ −275 |
+| **After pass 0's routing** | **≈ 2 007** |
 
 D-f projects the finished guide at **~1 600–1 800**. Routing alone does not get there, and
-the gap is not a disagreement: about 40 blocks above are ruled **Trim** rather than moved —
-they stay in the guide, shorter. That shrink is O-17's 20–30% on promoted maintainer prose,
-and it is **pass 3's**, not pass 0's. Counting it here would spend it twice and would put a
-size target on a pass whose output is supposed to be routing decisions. Routing lands
-~1 985; the register pass lands the band.
+the gap is not a disagreement: those ~40 **Trim** blocks stay in the guide, shorter. That
+shrink is O-17's 20–30% on promoted maintainer prose, and it is **pass 3's**, not pass 0's.
+Counting it here would spend it twice and would put a size target on a pass whose output is
+supposed to be routing decisions. Routing lands ~2 007; the register pass lands the band.
 
 ---
 
@@ -698,10 +715,11 @@ size target on a pass whose output is supposed to be routing decisions. Routing 
 
 For the step-4 checkpoint, the short read:
 
-1. **`extracting.md` carries 36% of the total reduction** (−108 of ~300), and 46 of those
-   lines are one ruling: §Trust boundaries plus §What is enforced are a threat-model
+1. **`extracting.md` carries about 30% of the total reduction** (~−82 of ~275), and ~52 of
+   those lines are one ruling: §Trust boundaries plus §What is enforced are a threat-model
    inventory that was rendered as user documentation. This is D-f's own worked case and the
    routing agrees with it block for block, including both directions on the bidi paragraph.
+   Routing alone leaves the page near ~145; D-f's ~110–130 band needs pass 3 as well.
 2. **The docstring leg is a `src/` writing task, not a move** (§Precondition). The prose
    largely exists as `#` comments that mkdocstrings drops on the floor. This is the single
    most consequential thing this pass found, because six rulings depend on it and because
