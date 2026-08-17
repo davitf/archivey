@@ -932,7 +932,16 @@ different characters), and filenames are far too short for statistical detectors
 format families are enumerated there, including one whose header format "has no charset field
 at all". Contrast with the shipped case: the UTF-8 sniff "is *validation*, not guessing —
 UTF-8 is self-checking, so a clean decode is near-conclusive"
-(`2026-07-14-zip-name-encoding-sniffing`).
+(`2026-07-14-zip-name-encoding-sniffing`), whose `design.md` records the detector
+investigation: both candidate libraries "are tuned for *documents* (paragraphs)", "frequently
+disagree on short strings", and "can even override a valid-UTF-8 string with a legacy guess —
+strictly worse", with one of them under a copyleft licence besides.
+
+An off-the-shelf statistical detector does not rescue this and can make it worse: it may
+override a *valid* UTF-8 string with a legacy guess, which is strictly worse than the case
+already handled correctly. And the honest approach has its own residual — a short legacy byte
+run that is coincidentally valid UTF-8 decodes as UTF-8 — which is rare and still better than
+the alternative for the common case.
 
 **Answer today.** The honest garble is the default: undecodable bytes survive as an escaped,
 byte-exact, round-trippable rendering, and the verbatim stored bytes are retained so any later
@@ -946,6 +955,43 @@ the raw bytes are already captured), never phoned home, because filenames are se
 **Sources.** `dev-docs/IDEAS.md` §Backends & format coverage;
 `openspec/changes/archive/2026-07-14-zip-name-encoding-sniffing/`; `history/SPEC.md` §4.4;
 `openspec/changes/archive/2026-07-14-adversarial-string-corpus-contract/`.
+
+---
+
+### FQ-31 — A file of concatenated compressed members has a trailer per member, not one for the file
+
+**Problem.** Several single-stream compressed formats are legally concatenated: a gzip file may
+be many complete gzip members end to end, and decompressing it yields their outputs joined.
+Each member carries its own trailer, so the file has *n* checksums and *n* lengths, and the last
+one describes only the last member. Presenting the whole file as one logical member therefore
+leaves no honest value for its checksum: the final trailer is the wrong answer, and combining
+them requires knowing where the boundaries are — which the format does not index and a
+random-access index does not record (UL-07).
+
+**Symptom.** A digest read cheaply from a compressed file's trailer matches only files that
+happen to contain exactly one member, and silently describes a suffix of the data for every
+other file. A caller using stored digests to identify content without decompressing gets a
+value that is not a digest of what they will receive.
+
+**Evidence.** RFC 1952 §2.2 ("a gzip file consists of a series of 'members'"). Stated as the
+constraint in
+`openspec/changes/archive/2026-07-14-stored-digest-dedupe-parity/design.md`: "A concatenated
+multi-member gzip's final trailer CRC covers only the last member; a single `Member` cannot
+honestly carry it. Reuse the existing member-count detection from the truncation backstop:
+surface `crc32` iff exactly one member, else omit."
+
+**Answer today.** The stored digest is surfaced only when the file is a single member, and
+omitted otherwise, using the same member-count scan the truncation backstop needs (UL-06,
+UL-07); the multi-member sum is deferred. For the sibling format whose trailers *are* walked by
+an index, the per-member checksums are combined into one whole-member digest
+(`2026-07-19-surface-stored-stream-digests`). The related decision not to surface one
+format's checksum at all is recorded there too: that wrapper has no size fields, so a
+last-four-bytes peek cannot be known to describe the whole synthetic member under
+concatenation or trailing junk.
+
+**Sources.** `openspec/changes/archive/2026-07-14-stored-digest-dedupe-parity/`;
+`openspec/changes/archive/2026-07-19-surface-stored-stream-digests/`;
+`library-analysis.md` §gzip; `known-issues.md`; `open-issues.md` §Docs.
 
 ---
 
@@ -1328,7 +1374,13 @@ of a multi-password archive costs a full read of members rather than a header ch
 **Evidence.** `dev-docs/open-issues.md` §Irreducible ("ZipCrypto multi-password + STORED
 confirmation cost (~1/256 false open → CRC scan)"); ZIP APPNOTE §7 (traditional PKWARE
 encryption, 12-byte header with a one-byte password check). Specified in
-`openspec/changes/archive/2026-07-11-zip-multipassword-disambiguation/`.
+`openspec/changes/archive/2026-07-11-zip-multipassword-disambiguation/`, whose `design.md`
+explains why the cost lands on *stored* members specifically: a wrong key hands a
+**decompressor** high-entropy garbage, which each codec rejects within a few bytes for
+structural reasons — deflate hits an invalid block type, invalid code lengths, or a
+stored-block length/complement mismatch; bzip2's stream and block magic fail immediately; raw
+LZMA's properties bytes and range coder reject early. A member stored uncompressed has no
+decompressor to do that, so only the whole-stream checksum discriminates.
 
 **Answer today.** Password disambiguation falls back to a checksum scan when the cheap check
 is inconclusive, with the cost documented rather than hidden
@@ -1766,6 +1818,11 @@ confirmed on CI and pinned by `tests/test_stream_inputs.py:585`
 (`test_windows_pipe_seek_characterization`). POSIX `lseek` on a FIFO fails with `ESPIPE`.
 The resolution is a file-type check via `fstat`
 (`src/archivey/internal/streams/streamtools/binaryio.py:96-107`).
+
+A corollary constrains any fix: wrapping a non-repositionable source in a buffer to make it
+repositionable makes the wrapper answer the capability question for itself rather than for the
+stream underneath, so the caller is told something untrue about their source
+(`2026-08-01-short-read-source-contract/design.md`).
 
 **Answer today.** A single predicate answers seekability: the stream's own claim is
 confirmed against the underlying file type, and a FIFO or character device overrides the
@@ -2592,6 +2649,11 @@ implemented at least three different ways across these classes … (the non-bloc
 is handled in some and not others)"; and "`io.RawIOBase`'s defaults are the wrong way round for
 these wrappers … so every read-only wrapper must override `readable()→True`,
 `writable()→False`, and provide a `readinto`."
+
+A second-order consequence: the standard buffered wrapper *requires* the fill-a-buffer
+primitive, so an object implementing only the read method cannot be buffered at all — which
+bites test doubles written to the simpler shape, making a correct fix look broken
+(`2026-08-01-short-read-source-contract/design.md`).
 
 **Answer today.** One shared read-only base inverts the relationship once — deriving the
 buffer primitive and read-everything from the subclass's read — and fixes the read-only
@@ -3883,6 +3945,43 @@ making per-member extraction results the sole authoritative record
 `openspec/changes/archive/2026-08-09-review-diagnostics-batch/`;
 `openspec/changes/archive/2026-08-15-extraction-results-authoritative/`;
 `threat-model.md` C2.
+
+---
+
+### API-30 — Guaranteeing a full-count read and salvaging a truncated prefix are the same call
+
+**Problem.** These two requirements are individually right and collide at one call site. A
+source may legally return fewer bytes than asked for (API-26), so a parser needs a layer that
+gathers across short returns before it can trust a fixed-size read. But a *decoder* returns
+short for a different reason — the data ended early — and the contract there is to deliver the
+recoverable prefix and raise on the next read (PERF-04, API-16). A gathering layer cannot tell
+the two apart from the return value alone: it sees a short return in both cases. Make it
+gather, and it keeps asking a truncated decoder for more until the decoder raises — which pulls
+the error into the first call and discards the prefix that was the point. Do not make it
+gather, and the parser above it misreads a legal short read as the end of the archive.
+
+**Symptom.** Fixing the short-read case silently destroys truncation salvage: a read over a
+damaged member that previously returned a few hundred recoverable bytes returns nothing and
+raises immediately instead.
+
+**Evidence.** Measured in
+`openspec/changes/archive/2026-08-01-short-read-source-contract/design.md`: making every sized
+view gather "collapses the deliver-then-raise truncation shape ADR-0014 requires — measured on
+a slice over a truncated xz/gzip/zlib decoder, the recoverable prefix went from 201/247/248
+bytes to zero, with [the truncation error] pulled into the first call." The colliding
+requirements are ADR 0014 (full-count reads, and verdicts from reads) and the raw-stream
+up-to-n contract (API-26).
+
+**Answer today.** The two are separated by *where* the guarantee is installed rather than by
+trying to distinguish the returns: gathering happens in a buffer placed in front of the source,
+which is the layer that has the latitude problem, while a view sitting directly over decoder
+output stops on the first short non-empty return and preserves the prefix. ADR 0014 anticipated
+this and prescribed the remedy used — an inner layer of this kind "needs a buffer in front".
+`2026-08-01-short-read-source-contract`.
+
+**Sources.** `openspec/changes/archive/2026-08-01-short-read-source-contract/`; ADR 0014;
+`investigations/adr-0014-investigation.md`;
+`openspec/changes/archive/2026-07-24-gzip-zlib-truncation-recovery/`.
 
 ---
 
