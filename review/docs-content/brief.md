@@ -410,6 +410,16 @@ that is itself a finding — either the claim is wrong or the page is documentin
 - **`review/README.md` conventions and the VISION tie-breakers apply.**
 - **No library changes in a docs PR.** However small, however obviously right. It becomes
   a finding with a runnable repro and its own red–green PR; `#225` is the shape.
+
+    **Amended 2026-08-17** ([`scope.md` Q1](scope.md), maintainer decision): this rule is
+    about **behaviour**, not about the `src/` directory. A docs PR **may** touch `src/`
+    solely to add or reword a **docstring** or attribute docstring — with no change to any
+    statement, signature, default, annotation or control flow — and should say so in its
+    body, naming the guide block it drains. D-f routes lookups to the docstring, and pass 0
+    found that the depth being routed there currently sits in `#` comments that
+    mkdocstrings does not render, so the move is a small write rather than a relocation.
+    Everything else remains `#225`'s shape, including a one-character behaviour fix noticed
+    while writing the docstring.
 - **Do not weaken a safety or honesty claim to make a page read better.** If a guarantee
   is narrower than the prose says, narrow the prose *and* say what the reader should do
   instead — O-16's fix, not a deletion.
