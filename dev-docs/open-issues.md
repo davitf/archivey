@@ -289,13 +289,29 @@ nor `DIRECTORY`. Original write-up below.
   `open_stream(format=…)`, which publicly accepts `StreamFormat | ArchiveFormat`
   (`src/archivey/core.py:374`): a caller holding a `StreamFormat` for that call may pass the
   same value here, and an untyped project gets no warning.
-- **Open question:** raise `ArchiveyUsageError` for an argument that is not an
-  `ArchiveFormat`; or accept `StreamFormat` and resolve it to its `RAW_STREAM` pair, on the
-  symmetry argument that `open_stream` already takes both; or leave it to the type checkers
-  and close this as won't-fix. The first is cheapest and matches ADR 0012. The second is a
-  public-surface widening and should not be taken casually pre-`0.2.0`. The third is
-  defensible precisely because the checkers do catch it — and is the option the original
-  filing hid by overstating the problem.
+- **DECIDED 2026-08-17 (maintainer): restrict to `ArchiveFormat` and raise a usage error
+  on any other type.** Not a public-surface widening — `open_stream` keeps accepting
+  `StreamFormat | ArchiveFormat` because a raw stream genuinely has no container, and that
+  asymmetry is the point rather than an inconsistency. Rejected: accepting `StreamFormat`
+  here and resolving it to the `RAW_STREAM` pair (widens the surface pre-`0.2.0` for a
+  caller error), and closing won't-fix (the field-type violation is real even though the
+  checkers catch the call).
+
+- **The sweep widens the fix to three entry points, failing two different ways.** Four
+  public functions take a format argument; `open_stream` is correct by design. The other
+  three all mishandle a wrong-typed one:
+
+  | Call | Today | Should be |
+  |---|---|---|
+  | `format_availability(StreamFormat.ZSTD)` | returns `NONE / missing=() / SEEKABLE` — a fabricated record whose `format` field violates its own declared type | `ArchiveyUsageError` |
+  | `open_archive(path, format=StreamFormat.ZSTD)` | `AttributeError: 'StreamFormat' object has no attribute 'container'` | `ArchiveyUsageError` |
+  | `extract(path, dest, format=StreamFormat.ZSTD)` | same `AttributeError` | `ArchiveyUsageError` |
+
+  The second shape is arguably worse than the one this entry was filed for: a raw
+  `AttributeError` naming a private attribute crosses the public boundary, which is the
+  error contract's "no internal leakage" rule (`CONTRIBUTING.md`) as well as ADR 0012's.
+  One validation helper at the boundary covers all three — this is a fix-the-cause case,
+  not three fixes.
 - **Severity, honestly:** low as a defect, moderate as an *honesty* question — a public
   query that invents an answer is the shape `VISION.md` rules out, even when the caller was
   wrong to ask that way.
