@@ -1,9 +1,9 @@
 """Public entry points: open archives and query format support.
 
-``open_archive`` pipeline (in order): register backends → validate streaming/
-concurrency → resolve source → detect or accept format → multi-volume checks →
-backend capability gates (password / seekability) → normalize stream origin →
-``backend.open_read(...)``.
+``open_archive`` pipeline (in order): register backends → refuse a wrong-typed
+``format=`` → validate streaming/concurrency → resolve source → detect or accept
+format → multi-volume checks → backend capability gates (password / seekability) →
+normalize stream origin → ``backend.open_read(...)``.
 """
 
 from __future__ import annotations
@@ -40,6 +40,10 @@ from archivey.internal.extraction_types import (
     ExtractionProgress,
     OnError,
     OverwritePolicy,
+)
+from archivey.internal.format_args import (
+    check_archive_format,
+    check_stream_or_archive_format,
 )
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.open_site import capture_open_site
@@ -205,6 +209,8 @@ def open_archive(
     import archivey.internal.backends  # noqa: F401
 
     open_site = capture_open_site()
+
+    check_archive_format(format, call="open_archive(format=…)")
 
     if streaming and concurrent_members:
         raise ArchiveyUsageError(
@@ -396,6 +402,10 @@ def open_stream(
     """
     import archivey.internal.backends  # noqa: F401
 
+    # Before any I/O: a value of neither format type used to fall through to
+    # auto-detection, which silently discards the caller's assertion.
+    check_stream_or_archive_format(format, call="open_stream(format=…)")
+
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     collector = collector_from_config(effective_config)
 
@@ -465,7 +475,12 @@ def _resolve_stream_format(
     open_source: Path | BinaryIO,
     collector: DiagnosticCollector,
 ) -> StreamFormat:
-    """Map open_stream's ``format=`` argument (or auto-detect) to a StreamFormat."""
+    """Map open_stream's ``format=`` argument (or auto-detect) to a StreamFormat.
+
+    Only ``None`` reaches the detection branch below: ``open_stream`` has already
+    refused a value of neither format type (``check_stream_or_archive_format``), so
+    falling through here means the caller asked for auto-detection.
+    """
     if isinstance(format, StreamFormat):
         return format
     if isinstance(format, ArchiveFormat):
@@ -476,6 +491,11 @@ def _resolve_stream_format(
                 "(e.g. ArchiveFormat.GZ), or use open_archive."
             )
         return format.stream
+
+    # The invariant the docstring states, enforced rather than described: without it a
+    # future caller of this private helper would auto-detect a value it was handed,
+    # which is the silent fall-through this function's boundary check exists to close.
+    assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
     detected = detect_format(open_source, collector=collector)
     if detected.format.container is not ContainerFormat.RAW_STREAM:
@@ -523,6 +543,11 @@ def extract(
     Returns an :class:`~archivey.ExtractionReport` whose diagnostic summary spans
     detection, open, and extraction for this call.
     """
+    # Checked here rather than left to open_archive below, so a wrong-typed argument is
+    # refused before the source is resolved and peeked, and the message names the call
+    # the caller actually made.
+    check_archive_format(format, call="extract(format=…)")
+
     # Peek only to choose access mode; open_archive re-resolves ``source`` (cheap).
     peek_target = resolve_source(source).open_source
     streaming = is_stream(peek_target) and not is_seekable(peek_target)

@@ -25,6 +25,7 @@ from archivey.exceptions import (
     UnsupportedFormatError,
     UnsupportedOperationError,
 )
+from archivey.internal.format_args import check_archive_format
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     STREAM_CODECS,
@@ -312,7 +313,18 @@ def get_registry() -> BackendRegistry:
 
 
 def format_availability(fmt: ArchiveFormat) -> FormatAvailability:
-    """Public query: the tri-state support level of ``fmt`` and its missing components."""
+    """Public query: the tri-state support level of ``fmt`` and its missing components.
+
+    ``fmt`` must be an :class:`~archivey.ArchiveFormat` — the ``(container, stream)``
+    pair. Anything else, a :class:`~archivey.StreamFormat` included, raises
+    :class:`~archivey.ArchiveyUsageError` rather than answering.
+    """
+    # A non-ArchiveFormat used to fall through to a fabricated record — NONE with an
+    # empty ``missing``, indistinguishable from a legitimate unsupported answer, and a
+    # ``format`` field violating its own declared type. The check is here rather than on
+    # the method so internal callers, which hold an ArchiveFormat by construction, keep
+    # the plain lookup.
+    check_archive_format(fmt, call="format_availability()", allow_none=False)
     return _registry.format_availability(fmt)
 
 
