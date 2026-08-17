@@ -143,7 +143,11 @@ Two observations that become claim rows rather than findings here:
   wrong negative with nothing in `missing` to explain it, disagreeing with the real record
   on `required_source`, the field `opening-and-listing.md:70-85` teaches callers to branch
   on. This is a **library** question, not a docs claim: filed as
-  `dev-docs/open-issues.md` **P10**, not fixed here.
+  `dev-docs/open-issues.md` **P10** — whose framing was **corrected 2026-08-17**: the
+  signature takes an `ArchiveFormat` only and both `pyrefly` and `ty` reject a
+  `StreamFormat`, so a typed caller is protected. What remains is that the wrong-typed
+  call *fabricates* a record instead of raising `ArchiveyUsageError`. Read P10, not this
+  paragraph's original wording. Not fixed here.
 - **`format_availability()` is a per-format query, not a matrix dump.** `install.md`'s
   inbound §B row 2 ("the `format_availability()` support-level query", ~10 lines) has to
   be written against that signature; a reader cannot call it once and get a table. Noted
