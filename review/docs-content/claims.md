@@ -147,7 +147,11 @@ Two observations that become claim rows rather than findings here:
   signature takes an `ArchiveFormat` only and both `pyrefly` and `ty` reject a
   `StreamFormat`, so a typed caller is protected. What remains is that the wrong-typed
   call *fabricates* a record instead of raising `ArchiveyUsageError`. Read P10, not this
-  paragraph's original wording. Not fixed here.
+  paragraph's original wording. Not fixed here — **fixed since**, in
+  `2026-08-17-reject-wrong-typed-format-arguments`: all four entry points that take a
+  format now raise `ArchiveyUsageError` on a value outside their declared types, so the
+  sweep above is a record of the *old* behaviour on this one call. A worker writing
+  `install.md`'s `format_availability()` section takes the contract from **G-25a**.
 - **`format_availability()` is a per-format query, not a matrix dump.** `install.md`'s
   inbound §B row 2 ("the `format_availability()` support-level query", ~10 lines) has to
   be written against that signature; a reader cannot call it once and get a table. Noted
@@ -756,6 +760,7 @@ Pages: `install`, `support-matrix`, `acknowledgements`, `migrating`, `index`, `f
 | G-23 | **Progress bars need `tqdm`, which comes with `[recommended]`; without it the command still runs** | `cli.md:3-4`, `acknowledgements.md:65` | `packaging-and-extras:50`, `cli:16` | Keep · `cfg` | |
 | G-24 | **§B row 2's second half, unwritten:** a four-row **extra → formats re-index** (core / `[recommended]` / `[seekable]` / `[free-threaded]`), naming which formats each unlocks, with `formats.md` still authoritative | `install.md:23-28` is the section that receives it | `packaging-and-extras:50` | **Guide, ~12 lines** — restored by maintainer decision (`scope.md` Q4), bounded to a re-index | |
 | G-25 | **§B row 2's first half, unwritten:** `format_availability()` as a runtime query — FULL / PARTIAL / NONE and what `missing` gives you (must-explain #15) | `install.md:23-28` receives it | `src/archivey/internal/registry.py:58-90`, `:314` | **Guide, ~10 lines** | |
+| G-25a | **When G-25 is written, the query takes an `ArchiveFormat` and nothing else.** A `StreamFormat` (or any other type) raises `ArchiveyUsageError` rather than returning a record — as does a wrong-typed `format=` on `open_archive` / `extract` / `open_stream`. Shipped after this baseline was taken (P10, `2026-08-17-reject-wrong-typed-format-arguments`), so the section must not be written from the old behaviour | `install.md:23-28` receives it | `src/archivey/internal/format_args.py`; `backend-registry:184` and its wrong-typed-argument requirement | **Guide** — one sentence inside G-25's ~10 lines | |
 | G-26 | The stdlib modules archivey always uses are `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `zlib`, and on 3.14+ `compression.zstd` | `acknowledgements.md:76-82` | `packaging-and-extras:23`, `compressed-streams:72` | Keep | |
 | G-27 | The **dev/test dependency table** is accurate: the PEP 735 `dev` / `docs` / `fuzz` groups, and each listed package's stated use | `acknowledgements.md:84-98` | `pyproject.toml`, `packaging-and-extras:181` | Keep | |
 
