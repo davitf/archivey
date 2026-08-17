@@ -228,7 +228,7 @@ This page is D-f's worked case, so the routing is given block by block.
 | Block | Ruling | Note |
 |---|---|---|
 | `1-10` title, "you opt out, not in", one-shot | **Keep** | The contract, stated. Six lines is right |
-| `12-27` §Trust boundaries — 4 bullets, 16 lines | **→ TM** | A threat model's §Scope rendered as user documentation. Nobody writes different code after reading that other local processes are trusted. Keep at most one clause in the contract sentence |
+| `12-27` §Trust boundaries — 4 bullets, 16 lines | **Trim to ~3 lines; rest → TM** | Mostly a threat model's §Scope rendered as user documentation — nobody writes different code after reading that other local processes are trusted, and the `O_NOFOLLOW`/`openat` future direction is roadmap. Two clauses do change behaviour and stay: *the archive is untrusted in every byte*, and *an earlier extracted member is untrusted input to every later one*. **Revised after #241**, which ruled the section "stays compact"; this is that reading, with the process/local-attacker and optional-dependency bullets still routed out |
 | `29-33` path traversal, absolute, UNC, null bytes | **Trim → one clause** | D-f rules it verbatim: "**Guide, as one clause** in the contract sentence. Not three lines with module paths." Drop `internal/filters.py` |
 | `34-37` extraction-root overwrite | **→ TM** | The caller does nothing differently; `PathTraversalError` already appears in the exception table |
 | `38-41` symlink escapes, three layers | **→ TM** | D-f rules it verbatim: "Nobody acts on the layer count" |
@@ -281,11 +281,11 @@ not permission, as `46` already says); per-format quirks (→ `formats.md`); saf
 | `16-33` measured column, nightly run link, corpus, the L5 follow-up | **Trim to ~6** | Keep the aspirational band table and one sentence pointing at the nightly. A specific run id, a corpus description, an above-band admission and a deferred-optimization pointer are maintainer evidence. **Also**: the run link at `18` points at `github.com/davitf/archivey-**2**/actions` — recorded as an accuracy row for pass 1, not fixed here |
 | `35-45` §Read `reader.cost` — the four-field table | **→ DS** | A field table is D-f's own example of a lookup. `CostReceipt` has an `api.md` entry, so it surfaces |
 | `46-53` cost ≠ legality; `StreamCapability` is ordered; the other two are not | **Keep** | Actionable, and the "not ordered" clause prevents a real mistake |
-| `55-63` §RAR listing cost | **→ page, 2 lines** | The Quick Open record and "the primary source" are format internals → `formats.md` §RAR. What a caller acts on — open-time cost scales with member count, `members()` is O(1) after — is two lines there |
+| `55-63` §RAR listing cost | **Keep, trim** | **Revised after #241.** I had moved this to `formats.md`; that was wrong by my own rule — a cost fact's owner is the cost page, and moving an owner is what → page is not for. Keep "open-time cost scales with member count, `members()` is O(1) afterwards"; the Quick Open record and "not the primary source" are parser internals → `formats.md` §RAR or the spec |
 | `64-87` §Solid archives: prefer one forward pass | **Keep** | The page's central claim; must-explain #11 |
 | `88-107` §Seeking — flag semantics, the rewind rule, single-block `.xz` | **Keep, tighten** | The "what the seek costs, not the codec's name" rule changes expectations. The single-block `.xz` worked example is the shortest proof that the rule is not a codec whitelist — keep it, shorter |
 | `109-111` fires on every qualifying seek, not only the first | **→ DS** | `DiagnosticCode.STREAM_REWIND_REDECOMPRESSES` |
-| `113-123` the flag changes nothing else; the `AUTO` threshold | **Keep** | must-explain #16. Landed in #225/#232 — the §B row for it is closed |
+| `113-123` the flag changes nothing else; the `AUTO` threshold | **Keep + one clause** | **Corrected after #241.** I had marked must-explain #16 closed; only half of it is. The page states the 1 MiB `AUTO` threshold but never says what happens when the package is *absent* — `ON` raises `PackageNotInstalledError`, `AUTO` falls back silently (`must-explain.md:212-214`, `config.py:19-31`). That is the half a caller acts on. ~2 lines |
 | `125-137` §Concurrent member streams | **Keep** | must-explain #3 |
 | `139-146` §Non-seekable sources | **→ page, 2 lines** | The rule is `opening-and-listing.md:64-68`'s. Here: what it costs you to spool |
 | `148-152` §Streaming mode is one pass | **Trim to 2 + link** | Third copy (`reading-members.md:158-171`, `gotchas.md:25-27`). The unique claim here is `scan_members()` to drain — keep that one |
@@ -326,7 +326,8 @@ detection *behaviour* (→ `opening-and-listing.md`); codec-choice rationale
 | `111-116` RAR: native metadata, `unrar` on `PATH`, password on stdin | **Keep** | |
 | `117-119` BLAKE2sp needs no package; HASHMAC via `ConvertHashToMAC` | **Trim** | Keep "tweaked digests are not exposed as `member.hashes`" (actionable — you will not find the value you expect). The UnRAR function name → TM |
 | `120-126` `-ver` history rows, solid RAR, read-only | **Keep** | Feeds `is_current` |
-| `128-140` ISO, Directory | **Keep** | |
+| `128-134` ISO 9660 | **Keep + one clause** | **Added after #241.** `gotchas.md:90` links "`import archivey` patches pycdlib process-globally" → `formats.md#iso-9660`, and the landing section does not mention it (must-explain #29 names both pages as owners). A link with no landing is round-2 finding 3's exact shape |
+| `136-140` Directory | **Keep** | |
 | `142-155` single-file: synthetic member, `FNAME`, gzip trailer CRC, the rapidgzip best-effort caveat | **Keep** | O-2's subject; the caveat is load-bearing |
 | `156-160` `.lz` CRC-combine derivation | **Trim to the rule** | "Whenever the source can be seeked" is actionable; how the multi-member value is combined is provenance → TM or spec |
 | `161-164` why zlib's Adler-32 is not surfaced | **Trim to the fact** | The parenthetical is an answer to a reviewer |
@@ -352,7 +353,7 @@ per-field lookups (→ docstrings, once §D is settled); the trap digest (→ `g
 | `6-32` §The exception tree — the `except ArchiveyError` example + 7-row subtype table | **Keep** | It reads like a lookup, and §D is why it is not: 21 of the 25 exception types have **no `api.md` entry**, so this table is the only reference that exists. **Coupled to §D** — if §D enumerates the exception tree in `api.md`, revisit this table then, and not before |
 | `33-39` `ArchiveyUsageError` is outside the tree | **Keep** | must-explain #1. The single most consequential fact about the hierarchy |
 | `41-46` §Diagnostics intro — queryable, not log-only | **Keep** | |
-| `48-62` the 7-row "said with a diagnostic" table | **Trim + → DS** | The *rule* (some conditions are real enough to report and not wrong enough to refuse) and the codes a caller matches on stay. Each row's "Means" paragraph is `DiagnosticCode`'s docstring material — and `DiagnosticCode` has an `api.md` entry, so it surfaces. `EMPTY_ARCHIVE`'s tar-is-all-zeros argument is one fact currently written in three places (here, `gotchas.md:91-104`, and the code) |
+| `48-62` the 7-row "said with a diagnostic" table | **Keep the table; trim the cells** | **Softened after #241**, which ruled it Keep outright on the ground that each code changes whether a caller escalates or ignores. That is right about the *table* — it is the escalation decision surface, not a glossary — so it stays. What still leaves is the multi-sentence justification inside three cells (`EMPTY_ARCHIVE`'s tar-is-all-zeros argument is written in three places: here, `gotchas.md:91-104`, and the code); reference-grade wording for each code belongs on `DiagnosticCode`'s members, which `api.md` renders |
 | `63-78` §What is *not* here: per-member outcomes | **Trim to ~6** | #235's admission rule. "Read `results`, not `report.diagnostics`" is the actionable sentence; "a fact has exactly one authoritative channel, and when a return value can carry it, the return value wins" is the design argument → the `diagnostics` spec, which already states it |
 | `80-101` §Named policy presets; `strict()` / `pedantic()`; the five exclusions | **Keep, tighten** | Each exclusion changes whether a pipeline raises. The per-exclusion justification is one clause each, not one sentence each |
 | `103-106` new codes may appear in minor releases | **Keep** | A version-stability rule a caller acts on |
@@ -603,14 +604,15 @@ row by row against `5d08f31`:
 |---|---|---:|---|---|---:|
 | 1 | `how-it-works.md`, all six D2 sections | ~150 | Still absent — the only page in the outline with no file | **Guide** | ~110 |
 | 2 | `install.md` — `format_availability()` section; matrix re-cut by extra | ~45 | 34 lines, two sections | **Splits: half guide, half dissolved** | ~10 |
-| 3 | `access-and-cost.md` — ON-vs-AUTO, measurement, config-at-a-glance | ~55 | AUTO threshold shipped (`118-123`) | **Splits: one shipped, one guide, one → DS** | ~8 |
+| 3 | `access-and-cost.md` — ON-vs-AUTO, measurement, config-at-a-glance | ~55 | AUTO *threshold* shipped (`118-123`); the ON-raises / AUTO-falls-back-silently half is **not** | **Splits: one half shipped, two guide, one → DS** | ~10 |
 | 4 | `extracting.md` — bounded recursion, "what `TRUSTED` does not relax", the config ceiling | ~90 | `TRUSTED` covered (`59-65`); recursion is a pointer (`203-206`) | **Splits: one shipped, two guide** | ~15 |
 | 5 | `errors-and-diagnostics.md` — translation, diagnostics-as-data, codes worth knowing, policy, limits vs filters | ~55 | Grew +61 in `#235` | **Splits: three shipped, one guide, one → DS** | ~15 |
 | 6 | `opening-and-listing.md` / `reading-members.md` remainders | ~25 / ~35 | | **Dissolved — all shipped** | 0 |
 | 7 | *(new)* `cli.md` — outline §10 items 3 and 6 | — | Never in the §B table | **Guide** | ~10 |
 | 8 | *(new)* `index.md` — the dedupe recipe D-f's `formats.md` ruling requires | — | | **Guide** | ~6 |
 | 9 | *(new)* `errors-and-diagnostics.md` — messages are terminal-inert (`#236`) | — | No page states it | **Guide** | ~3 |
-| | **Total new guide prose** | **~455** | | | **~177** |
+| 10 | *(new, from #241)* `formats.md` §ISO — state the process-global pycdlib patch | — | `gotchas.md:90` links here; the landing is silent | **Guide** | ~2 |
+| | **Total new guide prose** | **~455** | | | **~180** |
 
 ## Which rows dissolved, and why
 
@@ -720,6 +722,42 @@ For the step-4 checkpoint, the short read:
 
 ---
 
+# Cross-check against the second pass (#241)
+
+A second agent ran pass 0 independently (`cursor/docs-content-scope-07a9`, PR #241).
+Recorded here because the brief warns that convergence between passes with shared priors
+is weak evidence — both read the same brief and the same D-f, so agreement means "we made
+the same reading", not "the reading is right". Divergence is the informative half.
+
+**Converged, without contact** — treat as settled unless a question below reopens it:
+`extracting.md` is the primary cut and §What is enforced is the bulk of it; the `abort_on`
+member table and the `NAME_SANITIZED` essay go to docstrings; ADR/PR citations and the
+symlink layer count leave the guide; the bidi paragraph stays, shorter; `formats.md`'s
+`hashlib` loop cuts to ~8; **`support-matrix.md` §Free-threaded stays** (D-f left it
+unruled and both passes kept it, for the same reason — the adopter acts on the narrowness);
+the config-at-a-glance screen becomes an `ArchiveyConfig` docstring with a thin pointer
+under D-c; the error-translation narrative and the measurement section are real writes;
+§B row 6 dissolves entirely. Two findings were also found twice: `STANDARD` missing from
+the policy table, and the stale `archivey-2` link.
+
+**Taken from #241** (four corrections, applied above): the `archivey-2` link is **O-4**,
+already open, not a new finding — my S-1 was a rediscovery; must-explain #16 is **half
+open**, not closed, because the page never says `ON` raises while `AUTO` falls back
+silently; `formats.md` §ISO must state the pycdlib patch, because `gotchas.md:90` links
+there and the landing is silent; and §Trust boundaries keeps two clauses rather than
+leaving whole. One further revision came from re-reading my own rule under their pressure:
+§RAR listing cost stays on `access-and-cost.md`, because a cost fact's owner is the cost
+page.
+
+**Live disagreements** — §Questions Q4–Q6. Each is a deliverable that exists in one pass
+and not the other, which is why they are maintainer calls rather than merge conflicts.
+
+**In neither pass's favour, but only in this one:** the §Precondition finding. #241 routes
+material to docstrings without noticing that the depth it is routing *to* currently lives
+in `#` comments that mkdocstrings drops, so its docstring rows read as relocations. That is
+the same class of error as recording a decision in the present tense before doing the work
+it depends on — the trap the brief names three times.
+
 # Questions for the maintainer
 
 **Q1 — Does the docstring leg ship inside a docs PR?** Six rulings route a block to a
@@ -744,6 +782,42 @@ enumerate them, that table becomes a lookup and should shrink in the same pass. 
 decision to take now, but the two are coupled and the coupling should not be rediscovered
 later.
 
+*Q4–Q6 are the live disagreements with #241 (see §Cross-check). Each is a deliverable one
+pass has and the other does not, so none of them merges — they are decisions.*
+
+**Q4 — `install.md`: re-cut the format × extra matrix, or not?** #241 keeps the outline's
+row as a write ("a short table; detail rows can still link into `formats.md`"). I dissolved
+it: `formats.md:8-20` already carries Core?/Extra columns and `acknowledgements.md:63-68`
+already carries extra → packages, so a third cut is one fact in three places — the O-2
+shape this review exists to remove. The counter-argument is real: neither existing table is
+organized by *what you type*, which is `install.md`'s whole job. *Recommendation:* write it
+only if it is short enough to be a re-index rather than a third source of truth — four
+rows, one per extra, naming formats and linking out, with `formats.md` staying
+authoritative on capability.
+
+**Q5 — the bounded-recursion recipe: worked, or a pointer?** `brief.md` §B lists it as
+still-open work ("the worked recipe stays Topic 8", round-2 finding 3), and I routed ~12
+lines to `extracting.md` §Limits. #241 rules the opposite — keep it short, because a worked
+recipe "re-proves amplification" and the analysis belongs to threat-model O6. Both readings
+fit D-f: bounding recursion is something the reader *does* (guide), but the amplification
+argument is something they only need to believe (threat model). *Recommendation:* write the
+recipe — a caller who must bound depth and cumulative size across nested opens needs the
+shape, and D-f's own currency is "what changes what they write". But keep it a recipe with
+no derivation, ~10 lines, and if it starts explaining why zip-quines amplify, that half
+goes to the threat model.
+
+**Q6 — does Home get a fifth recipe?** D-f's `formats.md` ruling ends "Keep the use case
+visible via a Home recipe — VISION's founding use case is deduplicating messy backups, and
+visible ≠ a worked implementation." I read that as requiring a short Home recipe to receive
+the cut. #241 reads it as satisfied by the existing four and explicitly rules "any fifth
+recipe" off `index.md`. The sentence supports both. It matters because it is the difference
+between the `formats.md` cut landing somewhere and simply being a deletion — and the hard
+constraint says a claim removed must land or be recorded as dropped. *Recommendation:* add
+it, ~6 lines, at the cost of the first screen growing; the founding use case having no
+visible example anywhere is the worse outcome. If you disagree, the fallback is to record
+the dedupe use case as deliberately dropped from the guide, which is a decision I should
+not take alone.
+
 ---
 
 # Findings
@@ -755,8 +829,8 @@ Two non-defect items, recorded here so pass 1 does not re-derive them, and neith
 
 | # | Where | Item |
 |---|---|---|
-| S-1 | `docs/access-and-cost.md:18` | The nightly-run link points at `github.com/davitf/archivey-**2**/actions/runs/29992136861`, a different repository name from the one every other link on the site uses. Either a second repo or a stale paste — an accuracy row for `claims.md` |
-| S-2 | `docs/extracting.md:145-149` | The policy table has two rows for a three-member enum: `STANDARD` is absent while the page's prose uses it four times (`51`, `71`, `173`, `175`). An accuracy row, listed here because the block was ruled Keep and the gap would otherwise be inherited silently |
+| S-1 | `docs/access-and-cost.md:18` | The nightly-run link points at `github.com/davitf/archivey-**2**/actions/runs/29992136861`. **Already recorded — this is [O-4](../docs/observations.md), open**, from the IA audit: the repo was renamed 2026-07-25 and GitHub redirects, so it resolves but is stale. Cite O-4; do not file it again |
+| S-2 | `docs/extracting.md:145-149` | The policy table has two rows for a three-member enum: `STANDARD` is absent while the page's prose uses it four times (`51`, `71`, `173`, `175`). An accuracy row, listed here because the block was ruled Keep and the gap would otherwise be inherited silently. Independently found by the second pass (#241) |
 
 ---
 
