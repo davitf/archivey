@@ -204,6 +204,46 @@ nor `DIRECTORY`. Original write-up below.
   (once-per-reader would be the shape). Deliberately parked rather than left implicit.
 - **Refs:** `spec-drop-unimplemented-solid-warning` (#225); O-23.
 
+### P10. `format_availability()` answers for a public type it does not know
+
+- **Today:** `StreamFormat` and `ArchiveFormat` are both in `archivey.__all__`, and
+  `StreamFormat.ZSTD` / `ArchiveFormat.ZST` are *distinct* members that both carry the
+  value `'zst'`. `format_availability()` gives them different answers:
+
+  ```
+  format_availability(ArchiveFormat.ZST)  -> FULL, missing=(), FORWARD_ONLY
+  format_availability(StreamFormat.ZSTD)  -> NONE, missing=(), SEEKABLE
+  ```
+
+  `StreamFormat.ZSTD` is not in `list_known_formats()`, so the second call **fabricates a
+  verdict rather than raising**: `support=NONE` with nothing in `missing` to say what is
+  absent, and a `required_source` that contradicts the real record.
+- **Why it matters.** `NONE` with an empty `missing` is not a legible answer — a caller
+  cannot act on it, and `install.md`'s inbound `format_availability()` section is being
+  written around exactly this call. `required_source` is worse: `opening-and-listing.md:70-85`
+  teaches callers to branch on it (`required_source <= StreamCapability.FORWARD_ONLY`),
+  and the fabricated record answers `SEEKABLE` where the real one answers `FORWARD_ONLY`.
+  A silent wrong negative on a public query is the "behaviour differences are **data**,
+  never silent guesses" claim in `VISION.md` failing on its own terms.
+- **Not currently reachable through the documented recipe.** `detect_format()` returns a
+  `FormatInfo` whose `.format` is an `ArchiveFormat`, so the guide's own snippet is safe.
+  The exposure is a caller who legitimately holds a `StreamFormat` — `open_stream(format=…)`
+  publicly accepts `StreamFormat | ArchiveFormat` (`src/archivey/core.py:374`) — and then
+  asks about its availability.
+- **Open question:** raise `ArchiveyUsageError` for a format outside
+  `list_known_formats()`, or make `StreamFormat` members resolve to their `ArchiveFormat`
+  peer, or narrow the signature so a `StreamFormat` cannot be passed. The third is
+  cheapest and the first is most honest; the second risks implying the two enums are
+  interchangeable everywhere, which they are not.
+- **Provenance:** found 2026-08-17 while reconciling the baselines of two independent
+  Topic 8 step-2/3 passes (#246 read `ZST` as `FULL`, #247 swept
+  `list_supported_formats()` only). Neither pass had it in this form; the disagreement
+  between them was the signal. Recorded in
+  [`review/docs-content/claims.md`](../review/docs-content/claims.md) Part 1, which is a
+  docs artifact and deliberately does not fix it.
+- **Not a docs defect.** No published page states anything false about this; the guide
+  never passes a `StreamFormat` to `format_availability()`.
+
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
 - **Today:** Solid ALL-pipe demux must match what `unrar` actually emits (RAR5
