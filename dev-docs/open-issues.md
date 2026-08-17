@@ -206,6 +206,16 @@ nor `DIRECTORY`. Original write-up below.
 
 ### P11. A RAR stream source silently costs a whole-archive disk copy, in no signal
 
+> **Design in progress 2026-08-17:** `openspec/changes/opt-in-source-spooling` is the home
+> for this. It reframes P11 as an *unmanaged instance* of a feature rather than a standalone
+> defect: today's RAR spill is the worst available configuration of source spooling — no
+> opt-in, no limit, no signal — and the change makes it bounded and reported while adding the
+> opt-in capability spool that ADR 0010 currently refuses. **P11's open question is answered
+> there:** `CostReceipt.notes`, not a diagnostic, because once the spool is configured and
+> bounded the caller declared it, and the `diagnostics` admission clause covers only what
+> they could not have determined. Specs-first; four questions still open in that change's
+> `design.md`.
+
 - **Today:** `unrar` needs a filesystem path, so `RarReader._ensure_archive_path()`
   (`src/archivey/internal/backends/rar_reader.py:532-555`) writes the **entire archive**
   to `tempfile.mkstemp(suffix=".rar")` the first time a member cannot be read directly.
