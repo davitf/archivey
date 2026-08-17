@@ -808,6 +808,101 @@ header-encrypted archive can still be *listed* without the external tool (FQ-17)
 
 ---
 
+### FQ-27 — A block-transform codec emits nothing until an entire block has been read
+
+**Problem.** Stream-oriented codecs produce output incrementally, so a few kilobytes of
+compressed input already yields decompressed bytes. Block-transform codecs do not: bzip2
+applies a Burrows–Wheeler transform over a block of up to 900 KB and emits nothing until the
+whole block has been consumed. Anything that identifies content by decompressing a bounded
+prefix therefore works for every stream codec and fails for this one — and it fails in a
+data-dependent way, on exactly the archives whose first member is incompressible, because
+those are the ones whose first block exceeds the prefix.
+
+**Symptom.** A compressed tar archive is reported as a single opaque compressed file rather
+than an archive with members, for a large fraction of real-world files of that codec — and
+the filename does not rescue it, because content identification outranks the extension. A
+`.tar.bz2` whose leading member holds even a few kilobytes of already-compressed data is the
+failing case.
+
+**Evidence.** The bzip2 format's block structure (blocks of 100–900 KB, BWT applied per
+block). Stated with the failure mechanism in
+`openspec/changes/archive/2026-07-04-inner-tar-probe-block-codecs/proposal.md`: the probe
+"decompresses only the peeked detection prefix (4096 bytes) … the codec raises
+[a truncation error] on the prefix, the probe returns `False`, and the archive is mis-reported as
+a bare `.bz2`. There is no open-time re-probe … This affects a large fraction of real-world
+`.tar.bz2` files".
+
+**Answer today.** Block codecs get a larger probe window sized to their block structure
+rather than the common-case detection limit
+(`2026-07-04-inner-tar-probe-block-codecs`). Found by the maintainer after an
+unrelated truncation fix that addressed a different cause on the same symptom.
+
+**Sources.** `openspec/changes/archive/2026-07-04-inner-tar-probe-block-codecs/`;
+`history/SPEC.md` §8; `library-analysis.md` §bzip2.
+
+---
+
+### FQ-28 — A single forward pass can resolve only backward references
+
+**Problem.** Links inside an archive may point in either direction, but a forward-only pass
+sees each member exactly once and in order. A hard link, which by format rule refers to an
+earlier member, resolves as the pass runs. A symbolic link whose target appears *later* cannot
+be resolved when it is yielded, and by the time the target arrives the link has already been
+handed to the caller. So a forward pass and a random-access listing cannot produce the same
+resolved objects, and no amount of bookkeeping closes the gap — the information does not
+exist yet at the moment it is needed.
+
+**Symptom.** Iterating an archive from a pipe yields link members whose targets are
+unresolved, while listing the same archive from a file resolves them. Advice of the form
+"iterate, discarding the members, then ask for the list" produces a listing that is not the
+listing the other mode gives.
+
+**Evidence.** `openspec/changes/archive/2026-07-07-scan-members/proposal.md`: "a single
+forward pass resolves only **backward-pointing** links; **forward-pointing symlinks stay
+unresolved**, so a bare iteration can never yield the same resolved objects that random-access
+`members()` produces." The hard-link direction rule is POSIX.1-2017 `pax` `LNKTYPE`
+(FQ-19).
+
+**Answer today.** A dedicated scan operation exists for "give me the resolved listing of a
+forward-only archive": it finishes the pass (or completes an interrupted one) and returns the
+resolved list, in either access mode. `2026-07-07-scan-members`; the progressive
+finalization that fills resolved targets in place on already-yielded members is
+`ARCHITECTURE.md:269`.
+
+**Sources.** `openspec/changes/archive/2026-07-07-scan-members/`; `history/ARCHITECTURE.md`
+§2.4; `history/SPEC.md` §3.2; `openspec/changes/archive/2026-07-18-partial-members-and-errors/`.
+
+---
+
+### FQ-29 — A format's only integrity signal may be a hash the platform cannot compute
+
+**Problem.** Formats choose their own digest algorithms, and not every choice is available
+in a standard library. One archive format's members may carry a parallel tree-hash variant
+instead of a checksum — the same underlying function as a widely available hash, but composed
+over a tree of parallel lanes with specific parameters, and exposed by no standard hashing
+module. Where that hash is the member's *only* integrity signal, a reader that cannot compute
+it cannot verify the member at all, and the natural failure mode is silent: the hasher lookup
+returns nothing and verification quietly becomes an advisory.
+
+**Symptom.** A corrupted member of one specific format reads back as clean, on precisely the
+members that chose the stronger hash. Nothing raises, and the only trace is an advisory that
+the digest could not be checked.
+
+**Evidence.** `openspec/changes/archive/2026-07-14-rar-blake2sp-verification/proposal.md`:
+"`hashlib` has no `blake2sp` (only `blake2b`/`blake2s`), so `_make_hasher("blake2sp")` returns
+`None` and the read **silently degrades** … a corrupted BLAKE2sp-only RAR5 member is read back
+as clean today", with two specifications recorded as disagreeing about it as a result. The
+algorithm is BLAKE2sp, the parallel tree mode of BLAKE2s.
+
+**Answer today.** The tree mode is implemented on top of the standard library's own BLAKE2s
+using its tree parameters, keeping the zero-dependency core intact, and verification runs as
+bytes are read. `2026-07-14-rar-blake2sp-verification`.
+
+**Sources.** `openspec/changes/archive/2026-07-14-rar-blake2sp-verification/`;
+`review/archive/2026-07-16-crypto/SUMMARY.md`; `library-analysis.md`.
+
+---
+
 ## Security / hostile input
 
 ### SEC-01 — A member name can name a destination outside where extraction was asked to write
@@ -1179,8 +1274,10 @@ member therefore cannot rely on the verifier alone, and the fallback is to decry
 the member's real checksum — which for a stored (uncompressed) member means reading it.
 
 **Symptom.** A wrong password appears to be accepted, and the error surfaces later as
-corrupt data. Determining the right password for each member of a multi-password archive
-costs a full read of members rather than a header check.
+corrupt data. Because the real check only runs while the member is read, a wrong candidate
+that passed the cheap check *shadows* a later correct one, and the failure presents as
+corruption rather than as a password problem. Determining the right password for each member
+of a multi-password archive costs a full read of members rather than a header check.
 
 **Evidence.** `dev-docs/open-issues.md` §Irreducible ("ZipCrypto multi-password + STORED
 confirmation cost (~1/256 false open → CRC scan)"); ZIP APPNOTE §7 (traditional PKWARE
@@ -1189,7 +1286,10 @@ encryption, 12-byte header with a one-byte password check). Specified in
 
 **Answer today.** Password disambiguation falls back to a checksum scan when the cheap check
 is inconclusive, with the cost documented rather than hidden
-(`2026-07-11-zip-multipassword-disambiguation`, `open-issues.md` §Irreducible).
+(`2026-07-11-zip-multipassword-disambiguation`, `open-issues.md` §Irreducible). That change
+also records an **irreducible** limit it does not claim to solve: a wrong password that passes
+the cheap check and a correct password applied to corrupt encrypted data produce the same
+downstream failure, so "the reader must not claim it can always distinguish them".
 
 **Sources.** `open-issues.md` §Irreducible;
 `openspec/changes/archive/2026-07-11-zip-multipassword-disambiguation/`;
@@ -1492,6 +1592,106 @@ candidate iteration works again. Fixed in `#113` finding F1.
 **Sources.** `review/archive/2026-07-16-rar-reader/SUMMARY.md` (F1);
 `review/archive/2026-07-16-crypto/SUMMARY.md` (F2); `threat-model.md` O8;
 `openspec/changes/archive/2026-07-11-zip-multipassword-disambiguation/`.
+
+---
+
+### SEC-25 — Path normalization is a filesystem question, not a string operation
+
+**Problem.** Rewriting a member's path at read time — stripping a leading separator,
+collapsing `..` segments — looks like a safe textual cleanup and is not. Collapsing
+`foo/../bar` to `bar` is only equivalent when `foo` is a real directory; if `foo` is a
+symbolic link, the two paths name different places, and an archive can plant that link in an
+earlier member (SEC-02). So the collapse's correctness depends on filesystem state that does
+not exist yet when the name is read. Two further consequences follow from normalizing at all:
+the reported name is no longer what the archive stored, so a caller inspecting members before
+extracting sees a sanitized path rather than the hostile one; and the safety check and the
+destination computation end up looking at *different strings*, which must then be kept in
+sync in two places.
+
+**Symptom.** A member that should be refused is silently rewritten into an acceptable one, so
+a listing shows innocent paths for an archive that is not. A traversal check on the rewritten
+name passes while the danger lived in the value before the rewrite.
+
+**Evidence.** `openspec/changes/archive/2026-07-03-minimal-name-normalization/proposal.md`:
+"`/etc/passwd` becomes `etc/passwd` and `../../etc/passwd` becomes `etc/passwd`, emitting only
+a warning", with the two named consequences — "`member.name` is not truthful" and "the safety
+check and the path computation look at different strings" — and the symlink argument: the
+collapse "is also only equivalent when `foo` is a real directory; if `foo` is a symlink
+(planted by an earlier member) the two differ, so even 'internal' `..` collapse is a
+filesystem-dependent decision read-time normalization cannot safely make."
+
+**Answer today.** Read-time normalization is reduced to the meaning-preserving rewrites only
+(separator form, directory suffix); nothing that changes which file a path denotes is done at
+read time. Safety decisions are made once, at extraction, against the name the archive
+actually stored. `2026-07-03-minimal-name-normalization`.
+
+**Sources.** `openspec/changes/archive/2026-07-03-minimal-name-normalization/`;
+`history/SPEC.md` §4.4; `history/ARCHITECTURE.md` §4.1;
+`openspec/changes/archive/2026-07-03-phase-4-safe-extraction/`.
+
+---
+
+### SEC-26 — The ratio guard's denominator is missing in exactly the configuration an attacker would choose
+
+**Problem.** A compression-ratio limit needs to divide by something: either the member's own
+compressed size or the archive's total input size. Neither is always available. A format
+without per-member compressed sizes supplies the first as unknown; a source that cannot be
+sized — a pipe, a socket — supplies the second as unknown. Both are unknown at once for a
+compressed archive streamed from a pipe, which is precisely the shape an attacker sends:
+unknown total size, enormous expansion. The ratio check then never activates and only the
+absolute output cap remains, which still writes its whole budget from a few kilobytes of
+input before tripping.
+
+The ratio does not actually require a total. It can be measured *live*, from the compressed
+bytes consumed so far against the uncompressed bytes written so far — a running figure that
+exists even for a source whose total never will.
+
+**Symptom.** The weakest configuration is the least protected: a bomb piped in gets to write
+the full absolute limit — gigabytes — where a bomb in a file on disk is stopped almost
+immediately. The difference is invisible to the caller, who set the same limits both times.
+
+**Evidence.** `openspec/changes/archive/2026-07-04-live-decompression-ratio-guard/proposal.md`:
+"When **both are unknown** … the ratio check never activates … That is the weakest
+configuration and exactly the one an attacker picks: unknown total size, enormous expansion. A
+2 GiB default cap still writes up to 2 GiB from a few KiB of input before tripping, whereas a
+ratio guard would stop a 1000:1 bomb almost immediately."
+
+**Answer today.** The archive-wide ratio is measured live — compressed bytes consumed from
+the source against uncompressed bytes written — so it works on a pipe.
+`2026-07-04-live-decompression-ratio-guard`.
+
+**Sources.** `openspec/changes/archive/2026-07-04-live-decompression-ratio-guard/`;
+`history/ARCHITECTURE.md` §4.2, §5.5; `history/SPEC.md` §7.3.
+
+---
+
+### SEC-27 — Verifying that a terminator is present does not verify that nothing follows it
+
+**Problem.** A format whose end is marked by a terminator gives a completeness check two
+different jobs, and they are easy to confuse. Checking that the terminator *exists* proves the
+archive was not cut short. It proves nothing about the bytes after it — appended junk, a
+second archive concatenated on, an archive embedded in a larger file. A knob documented as
+guaranteeing a complete listing therefore delivers only half of what its description promises,
+and the missing half is the one that matters for "is this file exactly one archive?".
+
+**Symptom.** A strictness setting turned on for provable completeness passes a file with
+kilobytes of trailing data after the archive's end, and passes a pair of concatenated
+archives while listing only the first one's members.
+
+**Evidence.** `openspec/changes/archive/2026-08-09-strict-archive-eof-trailing-bytes/proposal.md`
+with a measured table: the knob "actually checks … one thing: that the second 512-byte null
+trailer block is present. It never looks past it." Independently confirmed in
+`review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` F20: "measured, it ignores 4 KiB
+of appended junk."
+
+**Answer today.** The strict setting asserts that every byte from the terminator to
+end-of-file is zero, which catches appended junk and concatenated archives — and deliberately
+does not fire on a legitimately empty archive, because zeros to end-of-file is exactly what one
+is (FQ-20). `2026-08-09-strict-archive-eof-trailing-bytes`; ADR 0015.
+
+**Sources.** `openspec/changes/archive/2026-08-09-strict-archive-eof-trailing-bytes/`;
+`review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` (F20); ADR 0015;
+`openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/`.
 
 ---
 
@@ -2277,6 +2477,42 @@ matrix pins it. Fixed in `#120` / `#131` (finding F1).
 
 **Sources.** `review/archive/2026-07-17-cli/SUMMARY.md` (F1);
 `openspec/changes/archive/2026-07-17-cli-v1/`.
+
+---
+
+### UL-22 — The standard raw-stream base class is oriented the wrong way for a read-only wrapper
+
+**Problem.** A language's raw byte-stream base class is written for the general case: it
+assumes the implementer provides a fill-a-buffer primitive and derives the read-into-new-bytes
+methods from it, and it answers "can this be read / written / repositioned?" with no by
+default. Every read-only wrapper over an existing stream wants the opposite of all four —
+it naturally implements read-into-new-bytes and delegates the rest, and it is readable,
+not writable. So each wrapper carries the same six to eight overrides, and the interesting
+method is one line among them. Worse, the fill-a-buffer primitive has genuinely subtle cases
+— a non-blocking source returning nothing-yet rather than end-of-file, an underlying object
+that does not implement it at all — so hand-written copies of it across a dozen wrappers
+diverge, and the divergence is exactly where the subtle bugs live.
+
+**Symptom.** A new wrapper is mostly boilerplate, and its author picks one of several
+incompatible spellings of the buffer primitive already present in the codebase. Some of those
+spellings handle the nothing-yet case and some do not, so behaviour on a non-blocking source
+depends on which wrapper happens to be in the stack.
+
+**Evidence.** `openspec/changes/archive/2026-06-27-stream-wrapper-base/proposal.md`, with an
+inventory of ten wrappers and the two problems stated explicitly: the buffer primitive "is
+implemented at least three different ways across these classes … (the non-blocking `None` case
+is handled in some and not others)"; and "`io.RawIOBase`'s defaults are the wrong way round for
+these wrappers … so every read-only wrapper must override `readable()→True`,
+`writable()→False`, and provide a `readinto`."
+
+**Answer today.** One shared read-only base inverts the relationship once — deriving the
+buffer primitive and read-everything from the subclass's read — and fixes the read-only
+answers, so a new wrapper overrides read plus the one method that is its actual purpose.
+`2026-06-27-stream-wrapper-base`.
+
+**Sources.** `openspec/changes/archive/2026-06-27-stream-wrapper-base/`;
+`openspec/changes/archive/2026-07-14-decompressor-stream-composition/`;
+`review/archive/2026-07-19-stream-layering/SUMMARY.md`.
 
 ---
 
@@ -3379,6 +3615,101 @@ availability type is public.
 
 ---
 
+### API-26 — A read of *n* bytes is allowed to return fewer, and real sources do
+
+**Problem.** The raw byte-stream contract is *up to* n bytes, not exactly n. Ordinary
+sources exercise that latitude: a socket returns what has arrived, a network filesystem
+returns what a request yielded, a caller's own wrapper returns whatever its inner call gave.
+A parser that reads a fixed-size structure and treats a short return as end-of-input therefore
+reports a perfectly healthy archive as truncated or corrupt, and it does so only for callers
+whose source happens to be one of those.
+
+The reason this survives testing is structural: the obvious in-memory test doubles are all
+built on a buffer that is always full-count, so no test returns short, and the entire class of
+bug is invisible however thorough the suite looks.
+
+**Symptom.** An archive that opens correctly from a file fails with a corruption or truncation
+error when the identical bytes are supplied through a socket or a user-written stream wrapper.
+The failure implicates the archive, which is fine.
+
+**Evidence.** `openspec/changes/archive/2026-08-01-short-read-source-contract/proposal.md`:
+"Header parsers assumed the full count and read a short return as EOF, so a **healthy** archive
+supplied as such a stream was reported as [corrupt or truncated]: 26 of 27
+committed RAR/ZIP fixtures, the `tar` / `zip` / `iso` corpus formats" — and the blind spot:
+"Nothing in `tests/` returned short — `NonSeekableBytesIO` and `CountingBytesIO` both delegate
+to `BytesIO`, which is always full-count — which is why this was invisible for the whole of
+Phase 2."
+
+**Answer today.** Full-count reads are guaranteed once, at the source boundary, rather than
+defended at every parse site; and a short-returning source is required test coverage rather
+than a file someone can delete. `2026-08-01-short-read-source-contract` (`#219`).
+
+**Sources.** `openspec/changes/archive/2026-08-01-short-read-source-contract/`; ADR 0014;
+`investigations/adr-0014-investigation.md`.
+
+---
+
+### API-27 — A damaged member and a refused member are different events that must not share a stop condition
+
+**Problem.** Two things halt a bulk operation over an archive's members, and they mean
+opposite things. A *failure* — data that will not decode, a checksum that does not match — says
+the archive is broken. A *block* — a member refused because its name would escape the
+destination, or because a policy declined it — says the safety layer worked exactly as designed.
+Treating both as "an error occurred" makes the stop-on-error setting abort an otherwise
+perfectly good archive the moment one member is unsafe, which is the opposite of the behaviour
+that motivates having a safety layer at all. It also makes an exit status unanswerable: the
+same code has to mean "your archive is damaged" and "I protected you".
+
+**Symptom.** An archive containing one hostile entry stops with an error under a setting the
+caller chose to catch *damage*, and the rest of a good archive goes unextracted. A script
+cannot distinguish "this archive is broken" from "this archive contained something I refused".
+
+**Evidence.** `openspec/changes/archive/2026-07-20-stop-on-failure-not-policy/proposal.md`:
+"`OnError.STOP` currently halts on **both** a member *failure* … and a policy *block* … These
+are different in kind: a failure means the archive is broken; a block is the safe-extraction
+library working **as designed**. Conflating them means STOP aborts an otherwise-good archive
+the moment one member is unsafe — the opposite of 'skip the unsafe member and keep going,'
+which is the library's defining behavior." The unanswerable exit-status question it created is
+recorded in `review/archive/2026-07-20-cli-product/`.
+
+**Answer today.** Stopping is keyed on failure only; a policy block is a distinct per-member
+outcome that does not halt the pass, and abort conditions are a caller-selected set.
+`2026-07-20-stop-on-failure-not-policy`; the outcome names were then separated so a caller can
+branch without reading a docstring (`2026-07-19-clarify-extraction-status-names`).
+
+**Sources.** `openspec/changes/archive/2026-07-20-stop-on-failure-not-policy/`;
+`openspec/changes/archive/2026-07-19-clarify-extraction-status-names/`;
+`review/archive/2026-07-20-cli-product/SUMMARY.md`;
+`openspec/changes/archive/2026-08-15-extraction-results-authoritative/`.
+
+---
+
+### API-28 — The unit an operation is measured in and the unit it reports in are not the same
+
+**Problem.** A bulk operation over an archive has a natural reporting boundary — the member —
+and a natural work unit, which is a chunk of bytes. If progress is emitted only at the member
+boundary, then a single large member is one report: a consumer drawing a progress display shows
+nothing for the duration of the largest item and then jumps by its whole size. The finer figure
+usually exists already, because whatever enforces per-member limits has to count bytes as they
+are written; it simply never leaves that component.
+
+**Symptom.** A progress display freezes for the duration of the biggest file in the archive
+and then leaps, which reads as a hang on exactly the archives where progress matters most.
+
+**Evidence.** `openspec/changes/archive/2026-07-15-extraction-progress-in-file/proposal.md`:
+progress "fires **once per member**, after the member is fully written … extracting one large
+member shows a frozen bar that jumps by the whole member size in a single step at completion",
+and "the data to do better already exists" — the ratio guard is fed per copy chunk and
+maintains the running in-member figure "because the per-member ratio check needs" it.
+
+**Answer today.** The intra-member byte position is emitted from inside the copy loop rather
+than only at the member boundary. `2026-07-15-extraction-progress-in-file`.
+
+**Sources.** `openspec/changes/archive/2026-07-15-extraction-progress-in-file/`;
+`history/ARCHITECTURE.md` §4.2; `review/archive/2026-07-20-cli-product/SUMMARY.md`.
+
+---
+
 ## Packaging & dependency
 
 ### PKG-01 — An optional dependency that is imported at module scope is not optional
@@ -3635,6 +3966,74 @@ F16 / Q11 / O6).
 
 ---
 
+### PKG-10 — An optional dependency group named after a format cannot be scoped by format
+
+**Problem.** Optional installs are named for what a user is trying to do — read this format —
+but codecs do not partition that way. A codec is shared: the same entropy coder appears as a
+member codec in several container formats, so the package that supplies it belongs to all of
+them or none. Naming a group after one format then makes the *error message* wrong in a
+specific and damaging way: a member of format A that needs the shared codec tells the user to
+install the group named for format B, which reads as if the library misidentified their file.
+
+Two more consequences follow from the same mismatch. Groups end up byte-identical to each
+other while implying different meanings, so one codec is reachable under two names. And a
+group named for a format whose data needs an *external binary* promises something no package
+installer can deliver.
+
+**Symptom.** A user reading one format is told to install support for a different one. Two
+install options do the same thing under different names. An install option appears to enable a
+format and does not, because the missing piece was never a package.
+
+**Evidence.** `openspec/changes/archive/2026-07-30-consolidate-optional-extras/proposal.md`:
+"`[7z]` pulls seven packages, six of which are member codecs shared with ZIP and TAR — so a
+ZIP member using Deflate64 or PPMd raises `PackageNotInstalledError: pip install
+archivey[7z]`. That hint is *correct* and reads like the library misidentified the file. The
+name is what lies, not the message." Plus the identical-groups and external-binary cases, both
+recorded there.
+
+**Answer today.** Groups are named by *capability* rather than by format, collapsing eleven
+into four, and the first public release was the only free window to do it — renaming a group is
+breaking after the tag. `2026-07-30-consolidate-optional-extras`;
+`2026-07-31-rename-extras-in-remaining-specs` carried the 62 references in the ten other
+specifications that the first change had left naming the old groups.
+
+**Sources.** `openspec/changes/archive/2026-07-30-consolidate-optional-extras/`;
+`openspec/changes/archive/2026-07-31-rename-extras-in-remaining-specs/`;
+`library-analysis.md`; ADR 0011.
+
+---
+
+### PKG-11 — A transitive dependency can refuse the interpreter build the project tests on
+
+**Problem.** An optional install pulls a chain of packages, and any link in it may decline to
+build for a particular interpreter variant. A newer interpreter build with different
+concurrency semantics is exactly the case: a dependency several levels down can reject it
+outright, so the *recommended* install fails on a runtime the project itself exercises in
+continuous integration — and nothing in the install metadata says so, because the refusal
+belongs to someone else's package. The gap closes when that package fixes it upstream, which
+means the correct expression of it is a version-conditional marker rather than an omission.
+
+**Symptom.** The install command the documentation recommends fails outright on one
+interpreter build, with an error from a package the user has never heard of, while the same
+command works everywhere else.
+
+**Evidence.** `openspec/changes/archive/2026-07-30-consolidate-optional-extras/proposal.md`,
+measured: "`pip install archivey[recommended]` fails outright on free-threaded CPython 3.13 —
+`[recommended]` → `[7z]` → `cryptography` → `cffi`, and cffi rejects free-threaded 3.13
+('upgrade to free-threaded 3.14 or newer'). The recommended install is therefore uninstallable
+on a runtime the project tests in CI, and nothing in the extras table says so." Verified on the
+next version: the dependency installs and works, so it is a one-version gap already fixed
+upstream.
+
+**Answer today.** The affected package is carried behind an interpreter-version marker rather
+than omitted, so the group installs on the affected build without it and gains it on the build
+where it works. `2026-07-30-consolidate-optional-extras`.
+
+**Sources.** `openspec/changes/archive/2026-07-30-consolidate-optional-extras/`;
+`threat-model.md` C4; `library-analysis.md`.
+
+---
+
 ## Concurrency & lifetime
 
 ### CONC-01 — Most archives are one byte source, so two concurrent readers of different members contend for one position
@@ -3646,15 +4045,21 @@ receives bytes from the other's position. This is not a defect in any component 
 single shared cursor means. Third-party readers frequently do exactly this, re-seeking on every
 read with no synchronization of their own.
 
-**Symptom.** Reading two members of one archive from two threads returns bytes belonging to
-the wrong member, intermittently, with no error. The corruption is data-dependent and does not
-reproduce under a debugger.
+**Symptom.** Reading two members of one archive returns bytes belonging to the wrong member,
+with no error. It does **not** take two threads: two interleaved reads on one thread are
+enough, because the second read moves the position the first will resume from. Adding threads
+only makes it intermittent and data-dependent as well.
 
 **Evidence.** `dev-docs/investigations/parallel-reader.md:44-60`: the standard tar reader's
 member file object "re-seeks on each `read()`, **no lock**", and the ISO library's stream
 object has "the same shape". The standard zip reader does coordinate seek and read internally,
 but its reference-count updates race without the interpreter lock. Per-format parallelizable
-units and their constraints at `:141-154`.
+units and their constraints at `:141-154`. The single-threaded case is spelled out with a
+worked interleaving in
+`openspec/changes/archive/2026-07-12-shared-source-streams/proposal.md`: two open member
+streams over regions at different offsets, where the second read "leaves the handle at 5100"
+so the first "MUST seek back to 1100 first, or it reads big2's bytes" — "**even in a single
+thread**".
 
 **Answer today.** Concurrency is a declared capability rather than an ambient promise: by
 default one live member stream, no locks, and a second overlapping open fails fast as a usage
