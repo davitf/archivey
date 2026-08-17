@@ -68,7 +68,9 @@ Consequences for this pass:
    the wrong syntactic slot.
 2. **It is a `src/` edit in a docs programme**, which the brief's "no library changes in a
    docs PR" rule does not obviously cover — a docstring changes no behaviour, but it does
-   change `src/`. §Questions Q1 asks rather than assuming.
+   change `src/`. **Decided (Q1):** the constraint is about behaviour, so a docstring
+   promotion rides with the page PR that drains the prose — under a stated carve-out that
+   nothing but a docstring may change.
 3. **§D gates part of it.** A block routed → DS is only *surfaced* if the type has an
    `api.md` entry. `ExtractionStatus`, `AbortOn`, `ExtractionResult`, `CostReceipt`,
    `ArchiveyConfig`, `DiagnosticCode` all have one, so those rulings are safe. The 21
@@ -767,27 +769,71 @@ it depends on — the trap the brief names three times.
 
 # Questions for the maintainer
 
-**Q1 — Does the docstring leg ship inside a docs PR?** Six rulings route a block to a
-docstring, which means editing `src/` (converting an existing `#` comment to a `"""`
-docstring — no behaviour change, no signature change). The brief's hard constraint is "no
-library changes in a docs PR". *Recommendation:* read the constraint as being about
-behaviour, and let docstring-only changes ride with the page PR that removes the prose —
-splitting them means merging a page that links to a docstring that does not exist yet. Say
-if you would rather have one separate docstring PR ahead of the page PRs.
+**All six are answered** (2026-08-17). Q1–Q3 were this pass's own; Q4–Q6 were the
+divergences with #241. Kept here with their reasoning rather than compressed to a verdict
+list, because a fresh container has no memory and the arguments are what stop them being
+re-run. Nothing in pass 0 is now blocked.
 
-**Q2 — Confirm the `support-matrix.md` §Free-threaded ruling.** D-f flagged the 105-line
-section as "not ruled here… it serves a small minority today" and handed it to this pass. I
-have ruled **keep at ~65 lines**: the extras table answers an install question that exists
-nowhere else, and the ~23 lines I am cutting are a fourth copy of the single-stream default
-rather than free-threading content. If your reading of "serves a small minority" was that
-the section should shrink much harder — say to a table plus a link — that is a different
-ruling and cheap to take now.
+**Q1 — Does the docstring leg ship inside a docs PR? — DECIDED 2026-08-17: it rides with
+the page PR.** Six rulings route a block to a docstring, which means editing `src/`
+(promoting an existing `#` comment to a `"""` docstring — no behaviour change, no signature
+change) against the brief's "no library changes in a docs PR". **Maintainer: read that
+constraint as being about behaviour.** Each page PR carries the docstring promotions its
+own cuts depend on, so a page never merges linking to a docstring that does not exist yet
+and a reviewer sees the fact *move* rather than vanish.
 
-**Q3 — §D's shape gates part of pass 6.** `errors-and-diagnostics.md`'s exception table is
-ruled Keep *because* 21 of the exception types have no `api.md` entry. If §D decides to
-enumerate them, that table becomes a lookup and should shrink in the same pass. Not a
-decision to take now, but the two are coupled and the coupling should not be rediscovered
-later.
+**The carve-out, stated so it is not re-argued per PR:** a docs PR may touch `src/` **only**
+to add or reword a docstring or an attribute docstring, with no change to any statement,
+signature, default, annotation or control flow. Anything else — including a one-character
+behaviour fix noticed while writing the docstring — is still `#225`'s shape: a finding, a
+repro, and its own red–green PR. Each page PR that carries a docstring change should say so
+in its body and name the guide block it drains, so the pairing is visible in review.
+
+**The six** (all have `api.md` entries, so all surface): `AbortOn` members ·
+`ExtractionStatus` values · `ExtractionResult` fields where the guide's Need-to-know table
+drains into them · `CostReceipt` fields · `DiagnosticCode.STREAM_REWIND_REDECOMPRESSES` ·
+`ArchiveyConfig` (the config-at-a-glance screen).
+
+**Q2 — `support-matrix.md` §Free-threaded — DECIDED 2026-08-17: keep at ~65 lines.** D-f
+flagged the 105-line section as "not ruled here… it serves a small minority today" and
+handed it to this pass; it is the one block D-f declined to decide. **Maintainer: keep at
+~65** — section 105 → ~65, page 152 → ~115.
+
+What that cuts is **cross-page duplication only**: §The default is fail-fast, not racy (a
+fourth copy of the one-live-stream default, after `reading-members.md:22-28`,
+`access-and-cost.md:125-137` and `philosophy.md:39`), the `ConcurrentAccessError`-outside-
+the-tree paragraph (`errors-and-diagnostics.md:33-39` owns it), and the duplicated "Measured
+on CPython 3.13.7t" line. **No free-threading fact is cut** — the measured extras table, the
+CI-proves scope, the two install consequences, the GIL-still-disabled assertion, the
+what-is-*not*-claimed list and the thread-safety summary all survive.
+
+**The reasoning, recorded because "serves a small minority" will be re-raised:** D-f asks
+whether a reader *acts*, not how many readers there are. The extras table answers "which
+extras keep the GIL disabled on 3.13t", which is an install decision derivable from no other
+page and no docstring. And the section is long *because* the claim is narrow — compressing
+a deliberately scoped safety claim is how it starts sounding broader than CI proves, which
+is O-16's failure mode on the page the outline calls "the most honest page on the site".
+**D-f's open flag is now closed**, not deferred again.
+
+**Q3 — §D's shape — DECIDED 2026-08-17 on *timing*, not on shape: settle §D before pass 6
+writes `errors-and-diagnostics.md`.** The table at `6-32` is ruled Keep *because* 21 of the
+exception types have no `api.md` entry, so it is currently the exception tree's only
+reference; if §D adds those entries, the table becomes a genuine lookup and should shrink
+in the same pass. **Maintainer: resolve the coupling before the prose, not after** — the
+page gets written once, against a known reference surface.
+
+**What is still open: which of the brief's three shapes** — enumerate all 87, enumerate a
+documented subset with the opening sentence corrected, or generate the list. Pass 0 does
+not take that; it is `QUESTIONS.md`'s, and it now carries a **deadline** rather than
+sitting undated: it must be answered before the errors page is written, which puts it
+between step 3 (claim inventory) and step 6 (prose).
+
+**What would settle it**, so the decision is not taken on vibes: the claim inventory says
+how much of the 7-row table is *accurate* and how many of the 21 types a reader is ever
+told about. A tree that is mostly unreferenced argues for generate-the-list plus a
+guardrail; one whose types are already named across four pages argues for enumerating them
+deliberately with the opening sentence fixed. Either way `brief.md` §D requires it to end
+as a test rather than a preference (Definition of done row 8).
 
 *Q4–Q6 are the live disagreements with #241 (see §Cross-check). Each is a deliverable one
 pass has and the other does not, so none of them merges — they are decisions.*
