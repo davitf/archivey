@@ -28,30 +28,34 @@ which means the document does not state a problem at all.
 <!-- KEEP THIS CURRENT AS YOU GO, NOT AT THE END. A fresh container has no memory of
      the session; this section plus the tables below are the entire handoff. -->
 
-**Session 1 (2026-08-17) stopped after the neutral-source groups.** Read in the
-brief's mandated order and complete:
+**Session 1 (2026-08-17).** Read in the brief's mandated order:
 
 | Group | State |
 |---|---|
 | 1. `dev-docs/history/` (5 files) | **complete** |
-| 2. `dev-docs/investigations/` (8) | **3 of 8** — `parallel-reader`, `rapidgzip-upstream-report`, `rar-corpus-sweep-diagnosis`. The four PPMd files and `adr-0014-investigation` are unread; their conclusions reached the catalogue through `known-issues.md` and ADR 0014, so entries exist (`UL-08`–`UL-10`, `UL-18`, `UL-06`, `API-16`) but the primary documents have not been checked for anything those summaries dropped |
+| 2. `dev-docs/investigations/` (8) | **6 of 8** — three read in full; `adr-0014-investigation` and `ppmd-native-investigation-results` read selectively (the sections carrying problems not already in a register), with the method recorded in their rows. Two PPMd files remain `unread — attributed`: their headings were scanned and every problem they state is carried verbatim by `known-issues.md`, but that is a summary's word, not the primary document |
 | 3. Standing registers (4) | **complete** |
 | 4. Unsettled / parked (5) | **unread** |
 | 5. `dev-docs/decisions/` (17 ADRs) | **complete** |
-| 6. `review/archive/*/SUMMARY.md` (11) | **unread** |
-| 7. Archived proposals (72 `## Why`, 57 `design.md`) | **unread** |
+| 6. `review/archive/*/SUMMARY.md` (11) | **complete** |
+| 7. Archived proposals (72 `## Why`, 57 `design.md`) | **unread** — 44 already carry attributed entry ids |
 | 8. Topic 8 harvest | **outstanding** — see §8 |
 
-**Catalogue at this point: 100 entries.** Next action is group 2's remaining five files,
-then groups 4, 6 and 7 in that order (the brief's ordering puts the already-problem-shaped
-sources before the solution-contaminated ones).
+**Catalogue at this point: 128 entries**, with 421 entry-source attributions across 89
+documents (3.3 documents per problem).
 
-**What the read-so-far groups already tell us about the unread ones.** 39 of the 100 entries
-cite `open-issues.md`, which is itself a triage over the reviews and the user-facing gotchas,
-and 24 cite `threat-model.md`. Both aggregate material that originates in the review
-summaries and the proposals. So groups 6 and 7 are expected to yield **more sources per
-existing entry** than new entries — which is the dedupe working, and is why their rows carry
-entry ids rather than being blank.
+**Next action** is group 7 — the 72 proposal `## Why` blocks and then the 57 `design.md`
+files — followed by group 4 and the two remaining PPMd investigations. The brief's ordering
+puts the proposals last because they are the most solution-contaminated and translate
+hardest.
+
+**What the read groups predict about group 7.** 44 of the 72 proposals are already
+attributed at least one entry from a document that *has* been read, because
+`open-issues.md` (39 entries), `threat-model.md` (24) and the review summaries are
+themselves aggregations over them. So group 7 is expected to yield **more sources per
+existing entry than new entries** — which is the dedupe working, and is why those rows carry
+entry ids rather than being blank. A session that finishes group 7 and adds few entries has
+not failed; it has confirmed the merge.
 
 ---
 
@@ -62,22 +66,22 @@ so its problem statements are natively neutral.
 
 | Document | State | Entries |
 |---|---|---|
-| `history/ARCHITECTURE.md` | mined | `FQ-01`, `FQ-03`, `FQ-04`, `FQ-05`, `FQ-06`, `FQ-14`, `FQ-15`, `FQ-16`, `FQ-17`, `FQ-18`, `FQ-19`, `SEC-01`, `SEC-02`, `SEC-03`, `SEC-04`, `PLAT-01`, `PLAT-02`, `PERF-01`, `PERF-02`, `API-03`, `API-04`, `API-06`, `API-07`, `API-08`, `API-10`, `API-11`, `PKG-01`, `PKG-04`, `PKG-05`, `PKG-09`, `CONC-02`, `CONC-04` |
+| `history/ARCHITECTURE.md` | mined | `FQ-01`, `FQ-03`, `FQ-04`, `FQ-05`, `FQ-06`, `FQ-14`, `FQ-15`, `FQ-16`, `FQ-17`, `FQ-18`, `FQ-19`, `FQ-26`, `UL-20`, `SEC-01`, `SEC-02`, `SEC-03`, `SEC-04`, `SEC-20`, `PLAT-01`, `PLAT-02`, `PERF-01`, `PERF-02`, `PERF-07`, `API-03`, `API-04`, `API-06`, `API-07`, `API-08`, `API-10`, `API-11`, `PKG-01`, `PKG-04`, `PKG-05`, `PKG-09`, `CONC-02`, `CONC-04` |
 | `history/ASYNC.md` | mined | `PERF-06`, `API-10` |
 | `history/COMPARISON.md` | mined | `FQ-01`, `FQ-03`, `FQ-05`, `FQ-06`, `FQ-07`, `FQ-08`, `FQ-09`, `FQ-10`, `FQ-11`, `FQ-12`, `FQ-13`, `FQ-14`, `FQ-15`, `FQ-19`, `SEC-01`, `SEC-03`, `PLAT-03`, `PERF-01`, `PERF-02`, `API-02`, `API-03`, `API-04`, `API-05`, `API-08`, `PKG-06`, `PKG-07`, `CONC-02` |
-| `history/SPEC.md` | mined | `FQ-01`, `FQ-02`, `FQ-03`, `FQ-04`, `FQ-05`, `FQ-06`, `FQ-07`, `FQ-08`, `FQ-09`, `FQ-10`, `FQ-11`, `FQ-13`, `FQ-14`, `FQ-15`, `FQ-16`, `FQ-17`, `FQ-18`, `FQ-19`, `FQ-20`, `FQ-21`, `SEC-01`, `SEC-02`, `SEC-03`, `SEC-04`, `PLAT-01`, `PLAT-02`, `PLAT-03`, `PERF-01`, `API-01`, `API-02`, `API-03`, `API-04`, `API-05`, `API-06`, `API-07`, `API-08`, `API-10`, `API-11`, `API-12`, `PKG-01` |
+| `history/SPEC.md` | mined | `FQ-01`, `FQ-02`, `FQ-03`, `FQ-04`, `FQ-05`, `FQ-06`, `FQ-07`, `FQ-08`, `FQ-09`, `FQ-10`, `FQ-11`, `FQ-13`, `FQ-14`, `FQ-15`, `FQ-16`, `FQ-17`, `FQ-18`, `FQ-19`, `FQ-20`, `FQ-21`, `FQ-26`, `SEC-01`, `SEC-02`, `SEC-03`, `SEC-04`, `PLAT-01`, `PLAT-02`, `PLAT-03`, `PERF-01`, `API-01`, `API-02`, `API-03`, `API-04`, `API-05`, `API-06`, `API-07`, `API-08`, `API-10`, `API-11`, `API-12`, `PKG-01` |
 | `history/index.md` | no problem statement — triage router: a status table pointing at the four documents above, with a suggested-triage list. States no problem of its own |  |
 
 ## 2. `dev-docs/investigations/` — 8 files
 
 | Document | State | Entries |
 |---|---|---|
-| `investigations/adr-0014-investigation.md` | unread — attributed | `UL-06`, `API-16` |
-| `investigations/parallel-reader.md` | mined | `FQ-06`, `UL-03`, `PERF-06`, `CONC-01`, `CONC-03`, `CONC-04`, `CONC-05` |
-| `investigations/ppmd-exit-after-green-exploration.md` | unread — attributed | `UL-08`, `UL-10` |
-| `investigations/ppmd-native-investigation-brief.md` | unread — attributed | `UL-08` |
-| `investigations/ppmd-native-investigation-results.md` | unread — attributed | `UL-08`, `UL-09`, `UL-10`, `UL-18` |
-| `investigations/pyppmd-upstream-report.md` | unread — attributed | `UL-08` |
+| `investigations/adr-0014-investigation.md` | mined — §Seek and §`read_exact` read in full; the rest via headings, its conclusions already carried by ADR 0014 | `UL-06`, `API-16`, `API-17`, `API-18`, `API-19` |
+| `investigations/parallel-reader.md` | mined | `FQ-06`, `UL-03`, `PERF-06`, `CONC-01`, `CONC-03`, `CONC-04`, `CONC-05`, `CONC-06` |
+| `investigations/ppmd-exit-after-green-exploration.md` | unread — attributed; headings scanned, no problem absent from `known-issues.md` §exit-after-green found | `FQ-23`, `UL-08`, `UL-10` |
+| `investigations/ppmd-native-investigation-brief.md` | unread — attributed; headings scanned, no problem absent from `known-issues.md` §PPMd found | `FQ-23`, `UL-08` |
+| `investigations/ppmd-native-investigation-results.md` | mined — §B read in full; the rest via headings + `known-issues.md`, which carries its conclusions verbatim | `FQ-23`, `UL-08`, `UL-09`, `UL-10`, `UL-18` |
+| `investigations/pyppmd-upstream-report.md` | mined | `UL-08` |
 | `investigations/rapidgzip-upstream-report.md` | mined | `UL-05`, `UL-06`, `UL-15` |
 | `investigations/rar-corpus-sweep-diagnosis.md` | mined | `FQ-03`, `FQ-18`, `SEC-15`, `PKG-05`, `PKG-09`, `CONC-02` |
 
@@ -85,10 +89,10 @@ so its problem statements are natively neutral.
 
 | Document | State | Entries |
 |---|---|---|
-| `dev-docs/threat-model.md` (9 `O` entries) | mined | `FQ-17`, `UL-02`, `UL-14`, `SEC-01`, `SEC-03`, `SEC-05`, `SEC-06`, `SEC-07`, `SEC-08`, `SEC-09`, `SEC-10`, `SEC-11`, `SEC-12`, `SEC-13`, `SEC-18`, `PLAT-05`, `PERF-06`, `API-09`, `PKG-04`, `PKG-08`, `CONC-01`, `CONC-03`, `CONC-04`, `CONC-05` |
-| `dev-docs/known-issues.md` (6 sections / 709 lines) | mined | `FQ-02`, `FQ-20`, `UL-01`, `UL-02`, `UL-03`, `UL-04`, `UL-05`, `UL-06`, `UL-07`, `UL-08`, `UL-09`, `UL-10`, `UL-15`, `UL-18`, `PKG-03`, `PKG-08`, `CONC-05` |
-| `dev-docs/library-analysis.md` (362 lines) | mined | `FQ-02`, `FQ-12`, `UL-04`, `UL-06`, `UL-07`, `UL-11`, `UL-12`, `UL-13`, `PERF-02`, `PERF-03`, `PERF-04`, `PERF-05`, `PKG-02`, `PKG-03`, `PKG-06`, `PKG-07` |
-| `dev-docs/open-issues.md` (310 lines) | mined | `FQ-02`, `FQ-04`, `FQ-06`, `FQ-07`, `FQ-08`, `FQ-16`, `FQ-17`, `FQ-21`, `FQ-22`, `UL-01`, `UL-02`, `UL-05`, `UL-06`, `UL-08`, `UL-16`, `UL-17`, `UL-18`, `SEC-11`, `SEC-13`, `SEC-14`, `SEC-15`, `SEC-16`, `SEC-17`, `SEC-18`, `PLAT-03`, `PLAT-04`, `PLAT-05`, `PERF-02`, `PERF-04`, `PERF-05`, `API-01`, `API-04`, `API-06`, `API-13`, `API-14`, `PKG-04`, `PKG-08`, `CONC-02`, `CONC-03` |
+| `dev-docs/threat-model.md` (9 `O` entries) | mined | `FQ-17`, `UL-02`, `UL-14`, `SEC-01`, `SEC-03`, `SEC-05`, `SEC-06`, `SEC-07`, `SEC-08`, `SEC-09`, `SEC-10`, `SEC-11`, `SEC-12`, `SEC-13`, `SEC-18`, `SEC-23`, `SEC-24`, `PLAT-05`, `PERF-06`, `API-09`, `PKG-04`, `PKG-08`, `CONC-01`, `CONC-03`, `CONC-04`, `CONC-05` |
+| `dev-docs/known-issues.md` (6 sections / 709 lines) | mined | `FQ-02`, `FQ-20`, `FQ-23`, `UL-01`, `UL-02`, `UL-03`, `UL-04`, `UL-05`, `UL-06`, `UL-07`, `UL-08`, `UL-09`, `UL-10`, `UL-15`, `UL-18`, `PKG-03`, `PKG-08`, `CONC-05` |
+| `dev-docs/library-analysis.md` (362 lines) | mined | `FQ-02`, `FQ-12`, `FQ-25`, `UL-04`, `UL-06`, `UL-07`, `UL-11`, `UL-12`, `UL-13`, `UL-19`, `PERF-02`, `PERF-03`, `PERF-04`, `PERF-05`, `PERF-11`, `PKG-02`, `PKG-03`, `PKG-06`, `PKG-07` |
+| `dev-docs/open-issues.md` (310 lines) | mined | `FQ-02`, `FQ-04`, `FQ-06`, `FQ-07`, `FQ-08`, `FQ-16`, `FQ-17`, `FQ-21`, `FQ-22`, `FQ-24`, `UL-01`, `UL-02`, `UL-05`, `UL-06`, `UL-08`, `UL-16`, `UL-17`, `UL-18`, `SEC-11`, `SEC-13`, `SEC-14`, `SEC-15`, `SEC-16`, `SEC-17`, `SEC-18`, `PLAT-03`, `PLAT-04`, `PLAT-05`, `PERF-02`, `PERF-04`, `PERF-05`, `API-01`, `API-04`, `API-06`, `API-13`, `API-14`, `API-21`, `API-22`, `PKG-04`, `PKG-08`, `CONC-02`, `CONC-03` |
 
 ## 4. Unsettled / parked — 5 files
 
@@ -108,7 +112,7 @@ The **Context** section is the source; the Decision section is field 4 material.
 | Document | State | Entries |
 |---|---|---|
 | `0001-native-7z-not-py7zr.md` | mined — no new entry; its context is stated by earlier sources |  |
-| `0002-native-rar-metadata-unrar-data.md` | mined | `FQ-17`, `PKG-04` |
+| `0002-native-rar-metadata-unrar-data.md` | mined | `FQ-17`, `FQ-26`, `SEC-20`, `PKG-04` |
 | `0003-member-streams-opt-in.md` | mined | `API-15`, `CONC-01` |
 | `0004-streaming-bool-not-intent-enum.md` | mined | `API-05`, `API-15` |
 | `0005-sync-only-v1.md` | mined | `API-10` |
@@ -116,11 +120,11 @@ The **Context** section is the source; the Decision section is field 4 material.
 | `0007-mutable-archive-member.md` | mined | `FQ-01`, `API-03` |
 | `0008-single-accelerator-rapidgzip.md` | mined | `UL-03`, `UL-04`, `CONC-05` |
 | `0009-zstd-stdlib-backports.md` | mined | `UL-11`, `PKG-02`, `PKG-07` |
-| `0010-no-silent-buffer-nonseekable.md` | mined | `FQ-04`, `API-01` |
+| `0010-no-silent-buffer-nonseekable.md` | mined | `FQ-04`, `API-01`, `API-25` |
 | `0011-zero-dependency-core.md` | mined | `PKG-01`, `PKG-06` |
 | `0012-usage-errors-outside-archiveyerror.md` | mined | `API-07` |
 | `0013-cross-platform-name-safety-policies.md` | mined | `SEC-06`, `SEC-07`, `SEC-08`, `SEC-19` |
-| `0014-integrity-verdicts-from-reads-not-close.md` | mined | `UL-06`, `PERF-03`, `API-16` |
+| `0014-integrity-verdicts-from-reads-not-close.md` | mined | `UL-06`, `SEC-22`, `PERF-03`, `API-16`, `API-17`, `API-18`, `API-19` |
 | `0015-zero-filled-files-are-valid-empty-tars.md` | mined | `FQ-20`, `UL-01` |
 | `0016-committed-rar-corpus-fixtures.md` | mined | `PKG-05`, `PKG-09` |
 | `0017-bidi-override-rejection-is-policy-keyed.md` | mined | `SEC-19` |
@@ -133,17 +137,17 @@ the other topics).
 
 | Document | State | Entries |
 |---|---|---|
-| `2026-07-12-codebase-deep-review/SUMMARY.md` | unread — attributed | `UL-01`, `SEC-05` |
-| `2026-07-16-crypto/SUMMARY.md` | unread — attributed | `UL-14`, `SEC-13`, `SEC-14`, `SEC-15`, `SEC-16`, `SEC-17` |
-| `2026-07-16-rar-reader/SUMMARY.md` | unread — attributed |  |
-| `2026-07-16-stream-decoder/SUMMARY.md` | unread — attributed |  |
-| `2026-07-17-cli/SUMMARY.md` | unread — attributed |  |
-| `2026-07-19-api-coherence/SUMMARY.md` | unread — attributed | `API-07`, `API-12` |
-| `2026-07-19-stream-layering/SUMMARY.md` | unread — attributed | `PERF-03`, `API-16` |
-| `2026-07-20-cli-product/SUMMARY.md` | unread — attributed |  |
-| `2026-07-28-debt-ledger/SUMMARY.md` | unread — attributed |  |
-| `2026-07-28-performance/SUMMARY.md` | unread — attributed |  |
-| `2026-08-15-simplicity-consistency/SUMMARY.md` | unread — attributed | `FQ-20`, `SEC-09`, `SEC-10`, `SEC-19`, `API-14`, `PKG-05`, `PKG-09` |
+| `2026-07-12-codebase-deep-review/SUMMARY.md` | mined | `UL-01`, `UL-19`, `SEC-05`, `SEC-21`, `SEC-23`, `PERF-09`, `PERF-10`, `CONC-06` |
+| `2026-07-16-crypto/SUMMARY.md` | mined | `UL-14`, `SEC-13`, `SEC-14`, `SEC-15`, `SEC-16`, `SEC-17`, `SEC-24` |
+| `2026-07-16-rar-reader/SUMMARY.md` | mined | `SEC-20`, `SEC-21`, `SEC-22`, `SEC-24` |
+| `2026-07-16-stream-decoder/SUMMARY.md` | mined | `FQ-25`, `SEC-22`, `PERF-07`, `API-19` |
+| `2026-07-17-cli/SUMMARY.md` | mined — findings table + headline read; the per-theme files are not §Sources rows | `UL-21`, `PLAT-06`, `API-23`, `API-24` |
+| `2026-07-19-api-coherence/SUMMARY.md` | mined | `FQ-24`, `API-07`, `API-12`, `API-18`, `API-22`, `API-24` |
+| `2026-07-19-stream-layering/SUMMARY.md` | mined | `SEC-22`, `PERF-03`, `PERF-08`, `API-16`, `API-17`, `API-19` |
+| `2026-07-20-cli-product/SUMMARY.md` | mined — findings table + headline read; the per-theme files are not §Sources rows | `PLAT-06`, `API-22`, `API-23` |
+| `2026-07-28-debt-ledger/SUMMARY.md` | mined — findings table + headline read; the per-theme files are not §Sources rows | `PERF-09` |
+| `2026-07-28-performance/SUMMARY.md` | mined | `PERF-07`, `PERF-08`, `PERF-09`, `PERF-10` |
+| `2026-08-15-simplicity-consistency/SUMMARY.md` | mined | `FQ-20`, `FQ-26`, `UL-20`, `SEC-09`, `SEC-10`, `SEC-19`, `PERF-11`, `API-14`, `API-20`, `API-21`, `API-24`, `API-25`, `PKG-05`, `PKG-09` |
 
 ## 7. `openspec/changes/archive/*/` — 72 proposals with a `## Why`, 57 with a `design.md`
 
@@ -157,7 +161,7 @@ one. `n/a` in the design column means the change has no `design.md` — that is 
 | `2026-06-27-stream-wrapper-base` | unread | n/a |  |
 | `2026-06-30-compression-library-evaluation` | unread — attributed | n/a | `UL-11`, `PKG-02` |
 | `2026-06-30-package-layout-restructure` | unread | n/a |  |
-| `2026-06-30-phase-3-indexed-leaf-formats` | unread — attributed | n/a | `UL-13` |
+| `2026-06-30-phase-3-indexed-leaf-formats` | unread — attributed | n/a | `FQ-25`, `UL-13` |
 | `2026-07-01-codec-descriptor-refactor` | unread | n/a |  |
 | `2026-07-01-zstd-stdlib-backend-migration` | unread — attributed | n/a | `UL-11` |
 | `2026-07-03-minimal-name-normalization` | unread | unread |  |
@@ -171,9 +175,9 @@ one. `n/a` in the design column means the change has no `design.md` — that is 
 | `2026-07-11-concurrent-member-streams` | unread — attributed | unread | `API-15`, `CONC-01` |
 | `2026-07-11-diagnostics-warnings-as-data` | unread — attributed | unread | `API-09` |
 | `2026-07-11-tar-concurrent-open` | unread — attributed | unread | `CONC-01` |
-| `2026-07-11-zip-multipassword-disambiguation` | unread — attributed | unread | `SEC-14` |
-| `2026-07-12-anti-member-type-and-nonfile-open` | unread | unread |  |
-| `2026-07-12-atheris-fuzz-harness` | unread — attributed | unread | `UL-02`, `SEC-12`, `SEC-18` |
+| `2026-07-11-zip-multipassword-disambiguation` | unread — attributed | unread | `SEC-14`, `SEC-24` |
+| `2026-07-12-anti-member-type-and-nonfile-open` | unread — attributed | unread | `FQ-24` |
+| `2026-07-12-atheris-fuzz-harness` | unread — attributed | unread | `UL-02`, `SEC-12`, `SEC-18`, `SEC-23` |
 | `2026-07-12-hypothesis-property-tests` | unread | unread |  |
 | `2026-07-12-listing-resource-limits` | unread — attributed | unread | `SEC-05` |
 | `2026-07-12-native-7z-reader` | unread | unread |  |
@@ -188,42 +192,42 @@ one. `n/a` in the design column means the change has no `design.md` — that is 
 | `2026-07-14-stored-digest-dedupe-parity` | unread | unread |  |
 | `2026-07-14-vendor-unix-compress-lzw` | unread — attributed | unread | `PERF-05` |
 | `2026-07-14-zip-name-encoding-sniffing` | unread — attributed | unread | `FQ-07` |
-| `2026-07-15-atheris-harness-depth` | unread — attributed | unread | `SEC-18` |
-| `2026-07-15-benchmark-gate` | unread | unread |  |
+| `2026-07-15-atheris-harness-depth` | unread — attributed | unread | `SEC-18`, `SEC-23` |
+| `2026-07-15-benchmark-gate` | unread — attributed | unread | `PERF-09` |
 | `2026-07-15-extraction-progress-in-file` | unread | unread |  |
 | `2026-07-15-rapidgzip-deflate-zlib-acceleration` | unread | unread |  |
 | `2026-07-15-rar-file-version-members` | unread — attributed | unread | `FQ-22` |
 | `2026-07-15-zip-aes-decryption` | unread | unread |  |
 | `2026-07-15-zip-native-codec-streams` | unread | unread |  |
 | `2026-07-16-cross-platform-name-safety` | unread — attributed | unread | `SEC-06`, `SEC-07` |
-| `2026-07-17-cli-v1` | unread | unread |  |
-| `2026-07-18-partial-members-and-errors` | unread — attributed | unread | `PERF-04`, `API-16` |
+| `2026-07-17-cli-v1` | unread — attributed | unread | `UL-21`, `API-23` |
+| `2026-07-18-partial-members-and-errors` | unread — attributed | unread | `PERF-04`, `API-16`, `API-22` |
 | `2026-07-18-sevenzip-header-cursor-parse` | unread | unread |  |
-| `2026-07-19-clarify-extraction-status-names` | unread | unread |  |
+| `2026-07-19-clarify-extraction-status-names` | unread — attributed | unread | `FQ-24` |
 | `2026-07-19-decide-strict-archive-eof-default` | unread — attributed | unread | `UL-01` |
 | `2026-07-19-surface-stored-stream-digests` | unread — attributed | unread | `PERF-03` |
-| `2026-07-20-stop-on-failure-not-policy` | unread | unread |  |
+| `2026-07-20-stop-on-failure-not-policy` | unread — attributed | unread | `API-22` |
 | `2026-07-24-gzip-zlib-truncation-recovery` | unread — attributed | unread | `PERF-04`, `API-16` |
 | `2026-07-24-rapidgzip-truncation-investigation` | unread | unread |  |
 | `2026-07-24-unify-pass-driver` | unread | unread |  |
 | `2026-07-25-gzip-truncation-backstop-any-seekable` | unread | unread |  |
 | `2026-07-30-consolidate-optional-extras` | unread — attributed | unread | `UL-09`, `PKG-03`, `PKG-06` |
-| `2026-07-30-member-stream-capability-booleans` | unread — attributed | unread | `API-15`, `CONC-03` |
+| `2026-07-30-member-stream-capability-booleans` | unread — attributed | unread | `API-15`, `API-20`, `CONC-03` |
 | `2026-07-31-rename-extras-in-remaining-specs` | unread | unread |  |
 | `2026-08-01-short-read-source-contract` | unread | unread |  |
 | `2026-08-03-docs-ia-unpublish-maintainer-tree` | unread | unread |  |
 | `2026-08-04-docs-ia-split-user-guide` | unread | unread |  |
 | `2026-08-06-close-member-streams-on-reader-close` | unread — attributed | n/a | `UL-05`, `UL-16`, `UL-17`, `API-14`, `CONC-03` |
-| `2026-08-06-reject-format-override-on-directory` | unread — attributed | n/a | `API-13` |
+| `2026-08-06-reject-format-override-on-directory` | unread — attributed | n/a | `API-13`, `API-21` |
 | `2026-08-06-spec-drop-unimplemented-solid-warning` | unread | n/a |  |
-| `2026-08-09-decouple-member-metadata-from-declared-seekability` | unread — attributed | unread | `PLAT-01` |
-| `2026-08-09-format-availability-required-source` | unread — attributed | unread | `PKG-01` |
+| `2026-08-09-decouple-member-metadata-from-declared-seekability` | unread — attributed | unread | `PLAT-01`, `API-20` |
+| `2026-08-09-format-availability-required-source` | unread — attributed | unread | `API-25`, `PKG-01` |
 | `2026-08-09-reject-bidi-overrides-in-safe-extraction` | unread — attributed | unread | `SEC-19` |
 | `2026-08-09-review-diagnostics-batch` | unread — attributed | unread | `API-09` |
-| `2026-08-09-rewind-diagnostic-redecode-cost` | unread | unread |  |
+| `2026-08-09-rewind-diagnostic-redecode-cost` | unread — attributed | unread | `PERF-11`, `API-17` |
 | `2026-08-09-strict-archive-eof-trailing-bytes` | unread — attributed | unread | `FQ-20` |
 | `2026-08-15-escape-cli-log-records` | unread — attributed | n/a | `SEC-09` |
-| `2026-08-15-extraction-results-authoritative` | unread — attributed | unread | `API-09` |
+| `2026-08-15-extraction-results-authoritative` | unread — attributed | unread | `API-09`, `API-22` |
 
 ### Archived changes with no `proposal.md` — outside the denominator
 

@@ -1,48 +1,27 @@
-# `catalogue.md` — the problem catalogue (annotated)
+# `catalogue-neutral.md` — the problem catalogue, fields 1–3
 
-Every non-trivial problem this project has had to consider, stated so that **someone who
-has never seen archivey could design against them**. One entry per problem, N sources.
+**Derived, not authored.** Generated from [`catalogue.md`](catalogue.md) by
+`scripts/derive_neutral_catalogue.py`, which strips field 4 ("Answer today") and the
+per-entry source list. Edit `catalogue.md` and re-run the script; a test asserts this
+file matches its output.
 
-Read [`brief.md`](brief.md) first. This file is the **annotated** view — all four fields.
-[`catalogue-neutral.md`](catalogue-neutral.md) is the same catalogue with field 4 stripped,
-and is the artifact the [experiment](experiment.md) is run against.
+This is the artifact the fresh-design comparison is run against
+([`experiment.md`](experiment.md)). It exists as a separate committed file so that
+redaction is not a manual step at experiment time — the failure it prevents is handing a
+frontier model the annotated catalogue by accident, which would invalidate the whole
+exercise.
 
-## Entry schema
+Each entry states a **problem** the world poses, the **symptom** someone observes, and the
+**evidence** that it is real. What any particular library does about it is deliberately
+absent. Categories: format quirk · upstream library defect · security / hostile input ·
+platform & filesystem · performance & memory · API and usage pattern · packaging &
+dependency · concurrency & lifetime.
 
-| # | Field | Rule |
-|---|---|---|
-| 1 | **Problem** | Solution-neutral. What the format, the library, the platform, the attacker or the user does — never what we built |
-| 2 | **Symptom** | What someone actually observes |
-| 3 | **Evidence** | Format spec section, upstream issue, a pinning test, a `file:line`. An entry without evidence is a belief, not a problem |
-| 4 | **Answer today** | The mechanism plus the ADR / change / finding that decided it. **Strippable** |
-
-Plus a stable id, a category, and every source that states it.
-
-### The neutrality rule, and one place the schema needed sharpening
-
-Field 1 may not name an archivey type, module or config field
-([`brief.md`](brief.md) §The neutrality rule). Two consequences the brief does not spell
-out, both adopted here:
-
-1. **Fields 2 and 3 carry the same obligation as field 1**, because the experiment is
-   handed all three. A symptom described as "`ArchiveReader.open()` raises
-   `ConcurrentAccessError`" leaks the design as surely as a problem statement would.
-   Symptoms are therefore written as what an operator or caller *sees*.
-2. **Field 3 cites the demonstration, not the implementation.** A pinning test, an
-   upstream issue, a format spec section, a measurement, or a register entry is evidence
-   that the problem is real. The internal class that *answers* it is field 4 material, and
-   citing it in field 3 would smuggle the solution into the redacted view. Where the only
-   available proof is archivey's own test, the test path is cited (a path like
-   `tests/test_iso.py:362` says a case exists; it does not describe an architecture).
-
-Category prefixes: `FQ` format quirk · `UL` upstream library defect · `SEC` security /
-hostile input · `PLAT` platform & filesystem · `PERF` performance & memory · `API` API and
-usage pattern · `PKG` packaging & dependency · `CONC` concurrency & lifetime.
-
-Ids are stable. A merged duplicate keeps the surviving id and gains the merged entry's
-sources; the retired id is listed in §Retired ids rather than reused.
+Entry ids are stable and shared with the annotated catalogue, so a finding against an
+entry here can be traced back.
 
 ---
+
 
 ## Format quirk
 
@@ -66,17 +45,6 @@ nothing to work from on exactly the archives that stream.
 RFC 1952 §2.3.1 (gzip `CRC32`/`ISIZE` trailer). Stated at
 `dev-docs/history/SPEC.md:341-347` and `dev-docs/history/ARCHITECTURE.md:73-88`.
 
-**Answer today.** The member object is a mutable dataclass and the library fills late
-fields in place on the object the caller already holds, so a caller under a single forward
-pass sees the late values without re-fetching; callers are contractually read-only and
-edit via a copy. Decided in ADR
-[`0007-mutable-archive-member`](../../dev-docs/decisions/0007-mutable-archive-member.md);
-consequences (unhashability, filters copy-on-edit) at `ARCHITECTURE.md:95-101` and
-§2.10.
-
-**Sources.** `history/SPEC.md` §4.4, §10.1; `history/ARCHITECTURE.md` §2.1, §2.10, §5.2;
-`history/COMPARISON.md` §4.2; ADR 0007.
-
 ---
 
 ### FQ-02 — A gzip stream's stored length is the true length modulo 2³²
@@ -92,15 +60,6 @@ against the stored length fails on a correct decode, or passes on a truncated on
 
 **Evidence.** RFC 1952 §2.3.1 (`ISIZE`, "the size of the original input data modulo 2^32").
 Recorded at `dev-docs/history/SPEC.md:949`.
-
-**Answer today.** Size is reported as unknown rather than guessed for gzip members, and
-the trailer length is used only as a single-member truncation backstop where the payload is
-small enough for the comparison to be meaningful; multi-member summing is deferred.
-`dev-docs/library-analysis.md` §gzip note 1; `dev-docs/known-issues.md` §"Soft EOF on
-truncated gzip".
-
-**Sources.** `history/SPEC.md` §10.3; `library-analysis.md`; `known-issues.md`;
-`open-issues.md` (Irreducible).
 
 ---
 
@@ -124,14 +83,6 @@ in (or encrypted within) the member's data"); `SPEC.md:1000-1002` and
 comparison in `dev-docs/investigations/rar-corpus-sweep-diagnosis.md:66-76` (ZIP stores 9
 bytes of target as data, 7z 45 bytes, TAR none, RAR5 none).
 
-**Answer today.** Link targets are treated as late-bound like sizes (FQ-01) and filled in
-place during the pass; a report peek is documented as possibly having unresolved targets,
-while the resolved-list calls guarantee them.
-`ARCHITECTURE.md:262-269`; `SPEC.md:168`.
-
-**Sources.** `history/SPEC.md` §4.4, §3.2, §10.5; `history/ARCHITECTURE.md` §2.1, §2.4, §8;
-`history/COMPARISON.md` §4.2; `investigations/rar-corpus-sweep-diagnosis.md`.
-
 ---
 
 ### FQ-04 — Some formats put their index at the end of the file
@@ -151,16 +102,6 @@ caller wanted. The failure appears at open time, before any member is touched.
 directory record). Recorded at `dev-docs/history/SPEC.md:902,911`;
 `dev-docs/open-issues.md` §Irreducible ("ZIP / ISO need seek — no pure-pipe path").
 
-**Answer today.** A non-seekable source for a format that needs an index at the end is
-refused at open time with an error advising the caller to buffer and reopen; the library
-never buffers implicitly. Decided in ADR
-[`0010-no-silent-buffer-nonseekable`](../../dev-docs/decisions/0010-no-silent-buffer-nonseekable.md).
-A native streaming reader that could handle the pipe case is registered as future work
-(`open-issues.md` §Longer-term, "Native streaming ZIP").
-
-**Sources.** `history/SPEC.md` §10.1; `history/ARCHITECTURE.md` §2.12; `open-issues.md`
-§Irreducible, §Longer-term; ADR 0010.
-
 ---
 
 ### FQ-05 — Some formats have no index at all, so enumerating members costs a full read
@@ -179,14 +120,6 @@ invisible to a caller who does not know which format they hold.
 **Evidence.** POSIX.1-2017 `pax` Interchange Format / ustar header block layout. Recorded
 at `dev-docs/history/SPEC.md:920` (listing cost "O(N) — no central directory") and
 `dev-docs/history/ARCHITECTURE.md:526-533`.
-
-**Answer today.** Listing cost is a declared, queryable property of the opened archive
-(indexed / requires scanning / requires decompression) rather than something the caller has
-to infer from the extension, and a member list is never materialized unless asked for.
-`ARCHITECTURE.md` §2.12, §2.4.
-
-**Sources.** `history/SPEC.md` §10.2; `history/ARCHITECTURE.md` §2.4, §2.12, §7.2;
-`history/COMPARISON.md` §2.
 
 ---
 
@@ -208,17 +141,6 @@ small file from the end of a large solid archive costs as much as extracting all
 concatenation of its files, sizes from the header): `dev-docs/history/ARCHITECTURE.md:836-847`.
 `dev-docs/history/SPEC.md:957,981`; `dev-docs/open-issues.md` §Irreducible ("Solid
 archives: out-of-order `open()` can re-decode").
-
-**Answer today.** Access cost (direct vs solid) and the solid block count are declared on
-the opened archive; the in-order streaming pass is the documented way to read every member
-once, and an out-of-order open re-decodes from the block start rather than holding a
-growing cache. Whether an out-of-order open should also *warn* was decided as "no
-diagnostic" and parked as an open question — `spec-drop-unimplemented-solid-warning`,
-`open-issues.md` P9.
-
-**Sources.** `history/SPEC.md` §10.4, §10.5; `history/ARCHITECTURE.md` §2.12, §5.6, §7.3,
-§7.4; `history/COMPARISON.md` §4.4; `open-issues.md` §Irreducible, P9;
-`investigations/parallel-reader.md` §5.
 
 ---
 
@@ -242,15 +164,6 @@ flagged names makes one bad name render the whole archive unlistable);
 `history/SPEC.md:363-366,440-445` (the verbatim stored bytes are retained precisely so a
 wrong guess can be undone).
 
-**Answer today.** The decoded name and the verbatim stored bytes are both carried, so a
-name can be re-decoded losslessly under another encoding; encoding is sniffed for ZIP
-(`2026-07-14-zip-name-encoding-sniffing`) and normalization that changes a logical path
-emits a diagnostic. The strict-UTF-8-flag failure mode remains open, tied to a native ZIP
-parser (`open-issues.md` P4).
-
-**Sources.** `history/SPEC.md` §4.4; `history/COMPARISON.md` §2, §4.12; `open-issues.md` P4;
-`openspec/changes/archive/2026-07-14-zip-name-encoding-sniffing/`.
-
 ---
 
 ### FQ-08 — Two members of one archive can carry the same name
@@ -269,13 +182,6 @@ loses data without any error.
 **Evidence.** POSIX.1-2017 `pax`/ustar (append semantics; no uniqueness constraint).
 Recorded at `dev-docs/history/COMPARISON.md:144` ("duplicate filenames are real (TAR, 7z)
 and CSP's name-keyed model mishandles them") and `dev-docs/open-issues.md:233`.
-
-**Answer today.** Members carry a stable positional identity independent of their name, and
-name lookup is documented as last-wins; hardlink resolution is defined against that
-positional identity ("earlier member with that name") rather than the name alone.
-`ARCHITECTURE.md:144`, `SPEC.md:415-417`; `open-issues.md:233-234`.
-
-**Sources.** `history/COMPARISON.md` §4.2; `history/SPEC.md` §4.4; `open-issues.md` §Docs.
 
 ---
 
@@ -299,14 +205,6 @@ field `0x5455` extended timestamp); POSIX.1-2017 `pax` extended header keywords
 (`mtime` with sub-second precision). Recorded at `dev-docs/history/SPEC.md:906,927-928,
 996-998` and `history/COMPARISON.md:57`.
 
-**Answer today.** A timestamp is exposed as timezone-aware when the format records UTC or
-an offset and naive when the format records local wall-clock, with the distinction
-documented rather than papered over; the higher-precision extra field is preferred where
-present. Cross-format equivalence testing compares only the fields a format can carry
-(`ARCHITECTURE.md:396`).
-
-**Sources.** `history/SPEC.md` §4.4, §10.1, §10.2, §10.5; `history/COMPARISON.md` §2, §4.12.
-
 ---
 
 ### FQ-10 — Permissions and ownership are optional or absent in most formats
@@ -327,12 +225,6 @@ either way.
 / host system). Recorded at `dev-docs/history/SPEC.md:905,972` ("7z POSIX metadata lives in
 an optional attribute block (absent → `mode`/`uid`/`gid` are `None`)").
 
-**Answer today.** Unrecorded metadata is an explicit "unknown" value rather than a
-substituted default — a design authority stated at `SPEC.md:13`: an unmappable format quirk
-surfaces as a documented `None`/unknown, "never as a silent guess, default, or exception".
-
-**Sources.** `history/SPEC.md` §1, §4.4, §10.1, §10.4; `history/COMPARISON.md` §4.2.
-
 ---
 
 ### FQ-11 — ISO 9660 images carry the same tree several times, at different fidelity
@@ -351,12 +243,6 @@ other. Which one a caller gets depends on a choice they did not know was being m
 the Rock Ridge Interchange Protocol and Joliet specifications. Recorded at
 `dev-docs/history/SPEC.md:1016`.
 
-**Answer today.** The richest available namespace is selected in a fixed priority order and
-the choice is reported on the opened archive's metadata so a caller can see which view they
-got. `SPEC.md:1016`.
-
-**Sources.** `history/SPEC.md` §10.6; `history/COMPARISON.md` §2.
-
 ---
 
 ### FQ-12 — Some compressed formats have no magic bytes to detect them by
@@ -372,13 +258,6 @@ no trailer, a brotli stream cut short cannot be distinguished from one that ende
 
 **Evidence.** RFC 7932 (brotli; no container header, no trailing checksum). Recorded at
 `dev-docs/library-analysis.md:57,309-315` and `history/COMPARISON.md:205`.
-
-**Answer today.** Brotli is detected by trial-decoding a bounded prefix, and truncation is
-reported only via "the decompressor never reported finished at end of input" — recorded as a
-partial capability in the per-codec truncation column
-(`library-analysis.md` §Summary, note 2).
-
-**Sources.** `library-analysis.md` §Summary, §brotli; `history/COMPARISON.md` §4.9.
 
 ---
 
@@ -396,15 +275,6 @@ opaque blob where they expected a directory tree, or vice versa.
 **Evidence.** RFC 1952 (gzip: `FNAME` is optional and carries no content type). Recorded at
 `dev-docs/history/COMPARISON.md:205` ("decompress a sample to find tar inside gz/bz2/xz/zstd
 — disambiguates `.tar.gz` from `.gz`") and `history/SPEC.md:936`.
-
-**Answer today.** Detection decompresses a bounded sample and probes for a tar header
-inside it, so the container/stream pair is a derived fact rather than an extension guess;
-the format model is a composite of container and stream rather than a flat enum, so
-"compressed tar" needs no separate enum member. `history/COMPARISON.md` §4.3;
-`openspec/changes/archive/2026-07-04-inner-tar-probe-block-codecs/`.
-
-**Sources.** `history/COMPARISON.md` §2, §4.3, §4.9; `history/SPEC.md` §10.2;
-`openspec/changes/archive/2026-07-04-inner-tar-probe-block-codecs/`.
 
 ---
 
@@ -426,13 +296,6 @@ of this.
 with offsets, and the ISO caveat requiring a 32 774-byte peek) and `history/COMPARISON.md:205`
 (SFX executables with embedded archives).
 
-**Answer today.** The detection read is bounded by default and raised to the ISO
-requirement only when that format is suspected; the peeked prefix is never discarded, so a
-larger peek costs buffering but not data. `SPEC.md` §8.1–8.3.
-
-**Sources.** `history/SPEC.md` §8.1, §8.2, §8.3; `history/ARCHITECTURE.md` §2.5;
-`history/COMPARISON.md` §4.9.
-
 ---
 
 ### FQ-15 — Detection has to read bytes it is not allowed to consume
@@ -448,15 +311,6 @@ calls a standalone "what is this?" helper on a stream they intend to keep readin
 damages it.
 
 **Evidence.** `dev-docs/history/SPEC.md:764,784-804`; `history/ARCHITECTURE.md:274-299`.
-
-**Answer today.** The opener wraps a non-seekable source in a read-ahead buffer *before*
-detection and hands the same wrapper to detection and to the backend, so the peeked prefix
-is replayed to the parser; detection itself consumes nothing and a caller invoking it
-directly on a raw non-seekable stream must supply the wrapper.
-`SPEC.md` §8.3; `ARCHITECTURE.md` §2.5.
-
-**Sources.** `history/SPEC.md` §8.1, §8.3; `history/ARCHITECTURE.md` §2.5;
-`history/COMPARISON.md` §4.9.
 
 ---
 
@@ -474,13 +328,6 @@ corrupted bytes that no checksum was consulted to reject.
 **Evidence.** 7-Zip's BCJ2 coder definition (four packed streams: main, call, jump, range
 coder). Recorded at `dev-docs/history/ARCHITECTURE.md:854-855,961` and
 `history/SPEC.md:963-964`.
-
-**Answer today.** The filter is detected and refused with an unsupported-feature error —
-explicitly "never garbage output and never a fallback to a third-party reader"
-(`ARCHITECTURE.md:854-855`). Listed as irreducible in `open-issues.md` §Irreducible.
-
-**Sources.** `history/ARCHITECTURE.md` §5.6, §7.3; `history/SPEC.md` §10.4;
-`open-issues.md` §Irreducible.
 
 ---
 
@@ -501,15 +348,6 @@ engineering to create a RAR compressor). Recorded at
 `dev-docs/history/ARCHITECTURE.md:882-885` and `dev-docs/threat-model.md:347-359` (C1: the
 decompressor matrix — `unrar` non-free, `unrar-free` handles little of RAR5, `7z`/`bsdtar`
 coverage varies by build, `unar` on macOS).
-
-**Answer today.** Metadata is parsed natively so listing needs no external tool, and member
-data is delegated to the vendor binary only. Exactly one binary is accepted — no silent
-fallback across the tool matrix — decided in ADR
-[`0002-native-rar-metadata-unrar-data`](../../dev-docs/decisions/0002-native-rar-metadata-unrar-data.md)
-and closed as won't-do in `threat-model.md` C1.
-
-**Sources.** `history/ARCHITECTURE.md` §5.7, §7.4; `history/SPEC.md` §10.5;
-`threat-model.md` C1; `open-issues.md` §Irreducible; ADR 0002.
 
 ---
 
@@ -534,14 +372,6 @@ without decompressing sees every link in every archive as identical.
 TAR no digest; RAR5 `0x00000000`, **0 bytes stored** (`unrar lt` reports `Packed size: 0`).
 RAR3/4 stores the target as member data, so its CRC32 *is* a genuine digest of it.
 
-**Answer today.** The digest is surfaced or withheld according to the storage shape (a
-redirect surfaces no digest) rather than the member type, which is what keeps the RAR3/4
-genuine digest while dropping the RAR5 constant. Fixed in the RAR reader, with the corpus
-assertion restored (`rar-corpus-sweep-diagnosis.md:96-100`).
-
-**Sources.** `investigations/rar-corpus-sweep-diagnosis.md`; `history/ARCHITECTURE.md` §8;
-`history/SPEC.md` §10.5.
-
 ---
 
 ### FQ-19 — A hard link points backwards; a symbolic link may point anywhere
@@ -561,15 +391,6 @@ destination outside where extraction was asked to write.
 previously archived file). Recorded at `dev-docs/history/SPEC.md:168`,
 `history/ARCHITECTURE.md:202-207,349,374`, and the adversarial-corpus obligations at
 `history/SPEC.md:1140-1141`.
-
-**Answer today.** Link chains are followed with cycle detection over visited members rather
-than a depth cap, a missing target is a distinct typed error, and hard links are resolved in
-one forward pass because the target precedes the link. A symlink whose target is a later
-member is rejected in forward-only mode and deferred to a final check in random access.
-`ARCHITECTURE.md` §2.6, §2.7, §8; `SPEC.md` §3.2.
-
-**Sources.** `history/SPEC.md` §3.2, §7, §14.2; `history/ARCHITECTURE.md` §2.3, §2.6, §2.7,
-§8; `history/COMPARISON.md` §4.5.
 
 ---
 
@@ -602,20 +423,6 @@ metadata-only layer. Surveyed on a development machine: 87 % of real archives ar
 10 240-aligned against 5 % of Go's test corpus. POSIX.1-2017 `pax` end-of-archive marker;
 ustar `magic` at offset 257, inside a header.
 
-**Answer today.** Zero members is never an error under any configuration; the observation
-is *reported* instead — an empty-archive advisory, plus one saying the format came from the
-extension and content detection would not have confirmed it. A canonical-size heuristic was
-considered three times across two review rounds and rejected each time: it is unsound
-(`tar -b 64` output is valid and the rule calls it suspect), it can only suppress an
-advisory that is *true*, and it is quirk-driven architecture. The adjacent question —
-appended junk after the trailer — stays a caller opt-in that deliberately does not fire
-here, because zeros to end-of-file is exactly what an empty archive is. ADR 0015;
-`2026-08-09-strict-archive-eof-trailing-bytes` (finding F20 / O8).
-
-**Sources.** ADR 0015; `history/SPEC.md` §10.2; `known-issues.md` §tarfile;
-`review/archive/2026-08-15-simplicity-consistency/` (F20, O8a/O8b);
-`openspec/changes/archive/2026-08-09-strict-archive-eof-trailing-bytes/`.
-
 ---
 
 ### FQ-21 — Multi-file archives spread one logical archive over several files
@@ -634,12 +441,6 @@ opened. A member larger than a volume cannot be read from any single file.
 P2 ("Multi-volume / split ZIP (`.z01`…`.zip`) … detected and rejected") and
 `history/SPEC.md:994` (RAR volume joining).
 
-**Answer today.** RAR and 7z volumes are joined; split ZIP is detected and refused with an
-unsupported-feature error advising the caller to rejoin first, with a native streaming ZIP
-reader named as the place volume support would land (`open-issues.md` P2, §Longer-term).
-
-**Sources.** `open-issues.md` P2, §Longer-term; `history/SPEC.md` §10.5.
-
 ---
 
 ### FQ-22 — A format may record file version history as ordinary members
@@ -655,11 +456,6 @@ each over the last, leaving whichever the archive happened to order last.
 **Evidence.** RAR file-version records (`unrar` `-ver` switch). Recorded at
 `dev-docs/open-issues.md:232` ("RAR5 `-ver` history rows in `members()`") and specified in
 `openspec/changes/archive/2026-07-15-rar-file-version-members/`.
-
-**Answer today.** Version rows are surfaced as members rather than hidden, and the behaviour
-is documented as a user-facing gotcha (`open-issues.md:232`, closed).
-
-**Sources.** `open-issues.md` §Docs; `openspec/changes/archive/2026-07-15-rar-file-version-members/`.
 
 ---
 
@@ -692,16 +488,6 @@ is exhausted"; and the binding's reader blocks instead (`ThreadDecoder.c:70-81`)
 round-trips through the binding's own encoder needed the synthetic byte in **0 of 60 768**
 trials — which is why the requirement is invisible until a real-world archive arrives.
 
-**Answer today.** At compressed end-of-input, at most one synthetic zero byte is injected,
-and the injection is **bounded to a small cap** rather than to the remaining declared size —
-because the same call with a large request is the overshoot crash primitive of UL-08.
-Anything still missing after that is reported as truncation rather than pumped in a loop.
-`known-issues.md` §Mitigation in archivey; `ppmd-native-investigation-results.md` §B, §I.
-
-**Sources.** `investigations/ppmd-native-investigation-results.md` §B;
-`investigations/ppmd-native-investigation-brief.md` §"Extra NUL";
-`investigations/ppmd-exit-after-green-exploration.md` §"Trailing `0x00`"; `known-issues.md`.
-
 ---
 
 ### FQ-24 — Some formats record the *deletion* of a file as a member, and most do not
@@ -729,20 +515,6 @@ current and default extraction **fails** on `tar -rf` output. The same review's
 pass, and that tombstone entries are themselves *current*, so "current only" still shows
 them.
 
-**Answer today.** Last-entry-wins currency is computed uniformly in the spine for every
-format rather than by the two backends that had it, and a skip because a member was
-superseded is a distinct outcome from a skip because the destination existed. The member
-list keeps returning everything and there is no include/exclude argument — with currency
-meaning the same thing everywhere, a one-line caller-side predicate covers the need, and the
-existing selectors already accept predicates. `review/archive/2026-07-19-api-coherence/`
-P1/E3 (implemented in `#153`–`#157`); `2026-07-12-anti-member-type-and-nonfile-open`;
-`2026-07-19-clarify-extraction-status-names`.
-
-**Sources.** `review/archive/2026-07-19-api-coherence/SUMMARY.md` (P1, E3, `parity.md`,
-`members-scope.md`); `open-issues.md` §Docs;
-`openspec/changes/archive/2026-07-12-anti-member-type-and-nonfile-open/`;
-`openspec/changes/archive/2026-07-19-clarify-extraction-status-names/`.
-
 ---
 
 ### FQ-25 — An index over a multi-stream compressed file legitimately holds several entries for one offset
@@ -768,16 +540,6 @@ container specification permits both shapes. That review also records why no exi
 could catch it: every seek test read forward to end-of-file *before* seeking, the one
 ordering that hides trigger (a).
 
-**Answer today.** Same-offset collisions resolve by refinement rather than being treated as
-impossible — the failure was a bare assertion, which is both an untyped crash and, with
-assertions disabled, a silent wrong seek. Fixed in `#128`; the review also notes that a
-randomized seek-math property test would have found it, and that the sibling format is
-immune because all its points carry no decoder state.
-`review/archive/2026-07-16-stream-decoder/` F1/F5.
-
-**Sources.** `review/archive/2026-07-16-stream-decoder/SUMMARY.md` (F1, F5);
-`library-analysis.md` §xz; `openspec/changes/archive/2026-06-30-phase-3-indexed-leaf-formats/`.
-
 ---
 
 ### FQ-26 — A format that encrypts its index cannot be listed without the key
@@ -798,15 +560,8 @@ classified as "format law + docs gap": header-encrypted 7z and RAR require the p
 open "(format law — the listing is ciphertext)" while the published laziness rule stated no
 bound. `dev-docs/history/SPEC.md:1004` (header encryption: "listing requires the password").
 
-**Answer today.** The bound is documented as an exception to the laziness rule (API-14)
-rather than the rule being weakened; header encryption is also decrypted natively so that a
-header-encrypted archive can still be *listed* without the external tool (FQ-17).
-`review/archive/2026-08-15-simplicity-consistency/` F9 → Q9 (docs-only).
-
-**Sources.** `review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` (F9);
-`history/SPEC.md` §10.5; `history/ARCHITECTURE.md` §5.7; ADR 0002.
-
 ---
+
 
 ## Security / hostile input
 
@@ -826,14 +581,6 @@ chose, overwriting whatever the process has permission to overwrite.
 `C:\Windows\System32\evil.dll`). Layered defence recorded at
 `history/ARCHITECTURE.md:683-698`.
 
-**Answer today.** Three independent layers: a string check on the member name before any
-I/O, a resolved-path containment check against the destination before writing, and a
-re-resolution after link creation. The name check is non-bypassable — it applies even under
-the most permissive policy (`SPEC.md:698`).
-
-**Sources.** `history/SPEC.md` §7.1, §14.2; `history/ARCHITECTURE.md` §4.1;
-`history/COMPARISON.md` §4.5; `threat-model.md` (published half).
-
 ---
 
 ### SEC-02 — An archive can rewrite its own destination as it is being extracted
@@ -852,12 +599,6 @@ outside the destination. Each individual check passes; the sequence defeats them
 adversarial-corpus obligations at `dev-docs/history/SPEC.md:1140`. Layer 3 rationale at
 `history/ARCHITECTURE.md:693,697-698`.
 
-**Answer today.** Every link is re-resolved immediately after creation and removed with a
-typed escape error if the resolved target leaves the destination, rather than checking only
-the stored string before creation. `ARCHITECTURE.md` §2.7, §4.1.
-
-**Sources.** `history/ARCHITECTURE.md` §2.7, §4.1; `history/SPEC.md` §7.1, §14.2.
-
 ---
 
 ### SEC-03 — Compressed data can expand without bound, and the archive declares the expansion
@@ -875,14 +616,6 @@ magnitude, in either direction.
 **Evidence.** The `42.zip` family (outer layer ~391:1; nested layers multiply);
 `dev-docs/history/ARCHITECTURE.md:814-824` and `SPEC.md:1136,1144` (adversarial corpus:
 zip bombs, and "member claims 1 TiB size but archive is 1 KiB").
-
-**Answer today.** A cumulative output-byte cap plus a per-member ratio cap, both enforced as
-bytes are written rather than from declared sizes, with an entry-count cap alongside; the
-caps live on one limits object with an explicit unlimited value for trusted input.
-`ARCHITECTURE.md` §4.2, §5.5.
-
-**Sources.** `history/ARCHITECTURE.md` §4.2, §5.5; `history/SPEC.md` §7.3, §14.2;
-`history/COMPARISON.md` §4.5; `threat-model.md`.
 
 ---
 
@@ -903,13 +636,6 @@ at `dev-docs/history/SPEC.md:1137` ("a tiny but highly-compressible legitimate f
 10 bytes → 15 KiB, 1500:1) — verify it extracts **without** error"). Typical ratios for
 comparison at `history/ARCHITECTURE.md:820`.
 
-**Answer today.** The ratio check is armed only after a member's own output crosses an
-absolute activation floor (5 MiB by default), so ratios on small members are never
-evaluated; the cumulative byte cap covers what the ratio check declines to judge.
-`ARCHITECTURE.md:740-747`, `SPEC.md:743`.
-
-**Sources.** `history/SPEC.md` §7.3, §14.2; `history/ARCHITECTURE.md` §4.2, §5.5.
-
 ---
 
 ### SEC-05 — Enumerating an archive's metadata is itself unbounded work
@@ -928,15 +654,6 @@ ever read and no byte ever written to disk.
 [open] before [the listing] caps apply"). Specified in
 `openspec/changes/archive/2026-07-12-listing-resource-limits/`.
 
-**Answer today.** Caps on member count and on retained metadata bytes are enforced when a
-member list is materialized, with format-local parser bounds as defence in depth; the
-forward-only unbounded iteration path is left unguarded deliberately as the O(1) escape
-hatch. Residual: indexed-format parser ceilings apply before the spine caps
-(`threat-model.md` O1).
-
-**Sources.** `threat-model.md` O1; `openspec/changes/archive/2026-07-12-listing-resource-limits/`;
-`review/archive/2026-07-12-codebase-deep-review/`.
-
 ---
 
 ### SEC-06 — Two names that differ in the archive are one file on the filesystem
@@ -954,18 +671,6 @@ some machines and not others. Under a fail-on-existing policy it instead reports
 **Evidence.** `dev-docs/threat-model.md:34-58` (O2, with the pre-fix behaviour recorded);
 Unicode Standard Annex #15 (normalization forms). Decided in ADR
 [`0013-cross-platform-name-safety-policies`](../../dev-docs/decisions/0013-cross-platform-name-safety-policies.md).
-
-**Answer today.** A casefolded, NFC-normalized key is tracked per written path and a
-collision is treated as a first-class event on **every** platform, not only on the ones
-where it manifests; the overwrite policy is then applied deliberately, a rename option
-exists, and the outcome is recorded per member. Only content-bearing members are tracked:
-directory entries recur structurally (auto-created parents, re-listed directory members) and
-merge by design, so folding them in would break legitimate archives. Residual: a
-file-versus-directory collision differing only by case stays OS-dependent, deferred rather
-than risk regressing normal directory handling (ADR 0013, `threat-model.md` O2).
-
-**Sources.** `threat-model.md` O2; ADR 0013;
-`openspec/changes/archive/2026-07-16-cross-platform-name-safety/`.
 
 ---
 
@@ -990,15 +695,6 @@ folder failed an entire extraction, and under continue-on-error would instead "*
 drop the folder and every file under it*, since they share the segment". Decided in ADR
 [`0013-cross-platform-name-safety-policies`](../../dev-docs/decisions/0013-cross-platform-name-safety-policies.md).
 
-**Answer today.** Reserved device names and `:` are rejected under the two safe policies on
-every platform; a trailing dot or space is stripped to its portable spelling under the
-strictest policy, deterministically and collision-tracked, with the pre-rewrite name
-recorded per member so the archive name, a caller's rename, and the on-disk spelling stay
-three distinguishable strings. ADR 0013, `threat-model.md` O3.
-
-**Sources.** `threat-model.md` O3, O4; ADR 0013;
-`openspec/changes/archive/2026-07-16-cross-platform-name-safety/`.
-
 ---
 
 ### SEC-08 — A name can be representable as bytes and still unwritable
@@ -1017,13 +713,6 @@ extraction.
 **Evidence.** `dev-docs/threat-model.md:162-181` (O7, naming `caf\udce9.txt` → `EILSEQ` on
 APFS); pinning test `tests/test_extraction.py:253`
 (`test_unrepresentable_name_oserror_is_translated`). PEP 383 (surrogateescape).
-
-**Answer today.** Non-UTF-8 bytes are percent-escaped to a deterministic, reversible
-portable spelling under the two safe policies on every platform, and collision-tracked;
-names that cannot be encoded at all are rejected; a write-time encoding error is translated
-to a typed extraction error naming the member. ADR 0013, `threat-model.md` O7.
-
-**Sources.** `threat-model.md` O7; ADR 0013.
 
 ---
 
@@ -1047,17 +736,6 @@ site, and the note that Windows refuses control bytes in filenames (`WinError 12
 failure path is itself a reporting path. GNU `ls`/`tar` quote output for the same reason.
 Pinning tests: `tests/test_escaping.py`, `tests/test_cli.py::test_extract_escapes_*`.
 
-**Answer today.** Archive-derived text is made inert where it *becomes* a message rather
-than where a message is displayed: error and diagnostic messages escape at construction, so
-every route to a terminal is covered including an uncaught traceback's final line.
-`escape-cli-log-records` (`threat-model.md` O9). Two rules are guarded by static tests
-because either failure is invisible except against a hostile archive: escape exactly once
-(52 sites interpolating `{name!r}` were converted), and keep `%r` at logger call sites since
-the handler no longer escapes.
-
-**Sources.** `threat-model.md` O9; `openspec/changes/archive/2026-08-15-escape-cli-log-records/`;
-`review/archive/2026-08-15-simplicity-consistency/`.
-
 ---
 
 ### SEC-10 — Escaping text for display is itself easy to get wrong
@@ -1080,13 +758,6 @@ surrogateescape range stated as `U+DC00`–`U+DFFF` rather than the `U+DC80`–`
 PEP 383 actually produces, reversing 768 code points; and `U+009B` colliding with an escaped
 byte `0x9B`. Pinning tests in `tests/test_escaping.py`.
 
-**Answer today.** Rendering delegates to the language's own `repr`, whose escape set was
-verified across the whole code space to be exactly the non-printable characters, and the
-guarantee is restated as inertness rather than unique recoverability.
-`threat-model.md` O9 §Escaping correctness.
-
-**Sources.** `threat-model.md` O9; `review/archive/2026-08-15-simplicity-consistency/`.
-
 ---
 
 ### SEC-11 — An archive can be a container for itself
@@ -1100,13 +771,6 @@ backups) does exactly that recursion, so the hazard is on the main path, not an 
 an archive that opens and lists perfectly at every individual level.
 
 **Evidence.** `dev-docs/threat-model.md:154-160` (O6, naming `droste.zip`).
-
-**Answer today.** Recursion is caller-driven, so nothing loops unless the caller loops; the
-stance is documented with a bounded-recursion recipe as the remaining work
-(`threat-model.md` O6, `open-issues.md` §Longer-term). **Partly unresolved** — the explicit
-documented stance is recorded as still owed.
-
-**Sources.** `threat-model.md` O6; `open-issues.md` §Longer-term, §Irreducible.
 
 ---
 
@@ -1125,12 +789,6 @@ then fail, or the caller finds a file where it expected a tree.
 (`bitflip@107:0x10` on `adversarial-tar.tar.gz`). Pinning tests
 `tests/test_extraction.py:154` (`test_check_universal_rejects_root_named_file`) and
 `test_extract_error_when_dest_is_a_file`.
-
-**Answer today.** The universal name check rejects a non-directory member naming the
-extraction root, and the parametrized fuzz loop asserts the destination is still a directory
-after any successful extraction (`threat-model.md` O5).
-
-**Sources.** `threat-model.md` O5; `openspec/changes/archive/2026-07-12-atheris-fuzz-harness/`.
 
 ---
 
@@ -1158,15 +816,6 @@ id and 1 was `HEADER`+`END`, matching the ≈1/256 chance that the first garbage
 `tests/test_sevenzip_reader.py:460`
 (`test_header_encrypted_empty_decoded_header_rejected`).
 
-**Answer today.** A decoded encrypted header that parses to zero file records is treated as
-a rejected password, since legitimate writers never encrypt an empty header. The
-folder-digest check remains the deterministic first line where the writer stored one.
-Residual: garbage parsing into a *non-empty* plausible header is inherent to a format with
-no check value (`threat-model.md` O8).
-
-**Sources.** `threat-model.md` O8; `open-issues.md` §Irreducible;
-`review/archive/2026-07-16-crypto/`.
-
 ---
 
 ### SEC-14 — A cheap password check has a false-accept rate
@@ -1186,14 +835,6 @@ costs a full read of members rather than a header check.
 confirmation cost (~1/256 false open → CRC scan)"); ZIP APPNOTE §7 (traditional PKWARE
 encryption, 12-byte header with a one-byte password check). Specified in
 `openspec/changes/archive/2026-07-11-zip-multipassword-disambiguation/`.
-
-**Answer today.** Password disambiguation falls back to a checksum scan when the cheap check
-is inconclusive, with the cost documented rather than hidden
-(`2026-07-11-zip-multipassword-disambiguation`, `open-issues.md` §Irreducible).
-
-**Sources.** `open-issues.md` §Irreducible;
-`openspec/changes/archive/2026-07-11-zip-multipassword-disambiguation/`;
-`review/archive/2026-07-16-crypto/`.
 
 ---
 
@@ -1217,16 +858,6 @@ MACs, so the corpus assertion demanding a plaintext digest "demanded a digest th
 does not expose". Also `dev-docs/open-issues.md:228` (RAR5 HASHMAC / tweaked digests) and
 `:227` (7z CRC-less encrypted store).
 
-**Answer today.** Tweaked values are kept out of the member's advertised digests and
-verified by applying the same forward transform once a password is available; a 7z
-encrypted store with no digest raises a diagnostic rather than silently verifying nothing.
-`rar-corpus-sweep-diagnosis.md`; crypto review findings closed in
-`review/archive/2026-07-16-crypto/`.
-
-**Sources.** `investigations/rar-corpus-sweep-diagnosis.md`; `open-issues.md` §Docs;
-`review/archive/2026-07-16-crypto/`;
-`openspec/changes/archive/2026-07-14-rar-blake2sp-verification/`.
-
 ---
 
 ### SEC-16 — A password passed on a command line is visible to every process on the host
@@ -1242,11 +873,6 @@ processes, with nothing in the calling code suggesting that happened.
 
 **Evidence.** `dev-docs/open-issues.md:230` ("RAR password via stdin (`-p` + stdin)"), closed
 in the crypto round (`review/archive/2026-07-16-crypto/`, PR #127).
-
-**Answer today.** The password is written to the tool's standard input rather than placed in
-an argument (`open-issues.md:230`, closed).
-
-**Sources.** `open-issues.md` §Docs; `review/archive/2026-07-16-crypto/`.
 
 ---
 
@@ -1264,11 +890,6 @@ read, and cannot be interrupted meaningfully because the work is one key derivat
 
 **Evidence.** `dev-docs/open-issues.md:229` ("7z `NumCyclesPower` ≤24 / `0x3F`"), closed in
 the crypto round (`review/archive/2026-07-16-crypto/`, PR #127).
-
-**Answer today.** The stored work factor is clamped to a sane ceiling, rejecting values
-above it rather than honouring them (`open-issues.md:229`, closed).
-
-**Sources.** `open-issues.md` §Docs; `review/archive/2026-07-16-crypto/`.
 
 ---
 
@@ -1288,19 +909,6 @@ crafted input** — a hang no Python-level translator can convert into [a typed 
 that SIGALRM/pytest-timeout cannot cleanly interrupt (the loop is in a C++ thread)". Found by the
 corpus mutation harness. The ISO library's infinite tree walk (UL-02) is the same shape in pure
 Python and *was* fixable in-process.
-
-**Answer today.** The mutation and coverage-guided fuzz harnesses run with accelerators off, and
-the accelerators are stated to be an opt-in performance path rather than part of the defended
-parsing surface for untrusted input; callers under a hard latency budget are told to disable them
-or enforce their own timeout. Fuzzing that native code is deferred to a resource-limited
-subprocess sandbox. **Unresolved:** the sandbox is not built (`threat-model.md` O5,
-`open-issues.md` §Longer-term).
-
-**Sources.** `threat-model.md` O5; `open-issues.md` §Longer-term, §Irreducible;
-`openspec/changes/archive/2026-07-12-atheris-fuzz-harness/`;
-`openspec/changes/archive/2026-07-15-atheris-harness-depth/`.
-
----
 
 ---
 
@@ -1328,20 +936,6 @@ nothing and appear in legitimate names. The ecosystem response is the same shape
 `text_direction_codepoint_in_literal` and GCC's `-Wbidi-chars` are deny-by-default
 diagnostics over the same ranges, not unconditional refusals.
 
-**Answer today.** Rejected under the two safe extraction policies and extracted faithfully
-under the explicitly-trusted one, because this is a presentation property rather than an
-unsafe write: the member lands inside the destination under exactly its stored bytes. The
-check runs on the *final* name after any caller rename, so renaming a deceptive name — the
-natural remedy — is reachable. Listing and reading are unaffected and always were, with the
-whole advisory set (overrides *and* marks) reported at listing time. ADR 0017 (review finding
-F10 / O7), which moved the check off the non-bypassable layer after establishing that placing
-it there left the member unextractable by any route — the same axis-coupling ADR 0013 had
-already rejected. Guarded by a test asserting the check is absent from the universal layer.
-
-**Sources.** ADR 0017; ADR 0013; `review/archive/2026-08-15-simplicity-consistency/` (F10/O7);
-`openspec/changes/archive/2026-08-09-reject-bidi-overrides-in-safe-extraction/`;
-`openspec/changes/archive/2026-07-14-adversarial-string-corpus-contract/`.
-
 ---
 
 ### SEC-20 — A member name handed to an external tool is read by that tool as an option
@@ -1367,14 +961,6 @@ exit 0)", and a member named `@atfile` shown "driving `unrar` to read an attacke
 file". The review records explicitly that the end-of-options marker "fixes the switch case
 but not `@`".
 
-**Answer today.** A named open never passes the member positionally — it goes through the
-tool's include-mask option instead — and a name containing glob metacharacters is refused with
-an unsupported-feature error, because the tool provides no escape for them. Fixed in `#113`
-(finding F3).
-
-**Sources.** `review/archive/2026-07-16-rar-reader/SUMMARY.md` (F3);
-`history/ARCHITECTURE.md` §7.4; ADR 0002.
-
 ---
 
 ### SEC-21 — A variable-length integer's length is chosen by the input, so decoding it must be bounded independently of its value
@@ -1394,12 +980,6 @@ quadratic by a reproduction script: a header-size pre-read loop accumulating per
 byte, "a few-MB all-`0x80` input → tens of seconds CPU". The review notes the format's *other*
 variable-length decoder was already capped at 11 bytes — this was a separate loop sitting in
 front of it, which is why the existing bound did not cover it.
-
-**Answer today.** The pre-read is length-capped like the main decoder. Fixed in `#113`
-(finding F2).
-
-**Sources.** `review/archive/2026-07-16-rar-reader/SUMMARY.md` (F2);
-`review/archive/2026-07-12-codebase-deep-review/SUMMARY.md` (finding 1, the allocation twin).
 
 ---
 
@@ -1423,16 +1003,6 @@ the bloated content. The narrower field-range version of the same shape is in th
 review's F3b — a header field accepted up to 31 where the format's ceiling is 16, turning a
 dictionary bound of 2¹⁶ into 2³¹.
 
-**Answer today.** Every member's read is bounded by its declared size *and* verified against
-its digest, in one stage rather than two mutually exclusive ones: over-long raises corruption
-at the boundary, short raises truncation, and the cap applies to hashed members too (it
-previously applied only to unhashed ones). Closed in `#137` via an explicit expected size on
-the verification wrap for ZIP, 7z and RAR; the RAR half landed in `#113` finding F4.
-
-**Sources.** `review/archive/2026-07-16-stream-decoder/SUMMARY.md` (F6);
-`review/archive/2026-07-19-stream-layering/SUMMARY.md`;
-`review/archive/2026-07-16-rar-reader/SUMMARY.md` (F4); ADR 0014.
-
 ---
 
 ### SEC-23 — A checksum over a header protects the parser from random mutation but not from an attacker
@@ -1452,16 +1022,6 @@ first field it parses.
 **Evidence.** `review/archive/2026-07-12-codebase-deep-review/SUMMARY.md` finding 1: an
 unbounded pre-allocation from a declared count, with the explicit note "**Fuzzers miss it
 because it needs a valid-CRC crafted header**".
-
-**Answer today.** The coverage-guided harnesses mutate the header and then *fix up* the
-checksum before feeding it, so the parser's fields are actually reached; declared counts are
-bounded against the header's own size so an absurd count is a corruption error rather than an
-allocation. `threat-model.md` O5 item 3 ("native 7z and RAR header parse (CRC
-mutate-then-fixup)"); `2026-07-12-atheris-fuzz-harness`, `2026-07-15-atheris-harness-depth`.
-
-**Sources.** `review/archive/2026-07-12-codebase-deep-review/SUMMARY.md` (finding 1);
-`threat-model.md` O1, O5; `openspec/changes/archive/2026-07-12-atheris-fuzz-harness/`;
-`openspec/changes/archive/2026-07-15-atheris-harness-depth/`.
 
 ---
 
@@ -1485,15 +1045,8 @@ value — always for RAR3, and for any RAR5 whose `ENCRYPTION` block omits the c
 which "escapes the password-candidate retry loop … so supplying `["wrong", "correct"]` …
 aborts with [a corruption error] and **never tries the correct password**."
 
-**Answer today.** A failed header decryption maps to a key error wherever no verifier
-exists, and stays a corruption error only where a verified key still produced bad bytes — so
-candidate iteration works again. Fixed in `#113` finding F1.
-
-**Sources.** `review/archive/2026-07-16-rar-reader/SUMMARY.md` (F1);
-`review/archive/2026-07-16-crypto/SUMMARY.md` (F2); `threat-model.md` O8;
-`openspec/changes/archive/2026-07-11-zip-multipassword-disambiguation/`.
-
 ---
+
 
 ## Platform & filesystem
 
@@ -1521,15 +1074,6 @@ confirmed on CI and pinned by `tests/test_stream_inputs.py:585`
 The resolution is a file-type check via `fstat`
 (`src/archivey/internal/streams/streamtools/binaryio.py:96-107`).
 
-**Answer today.** A single predicate answers seekability: the stream's own claim is
-confirmed against the underlying file type, and a FIFO or character device overrides the
-claim to false. The check runs only when the claim is `True` and only for objects with a
-real file descriptor, so in-memory and network streams are untouched, and no seek probe is
-ever performed. `ARCHITECTURE.md` §2.5.
-
-**Sources.** `history/ARCHITECTURE.md` §2.5; `history/SPEC.md` §8.3;
-`openspec/changes/archive/2026-08-09-decouple-member-metadata-from-declared-seekability/`.
-
 ---
 
 ### PLAT-02 — Resolving a path that loops raises an error the caller was not looking for
@@ -1549,12 +1093,6 @@ nothing to do with it.
 `history/SPEC.md:1141` ("cyclic symlinks (`a → b`, `b → a`) — verify extraction fails safe …
 no uncaught `OSError`/crash").
 
-**Answer today.** An unresolvable link is treated as an escape: the resolution is guarded,
-and both error kinds map to the same typed rejection, so the member is refused rather than
-the run aborting. `ARCHITECTURE.md` §2.7.
-
-**Sources.** `history/ARCHITECTURE.md` §2.7; `history/SPEC.md` §14.2.
-
 ---
 
 ### PLAT-03 — Hard links cannot always be created where the file is
@@ -1572,12 +1110,6 @@ different filesystem than the archive described.
 fall back to copying"); `history/COMPARISON.md:180` (cross-device fallback to copy);
 `dev-docs/open-issues.md:236` ("Symlink-unsupported FS ≠ `tarfile` copy-through").
 
-**Answer today.** Link creation falls back to copying the content, and the divergence from
-the stdlib's own behaviour on symlink-hostile filesystems is documented as a user-facing
-gotcha rather than silently matched (`open-issues.md:236`).
-
-**Sources.** `history/SPEC.md` §10.2; `history/COMPARISON.md` §4.5; `open-issues.md` §Docs.
-
 ---
 
 ### PLAT-04 — Extraction writes into a directory other processes can change underneath it
@@ -1593,11 +1125,6 @@ inexplicably, when something else is touching the destination concurrently.
 
 **Evidence.** `dev-docs/open-issues.md:270` — recorded explicitly as out of scope:
 "Concurrent hostile modification of the destination during extract".
-
-**Answer today.** **Unresolved by design.** Declared out of scope in `open-issues.md`
-§Irreducible; the in-archive variant of the same shape is defended (SEC-02).
-
-**Sources.** `open-issues.md` §Irreducible.
 
 ---
 
@@ -1616,13 +1143,6 @@ the destination filesystem.
 **Evidence.** `dev-docs/threat-model.md:369-375` (C3: PAX extended attributes survive only
 inside a format-specific extras mapping; ACLs, resource forks and NTFS alternate data
 streams are untouched).
-
-**Answer today.** **Unresolved / deliberately deferred.** No metadata-fidelity claim is made
-on extraction; read-side promotion to first-class fields is noted as cheap and additive, and
-true fidelity is deferred to when writing lands. `threat-model.md` C3; `open-issues.md`
-§Irreducible.
-
-**Sources.** `threat-model.md` C3; `open-issues.md` §Irreducible; `IDEAS.md`.
 
 ---
 
@@ -1643,13 +1163,8 @@ successful command.
 `head` exits 1 with `[Errno 32] Broken pipe` noise — the `except BrokenPipeError` handler is
 dead code behind `except OSError`."
 
-**Answer today.** The specific handler is ordered before the general one and the stream is
-handled so the flush cannot raise after exit. Fixed in `#120` / `#131` (finding F2).
-
-**Sources.** `review/archive/2026-07-17-cli/SUMMARY.md` (F2);
-`review/archive/2026-07-20-cli-product/SUMMARY.md`.
-
 ---
+
 
 ## Upstream library defect
 
@@ -1670,20 +1185,6 @@ fixture and a corrupted compressed archive whose garbage decode parses as an inv
 (deep review finding W1). The behaviour is in `tarfile.TarFile.next()`: the invalid-header
 error is re-raised only at offset 0.
 
-**Answer today.** An end-of-archive check backstops the library: when the stopped scan lands
-on a rejected non-null header block, a corruption error is raised by default, while an
-archive that merely ended without the two zero blocks is reported as a warning that a
-stricter setting escalates. In random-access mode a probe inspects the final header attempt
-so the case is caught even when the bad header is the archive's last block, without seeking
-back. Decided in `2026-07-19-decide-strict-archive-eof-default` (Option F). **Residual:** in
-forward-only mode the library hides its header reads, so a rejected *final* header is still
-misclassified as a missing trailer; a native header walker is the named structural fix
-(`open-issues.md` P3).
-
-**Sources.** `known-issues.md` §tarfile; `open-issues.md` P3, §Longer-term;
-`review/archive/2026-07-12-codebase-deep-review/` (W1);
-`openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/`; ADR 0015.
-
 ---
 
 ### UL-02 — An ISO reader loops forever on directory records that form a cycle
@@ -1703,16 +1204,6 @@ by the corpus mutation harness: a Joliet case at `bitflip@71746:0x01` on `basic-
 the same one-bit corruption in a subdirectory's extent reproducing on plain-only and
 Rock-Ridge-only images. Pinning test `tests/test_iso.py:362`
 (`test_pycdlib_directory_cycle_does_not_hang`), parametrized over all three namespaces.
-
-**Answer today.** A guard is installed into the third-party library's own namespace at
-import: a queue subclass drops a directory record whose extent was already scheduled. It is
-confined to that library rather than swapping a global, installed once, and is a strict
-superset of the library's behaviour on valid trees. The trade — a program that also uses that
-library directly in the same process sees the guarded queue — is documented deliberately
-(`known-issues.md`, `open-issues.md` §Irreducible).
-
-**Sources.** `known-issues.md` §pycdlib; `threat-model.md` O5; `open-issues.md` §Irreducible;
-`openspec/changes/archive/2026-07-12-atheris-fuzz-harness/`.
 
 ---
 
@@ -1736,16 +1227,6 @@ explicitly closed → clean; reclaimed by the cyclic collector without closing �
 finalized at interpreter shutdown without closing → abort. The library's own message says to
 close all objects.
 
-**Answer today.** Every such object is wrapped, and the wrapper installs a finalizer that
-*closes* the raw object exactly once — when collected cyclically or otherwise, or at
-interpreter exit — holding a strong reference so the close always runs first. The test
-doubles as a canary: if a future release stops aborting on a raw unclosed object, the
-raw-case assertions fail, signalling that the wrapper could be simplified.
-`known-issues.md` §The canary.
-
-**Sources.** `known-issues.md` §Random-access accelerators (Bug 1);
-`investigations/parallel-reader.md` §4; ADR 0008.
-
 ---
 
 ### UL-04 — Two independent extensions bundling the same C++ core corrupt each other's heap
@@ -1766,17 +1247,6 @@ unrelated to either library.
 `scripts/dual_accelerator_repro.py` with no archivey and no pytest: ~100 % crash rate on
 macOS with both, never with one. The upstream author's guidance is quoted verbatim from
 `mxmlnkn/librapidarchive` ("if you need to use both, depend on rapidgzip for now").
-
-**Answer today.** Exactly one accelerator library is used, for both codecs, because that
-library bundles the other's specialized decoder; the standalone package is never imported.
-Decided in ADR
-[`0008-single-accelerator-rapidgzip`](../../dev-docs/decisions/0008-single-accelerator-rapidgzip.md);
-guarded by `tests/test_accelerator_shutdown.py:203`
-(`test_archivey_uses_single_accelerator_library`), which asserts in a subprocess that the
-standalone package is never imported.
-
-**Sources.** `known-issues.md` §Random-access accelerators (Bug 2); `library-analysis.md`
-§bzip2, §Seekable zstd; ADR 0008.
 
 ---
 
@@ -1799,15 +1269,6 @@ to the requested result type") through a `terminate()` boundary. Also
 `dev-docs/investigations/rapidgzip-upstream-report.md:68-82` §2, which records that some
 *path*-source truncations and checksum mismatches can terminate during worker finalization
 too.
-
-**Answer today.** The source is never killed underneath a live accelerator stream: teardown
-of the shared source is deferred behind the streams that use it, so closing the reader with
-a member stream still open cannot trigger the abort. **Residual, upstream-only:** a caller
-who closes *their own* source stream while an accelerator-backed stream is still in use
-remains exposed (`open-issues.md` P5, `known-issues.md` Bug 3).
-
-**Sources.** `known-issues.md` Bug 3; `investigations/rapidgzip-upstream-report.md` §2;
-`open-issues.md` P5; `openspec/changes/archive/2026-08-06-close-member-streams-on-reader-close/`.
 
 ---
 
@@ -1835,21 +1296,6 @@ swallows `std::exception` while guessing block starts) and the explicit finding 
 filed upstream** — an incompleteness flag would be a feature request, not a bug report.
 Also `dev-docs/known-issues.md:156-165`.
 
-**Answer today.** On any seekable source the accelerator's answer is backstopped: an empty
-soft end-of-file switches the decode to the standard-library engine, and a non-empty one is
-checked against the stream's declared trailer length for a single-member stream. Decided in
-ADR
-[`0014-integrity-verdicts-from-reads-not-close`](../../dev-docs/decisions/0014-integrity-verdicts-from-reads-not-close.md)
-and `2026-07-24-rapidgzip-truncation-investigation` /
-`2026-07-25-gzip-truncation-backstop-any-seekable`. **Residual:** multi-member trailer
-summing is deferred; the honest statement to users is that bare-stream truncation detection
-is best-effort and the accelerator can be turned off when certainty is required
-(`open-issues.md` §Irreducible).
-
-**Sources.** `investigations/rapidgzip-upstream-report.md`; `known-issues.md`;
-`library-analysis.md` §gzip; `open-issues.md` §Irreducible, §Longer-term; ADR 0014;
-`investigations/adr-0014-investigation.md`.
-
 ---
 
 ### UL-07 — A random-access index over a compressed stream does not record the stream's own boundaries
@@ -1869,12 +1315,6 @@ at any parallelism setting — serial records only the start and end, parallel a
 chunk points unrelated to member starts. The index-import entry points are inputs, not a
 decode-time enumeration. A change proposal to use the index for this was **closed on this
 finding**.
-
-**Answer today.** The byte scan for a further member header stays; the deferred per-member
-trailer sum cannot use the index either. Recorded as a confirmed limitation with no action
-(`known-issues.md`).
-
-**Sources.** `known-issues.md` §rapidgzip's index; `library-analysis.md` §gzip.
 
 ---
 
@@ -1909,23 +1349,6 @@ under one identical stress scenario: 0/40 native crashes on 1.1.1 and 1.2.0, **1
 controls. Overshoot A/B: +65 536 bytes over → 13/20 and 10/20; +64 and +4096 → 0/20 each.
 Deterministic gate: `scripts/ppmd_uaf_valgrind.py`.
 
-**Answer today.** Every decode is bounded by the container's declared size for that member
-or block; an unbounded request after end-of-input is never made; at compressed end-of-input
-at most one documented synthetic byte is injected, bounded, and anything still missing is
-reported as truncation rather than pumped in a loop. The variant with no end marker is
-*rejected at construction* when no size is declared, since there is then no safe request
-size and no correct output boundary either. A parked worker is driven to completion before
-the decoder is disposed so teardown cannot resume it. **Residual:** a crafted header that
-inflates the declared size ≳64 KiB past the member's true content puts the one bounded
-decode back into the crashy class, and cannot be detected before decoding
-(`known-issues.md`).
-
-**Sources.** `known-issues.md` §Intermittent `pyppmd` native aborts, §exit-after-green;
-`investigations/ppmd-native-investigation-results.md`;
-`investigations/ppmd-native-investigation-brief.md`;
-`investigations/ppmd-exit-after-green-exploration.md`;
-`investigations/pyppmd-upstream-report.md`; `open-issues.md` §Irreducible, §Longer-term.
-
 ---
 
 ### UL-09 — Older releases of the same codec binding returned wrong bytes instead of crashing
@@ -1944,15 +1367,6 @@ itself.
 1.1.1 and 1.2.0 produced 0/40 native crashes but 27/40 checksum mismatches on a solid
 second member, while 1.3.1 produced 12/40 crashes and 0 mismatches.
 
-**Answer today.** The version floor is raised to the release that crashes rather than
-corrupts, because bounding the decode is an effective mitigation for the crash (0/80 in the
-same soak) while wrong bytes have no mitigation; the older releases' recovery workarounds
-were removed with the floor. `known-issues.md` §Version floor decision.
-
-**Sources.** `known-issues.md` §Intermittent `pyppmd` native aborts;
-`investigations/ppmd-native-investigation-results.md`;
-`openspec/changes/archive/2026-07-30-consolidate-optional-extras/`.
-
 ---
 
 ### UL-10 — A codec can report end-of-stream early, making truncation indistinguishable from completion
@@ -1970,17 +1384,6 @@ caller chose.
 
 **Evidence.** `dev-docs/known-issues.md:477-483`: draining to finish the tail produced a
 memory error in **36/36** trials at 50–99 % compressed-length cuts on the affected release.
-
-**Answer today.** The compressed length is required for the affected codec variant, so the
-decoder can tell "input exhausted" from "flag flipped early" instead of choosing between
-truncating a valid member and crashing; post-end drains run only when the compressed input is
-known complete *and* a declared output size bounds them. The length is plumbed through the
-7z pipeline, including the encrypted case where the codec's own input has no knowable length
-and the preceding stage's output size supplies it. `known-issues.md` §Mitigation in archivey.
-
-**Sources.** `known-issues.md` §exit-after-green;
-`investigations/ppmd-exit-after-green-exploration.md`;
-`investigations/ppmd-native-investigation-results.md`.
 
 ---
 
@@ -2004,16 +1407,6 @@ one binding, `EOFError` for the two others; backward seek → refused for one, i
 for the two others; corruption with no frame checksum → silent for all three, "inherent to
 zstd".
 
-**Answer today.** The decode backend was migrated to the standard-library line of the same
-API (a backport on older language versions), which fixes both behaviours at once and lets
-the reopen-from-start workaround be deleted. Decided in ADR
-[`0009-zstd-stdlib-backports`](../../dev-docs/decisions/0009-zstd-stdlib-backports.md) and
-`2026-07-01-zstd-stdlib-backend-migration`.
-
-**Sources.** `library-analysis.md` §zstd; ADR 0009;
-`openspec/changes/archive/2026-07-01-zstd-stdlib-backend-migration/`;
-`openspec/changes/archive/2026-06-30-compression-library-evaluation/`.
-
 ---
 
 ### UL-12 — Composing two raw filter stages in one library chain can silently drop the tail
@@ -2030,13 +1423,6 @@ if the container stored one; nothing else does.
 **Evidence.** `dev-docs/library-analysis.md:282-290`, citing upstream BPO-21872 and the
 xz-devel discussion, and noting that the same staging workaround is what another Python 7z
 implementation does.
-
-**Answer today.** The two stages are run separately — the entropy coder through the standard
-library, the branch filter through a dedicated package — rather than composed into one raw
-chain. `library-analysis.md` §LZMA1 / LZMA2.
-
-**Sources.** `library-analysis.md` §LZMA1/LZMA2 and filter stages;
-`openspec/changes/archive/2026-07-12-support-lzma1-bcj/`.
 
 ---
 
@@ -2058,15 +1444,6 @@ the previous standard-library-based metadata path "reported the wrong size for m
 XZ files". The alternative third-party reader was rejected for requiring a seekable input
 and doing an upfront full index scan.
 
-**Answer today.** A native parser over the standard library's codec walks streams backwards
-from the end, reading footers and indices without decompressing, so both size and block-level
-random access come from the file's own structure; multi-stream handling is explicit in both
-directions. The same framework serves lzip, whose member trailer carries the equivalent
-information. `library-analysis.md` §xz, §lzip.
-
-**Sources.** `library-analysis.md` §xz, §lzip;
-`openspec/changes/archive/2026-06-30-phase-3-indexed-leaf-formats/`.
-
 ---
 
 ### UL-14 — An encrypted-header writer may omit the digest that would make a wrong password detectable
@@ -2086,12 +1463,6 @@ the digest so detection is deterministic; the other writer reports the digest as
 the encoded-header block, "and the only 7z archives *we* produce are test fixtures written
 through" it.
 
-**Answer today.** The digest is verified when present, and the zero-file-record heuristic
-(SEC-13) covers the case where it is absent; upstream storing the digest is listed as an
-optional hardening. `threat-model.md` O8.
-
-**Sources.** `threat-model.md` O8; `review/archive/2026-07-16-crypto/`.
-
 ---
 
 ### UL-15 — A parallelism setting of zero means "all cores", not "sequential"
@@ -2108,12 +1479,6 @@ what the caller reasoned about.
 **Evidence.** `dev-docs/investigations/rapidgzip-upstream-report.md:88-93`: "`parallelization=0`
 → `availableCores()`. Archivey passes `0` **intentionally** (all-cores + benchmarks). Not
 'sequential.'"
-
-**Answer today.** The value is passed deliberately with the intent recorded next to it, and
-the note is kept in the upstream report so the reading is not re-derived
-(`rapidgzip-upstream-report.md` §3).
-
-**Sources.** `investigations/rapidgzip-upstream-report.md` §3; `known-issues.md`.
 
 ---
 
@@ -2133,13 +1498,6 @@ of seven backends when a stream was dropped without closing, unchanged after thr
 collections; root-caused to exactly this pattern, and fixed by capturing the object's
 identity rather than the object.
 
-**Answer today.** The callback captures only the identity value it actually needed, so the
-subject can become unreachable and the finalizer runs. Fixed in
-`2026-08-06-close-member-streams-on-reader-close` (`open-issues.md` P7).
-
-**Sources.** `open-issues.md` P7;
-`openspec/changes/archive/2026-08-06-close-member-streams-on-reader-close/`.
-
 ---
 
 ### UL-17 — A library's tar and zip readers invalidate member streams when the archive is closed
@@ -2158,15 +1516,6 @@ in a migration guide.
 **Evidence.** `dev-docs/open-issues.md:136-142`: `zipfile.ZipFile.close()` and
 `tarfile.TarFile.close()` both invalidate member streams; measured on all seven backends,
 reading after archive close succeeded everywhere before the change.
-
-**Answer today.** Member streams are closed when the reader closes, matching the standard
-library, chosen by the maintainer over a diagnostic-plus-finalizer alternative after
-establishing that the principle the alternative protected was about how *contention* is
-resolved, not about lifetime. `2026-08-06-close-member-streams-on-reader-close`
-(`open-issues.md` P7).
-
-**Sources.** `open-issues.md` P7;
-`openspec/changes/archive/2026-08-06-close-member-streams-on-reader-close/`.
 
 ---
 
@@ -2191,17 +1540,6 @@ typically absent on two other platforms on the same commits; and with no reliabl
 reproduction. Also recorded: one combined test process aborted with every test green during
 coverage flush.
 
-**Answer today.** **Unresolved.** Process isolation as continuous-integration hygiene — the
-suite is split so the heaviest native paths run in their own subprocesses and a corrupted heap in
-one cannot take down another — explicitly labelled "CI hygiene, not a product fix", with a
-bisection recipe and known red fingerprints recorded. `known-issues.md` §Intermittent Linux
-full-suite heap corruption.
-
-**Sources.** `known-issues.md` §Intermittent Linux full-suite heap corruption;
-`investigations/ppmd-native-investigation-results.md`; `open-issues.md` §Irreducible.
-
----
-
 ---
 
 ### UL-19 — A capability the standard library provides only through a private function
@@ -2219,13 +1557,6 @@ says so.
 **Evidence.** `review/archive/2026-07-12-codebase-deep-review/SUMMARY.md` finding 7:
 "Private stdlib dependency `lzma._decode_filter_properties`: if a future Python drops it,
 *every* LZMA 7z member silently reports [corruption] instead of failing loud."
-
-**Answer today.** Recorded as a known latent dependency with the failure mode named, so the
-misdiagnosis is anticipated rather than discovered.
-`review/archive/2026-07-12-codebase-deep-review/` finding 7 (writeup).
-
-**Sources.** `review/archive/2026-07-12-codebase-deep-review/SUMMARY.md` (finding 7, D1);
-`library-analysis.md` §LZMA1/LZMA2.
 
 ---
 
@@ -2247,13 +1578,6 @@ in. Sends a caller hunting a bad file that is fine." Related: F3 in the same rev
 argument-shape refusals raised at the entry point cannot be typed at all because they happen
 before any translator is in scope, while the same refusal one path over is typed.
 
-**Answer today.** The blanket arm was narrowed (fixed via finding F4 → Q4), and the
-entry-point refusals were given types of their own (F3 → Q3), so the earliest failures are
-described as well as the latest.
-
-**Sources.** `review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` (F3, F4);
-`history/ARCHITECTURE.md` §2.11; `review/README.md`.
-
 ---
 
 ### UL-21 — A subcommand-style argument parser silently discards an option placed before the subcommand
@@ -2272,13 +1596,8 @@ verb reports nothing — and the help text shows exactly that spelling.
 placed before the verb is silently discarded … and the `--help` usage line explicitly
 advertises this placement", with the two concrete invocations that fail.
 
-**Answer today.** Global options are declared so that both placements work, and the behaviour
-matrix pins it. Fixed in `#120` / `#131` (finding F1).
-
-**Sources.** `review/archive/2026-07-17-cli/SUMMARY.md` (F1);
-`openspec/changes/archive/2026-07-17-cli-v1/`.
-
 ---
+
 
 ## Performance & memory
 
@@ -2304,15 +1623,6 @@ solid block) spilling to disk. The "two memory profiles" distinction — a monot
 growing random-access cache versus a bounded sequential pass — is called out there as
 something to state explicitly rather than leave implicit.
 
-**Answer today.** The in-order streaming pass is the bounded-memory path and is what
-conversion drives; a random open re-decodes from the block start rather than accumulating a
-cache, and may cache at most one decoded block for repeated access to that block. The
-prohibition is explicit: no growing cache of decoded data released only at close.
-`ARCHITECTURE.md` §5.6, §7.3.
-
-**Sources.** `history/COMPARISON.md` §2, §4.4; `history/ARCHITECTURE.md` §2.3, §5.6, §7.3;
-`history/SPEC.md` §10.4.
-
 ---
 
 ### PERF-02 — A backward seek in a compressed stream costs a full re-decode unless the format has an index
@@ -2333,15 +1643,6 @@ backward seek by re-decompressing from the start — O(n) per rewind … permitt
 silent: the first rewinding seek logs a warning"), and the per-codec efficient-seek column at
 `:46-60`. Frame-granularity limits of the zstd option at `:159-170`.
 
-**Answer today.** Rewinding is permitted and never silent: the first rewinding seek warns,
-naming the extra that would make it cheap; efficient seeking is provided natively where the
-format carries the information (xz block index, lzip trailer, `.Z` clear-code boundaries) and
-by an optional accelerator for gzip/bzip2/deflate. A seek-cost signal is part of the declared
-cost of the opened archive. `library-analysis.md`; `ARCHITECTURE.md` §2.12.
-
-**Sources.** `library-analysis.md` §Summary, §xz, §Seekable zstd; `history/ARCHITECTURE.md`
-§2.12; `history/COMPARISON.md` §4.12; `open-issues.md` §Irreducible.
-
 ---
 
 ### PERF-03 — Verifying a member's declared checksum and delivering its bytes are the same read
@@ -2360,15 +1661,6 @@ corruption is delivered silently.
 [`brief.md`](brief.md):216 (§The neutrality rule). Verification is stated as a stage of the
 uniform stream layer at `dev-docs/library-analysis.md:39-42`: the container-supplied digest
 is checked over the decompressed bytes at clean end-of-file.
-
-**Answer today.** Verification is fused into the delivering read as a stream stage rather
-than a second pass; the verdict is produced by the reads themselves rather than at close, and
-digests the container already stores are surfaced so callers need not recompute them. ADR
-[`0014-integrity-verdicts-from-reads-not-close`](../../dev-docs/decisions/0014-integrity-verdicts-from-reads-not-close.md);
-`2026-07-19-surface-stored-stream-digests`; stream-layering review F1/F2 (`#137`).
-
-**Sources.** `library-analysis.md`; `review/archive/2026-07-19-stream-layering/`; ADR 0014;
-`openspec/changes/archive/2026-07-19-surface-stored-stream-digests/`.
 
 ---
 
@@ -2391,14 +1683,6 @@ read-everything call "raises [a truncation error] and returns nothing — a sile
 success is worse than not salvaging". The salvage use case is registered as unmet:
 `dev-docs/open-issues.md:279` ("Salvage / best-effort read mode … all-or-error today").
 
-**Answer today.** The chunked read path recovers the prefix and then reports truncation; the
-read-everything path refuses to return a partial result. A general best-effort salvage mode
-is **unresolved** and registered as longer-term work (`open-issues.md` §Longer-term).
-
-**Sources.** `library-analysis.md` §Summary note 1, §gzip; `open-issues.md` §Longer-term;
-`openspec/changes/archive/2026-07-24-gzip-zlib-truncation-recovery/`;
-`openspec/changes/archive/2026-07-18-partial-members-and-errors/`.
-
 ---
 
 ### PERF-05 — Truncation is undetectable in formats that store no length or checksum
@@ -2417,14 +1701,6 @@ pattern the user can see. A verification pass gives a clean verdict on a damaged
 by "never finished at EOF"; `.Z` truncation is best-effort via nonzero leftover bits, and
 "cuts that leave only zero leftover bits stay silent". Also `dev-docs/open-issues.md:265`
 ("`.Z` truncation: only nonzero leftover bits are loud").
-
-**Answer today.** Best-effort detection where the format allows any, and an explicit
-statement of the limit rather than an implied guarantee; where the member sits inside a
-container that stores a digest, the container's digest is the real net (PERF-03).
-`library-analysis.md` §Summary; `open-issues.md` §Irreducible.
-
-**Sources.** `library-analysis.md` §Summary, §brotli, §unix-compress; `open-issues.md`
-§Irreducible; `openspec/changes/archive/2026-07-14-vendor-unix-compress-lzw/`.
 
 ---
 
@@ -2448,15 +1724,6 @@ accelerator objects ⇒ linear speedup (FD / memory / thread pressure)". Per-for
 parallelizable units and their constraints at `parallel-reader.md:141-154`; workloads
 including a deliberate negative control at `:83-97`.
 
-**Answer today.** Correctness changes carry no speed threshold and no throughput claim;
-parallel decode and extraction scheduling are deferred as a separate feature whose speed
-claims require targeted before/after measurement at the format's real parallel unit (member
-for independent-offset formats, folder or block for solid ones).
-`parallel-reader.md` §3, §5; `threat-model.md` C4.
-
-**Sources.** `history/ASYNC.md` §3; `investigations/parallel-reader.md` §3, §4, §5;
-`threat-model.md` C4; `openspec/changes/archive/2026-07-10-parallel-reader-exploration/`.
-
 ---
 
 ### PERF-07 — Bounding decode work by input size does not bound memory, because the ratio is unbounded
@@ -2478,13 +1745,6 @@ deflate 48 KB → 50 MB, LZW 9.4 KB → 20 MB. The review records that maintaine
 correctly broadened it from one codec to the shared base, and that forward iteration applies
 no extraction-time guard.
 
-**Answer today.** The decode increment is bounded on the output side rather than only the
-input side, so a small read cannot materialize an arbitrary decoded block. Fixed in `#128`,
-with the bound confirmed by the performance review's memory check.
-
-**Sources.** `review/archive/2026-07-16-stream-decoder/SUMMARY.md` (F3);
-`review/archive/2026-07-28-performance/SUMMARY.md`; `history/ARCHITECTURE.md` §4.2.
-
 ---
 
 ### PERF-08 — Bounded memory and per-call overhead pull against each other, and the boundary crossing dominates
@@ -2505,14 +1765,6 @@ wrapper layers "did not move" the read-all wall time (±2 %, within noise, on tw
 probes), and the real cost was decode granularity — an 8 KiB compressed feed "through a
 5-frame Python loop ~17×/member while `zipfile` decompresses each member in a single C call".
 Raising the feed took read-all from **1.38× → 1.23×** of the standard library on that host.
-
-**Answer today.** The feed size was raised, with a known-size single-shot path for the case
-where the whole member's size is known — keeping the bounded-memory property for the
-streaming case while paying the boundary crossing once where it is safe to.
-`review/archive/2026-07-28-performance/` (revised H2 attribution); `#139`.
-
-**Sources.** `review/archive/2026-07-28-performance/SUMMARY.md`;
-`review/archive/2026-07-19-stream-layering/SUMMARY.md` (the layering half, measured separately).
 
 ---
 
@@ -2538,18 +1790,6 @@ churn (P4); and a full double re-decode of a solid block passing because the bou
 exactly a factor of two (P5). Also P6: no peer implementation existed for open, list or
 extract at all, "why P2's extract miss went unnoticed".
 
-**Answer today.** Bounds tightened to catch the specific regressions each probe demonstrates
-(over-decode ratio and a baseline-plus-constant seek tolerance rather than a multiplier;
-solid factor cut from 2.0 to 1.25), peers added for the unguarded operations, and a drift
-gate added so the measured numbers are compared over time rather than only against an
-absolute band. Each fix is pinned by the probe that previously passed. `#139`, `#143`;
-`review/archive/2026-07-28-debt-ledger/` D1/T3.
-
-**Sources.** `review/archive/2026-07-28-performance/SUMMARY.md` (P1, P4, P5, P6, P9);
-`review/archive/2026-07-28-debt-ledger/SUMMARY.md` (D1, T3);
-`review/archive/2026-07-12-codebase-deep-review/SUMMARY.md` (finding 5);
-`openspec/changes/archive/2026-07-15-benchmark-gate/`.
-
 ---
 
 ### PERF-10 — At scale, the cost of an archive is dominated by opening it, not by decoding it
@@ -2568,14 +1808,6 @@ bytes suggest, while every throughput measurement looks healthy.
 **5–8×** the standard library, attributed to "detection + member-model build ~0.3 ms/archive
 — the founding million-archive sweep pays minutes". The same review's P2 records open-and-list
 at 5–8× against 2.2–2.3× for reading.
-
-**Answer today.** Partly addressed — an extension-map cache landed in `#136`; the
-member-model build is recorded as actionable toward 2–3× and remains open
-(`review/archive/2026-07-28-performance/` P7, Q1). Also the motivation for keeping per-open
-bookkeeping cheap enough to gate (that review's D2).
-
-**Sources.** `review/archive/2026-07-28-performance/SUMMARY.md` (P2, P7, D2);
-`review/archive/2026-07-12-codebase-deep-review/SUMMARY.md`.
 
 ---
 
@@ -2602,15 +1834,8 @@ re-decodes the whole stream on a backward seek, and emits nothing — so [escala
 advisory to an error] cannot fire either. The honest predicate is the seek's re-decode
 distance".
 
-**Answer today.** The predicate becomes the seek's actual re-decode distance rather than
-codec identity — the value the seek machinery already computes.
-`2026-08-09-rewind-diagnostic-redecode-cost` (finding F19 → Q13).
-
-**Sources.** `review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` (F12, F19,
-`q13-rewind-diagnostic.md`); `library-analysis.md`;
-`openspec/changes/archive/2026-08-09-rewind-diagnostic-redecode-cost/`.
-
 ---
+
 
 ## API and usage pattern
 
@@ -2633,11 +1858,6 @@ decided in ADR
 [`0010-no-silent-buffer-nonseekable`](../../dev-docs/decisions/0010-no-silent-buffer-nonseekable.md);
 `dev-docs/open-issues.md:252` (§Irreducible, "no silent buffer").
 
-**Answer today.** Refuse, loudly, at open time, with the message naming the remedy (buffer
-and reopen); transparent spooling would return only as an explicit opt-in argument. ADR 0010.
-
-**Sources.** `history/SPEC.md` §10.1, §5.1; ADR 0010; `open-issues.md` §Irreducible.
-
 ---
 
 ### API-02 — "Unknown" and "empty" are different answers that formats force into one field
@@ -2656,11 +1876,6 @@ substituted values into the target archive as if they had been recorded.
 quirk cannot be cleanly mapped to the unified model, the library surfaces the inconsistency
 as an explicit, documented field value (`None` or an `Unknown` sentinel) — never as a silent
 guess, default, or exception." Per-field consequences at `SPEC.md:368,905,972`.
-
-**Answer today.** Every optional field is explicitly nullable and documented as such, and an
-unrecognized codec maps to an unknown value rather than raising. `SPEC.md` §4.4, §4.3.
-
-**Sources.** `history/SPEC.md` §1, §4.3, §4.4; `history/COMPARISON.md` §4.2.
 
 ---
 
@@ -2684,16 +1899,6 @@ filter "would yield that copy while the backend went on updating the original �
 object would never see the late values". Decided in ADR
 [`0007-mutable-archive-member`](../../dev-docs/decisions/0007-mutable-archive-member.md).
 
-**Answer today.** Mutate, under a contract: the library is the only writer, callers treat
-members as read-only, and any caller edit goes through a copy-returning method. The
-unhashability that follows is accepted and callers key by name or positional identity
-instead. Transformation lives at the sinks that consume the stream, each applying it to a
-transient copy while the original supplies accurate limits and metadata.
-`ARCHITECTURE.md` §2.1, §2.10, §5.2; ADR 0007.
-
-**Sources.** `history/ARCHITECTURE.md` §2.1, §2.3, §2.10, §5.2; `history/SPEC.md` §4.4;
-`history/COMPARISON.md` §4.2; ADR 0007.
-
 ---
 
 ### API-04 — The cost of an operation varies by orders of magnitude across formats that share one interface
@@ -2715,16 +1920,6 @@ that backend flags … leak the cost model: you must know the trick to get cheap
 `.tar.gz`." The three orthogonal cost axes and their per-format values at
 `history/ARCHITECTURE.md:508-541`.
 
-**Answer today.** Cost is a queryable property of the opened archive along three orthogonal
-axes — enumeration cost, per-member access cost, and the source's own stream capability —
-computed before any heavy I/O, with the solid block count alongside; backend flags become
-tri-state and are resolved against the declared access mode rather than being the interface
-to the cost model. `ARCHITECTURE.md` §2.12; `history/COMPARISON.md` §4.7;
-`2026-07-30-member-stream-capability-booleans`.
-
-**Sources.** `history/COMPARISON.md` §3, §4.7; `history/ARCHITECTURE.md` §2.12;
-`history/SPEC.md` §4.6; `open-issues.md` P9.
-
 ---
 
 ### API-05 — Access mode is a real binary, but three-valued models of it are tempting and wrong
@@ -2745,13 +1940,6 @@ mode), and the model collapses to a real binary — random access vs. forward-on
 deferred performance hint." Decided in ADR
 [`0004-streaming-bool-not-intent-enum`](../../dev-docs/decisions/0004-streaming-bool-not-intent-enum.md).
 
-**Answer today.** A boolean access mode, defaulting to random access and failing fast on a
-non-seekable source; the eager seek-point hint may return later as an explicit opt-in.
-ADR 0004.
-
-**Sources.** `history/COMPARISON.md` §Decision update, §2, §3, §5; ADR 0004;
-`history/SPEC.md` §5.1.
-
 ---
 
 ### API-06 — A forward-only pass can be run once, and callers will try to run it twice
@@ -2770,14 +1958,6 @@ read is silently short, and the same code works on a file and fails on a pipe.
 covers, and the deliberate absence of replay from cache because link-resolution semantics
 differ at yield time and after finalization); `dev-docs/open-issues.md:251` (§Irreducible,
 "Streaming mode is one pass (including after early `break`)").
-
-**Answer today.** Forward-only passes are explicitly once-only and a second attempt raises; a
-dedicated scan call is the documented exception that may finish an interrupted pass or return
-the completed result. Random-access iteration serves from the stored report once materialized.
-`ARCHITECTURE.md` §2.4; `2026-07-07-scan-members`.
-
-**Sources.** `history/ARCHITECTURE.md` §2.4; `history/SPEC.md` §3.2; `open-issues.md`
-§Irreducible; `openspec/changes/archive/2026-07-07-scan-members/`.
 
 ---
 
@@ -2798,14 +1978,6 @@ as long as it takes someone to read the traceback.
 [`0012-usage-errors-outside-archiveyerror`](../../dev-docs/decisions/0012-usage-errors-outside-archiveyerror.md);
 the error-contract convention is restated in `review/README.md` §Conventions ("usage errors
 sit deliberately outside the tree"). Taxonomy at `dev-docs/history/SPEC.md:642-694`.
-
-**Answer today.** Usage errors are a separate hierarchy deliberately outside the
-archive-error tree, so catching archive errors cannot catch a misuse; unrecognized exceptions
-propagate raw with no catch-all, and only exceptions from a decoding library's own taxonomy
-are translated. ADR 0012; `ARCHITECTURE.md` §2.11.
-
-**Sources.** ADR 0012; `history/SPEC.md` §6; `history/ARCHITECTURE.md` §2.11;
-`review/README.md`; `review/archive/2026-07-19-api-coherence/`.
 
 ---
 
@@ -2829,14 +2001,6 @@ propagate unchanged" — a filesystem error, an interrupt, and a memory error mu
 archive errors. `history/SPEC.md:692` ("Libraries must never swallow the original
 exception").
 
-**Answer today.** Two separable concerns: a small translator per underlying library maps that
-library's exceptions to typed errors and sets no context, and the reader boundary stamps
-archive/member/format context onto an error it is already re-raising. The cause chain is
-preserved; no catch-all. `ARCHITECTURE.md` §2.11; `review/README.md` §Error contract.
-
-**Sources.** `history/ARCHITECTURE.md` §2.11; `history/SPEC.md` §6; `history/COMPARISON.md`
-§4.6; `review/README.md`.
-
 ---
 
 ### API-09 — Advisory conditions are numerous, and logging is the wrong channel for a library
@@ -2858,19 +2022,6 @@ the information is only visible to a human reading a terminal.
 addressed by the lifecycle-aware diagnostics capability. The lifecycle constraint (which
 surface an advisory can attach to) is what made this non-trivial, discussed at length in
 `dev-docs/discussions/2026-08-diagnostics/`.
-
-**Answer today.** Advisories are immutable values with stable codes attached to
-lifecycle-appropriate surfaces (the detection result, the reader or a stream, a member, an
-extraction report), with per-code policy (ignore / collect / raise) and a shared retention
-budget; logging becomes the zero-configuration projection of the same data.
-`diagnostics-warnings-as-data` (`threat-model.md` C2). Extraction results were later made the
-sole authoritative record for extraction outcomes
-(`2026-08-15-extraction-results-authoritative`).
-
-**Sources.** `threat-model.md` C2; `dev-docs/discussions/2026-08-diagnostics/`;
-`openspec/changes/archive/2026-07-11-diagnostics-warnings-as-data/`;
-`openspec/changes/archive/2026-08-09-review-diagnostics-batch/`;
-`openspec/changes/archive/2026-08-15-extraction-results-authoritative/`.
 
 ---
 
@@ -2896,17 +2047,6 @@ walking headers synchronously; the pull-driven standard-library codecs; a subpro
 synchronously) and the conclusion that "there is no 'async all the way down' available in
 Python without rewriting the decoders". Cost comparison of the three options at `:115-154`.
 
-**Answer today.** Synchronous only, with a documented recipe for running whole operations on a
-worker thread; a leaf-level asynchronous facade is designed but deferred, and the sync-hygiene
-seams that keep it cheap (inject the source as a narrow protocol, keep readers
-thread-confinable, keep the byte interface pull-based and chunked, keep the event loop out of
-error plumbing) are adopted now. Decided in ADR
-[`0005-sync-only-v1`](../../dev-docs/decisions/0005-sync-only-v1.md); analysis in
-`history/ASYNC.md` §6–§7 ("bake in the *seams*, not the *colour*").
-
-**Sources.** `history/ASYNC.md`; `history/ARCHITECTURE.md` §5.3; `history/SPEC.md` §2,
-Appendix A; ADR 0005.
-
 ---
 
 ### API-11 — Appending to an archive in place is possible for some formats and unsafe in all of them
@@ -2924,11 +2064,6 @@ reject, and an interrupted append destroys data that existed before it started.
 **Evidence.** `dev-docs/history/ARCHITECTURE.md:807-812`: ZIP append "is fragile and creates
 corrupt archives if interrupted. 7z has no append mode. TAR can be appended to … but the
 result is not a valid multi-stream archive."
-
-**Answer today.** Writing is create-only; the supported workflow is read-old-write-new, which
-the conversion path makes a single streaming pass. `ARCHITECTURE.md` §5.4.
-
-**Sources.** `history/ARCHITECTURE.md` §5.4; `history/SPEC.md` §11.
 
 ---
 
@@ -2948,11 +2083,6 @@ anti-pattern because the signature invited it.
 passing pre-fetched members to a one-shot function would force the caller to open the archive,
 fetch the list, and reopen it here (an anti-pattern)."
 
-**Answer today.** The one-shot call extracts everything and has no selector; selective work is
-done on an already-open reader. `SPEC.md` §3.1.
-
-**Sources.** `history/SPEC.md` §3.1; `review/archive/2026-07-19-api-coherence/`.
-
 ---
 
 ### API-13 — An explicit argument that is silently ignored is worse than one that is rejected
@@ -2970,13 +2100,6 @@ it.
 before the caller's argument was ever consulted, "so the argument is discarded without a
 diagnostic … every other way of being explicit about the format is honoured or rejected
 loudly."
-
-**Answer today.** The contradictory combination raises a usage error; passing the override
-that agrees with the input stays valid. Fixed in `2026-08-06-reject-format-override-on-directory`
-(`open-issues.md` P8, closed).
-
-**Sources.** `open-issues.md` P8;
-`openspec/changes/archive/2026-08-06-reject-format-override-on-directory/`.
 
 ---
 
@@ -3000,12 +2123,6 @@ reading it.
 an encrypted archive without reading raised `EncryptionError` and made a wrong password look
 right". Found by review; fixed in `#225`.
 
-**Answer today.** Both solid backends defer to the first read. `open-issues.md:239` (closed);
-found by review on `#224`.
-
-**Sources.** `open-issues.md` §Docs; `review/archive/2026-08-15-simplicity-consistency/`;
-`openspec/changes/archive/2026-08-06-close-member-streams-on-reader-close/`.
-
 ---
 
 ### API-15 — A capability that is cheap on one format and a trap on another cannot be on by default
@@ -3027,18 +2144,6 @@ time.
 [`0003-member-streams-opt-in`](../../dev-docs/decisions/0003-member-streams-opt-in.md): "an
 unconditional 'always seekable / always concurrent' API lets developers test on ZIP and ship
 a footgun on TAR/7z. Cost receipts alone are too passive."
-
-**Answer today.** Both capabilities are off by default on **every** format, including the
-trivial ones, so the default path has no locks, no seek tables and no accelerators, and a
-caller who needs either declares it at open time. The strict default is reversible before
-1.0 while permissive-then-gate would be a breaking change. Solid open-*order* cost is
-explicitly **not** erased by declaring concurrency — it stays the caller's algorithm.
-ADR 0003 (amended before 0.2.0 to share one vocabulary with the single-stream entry point,
-on the same reasoning as ADR 0004: prefer a boolean when the mode count is small).
-
-**Sources.** ADR 0003; ADR 0004; `openspec/changes/archive/2026-07-11-concurrent-member-streams/`;
-`openspec/changes/archive/2026-07-12-promote-concurrent-member-streams/`;
-`openspec/changes/archive/2026-07-30-member-stream-capability-booleans/`.
 
 ---
 
@@ -3065,19 +2170,6 @@ resolve into a verdict.
 exception, and a caller who stops reading early has not asked for a verdict at all." The
 trade-off analysis and rejected alternatives are in
 `dev-docs/investigations/adr-0014-investigation.md`.
-
-**Answer today.** Verdicts surface from reads, never from close. A read of *n* bytes returns
-exactly *n* unless it hits a terminal boundary, so a short return is always terminal;
-reaching the end of proven-wrong bytes raises and withholds the reaching chunk, while a
-truncation-shaped end delivers the best-effort prefix and raises on the read past it.
-Stopping early is not verification and is quiet; a caller who wants verification regardless
-of access pattern opts into a strict mode. ADR 0014, settling the contract that
-`2026-07-24-gzip-zlib-truncation-recovery` implements.
-
-**Sources.** ADR 0014; `investigations/adr-0014-investigation.md`;
-`openspec/changes/archive/2026-07-24-gzip-zlib-truncation-recovery/`;
-`openspec/changes/archive/2026-07-18-partial-members-and-errors/`;
-`review/archive/2026-07-19-stream-layering/`.
 
 ---
 
@@ -3109,21 +2201,6 @@ seek-forward-then-back "must not re-enable a hash comparison over a non-contiguo
 (false-positive [corruption verdict])"; and the past-end case cuts both ways because in-memory and
 ordinary file objects permit seeking past the end.
 
-**Answer today.** The checksum verdict is forfeited for the rest of that handle's life on a
-genuine intra-stream seek of a truly-seekable member — itself an opt-in capability (API-15) —
-while the length and over-run verdict stays on, keyed off the furthest position an actual
-*read* reached rather than the logical position. A seek that jumps to or past the declared
-size without reading the gap is concluded by reading that gap and probing one byte beyond,
-which reproduces exactly the verdict a sequential read would have reached: short raises
-truncation with its true recoverable length, over-long raises corruption, complete returns
-empty. A member already read to its declared size short-circuits with no extra I/O, and a
-member whose "seek" is satisfied by re-decoding from the start keeps linear hashing and so
-keeps its checksum. ADR 0014; `adr-0014-investigation.md` §Seek.
-
-**Sources.** `investigations/adr-0014-investigation.md`; ADR 0014;
-`openspec/changes/archive/2026-08-09-rewind-diagnostic-redecode-cost/`;
-`review/archive/2026-07-19-stream-layering/`.
-
 ---
 
 ### API-18 — A stream type that needs methods a plain file object lacks is not substitutable
@@ -3144,14 +2221,6 @@ leaks at exactly the boundary it was supposed to hide.
 read-exact method on precisely these grounds: "A core goal is that code written against
 archivey streams also works against ordinary file objects (and vice versa), so we do **not**
 add methods a plain `BinaryIO` lacks."
-
-**Answer today.** The ambiguity is resolved with standard means only: the whole-member idioms
-are the standard read-everything and iterate-to-empty forms, which raise on a
-truncation-shaped failure, while a sized read stays a bounded read whose short return the
-caller checks by length. `adr-0014-investigation.md` §`read_exact(n)`; ADR 0014.
-
-**Sources.** `investigations/adr-0014-investigation.md`; ADR 0014;
-`review/archive/2026-07-19-api-coherence/`.
 
 ---
 
@@ -3175,14 +2244,6 @@ the `f.read()` idiom returns partial data and **swallows** the [truncation error
 not the one codec that exposed it. The false-EOF twin is
 `review/archive/2026-07-19-stream-layering/SUMMARY.md` F1, where a zero-length read was
 treated as end-of-file and produced a spurious corruption error.
-
-**Answer today.** The deferred error is consulted by every read idiom, and a zero-length read
-is not an end-of-file signal. Fixed in `#128` (F4) and `#137` (F1); ADR 0014 makes the
-read-everything idioms the guaranteed whole-member forms, precisely because they raise.
-
-**Sources.** `review/archive/2026-07-16-stream-decoder/SUMMARY.md` (F4);
-`review/archive/2026-07-19-stream-layering/SUMMARY.md` (F1, F2); ADR 0014;
-`investigations/adr-0014-investigation.md`.
 
 ---
 
@@ -3210,14 +2271,6 @@ an accident of harvesting cheap trailer metadata *through* the index machinery. 
 compressed size "filled from a `Path` and `None` from a seekable `BytesIO` — for **every**
 single-file codec".
 
-**Answer today.** Metadata harvesting was decoupled from the declared seekability, so the
-trailer is read on its own terms. `2026-08-09-decouple-member-metadata-from-declared-seekability`
-(findings F1 → Q1, F5 → Q5).
-
-**Sources.** `review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` (F1, F5);
-`openspec/changes/archive/2026-08-09-decouple-member-metadata-from-declared-seekability/`;
-`openspec/changes/archive/2026-07-30-member-stream-capability-booleans/`.
-
 ---
 
 ### API-21 — An argument only some formats can honour needs one consistent answer, and silence is the wrong one
@@ -3243,14 +2296,6 @@ to one argument only". The same review's §Format-scoped config knobs records th
 version of inertness — a knob naming a structure the format lacks overrules no caller
 assertion — which is what makes the discarded-encoding case different.
 
-**Answer today.** The gate was extended to the second argument so both are refused where they
-cannot be honoured (finding F2 → Q2). The directory-format override case is the same family
-(API-13).
-
-**Sources.** `review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` (F2, F7,
-§Format-scoped config knobs); `open-issues.md` P8;
-`openspec/changes/archive/2026-08-06-reject-format-override-on-directory/`.
-
 ---
 
 ### API-22 — One unusable member and an unusable archive are different events, and a single pass presents them identically
@@ -3275,20 +2320,6 @@ loop's "mid-pass failure poisons the stream and loses remaining members". The un
 general capability is registered as `dev-docs/open-issues.md:279` ("Salvage / best-effort
 read mode … all-or-error today").
 
-**Answer today.** Per-member failures became continuable with an explicit policy, and the
-authoritative record is a per-member result rather than an exception: each member reports its
-own outcome, and abort conditions are a caller-selected set rather than the default.
-`2026-07-18-partial-members-and-errors`, `2026-07-20-stop-on-failure-not-policy`,
-`2026-08-15-extraction-results-authoritative`. **Partly unresolved:** a general best-effort
-salvage read mode is still registered as longer-term work, and a library-level
-verify-everything primitive was deferred (api-coherence Q5 → `IDEAS.md`).
-
-**Sources.** `review/archive/2026-07-20-cli-product/SUMMARY.md`;
-`review/archive/2026-07-19-api-coherence/SUMMARY.md` (E2); `open-issues.md` §Longer-term;
-`openspec/changes/archive/2026-07-18-partial-members-and-errors/`;
-`openspec/changes/archive/2026-07-20-stop-on-failure-not-policy/`;
-`openspec/changes/archive/2026-08-15-extraction-results-authoritative/`.
-
 ---
 
 ### API-23 — A selection that matches nothing is indistinguishable from a job well done
@@ -3310,13 +2341,6 @@ session: `archivey x photos.zip out` — "my `unzip`/`7z` reflex for 'extract in
 produced "`0 extracted, 0 renamed, 0 skipped → .`, **exit 0** … the success exit meant my
 script wouldn't notice either", and the same for a directory-name argument that needed a glob
 suffix. Recorded as finding P2, one of the two "silence-shaped" trust-costing failures.
-
-**Answer today.** An empty match is reported and no longer exits successfully (finding P2,
-landed in `#144`).
-
-**Sources.** `review/archive/2026-07-20-cli-product/SUMMARY.md` (P2);
-`review/archive/2026-07-17-cli/SUMMARY.md`;
-`openspec/changes/archive/2026-07-17-cli-v1/`.
 
 ---
 
@@ -3342,15 +2366,6 @@ parses `repr()`)". A residual instance is
 `review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` F14, where two front-end
 modules still import a public type from the private path.
 
-**Answer today.** Instrumentation became a public `archivey.measurement` module with
-`IoStats` and `enable_measurement`, and the counters reachable from `ArchiveReader`, and the format enumeration gained a display-name property (findings E1, S2,
-implemented in `#153`–`#157`); the private-path imports were corrected (F14 → Q14).
-**Partly unresolved:** the verify-everything primitive was deferred (E2 → Q5 → `IDEAS.md`).
-
-**Sources.** `review/archive/2026-07-19-api-coherence/SUMMARY.md` (E1, E2, S1, S2, S3);
-`review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` (F14);
-`review/archive/2026-07-17-cli/SUMMARY.md`.
-
 ---
 
 ### API-25 — Whether a format can be read from a pipe is a fact callers need and cannot compute
@@ -3371,13 +2386,8 @@ loud and uniform (good), but `FormatAvailability` carries only `format`/`support
 the fact lives on an `internal/` class attribute", with a recorded freeze cost because the
 availability type is public.
 
-**Answer today.** The requirement is published on the availability type
-(`2026-08-09-format-availability-required-source`, finding F8 → Q8).
-
-**Sources.** `review/archive/2026-08-15-simplicity-consistency/SUMMARY.md` (F8);
-`openspec/changes/archive/2026-08-09-format-availability-required-source/`; ADR 0010.
-
 ---
+
 
 ## Packaging & dependency
 
@@ -3396,17 +2406,6 @@ at the moment data is read.
 **Evidence.** `dev-docs/history/ARCHITECTURE.md:543-582` and `history/SPEC.md:817`: the
 registration guard pattern, and "an absent dependency simply makes the format unavailable (it
 never appears in `list_formats()`)"; the error message names the extra to install.
-
-**Answer today.** A library-backed backend registers itself only inside a successful-import
-guard and declares its identifying bytes as data, so an absent package makes the format
-absent from the availability list rather than breaking the import; requesting it raises an
-error naming the extra. Native-parser backends register unconditionally and degrade at the
-point the missing piece is actually needed — listing works, reading data raises an error
-naming the missing tool. `ARCHITECTURE.md` §2.13;
-`2026-08-09-format-availability-required-source`.
-
-**Sources.** `history/ARCHITECTURE.md` §2.13; `history/SPEC.md` §9.1;
-`openspec/changes/archive/2026-08-09-format-availability-required-source/`; ADR 0011.
 
 ---
 
@@ -3429,14 +2428,6 @@ backport rather than any third-party binding — partly because a competing bind
 `backports.zstd` for Python < 3.14" so targeting that API covers it too. Also `:55` (core on
 3.14+, an extra below).
 
-**Answer today.** Target the standard-library API and use a pure backport of it below the
-version where it landed, so the extra disappears as the floor rises. ADR
-[`0009-zstd-stdlib-backports`](../../dev-docs/decisions/0009-zstd-stdlib-backports.md);
-`library-analysis.md` §zstd.
-
-**Sources.** `library-analysis.md` §zstd; ADR 0009;
-`openspec/changes/archive/2026-06-30-compression-library-evaluation/`.
-
 ---
 
 ### PKG-03 — Behaviour depends on both the presence and the version of optional packages
@@ -3454,14 +2445,6 @@ continuous-integration leg and not the rest, with no difference in the code.
 both presence and version of optional libs … Say which config a finding reproduces in").
 Measured version-dependent behaviour differences at `dev-docs/known-issues.md:278-311` and
 `dev-docs/library-analysis.md:102-116`.
-
-**Answer today.** Three dependency configurations are a standing gate before pushing —
-everything, everything at lowest permitted versions, and zero-dependency core — and every
-review finding must name the configuration it reproduces in. `CONTRIBUTING.md` §Before
-pushing; `review/README.md` §Conventions.
-
-**Sources.** `review/README.md`; `known-issues.md`; `library-analysis.md`;
-`openspec/changes/archive/2026-07-30-consolidate-optional-extras/`.
 
 ---
 
@@ -3482,13 +2465,6 @@ on archives that use the rest.
 `unrar-free` "handles little of RAR5", `7z`/`bsdtar` coverage varies by build, `unar` exists on
 macOS; a multi-tool fallback matrix "would otherwise degrade into 'works on my machine' plus
 divergent solid/password behavior").
-
-**Answer today.** Exactly one vendor binary is accepted; any other program of that name raises
-an error naming the required one, with no silent fallback, and listing is designed to work
-without the tool at all. ADR 0002; `threat-model.md` C1 (closed as won't-do).
-
-**Sources.** `threat-model.md` C1; `history/ARCHITECTURE.md` §5.7; ADR 0002;
-`open-issues.md` §Irreducible.
 
 ---
 
@@ -3513,16 +2489,6 @@ reason and explicitly left as a maintainer decision. Pinning test
 (`test_rar_column_is_unmeasured_without_the_rar_writer`), which documents the gap and skips
 when the writer is present.
 
-**Answer today.** **Partly unresolved.** The gap is pinned by a test that fails to skip only
-when the writer is present, so it cannot be forgotten; the diagnosis recommends a third route
-(install the writer on one continuous-integration leg) that needs no digest rework and commits
-no binaries, and leaves the licensing call to the maintainer. Committed fixtures with sidecars
-are the accepted route where generation is genuinely impossible — ADR
-[`0016-committed-rar-corpus-fixtures`](../../dev-docs/decisions/0016-committed-rar-corpus-fixtures.md).
-
-**Sources.** `investigations/rar-corpus-sweep-diagnosis.md`; ADR 0016;
-`review/archive/2026-08-15-simplicity-consistency/`; `history/ARCHITECTURE.md` §2.8.
-
 ---
 
 ### PKG-06 — Every hard dependency is imposed on every user, including those who never use it
@@ -3542,14 +2508,6 @@ library and two backports, dropped for a zero-dependency core, with the progress
 callback used only by the command-line tool). Decided in ADR
 [`0011-zero-dependency-core`](../../dev-docs/decisions/0011-zero-dependency-core.md).
 
-**Answer today.** Zero hard dependencies in the core; everything optional sits behind a named
-extra, progress is a callback the caller supplies, and a guard test asserts that every package
-pinned in a user-facing extra is actually imported by some source path so a dead or test-only
-dependency cannot re-enter an extra. ADR 0011; `library-analysis.md` §Test-only libraries.
-
-**Sources.** `history/COMPARISON.md` §2, §4.7, §4.11; ADR 0011; `library-analysis.md`;
-`openspec/changes/archive/2026-07-30-consolidate-optional-extras/`.
-
 ---
 
 ### PKG-07 — The supported language-version range is a moving constraint at both ends
@@ -3566,13 +2524,6 @@ carries version-conditional paths for capabilities that are unconditional a vers
 **Evidence.** `dev-docs/history/COMPARISON.md:215-218`: raising the floor "drops two backport
 deps; 3.10 is EOL October 2026 anyway", against a matrix spanning four newer versions.
 Version-dependent codec availability at `dev-docs/library-analysis.md:55`.
-
-**Answer today.** A floor chosen so the backports disappear, with a continuous-integration
-matrix across the supported range, and a codec's provider expressed as "standard library where
-available, backport below" so the extra retires itself as the floor rises.
-`history/COMPARISON.md` §4.11; ADR 0009.
-
-**Sources.** `history/COMPARISON.md` §4.11; `library-analysis.md`; ADR 0009.
 
 ---
 
@@ -3592,12 +2543,6 @@ different behaviour from the latter, and nothing in its own code explains why.
 swap, with the trade named explicitly — "hang-safety on hostile input over leaving another
 library's pycdlib untouched" — and the mitigating argument that the guard is a strict superset
 of the library's behaviour on valid trees.
-
-**Answer today.** The narrowest possible patch (that library's namespace, not a global),
-installed once, documented as an irreducible visible consequence.
-`known-issues.md`; `open-issues.md` §Irreducible.
-
-**Sources.** `known-issues.md` §pycdlib; `open-issues.md` §Irreducible; `threat-model.md` O5.
 
 ---
 
@@ -3622,18 +2567,8 @@ byte-identical to its predecessor, because archives embed timestamps. So 'rebuil
 compare' is not available as a CI check, and any scheme that assumed it would be perpetually
 red."
 
-**Answer today.** Each stored archive is pinned to a hash of its *definition* — the same
-content key the on-demand builder caches on — rather than to a hash of its bytes, so the
-check answers "were these bytes built from what the definition currently says?". A mismatch
-is detected and never absorbed: rebuilt in place where the writer is available, and a hard
-error naming the regeneration command anywhere else. Which formats are stored rather than
-built is an explicit one-line set, so the precedent cannot drift. ADR 0016 (review finding
-F16 / Q11 / O6).
-
-**Sources.** ADR 0016; `investigations/rar-corpus-sweep-diagnosis.md`;
-`review/archive/2026-08-15-simplicity-consistency/` (F16); `history/ARCHITECTURE.md` §2.8.
-
 ---
+
 
 ## Concurrency & lifetime
 
@@ -3655,22 +2590,6 @@ member file object "re-seeks on each `read()`, **no lock**", and the ISO library
 object has "the same shape". The standard zip reader does coordinate seek and read internally,
 but its reference-count updates race without the interpreter lock. Per-format parallelizable
 units and their constraints at `:141-154`.
-
-**Answer today.** Concurrency is a declared capability rather than an ambient promise: by
-default one live member stream, no locks, and a second overlapping open fails fast as a usage
-error, so accidental cross-thread sharing cannot race. Once declared, first-touch
-materialization is coordinated (one builder, waiters share the published result) and the
-shared-handle backends take one comprehensive per-reader lock covering open, listing reads,
-member creation, reads, positioning and close — correctness guaranteed, handle operations
-serialized. Reader-wide passes stay single-owner.
-`concurrent-member-streams`, `reader-concurrency-coordination`, `tar-concurrent-open`;
-`parallel-reader.md` §1, §4.
-
-**Sources.** `investigations/parallel-reader.md`; `threat-model.md` C4; ADR 0003;
-`openspec/changes/archive/2026-07-11-concurrent-member-streams/`;
-`openspec/changes/archive/2026-07-11-tar-concurrent-open/`;
-`openspec/changes/archive/2026-07-12-reader-concurrency-coordination/`;
-`openspec/changes/archive/2026-07-12-shared-source-streams/`.
 
 ---
 
@@ -3695,14 +2614,6 @@ breaks members unrelated to it.
 LZ data → also 0 after decode). Easy to desync on new member kinds." The storage-shape
 difference is measured in `investigations/rar-corpus-sweep-diagnosis.md:58-89` (FQ-18).
 
-**Answer today.** The pipe is demultiplexed by header-declared sizes with each member's
-checksum validated incrementally as it is read, so a desynchronization surfaces as a checksum
-failure rather than silent wrong data. A shared emission table is named as the hardening;
-**partly unresolved** (`open-issues.md` P6). `ARCHITECTURE.md` §7.4.
-
-**Sources.** `open-issues.md` P6; `history/ARCHITECTURE.md` §5.7, §7.4;
-`history/COMPARISON.md` §4.4; `investigations/rar-corpus-sweep-diagnosis.md`.
-
 ---
 
 ### CONC-03 — A stream handed to a caller can outlive the thing that produced it
@@ -3725,17 +2636,6 @@ are laid out there — a general principle against silently invalidating a held 
 decoder abort hazard running the other way, and the standard library doing the opposite
 (UL-17).
 
-**Answer today.** Backend teardown is deferred behind lifecycle leases until the last member
-stream closes, so the source is never closed under a live stream; member streams are then closed
-when the reader closes, matching the standard library; and the finalizer safety net was fixed
-(UL-16) so a dropped stream is reclaimed. `2026-08-06-close-member-streams-on-reader-close`
-(`open-issues.md` P7); `threat-model.md` C4.
-
-**Sources.** `open-issues.md` P7; `threat-model.md` C4;
-`investigations/parallel-reader.md` §4;
-`openspec/changes/archive/2026-08-06-close-member-streams-on-reader-close/`;
-`openspec/changes/archive/2026-07-30-member-stream-capability-booleans/`.
-
 ---
 
 ### CONC-04 — Archive-wide limits cannot be enforced from parallel workers
@@ -3752,13 +2652,6 @@ scales with the number of workers, without reporting that any limit was crossed.
 **Evidence.** `dev-docs/investigations/parallel-reader.md:170-173`: "archive-wide limits
 (`max_entries`, `max_extracted_bytes`, ratio guard) must stay on a single coordinator thread (or
 a locked counter); workers only produce bytes / paths."
-
-**Answer today.** The limits stay on a single coordinator; parallel extraction scheduling is
-deferred, and the constraint is recorded as a design obligation for whenever it lands.
-`parallel-reader.md` §6.
-
-**Sources.** `investigations/parallel-reader.md` §6; `history/ARCHITECTURE.md` §4.2;
-`threat-model.md` C4.
 
 ---
 
@@ -3777,15 +2670,6 @@ running (UL-03).
 **Evidence.** `dev-docs/known-issues.md:73-79` ("spawn **C++ worker threads** (`std::thread`s,
 invisible to Python's `threading` module)"); `dev-docs/investigations/parallel-reader.md:131-137`
 (free-threading "does not remove the close-before-finalize requirement").
-
-**Answer today.** Such objects are always explicitly closed via a finalizer guard (UL-03), never
-have their source removed underneath them (UL-05), and are excluded from the defended parsing
-surface for untrusted input (SEC-18); the free-threading position is that this constraint is
-unchanged by the interpreter's own concurrency model. `known-issues.md`;
-`parallel-reader.md` §4; `threat-model.md` C4.
-
-**Sources.** `known-issues.md`; `investigations/parallel-reader.md` §4; `threat-model.md` O5, C4;
-ADR 0008.
 
 ---
 
@@ -3809,18 +2693,4 @@ wedged: non-concurrent → misleading error, CONCURRENT → CV deadlock", traced
 review's `concurrency.md` C1 and `latent-bugs.md` L2, and listed as a change to make ("Reader
 survives Ctrl-C; no CV deadlock").
 
-**Answer today.** A failed build that is not terminal archive damage returns the state to
-not-built, wakes the waiters, and publishes nothing; terminal damage publishes an incomplete
-result with its error set rather than leaving the state ambiguous. Heavy work runs outside
-the lock. `reader-concurrency-coordination`; `investigations/parallel-reader.md` §2.
-
-**Sources.** `review/archive/2026-07-12-codebase-deep-review/SUMMARY.md` (finding 2);
-`investigations/parallel-reader.md` §2;
-`openspec/changes/archive/2026-07-12-reader-concurrency-coordination/`.
-
 ---
-
-## Retired ids
-
-None yet. When two entries merge, the surviving id keeps its number and the retired one is
-listed here with a pointer, so a citation of the retired id still resolves.
