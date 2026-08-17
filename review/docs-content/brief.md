@@ -389,8 +389,10 @@ that is itself a finding — either the claim is wrong or the page is documentin
   reachable only by someone already reading the subsystem. That is these workers, once.
   **Cap it:** a bounded list per capability, no investigation, no chasing. A worker that
   starts researching a problem has stopped doing pass 1.
-- **The step-4 checkpoint is the fan-in.** A wrong split is cheap to correct there and
-  expensive to correct after the prose is written.
+- **The step-4 checkpoint gates the fan-out.** The coordinator builds `claims.md` alone
+  first — deduping needs every page in one view — and the workers fan out only after the
+  maintainer has seen it. A wrong split is cheap to correct there and expensive to correct
+  after the prose is written.
 - **The cross-page consistency pass is mandatory, whatever the topology.** #223's round-2
   re-review found four contradictions the splits change had created *in a single pass by a
   single agent* — `access-and-cost.md` said accelerator faults abort the process while the
