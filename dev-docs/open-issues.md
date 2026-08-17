@@ -204,6 +204,49 @@ nor `DIRECTORY`. Original write-up below.
   (once-per-reader would be the shape). Deliberately parked rather than left implicit.
 - **Refs:** `spec-drop-unimplemented-solid-warning` (#225); O-23.
 
+### P11. A RAR stream source silently costs a whole-archive disk copy, in no signal
+
+- **Today:** `unrar` needs a filesystem path, so `RarReader._ensure_archive_path()`
+  (`src/archivey/internal/backends/rar_reader.py:532-555`) writes the **entire archive**
+  to `tempfile.mkstemp(suffix=".rar")` the first time a member cannot be read directly.
+  Multi-volume stream sources go through `_materialize_stream_volumes()` (`:438-459`) into
+  a temp dir. Both are removed on reader close. Measured on a `rar -m5` archive read from a
+  `BytesIO`: the read succeeds, one temp `.rar` of full archive size appears, and
+
+  ```
+  reader.diagnostics      -> []
+  reader.cost             -> CostReceipt(..., notes=())      # byte-identical to a path source
+  ```
+
+- **Why it matters.** `VISION.md`'s load-bearing claim is one uniform interface with
+  **honest cost signals** — "behaviour differences are **data** (`None`, explicit fields,
+  diagnostics, `CostReceipt`), never silent guesses". A whole-archive copy to disk is the
+  largest hidden cost in the library, and it is in neither channel. A caller handing over a
+  4 GiB `BytesIO` gets a 4 GiB temp file with no way to have known.
+- **The trigger is per-member, which makes it worse.** A stored member from a stream costs
+  nothing (`_can_direct_read`); the next member in the same archive, compressed, costs a
+  full copy. Same call, same source, two very different costs, no signal distinguishing
+  them. Any member of a solid archive triggers it via `_iter_with_data` (`:673-679`).
+- **Not an ADR 0010 violation.** That decision forbids buffering a *non-seekable* source to
+  fake seekability; this is a *seekable* stream copied to satisfy an external binary — a
+  different trade-off that was never written down. Worth noting `docs/access-and-cost.md:142`
+  ("Archivey will not silently buffer the whole archive into memory or a temp file") is
+  scoped to the pipe case in context but reads as absolute.
+- **Open question:** a `CostReceipt.notes` entry, a diagnostic, or both. A note is the better
+  fit — the taxonomy's admission clause asks whether the caller could have determined it from
+  the declared contract, and *nothing* declares it today, but the placement clause prefers a
+  structured field where one exists and `notes` is exactly that field. A size threshold is a
+  third option and probably wrong: the cost is unbounded either way and a caller choosing a
+  stream source deserves to know before the first read, not after 1 MiB.
+- **Provenance:** found 2026-08-17 answering a maintainer question during Topic 8's step-4
+  checkpoint ("do we support extraction for rar files opened via a stream, since we rely on
+  the external unrar binary and presumably can't pass a stream to it?"). Neither step-2/3
+  pass had it: #246's E-43 captured temp materialization for *solid random opens* only, from
+  `formats.md:123-124`, and no page states the general case.
+- **The documentation half is separate** and belongs to Topic 8:
+  [`review/docs-content/claims.md`](../review/docs-content/claims.md) **E-71**, a gap row —
+  no page states the behaviour at all.
+
 ### P10. `format_availability()` answers for a public type it does not know
 
 - **Today:** `StreamFormat` and `ArchiveFormat` are both in `archivey.__all__`, and

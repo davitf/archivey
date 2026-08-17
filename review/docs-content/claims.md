@@ -266,7 +266,7 @@ Pages: `opening-and-listing`, `install`, `formats`, `index`, `migrating`, `philo
 | A-3 | `reader.get(name)` returns the member with that name | `opening-and-listing.md:16` | `archive-reading:406` | Keep | |
 | A-4 | An open reader exposes `.format` and `.cost` | `opening-and-listing.md:17` | `access-mode-and-cost:151` | Keep | |
 | A-5 | **By default any member may be opened in any order** — random access is the default access mode | `opening-and-listing.md:20-23` | `access-mode-and-cost:19` | Keep | |
-| A-6 | Without `streaming=True` a non-seekable source **fails at open**, not halfway through, and archivey never silently buffers it to memory or a temp file | `opening-and-listing.md:25-28`, `access-and-cost.md:141-143`, `philosophy.md:42`, `migrating.md:170-172` | `access-mode-and-cost:50`, `archive-reading:701` | Keep | |
+| A-6 | Without `streaming=True` a non-seekable source **fails at open**, not halfway through, and archivey never silently buffers it to memory or a temp file. **Reword:** the no-buffering half is true of the *pipe* case it sits in (ADR 0010's scope) but reads as absolute, and RAR-from-a-seekable-stream contradicts the absolute reading — see **E-71** | `opening-and-listing.md:25-28`, `access-and-cost.md:141-143`, `philosophy.md:42`, `migrating.md:170-172` | `access-mode-and-cost:50`, `archive-reading:701`, ADR 0010 (scoped to non-seekable) | Keep, **reword** | **`wrong` as written** (absolute reading). Repro §Coordinator-verified |
 | A-7 | `open_archive` on a plain `.gz` yields an archive with **exactly one** member, named after the file | `opening-and-listing.md:41-43`, `formats.md:143` | `format-single-file-compressors:27` | Keep | |
 | A-8 | `open_stream(path)` returns the decompressed bytes rather than an archive | `opening-and-listing.md:36-39`, `migrating.md:20` | `compressed-streams:36` | Keep | |
 | A-9 | `[code]` the `open_archive` / `open_stream` two-liner runs | `opening-and-listing.md:36-39` | — (executable) | Keep | |
@@ -276,7 +276,7 @@ Pages: `opening-and-listing`, `install`, `formats`, `index`, `migrating`, `philo
 | A-13 | There is **no matching end bound** — the archive must run to the end of the stream, else the caller wraps it in a bounded view | `opening-and-listing.md:61-62` | `archive-reading:20` | Keep | |
 | A-14 | A non-seekable stream with `streaming=True` works for **TAR (including compressed tar) and the single-file compressors** | `opening-and-listing.md:64-66`, `formats.md:11-12` | `access-mode-and-cost:50`, `format-tar:20` | Keep | |
 | A-15 | **ZIP, 7z, RAR and ISO must seek**; opening one from a pipe raises `StreamNotSeekableError`, fix is to buffer to a file or `BytesIO` | `opening-and-listing.md:66-68` | `format-zip:118`, `format-iso:22`, `format-7z:25`, `format-rar:25` | Keep | |
-| A-16 | **Divergence to settle with A-15:** `access-and-cost.md` names only **ZIP (stdlib) and ISO** as always needing seek, omitting 7z and RAR. Either one page is wrong or the two describe different things | `access-and-cost.md:145-146` vs `opening-and-listing.md:66-68` | `access-mode-and-cost:233`, the `required_source` sweep in Part 1 (7z/RAR = `SEEKABLE`) | Keep (both) · `→ page, 2 lines` for `access-and-cost.md:139-146` | |
+| A-16 | **`access-and-cost.md` is the wrong side.** It names only **ZIP (stdlib) and ISO** as always needing seek, which implies 7z and RAR can be opened from a pipe under `streaming=True`. They cannot. `opening-and-listing.md:66-68` is correct | `access-and-cost.md:145-146` vs `opening-and-listing.md:66-68` | `access-mode-and-cost:233`; `required_source` is `SEEKABLE` for ZIP / 7z / RAR / ISO alike (Part 1 sweep) | Keep (`opening-and-listing`) · **fix** `access-and-cost.md:145-146` | **`wrong` — `access-and-cost.md`.** Repro §Coordinator-verified |
 | A-17 | `format_availability(fmt).required_source` is **the weakest source shape the format can be read from**, so a comparison replaces a `try`/`except` | `opening-and-listing.md:70-73` | `src/archivey/internal/registry.py:69`, `:314` | Keep — canonical home | |
 | A-18 | `[code]` the `required_source` / `StreamCapability` comparison block runs as written (imports `StreamCapability, detect_format, format_availability` from `archivey`) | `opening-and-listing.md:74-81` | — (executable) | Keep | |
 | A-19 | `StreamCapability` is **ordered**, `FORWARD_ONLY < SEEKABLE`, and the same comparison works against `reader.cost.stream_capability` | `opening-and-listing.md:83-85`, `access-and-cost.md:48-52` | `src/archivey/cost.py:48-84` | Keep — canonical home | |
@@ -614,6 +614,7 @@ Pages: `formats`, `install`, `support-matrix`, `gotchas`, `index`, `migrating`.
 | E-41 | RAR5 members with the **HASHMAC** flag verify tweaked digests via UnRAR's `ConvertHashToMAC` when a password is available; **tweaked values are not exposed as plain `member.hashes`** | `formats.md:118-119` | `format-rar:230` | **Trim** — the actionable half (not exposed) stays; the UnRAR function name → TM | |
 | E-42 | RAR **file-version history (`-ver`)**: revision rows appear in `members()` as `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays `is_current=True`; default extract **skips** non-current rows | `formats.md:120-122`, `extracting.md:166-167` | `format-rar:92`, `safe-extraction:254` | Keep | |
 | E-43 | **Solid RAR**: one `unrar p` pipe for `stream_members()`; random solid opens may use explicit temp materialization | `formats.md:123-124` | `format-rar:168`, `format-rar:191` | Keep | |
+| E-71 | **Stated by no page.** Reading a RAR member that is not directly readable (compressed, or any member of a solid archive) from a **stream** source copies the **whole archive** to a temp `.rar` in the system temp directory — `_ensure_archive_path`, "materialize streams once". Unbounded in size, absent from `CostReceipt.notes` *and* from `diagnostics`, removed on reader close. A stored member from a stream never triggers it (`_can_direct_read`), so the same call is free or a full disk copy depending on the member's compression | *(nowhere — gap)* | `src/archivey/internal/backends/rar_reader.py:532-555` (`_ensure_archive_path`), `:438-459` (`_materialize_stream_volumes`), `:889-897` (the `_can_direct_read` branch); `format-rar:168`; ADR 0002 | **Guide — new prose.** Which page is `scope.md`'s call: `formats.md` §RAR (beside E-43) or `access-and-cost.md`. Honest-cost half filed as `open-issues.md` **P11** | **`wrong` — silence is a claim.** Repro §Coordinator-verified |
 | E-44 | RAR is **read-only — no RAR writer** | `formats.md:16`, `formats.md:125`, `migrating.md:138-139` | `format-rar:25` | Keep | |
 | E-45 | **ISO needs `[recommended]` (`pycdlib`) and a seekable source** | `formats.md:17`, `formats.md:129`, `access-and-cost.md:145-146` | `format-iso:22`, `packaging-and-extras:50` | Keep · `cfg` | |
 | E-46 | ISO namespace is **auto-selected Rock Ridge → Joliet → plain ISO 9660** and reported in `ArchiveInfo.extra["iso.namespace"]` | `formats.md:130-131` | `format-iso:47` | Keep | |
@@ -913,6 +914,68 @@ about behaviour that changed) and `support-matrix.md`'s free-threading table, wh
 the only section on the site whose every row cites a CI job by name.
 
 ---
+
+# Coordinator-verified out of band — three rows
+
+**These three carry verdicts where every other row is empty.** The maintainer asked two
+direct questions after the checkpoint — whether 7z/RAR really need seek, and whether RAR
+extraction works from a stream given `unrar` needs a file — so they were run rather than
+left for a worker. Repros below; a worker should **not** redo them.
+
+### A-16 — all four formats need seek; `access-and-cost.md` is wrong
+
+```python
+class Pipe(io.RawIOBase):          # non-seekable wrapper
+    def seekable(self): return False
+    ...
+for fmt in (zip, 7z, rar, tar):
+    open_archive(Pipe(data), streaming=False) ; open_archive(Pipe(data), streaming=True)
+```
+
+| Format | `streaming=False` from a pipe | `streaming=True` from a pipe |
+|---|---|---|
+| ZIP | `StreamNotSeekableError` | `StreamNotSeekableError` |
+| 7z | `StreamNotSeekableError` | `StreamNotSeekableError` |
+| RAR | `StreamNotSeekableError` | `StreamNotSeekableError` |
+| TAR | `StreamNotSeekableError` | **OK** |
+
+`format_availability().required_source` is `SEEKABLE` for ZIP, 7z, RAR and ISO alike. So
+this was never a behavioural split: `opening-and-listing.md:66-68` is right, and
+`access-and-cost.md:145-146`'s "ZIP (stdlib) and ISO" singles out two of four and implies
+7z and RAR behave differently. **Fix the sentence on `access-and-cost.md`.** ISO was not
+run (no fixture in-tree) but declares `SEEKABLE`; a worker should confirm the row rather
+than inherit it.
+
+### E-71 — RAR from a stream works, by copying the whole archive to disk
+
+`unrar` needs a filesystem path, and archivey supplies one: `_ensure_archive_path()` writes
+the entire archive to `tempfile.mkstemp(suffix=".rar")` the first time a member cannot be
+read directly. Measured on a `rar -m5` archive read from a `BytesIO`:
+
+```
+member: big.txt  size: 300000        READ FROM STREAM: 300000 bytes, ok=True
+_ensure_archive_path calls: 1        -> /tmp/tmpqee8ey8z.rar   (whole archive)
+diagnostics: []                      CostReceipt.notes: ()     (identical to a path source)
+temp .rar after close: 0             (cleaned up)
+```
+
+So the answer to "do we support extraction for RAR opened via a stream" is **yes, via a
+full temp-file spill** — and three things follow:
+
+1. **No page says so.** A caller handing over a 4 GiB `BytesIO` gets a 4 GiB temp file, and
+   nothing in the guide, the cost receipt or the diagnostics channel mentions it.
+2. **ADR 0010 is not violated, but `access-and-cost.md:142` reads as though it is.** The ADR
+   forbids buffering *a non-seekable source* to fake seekability; this is a *seekable* stream
+   copied to satisfy an external binary. Different decision, same sentence covers both to a
+   reader — hence A-6's reword.
+3. **The trigger is per-member, not per-archive.** A stored member from a stream costs
+   nothing (`_can_direct_read`); the next member, compressed, costs a full archive copy.
+   Same call, same source, two very different costs.
+
+The **honest-cost half** — that a whole-archive disk copy appears in neither
+`CostReceipt.notes` nor `diagnostics`, against VISION's "behaviour differences are data,
+never silent guesses" — is a library question, filed as `dev-docs/open-issues.md` **P11**.
+The **documentation half** is E-71 and belongs to this pass.
 
 # Provenance — merged from two independent passes
 
