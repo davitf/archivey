@@ -73,7 +73,7 @@ def _describe(value: object) -> str:
 
 
 def _pair_hint(stream: StreamFormat) -> str:
-    """ ", so pass …" naming the predefined ArchiveFormats built on this codec."""
+    """Return the ``", so pass …"`` clause naming the pairs built on this codec."""
     if stream is StreamFormat.UNCOMPRESSED:
         # The "no codec" marker rather than a codec: every container-only format pairs
         # with it, so there is no short list of pairs worth naming.

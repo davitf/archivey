@@ -1,9 +1,9 @@
 """Public entry points: open archives and query format support.
 
-``open_archive`` pipeline (in order): register backends → validate streaming/
-concurrency → resolve source → detect or accept format → multi-volume checks →
-backend capability gates (password / seekability) → normalize stream origin →
-``backend.open_read(...)``.
+``open_archive`` pipeline (in order): register backends → refuse a wrong-typed
+``format=`` → validate streaming/concurrency → resolve source → detect or accept
+format → multi-volume checks → backend capability gates (password / seekability) →
+normalize stream origin → ``backend.open_read(...)``.
 """
 
 from __future__ import annotations
@@ -491,6 +491,11 @@ def _resolve_stream_format(
                 "(e.g. ArchiveFormat.GZ), or use open_archive."
             )
         return format.stream
+
+    # The invariant the docstring states, enforced rather than described: without it a
+    # future caller of this private helper would auto-detect a value it was handed,
+    # which is the silent fall-through this function's boundary check exists to close.
+    assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
     detected = detect_format(open_source, collector=collector)
     if detected.format.container is not ContainerFormat.RAW_STREAM:

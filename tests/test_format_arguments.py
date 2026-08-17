@@ -131,6 +131,15 @@ def test_open_archive_does_not_leak_an_attribute_error(zip_path: Path) -> None:
     assert exc_info.value.__cause__ is None
 
 
+def test_open_archive_rejects_before_it_reads_the_source() -> None:
+    """The spec requires the refusal before the source is resolved, peeked or read."""
+    source = io.BytesIO(b"PK\x03\x04not really a zip")
+    with pytest.raises(ArchiveyUsageError):
+        open_archive(source, format=StreamFormat.ZSTD)  # type: ignore[arg-type]
+
+    assert source.tell() == 0
+
+
 @pytest.mark.parametrize("value", ["zip", 7])
 def test_open_archive_rejects_any_non_archive_format(
     value: object, zip_path: Path
