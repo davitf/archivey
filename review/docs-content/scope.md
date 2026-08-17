@@ -89,7 +89,8 @@ name the page that owns each next step.
 
 **Not on this page.** Any explanation of *why* a default is what it is (→ `philosophy.md`,
 `how-it-works.md`); install detail beyond the pointer (→ `install.md`); behaviour of
-anything the recipes call (→ the owning flow page); contributor material (→ the repo, D1/D3).
+anything the recipes call (→ the owning flow page); contributor material (→ the repo, D1/D3);
+**a fifth recipe** — the block stays at four by maintainer decision (Q6).
 
 | Block | Ruling | Note |
 |---|---|---|
@@ -100,12 +101,11 @@ anything the recipes call (→ the owning flow page); contributor material (→ 
 | `63-78` §User guide — numbered mirror of the nav | **Keep** | Becomes 15 entries when `how-it-works.md` lands; `check_docs_nav.py` is the guardrail |
 | `80-93` §For contributors | **Keep** | D1/D3 shape: published page → repo links |
 
-**Inbound.** One recipe, ~6 lines: cheap dedupe over `member.hashes`. D-f's `formats.md`
-ruling cuts the 30-line `hashlib` loop *and* requires "keep the use case visible via a Home
-recipe" — VISION's founding use case is deduplicating messy backups. This page is the
-named receiver, so the cut and the addition are one change.
+**Inbound.** None. I had routed one recipe here (~6 lines, cheap dedupe over
+`member.hashes`) as the receiver for D-f's `formats.md` cut; **dropped by maintainer
+decision** (Q6). The trimmed `formats.md` snippet is the guide's only dedupe example.
 
-**Size.** 93 → ~99.
+**Size.** 93 → 93.
 
 ---
 
@@ -125,14 +125,16 @@ screen.
 | `8-13` four `pip install` lines | **Keep** | The page's deliverable |
 | `15-18` four extras, no per-format ones; free-threaded pointer | **Keep** | |
 | `20-21` RAR needs `unrar` | **Keep** | must-explain #14 |
-| `23-28` §What each format needs | **Trim, then extend** | Today it is a pointer wearing a section heading. The §B row's `format_availability()` half lands here — but only the *support-level* half (see §B row 2) |
+| `23-28` §What each format needs | **Trim, then extend** | Today it is a pointer wearing a section heading. Receives both halves of the §B row: the `format_availability()` support-level query, and — **by maintainer decision (Q4)** — a four-row extra → formats re-index, capped at a re-index rather than a capability table |
 | `30-34` §Free-threaded builds | **→ page (fold)** | Repeats `15-18` almost word for word, including the same link. One home; fold into the extras paragraph |
 
-**Inbound.** `format_availability()` as a runtime query, FULL / PARTIAL / NONE and what
-`missing` gives you (must-explain #15), ~10 lines. Actionable: a caller checks it before
-promising a user a format works.
+**Inbound, two.** (1) `format_availability()` as a runtime query — FULL / PARTIAL / NONE
+and what `missing` gives you (must-explain #15), ~10 lines. Actionable: a caller checks it
+before promising a user a format works. (2) The extra → formats re-index, ~12 lines,
+restored by decision (Q4) after I had dissolved it; four rows, no capability columns,
+`formats.md` still authoritative.
 
-**Size.** 34 → ~40.
+**Size.** 34 → ~52 (the Q4 re-index is most of the growth).
 
 ---
 
@@ -254,7 +256,7 @@ This page is D-f's worked case, so the routing is given block by block.
 | `151-155` selective extract on an open reader | **Keep** | |
 | `157-167` §Names change on disk — the four identity rules | **Keep** | Receives the hardlink rule from `42-43` |
 | `169-183` the 14-row "Need to know" table | **Trim to ~6 rows** | A second gotchas digest living inside a flow page. Six rows are extraction-specific and stated nowhere else (STRICT rewrites names · collisions are first-class · `collided_with` · reserved names · hardlinks + filters · symlink-hostile filesystems). The other eight each have a home: nested archives → `gotchas.md:41-44` + §Limits; listing vs extract limits → §Limits; staging leftovers → `80-84`; `CONTINUE` ≠ ignore bombs → `gotchas.md`; `STOP` is failures-only → `108-111`; `TRUSTED` won't traverse → the policy table; safe ≠ unlimited → §Limits |
-| `185-206` §Limits | **Keep + extend** | Receives the bounded-recursion worked recipe (§B row 4) |
+| `185-206` §Limits | **Keep, unchanged** | Including the per-archive bomb-tracker paragraph at `203-206`. The worked recursion recipe I had routed here is **dropped by maintainer decision** (Q5) — the pointer is the coverage |
 | `208-216` accelerators off for untrusted input | **Trim** | Keep the rule and the reason. "Mutation and Atheris harnesses run with accelerators off for this reason" is evidence for the maintainer → TM |
 | `218-223` external `unrar` is in your trust boundary; extract-then-promote | **Keep** | Both operational |
 | `225-228` §Diagnostics pointer | **Keep** | |
@@ -333,7 +335,7 @@ detection *behaviour* (→ `opening-and-listing.md`); codec-choice rationale
 | `161-164` why zlib's Adler-32 is not surfaced | **Trim to the fact** | The parenthetical is an answer to a reviewer |
 | `165-170` `.Z` truncation, `open_stream` seekability | **Keep** | |
 | `172-189` §Stored digests intro + the format×keys matrix | **Keep** | D-f: "The *matrix* is archivey knowledge and stays" |
-| `190-220` §Cheap dedupe — the 30-line `hashlib` loop | **Cut to ~8** | D-f rules it: "the loop demonstrates that Python has `for`". Keep the provenance idea (stored vs computed) as a few lines; the use case stays visible via the `index.md` recipe |
+| `190-220` §Cheap dedupe — the 30-line `hashlib` loop | **Cut to ~8, floor raised** | D-f rules it: "the loop demonstrates that Python has `for`". Q6 declined the Home recipe that was to receive the use case, so this snippet is the guide's **only** dedupe example and must stand alone — keep the stored-vs-computed provenance idea in the ~8 lines, not just the `member.hashes` lookup |
 | `222-228` §Detection | **→ page, 2 lines** | `opening-and-listing.md:109-131` owns detection. The SFX-stub line is unique — keep it here |
 
 **Size.** 228 → ~185. §Stored digests: 49 → ~20, as D-f targets.
@@ -603,16 +605,16 @@ row by row against `5d08f31`:
 | # | Outline row | Est. | State now | Routed | New est. |
 |---|---|---:|---|---|---:|
 | 1 | `how-it-works.md`, all six D2 sections | ~150 | Still absent — the only page in the outline with no file | **Guide** | ~110 |
-| 2 | `install.md` — `format_availability()` section; matrix re-cut by extra | ~45 | 34 lines, two sections | **Splits: half guide, half dissolved** | ~10 |
+| 2 | `install.md` — `format_availability()` section; matrix re-cut by extra | ~45 | 34 lines, two sections | **Both halves guide** — the re-cut restored by decision (Q4), capped as a four-row re-index | ~22 |
 | 3 | `access-and-cost.md` — ON-vs-AUTO, measurement, config-at-a-glance | ~55 | AUTO *threshold* shipped (`118-123`); the ON-raises / AUTO-falls-back-silently half is **not** | **Splits: one half shipped, two guide, one → DS** | ~10 |
-| 4 | `extracting.md` — bounded recursion, "what `TRUSTED` does not relax", the config ceiling | ~90 | `TRUSTED` covered (`59-65`); recursion is a pointer (`203-206`) | **Splits: one shipped, two guide** | ~15 |
+| 4 | `extracting.md` — bounded recursion, "what `TRUSTED` does not relax", the config ceiling | ~90 | `TRUSTED` covered (`59-65`); recursion is a pointer (`203-206`) | **Splits: one shipped, one dropped by decision (Q5), one guide** | ~3 |
 | 5 | `errors-and-diagnostics.md` — translation, diagnostics-as-data, codes worth knowing, policy, limits vs filters | ~55 | Grew +61 in `#235` | **Splits: three shipped, one guide, one → DS** | ~15 |
 | 6 | `opening-and-listing.md` / `reading-members.md` remainders | ~25 / ~35 | | **Dissolved — all shipped** | 0 |
 | 7 | *(new)* `cli.md` — outline §10 items 3 and 6 | — | Never in the §B table | **Guide** | ~10 |
-| 8 | *(new)* `index.md` — the dedupe recipe D-f's `formats.md` ruling requires | — | | **Guide** | ~6 |
+| 8 | *(new)* `index.md` — a dedupe recipe to receive the `formats.md` cut | — | | **Dropped by decision (Q6)** — recorded, not unwritten | 0 |
 | 9 | *(new)* `errors-and-diagnostics.md` — messages are terminal-inert (`#236`) | — | No page states it | **Guide** | ~3 |
 | 10 | *(new, from #241)* `formats.md` §ISO — state the process-global pycdlib patch | — | `gotchas.md:90` links here; the landing is silent | **Guide** | ~2 |
-| | **Total new guide prose** | **~455** | | | **~180** |
+| | **Total new guide prose** | **~455** | | | **~174** |
 
 ## Which rows dissolved, and why
 
@@ -677,9 +679,9 @@ caller-visible contract that two specs require and no page states.
 | | Lines |
 |---|---:|
 | Guide today | 2 108 |
-| New prose (the re-derived worklist) | +177 |
+| New prose (the re-derived worklist) | +174 |
 | Routed out — → TM, → DS, → page, Cut | ≈ −300 |
-| **After pass 0's routing** | **≈ 1 985** |
+| **After pass 0's routing** | **≈ 1 982** |
 
 D-f projects the finished guide at **~1 600–1 800**. Routing alone does not get there, and
 the gap is not a disagreement: about 40 blocks above are ruled **Trim** rather than moved —
@@ -712,9 +714,10 @@ For the step-4 checkpoint, the short read:
    `acknowledgements.md`. Recorded so a later pass does not re-derive them. `philosophy.md`
    is rationale by job, and `acknowledgements.md` is attribution by job; D-f's "no" leg is
    not the test for either.
-5. **Two pages grow**: `cli.md` (48 → ~60, the thinnest page against the largest recent
-   change to CLI output) and `how-it-works.md` (0 → ~110). Nothing else nets positive.
-6. **The worklist shrank by 61%** (~455 → ~177), and the largest single reason is not D-f —
+5. **Three pages grow**: `how-it-works.md` (0 → ~110), `install.md` (34 → ~52, mostly the
+   Q4 re-index) and `cli.md` (48 → ~60, the thinnest page against the largest recent change
+   to CLI output). Nothing else nets positive; `index.md` was going to, until Q6.
+6. **The worklist shrank by 62%** (~455 → ~174), and the largest single reason is not D-f —
    it is that rows 6 and half of 2, 3, 4 and 5 had already shipped in `#224`/`#225`/`#232`/
    `#235`. D-f converts about 30 more lines to docstring and threat-model tasks. Both
    halves matter: planning against the stale number would have written six sections that
@@ -749,8 +752,12 @@ leaving whole. One further revision came from re-reading my own rule under their
 §RAR listing cost stays on `access-and-cost.md`, because a cost fact's owner is the cost
 page.
 
-**Live disagreements** — §Questions Q4–Q6. Each is a deliverable that exists in one pass
-and not the other, which is why they are maintainer calls rather than merge conflicts.
+**Diverged, and now decided** — Q4–Q6, each a deliverable one pass had and the other did
+not, so none of them merged. The maintainer settled all three on 2026-08-17, and they split
+**two to one against this pass**: the `install.md` matrix re-cut is written after all (#241,
+bounded to a four-row re-index), the bounded-recursion recipe is dropped for a pointer
+(#241), and Home gets no fifth recipe (#241). Recorded in §Questions with the reasoning, so
+the next pass inherits decisions rather than re-running the argument.
 
 **In neither pass's favour, but only in this one:** the §Precondition finding. #241 routes
 material to docstrings without noticing that the depth it is routing *to* currently lives
@@ -785,38 +792,48 @@ later.
 *Q4–Q6 are the live disagreements with #241 (see §Cross-check). Each is a deliverable one
 pass has and the other does not, so none of them merges — they are decisions.*
 
-**Q4 — `install.md`: re-cut the format × extra matrix, or not?** #241 keeps the outline's
-row as a write ("a short table; detail rows can still link into `formats.md`"). I dissolved
-it: `formats.md:8-20` already carries Core?/Extra columns and `acknowledgements.md:63-68`
-already carries extra → packages, so a third cut is one fact in three places — the O-2
-shape this review exists to remove. The counter-argument is real: neither existing table is
-organized by *what you type*, which is `install.md`'s whole job. *Recommendation:* write it
-only if it is short enough to be a re-index rather than a third source of truth — four
-rows, one per extra, naming formats and linking out, with `formats.md` staying
-authoritative on capability.
+**Q4 — `install.md`: re-cut the format × extra matrix? — DECIDED 2026-08-17: write it, as a
+four-row re-index.** I had dissolved the row as O-2-shaped duplication (`formats.md:8-20`
+and `acknowledgements.md:63-68` each already carry a cut of this data); #241 kept it as a
+write, on the ground that neither existing table is organised by *what the reader types*.
+**Maintainer: write it, bounded.** One row per extra — core / `[recommended]` / `[seekable]`
+/ `[free-threaded]` — naming which formats it unlocks and linking out, ~12 lines. It is a
+**re-index, not a third source of truth**: `formats.md` stays authoritative on per-format
+capability, and the row must not grow columns that duplicate it. The bounded duplication is
+accepted deliberately so the page answers its own question; whoever writes it should expect
+the guardrail conversation (§D's shape) to eventually cover it.
 
-**Q5 — the bounded-recursion recipe: worked, or a pointer?** `brief.md` §B lists it as
-still-open work ("the worked recipe stays Topic 8", round-2 finding 3), and I routed ~12
-lines to `extracting.md` §Limits. #241 rules the opposite — keep it short, because a worked
-recipe "re-proves amplification" and the analysis belongs to threat-model O6. Both readings
-fit D-f: bounding recursion is something the reader *does* (guide), but the amplification
-argument is something they only need to believe (threat model). *Recommendation:* write the
-recipe — a caller who must bound depth and cumulative size across nested opens needs the
-shape, and D-f's own currency is "what changes what they write". But keep it a recipe with
-no derivation, ~10 lines, and if it starts explaining why zip-quines amplify, that half
-goes to the threat model.
+**Q5 — the bounded-recursion recipe: worked, or a pointer? — DECIDED 2026-08-17: pointer.**
+`brief.md` §B listed it as still-open work ("the worked recipe stays Topic 8", round-2
+finding 3) and I had routed ~12 lines to `extracting.md` §Limits; #241 ruled the opposite.
+**Maintainer: keep the pointer, drop the row.** The paragraph already at
+`extracting.md:203-206` plus `gotchas.md:41-44`'s one-liner is the guide's whole coverage;
+the amplification analysis stays threat-model O6's, and a code block re-proving it would be
+threat-model material wearing a recipe. This is a **decision that supersedes the §B row**
+(`brief.md` §Definition of done row 2), not an unwritten row — recorded so no later pass
+re-derives it as outstanding work.
 
-**Q6 — does Home get a fifth recipe?** D-f's `formats.md` ruling ends "Keep the use case
-visible via a Home recipe — VISION's founding use case is deduplicating messy backups, and
-visible ≠ a worked implementation." I read that as requiring a short Home recipe to receive
-the cut. #241 reads it as satisfied by the existing four and explicitly rules "any fifth
-recipe" off `index.md`. The sentence supports both. It matters because it is the difference
-between the `formats.md` cut landing somewhere and simply being a deletion — and the hard
-constraint says a claim removed must land or be recorded as dropped. *Recommendation:* add
-it, ~6 lines, at the cost of the first screen growing; the founding use case having no
-visible example anywhere is the worse outcome. If you disagree, the fallback is to record
-the dedupe use case as deliberately dropped from the guide, which is a decision I should
-not take alone.
+**Q6 — does Home get a fifth recipe? — DECIDED 2026-08-17: no.** D-f's `formats.md` ruling
+("keep the use case visible via a Home recipe") supports both readings; I read it as
+requiring a receiver on Home, #241 read it as satisfied by the existing four.
+**Maintainer: no fifth recipe.** `index.md` §Thirty seconds stays at four, and "any fifth
+recipe" joins its non-coverage list.
+
+**What this means for the cut, stated precisely** (hard constraint: a claim removed must
+land or be recorded as dropped):
+
+- **Dropped from Home:** the dedupe use case has no first-screen presence, by decision.
+  VISION's founding use case is therefore not visible on `index.md`. Recorded, not
+  accidental.
+- **Not dropped from the guide:** D-f's "cut to ~8" leaves a short snippet on
+  `formats.md` beside the stored-digest matrix, which D-b put there deliberately. That
+  snippet is now the guide's **only** dedupe example, which raises its floor — it has to
+  stand on its own rather than as a pointer to something on Home. Whoever writes the cut
+  should keep the stored-vs-computed provenance idea in it, not just the lookup.
+- **A consequence for Topic 7:** the adoption capstone asks whether the docs persuade, and
+  the founding use case now appears on no landing surface. That is a legitimate thing for
+  it to re-raise; it is not a rediscovery of this decision, it is a different question
+  about the same fact.
 
 ---
 
