@@ -6,7 +6,9 @@ Topic 8 claim A-34 measured the worst consequence: a low-entropy `MZ` stub can b
 by the Brotli content probe, and `open_archive` then succeeds with a fabricated
 `*.uncompressed` member (silent wrong answer). `payload_offset` is never consumed by
 `open_archive` even when detection would set it. Found by the docs-content verification
-pass (#252); not yet a `dev-docs/open-issues.md` P-entry.
+pass (#252); not yet a `dev-docs/open-issues.md` P-entry. **Maintainer raised priority
+(MD1 = B, 2026-08-18):** implement ahead of ordinary docs prose fixes; silent-success
+regression is mandatory.
 
 ## What Changes
 
