@@ -1,6 +1,7 @@
 # Session baseline for capability workers (coordinator)
 
-Measured 2026-08-18 on this container before fan-out.
+Measured 2026-08-18 on this container before fan-out; **F4 corrected** the
+availability sweep after review (same session, same container).
 
 ## Environment
 
@@ -11,14 +12,21 @@ Measured 2026-08-18 on this container before fan-out.
 
 ## `format_availability()` — this session
 
-22 formats. **FULL=21, PARTIAL=0, NONE=1** (`UNKNOWN` only).
+Drive the sweep with **`list_known_formats()`**, not named `ArchiveFormat`
+attributes alone (the named-attr walk under-counts five composed TAR variants).
 
-Seekable-required: DIRECTORY, ISO, RAR, SEVEN_Z, ZIP, UNKNOWN.
-Forward-only: all compressors and TAR variants.
+- `list_known_formats()`: **26 formats, all FULL** (no PARTIAL).
+- Composed TAR variants also FULL / FORWARD_ONLY: `TAR`+`LZIP`, `LZMA_ALONE`,
+  `ZLIB`, `BROTLI`, `UNIX_COMPRESS`.
+- Named attributes additionally include `UNKNOWN` → NONE (not in
+  `list_known_formats()`).
 
-Do **not** inherit the earlier baseline's wording blindly — re-measure if you change
-config. For `cfg` rows, name which config you checked (`[all]`, and `[core-only]` /
-`[all-lowest]` when the claim depends on an optional package).
+Seekable-required among known formats: DIRECTORY, ISO, RAR, SEVEN_Z, ZIP.
+Forward-only: all compressors and TAR variants (including the five composed).
+
+Do **not** inherit older baselines without re-running. For `cfg` rows, name which
+config you checked (`[all]`, and `[core-only]` / `[all-lowest]` when the claim
+depends on an optional package).
 
 ## Hard rules (from brief)
 

@@ -107,9 +107,13 @@ backend:
 ## `format_availability()` — re-measured 2026-08-18 (this verification session)
 
 `scripts/setup-dev-env.sh` closing block: `ok unrar`, `ok 7z`. Config **`[all]`**.
-Sweep of 22 `ArchiveFormat` values: **FULL=21, NONE=1** (`UNKNOWN` only). No PARTIAL.
-Seekable-required: DIRECTORY, ISO, RAR, SEVEN_Z, ZIP (+ UNKNOWN). All compressor/TAR
-variants: FORWARD_ONLY. Do not inherit older baselines without re-running.
+
+**Corrected sweep (F4):** driven by `list_known_formats()` — **26 formats, all FULL**.
+Named `ArchiveFormat` attributes alone under-count by five composed TAR variants
+(`TAR`+`LZIP` / `LZMA_ALONE` / `ZLIB` / `BROTLI` / `UNIX_COMPRESS`); those five are
+also FULL / FORWARD_ONLY here. `UNKNOWN` is a named attribute not returned by
+`list_known_formats()` and reports NONE. Seekable-required among known formats:
+DIRECTORY, ISO, RAR, SEVEN_Z, ZIP. Do not inherit older baselines without re-running.
 
 ---
 
@@ -278,6 +282,8 @@ were walked line by line. What is deliberately **not** a row:
 Specs: `format-detection`, `archive-reading`, `compressed-streams`.
 Pages: `opening-and-listing`, `install`, `formats`, `index`, `migrating`, `philosophy`.
 
+Evidence: [`worker-inputs/verdicts-A.md`](worker-inputs/verdicts-A.md); harvest [`../problem-catalogue/harvest/A-opening.md`](../problem-catalogue/harvest/A-opening.md).
+
 | # | Claim | Stated at | Settles it | Ruling | V |
 |---|---|---|---|---|---|
 | A-1 | `open_archive(path)` detects the format and returns a reader; iterating it yields members in **archive order** | `opening-and-listing.md:11-13`, `index.md:9-11`, `migrating.md:14-15` | `archive-reading:20`, `archive-reading:259` | Keep | verified |
@@ -310,7 +316,7 @@ Pages: `opening-and-listing`, `install`, `formats`, `index`, `migrating`, `philo
 | A-28 | **Content wins over filename**: bytes first, extension only when the bytes are inconclusive | `opening-and-listing.md:119-120`, `formats.md:224`, `migrating.md:109-110`, `philosophy.md:66` | `format-detection:68` | Keep — canonical home | verified |
 | A-29 | When bytes and extension disagree, the bytes are used **and** a `FORMAT_EXTENSION_CONFLICT` diagnostic names both candidates | `opening-and-listing.md:120-123` | `format-detection:84`, `src/archivey/diagnostics.py:64` | Keep | verified |
 | A-30 | `detect_format` reports **the same format `open_archive` would use** | `opening-and-listing.md:125` | `format-detection:19` | Keep | verified |
-| A-31 | Telling `.tar.zst` from plain `.zst` needs decompressing a little to look for a tar header; **when the compressor's package is absent the check cannot run** and the bare compressor is reported | `opening-and-listing.md:126-128` | `format-detection:174` | Keep · `cfg` | verified |
+| A-31 | Telling `.tar.zst` from plain `.zst` needs decompressing a little to look for a tar header; **when the compressor's package is absent the check cannot run** and the bare compressor is reported | `opening-and-listing.md:126-128` | `format-detection:174` | Keep · `cfg` | verified · cfg `[all]` |
 | A-32 | Opening such a file then raises **`UnsupportedFormatError`, naming the package to install** | `opening-and-listing.md:128-130` | `compressed-streams:124` | Keep | verified |
 | A-33 | **Conflicts with A-32:** `formats.md` says a missing backend raises **`PackageNotInstalledError`**. Two pages name two exception types for one situation | `formats.md:36-37`, `formats.md:58-59` vs `opening-and-listing.md:128-130` | `compressed-streams:124`, `src/archivey/exceptions.py:113`, `:224` | Keep (both) | wrong |
 | A-34 | **SFX stubs** are detected when the payload sits behind an executable header | `formats.md:225-226` | `format-detection:231` | `→ page, 2 lines` — the SFX line is the unique claim and stays on `formats.md` | wrong |
@@ -341,6 +347,8 @@ Pages: `opening-and-listing`, `install`, `formats`, `index`, `migrating`, `philo
 Specs: `archive-reading`, `reader-concurrency`, `archive-data-model`.
 Pages: `reading-members`, `access-and-cost`, `gotchas`, `support-matrix`,
 `opening-and-listing`, `migrating`, `philosophy`.
+
+Evidence: [`worker-inputs/verdicts-B.md`](worker-inputs/verdicts-B.md); harvest [`../problem-catalogue/harvest/B-reading.md`](../problem-catalogue/harvest/B-reading.md).
 
 | # | Claim | Stated at | Settles it | Ruling | V |
 |---|---|---|---|---|---|
@@ -410,6 +418,8 @@ Pages: `reading-members`, `access-and-cost`, `gotchas`, `support-matrix`,
 
 Spec: `safe-extraction`.
 Pages: `extracting`, `index`, `cli`, `gotchas`, `migrating`, `opening-and-listing`.
+
+Evidence: [`worker-inputs/verdicts-C.md`](worker-inputs/verdicts-C.md); harvest [`../problem-catalogue/harvest/C-extraction.md`](../problem-catalogue/harvest/C-extraction.md).
 
 | # | Claim | Stated at | Settles it | Ruling | V |
 |---|---|---|---|---|---|
@@ -510,6 +520,8 @@ Specs: `error-handling`, `diagnostics`, `logging`.
 Pages: `errors-and-diagnostics`, `extracting`, `gotchas`, `opening-and-listing`,
 `reading-members`, `support-matrix`.
 
+Evidence: [`worker-inputs/verdicts-D.md`](worker-inputs/verdicts-D.md); harvest [`../problem-catalogue/harvest/D-errors.md`](../problem-catalogue/harvest/D-errors.md).
+
 | # | Claim | Stated at | Settles it | Ruling | V |
 |---|---|---|---|---|---|
 | D-1 | **Every failure from the archive or its environment derives from `ArchiveyError`**, so one `except` covers them all | `errors-and-diagnostics.md:8-9`, `index.md:60-61` | `error-handling:20` | Keep | verified |
@@ -588,13 +600,15 @@ Pages: `errors-and-diagnostics`, `extracting`, `gotchas`, `opening-and-listing`,
 Specs: the seven `format-<name>` specs, `archive-data-model`.
 Pages: `formats`, `install`, `support-matrix`, `gotchas`, `index`, `migrating`.
 
+Evidence: [`worker-inputs/verdicts-E.md`](worker-inputs/verdicts-E.md); harvest [`../problem-catalogue/harvest/E-formats.md`](../problem-catalogue/harvest/E-formats.md).
+
 | # | Claim | Stated at | Settles it | Ruling | V |
 |---|---|---|---|---|---|
 | E-1 | The quick matrix is correct row by row: Core?, Extra/tool, Listing, Random member access, Notes — 11 rows | `formats.md:8-20` | the seven `format-*` specs; `packaging-and-extras:50`; the `format_availability()` sweep in Part 1 | Keep | wrong |
 | E-2 | ZIP listing is **indexed (central directory)**, access **direct**, and a **seekable source is required** | `formats.md:10`, `formats.md:31-33` | `format-zip:20`, `format-zip:118` | Keep | verified |
 | E-3 | ZIP **listing** uses stdlib `zipfile`; member **data** decodes through archivey's shared codec layer | `formats.md:31-33`, `migrating.md:14` | `format-zip:20`, `format-zip:57` | Keep | verified |
 | E-4 | ZIP data needs a seekable source **even with `streaming=True`** | `formats.md:32-33`, `access-and-cost.md:145-146` | `format-zip:118` | Keep | verified |
-| E-5 | With `[recommended]`, ZIP gains **Deflate64 and PPMd** (`inflate64` / `pyppmd` — the same packages the 7z reader uses) and **Zstd** (`backports.zstd`, or stdlib on 3.14+) | `formats.md:34-37` | `format-zip:57`, `packaging-and-extras:50` | Keep · `cfg` | verified |
+| E-5 | With `[recommended]`, ZIP gains **Deflate64 and PPMd** (`inflate64` / `pyppmd` — the same packages the 7z reader uses) and **Zstd** (`backports.zstd`, or stdlib on 3.14+) | `formats.md:34-37` | `format-zip:57`, `packaging-and-extras:50` | Keep · `cfg` | verified · cfg `[all]` |
 | E-6 | **Multi-volume / split ZIP (`.z01`…`.zip`) is detected and rejected with `UnsupportedFeatureError`** | `formats.md:38-39`, `opening-and-listing.md:89` | `format-zip:169` | Keep | verified |
 | E-7 | Unsupported ZIP compression methods: **listing succeeds; reading raises `UnsupportedFeatureError`** | `formats.md:40-41` | `format-zip:57` | Keep | verified |
 | E-8 | ZIP timestamps: DOS base, with **NTFS / Extended Timestamp extras overriding when present** | `formats.md:42` | `format-zip:135` | Keep | verified |
@@ -603,7 +617,7 @@ Pages: `formats`, `install`, `support-matrix`, `gotchas`, `index`, `migrating`.
 | E-11 | Passing `encoding=` to `open_archive` **is authoritative** — used verbatim, disables the sniff | `formats.md:48-49` | `format-zip:245`, `diagnostics:253` | Keep | verified |
 | E-12 | **A wrongly-set UTF-8 bit-11 makes the whole archive unlistable**: stdlib `zipfile` raises while parsing the central directory, so the failure is archive-wide rather than confined to one name | `formats.md:50-54` | `format-zip:245`, `format-zip:20` | **Keep, 2 lines** (the roadmap clause at `53-54` is `Cut`) | verified |
 | E-13 | **ZipCrypto multi-password confirmation is expensive on STORED members** | `formats.md:55-56`, `access-and-cost.md:155-158` | `format-zip:188` | Keep | verified |
-| E-14 | **WinZip AES** (method 99 / AE-1, AE-2) decrypts via `[recommended]` (PBKDF2 + AES-CTR + HMAC-SHA1); **AE-2 members expose no `crc32`**; without the extra an AES member raises `PackageNotInstalledError` **but is still listed as encrypted** | `formats.md:56-59`, `migrating.md:50-51` | `format-zip:85` | Keep · `cfg` | verified |
+| E-14 | **WinZip AES** (method 99 / AE-1, AE-2) decrypts via `[recommended]` (PBKDF2 + AES-CTR + HMAC-SHA1); **AE-2 members expose no `crc32`**; without the extra an AES member raises `PackageNotInstalledError` **but is still listed as encrypted** | `formats.md:56-59`, `migrating.md:50-51` | `format-zip:85` | Keep · `cfg` | verified · cfg `[all]` |
 | E-15 | Uncompressed seekable TAR gets **random access via `tarfile`** | `formats.md:63`, `formats.md:11` | `format-tar:20` | Keep | verified |
 | E-16 | TAR **hardlinks are first-class at extraction**, and an unfiltered `extract_all` resolves them in one pass | `formats.md:66-67` | `format-tar:78`, `safe-extraction:332` | Keep | verified |
 | E-17 | TAR `concurrent_members=True` uses a **per-reader shared-handle lock**, the same shape as ISO | `formats.md:68` | `format-tar:222`, `format-iso:89` | Keep | verified |
@@ -617,7 +631,7 @@ Pages: `formats`, `install`, `support-matrix`, `gotchas`, `index`, `migrating`.
 | E-25 | **Truncation inside a member's data always raises `TruncatedError` during iteration, regardless of the flag** | `formats.md:88-89` | `format-tar:125` | Keep, tighten | verified |
 | E-26 | **Streaming caveat:** a corrupt header as the *final* block is caught in random-access reads but **not** in forward-only streaming, where it surfaces as the missing-trailer warning | `formats.md:90-92`, `gotchas.md:72-74` | `format-tar:125` | Keep (the roadmap clause at `92` is `Cut`) | verified |
 | E-27 | 7z uses a **native header parse** plus stdlib codecs for LZMA/LZMA2/BCJ/Delta/Deflate/BZip2/stored — **no `py7zr` on the read path** | `formats.md:96-97`, `index.md:54-55`, `migrating.md:128-129`, `migrating.md:153-155`, `acknowledgements.md:35` | `format-7z:46`, `format-7z:115` | Keep | verified |
-| E-28 | `[recommended]` adds **PPMd, Deflate64, Zstd, Brotli and AES** to 7z | `formats.md:98`, `migrating.md:129` | `format-7z:115`, `packaging-and-extras:50` | Keep · `cfg` | verified |
+| E-28 | `[recommended]` adds **PPMd, Deflate64, Zstd, Brotli and AES** to 7z | `formats.md:98`, `migrating.md:129` | `format-7z:115`, `packaging-and-extras:50` | Keep · `cfg` | verified · cfg `[all]` |
 | E-29 | **BCJ2 is detected and rejected with `UnsupportedFeatureError` — never garbage output** | `formats.md:15`, `formats.md:99` | `format-7z:162` | Keep | verified |
 | E-30 | 7z **solid folders**: `stream_members()` decodes each folder once; a random `open()` of a mid-folder member may re-decode from the folder start | `formats.md:100-101`, `access-and-cost.md:66-67` | `format-7z:243` | Keep | verified |
 | E-31 | **AES + store/copy with no folder digest and no member CRC**: 7z has no password check value, a wrong password can yield garbage (matching 7-Zip), and archivey emits `DIGEST_UNVERIFIABLE` with `reason="no_integrity_anchor"` | `formats.md:102-104`, `gotchas.md:62-65` | `format-7z:197`, `src/archivey/diagnostics.py:76`, `:256` | Keep | verified |
@@ -628,14 +642,14 @@ Pages: `formats`, `install`, `support-matrix`, `gotchas`, `index`, `migrating`.
 | E-36 | RAR **metadata / listing is a native RAR 1.5–RAR5 parser and works without `unrar`** | `formats.md:16`, `formats.md:113`, `index.md:54-55`, `install.md:20-21`, `install.md:27-28`, `migrating.md:130-131`, `acknowledgements.md:36` | `format-rar:46`, `format-rar:127` | Keep | verified |
 | E-37 | RAR **member data** needs the RARLAB `unrar` on `PATH` — **not `unrar-free`, `unar`, or `7z`**, and no pip extra can supply it | `formats.md:22-23`, `formats.md:114`, `install.md:20-21`, `install.md:26-28`, `acknowledgements.md:72-73` | `format-rar:127`, `packaging-and-extras:142` | Keep | verified |
 | E-38 | RAR passwords are passed as **bare `-p` with the secret on stdin, not in argv** | `formats.md:114-115` | `format-rar:145` | Keep | verified |
-| E-39 | `[recommended]` covers **header-encrypted RAR5** | `formats.md:117`, `formats.md:16` | `format-rar:308`, `packaging-and-extras:50` | Keep · `cfg` | verified |
+| E-39 | `[recommended]` covers **header-encrypted RAR5** | `formats.md:117`, `formats.md:16` | `format-rar:308`, `packaging-and-extras:50` | Keep · `cfg` | verified · cfg `[all]` |
 | E-40 | **BLAKE2sp verification needs no package** — implemented natively on stdlib `hashlib` | `formats.md:117-118`, `acknowledgements.md:73-74` | `src/archivey/internal/hashing/blake2sp.py`, `format-rar:230` | Trim | verified |
 | E-41 | RAR5 members with the **HASHMAC** flag verify tweaked digests via UnRAR's `ConvertHashToMAC` when a password is available; **tweaked values are not exposed as plain `member.hashes`** | `formats.md:118-119` | `format-rar:230` | **Trim** — the actionable half (not exposed) stays; the UnRAR function name → TM | verified |
 | E-42 | RAR **file-version history (`-ver`)**: revision rows appear in `members()` as `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays `is_current=True`; default extract **skips** non-current rows | `formats.md:120-122`, `extracting.md:166-167` | `format-rar:92`, `safe-extraction:254` | Keep | verified |
 | E-43 | **Solid RAR**: one `unrar p` pipe for `stream_members()`; random solid opens may use explicit temp materialization | `formats.md:123-124` | `format-rar:168`, `format-rar:191` | Keep | verified |
 | E-71 | **Stated by no page.** Reading a RAR member that is not directly readable (compressed, or any member of a solid archive) from a **stream** source copies the **whole archive** to a temp `.rar` in the system temp directory — `_ensure_archive_path`, "materialize streams once". Unbounded in size, absent from `CostReceipt.notes` *and* from `diagnostics`, removed on reader close. A stored member from a stream never triggers it (`_can_direct_read`), so the same call is free or a full disk copy depending on the member's compression | *(nowhere — gap)* | `src/archivey/internal/backends/rar_reader.py:532-555` (`_ensure_archive_path`), `:438-459` (`_materialize_stream_volumes`), `:889-897` (the `_can_direct_read` branch); `format-rar:168`; ADR 0002 | **Guide — new prose.** Which page is `scope.md`'s call: `formats.md` §RAR (beside E-43) or `access-and-cost.md`. Honest-cost half filed as `open-issues.md` **P11** | **`wrong` — silence is a claim.** Repro §Coordinator-verified |
 | E-44 | RAR is **read-only — no RAR writer** | `formats.md:16`, `formats.md:125`, `migrating.md:138-139` | `format-rar:25` | Keep | verified |
-| E-45 | **ISO needs `[recommended]` (`pycdlib`) and a seekable source** | `formats.md:17`, `formats.md:129`, `access-and-cost.md:145-146` | `format-iso:22`, `packaging-and-extras:50` | Keep · `cfg` | verified |
+| E-45 | **ISO needs `[recommended]` (`pycdlib`) and a seekable source** | `formats.md:17`, `formats.md:129`, `access-and-cost.md:145-146` | `format-iso:22`, `packaging-and-extras:50` | Keep · `cfg` | verified · cfg `[all]` |
 | E-46 | ISO namespace is **auto-selected Rock Ridge → Joliet → plain ISO 9660** and reported in `ArchiveInfo.extra["iso.namespace"]` | `formats.md:130-131` | `format-iso:47` | Keep | verified |
 | E-47 | Raw `.bin` Mode 1 sector images may be **stripped to 2048-byte payloads**; unsupported layouts raise rather than mis-read | `formats.md:132-133` | `format-iso:70` | Keep | verified |
 | E-48 | **`import archivey` patches pycdlib process-globally** — a hang-safety guard inside pycdlib's namespace, which other code in the same process sees as a strict superset of correct results on valid trees | `gotchas.md:87-90` | `format-iso:22`, `src/archivey/internal/backends/iso_reader.py` | Keep on `gotchas`; **`formats.md` §ISO must state it** — `scope.md` row 10, currently a link with no landing | verified |
@@ -643,7 +657,7 @@ Pages: `formats`, `install`, `support-matrix`, `gotchas`, `index`, `migrating`.
 | E-50 | Single-file compressors present **one synthetic member**, named from the source path or `data` for anonymous streams | `formats.md:143`, `opening-and-listing.md:41-43` | `format-single-file-compressors:27` | Keep | verified |
 | E-51 | `.gz` may expose `extra["gzip.original_filename"]` when the header carries **`FNAME`** — and it is **not** used as the member name | `formats.md:144` | `format-single-file-compressors:126` | Keep | verified |
 | E-52 | `.gz` surfaces the **trailer CRC-32** as `member.hashes["crc32"]` for a **single-member** file on a seekable/path source — omitted for multi-member gzip (the trailer covers only the last member) and for non-seekable sources | `formats.md:145-147`, `formats.md:186` | `format-single-file-compressors:180` | Keep | verified |
-| E-53 | **With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, truncation detection is best-effort** (empty→stdlib fallback + single-member ISIZE) — stronger than naked rapidgzip, weaker than stdlib alone; use `use_rapidgzip=OFF` when you need certainty | `formats.md:148-151`, `gotchas.md:80-84` | `seekable-decompressor-streams:69`, `format-single-file-compressors:87` | Keep — O-2's subject, load-bearing · `cfg` | verified |
+| E-53 | **With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, truncation detection is best-effort** (empty→stdlib fallback + single-member ISIZE) — stronger than naked rapidgzip, weaker than stdlib alone; use `use_rapidgzip=OFF` when you need certainty | `formats.md:148-151`, `gotchas.md:80-84` | `seekable-decompressor-streams:69`, `format-single-file-compressors:87` | Keep — O-2's subject, load-bearing · `cfg` | verified · cfg `[all]` |
 | E-54 | That caveat applies to **bare** `.gz` / `open_stream` (and bare zlib/raw deflate), **not** to ZIP/7z members, which carry their own CRC/size and fail via `VerifyingStream` | `formats.md:151-153`, `gotchas.md:83-84` | `compressed-streams:254`, `src/archivey/internal/streams/verify.py` | Keep | verified |
 | E-55 | `.lz` surfaces a whole-member CRC-32 **whenever the source can be seeked** — a file path and an in-memory stream qualify, a pipe does not | `formats.md:154-156`, `formats.md:187` | `format-single-file-compressors:180` | **Trim to the rule** | verified |
 | E-56 | `seekable_members=True` is **not required and makes no difference** here: it is about `seek()` on a *member stream*, while the lzip trailer is a bounded backward peek — same for the `.xz` size read from the stream index | `formats.md:156-158`, `access-and-cost.md:113-115` | `format-single-file-compressors:87`, `seekable-decompressor-streams:52` | Keep | verified |
@@ -682,6 +696,8 @@ Pages: `formats`, `install`, `support-matrix`, `gotchas`, `index`, `migrating`.
 Specs: `access-mode-and-cost`, `seekable-decompressor-streams`.
 Pages: `access-and-cost`, `gotchas`, `formats`, `philosophy`, `reading-members`.
 
+Evidence: [`worker-inputs/verdicts-F.md`](worker-inputs/verdicts-F.md); harvest [`../problem-catalogue/harvest/F-cost.md`](../problem-catalogue/harvest/F-cost.md).
+
 | # | Claim | Stated at | Settles it | Ruling | V |
 |---|---|---|---|---|---|
 | F-1 | The wall-time bands are **targets, not CI hard-fails**; the PR gate enforces structural invariants (bytes decompressed, seeks, solid decode-once) instead | `access-and-cost.md:8-9`, `philosophy.md:70-72` | `testing-contract`, `benchmarks/harness` | Keep | verified |
@@ -703,7 +719,7 @@ Pages: `access-and-cost`, `gotchas`, `formats`, `philosophy`, `reading-members`.
 | F-17 | `[code]` the "avoid this" block runs (and does what the comment says: may restart the solid block each time) | `access-and-cost.md:78-82` | — (executable) | Keep | verified |
 | F-18 | **`concurrent_members=True` does not remove solid open-order cost** — it only makes overlapping streams correct | `access-and-cost.md:85-86`, `gotchas.md:22-23` | `reader-concurrency:22`, `access-mode-and-cost:265` | Keep | verified |
 | F-19 | With `seekable_members=True`: **XZ / lzip seek via native indexes** | `access-and-cost.md:95` | `seekable-decompressor-streams:52` | Keep, tighten | verified |
-| F-20 | With `seekable_members=True`: **gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed** | `access-and-cost.md:96`, `formats.md:148`, `acknowledgements.md:53` | `seekable-decompressor-streams:69`, `seekable-decompressor-streams:90` | Keep, tighten · `cfg` | verified |
+| F-20 | With `seekable_members=True`: **gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed** | `access-and-cost.md:96`, `formats.md:148`, `acknowledgements.md:53` | `seekable-decompressor-streams:69`, `seekable-decompressor-streams:90` | Keep, tighten · `cfg` | verified · cfg `[all]` |
 | F-21 | Otherwise **a backward seek may re-decompress from the start** | `access-and-cost.md:97-98`, `gotchas.md:16-18`, `philosophy.md:33-34` | `seekable-decompressor-streams:182` | Keep, tighten | verified |
 | F-22 | **`STREAM_REWIND_REDECOMPRESSES` fires on cost, not on codec name** — when the rewind discards more than about a megabyte of decoded progress. The threshold is named: `REWIND_REDECODE_WARN_BYTES` = 1 MiB. **Verifier's trap:** the guide names a *different* 1 MiB constant, `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (`access-and-cost.md:119`), so "about a megabyte" has two distinct sources and the page names only the other one | `access-and-cost.md:100-102`, `gotchas.md:17-18` | `src/archivey/config.py:93` (`REWIND_REDECODE_WARN_BYTES`), `seekable-decompressor-streams:182`, `src/archivey/diagnostics.py:78`, `:281` | Keep, tighten | verified |
 | F-23 | **A single-block `.xz`** (what `lzma.compress` and un-threaded `xz` produce) has exactly one seek point at the origin, so rewinding it costs the same as a codec with no index — and an engaged rapidgzip can hold an index sparse enough for the same thing; **small rewinds stay quiet on every codec** | `access-and-cost.md:103-107` | `seekable-decompressor-streams:52`, `seekable-decompressor-streams:182` | Keep, tighten — the shortest proof the rule is not a codec whitelist | verified |
@@ -712,7 +728,7 @@ Pages: `access-and-cost`, `gotchas`, `formats`, `philosophy`, `reading-members`.
 | F-26 | Under `use_rapidgzip=AUTO` (the **default**) rapidgzip is selected only when seekability is **declared** *and* the known compressed input is ≥ `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (**1 MiB**) | `access-and-cost.md:117-120` | `src/archivey/config.py:76`, `:148`, `seekable-decompressor-streams:90` | Keep + one clause | wrong |
 | F-27 | Smaller members **stay on stdlib `zlib`/`gzip`** so archives of many tiny entries do not pay per-stream accelerator setup | `access-and-cost.md:119-121` | `src/archivey/config.py:76-95` | Keep + one clause | verified |
 | F-28 | `use_rapidgzip=ON` forces the accelerator regardless of size; `OFF` disables it | `access-and-cost.md:121`, `formats.md:150`, `gotchas.md:82` | `src/archivey/config.py:16-25` | Keep + one clause | verified |
-| F-29 | **must-explain #16's open half, unwritten:** with the package **absent**, `ON` raises `PackageNotInstalledError` while `AUTO` **falls back silently** | *no page states it* | `src/archivey/config.py:19-31`, `compressed-streams:124` | **Guide, ~2 lines** — `scope.md` §B row 3 (corrected after #241) · `cfg` | verified |
+| F-29 | **must-explain #16's open half, unwritten:** with the package **absent**, `ON` raises `PackageNotInstalledError` while `AUTO` **falls back silently** | *no page states it* | `src/archivey/config.py:19-31`, `compressed-streams:124` | **Guide, ~2 lines** — `scope.md` §B row 3 (corrected after #241) · `cfg` | verified · cfg `[all]` |
 | F-30 | **Declare seek only when you need it** (e.g. parquet-in-zip random reads) | `access-and-cost.md:123`, `philosophy.md:40` | `seekable-decompressor-streams:20` | Keep | verified |
 | F-31 | Multiple password candidates can trigger **confirmation reads**; **ZipCrypto STORED** is the expensive niche — a wrong candidate passing the weak open check may force a full-member CRC scan | `access-and-cost.md:155-158`, `formats.md:55-56` | `archive-reading:668`, `format-zip:188` | Keep | verified |
 | F-32 | The `[seekable]` path is **`rapidgzip` covering gzip / zlib / raw deflate + bzip2**, is C++, and **does not tolerate its Python source disappearing mid-decode**: upstream that raises through a `terminate()` boundary and aborts the process | `access-and-cost.md:163-165`, `acknowledgements.md:44-45`, `acknowledgements.md:53` | `seekable-decompressor-streams:69`, `seekable-decompressor-streams:115` | `Trim to ~4` | verified |
@@ -744,6 +760,8 @@ Pages: `access-and-cost`, `gotchas`, `formats`, `philosophy`, `reading-members`.
 Spec: `packaging-and-extras`.
 Pages: `install`, `support-matrix`, `acknowledgements`, `migrating`, `index`, `formats`.
 
+Evidence: [`worker-inputs/verdicts-G.md`](worker-inputs/verdicts-G.md); harvest [`../problem-catalogue/harvest/G-packaging.md`](../problem-catalogue/harvest/G-packaging.md).
+
 | # | Claim | Stated at | Settles it | Ruling | V |
 |---|---|---|---|---|---|
 | G-1 | **The core installs with no dependencies at all** and reads ZIP, TAR, directories and the stdlib codecs | `install.md:3-4`, `index.md:52-53`, `formats.md:8-14`, `acknowledgements.md:61` | `packaging-and-extras:23` | Keep | verified |
@@ -751,7 +769,7 @@ Pages: `install`, `support-matrix`, `acknowledgements`, `migrating`, `index`, `f
 | G-3 | `[code]` the four `pip install` lines are the correct four, with the correct one-line descriptions (`archivey`, `[recommended]`, `[seekable]`, `[all]`) | `install.md:8-13` | `packaging-and-extras:50`, `pyproject.toml` | Keep — the page's deliverable | verified |
 | G-4 | **`[recommended]` is "every format and codec that installs everywhere"** | `install.md:10`, `formats.md:25-26` | `packaging-and-extras:50` | Keep | verified |
 | G-5 | **`[seekable]` is rapidgzip**, giving gz/bz2 random access and speed | `install.md:11`, `acknowledgements.md:66`, `formats.md:25-26` | `packaging-and-extras:50`, `seekable-decompressor-streams:69` | Keep | verified |
-| G-6 | `[recommended]` pulls exactly: `pyppmd`, `inflate64`, `brotli`, `lz4`, `pybcj`, `backports.zstd` (before 3.14; 3.14+ uses stdlib `compression.zstd`), `cryptography`, `pycdlib`, `tqdm` | `acknowledgements.md:65`, `formats.md:18` | `packaging-and-extras:50`, `packaging-and-extras:157`, `pyproject.toml` | Keep · `cfg` — see the Part 1 note: this session has zstd working with **neither** package installed under those names | verified |
+| G-6 | `[recommended]` pulls exactly: `pyppmd`, `inflate64`, `brotli`, `lz4`, `pybcj`, `backports.zstd` (before 3.14; 3.14+ uses stdlib `compression.zstd`), `cryptography`, `pycdlib`, `tqdm` | `acknowledgements.md:65`, `formats.md:18` | `packaging-and-extras:50`, `packaging-and-extras:157`, `pyproject.toml` | Keep · `cfg` — see the Part 1 note: this session has zstd working with **neither** package installed under those names | verified · cfg `[all]` |
 | G-7 | `[all]` is `[recommended]` + `[seekable]` | `install.md:12`, `acknowledgements.md:68` | `packaging-and-extras:50` | Keep | verified |
 | G-8 | On a free-threaded build use **`archivey[free-threaded]`** — the measured subset of extras that leaves the GIL disabled | `install.md:16-18`, `install.md:30-34`, `support-matrix.md:67-68`, `acknowledgements.md:67` | `packaging-and-extras:50`, `packaging-and-extras:197` | `install.md:30-34` = **`→ page` (fold)**, near-verbatim repeat of `15-18` | verified |
 | G-9 | **`archivey[free-threaded]` is exactly** `pycdlib`, `lz4`, `tqdm`, `backports.zstd`, and `cryptography` on 3.14+ only | `acknowledgements.md:67`, `support-matrix.md:70-78` | `packaging-and-extras:50`, `pyproject.toml` | Keep | wrong |
@@ -768,10 +786,10 @@ Pages: `install`, `support-matrix`, `acknowledgements`, `migrating`, `index`, `f
 | G-20 | The free-threading claim is verified by a **required CI job on Linux CPython 3.13t running the whole test suite** in two stages (zero-dep core, then core + GIL-safe extras) | `support-matrix.md:56-58` | `.github/workflows/ci.yml` | Keep | verified |
 | G-21 | Four explicit **non-claims**: macOS/Windows free-threaded builds, the "No"-row packages, everything except member streams, and parallel **speedup** | `support-matrix.md:98-108` | `reader-concurrency:22`, `.github/workflows/ci.yml` | Keep — what an explicit non-coverage list looks like when done well | verified |
 | G-22 | **`archivey`'s console entry point ships with the base package** | `cli.md:3`, `install.md:8-9` | `packaging-and-extras:262` | Keep | verified |
-| G-23 | **Progress bars need `tqdm`, which comes with `[recommended]`; without it the command still runs** | `cli.md:3-4`, `acknowledgements.md:65` | `packaging-and-extras:50`, `cli:16` | Keep · `cfg` | verified |
+| G-23 | **Progress bars need `tqdm`, which comes with `[recommended]`; without it the command still runs** | `cli.md:3-4`, `acknowledgements.md:65` | `packaging-and-extras:50`, `cli:16` | Keep · `cfg` | verified · cfg `[all]` |
 | G-24 | **§B row 2's second half, unwritten:** a four-row **extra → formats re-index** (core / `[recommended]` / `[seekable]` / `[free-threaded]`), naming which formats each unlocks, with `formats.md` still authoritative | `install.md:23-28` is the section that receives it | `packaging-and-extras:50` | **Guide, ~12 lines** — restored by maintainer decision (`scope.md` Q4), bounded to a re-index | verified |
 | G-25 | **§B row 2's first half, unwritten:** `format_availability()` as a runtime query — FULL / PARTIAL / NONE and what `missing` gives you (must-explain #15) | `install.md:23-28` receives it | `src/archivey/internal/registry.py:58-90`, `:314` | **Guide, ~10 lines** | verified |
-| G-25a | **When G-25 is written, the query takes an `ArchiveFormat` and nothing else.** A `StreamFormat` (or any other type) raises `ArchiveyUsageError` rather than returning a record — as does a wrong-typed `format=` on `open_archive` / `extract` / `open_stream`. Shipped after this baseline was taken (P10, `2026-08-17-reject-wrong-typed-format-arguments`), so the section must not be written from the old behaviour | `install.md:23-28` receives it | `src/archivey/internal/format_args.py`; `backend-registry` §"Format support is tri-state and compositional" and §"A format argument outside its declared type is a usage error" (named rather than numbered — this PR's own inserts move the line) | **Guide** — one sentence inside G-25's ~10 lines | |
+| G-25a | **When G-25 is written, the query takes an `ArchiveFormat` and nothing else.** A `StreamFormat` (or any other type) raises `ArchiveyUsageError` rather than returning a record — as does a wrong-typed `format=` on `open_archive` / `extract` / `open_stream`. Shipped after this baseline was taken (P10, `2026-08-17-reject-wrong-typed-format-arguments`), so the section must not be written from the old behaviour | `install.md:23-28` receives it | `src/archivey/internal/format_args.py`; `backend-registry` §"Format support is tri-state and compositional" and §"A format argument outside its declared type is a usage error" (named rather than numbered — this PR's own inserts move the line) | **Guide** — one sentence inside G-25's ~10 lines | verified |
 | G-26 | The stdlib modules archivey always uses are `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `zlib`, and on 3.14+ `compression.zstd` | `acknowledgements.md:76-82` | `packaging-and-extras:23`, `compressed-streams:72` | Keep | verified |
 | G-27 | The **dev/test dependency table** is accurate: the PEP 735 `dev` / `docs` / `fuzz` groups, and each listed package's stated use | `acknowledgements.md:84-98` | `pyproject.toml`, `packaging-and-extras:181` | Keep | verified |
 
@@ -795,12 +813,14 @@ Pages: `install`, `support-matrix`, `acknowledgements`, `migrating`, `index`, `f
 Spec: `cli`. Page: `cli` (48 lines — the thinnest page against the largest recent change
 to CLI output).
 
+Evidence: [`worker-inputs/verdicts-H.md`](worker-inputs/verdicts-H.md); harvest [`../problem-catalogue/harvest/H-cli.md`](../problem-catalogue/harvest/H-cli.md).
+
 | # | Claim | Stated at | Settles it | Ruling | V |
 |---|---|---|---|---|---|
 | H-1 | The six verb forms in the block are correct: bare path = `list`, `l`, `t`, `x`, `info`/`detect`, `--version -v` | `cli.md:6-13` | `cli:16`, `cli:213`, `cli:233`, `src/archivey/cli/main.py:229-330` | Keep | verified |
 | H-2 | `archivey t` is a **full-read integrity check** | `cli.md:9` | `cli:16`, `src/archivey/cli/test_cmd.py` | Keep | verified |
 | H-3 | `archivey info` reports format / identity **and access cost** | `cli.md:11` | `cli:213` | Keep | verified |
-| H-4 | `archivey --version -v` prints version **plus the format availability matrix for this install** | `cli.md:12` | `cli:233` | Keep · `cfg` | verified |
+| H-4 | `archivey --version -v` prints version **plus the format availability matrix for this install** | `cli.md:12` | `cli:233` | Keep · `cfg` | verified · cfg `[all]` |
 | H-5 | **CLI extract defaults are `policy=strict`, `overwrite=rename`, `on_error=continue`** | `cli.md:18` | `src/archivey/cli/main.py:267-292`, `cli:16` | Keep, restructure | verified |
 | H-6 | **must-explain #23, unwritten as its own block:** those CLI defaults **diverge from the library**, which defaults to `ERROR` / `STOP` — "it is what breaks scripts ported from one to the other" | `cli.md:18-22` states the CLI half **inside a bash comment**; the divergence is never stated as such | `src/archivey/cli/main.py:267-292` vs `src/archivey/internal/extraction_types.py:75`, `:94` | **Guide, ~6 lines** — `scope.md` §B row 7 | verified |
 | H-7 | **With no `-d`, a multi-entry archive lands in `./<stem>/` rather than the current directory** (tarbomb-safe) | `cli.md:18-20` | `cli:16`, `src/archivey/cli/extract_cmd.py:96-142` | Keep, restructure | verified |
@@ -830,6 +850,8 @@ to CLI output).
 
 Spec: `documentation` (the coordinator's own — `brief.md` §Capability clusters).
 Pages: `api`, `index`, `philosophy`, `acknowledgements`.
+
+Evidence: [`worker-inputs/verdicts-I.md`](worker-inputs/verdicts-I.md); harvest [`../problem-catalogue/harvest/I-docs-shape.md`](../problem-catalogue/harvest/I-docs-shape.md).
 
 | # | Claim | Stated at | Settles it | Ruling | V |
 |---|---|---|---|---|---|
@@ -1049,12 +1071,12 @@ backend at open. It stays a row to verify, not a contradiction.
 
 # Pass 1 verification summary (coordinator merge)
 
-Filled **401** rows (all claim IDs in this file). Session: `[all]`, `unrar`+`7z` present,
-`format_availability()` FULL for every real format (UNKNOWN=NONE only).
+Filled **402** rows (all claim IDs in this file). Session: `[all]`, `unrar`+`7z` present,
+`list_known_formats()` → 26×FULL (F4); `UNKNOWN` named-attr only → NONE.
 
 | Verdict | Count |
 |---|---:|
-| verified | 381 |
+| verified | 382 |
 | wrong | 11 |
 | out of scope ([TM]) | 8 |
 | unverifiable (platform) | 1 (C-17 NTFS junctions) |

@@ -35,7 +35,18 @@ Eleven rows. Prefer **spec** over code when both exist.
 
 | ID | Defect | Triggering input | Config | Proposed vehicle |
 |---|---|---|---|---|
-| **A-34** | `detect_format` / auto-open do not implement SFX scan; `format-detection` **requires** SFX behind executable stub; guide matches the **spec** | `MZ` stub + real RAR/7z payload → `FormatDetectionError`; `format=RAR` opens | `[all]` | Library PR implementing SFX window in detection (or, if deliberately deferred, OpenSpec change to retract the requirement — see Q1) |
+| **A-34** | `detect_format` / auto-open do not implement SFX scan; `format-detection` **requires** SFX behind executable stub; guide matches the **spec**. **Worst path is silent:** low-entropy `MZ` stub can misdetect as `BROTLI` and `open_archive` succeeds with a fabricated `*.uncompressed` member — no exception, no diagnostic | See trigger matrix below (not only `FormatDetectionError`) | `[all]` | Library PR implementing SFX window in detection (or OpenSpec retract — Q1). **Regression test must cover the silent-success path**, not only the raising case. Priority: see review MD1 |
+
+**A-34 trigger matrix** (reproduced `[all]`, 4 KiB stub + real payload):
+
+| Stub filler | `detect_format` | `open_archive` (auto) | forced `format=` |
+|---|---|---|---|
+| `MZ` + `0x90`×4094, RAR | **`BROTLI` / PROBABLE** (`content_probe`, `payload_offset=0`) | **OK** — bogus member `sfx.exe.uncompressed` | `RAR` → OK, real members |
+| `MZ` + varied bytes, RAR | `FormatDetectionError` | `FormatDetectionError` | `RAR` → OK |
+| `MZ` + varied bytes, 7z | `FormatDetectionError` | `FormatDetectionError` | `SEVEN_Z` → **`CorruptionError`** (no 7z SFX scan) |
+| `MZ` + `0x90`×4094, 7z | **`BROTLI` / PROBABLE** | **OK** — bogus member | `SEVEN_Z` → **`CorruptionError`** |
+
+Forced-format escape is **RAR-only** (`rar_parser._find_sfx_header`, `SFX_MAX=2MiB`). 7z has no equivalent.
 
 ### Spec is wrong → OpenSpec change
 
@@ -45,15 +56,17 @@ None of the eleven `wrong` rows is *only* a spec defect. Two **verified** guide 
 
 ## Q1 — A-34: implement SFX detection, or retract the spec?
 
-**Context.** `openspec/specs/format-detection/spec.md` §“Self-extracting (SFX) archives are detected behind an executable stub” requires detecting RAR/7z behind an executable header (`payload_offset > 0`). Guide `formats.md:225-226` states that. Shipped `detect_format` has no SFX scan (module comment: deferred); forced `format=RAR` still opens via the parser.
+**Context.** `openspec/specs/format-detection/spec.md` §“Self-extracting (SFX) archives are detected behind an executable stub” requires detecting RAR/7z behind an executable header (`payload_offset > 0`). Guide `formats.md:225-226` states that. Shipped `detect_format` has no SFX scan (module comment: deferred).
+
+Forced `format=RAR` still opens via the RAR parser's SFX window. Forced `format=SEVEN_Z` on the same stub raises `CorruptionError` (bad magic) — **7z has no parser-side SFX scan**. Separately, a low-entropy stub can misdetect as `BROTLI` and open successfully with a fabricated member (silent wrong answer).
 
 **Options**
 
-1. **Implement** SFX detection in `detect_format` / auto-open (prefer: matches current spec + guide).
-2. **Retract** the format-detection SFX requirement and rewrite the guide to “forced `format=` / parser-only until detection lands.”
+1. **Implement** SFX detection in `detect_format` / auto-open (prefer: matches current spec + guide; also closes the silent `BROTLI` path and gives 7z a working SFX path).
+2. **Retract** the format-detection SFX requirement and rewrite the guide. Escape hatch is **RAR-only today**; under a retract, **7z SFX would have no working path** until a separate 7z parser SFX scan lands. Do not advertise “forced `format=`” as a general fallback.
 3. **Document as known gap** pointing at an issue, leave spec as aspirational (weak — contradicts “specs are authoritative”).
 
-**Recommendation:** (1), unless there is a known blocker already recorded. Preferring the spec is O-26.
+**Recommendation:** (1). Preferring the spec is O-26; Option 2 is costlier than it first reads because of the 7z hole and the silent misdetect.
 
 **Blocks:** writing the formats Detection / SFX sentence in pass 1.
 
@@ -131,6 +144,21 @@ These rows are **verified** as “the defect/silence exists.” They are not in 
 | **F-7** | Completeness | `CostReceipt` table omits `notes` |
 | **H-16 / H-17** | Silence | Terminal escaping / password-argv documentation gaps (help already warns) |
 | **I-22 / I-24** | Silence / dangling | `api.md` `__all__` gaps; bare `IDEAS.md` refs |
+
+---
+
+## Review round-1 dispositions (PR #252)
+
+| ID | Disposition | Note |
+|---|---|---|
+| F1 | **Fixed** | `G-25a` → `verified`; counts 401→402 / verified 381→382 |
+| F2 | **Fixed** | A-34 trigger matrix + Q1 Option 2 corrected (RAR-only forced-format; silent `BROTLI` path) |
+| F3 | **Fixed** | Twelve `cfg` rows restored to `verified · cfg `[all]``; per-cluster evidence pointers added (MD3 option B) |
+| F4 | **Fixed** | Sweep restated via `list_known_formats()` (26×FULL); SESSION + claims re-measure note |
+| F5 | **Disproven** as contradiction; **deferred** clarity to page PR | `gotchas.md:45-48` is true for its own trigger; suggest naming the trigger / linking the path residual when that page is rewritten. Home: pass-1 `gotchas.md` page PR worklist |
+| MD4 (validator) | **Deferred** | Small `claims.md` completeness check (non-empty V; stated counts match). Home: `review/backlog.md` under Topic 8 follow-ups / Definition-of-done row 8 |
+
+Maintainer product calls still open: **MD1** (A-34 priority — silent path vs normal library PR) below; Q2–Q5 unchanged.
 
 ---
 
