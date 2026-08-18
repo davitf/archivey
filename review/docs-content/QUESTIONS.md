@@ -35,7 +35,7 @@ Eleven rows. Prefer **spec** over code when both exist.
 
 | ID | Defect | Triggering input | Config | Proposed vehicle |
 |---|---|---|---|---|
-| **A-34** | `detect_format` / auto-open do not implement SFX scan; `format-detection` **requires** SFX behind executable stub; guide matches the **spec**. **Worst path is silent:** low-entropy `MZ` stub can misdetect as `BROTLI` and `open_archive` succeeds with a fabricated `*.uncompressed` member — no exception, no diagnostic | See trigger matrix below (not only `FormatDetectionError`) | `[all]` | Library PR implementing SFX window in detection (or OpenSpec retract — Q1). **Regression test must cover the silent-success path**, not only the raising case. Priority: see review MD1 |
+| **A-34** | `detect_format` / auto-open do not implement SFX scan; `format-detection` **requires** SFX behind executable stub; guide matches the **spec**. **Worst path is silent:** low-entropy `MZ` stub can misdetect as `BROTLI` and `open_archive` succeeds with a fabricated `*.uncompressed` member — no exception, no diagnostic | See trigger matrix below (not only `FormatDetectionError`) | `[all]` | **Raised priority (MD1 = B, 2026-08-18).** Vehicles: `sfx-format-detection` + `sevenz-sfx-start-offset` (#253). Regression **MUST** cover the silent-success path, not only `FormatDetectionError`. |
 
 **A-34 trigger matrix** (reproduced `[all]`, 4 KiB stub + real payload):
 
@@ -66,9 +66,11 @@ Forced `format=RAR` still opens via the RAR parser's SFX window. Forced `format=
 2. **Retract** the format-detection SFX requirement and rewrite the guide. Escape hatch is **RAR-only today**; under a retract, **7z SFX would have no working path** until a separate 7z parser SFX scan lands. Do not advertise “forced `format=`” as a general fallback.
 3. **Document as known gap** pointing at an issue, leave spec as aspirational (weak — contradicts “specs are authoritative”).
 
-**Recommendation:** (1). Preferring the spec is O-26; Option 2 is costlier than it first reads because of the 7z hole and the silent misdetect.
+**Recommendation:** (1). Preferring the spec is O-26; Option 2 is costlier than it first reads because of the 7z hole and the silent misdetect. **Priority raised (MD1 = B):** treat as high-priority library work ahead of ordinary docs prose fixes; silent-success regression is mandatory.
 
 **Blocks:** writing the formats Detection / SFX sentence in pass 1.
+
+**Vehicles (proposed):** `openspec/changes/sfx-format-detection/`, `openspec/changes/sevenz-sfx-start-offset/` (#253).
 
 ---
 
@@ -157,8 +159,13 @@ These rows are **verified** as “the defect/silence exists.” They are not in 
 | F4 | **Fixed** | Sweep restated via `list_known_formats()` (26×FULL); SESSION + claims re-measure note |
 | F5 | **Disproven** as contradiction; **deferred** clarity to page PR | `gotchas.md:45-48` is true for its own trigger; suggest naming the trigger / linking the path residual when that page is rewritten. Home: pass-1 `gotchas.md` page PR worklist |
 | MD4 (validator) | **Deferred** | Small `claims.md` completeness check (non-empty V; stated counts match). Home: `review/backlog.md` under Topic 8 follow-ups / Definition-of-done row 8 |
+| **MD1** (A-34 priority) | **Decided: B** (2026-08-18) | Raise priority. Silent-success regression is mandatory. Vehicles: OpenSpec changes on #253 |
 
-Maintainer product calls still open: **MD1** (A-34 priority — silent path vs normal library PR) below; Q2–Q5 unchanged.
+Maintainer product calls still open: Q2–Q5. **MD1 closed** (B).
+
+### MD1 — decided
+
+**Raise A-34.** The silent `BROTLI` misdetect + successful fabricated member is the severity (VISION “never silent guesses”). Implement via `sfx-format-detection` and `sevenz-sfx-start-offset` (#253); the red–green suite must cover the silent-success path specifically, not only `pytest.raises(FormatDetectionError)`.
 
 ---
 

@@ -222,6 +222,10 @@ the difference between doing this pass once and doing it every release.
 
 **Follow-ups parked from #252 review (2026-08-18):**
 
+- **A-34 SFX silent misdetect — raised priority (MD1 = B):** implement
+  `sfx-format-detection` + `sevenz-sfx-start-offset` (#253) ahead of ordinary
+  docs prose fixes. Regression must cover silent `BROTLI` success, not only
+  `FormatDetectionError`. Blocks writing `formats.md` Detection / SFX.
 - **claims.md completeness validator** (review MD4): assert every claim ID has a
   non-empty `V` cell and that stated totals match row counts. Would have caught F1
   (bare `G-25a`). Fits Definition-of-done row 8's "accuracy ends as a test" intent;
