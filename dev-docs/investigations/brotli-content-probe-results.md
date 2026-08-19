@@ -536,9 +536,11 @@ three binaries. So:
 
 - **Keep `e_lfanew` → `PE\0\0` as the STRONG rule.** Do not add `e_cblp` as an alternative
   path to STRONG. Retracted.
-- **Bounding `e_lfanew` is safe and mildly worth doing — but not for the false-positive
-  rate.** Observed values across the 100 binaries are just ten distinct numbers spanning
-  **120…280**:
+- **Bounding `e_lfanew` looked safe here and is not — see §7.2.** A Windows survey of
+  12 887 PE binaries found a maximum of **11 648**, so the cap below rejects a real
+  binary. Kept as written because the reasoning about *why* one might want a bound still
+  holds; the conclusion is superseded. Observed values across the original 100 binaries
+  are just ten distinct numbers spanning **120…280**:
 
   | `e_lfanew` | 120 | 128 | 130 | 232 | 240 | 248 | 256 | 264 | 272 | 280 |
   | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -590,6 +592,92 @@ read error" rather than "silent wrong answer", which §5 measured as not occurri
 builds a 2 MB one starting with `MZ`. Brotli has no magic, so "this file is simultaneously
 valid Brotli and something else" is a property of the format, not a defect in the probe.
 No gate proposed here changes that, and none should claim to.
+
+## 7.2 Field survey: what other operating systems say
+
+Everything above §7.1 was measured on one Linux container. `scripts/exploration/
+brotli_probe_field_survey.py` was run on GitHub's Windows, macOS and Linux images via a
+temporary workflow (`.github/workflows/brotli-field-survey.yml`), ~59 000 files each:
+
+| image | files | PE | probe hits | framing gate rejects | chain walk rejects | survive both |
+| --- | --- | --- | --- | --- | --- | --- |
+| `windows-latest` (Server 2025) | 59 202 | 12 887 | 318 (0.54%) | 259 | 306 | **12** (0.020%) |
+| `windows-2022` | 59 176 | — | — | — | — | **14** |
+| `macos-latest` (ARM64) | 59 800 | 934 | 672 (1.12%) | 659 | 670 | **2** (0.0033%) |
+
+Three platforms, ~178 000 files: the residual after the chain walk stays at 0.003–0.02%,
+consistent with the 0.035% measured on `/usr` locally. **The gate's effectiveness is not a
+Linux artifact.** Four findings change the text above.
+
+**1. The `e_lfanew ≤ 1024` cap in §7 is dead.** 12 887 Windows PE binaries — 129× the
+corpus §3.1 rests on — give a maximum of **11 648**, 11× the value the cap was sized
+against, and one binary exceeds 1024:
+
+| `e_lfanew` | 64 | 120 | 128 | 168–360 | 11648 |
+| --- | --- | --- | --- | --- | --- |
+| count | 20 | 34 | 3304 | 9528 | **1** |
+
+That binary is **`C:\Windows\System32\tcblaunch.exe`** (11 560 on `windows-2022`), the
+Trusted Computing Base launcher — and its DOS header is entirely ordinary, `4d 5a 90 00`
+with `e_cblp` = 144. So the giant `e_lfanew` is not correlated with any other oddity that
+might have been used to except it.
+
+`rule_lfanew_le_1024` scores 12 886/12 887. The spec-grounded `e_lfanew` → `PE\0\0` test
+is still 12 887/12 887. So the cap is not the free tightening §7 called it; it is another
+field-derived rule that loses a real binary, and the only reason to want it — bounding the
+read — has to be weighed against that. Recommend: keep it out of the *correctness* rule;
+if a bound is wanted for read-size reasons, treat exceeding it as "cannot confirm cheaply",
+not as "not an executable".
+
+**2. Windows DOS stubs come in three shapes, not one**, and the exceptions are whole
+product families rather than strays:
+
+| bytes 0–3 | `e_cblp` | `e_lfanew` | count | what they are |
+| --- | --- | --- | --- | --- |
+| `4d 5a 90 00` | 144 | 128–360 | 12 833 | the canonical stub |
+| `4d 5a 78 00` | 120 | 120 | 34 | Edge WebView (`vulkan-1.dll`, `vk_swiftshader.dll`, `telclient.dll`, …) and the .NET Android SDK's `aapt2.exe` |
+| `4d 5a 00 00` | **0** | **64** | 20 | `C:\Windows\System32\WinMetadata\*.winmd` — WinRT/ECMA-335 metadata assemblies, **no DOS stub at all**: the PE header starts immediately after the 64-byte DOS header |
+
+§3.1's "`90 00` in 97/100" was optimistic about a convention that managed assemblies and
+two separate Microsoft product teams already break.
+
+**3. 64-bit Mach-O is structurally *guaranteed* to pass the probe.** macOS returned **200
+Mach-O hits**, and the reason is exact rather than statistical: `cf fa ed fe`
+(`MH_MAGIC_64`, little-endian) parses as WBITS 24, `ISLAST` 0, `MNIBBLES` code 2,
+non-zero top MLEN nibble, `ISUNCOMPRESSED` = 1, zero padding — a complete uncompressed
+meta-block header. The other Mach-O magics (`ce fa ed fe`, both big-endian forms, and the
+fat `ca fe ba be`) are all rejected. This is the exact mirror of ELF, which §3 shows is
+*impossible*.
+
+It matters beyond this investigation: archivey's `executable_cue` handles `MZ` and ELF
+only, so **a macOS SFX stub gets no cue at all *and* is claimed by the Brotli probe** —
+the `sfx-format-detection` defect, on a platform that change never considered. The framing
+gate rescues it (a Mach-O's MLEN comes from its `cputype` field — 16 636 918 for arm64 —
+which no ordinary binary can honour), but the missing cue is worth registering separately.
+
+*A correction to my own tooling, recorded because it would otherwise have become a claim
+in this document:* the survey script first reported "Mach-O: 66" on **Windows**, which is
+not a thing. Mach-O fat binaries and Java `.class` files share the magic `ca fe ba be`,
+and the script split them on "is the next `u32` small?" — but a Java 8 class reads
+`00 00 00 34` = 52, which is small. Those 51 files were Java classes. The fix splits on
+field layout instead (Java has `minor_version` then `major_version`, and major has been
+≥ 45 since JDK 1.1; Mach-O has a single `nfat_arch`). The 200 macOS hits are unaffected —
+they are `cf fa ed fe`, verified against the reference decoder independently.
+
+**4. `---\r\n` joins `/**\n`.** 50 Windows hits are Narrator Braille rule files opening with
+the YAML document separator. Same mechanism: byte 3 is `0x0D`. The general rule is that
+byte 3 must land in **`0x09`–`0x0F`** — tab, LF, VT, FF, CR — with bit 3 set (giving
+`ISUNCOMPRESSED`) and bits 4–7 clear (satisfying the padding rule). It is necessary but not
+sufficient: bytes 0–2 must also produce a non-zero top MLEN nibble, so `abc\t` is rejected
+while `/**\n`, `---\r\n`, `-- \n` and `## \n` are accepted. Windows' hit mix is `.txt` 89,
+`.rst` 82, `.yaml` 50, `.nls` 45; macOS's is `.h` 117, no-extension 117, `.yml` 114,
+`.md` 90, `.o` 77.
+
+**Caveats.** CI images are stocked by GitHub's imaging, not by a user's install history:
+no consumer installers, no packed or DRM'd binaries, no third-party signed EXEs. They are a
+better sample than one container, not a sample of the wild. Intel macOS went unsampled —
+`macos-13` never scheduled (Intel runners are effectively unavailable) and was dropped from
+the matrix. The Windows `e_lfanew` maximum is the number most likely to move again.
 
 ## 8. Reproducing
 

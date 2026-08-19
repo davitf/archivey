@@ -304,11 +304,20 @@ def analyse_macho(head):
     kind = MACHO_MAGICS.get(be)
     out = {"magic_be": "0x%08x" % be, "kind": kind}
     if be == 0xCAFEBABE:
-        # Java class files share this magic: next 4 bytes are minor/major version,
-        # where a Mach-O fat header has nfat_arch (a small count).
-        (nxt,) = struct.unpack_from(">I", head, 4)
-        out["next_u32"] = nxt
-        out["likely"] = "macho-fat" if nxt < 64 else "java-class"
+        # Java class files share this magic. Both put a small number in bytes 4-7, so
+        # "is it small?" does not separate them: a Java 8 class reads 0x00000034 = 52.
+        # Split on the field layout instead — Java has minor_version then major_version,
+        # and major has been >= 45 since JDK 1.1; Mach-O has a single nfat_arch count.
+        minor, major = struct.unpack_from(">HH", head, 4)
+        (nfat,) = struct.unpack_from(">I", head, 4)
+        out["next_u32"] = nfat
+        out["java_major"] = major
+        if minor in (0, 0xFFFF) and 45 <= major <= 80:
+            out["likely"] = "java-class"
+        elif 1 <= nfat <= 32:
+            out["likely"] = "macho-fat"
+        else:
+            out["likely"] = "unknown"
     return out
 
 
