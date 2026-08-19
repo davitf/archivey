@@ -17,5 +17,5 @@
 - [x] 3.2 Red–green: low-entropy `MZ` stub + ZIP payload must not detect/open as Brotli; assert real ZIP members
 - [x] 3.3 Real Brotli (and bare non-executable streams) still detect; include a weak-executable-prefix Brotli case from 1.0
 - [x] 3.4 Varied-stub + RAR/7z/ZIP cases from the SFX matrix (match / no-match / extension fallthrough)
-- [ ] 3.5 `openspec validate --strict sfx-format-detection`
+- [x] 3.5 `openspec validate --strict sfx-format-detection`
 - [ ] 3.6 Archive this change in the finishing PR (`openspec archive sfx-format-detection --yes`)
