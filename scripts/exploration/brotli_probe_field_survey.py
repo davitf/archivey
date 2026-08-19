@@ -422,8 +422,11 @@ def iter_files(roots, max_files, deadline, errors):
                 dirnames[:] = []
                 continue
             dirnames[:] = [d for d in dirnames if d not in SKIP_NAMES]
+            # Key on the resolved path, not st_ino: Windows reports st_ino == 0 on some
+            # filesystems, which would collapse every such directory into one "seen"
+            # entry and silently truncate the scan.
             try:
-                key = os.stat(dirpath).st_ino
+                key = os.path.normcase(os.path.realpath(dirpath))
             except OSError as exc:
                 errors[type(exc).__name__] += 1
                 continue
@@ -703,7 +706,22 @@ def main(argv=None):
     ap.add_argument(
         "--self-test", action="store_true", help="verify the parser and exit"
     )
+    ap.add_argument(
+        "--emit-json",
+        action="store_true",
+        help="also print the report to stdout (for CI logs, where artifacts are awkward)",
+    )
     args = ap.parse_args(argv)
+
+    # Filenames are arbitrary bytes; a Windows console defaulting to cp1252 would raise
+    # UnicodeEncodeError part-way through the summary and lose the whole run.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (OSError, ValueError):
+                pass
 
     if args.self_test:
         return self_test()
@@ -768,10 +786,14 @@ def main(argv=None):
         platform.system().lower(),
         datetime.now().strftime("%Y%m%d-%H%M%S"),
     )
-    with open(out, "w") as fh:
+    with open(out, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=1, sort_keys=True)
 
     print_summary(report, out)
+    if args.emit_json:
+        print("\n----- BEGIN REPORT JSON -----")
+        print(json.dumps(report, indent=1, sort_keys=True))
+        print("----- END REPORT JSON -----")
     return 0
 
 

@@ -1,0 +1,103 @@
+name: Brotli field survey (TEMPORARY)
+
+# TEMPORARY — delete with the brotli-content-probe investigation.
+#
+# `dev-docs/investigations/brotli-content-probe-results.md` was measured entirely on one
+# Linux container. Three of its conclusions need corpora that container cannot provide:
+# the `e_lfanew` maximum across real Windows toolchains (installers, signed EXEs, .NET
+# assemblies), what WBITS real Brotli streams use, and whether Mach-O binaries exist that
+# archivey's MZ/ELF-only executable cue misses.
+#
+# GitHub's Windows and macOS runners are stocked with exactly that software, so this job
+# runs the read-only survey script on each and prints the report into the log. It is
+# manual-dispatch plus a path filter on the survey branch — it must never become part of
+# the ordinary CI signal, and it is deleted once the results are folded into the doc.
+#
+# Tracked as task 5.2 of `openspec/changes/brotli-probe-framing-gate/tasks.md`.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/brotli-content-probe-9ib95r]
+    paths:
+      - "scripts/exploration/brotli_probe_field_survey.py"
+      - ".github/workflows/brotli-field-survey.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brotli-survey-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  survey:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-2022/2025 and macos-14/13 differ in preinstalled software and CPU
+        # architecture, which is the whole point — more toolchains, more DOS stubs.
+        os:
+          - windows-latest
+          - windows-2022
+          - macos-latest
+          - macos-13
+          - ubuntu-latest
+          - ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The script is stdlib-only; brotli is installed purely so the run cross-checks
+      # its header classification against the reference decoder.
+      - name: Install brotli (decoder cross-check)
+        continue-on-error: true
+        run: python -m pip install --disable-pip-version-check Brotli
+
+      - name: Self-test the RFC 7932 parser
+        run: python scripts/exploration/brotli_probe_field_survey.py --self-test
+
+      - name: Survey (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python scripts/exploration/brotli_probe_field_survey.py `
+            "$env:SystemRoot\System32" `
+            "$env:ProgramFiles" `
+            "${env:ProgramFiles(x86)}" `
+            "$env:LOCALAPPDATA\Microsoft\WindowsApps" `
+            C:\hostedtoolcache `
+            --max-files 60000 --time-limit 900 --max-detail 120 `
+            --full-paths --emit-json --out survey-${{ matrix.os }}.json
+
+      - name: Survey (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python scripts/exploration/brotli_probe_field_survey.py \
+            /bin /usr/bin /usr/lib /usr/libexec /usr/local /opt \
+            /Applications /System/Library/CoreServices /Library \
+            --max-files 60000 --time-limit 900 --max-detail 120 \
+            --full-paths --emit-json --out survey-${{ matrix.os }}.json
+
+      - name: Survey (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python scripts/exploration/brotli_probe_field_survey.py \
+            /bin /usr /opt /snap \
+            --max-files 60000 --time-limit 900 --max-detail 120 \
+            --full-paths --emit-json --out survey-${{ matrix.os }}.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: brotli-survey-${{ matrix.os }}
+          path: survey-${{ matrix.os }}.json
+          if-no-files-found: warn
