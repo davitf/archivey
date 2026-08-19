@@ -1,5 +1,26 @@
 ## MODIFIED Requirements
 
+### Requirement: Magic/extension/probe tables are aggregated from backends and codec descriptors
+
+Detector tables SHALL come from container backends (`ReadBackend.MAGIC` /
+`EXTENSIONS` / `CONTENT_PROBES`) and stream-codec descriptors — no per-format
+`detect()` logic. Stream-codec rows come from descriptors (not hand-listed on
+`SingleFileBackend`). A content probe is the codec's `content_probe` function.
+Detected formats and `detected_by` MUST match prior behavior. Confidence MUST also
+match prior behavior **except** for an uncorroborated Brotli content-probe match,
+which reports `GUESS` (see the magic-less-formats requirement); that is the only
+confidence value this change moves.
+
+#### Scenario: table sources matrix
+
+| Case | Expected |
+| --- | --- |
+| `.gz` / `.zst` | Same result as before; magic from codec descriptors |
+| zlib / LZMA Alone | `PROBABLE` / `content_probe` from descriptor functions — unchanged |
+| Brotli, extension corroborates | `PROBABLE` / `content_probe` |
+| Brotli, no corroborating extension | `GUESS` / `content_probe` |
+| ZIP / TAR / ISO | Container backend `MAGIC`, merged into the same table |
+
 ### Requirement: Magic-less formats are detected by a content probe
 
 When the magic-byte table yields no match, the system SHALL run each registered
@@ -11,11 +32,17 @@ when detection knows it (see the framing requirement below). Skip when the
 decompressor backend is missing (fall through to extension). Extension MAY override
 a disagreeing probe (false-positive risk on short/adversarial input).
 
-A probe match SHALL report `detected_by="content_probe"`. Confidence SHALL be
-`PROBABLE` when the file extension corroborates the probed format, and `GUESS`
-otherwise: a content probe on a magic-less format with nothing else agreeing is
-weaker evidence than a structural probe on a format that has a signature. This
-does not change *what* is detected — only what the system claims to know about it.
+A probe match SHALL report `detected_by="content_probe"`. For **Brotli specifically**,
+confidence SHALL be `PROBABLE` when the file extension corroborates the format and
+`GUESS` otherwise: Brotli's probe is the only one measured to accept ordinary files
+(3.5% of a real `/usr` tree), so a Brotli claim with nothing else agreeing is weaker
+evidence than the other probes' claims. This does not change *what* is detected — only
+what the system claims to know about it.
+
+The zlib and LZMA Alone probes keep `PROBABLE` unconditionally. Both are gated before
+decoding (zlib on 4 of 65 536 two-byte prefixes; LZMA Alone on a plausible 13-byte
+header) and both measured **0 false positives in 20 000 random blobs**, so the
+confidence downgrade would cost honesty rather than buy it.
 
 The LZMA Alone probe SHALL attempt a bounded `FORMAT_ALONE` decode and MUST NOT
 claim streams that already matched exact magic (notably lzip `LZIP` and xz
@@ -27,10 +54,10 @@ claim streams that already matched exact magic (notably lzip `LZIP` and xz
 | --- | --- |
 | No magic; bounded prefix decompresses as Brotli, name is `x.br` | `BROTLI`, `PROBABLE`, `content_probe` |
 | No magic; bounded prefix decompresses as Brotli, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
-| zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE` if extension agrees, else `GUESS`, `content_probe` |
+| zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE`, `content_probe` — unchanged |
 | zlib-looking header, decode fails | No zlib claim; fall through to extension / fail |
 | `.br`, Brotli extra missing | Probe skipped; extension guess `BROTLI`/`GUESS` |
-| No magic; bounded prefix decompresses as LZMA Alone | `LZMA_ALONE`, `PROBABLE` if extension agrees, else `GUESS` |
+| No magic; bounded prefix decompresses as LZMA Alone | `LZMA_ALONE`, `PROBABLE`, `content_probe` — unchanged |
 | Stream starts with `LZIP` | lzip magic wins; Alone probe not claimed |
 | Alone-looking bytes that fail `FORMAT_ALONE` decode | No Alone claim; fall through |
 
@@ -72,6 +99,8 @@ roughly one-for-one, or to reject real `.br` files.
 | `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
 | A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
 | Arbitrary data whose declared block happens to fit | Probe may still accept; residual is accepted and documented |
+| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | **Still accepted** — its constant magic declares MLEN 7422, which always fits. Known systematic residual, not a gate failure |
+| COFF object (`64 86 …`, e.g. a Go `.syso`) | Still accepted — same shape |
 | Non-seekable source of unknown length | Gate skipped; today's behaviour |
 | Source length known to be shorter than the declared metadata skip | Rejected |
 

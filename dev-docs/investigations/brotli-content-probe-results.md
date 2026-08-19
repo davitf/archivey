@@ -33,13 +33,14 @@ Three consequences, each measured:
    Following the declared chain across meta-blocks does better still, and is the only
    variant that helps files ≥ 16 MiB.
 3. **The impact is narrower than P12/O10 record, but the *reach* is wider.** Across 364
-   false positives, **not one** produced a silent wrong answer: listing succeeds, but every
-   read failed (`TruncatedError` 97.5%, `CorruptionError` 2.5%). The defect is a *misleading
-   listing and a misattributed error*, not silent data fabrication. But it is not confined
-   to high-entropy blobs the way an earlier draft of §5 claimed: **3.5% of 39 859 files
-   under `/usr`** are claimed, dominated by the Doxygen opener `/**\n` — `/usr/include/lzma.h`
-   detects as `BROTLI`. The genuinely silent case still needs crafted input, and crafted
-   input really is valid Brotli, so no probe can refuse it (§3).
+   false positives, **not one** ended in a silent success: the listing is wrong, and a full
+   read always raises. But two qualifications matter (§5.1). It is not confined to
+   high-entropy blobs — **3.5% of 39 859 files under `/usr`** are claimed, dominated by the
+   Doxygen opener `/**\n`, and `/usr/include/lzma.h` detects as `BROTLI`. And "the read
+   raises" is about the *terminal exception*: a read can hand back **65 536 bytes** of
+   fabricated output — verbatim slices of the input — before the error arrives, so a caller
+   streaming to disk has already written garbage. The genuinely silent case still needs
+   crafted input, and crafted input really is valid Brotli, so no probe can refuse it (§3).
 
 Also settled: **`MZ` is a legal Brotli stream prefix** — §3 builds one and round-trips it
 through the reference decoder. But **`MZ` followed by a *valid DOS header* is not**, and
@@ -341,8 +342,20 @@ Whitelisting even the union observed here, {15, 16, 19, 22}, is worth just **2.1
 | whitelist | random FP | reduction | rejects |
 | --- | --- | --- | --- |
 | {22} only | 0.79% | 10.5× | both real `.br` files, 4/12 fonts |
-| {15, 16, 19, 22} (observed) | 4.00% | 2.1× | nothing observed — but still a guess |
+| {15, 16, 19, 22} ("observed" — **already stale**) | 4.00% | 2.1× | Fira Sans (18) and Source Code Pro / Source Serif 4 (21) — see below |
 | {16…24} | 8.15% | 1.0× | the `.br` file at WBITS 15 |
+
+**The middle row is the point, and it did not survive one independent run.** A reviewer
+surveyed 213 real WOFF2 streams on a different machine and found **22** (171), **16** (34),
+**21** (6, hashed rust-docs Source Code Pro / Source Serif 4) and **18** (2, Fira Sans).
+Adding my own `.br` files and fonts, the observed union across two machines is now
+**{15, 16, 18, 19, 21, 22}** — six of the fifteen legal values, from two small samples that
+disagreed with each other on first contact.
+
+That is the strongest form of this argument. An "observed union" whitelist is not a
+conservative choice that merely fails to pay; it is a rule whose false-negative set is
+whatever the next machine happens to ship, and the very first attempt to reproduce it found
+real fonts it would reject.
 
 So WBITS whitelisting is the wrong shape of lever: the variants that pay are unsound
 (they reject files archivey claims to support), and the variant that is safe barely pays.
@@ -391,8 +404,12 @@ Two other pieces of the realistic picture:
   the fourth byte is what completes the header**, which is why a comment opener followed by
   a line break is such a reliable hit.
 
-  So the accepting bit patterns do *not* need entropy. They need one of a handful of
-  four-byte openers, and `/**\n` is among the most common in existence.
+  So the accepting bit patterns do *not* need entropy. They need one of a family of
+  four-byte openers, and `/**\n` is among the most common in existence. The family is
+  wider than this table: an independent scan of a different Linux image found
+  `/*!\n` (34), `// \n` (30), `AUTO` (27), `#\n#\t` (21), `LINK` (20) *ahead of* `/**\n`
+  (18), and §7.2 adds `---\r\n` from Windows. Read the table as "whichever comment-plus-
+  line-break openers this filesystem happens to contain", not as a fixed top four.
 
   The gates hold up on exactly this data: of the 1377, the first-block framing check
   rejects **1316**, the chain walk rejects **1363**, and only **14** survive both.
@@ -403,9 +420,47 @@ Two other pieces of the realistic picture:
   with no magic", which is also the case where a clean `FormatDetectionError` is the most
   useful answer.
 
-The residual after gating is real but small and bounded: at 4 KiB, 0.325% survive (40
-uncompressed, 24 metadata, 1 compressed per 20 000), all with declared lengths that
-genuinely fit inside the file.
+### 5.1 The residual is not just lucky fits — and "every read failed" undersells it
+
+Two corrections from an independent replication, both reproduced here.
+
+**The residual has named format families in it.** At 4 KiB, 0.325% of random blobs survive
+(40 uncompressed, 24 metadata, 1 compressed per 20 000) with declared lengths that happen to
+fit. But on real filesystems the survivors are systematic, because some container magics
+*are* a valid uncompressed meta-block header with a small declared length:
+
+| magic | what it is | parses as | survives the gate when |
+| --- | --- | --- | --- |
+| `D0 CF 11 E0 A1 B1 1A E1` | OLE / Compound File Binary — `.doc`, `.xls`, `.ppt`, `.msi`, `.vsmacros` | WBITS 16, **MLEN 7422**, header 3 bytes | file ≥ 7425 bytes — i.e. **always**, in practice |
+| `64 86 …` | COFF object (`IMAGE_FILE_MACHINE_AMD64`), e.g. Go's `race_windows.syso` | uncompressed, small MLEN | routinely |
+
+The OLE case is the sharp one: those 8 bytes are *constant*, so the declared length is
+always 7422 and **every CFB file above 7425 bytes passes both the framing check and the
+chain walk**. Verified on this machine —
+`detect_format("/usr/share/cmake-3.28/Templates/CMakeVSMacros1.vsmacros")` returns
+`BROTLI` / `PROBABLE` / `content_probe`, and the chain walk stops at the first compressed
+header and returns cannot-disprove. The gate is still the right primary fix (it cut 207 → 3
+on the reviewer's 79 926-file scan, and it rejects the Mach-O files §7.2 shows the probe
+accepts today) — but the residual is *Microsoft Compound Files and COFF objects*, not
+opaque blobs, and it should be tested with those fixtures rather than a random blob whose
+MLEN happens to fit.
+
+**A read can deliver fabricated bytes before it fails.** §5's table says every read failed,
+which is true of the terminal exception and misleading about what the caller gets. Measured
+here on a file whose first uncompressed meta-block declares 163 846 bytes and fits:
+
+```
+read delivered 65536 bytes, then CorruptionError
+those bytes are a verbatim slice of the input file: True
+```
+
+The reviewer measured the same shape on real files — 126 976 bytes from `race_windows.syso`
+before `CorruptionError`, 5020 of 5024 from a Mach-O before `TruncatedError`. So a caller
+streaming to disk has already written a chunk of garbage when the error arrives. `.vsmacros`
+happens to deliver 0 bytes (the decoder fails inside the same fill), so this depends on
+where the failure lands relative to the buffer — which is exactly why "no silent wrong
+answer" is the wrong summary. **P12 / O10 should say: the listing is wrong, a full read
+raises, and a prefix of fabricated bytes may already have been produced.**
 
 ## 6. Do the peer probes share the problem? (brief Q6)
 
@@ -549,11 +604,12 @@ three binaries. So:
   Go and MinGW emit 128 exactly; MSVC varies 128–280 as its Rich header grows. A cap of
   **1024** keeps 100/100 with ~3.6× headroom over the observed maximum. But the FP gain is
   ~2⁻⁵² → ~2⁻⁵⁴ — invisible, because the 2⁻³² signature match dominates and the range term
-  was already the smaller factor. The real reason to cap it is **bounding the read**: today's
-  `_is_pe` allows `e_lfanew` anywhere up to `len(prefix) - 4`, so resolving the check can
-  require the whole 4096-byte prefix; a 1 KiB cap makes the cue answerable from 1 KiB and
-  keeps it answerable if `DETECTION_LIMIT` ever grows. Treat it as hygiene, not as detection
-  strength.
+  was already the smaller factor. The real reason to cap it is **bounding the read**: the
+  `_is_pe` helper proposed in `sfx-format-detection` (#254 — **not** in `main`; there is no
+  `_is_pe` in `src/` today) allows `e_lfanew` anywhere up to `len(prefix) - 4`, so resolving
+  the check can require the whole 4096-byte prefix; a 1 KiB cap makes the cue answerable
+  from 1 KiB and keeps it answerable if `DETECTION_LIMIT` ever grows. Treat it as hygiene,
+  not as detection strength.
 - **Do not require alignment.** It is the tempting next step and it is wrong: the Linux EFI
   kernel image sits at `e_lfanew` = 130, not even 4-byte aligned, and is a valid PE. The PE
   format recommends alignment; it does not require it, and real files exercise the
@@ -672,6 +728,42 @@ sufficient: bytes 0–2 must also produce a non-zero top MLEN nibble, so `abc\t`
 while `/**\n`, `---\r\n`, `-- \n` and `## \n` are accepted. Windows' hit mix is `.txt` 89,
 `.rst` 82, `.yaml` 50, `.nls` 45; macOS's is `.h` 117, no-extension 117, `.yml` 114,
 `.md` 90, `.o` 77.
+
+### 7.3 Scope: the target is SFX stubs, not every PE
+
+**Maintainer ruling (2026-08-19), and it narrows most of §3.1 and §7.2.** archivey does not
+need to classify arbitrary executables. The executable cue exists for one job: recognising
+the **stub in front of a self-extracting archive**. That is a far more restrictive
+population than "every `MZ` file on a Windows install", and the corner cases this
+investigation kept finding are mostly *outside* it:
+
+| counterexample | what it is | an SFX stub? |
+| --- | --- | --- |
+| `vmlinuz-4.15` (`e_cblp` 2026, `e_lfanew` 130 unaligned) | Linux EFI kernel image | no |
+| `WinMetadata\*.winmd` (`e_cblp` 0, no DOS stub) | WinRT/ECMA-335 metadata assemblies | no |
+| `tcblaunch.exe` (`e_lfanew` 11 648) | Windows Trusted Computing Base launcher | no |
+| Edge WebView DLLs, `aapt2.exe` (120-byte stub) | ordinary shipped binaries | no |
+
+So the "every field-derived rule loses a real binary" result in §7 is *true as stated about
+all PEs*, and **over-strong as an argument about SFX cues**. A rule that mishandles a Linux
+kernel image or a `.winmd` costs archivey nothing, because neither will ever be handed to it
+as a self-extracting archive. The conclusion that survives the narrowing is weaker but still
+holds: the `e_lfanew` → `PE\0\0` test is both the cheapest and the most robust of the
+candidates, and nothing measured here argues for replacing it. What does *not* survive is
+using these counterexamples to rule out a bounded `e_lfanew`.
+
+The one artifact in the corpus that genuinely *is* SFX-shaped is instructive: **distlib's
+`t32`/`t64`/`w32`/`w64` launchers**, which `pip` concatenates with a ZIP payload to make an
+executable — exactly the stub-plus-archive shape. Those sit at `e_lfanew` 240–280, well
+inside any plausible bound.
+
+**What this leaves open, deliberately.** There is no real SFX corpus here. The maintainer's
+plan is to generate stubs with current *and* old tools (WinRAR, 7-Zip, InstallShield-era
+installers) and to pull from old installation archives and media images — which is the only
+way to learn what a 1990s NE/LE self-extractor actually looks like. Until then, treat §3.1
+and §7.2's executable-header conclusions as *bounds on the general PE population*, and do
+not let their corner cases veto a cue design aimed at stubs. Recorded as a follow-up in
+`brotli-probe-framing-gate/tasks.md` §5.
 
 **Caveats.** CI images are stocked by GitHub's imaging, not by a user's install history:
 no consumer installers, no packed or DRM'd binaries, no third-party signed EXEs. They are a

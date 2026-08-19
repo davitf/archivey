@@ -72,6 +72,25 @@ decoder never reaches the end within the prefix. The gate supplies the missing h
 | first-byte legality table | 54/256 first bytes are provably impossible (including `\x7fELF`, which is why 0/887 ELF binaries were ever accepted). Free, but only 21% |
 | extension gate / off by default | contradicts `VISION.md`'s founding use case ("wrong extensions are normal"); see proposal Decisions |
 
+## A lever adjacent to the gate, deliberately not taken
+
+The residual is not only lucky fits. **OLE/CFB** (`D0 CF 11 E0 A1 B1 1A E1` — `.doc`,
+`.xls`, `.msi`, `.vsmacros`) has a *constant* 8-byte magic that parses as WBITS 16,
+MLEN 7422, 3-byte header, so **every CFB file above 7425 bytes passes both the framing
+check and the chain walk**. COFF objects (`64 86 …`) behave the same way.
+
+A short denylist of such container magics would catch them for a few bytes of work. It is
+**not** the first-byte legality table §4.1 rejected: those 54 bytes *cannot* begin a valid
+stream, whereas OLE magic *can*, so a denylist is a heuristic with a real (if absurd)
+false-negative — a crafted Brotli stream that starts with OLE magic.
+
+Not proposed here, on purpose: this change's value is that its rule is *sound*, and mixing
+in a heuristic denylist would forfeit that property for two file families. The residual is
+named in `format-detection`'s framing-gate scenario table and fixtured in task 4.3 instead,
+so it is tested rather than anecdotal. If `.doc`/`.msi` falling out of `detect_format`
+becomes worth having, it belongs in its own change alongside the extension-first ordering
+work (task 5.1), where heuristics are the point.
+
 ## What the gate does not fix
 
 A crafted file genuinely *is* a valid Brotli stream — the investigation builds a 2 171 066-byte

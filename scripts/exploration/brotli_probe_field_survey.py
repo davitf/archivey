@@ -253,14 +253,32 @@ MACHO_MAGICS = {
 PE_SIGNATURES = (b"PE\x00\x00", b"NE", b"LE", b"LX", b"LC")
 
 
-def analyse_pe(head):
-    """DOS/PE header fields, plus every candidate cue rule's verdict."""
+def analyse_pe(head, file_size=None, fh=None):
+    """DOS/PE header fields, plus every candidate cue rule's verdict.
+
+    ``e_lfanew`` is bounded against the *file*, not against the head buffer: a stub big
+    enough to push the PE header past ``HEAD_BYTES`` is exactly the installer/packer case
+    this script exists to measure, and bounding against the buffer would silently drop it
+    from the maximum. When the signature sits past the head buffer, seek for it.
+    """
     if len(head) < 0x40:
         return {"truncated": True}
     e_cblp, e_cp = struct.unpack_from("<HH", head, 2)
     (e_lfanew,) = struct.unpack_from("<I", head, 0x3C)
-    in_bounds = 0x40 <= e_lfanew <= len(head) - 4
-    sig = head[e_lfanew : e_lfanew + 4] if in_bounds else b""
+    limit = (file_size if file_size is not None else len(head)) - 4
+    in_bounds = 0x40 <= e_lfanew <= limit
+    sig = b""
+    beyond_head = False
+    if in_bounds:
+        if e_lfanew + 4 <= len(head):
+            sig = head[e_lfanew : e_lfanew + 4]
+        elif fh is not None:
+            beyond_head = True
+            try:
+                fh.seek(e_lfanew)
+                sig = fh.read(4)
+            except OSError:
+                sig = b""
     sig2 = sig[:2]
     return {
         "bytes_0_3": head[:4].hex(" "),
@@ -268,6 +286,7 @@ def analyse_pe(head):
         "e_cp": e_cp,
         "e_lfanew": e_lfanew,
         "e_lfanew_in_bounds": in_bounds,
+        "e_lfanew_beyond_head": beyond_head,
         "e_lfanew_align8": e_lfanew % 8 == 0,
         "e_lfanew_align4": e_lfanew % 4 == 0,
         "signature": sig.hex(" ") if sig else None,
@@ -479,7 +498,7 @@ def analyse_file(path, real_probe):
             }
 
             if kind == "pe":
-                rec["pe"] = analyse_pe(head)
+                rec["pe"] = analyse_pe(head, size, fh)
             elif kind == "elf":
                 rec["elf"] = analyse_elf(head)
             elif kind == "macho":
@@ -650,8 +669,15 @@ def summarise(records):
 
 
 def interesting(records):
-    """The records worth shipping in full: rule violators, probe hits, real streams."""
-    out = []
+    """The records worth shipping in full, rarest first.
+
+    Ordered rather than left in walk order: the detail list is capped, and a large
+    false-positive set would otherwise crowd out the PE rule-violators and real Brotli
+    streams that the survey exists to collect. Probe hits are the most numerous and the
+    least individually informative, so they go last — and the gate-surviving ones go
+    before the rest, since those are the residual worth naming.
+    """
+    scored = []
     for r in records:
         pe = r.get("pe") or {}
         odd_pe = r["kind"] == "pe" and (
@@ -662,9 +688,21 @@ def interesting(records):
             or not pe.get("e_lfanew_in_bounds", True)
             or (pe.get("e_lfanew") or 0) > 512
         )
-        if odd_pe or r["brotli"]["header_accepts"] or "brotli_stream" in r:
-            out.append(r)
-    return out
+        hit = r["brotli"]["header_accepts"]
+        survives = hit and r["brotli"].get("chain_ok") is not False
+        if odd_pe:
+            rank = 0
+        elif "brotli_stream" in r:
+            rank = 1
+        elif survives:
+            rank = 2
+        elif hit:
+            rank = 3
+        else:
+            continue
+        scored.append((rank, r))
+    scored.sort(key=lambda pair: pair[0])
+    return [r for _rank, r in scored]
 
 
 SELF_TEST_VECTORS = [

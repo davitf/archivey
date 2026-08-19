@@ -40,10 +40,12 @@ halves are worth fixing.
   it. Extend the codec-probe interface so a probe may consult the source length when
   detection knows it (path, seekable stream, or a short peek that reveals the whole file),
   and degrade to today's behaviour when it does not.
-- **Report probe-only single-file results as `GUESS`, not `PROBABLE`.** A content probe
-  with no corroborating extension is not "probable" evidence for a magic-less format;
-  probe + matching extension stays `PROBABLE`. This narrows the existing content-probe
-  requirement's confidence table for Brotli.
+- **Report probe-only *Brotli* results as `GUESS`, not `PROBABLE`.** A Brotli match with no
+  corroborating extension is not "probable" evidence; probe + `.br` stays `PROBABLE`.
+  **Scoped to Brotli**, not to magic-less probes generally: zlib and LZMA Alone measured
+  0/20 000 false positives and stay `PROBABLE` (see Decisions). The sibling "table sources"
+  requirement is MODIFIED in the same delta so the archived spec does not contradict itself
+  on confidence.
 - **Make the failure honest.** When a read fails on a single-file result whose only
   evidence was a content probe, the error SHALL say the format identification was
   unconfirmed rather than presenting as a plain truncation.
@@ -82,6 +84,18 @@ Recorded because they were considered and rejected on measurement, not overlooke
   and real files use the range: the two `.br` files on the measurement system are WBITS 15
   and 16, and twelve WOFF2 fonts split 19/22. Whitelisting the observed union is worth
   2.1×, against 25–162× for the sound gate.
+- **The `GUESS` downgrade is Brotli-only.** An earlier draft applied it to every magic-less
+  probe, which contradicted this investigation's own Q6 result ("the fix belongs in Brotli,
+  not at the probe layer generally") and would have left the archived spec disagreeing with
+  its unmodified sibling requirement. zlib is gated on 4 of 65 536 prefixes and LZMA Alone
+  scored 0/20 000 on random data; downgrading them would report less confidence than the
+  evidence supports. Raised in review as MD1; both the reviewer and the measurements point
+  the same way.
+- **No known-magic denylist.** The residual after the gate includes OLE/CFB and COFF
+  systematically, not just lucky fits (results doc §5.1), and a 8-byte denylist would catch
+  them cheaply. Declined for this change because its whole value is that the rule is
+  *sound*; a denylist is a heuristic with a real false-negative. Named in the spec's
+  scenario table and fixtured in task 4.3 instead. Raised in review as MD2.
 - **Extension-first detection ordering is out of scope.** Trying the formats matching the
   extension first and falling back to the rest is better than either the status quo or a
   hard gate — it uses the extension as a priority order rather than a filter — but it
