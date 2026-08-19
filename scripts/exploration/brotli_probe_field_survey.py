@@ -815,11 +815,13 @@ def main(argv=None):
     with open(out, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=1, sort_keys=True)
 
-    print_summary(report, out)
+    # JSON first, human summary last: in a CI log the summary is what gets read, and a
+    # 60-line tail should reach it however big the report grew.
     if args.emit_json:
         print("\n----- BEGIN REPORT JSON -----")
         print(json.dumps(report, indent=1, sort_keys=True))
         print("----- END REPORT JSON -----")
+    print_summary(report, out)
     return 0
 
 
@@ -857,6 +859,14 @@ def print_summary(report, out):
         for k, v in sorted(pe["rule_pass_counts"].items()):
             flag = "" if v == pe["count"] else "   <-- rejects real binaries"
             print("    %-22s %5d%s" % (k, v, flag))
+        if pe.get("outliers"):
+            print("  binaries that decide the ranking (largest e_lfanew first):")
+            for o in pe["outliers"][:12]:
+                print(
+                    "    e_lfanew=%-6d %s e_cblp=%-5d %s"
+                    % (o["e_lfanew"], o["bytes_0_3"], o["e_cblp"], ",".join(o["fails"]))
+                )
+                print("      %s" % (o.get("path") or o.get("name")))
 
     if s["macho"]["count"]:
         print("\nMach-O: %d  %s" % (s["macho"]["count"], s["macho"]["likely"]))
