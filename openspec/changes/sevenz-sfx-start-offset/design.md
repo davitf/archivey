@@ -25,7 +25,7 @@ file origin, so forced `format=SEVEN_Z` on an SFX stub raises `CorruptionError`.
 | Observation | Evidence |
 | --- | --- |
 | RAR SFX on forced format | `rar_parser._find_sfx_header`; #252 repro |
-| 7z magic-at-zero only | `sevenzip_parser.py` `fp.seek(0)` then `MAGIC_7Z` check |
+| 7z magic-at-zero only | `sevenzip_parser.py` `:357` `fp.seek(0)` then `MAGIC_7Z`; `:388` absolute next-header seek; pipeline has none |
 | Packed-stream offsets are relative to signature | Signature header at 32 + pack_pos; a non-zero archive origin must shift all absolute seeks |
 | Detection hand-off | Sibling change wires `payload_offset`; this change must accept that offset |
 
@@ -55,9 +55,13 @@ Add an explicit requirement so format owners see it next to other 7z contracts.
 
 ## Risks / Trade-offs
 
-- [Missed seek sites after introducing S] → Audit all `seek`/`tell` in 7z parser
-  / pipeline against the signature origin; add an SFX fixture that exercises
-  packed streams, not only empty archives.
+- [Missed seek sites after introducing S] → At `main` there are exactly **two**
+  absolute seeks to rebase in `sevenzip_parser.py`:
+  `read_signature_and_next_header` line ~357 (`fp.seek(0)`) and line ~388
+  (`fp.seek(_SIGNATURE_HEADER_SIZE + next_header_offset)`).
+  `sevenzip_pipeline.py` has no `.seek(` calls. That bounds the *known* sites —
+  keep task `3.2`’s pack-stream SFX fixture anyway, because pack offsets may be
+  applied via stream slicing rather than a literal `.seek(`.
 - [Scan cost on every forced open] → Fast path: magic at origin unchanged; scan
   only on miss.
 

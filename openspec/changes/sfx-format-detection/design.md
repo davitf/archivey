@@ -55,12 +55,18 @@ optional if the forward window already covers typical stubs; document the chosen
 bound in the delta. **Rejected:** unbounded scan; **Rejected:** tiny window that
 misses real SFX stubs RAR already accepts.
 
-### 3. Open path honours `payload_offset` by seeking / slicing to the payload start
-After detection returns `payload_offset > 0`, the opener positions the source (or
-passes an equivalent start offset into `backend.open_read`) so the backend sees
-archive byte 0 at the payload. Prefer read-in-place over copying the remainder.
+### 3. Open path honours `payload_offset` via start-offset arg or offset view
+After detection returns `payload_offset > 0`, the opener SHALL either pass an
+explicit start-offset into `backend.open_read` or wrap the source in a bounded
+offset view / slice whose byte 0 is the payload. A bare seek on a shared handle
+is insufficient — 7z’s parser absolute-seeks to 0 and then to
+`_SIGNATURE_HEADER_SIZE + next_header_offset`, discarding caller positioning
+(see sibling `sevenz-sfx-start-offset` Decision 1). Prefer read-in-place over
+copying the remainder.
 **Rejected:** re-implementing SFX only inside each backend for auto-detect (leaves
 `payload_offset` dead and duplicates RAR’s scanner).
+**Rejected:** bare seek alone as the hand-off (works for RAR’s forward scan, fails
+for 7z).
 
 ### 4. Silent-success regression is mandatory
 At least one test builds a low-entropy `MZ` stub + real RAR (and 7z once sibling
@@ -80,6 +86,12 @@ and RAR’s own scanner still finds magic at the new origin.
 - [7z auto-open still broken until sibling] → Tasks call out dependency; forced
   `format=SEVEN_Z` fixed by sibling alone.
 - [Large SFX stubs beyond window] → Same limit as RAR parser today; document.
+- [RAR stream temp spill × `payload_offset` (E-71 / P11)] → Seekable-stream RAR
+  already copies to a temp path for `unrar` (`RarReader._ensure_archive_path`).
+  Once detection supplies a non-zero `payload_offset`, decide in the implement
+  PR whether the temp holds payload-only (offset consumed) or stub+payload
+  (`unrar` re-finds magic). Keep that choice consistent with P11’s eventual cost
+  signal; this change does not invent a second spill.
 
 ## Open Questions
 

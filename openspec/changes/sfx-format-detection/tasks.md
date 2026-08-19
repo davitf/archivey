@@ -6,7 +6,7 @@
 
 ## 2. Open-path hand-off
 
-- [ ] 2.1 Thread non-zero `payload_offset` from detection through `open_archive` into backend open (seek/slice or start-offset argument)
+- [ ] 2.1 Thread non-zero `payload_offset` from detection through `open_archive` into backend open via explicit start-offset argument or bounded offset view (not bare seek alone)
 - [ ] 2.2 Confirm RAR auto-open of SFX succeeds with real members (no fabricated single-file member)
 - [ ] 2.3 Gate 7z auto-open SFX on `sevenz-sfx-start-offset` (or land that change in the same train)
 
