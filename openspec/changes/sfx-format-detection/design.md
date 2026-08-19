@@ -7,25 +7,33 @@ defers it). `FormatInfo.payload_offset` exists but `open_archive` only consumes
 `.format` / `.encoding_hint`. Content probes (Brotli) can claim an executable
 stub before any archive magic deeper in the file is considered.
 
-Topic 8 #252 / A-34 reproduced: low-entropy `MZ` + RAR/7z payload → detect as
+Topic 8 #252 / A-34 reproduced: low-entropy `MZ` + RAR/7z/ZIP payload → detect as
 `BROTLI`, auto-open succeeds with fabricated `*.uncompressed`. Varied stub →
 `FormatDetectionError`. Forced `format=RAR` works via parser SFX; forced
-`SEVEN_Z` fails until `sevenz-sfx-start-offset`.
+`SEVEN_Z` fails until `sevenz-sfx-start-offset`; forced `format=ZIP` already
+succeeds (zipfile finds EOCD from the tail).
 
 Deferred historically in Phase 3 (`SFX → Phase 7`); native 7z/RAR later landed
 without finishing detection-side SFX. Not a `dev-docs/open-issues.md` P-entry.
 
+**Maintainer (PR #253 F1 = A, 2026-08-19):** include ZIP local-header
+(`PK\x03\x04`) in the SFX scan — same silent-`BROTLI` defect, most common wild
+SFX form; incremental cost is a needle plus a matrix row.
+
 ## Goals / Non-Goals
 
 **Goals:**
-- Implement SFX scan in `detect_format` for RAR and 7z magic within a bounded window.
+- Implement SFX scan in `detect_format` for RAR, 7z, and ZIP local-header magic
+  within a bounded window.
 - Prevent content probes from silently winning on executable stubs.
 - Hand `payload_offset` to the open path so backends read in place from the payload.
 - Tests that fail on the silent-success path (not only the raising path).
 
 **Non-Goals:**
 - Implementing 7z parser start-offset / SFX scan (sibling `sevenz-sfx-start-offset`).
-- ZIP SFX / other formats’ embedded payloads.
+- Other formats’ embedded payloads beyond RAR / 7z / ZIP (e.g. TAR-behind-stub).
+- Changing ZIP’s EOCD-from-tail open behaviour (already correct under forced
+  `format=ZIP`); this change only teaches *detection* to find ZIP SFX.
 - Changing the public `FormatInfo` shape.
 - Guide prose (Topic 8 page PRs after this lands).
 
@@ -36,17 +44,21 @@ without finishing detection-side SFX. Not a `dev-docs/open-issues.md` P-entry.
 | Spec already normative | `format-detection` §SFX; `payload_offset` on `FormatInfo` |
 | Detection deferred in code | `detection.py` module docstring |
 | `payload_offset` unused at open | `core.py` uses `detected.format` / `encoding_hint` only |
-| Silent path | `MZ`+`0x90`×4094 + RAR → `BROTLI` / open OK / bogus member |
+| Silent path (RAR) | `MZ`+`0x90`×4094 + RAR → `BROTLI` / open OK / bogus member |
+| Silent path (ZIP) | Same stub + ZIP → `BROTLI` / fabricated `*.uncompressed`; forced ZIP → real members (#253 F1) |
 | Loud path | Varied stub → `FormatDetectionError` |
 | RAR forced-format OK | `rar_parser._find_sfx_header`, `SFX_MAX = 2 MiB` |
 | 7z forced-format fails | `sevenzip_parser.read_signature_and_next_header` seeks 0, magic at byte 0 |
+| ZIP forced-format OK | `zipfile` EOCD from tail; stub ignored |
 
 ## Decisions
 
 ### 1. SFX scan runs before content probes when the prefix looks executable
 If the peeked prefix matches executable cues (`MZ` / ELF), run the SFX magic scan
-first. Only if no RAR/7z magic is found may content probes / extension fallback
-run. **Rejected:** scan after probes (preserves today’s silent BROTLI bug).
+first (RAR / 7z / ZIP local-header needles). Only if no match is found may content
+probes / extension fallback run. **Rejected:** scan after probes (preserves today’s
+silent BROTLI bug). **Rejected:** RAR/7z-only scan (leaves ZIP SFX at
+`FormatDetectionError` for a file forced `format=ZIP` already reads — #253 F1 = A).
 
 ### 2. Bounded forward window aligned with RAR’s existing SFX_MAX (2 MiB)
 Reuse the same order-of-magnitude bound as `rar_parser.SFX_MAX` for detection so
@@ -69,9 +81,10 @@ copying the remainder.
 for 7z).
 
 ### 4. Silent-success regression is mandatory
-At least one test builds a low-entropy `MZ` stub + real RAR (and 7z once sibling
-lands) and asserts: not `BROTLI`, and auto-open does not return a fabricated
-single-file member. **Rejected:** only testing `FormatDetectionError` on varied stubs.
+At least one test builds a low-entropy `MZ` stub + real RAR, one with ZIP, and
+(once the sibling lands) 7z, and asserts: not `BROTLI`, and auto-open does not
+return a fabricated single-file member. **Rejected:** only testing
+`FormatDetectionError` on varied stubs.
 
 ### 5. Pair with `sevenz-sfx-start-offset`
 Detection can return `SEVEN_Z` + offset before 7z accepts offsets; auto-open of 7z

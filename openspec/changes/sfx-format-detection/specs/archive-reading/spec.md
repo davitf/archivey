@@ -19,7 +19,7 @@ start-offset / SFX rules (`format-rar`, `format-7z`).
 
 | Case | Expected |
 | --- | --- |
-| Auto-detect SFX RAR/7z with `payload_offset == N` | Backend opens via start-offset arg or offset view; real members listed |
+| Auto-detect SFX RAR/7z/ZIP with `payload_offset == N` | Backend opens via start-offset arg or offset view; real members listed |
 | `payload_offset == 0` | Unchanged open-at-current-position behaviour |
 | Explicit `format=` | Detection skipped; backend SFX/start-offset rules apply |
 | Bare seek only (no start-offset / no offset view) | Insufficient for 7z; MUST NOT be the sole hand-off mechanism |

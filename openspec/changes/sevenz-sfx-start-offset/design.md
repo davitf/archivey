@@ -16,9 +16,11 @@ file origin, so forced `format=SEVEN_Z` on an SFX stub raises `CorruptionError`.
   `format-detection`.
 
 **Non-Goals:**
-- Implementing `detect_format` SFX scan (sibling `sfx-format-detection`).
+- Implementing `detect_format` SFX scan (sibling `sfx-format-detection`, which
+  covers RAR / 7z / ZIP needles).
 - Changing solid/folder decode, codecs, or multi-volume joining.
-- ZIP or other formats’ SFX.
+- ZIP parser changes (ZIP SFX already opens under forced `format=ZIP` via EOCD
+  from the tail; detection-side ZIP needle is the sibling’s job).
 
 ## Investigations
 
