@@ -32,12 +32,14 @@ Three consequences, each measured:
    false negatives on 150 real streams — 56 of which take the uncompressed path themselves.
    Following the declared chain across meta-blocks does better still, and is the only
    variant that helps files ≥ 16 MiB.
-3. **The impact is narrower than P12/O10 record.** Across 364 false positives at three file
-   sizes, **not one** produced a silent wrong answer: listing succeeds, but every read
-   failed (`TruncatedError` 97.5%, `CorruptionError` 2.5%). The defect is a *misleading
-   listing and a misattributed error*, not silent data fabrication. The genuinely silent
-   case needs crafted input — and crafted input really is valid Brotli, so no probe can
-   refuse it (§3).
+3. **The impact is narrower than P12/O10 record, but the *reach* is wider.** Across 364
+   false positives, **not one** produced a silent wrong answer: listing succeeds, but every
+   read failed (`TruncatedError` 97.5%, `CorruptionError` 2.5%). The defect is a *misleading
+   listing and a misattributed error*, not silent data fabrication. But it is not confined
+   to high-entropy blobs the way an earlier draft of §5 claimed: **3.5% of 39 859 files
+   under `/usr`** are claimed, dominated by the Doxygen opener `/**\n` — `/usr/include/lzma.h`
+   detects as `BROTLI`. The genuinely silent case still needs crafted input, and crafted
+   input really is valid Brotli, so no probe can refuse it (§3).
 
 Also settled: **`MZ` is a legal Brotli stream prefix** — §3 builds one and round-trips it
 through the reference decoder. But **`MZ` followed by a *valid DOS header* is not**, and
@@ -366,10 +368,34 @@ format=BROTLI)`, which blames the file for being truncated and names a format it
 
 Two other pieces of the realistic picture:
 
-- **Structured files are not at risk.** 0/950 real repo files (source, Markdown, JSON,
-  fixtures), 0/1200 system binaries, and the brief's 0/887 ELF binaries. The accepting bit
-  patterns need entropy that text and executables do not have — and for ELF, §3 shows it is
-  outright impossible.
+- **Executables are not at risk.** 0/1200 system binaries and the brief's 0/887 ELF
+  binaries — and for ELF, §3 shows it is outright impossible.
+- **Ordinary text files very much are.** An earlier draft of this section claimed
+  "structured files are not at risk" from 0/950 repo files. That was an artifact of which
+  file types got scanned (`.py`, `.md`, `.json`, `.toml`). A wider sweep — 39 859 files
+  under `/usr`, via `scripts/exploration/brotli_probe_field_survey.py` — finds **1377
+  accepted (3.5%)**, and they are not high-entropy at all:
+
+  | first 4 bytes | what it is | count |
+  | --- | --- | --- |
+  | `/**\n` | Doxygen / Javadoc comment opener | **375** |
+  | `let ` | JavaScript / TypeScript | 17 |
+  | `-- \n` | SQL / Lua / Haskell comment | 3 |
+  | `## \n` | Markdown / shell comment | 2 |
+
+  `/usr/include/lzma.h` and `/usr/include/yaml.h` both come back from `detect_format` as
+  `ArchiveFormat.BROTLI`. The reason is exact rather than lucky: `2f 2a 2a 0a` gives
+  WBITS = 24 (`/` = `0x2F`), `ISLAST` = 0, `MNIBBLES` code 1 (five nibbles), a non-zero top
+  MLEN nibble, `ISUNCOMPRESSED` = 1 from bit 3 of `\n`, and — the part that makes it work —
+  bits 4–7 of `0x0A` are all zero, satisfying the pad-to-byte-boundary rule. **A newline as
+  the fourth byte is what completes the header**, which is why a comment opener followed by
+  a line break is such a reliable hit.
+
+  So the accepting bit patterns do *not* need entropy. They need one of a handful of
+  four-byte openers, and `/**\n` is among the most common in existence.
+
+  The gates hold up on exactly this data: of the 1377, the first-block framing check
+  rejects **1316**, the chain walk rejects **1363**, and only **14** survive both.
 - **High-entropy *bodies* are.** Reading real compressed/media files from an offset (so the
   container header is gone, i.e. a headerless blob) gives 1.5–2.6% acceptance, and
   cryptographic random gives 8.05% — indistinguishable from uniform random, and cut to
@@ -547,6 +573,23 @@ Scripts live in the session scratchpad, not the repo — they are measurement on
 the numbers they produced are recorded above. The two that would be worth keeping if the
 proposal lands are `hdr.py` and `m3_variants.py`, as the seed of a regression test that the
 gate's false-negative count stays at zero.
+
+### The one script that *is* in the repo
+
+`scripts/exploration/brotli_probe_field_survey.py` packages the header parser and every
+survey above into one stdlib-only, read-only, Python 3.8+ file that runs on a bare system
+interpreter — no venv, no archivey. It exists because three conclusions here rest on
+corpora that one Linux container cannot make representative:
+
+| what it collects | why this document needs it |
+| --- | --- |
+| PE/DOS fields + every candidate cue rule's verdict | §7's ranking turns on `e_lfanew`'s maximum (280 here, from 100 binaries with no installers, packers or signed EXEs) |
+| WBITS of every `.br` file and WOFF2 payload found | §4.1 rejects WBITS whitelisting on 2 `.br` files and 12 fonts |
+| header class of every file, + both gates' verdicts | §5's real-world false-positive rate — already corrected once by this script |
+| Mach-O count | archivey's cue handles `MZ` and ELF only; a macOS SFX stub gets no cue at all |
+
+Running it on Linux is what turned up the `/**\n` result in §5. Windows and macOS runs are
+the ones still missing.
 
 ## Refs
 

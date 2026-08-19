@@ -1,4 +1,27 @@
-# ZipCrypto disambiguation — exploration notes
+# Exploration scripts
+
+## Brotli content probe — field survey
+
+`brotli_probe_field_survey.py` collects the evidence
+`dev-docs/investigations/brotli-content-probe-results.md` is thinnest on: PE/DOS header
+shapes across real toolchains (especially the `e_lfanew` maximum), the WBITS values real
+Brotli streams use, and how often the content probe claims ordinary files.
+
+Stdlib-only and Python 3.8+, so it runs on a bare system interpreter — no venv, no
+archivey, on whatever machine you point it at. Read-only; it writes one JSON report and
+uploads nothing. Names are basenames by default (`--no-names` / `--full-paths` to change
+that).
+
+```bash
+python3 scripts/exploration/brotli_probe_field_survey.py --self-test
+python3 scripts/exploration/brotli_probe_field_survey.py            # system roots
+python3 scripts/exploration/brotli_probe_field_survey.py ~/Downloads --out report.json
+```
+
+Windows and macOS runs are the valuable ones — the results doc was measured entirely on
+one Linux container.
+
+## ZipCrypto disambiguation — exploration notes
 
 Scripts supporting
 `openspec/changes/zip-multipassword-disambiguation` tasks 1.1 and 1.3.
