@@ -40,11 +40,14 @@ Three consequences, each measured:
    refuse it (§3).
 
 Also settled: **`MZ` is a legal Brotli stream prefix** — §3 builds one and round-trips it
-through the reference decoder — so `sfx-format-detection`'s weak/strong cue split stands
-and cannot be tightened on legality grounds. **`\x7fELF` is not**, deterministically, which
-is why 0/887 ELF binaries were accepted; that is one of **54 first bytes that can never
-begin a valid Brotli stream**. And the peer probes are clean: zlib and LZMA Alone take
-**0/20 000** random blobs each, so this is Brotli's problem alone.
+through the reference decoder. But **`MZ` followed by a *valid DOS header* is not**, and
+provably so (§3.1): the `e_cblp` field the SFX cue could check is arithmetically disjoint
+from what Brotli's MLEN encoding requires at those byte positions. Real PE files are
+already rejected (0/40 on this system); the `MZ` + `\x90`×4094 fixture is accepted only
+because its filler is *not* what a DOS header looks like. **`\x7fELF` is likewise
+impossible**, deterministically — one of **54 first bytes that can never begin a valid
+Brotli stream**. And the peer probes are clean: zlib and LZMA Alone take **0/20 000**
+random blobs each, so this is Brotli's problem alone.
 
 ---
 
@@ -175,6 +178,44 @@ b3 b5 b6 b7 b9 bb bd be bf c6 ce d6 de e6 ee f3 f5 f6 f7 f9 fb fd fe ff
 
 Note `0x7f` (ELF) and `0xff` are both in it; `0x4d` (`M`) and `0x23` (`#!`) are not.
 
+### 3.1 Where the `\x90` filler came from, and why `e_cblp` closes the case
+
+`MZ` + `\x90`×4094 is `_STUB` in `tests/test_sfx.py` (#254), and its own comment calls it
+"deliberately the *synthetic* one". `\x90` is x86 `NOP` — filler chosen to look like code,
+not copied from a real executable. It matters more than a fixture choice usually would,
+because **`\x90` is exactly what makes it decode**: §1 showed byte 3 supplies both the
+non-zero MLEN top nibble and the set `ISUNCOMPRESSED` bit.
+
+A real PE does not look like that. Every MS-linker DOS header begins `4D 5A 90 00` — byte 2
+is `0x90` (that is `e_cblp` = 144, bytes-on-last-page), but **byte 3 is `0x00`**. All 40 PE
+binaries on this system carry exactly those four bytes, and the Brotli probe claims
+**0/40**. The header shape alone is enough: `MZ\x90\x00…` fails on `EXUBERANT_NIBBLE`.
+
+That generalises into a provable rule, which is the useful part:
+
+> For a prefix starting `MZ`, byte 0 = `0x4D` pins `MNIBBLES` to code 2 (six nibbles), so
+> MLEN's most significant nibble is **byte 3 bits 3–6** and must be non-zero. Hence a legal
+> Brotli stream beginning `MZ` requires **byte 3 ≥ 0x08**, i.e. **`e_cblp` ≥ 2048**.
+> `e_cblp ≤ 512` forces byte 3 ≤ 2. **The two conditions cannot both hold.**
+
+Verified exhaustively over all 65 536 `(byte2, byte3)` pairs: **0 overlap**. So validating
+`e_cblp` in the SFX executable cue costs *nothing* in Brotli detection — it cannot reject a
+stream the probe could legitimately want, because no such stream exists. And it is a sharp
+discriminator: only 513/65 536 = 0.78% of random 2-byte values satisfy `e_cblp ≤ 512`
+(measured 0.90% on 20 000 random `MZ`-prefixed blobs).
+
+This also puts a number on how exposed the SFX path specifically is. Random data *forced*
+to start with `MZ` is accepted by the Brotli probe **47.19%** of the time — not 8% — because
+`M` pins WBITS = 23, `ISLAST` = 0 and `MNIBBLES` = 6 all at once, which is a far more
+favourable configuration than average. The `MZ` prefix makes the collision six times more
+likely, and `e_cblp` removes it entirely.
+
+The residual honesty: the Windows loader ignores every DOS header field except `e_lfanew`
+and the `MZ` magic, so a hand-built PE *may* carry a nonsense `e_cblp` and still run. The
+rule above is sound in the direction that matters (valid `e_cblp` ⇒ not Brotli); it is not a
+guarantee that every loadable PE has one. Real linker output does, which is what an SFX stub
+is.
+
 ## 4. Is there a cheap structural pre-gate? (brief Q4)
 
 **Yes, and it is a good one.** Not a first-byte table — that is free but only worth 21% —
@@ -231,6 +272,52 @@ blobs, 1200 system binaries, 150 real streams):
 (The ≥512-byte rows differ from the brief's, which counted a truncation as a hit regardless
 of how much came out; here the byte count is required outright. Both agree on the
 conclusion, and on the direction of every trade.)
+
+### 4.1 A gate that looks attractive and is not: restricting WBITS
+
+WBITS is the obvious candidate, because its encoding is lopsided. The 15 legal values are
+*not* equiprobable in random data — WBITS = 16 is a **one-bit** encoding, so it takes half
+of all random prefixes, while 18–24 take four bits each:
+
+| WBITS | encoding | share of random data |
+| --- | --- | --- |
+| 16 | 1 bit | **50.0%** |
+| 18–24 | 4 bits | ~6.2% each |
+| 10–15, 17 | 7 bits | ~0.8% each |
+| (reserved) | 7 bits | 0.78% |
+
+So a whitelist bites hard. Restricting the probe to WBITS = 22 — the reference encoder's
+default — takes random-data FP from **8.30% to 0.79%**, a 10.5× cut.
+
+**But the encoder emits whatever it is asked for, and real files use the full range.**
+Measured across quality × `lgwin` × payload: at quality ≥ 2 the encoder emits *exactly* the
+requested `lgwin`, all 15 values 10–24 reachable; quality 0 and 1 clamp anything below 18 up
+to 18. Nothing narrows it. And the wild confirms it — every real Brotli stream I could find
+on this machine, verified by decompressing it:
+
+| source | WBITS |
+| --- | --- |
+| `/usr/share/javascript/underscore/underscore.min.js.br` | **15** |
+| `…/underscore.min.js.map.br` | **16** |
+| 4 WOFF2 fonts (Font Awesome) | **19** |
+| 8 WOFF2 fonts (Lato, Roboto Slab, Fraunces) | **22** |
+
+The two `.br` files — the exact format the brief insists must keep working — use 15 and 16.
+The `brotli` CLI shrinks the window toward the input size, so small-window streams are the
+*normal* case for small files; only the Python binding's `lgwin=22` default keeps 22 common.
+Whitelisting even the union observed here, {15, 16, 19, 22}, is worth just **2.1×** (8.30% →
+4.00%) because it has to admit 16 — the one value that is half of all random data.
+
+| whitelist | random FP | reduction | rejects |
+| --- | --- | --- | --- |
+| {22} only | 0.79% | 10.5× | both real `.br` files, 4/12 fonts |
+| {15, 16, 19, 22} (observed) | 4.00% | 2.1× | nothing observed — but still a guess |
+| {16…24} | 8.15% | 1.0× | the `.br` file at WBITS 15 |
+
+So WBITS whitelisting is the wrong shape of lever: the variants that pay are unsound
+(they reject files archivey claims to support), and the variant that is safe barely pays.
+The framing check in §4 gets 25–162× while being *sound* — it cannot reject a valid complete
+file, because the property it tests is one such a file must have. Not recommended.
 
 ## 5. What actually happens on a false positive
 
@@ -313,6 +400,21 @@ On the brief's four:
 | fail loudly when a single-file result rests only on a content probe | **Worth doing, separately, and narrowly.** Not as a refusal — that would break `.br` — but the `PROBABLE`/`content_probe` provenance is already on `FormatInfo` and is currently discarded downstream. §5 shows the wrong-error problem is the real user-visible harm; a read failure on a probe-only single-file result should say "this may not be a Brotli file" rather than "file is truncated". |
 | accept the rate and document it | **Superseded.** It was the right call while probe tuning looked like the only lever. It is not the only lever. |
 
+**Separately, for the SFX cue (#254).** §3.1 makes `e_cblp` validation a free win: for an
+`MZ` prefix, a valid `e_cblp` and a legal Brotli stream are arithmetically disjoint, so
+checking it in `executable_cue` cannot cost a Brotli detection. Two consequences worth
+folding into that change rather than this one:
+
+- The `MZ` cue can be **promoted from WEAK to STRONG on a valid DOS header** (`e_cblp ≤ 512`,
+  optionally with `e_cp`), independently of whether `e_lfanew` resolves to `PE\0\0`. That
+  covers real linker output — including SFX stubs — without the four-byte `PE` follow-through,
+  and it is provable rather than outcome-shaped, which is the property #254's spec delta was
+  reaching for.
+- The `MZ` + `\x90`×4094 fixture should be labelled for what §3.1 shows it is: not a stub
+  with unlucky filler, but a byte sequence whose filler is *specifically* what a DOS header
+  never contains. It is a fine regression test; it is not evidence about real executables,
+  and #254's design notes read as though it were.
+
 **Scope note for the proposal.** Any of this moves normative text in
 `openspec/specs/format-detection/spec.md` (the probe requirements) and touches the
 `content_probe(prefix) -> bool` signature, since the gate needs a size the probe cannot
@@ -361,6 +463,8 @@ assert brotli.decompress(b"MZ\x90\x90" + payload + b"\x03") == payload
 | `m5_analytic.py` | §2's analytic derivation |
 | `m7_chain.py` | §4's chain walk across file sizes |
 | `m9_impact.py`, `m10_realworld.py` | §5: listing-vs-reading outcomes, and the real-file negatives |
+| `m11_mz.py` | §3.1: real PE headers, and the exhaustive `e_cblp` disjointness check |
+| `m12_wbits.py` | §4.1: emitted vs. requested `lgwin`, and the WBITS whitelist trade |
 
 Scripts live in the session scratchpad, not the repo — they are measurement one-offs, and
 the numbers they produced are recorded above. The two that would be worth keeping if the
