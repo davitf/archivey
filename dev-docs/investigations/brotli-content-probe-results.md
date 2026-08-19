@@ -41,10 +41,12 @@ Three consequences, each measured:
 
 Also settled: **`MZ` is a legal Brotli stream prefix** — §3 builds one and round-trips it
 through the reference decoder. But **`MZ` followed by a *valid DOS header* is not**, and
-provably so (§3.1): the `e_cblp` field the SFX cue could check is arithmetically disjoint
-from what Brotli's MLEN encoding requires at those byte positions. Real PE files are
-already rejected (0/40 on this system); the `MZ` + `\x90`×4094 fixture is accepted only
-because its filler is *not* what a DOS header looks like. **`\x7fELF` is likewise
+provably so (§3.1): a valid `e_cblp` is arithmetically disjoint from what Brotli's MLEN
+encoding requires at those byte positions. Real PE files are already rejected — **0/60**
+across four independent toolchains — and the `MZ` + `\x90`×4094 fixture is accepted only
+because its filler is *not* what a DOS header looks like. That explains why #254's cue split
+is safe, but it does **not** justify loosening the STRONG test to `e_cblp`: §7 measures
+today's `e_lfanew` → `PE\0\0` rule at ~2⁻⁵² against `e_cblp`'s 2⁻⁷. **`\x7fELF` is likewise
 impossible**, deterministically — one of **54 first bytes that can never begin a valid
 Brotli stream**. And the peer probes are clean: zlib and LZMA Alone take **0/20 000**
 random blobs each, so this is Brotli's problem alone.
@@ -186,10 +188,17 @@ not copied from a real executable. It matters more than a fixture choice usually
 because **`\x90` is exactly what makes it decode**: §1 showed byte 3 supplies both the
 non-zero MLEN top nibble and the set `ISUNCOMPRESSED` bit.
 
-A real PE does not look like that. Every MS-linker DOS header begins `4D 5A 90 00` — byte 2
-is `0x90` (that is `e_cblp` = 144, bytes-on-last-page), but **byte 3 is `0x00`**. All 40 PE
-binaries on this system carry exactly those four bytes, and the Brotli probe claims
-**0/40**. The header shape alone is enough: `MZ\x90\x00…` fails on `EXUBERANT_NIBBLE`.
+A real PE does not look like that. Every PE DOS header begins `4D 5A 90 00` — byte 2 is
+`0x90` (that is `e_cblp` = 144, bytes-on-last-page), but **byte 3 is `0x00`**. The header
+shape alone is enough: `MZ\x90\x00…` fails on `EXUBERANT_NIBBLE`.
+
+That is not one linker's habit. Across **60 distinct PE binaries from four independent
+toolchains** — MSVC (distlib launchers, plus `.pyd`/`.dll` from the numpy, Pillow, lxml,
+cffi, cryptography, msgpack and PyYAML Windows wheels), **Go's own internal linker**, and
+**MinGW-w64's GNU `ld`** — bytes 2–3 are `90 00` in **60/60**, `e_cp` is 3 in 60/60, the
+`e_lfanew` signature is `PE\0\0` in 60/60, and the Brotli probe claims **0/60**. Every
+toolchain embeds the same canonical "This program cannot be run in DOS mode" stub, so the
+prologue is effectively universal in practice rather than vendor-specific.
 
 That generalises into a provable rule, which is the useful part:
 
@@ -400,16 +409,38 @@ On the brief's four:
 | fail loudly when a single-file result rests only on a content probe | **Worth doing, separately, and narrowly.** Not as a refusal — that would break `.br` — but the `PROBABLE`/`content_probe` provenance is already on `FormatInfo` and is currently discarded downstream. §5 shows the wrong-error problem is the real user-visible harm; a read failure on a probe-only single-file result should say "this may not be a Brotli file" rather than "file is truncated". |
 | accept the rate and document it | **Superseded.** It was the right call while probe tuning looked like the only lever. It is not the only lever. |
 
-**Separately, for the SFX cue (#254).** §3.1 makes `e_cblp` validation a free win: for an
-`MZ` prefix, a valid `e_cblp` and a legal Brotli stream are arithmetically disjoint, so
-checking it in `executable_cue` cannot cost a Brotli detection. Two consequences worth
-folding into that change rather than this one:
+**Separately, for the SFX cue (#254).** An earlier draft of this section proposed promoting
+the `MZ` cue to STRONG on a valid `e_cblp`, *independently* of the `e_lfanew` → `PE\0\0`
+follow-through. **That was wrong, and measuring the alternatives is what shows it.** Over
+200 000 random `MZ`-prefixed blobs:
 
-- The `MZ` cue can be **promoted from WEAK to STRONG on a valid DOS header** (`e_cblp ≤ 512`,
-  optionally with `e_cp`), independently of whether `e_lfanew` resolves to `PE\0\0`. That
-  covers real linker output — including SFX stubs — without the four-byte `PE` follow-through,
-  and it is provable rather than outcome-shaped, which is the property #254's spec delta was
-  reaching for.
+| candidate STRONG rule | real PEs | random `MZ` FP | analytic bound |
+| --- | --- | --- | --- |
+| `e_cblp ≤ 512` | 60/60 | **0.7695%** | 513/2¹⁶ = 0.783% |
+| bytes 2–3 == `90 00` | 60/60 | 0.0025% | 1/2¹⁶ = 0.0015% |
+| `e_lfanew` → `PE\0\0` (**today's rule**) | 60/60 | **0.0000%** | ~2⁻⁵² |
+| `e_lfanew` → `PE`/`NE`/`LE`/`LX` | 60/60 | 0.0000% | ~2⁻⁵⁰ |
+
+The existing rule already wins by a margin nothing else approaches: `e_lfanew` is four
+random bytes that must land inside the prefix (~2⁻²²) *and* address four more specific bytes
+(2⁻³²). Swapping in `e_cblp` would have made the cue roughly **10¹³ times looser**, and even
+the tightened `90 00` form is 2⁻¹⁶ against 2⁻⁵². So:
+
+- **Keep `e_lfanew` → `PE\0\0` as the STRONG rule.** Do not add `e_cblp` as an alternative
+  path to STRONG. Retracted.
+- **Optionally widen the accepted signature to `NE`/`LE`/`LX`** alongside `PE`. Still
+  0.0000% measured, still ~2⁻⁵⁰ analytically, and it covers 16-bit Windows and OS/2 SFX
+  stubs that the `PE`-only test rejects. Caveat: no such stub was available to test here —
+  every one of the 53 `MZ` files on this machine is a `PE` — so this is reasoning from the
+  format, not from a corpus.
+- **`e_cblp`'s real value is explanatory, not operational.** It is what *proves* real
+  executables can never collide with the Brotli probe, which is precisely the assurance
+  #254's weak/strong split was asserting from outcomes. As a runtime check it would only be
+  a micro-optimisation (two bytes, no `e_lfanew` read) and is not worth the code.
+- **Narrowing STRONG to bytes 2–3 == `90 00`** is tighter than `e_cblp ≤ 512` and holds
+  60/60 here, but it is a toolchain convention, not a format requirement: a genuine DOS-era
+  `MZ` binary carries `e_cblp` = filesize mod 512, i.e. effectively arbitrary. Since the
+  `e_lfanew` test is both tighter *and* grounded in the PE spec, `90 00` has no role.
 - The `MZ` + `\x90`×4094 fixture should be labelled for what §3.1 shows it is: not a stub
   with unlucky filler, but a byte sequence whose filler is *specifically* what a DOS header
   never contains. It is a fine regression test; it is not evidence about real executables,
@@ -464,6 +495,7 @@ assert brotli.decompress(b"MZ\x90\x90" + payload + b"\x03") == payload
 | `m7_chain.py` | §4's chain walk across file sizes |
 | `m9_impact.py`, `m10_realworld.py` | §5: listing-vs-reading outcomes, and the real-file negatives |
 | `m11_mz.py` | §3.1: real PE headers, and the exhaustive `e_cblp` disjointness check |
+| `m13_dos.py` | §3.1/§7: the 60-binary four-toolchain DOS-header survey and the STRONG-rule comparison (builds its own Go and MinGW PEs, and pulls MSVC-built `.pyd`s from Windows wheels) |
 | `m12_wbits.py` | §4.1: emitted vs. requested `lgwin`, and the WBITS whitelist trade |
 
 Scripts live in the session scratchpad, not the repo — they are measurement one-offs, and
