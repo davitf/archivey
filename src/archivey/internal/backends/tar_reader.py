@@ -54,7 +54,11 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
 )
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    BaseArchiveReader,
+    ReadBackend,
+    reject_start_offset,
+)
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as backends_logger
@@ -836,7 +840,9 @@ class TarReadBackend(ReadBackend):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> TarReader:
+        reject_start_offset(start_offset, format, archive_name)
         # `format` carries the concrete (TAR, <stream>) variant the detector/caller resolved;
         # the backend uses its stream to pick the codec to decompress with.
         return TarReader(

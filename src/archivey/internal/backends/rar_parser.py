@@ -48,6 +48,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     raw_message_of,
 )
+from archivey.internal.sfx import SFX_MAX, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
 
@@ -64,8 +65,6 @@ class _Readable(Protocol):
 
 RAR_ID = b"Rar!\x1a\x07\x00"
 RAR5_ID = b"Rar!\x1a\x07\x01\x00"
-_SFX_NEEDLE = b"Rar!\x1a\x07"
-SFX_MAX = 2 * 1024 * 1024
 _RAR_MAX_PASSWORD = 127
 _RAR_MAX_KDF_SHIFT = 24
 _RAR5_MAX_HEADER = 2 * 1024 * 1024
@@ -388,7 +387,12 @@ def _parse_rar_one(
 
 
 def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
-    """Return ``(version, offset_from_start)`` for RAR4 (version 4) or RAR5."""
+    """Return ``(version, offset_from_start)`` for RAR4 (version 4) or RAR5.
+
+    Scanning both ids rather than their shared ``Rar!\x1a\x07`` prefix lets the shared
+    scanner resolve the version by which id matched first, so a stub containing the bare
+    prefix (without a valid version byte) no longer needs a rescan loop here.
+    """
     source.seek(start)
     # Fast path: magic at current position.
     head = read_exact(source, len(RAR5_ID))
@@ -398,26 +402,14 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
         return 4, 0
 
     source.seek(start)
-    buf = bytearray()
-    remaining = SFX_MAX
-    while remaining > 0:
-        chunk = source.read(min(65536, remaining))
-        if not chunk:
-            break
-        buf.extend(chunk)
-        remaining -= len(chunk)
-        # Search within newly complete window.
-        find_from = max(0, len(buf) - len(chunk) - len(_SFX_NEEDLE))
-        pos = find_from
-        while True:
-            idx = bytes(buf).find(_SFX_NEEDLE, pos)
-            if idx < 0:
-                break
-            if buf[idx : idx + len(RAR5_ID)] == RAR5_ID:
-                return 5, idx
-            if buf[idx : idx + len(RAR_ID)] == RAR_ID:
-                return 4, idx
-            pos = idx + len(_SFX_NEEDLE)
+    offset = scan_for_magic(source, (RAR5_ID, RAR_ID), limit=SFX_MAX)
+    if offset is not None:
+        source.seek(start + offset)
+        ident = read_exact(source, len(RAR5_ID))
+        if ident.startswith(RAR5_ID):
+            return 5, offset
+        assert ident.startswith(RAR_ID), "scan matched an id the reread does not"
+        return 4, offset
 
     raise CorruptionError("Not a RAR archive: magic not found within SFX scan limit")
 

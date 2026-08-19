@@ -62,7 +62,11 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     raw_message_of,
 )
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    BaseArchiveReader,
+    ReadBackend,
+    reject_start_offset,
+)
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
@@ -1460,7 +1464,11 @@ class ZipReadBackend(ReadBackend):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> ZipReader:
+        # Honoured in the sfx-format-detection sibling; until then an SFX
+        # offset must not be silently read from byte 0.
+        reject_start_offset(start_offset, format, archive_name)
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
         return ZipReader(

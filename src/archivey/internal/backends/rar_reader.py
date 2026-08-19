@@ -57,7 +57,11 @@ from archivey.internal.backends.rar_unrar import (
     open_unrar_p,
     terminate_unrar,
 )
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    BaseArchiveReader,
+    ReadBackend,
+    reject_start_offset,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
@@ -1004,7 +1008,11 @@ class RarReadBackend(ReadBackend):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> RarReader:
+        # Honoured in the sfx-format-detection sibling; until then an SFX
+        # offset must not be silently read from byte 0.
+        reject_start_offset(start_offset, format, archive_name)
         del format
         return RarReader(
             source,

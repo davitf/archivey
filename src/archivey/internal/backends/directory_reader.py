@@ -24,7 +24,11 @@ from archivey.cost import (
 )
 from archivey.diagnostics import DiagnosticCode, ScanRaceContext
 from archivey.escaping import quoted
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    BaseArchiveReader,
+    ReadBackend,
+    reject_start_offset,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
 from archivey.internal.open_site import OpenSite
@@ -319,7 +323,9 @@ class DirectoryReadBackend(ReadBackend):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> DirectoryReader:
+        reject_start_offset(start_offset, format, archive_name)
         # `format` is always DIRECTORY here (single-format backend); accepted for the
         # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
         if not isinstance(source, Path):

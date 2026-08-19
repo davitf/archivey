@@ -56,7 +56,11 @@ from archivey.exceptions import (
     CorruptionError,
     PackageNotInstalledError,
 )
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    BaseArchiveReader,
+    ReadBackend,
+    reject_start_offset,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
@@ -548,7 +552,9 @@ class IsoReadBackend(ReadBackend):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> IsoReader:
+        reject_start_offset(start_offset, format, archive_name)
         # `format` is always ISO here (single-format backend); accepted for the uniform
         # ReadBackend signature.
         return IsoReader(

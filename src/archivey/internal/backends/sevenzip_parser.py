@@ -46,6 +46,7 @@ from archivey.internal.backends.sevenzip_methods import (
     is_aes,
     lookup,
 )
+from archivey.internal.sfx import SFX_MAX, scan_for_magic
 from archivey.internal.streams.streamtools import read_exact
 from archivey.types import CompressionAlgorithm, CompressionMethod
 
@@ -352,8 +353,42 @@ class _Cursor:
         return sub
 
 
+def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
+    """Offset of the 7z signature header from ``fp``'s current position.
+
+    ``0`` when the magic is already there — the ordinary case, and one 6-byte read.
+    Otherwise the file is treated as self-extracting: the magic is searched for within
+    ``limit`` bytes (the shared :data:`~archivey.internal.sfx.SFX_MAX`, the same bound
+    the RAR parser and ``detect_format`` use), which is what makes forced
+    ``format=SEVEN_Z`` work on a stub the way forced ``format=RAR`` already does.
+
+    Raises :class:`CorruptionError` on a miss, so a non-7z source fails loudly instead
+    of opening as an empty archive. ``fp`` is restored to its starting position.
+    """
+    start = fp.tell()
+    try:
+        if fp.read(len(MAGIC_7Z)) == MAGIC_7Z:
+            return 0
+        fp.seek(start)
+        offset = scan_for_magic(fp, (MAGIC_7Z,), limit=limit)
+    finally:
+        fp.seek(start)
+    if offset is None:
+        raise CorruptionError(
+            "Not a 7z archive: bad magic bytes (and no 7z signature within the "
+            f"{limit}-byte self-extracting scan window)"
+        )
+    return offset
+
+
 def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
-    """Read signature header, verify CRCs, return next-header bytes (possibly empty)."""
+    """Read signature header, verify CRCs, return next-header bytes (possibly empty).
+
+    ``fp`` is expected to begin *at* the signature header: every offset in a 7z archive
+    is relative to it, so a self-extracting archive is opened by handing this a view
+    whose byte 0 is the signature (see :func:`find_signature_offset` and
+    ``SevenZipReader._view``) rather than by adding a stub offset to each seek here.
+    """
     fp.seek(0)
     signature = _read_stream_exact(fp, _SIGNATURE_HEADER_SIZE, "7z signature header")
     if signature[: len(MAGIC_7Z)] != MAGIC_7Z:
@@ -552,6 +587,7 @@ __all__ = [
     "compression_method_for_coder",
     "empty_archive",
     "encoded_folder_slices",
+    "find_signature_offset",
     "folder_is_encrypted",
     "folder_unpack_size",
     "materialize_archive",
