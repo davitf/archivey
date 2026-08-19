@@ -795,6 +795,7 @@ class SevenZipReadBackend(ReadBackend):
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(0, b"7z\xbc\xaf'\x1c", ArchiveFormat.SEVEN_Z),
     )
+    SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SUPPORTS_PASSWORD = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     OPTIONAL_DEPENDENCY = None

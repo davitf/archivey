@@ -402,14 +402,10 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
         return 4, 0
 
     source.seek(start)
-    offset = scan_for_magic(source, (RAR5_ID, RAR_ID), limit=SFX_MAX)
-    if offset is not None:
-        source.seek(start + offset)
-        ident = read_exact(source, len(RAR5_ID))
-        if ident.startswith(RAR5_ID):
-            return 5, offset
-        assert ident.startswith(RAR_ID), "scan matched an id the reread does not"
-        return 4, offset
+    hit = scan_for_magic(source, (RAR5_ID, RAR_ID), limit=SFX_MAX)
+    if hit is not None:
+        offset, ident = hit
+        return (5 if ident == RAR5_ID else 4), offset
 
     raise CorruptionError("Not a RAR archive: magic not found within SFX scan limit")
 

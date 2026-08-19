@@ -1,4 +1,4 @@
-"""Self-extracting (SFX) stubs: the shared scan bound and the forward magic scan.
+"""Self-extracting (SFX) stubs: the shared scan bound, the forward scan, and the cue.
 
 A self-extracting archive is an executable stub with a real archive appended, so the
 archive magic sits at some offset ``N > 0`` rather than at byte zero. Three places have
@@ -12,18 +12,25 @@ to agree on how far forward to look for it:
 
 They share :data:`SFX_MAX` rather than each carrying a bound of its own: three separate
 limits drift, and a stub the RAR parser accepts but the detector does not would be a
-format that opens under ``format=RAR`` and fails under auto-detect. Raising the bound is
+file that opens under ``format=RAR`` and fails under auto-detect. Raising the bound is
 one edit here for all three.
 
-The scan itself is :func:`scan_for_magic`, which walks a source forward in chunks and
-keeps only the needle-length overlap between them, so a 2 MiB window costs 2 MiB of
-reads and a few hundred bytes of buffer — not a 2 MiB buffer, and not the quadratic
-re-search a grow-and-rescan loop pays.
+Two scan entry points, because the callers differ in what they may do to the source.
+A parser owns its handle and reads forward (:func:`scan_for_magic`); the detector must
+not consume anything, so it works from growing peeks (:func:`find_magic_in_prefix`).
+Both keep the window bounded and neither buffers the whole of it.
+
+:func:`executable_cue` is the gate. Scanning every source for archive magic would claim
+any file that happens to contain ``PK\\x03\\x04`` somewhere in its first 2 MiB, so the
+scan runs only where a stub could plausibly be. The gate is deliberately two-tiered —
+see :class:`ExecutableCue`.
 """
 
 from __future__ import annotations
 
-from typing import BinaryIO, Sequence
+import struct
+from enum import Enum
+from typing import BinaryIO, Callable, Sequence
 
 # How far past the start of a source the archive magic may sit before we stop looking.
 # 2 MiB comfortably covers real stubs (a `rar a -sfx` ELF stub is ~250 KB, and Windows
@@ -34,14 +41,86 @@ SFX_MAX = 2 * 1024 * 1024
 # reads, small enough that a match near the front stops early.
 _SCAN_CHUNK = 65536
 
+# Peek sizes the non-consuming scan steps through. Each peek re-reads from the source
+# origin, so growing geometrically keeps a small stub cheap (64 KiB) while capping the
+# worst case at a little over 2× the window, instead of the ~32× a fixed chunk would
+# cost. A stub whose magic is at 250 KB — the size `rar a -sfx` produces — is found on
+# the third peek.
+_PEEK_STEPS = (1 << 16, 1 << 18, 1 << 20)
 
-def _find_earliest(data: bytes | bytearray, needles: Sequence[bytes]) -> int:
-    """Index of the earliest needle occurrence in ``data``, or ``-1`` if none match."""
-    best = -1
+_MZ = b"MZ"
+_ELF = b"\x7fELF"
+_PE = b"PE\x00\x00"
+# Offset of the PE header pointer (``e_lfanew``) in the DOS header, and the smallest
+# value it can legally hold — the PE header cannot overlap the DOS header itself.
+_E_LFANEW_OFFSET = 0x3C
+_DOS_HEADER_SIZE = 0x40
+
+
+class ExecutableCue(Enum):
+    """How strongly a source's leading bytes say "this is an executable".
+
+    ``STRONG`` means structurally confirmed — a DOS header whose ``e_lfanew`` actually
+    points at a ``PE\\0\\0`` signature, or an ELF identification block whose class, data
+    encoding and version fields are all valid. Arbitrary data reaches this by accident
+    with vanishing probability.
+
+    ``WEAK`` is the two- or four-byte prefix alone. It is enough to justify *looking*
+    for an appended archive, but not enough to overrule a content probe: ``MZ`` is two
+    bytes, and a genuine Brotli stream that happens to start with them must still be
+    detectable (``format-detection``: "Executable-looking prefixes must not silently
+    become a wrong stream format" is outcome-shaped, not "disable Brotli on ``MZ``").
+    """
+
+    NONE = "none"
+    WEAK = "weak"
+    STRONG = "strong"
+
+
+def executable_cue(prefix: bytes) -> ExecutableCue:
+    """Classify ``prefix`` as :class:`ExecutableCue`.
+
+    Reads only the peeked detection prefix — a few KiB is far more than the DOS header
+    and ELF ident block need — so a source whose leading bytes are not executable-shaped
+    costs two byte comparisons.
+    """
+    if prefix.startswith(_MZ):
+        return ExecutableCue.STRONG if _is_pe(prefix) else ExecutableCue.WEAK
+    if prefix.startswith(_ELF):
+        return ExecutableCue.STRONG if _is_elf(prefix) else ExecutableCue.WEAK
+    return ExecutableCue.NONE
+
+
+def _is_pe(prefix: bytes) -> bool:
+    """Whether a ``MZ`` prefix carries a DOS header pointing at a real PE signature."""
+    if len(prefix) < _E_LFANEW_OFFSET + 4:
+        return False
+    (e_lfanew,) = struct.unpack_from("<I", prefix, _E_LFANEW_OFFSET)
+    if not _DOS_HEADER_SIZE <= e_lfanew <= len(prefix) - len(_PE):
+        return False
+    return prefix[e_lfanew : e_lfanew + len(_PE)] == _PE
+
+
+def _is_elf(prefix: bytes) -> bool:
+    """Whether an ``\\x7fELF`` prefix carries a valid identification block.
+
+    ``EI_CLASS`` (32/64-bit), ``EI_DATA`` (endianness) and ``EI_VERSION`` are the three
+    ident fields with a closed set of legal values.
+    """
+    if len(prefix) < 7:
+        return False
+    return prefix[4] in (1, 2) and prefix[5] in (1, 2) and prefix[6] == 1
+
+
+def _find_earliest(
+    data: bytes | bytearray, needles: Sequence[bytes], start: int = 0
+) -> tuple[int, bytes] | None:
+    """The earliest needle occurrence at or after ``start``, as ``(index, needle)``."""
+    best: tuple[int, bytes] | None = None
     for needle in needles:
-        found = data.find(needle)
-        if found >= 0 and (best < 0 or found < best):
-            best = found
+        found = data.find(needle, start)
+        if found >= 0 and (best is None or found < best[0]):
+            best = (found, needle)
     return best
 
 
@@ -50,8 +129,8 @@ def scan_for_magic(
     needles: Sequence[bytes],
     *,
     limit: int = SFX_MAX,
-) -> int | None:
-    """Offset of the earliest ``needles`` match within ``limit`` bytes, or ``None``.
+) -> tuple[int, bytes] | None:
+    """The earliest ``needles`` match within ``limit`` bytes, as ``(offset, needle)``.
 
     The scan starts at ``source``'s **current position** and the returned offset is
     relative to it. A needle counts as found only when it lies wholly inside the first
@@ -80,12 +159,46 @@ def scan_for_magic(
         consumed += len(chunk)
         window.extend(chunk)
 
-        found = _find_earliest(window, needles)
-        if found >= 0:
-            return window_start + found
+        hit = _find_earliest(window, needles)
+        if hit is not None:
+            index, needle = hit
+            return window_start + index, needle
 
         if len(window) > overlap:
             window_start += len(window) - overlap
             del window[: len(window) - overlap]
+
+    return None
+
+
+def find_magic_in_prefix(
+    peek_more: Callable[[int], bytes],
+    needles: Sequence[bytes],
+    *,
+    limit: int = SFX_MAX,
+) -> tuple[int, bytes] | None:
+    """:func:`scan_for_magic` for a source that must not be consumed.
+
+    ``peek_more(n)`` returns the source's first ``n`` bytes without consuming them
+    (idempotent, growing supersets — see ``detection._peek_prefix``). The window grows
+    geometrically and each round searches only the bytes the previous one could not
+    have covered, so a stub found early costs one small peek and a miss costs a bounded
+    number of large ones.
+    """
+    if not needles:
+        return None
+    overlap = max(len(needle) for needle in needles) - 1
+    searched = 0
+
+    for step in (*_PEEK_STEPS, limit):
+        if step <= searched:
+            continue
+        data = peek_more(min(step, limit))
+        hit = _find_earliest(data, needles, max(0, searched - overlap))
+        if hit is not None:
+            return hit
+        if len(data) < step:
+            return None  # the source ended inside this peek; nothing more to search
+        searched = len(data)
 
     return None

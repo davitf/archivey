@@ -342,6 +342,38 @@ Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Th
 Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a
 Unix-only test, because a name containing control bytes cannot be created on NTFS.
 
+### O10. A content probe fabricates a member from arbitrary attacker bytes — open
+
+Brotli has no magic number, so `detect_format` recognizes it by decoding a 256-byte
+prefix (`BrotliCodec.content_probe`). Measured 2026-08-19: **8.27%** of uniformly random
+4 KiB blobs pass that probe, and **7.3%** of them come back from `detect_format` as
+`ArchiveFormat.BROTLI` end to end. `open_archive` on such a file does not fail — it
+returns a reader with one fabricated `<name>.uncompressed` member whose contents are
+whatever the decoder produced from bytes that were never a Brotli stream.
+
+That is a trust-boundary issue rather than a gotcha: the source is untrusted input by
+definition (`archive bytes` is the primary attacker-controlled surface in this model),
+and the failure mode is a *plausible answer* rather than an error, so a caller
+extracting from a directory of unknown files gets a file it has no reason to distrust.
+Nothing is executed and no path escapes — the impact is a wrong answer, not a write
+outside the destination — which is why this is ranked as a correctness gap and not as a
+containment one.
+
+The obvious mitigation does not work: a larger probe prefix leaves the rate at 8.13%,
+and demanding decoded output trades the false positives for false negatives roughly
+one-for-one (10 of 15 real Brotli streams lost at the setting that halves the FP rate).
+The looseness is in the bitstream, so closing it needs an understanding of the format
+rather than a parameter change — hence an investigation brief rather than a fix:
+[`investigations/brotli-content-probe-brief.md`](investigations/brotli-content-probe-brief.md).
+Product triage of the same defect: `open-issues.md` P12.
+
+**Adjacent and already closed:** the *archive-behind-a-stub* case, where a real RAR / 7z
+/ ZIP payload behind an executable stub was claimed by this probe and opened as a
+fabricated member (Topic 8 A-34). `sfx-format-detection` fixed that by searching for
+archive magic before running any content probe, and by refusing content probes outright
+on a structurally confirmed PE/ELF prefix. What remains under O10 is the case where the
+bytes are not an archive at all.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed

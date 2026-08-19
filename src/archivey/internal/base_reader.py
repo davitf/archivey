@@ -161,6 +161,15 @@ class ReadBackend(ABC):
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     # Exact magic-byte signals as data (offset, bytes, format), accepted on the byte match.
     MAGIC: tuple[MagicSignature, ...] = ()
+    # Magic to hunt for *behind an executable stub*, for the formats that ship as
+    # self-extracting archives (RAR / 7z / ZIP). The offset is 0 because these are
+    # magic at offset 0 of the *payload*, wherever in the file that starts; the
+    # detector searches for them within the shared SFX_MAX window when the leading
+    # bytes look executable-shaped, and reports the match position as
+    # ``FormatInfo.payload_offset``. Deliberately a separate, narrower table than
+    # ``MAGIC``: ZIP declares only its local-file header here, because scanning a stub
+    # for the EOCD or spanned markers would claim any file containing those four bytes.
+    SFX_MAGIC: tuple[MagicSignature, ...] = ()
     # Formats this backend reads that have no exact magic and are recognized by a content
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).

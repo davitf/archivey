@@ -354,6 +354,14 @@ def open_archive(
     if effective_encoding is None and detected is not None:
         effective_encoding = detected.encoding_hint
 
+    # A self-extracting source has an executable stub before the archive; detection
+    # reports where the payload starts and the backend opens there. Handed over as an
+    # explicit argument rather than by slicing here, so a path source stays a path:
+    # RAR needs one to hand `unrar`, and turning it into a stream would spill the whole
+    # archive to a temp file for every compressed member (`_ensure_archive_path`). The
+    # argument carries the same promise a slice would — see `ReadBackend.open_read`.
+    payload_offset = detected.payload_offset if detected is not None else 0
+
     backend = backend_cls()
     reader = backend.open_read(
         reader_source,
@@ -366,6 +374,7 @@ def open_archive(
         collector=collector,
         member_streams=member_streams,
         open_site=open_site,
+        start_offset=payload_offset,
     )
     # An empty listing is only interesting when the bytes never confirmed the format.
     # That is known here and the listing is not, so carry it to the reader rather than

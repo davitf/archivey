@@ -150,6 +150,18 @@ class BackendRegistry:
             entries.extend(codec.magic)
         return entries
 
+    def sfx_magic_entries(self) -> list[MagicSignature]:
+        """Magic the SFX scan hunts for behind an executable stub.
+
+        Only the backends that can ship as a self-extracting archive declare any
+        (``ReadBackend.SFX_MAGIC``); the stream codecs never do, since a stub plus a
+        bare compressed stream is not a thing anyone produces.
+        """
+        entries: list[MagicSignature] = []
+        for cls in self._reader_classes:
+            entries.extend(cls.SFX_MAGIC)
+        return entries
+
     def content_probes(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
         """(format, probe) pairs for formats recognized by a content probe.
 

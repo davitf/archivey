@@ -3,26 +3,43 @@
 A self-extracting archive is an executable stub with a real archive appended, so the
 archive magic sits at some offset ``N > 0``. Three pieces have to agree about that
 offset — the shared scanner in ``archivey.internal.sfx``, each parser's own scan, and
-(in the sibling change) ``detect_format`` — so they are exercised together here rather
-than once per backend.
+``detect_format`` — so they are exercised together here rather than once per backend.
+
+The detection half is the one with teeth: before it, a low-entropy ``MZ`` stub in front
+of a real RAR/7z/ZIP was reported as ``BROTLI`` and ``open_archive`` returned a
+fabricated ``*.uncompressed`` member. A test that only asserted ``FormatDetectionError``
+would have stayed green through that, so the cases below assert the *members*.
 """
 
 from __future__ import annotations
 
 import io
+import struct
+import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from archivey import DEFAULT_ARCHIVEY_CONFIG, open_archive
-from archivey.exceptions import CorruptionError, UnsupportedFeatureError
+from archivey import DEFAULT_ARCHIVEY_CONFIG, detect_format, open_archive
+from archivey.exceptions import (
+    CorruptionError,
+    FormatDetectionError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z, find_signature_offset
 from archivey.internal.backends.sevenzip_reader import SevenZipReadBackend
 from archivey.internal.password import _PasswordCandidates
-from archivey.internal.sfx import SFX_MAX, scan_for_magic
+from archivey.internal.sfx import (
+    SFX_MAX,
+    ExecutableCue,
+    executable_cue,
+    scan_for_magic,
+)
+from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.types import ArchiveFormat
-from tests.conftest import requires
+from tests.conftest import requires, requires_binary
 
 # The stub shape from Topic 8 A-34: `MZ` plus low-entropy filler. Deliberately the
 # *synthetic* one — real PE/ELF stubs are the easy case, this one is what the Brotli
@@ -63,7 +80,7 @@ def _sfx(tmp_path: Path, name: str, *, header_encryption: bool = False) -> Path:
 
 def test_scan_finds_magic_at_offset() -> None:
     data = b"stub" * 100 + MAGIC_7Z + b"rest"
-    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == 400
+    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == (400, MAGIC_7Z)
 
 
 def test_scan_returns_none_when_absent() -> None:
@@ -76,18 +93,21 @@ def test_scan_finds_magic_straddling_a_chunk_boundary() -> None:
     for split in range(1, len(MAGIC_7Z)):
         offset = 65536 - split
         data = b"\x00" * offset + MAGIC_7Z + b"\x00" * 128
-        assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == offset
+        assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == (offset, MAGIC_7Z)
 
 
 def test_scan_returns_the_earliest_of_several_needles() -> None:
     data = b"\x00" * 50 + b"SECOND" + b"\x00" * 50 + b"FIRST"
     # Earliest position wins, not the order the needles were passed in.
-    assert scan_for_magic(io.BytesIO(data), (b"FIRST", b"SECOND")) == 50
+    assert scan_for_magic(io.BytesIO(data), (b"FIRST", b"SECOND")) == (50, b"SECOND")
 
 
 def test_scan_requires_the_whole_magic_inside_the_limit() -> None:
     data = b"\x00" * 10 + MAGIC_7Z
-    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,), limit=10 + len(MAGIC_7Z)) == 10
+    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,), limit=10 + len(MAGIC_7Z)) == (
+        10,
+        MAGIC_7Z,
+    )
     # One byte short: the magic starts inside the window but does not fit in it.
     assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,), limit=15) is None
 
@@ -240,3 +260,252 @@ def test_sfx_max_is_one_shared_bound() -> None:
     from archivey.internal.backends import rar_parser
 
     assert rar_parser.SFX_MAX is SFX_MAX
+
+
+# --- detection: executable cues ---------------------------------------------------------
+
+
+def _pe_stub(size: int = 8192, filler: bytes = b"\x90") -> bytes:
+    """A DOS header whose ``e_lfanew`` really points at a ``PE\\0\\0`` signature."""
+    header = bytearray(b"\x00" * 0x40)
+    header[0:2] = b"MZ"
+    header[0x3C:0x40] = struct.pack("<I", 0x80)
+    body = bytearray(filler * (size - 0x40))
+    body[0x80 - 0x40 : 0x80 - 0x40 + 4] = b"PE\x00\x00"
+    return bytes(header) + bytes(body)
+
+
+def test_executable_cue_grades_the_evidence() -> None:
+    assert executable_cue(b"not an executable at all") is ExecutableCue.NONE
+    # `MZ` alone is two bytes — enough to look for a payload, not enough to overrule a
+    # content probe.
+    assert executable_cue(_STUB) is ExecutableCue.WEAK
+    assert executable_cue(_pe_stub()) is ExecutableCue.STRONG
+    assert executable_cue(b"\x7fELF" + b"\x00" * 64) is ExecutableCue.WEAK
+    assert executable_cue(b"\x7fELF\x02\x01\x01" + b"\x00" * 64) is ExecutableCue.STRONG
+
+
+def test_a_real_elf_binary_is_a_strong_cue() -> None:
+    binary = Path("/usr/bin/env")
+    if not binary.is_file():  # pragma: no cover - platform dependent
+        pytest.skip("no ELF binary to sample")
+    assert executable_cue(binary.read_bytes()[:4096]) is ExecutableCue.STRONG
+
+
+# --- detection: the SFX matrix ----------------------------------------------------------
+
+
+def _zip_bytes() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in _FILES.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+def _rar_bytes(tmp_path: Path) -> bytes:
+    source = tmp_path / "rar-src"
+    for name, data in _FILES.items():
+        target = source / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    out = tmp_path / "payload.rar"
+    subprocess.run(
+        ["rar", "a", "-r", "-ep1", str(out), "."],
+        cwd=source,
+        check=True,
+        capture_output=True,
+    )
+    return out.read_bytes()
+
+
+def _7z_bytes(tmp_path: Path) -> bytes:
+    inner = tmp_path / "payload.7z"
+    _write_7z(inner)
+    return inner.read_bytes()
+
+
+def _assert_sfx_opens(path: Path, expected: ArchiveFormat, offset: int) -> None:
+    detected = detect_format(path)
+    assert detected.format == expected
+    assert detected.payload_offset == offset
+    assert detected.detected_by == "sfx_scan"
+    with open_archive(path) as archive:
+        members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
+    assert members == _FILES
+
+
+@requires("py7zr")
+def test_sfx_7z_behind_a_low_entropy_stub_is_not_brotli(tmp_path: Path) -> None:
+    path = tmp_path / "installer.exe"
+    path.write_bytes(_STUB + _7z_bytes(tmp_path))
+    _assert_sfx_opens(path, ArchiveFormat.SEVEN_Z, len(_STUB))
+
+
+def test_sfx_zip_behind_a_low_entropy_stub_is_not_brotli(tmp_path: Path) -> None:
+    path = tmp_path / "installer.exe"
+    path.write_bytes(_STUB + _zip_bytes())
+    _assert_sfx_opens(path, ArchiveFormat.ZIP, len(_STUB))
+
+
+@requires_binary("rar")
+def test_sfx_rar_behind_a_low_entropy_stub_is_not_brotli(tmp_path: Path) -> None:
+    path = tmp_path / "installer.exe"
+    path.write_bytes(_STUB + _rar_bytes(tmp_path))
+    _assert_sfx_opens(path, ArchiveFormat.RAR, len(_STUB))
+
+
+@requires_binary("rar")
+def test_a_real_sfx_archive_auto_opens(tmp_path: Path) -> None:
+    """`rar a -sfx` output: a real ~250 KB stub, not a hand-rolled one.
+
+    Before the scan this raised FormatDetectionError — the loud half of the same defect.
+    """
+    source = tmp_path / "sfx-src"
+    source.mkdir()
+    (source / "alpha.txt").write_bytes(_FILES["alpha.txt"])
+    path = tmp_path / "real.exe"
+    subprocess.run(
+        ["rar", "a", "-ep", "-sfx", str(path), "alpha.txt"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+    )
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.RAR
+    assert detected.payload_offset > 0
+    with open_archive(path) as archive:
+        assert archive.read("alpha.txt") == _FILES["alpha.txt"]
+
+
+def test_executable_prefix_with_a_pe_header_never_becomes_a_stream_codec(
+    tmp_path: Path,
+) -> None:
+    """A confirmed PE with no archive in the window: an error, never a fake member."""
+    path = tmp_path / "plain.exe"
+    path.write_bytes(_pe_stub(200_000))
+    with pytest.raises(FormatDetectionError):
+        detect_format(path)
+
+
+def test_a_weak_cue_still_lets_a_content_probe_answer(tmp_path: Path) -> None:
+    """`MZ` is two bytes: a probe-matched stream that starts with them stays detectable.
+
+    The synthetic stub *is* a Brotli-probe hit (that is the whole A-34 defect), so it
+    doubles as the "weak cue does not gate the probes" fixture: with no archive in the
+    window, detection is unchanged from before this change.
+    """
+    brotli = pytest.importorskip("brotli")
+    del brotli
+    path = tmp_path / "weak.bin"
+    path.write_bytes(_STUB)
+    assert detect_format(path).format == ArchiveFormat.BROTLI
+
+
+def test_a_real_brotli_stream_is_unaffected(tmp_path: Path) -> None:
+    brotli = pytest.importorskip("brotli")
+    path = tmp_path / "payload.bin"
+    path.write_bytes(brotli.compress(b"hello world\n" * 500))
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.BROTLI
+    assert detected.detected_by == "content_probe"
+    assert detected.payload_offset == 0
+
+
+def test_no_archive_needle_in_the_window_falls_through_to_the_extension(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mislabelled.zip"
+    path.write_bytes(_pe_stub(100_000))
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.ZIP
+    assert detected.detected_by == "extension"
+    assert detected.payload_offset == 0
+
+
+def test_the_scan_does_not_reach_past_the_shared_bound(tmp_path: Path) -> None:
+    path = tmp_path / "far.exe"
+    path.write_bytes(b"MZ" + b"\x00" * SFX_MAX + _zip_bytes())
+    with pytest.raises(FormatDetectionError):
+        detect_format(path)
+
+
+def test_detection_leaves_a_non_seekable_stream_replayable(tmp_path: Path) -> None:
+    """The scan peeks; it must not eat the bytes the backend still needs.
+
+    A pipe cannot be rewound, so this is what stops the SFX window from being a
+    destructive read for the streaming ZIP reader this repo is heading towards.
+    """
+    payload = _STUB + _zip_bytes()
+    source = PeekableStream(io.BytesIO(payload))
+    detected = detect_format(source)
+    assert detected.format == ArchiveFormat.ZIP
+    assert detected.payload_offset == len(_STUB)
+    assert source.read() == payload
+
+
+# --- the payload_offset hand-off --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "builder,expected",
+    [
+        pytest.param(lambda tmp: _zip_bytes(), ArchiveFormat.ZIP, id="zip"),
+        pytest.param(
+            _7z_bytes,
+            ArchiveFormat.SEVEN_Z,
+            id="7z",
+            marks=requires("py7zr"),
+        ),
+        pytest.param(
+            _rar_bytes,
+            ArchiveFormat.RAR,
+            id="rar",
+            marks=requires_binary("rar"),
+        ),
+    ],
+)
+def test_auto_open_matches_an_explicitly_sliced_stream(
+    tmp_path: Path, builder, expected: ArchiveFormat
+) -> None:
+    """Auto-open of an SFX file equals opening a view whose byte 0 is the payload.
+
+    The hand-off is an argument rather than a slice so a path source stays a path; this
+    is the assertion that the two are nonetheless the same archive.
+    """
+    payload = builder(tmp_path)
+    path = tmp_path / "installer.exe"
+    path.write_bytes(_STUB + payload)
+
+    with open_archive(path) as auto:
+        assert auto.format == expected
+        auto_read = {m.name: auto.read(m) for m in auto.members() if m.is_file}
+
+    with path.open("rb") as handle:
+        with open_archive(SlicingStream(handle, start=len(_STUB))) as sliced:
+            sliced_read = {
+                m.name: sliced.read(m) for m in sliced.members() if m.is_file
+            }
+
+    assert auto_read == sliced_read == _FILES
+
+
+def test_a_stub_carrying_a_decoy_zip_header_does_not_move_the_answer(
+    tmp_path: Path,
+) -> None:
+    """ZIP is sliced at the detected offset rather than left to self-adjust.
+
+    zipfile would find the EOCD from the tail and correct for a stub on its own, so this
+    only fails if the slice is dropped — the point being that ``start_offset`` decides
+    where the archive starts, not the file's own tail arithmetic.
+    """
+    payload = _zip_bytes()
+    path = tmp_path / "installer.exe"
+    path.write_bytes(_STUB + payload)
+
+    detected = detect_format(path)
+    assert detected.payload_offset == len(_STUB)
+    with open_archive(path) as archive:
+        assert {
+            m.name: archive.read(m) for m in archive.members() if m.is_file
+        } == _FILES

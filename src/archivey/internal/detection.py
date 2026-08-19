@@ -17,9 +17,16 @@ which detection inspects via ``peek``.
 Formats without an exact magic are recognized by a **content probe**: Brotli (no signature
 at all) and zlib (a 2-byte header too unspecific to trust, so its probe gates on that
 header before decoding). Each probe is a function the backends declare as data — for the
-stream codecs, on the codec descriptor — so the detector stays format-agnostic. The
-inner-TAR probe, the ISO extended window, and SFX scanning arrive with the backends they
-feed in later stages.
+stream codecs, on the codec descriptor — so the detector stays format-agnostic.
+
+A **self-extracting** archive has no archive magic at offset 0 at all: an executable stub
+comes first. When the leading bytes look executable-shaped the detector searches forward
+for the backends' ``SFX_MAGIC`` within the shared ``SFX_MAX`` window and reports the
+payload start as ``payload_offset`` (``PROBABLE`` / ``sfx_scan``). That search runs
+*before* the content probes, because a stub is arbitrary bytes and a probe asked to judge
+arbitrary bytes will sometimes say yes — see ``executable_cue`` and
+``format-detection``'s "Executable-looking prefixes must not silently become a wrong
+stream format".
 """
 
 from __future__ import annotations
@@ -42,6 +49,12 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
+from archivey.internal.sfx import (
+    SFX_MAX,
+    ExecutableCue,
+    executable_cue,
+    find_magic_in_prefix,
+)
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -322,6 +335,30 @@ def _warn_on_conflict(
     )
 
 
+def _scan_for_sfx_payload(
+    entries: list[MagicSignature],
+    peek_more: Callable[[int], bytes],
+) -> FormatInfo | None:
+    """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
+
+    ``entries`` are the backends' ``SFX_MAGIC`` declarations, so which formats can hide
+    behind a stub is backend data like every other detection signal. ``PROBABLE`` rather
+    than ``CERTAIN``: an exact magic found at a *searched-for* offset is a weaker claim
+    than one found at the offset the format specifies.
+    """
+    by_needle = {entry.magic: entry.format for entry in entries}
+    hit = find_magic_in_prefix(peek_more, tuple(by_needle), limit=SFX_MAX)
+    if hit is None:
+        return None
+    offset, needle = hit
+    return FormatInfo(
+        by_needle[needle],
+        DetectionConfidence.PROBABLE,
+        "sfx_scan",
+        payload_offset=offset,
+    )
+
+
 def detect_format(
     source: str | Path | BinaryIO,
     *,
@@ -392,19 +429,38 @@ def _detect_format_body(
         _warn_on_conflict(collector, name, ext_match, info.format)
         return info
 
-    # 2. Formats without an exact magic, recognized by a content probe (Brotli decodes a
+    # 2. Self-extracting archives: an executable stub, then real archive magic somewhere
+    #    in the SFX window. This runs before the content probes rather than after, which
+    #    is the whole fix: a stub is arbitrary bytes, and a probe handed arbitrary bytes
+    #    sometimes says yes — a low-entropy `MZ` stub in front of a real RAR/7z/ZIP used
+    #    to be reported as BROTLI, and open_archive then fabricated a single-file member.
+    cue = executable_cue(data)
+    if cue is not ExecutableCue.NONE:
+        sfx_info = _scan_for_sfx_payload(registry.sfx_magic_entries(), peek_more)
+        if sfx_info is not None:
+            _warn_on_conflict(collector, name, ext_match, sfx_info.format)
+            return sfx_info
+
+    # 3. Formats without an exact magic, recognized by a content probe (Brotli decodes a
     #    prefix; zlib gates on its 2-byte header then decodes). A probe is skipped when its
     #    backend is absent, so detection falls through. A matching compressor is likewise
     #    probed for an inner TAR (so .tar.br → TAR_BROTLI).
-    for probe_fmt, probe in registry.content_probes():
-        if probe(data):
-            info = _resolve_single_file_or_tar(
-                probe_fmt, DetectionConfidence.PROBABLE, "content_probe", peek_more
-            )
-            _warn_on_conflict(collector, name, ext_match, info.format)
-            return info
+    #
+    #    Skipped entirely on a STRONG executable cue: a DOS header that really points at
+    #    `PE\0\0`, or a valid ELF ident block, is not a compressed stream, and letting a
+    #    probe claim one produces a fabricated `*.uncompressed` member — a silent wrong
+    #    answer. A WEAK cue does not gate the probes: `MZ` alone is two bytes, and a
+    #    genuine Brotli stream that happens to start with them must still be detectable.
+    if cue is not ExecutableCue.STRONG:
+        for probe_fmt, probe in registry.content_probes():
+            if probe(data):
+                info = _resolve_single_file_or_tar(
+                    probe_fmt, DetectionConfidence.PROBABLE, "content_probe", peek_more
+                )
+                _warn_on_conflict(collector, name, ext_match, info.format)
+                return info
 
-    # 3. Far magic (ISO's CD001 at offset 32 769): peek the extended 32 774-byte window on
+    # 4. Far magic (ISO's CD001 at offset 32 769): peek the extended 32 774-byte window on
     #    demand. A stream shorter than the window simply yields no match and falls through —
     #    it is never rejected solely for being too short for the ISO probe.
     if far:
@@ -415,7 +471,7 @@ def _detect_format_body(
             _warn_on_conflict(collector, name, ext_match, far_fmt)
             return FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic")
 
-    # 4. Extension-only guess.
+    # 5. Extension-only guess.
     if ext_fmt is not None:
         return FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension")
 
