@@ -38,13 +38,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # windows-2022/2025 and macos-14/13 differ in preinstalled software and CPU
-        # architecture, which is the whole point — more toolchains, more DOS stubs.
+        # Different images ship different preinstalled software, which is the whole
+        # point — more toolchains, more DOS stubs. macos-13 (Intel) was in this list and
+        # never got scheduled: Intel macOS runners are effectively unavailable, so it sat
+        # queued and made the whole run look hung. Dropped rather than waited on; the
+        # results doc notes that Intel macOS went unsampled.
         os:
           - windows-latest
           - windows-2022
           - macos-latest
-          - macos-13
           - ubuntu-latest
           - ubuntu-22.04
     steps:

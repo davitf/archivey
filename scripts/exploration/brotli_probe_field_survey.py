@@ -567,6 +567,32 @@ def summarise(records):
             ),
             "signatures": hist(Counter(str(r["pe"]["signature_ascii"]) for r in pes)),
             "rule_pass_counts": {k: sum(1 for r in pes if r["pe"][k]) for k in rules},
+            # The binaries that decide which cue rule is safe. Named here rather than
+            # left to the detail cap, where a flood of probe hits can crowd them out.
+            "outliers": [
+                {
+                    "name": r.get("name"),
+                    "path": r.get("path"),
+                    "bytes_0_3": r["pe"]["bytes_0_3"],
+                    "e_cblp": r["pe"]["e_cblp"],
+                    "e_cp": r["pe"]["e_cp"],
+                    "e_lfanew": r["pe"]["e_lfanew"],
+                    "signature": r["pe"]["signature_ascii"],
+                    "size": r["size"],
+                    "fails": [k for k in rules if not r["pe"][k]]
+                    + ([] if r["pe"]["e_lfanew_align8"] else ["align8"]),
+                }
+                for r in sorted(
+                    (
+                        r
+                        for r in pes
+                        if r["pe"]["e_lfanew"] > 512
+                        or not all(r["pe"][k] for k in rules)
+                        or not r["pe"]["e_lfanew_align8"]
+                    ),
+                    key=lambda r: -r["pe"]["e_lfanew"],
+                )[:25]
+            ],
         }
 
     streams = [r for r in records if "brotli_stream" in r]
