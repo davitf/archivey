@@ -15,13 +15,14 @@ implement ahead of ordinary docs prose fixes; silent-success regression is manda
 ## What Changes
 
 - Implement the SFX scan in `detect_format` (bounded window for RAR / 7z / ZIP
-  local-header magic when leading bytes look like `MZ` / ELF).
-- Order the scan **before** content probes so an executable stub cannot be silently
-  claimed as Brotli (or similar).
+  local-header magic when leading bytes look executable-shaped).
+- Split “no silent wrong answer on executable-shaped prefixes” into its own
+  requirement; investigate Brotli/probe vs stub differentiation before locking
+  heuristics (not a hard “disable Brotli on `MZ`”).
 - Wire `FormatInfo.payload_offset` through `open_archive` so backends open at the
   payload start (read in place, no copy).
 - Red–green tests that cover the **silent-success** path specifically (not only
-  `FormatDetectionError`), including a ZIP SFX fixture.
+  `FormatDetectionError`), including ZIP SFX and a real-Brotli-with-weak-cue case.
 - No **BREAKING** public API change: `FormatInfo.payload_offset` already exists; it
   becomes non-zero for real SFX inputs.
 
@@ -30,9 +31,10 @@ implement ahead of ordinary docs prose fixes; silent-success regression is manda
 ### New Capabilities
 
 ### Modified Capabilities
-- `format-detection` — tighten SFX vs content-probe ordering and the “no silent wrong
-  format” obligation for executable stubs; keep the existing SFX matrix and
-  `payload_offset` contract.
+- `format-detection` — SFX scan includes ZIP; split “no silent wrong answer on
+  executable-shaped prefixes” into its own requirement; probe-vs-stub
+  differentiation investigated before locking heuristics; keep `payload_offset`
+  contract.
 - `archive-reading` — open path SHALL honour a non-zero `payload_offset` from detection
   (or an equivalent start-offset hand-off to the backend).
 

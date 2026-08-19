@@ -20,12 +20,20 @@ without finishing detection-side SFX. Not a `dev-docs/open-issues.md` P-entry.
 (`PK\x03\x04`) in the SFX scan — same silent-`BROTLI` defect, most common wild
 SFX form; incremental cost is a needle plus a matrix row.
 
+**Maintainer (PR #253 MD2 = A + investigation, 2026-08-19):** split “no silent
+wrong answer on executable-shaped prefix” into its own requirement. Do **not**
+hard-wire “disable Brotli on `MZ`” — a real Brotli stream can begin with
+executable-looking bytes. Investigate differentiation before locking the probe
+policy.
+
 ## Goals / Non-Goals
 
 **Goals:**
 - Implement SFX scan in `detect_format` for RAR, 7z, and ZIP local-header magic
   within a bounded window.
-- Prevent content probes from silently winning on executable stubs.
+- Prevent content probes from producing a *silent wrong answer* on
+  executable-shaped stubs, without falsely rejecting real probe-matched streams
+  whose prefix happens to look executable.
 - Hand `payload_offset` to the open path so backends read in place from the payload.
 - Tests that fail on the silent-success path (not only the raising path).
 
@@ -36,6 +44,7 @@ SFX form; incremental cost is a needle plus a matrix row.
   `format=ZIP`); this change only teaches *detection* to find ZIP SFX.
 - Changing the public `FormatInfo` shape.
 - Guide prose (Topic 8 page PRs after this lands).
+- Prematurely locking a Brotli-vs-SFX heuristic before the investigation below.
 
 ## Investigations
 
@@ -50,15 +59,48 @@ SFX form; incremental cost is a needle plus a matrix row.
 | RAR forced-format OK | `rar_parser._find_sfx_header`, `SFX_MAX = 2 MiB` |
 | 7z forced-format fails | `sevenzip_parser.read_signature_and_next_header` seeks 0, magic at byte 0 |
 | ZIP forced-format OK | `zipfile` EOCD from tail; stub ignored |
+| Brotli probe is weak | `BrotliCodec.content_probe` → `_decodes_sample`; `_PROBE_PREFIX = 256`; `TruncatedError` counts as a hit — low-entropy stubs can “decode” briefly then fabricate a member |
+
+### Open investigation — Brotli (and peers) vs executable-shaped prefixes
+
+**Problem.** Today’s failure is “stub looks like Brotli for 256 bytes.” Blindly
+skipping content probes whenever the prefix is `MZ` / ELF would fix SFX but can
+miss a genuine Brotli (or zlib) stream whose first bytes coincide with a weak
+executable cue. `MZ` alone is only two bytes; real PE/ELF/SFX stubs carry more
+structure.
+
+**Candidate levers** (evaluate in the implement PR; pick one or a combination;
+record measurements):
+
+1. **SFX-scan-first, then probe on miss** — always search RAR/7z/ZIP needles in
+   the window when a *strong* executable cue matches; only then run content
+   probes. Preserves real Brotli-with-`MZ`-prefix after a needle miss.
+2. **Stronger executable cues** — require PE (`e_lfanew` → `PE\0\0`), ELF class /
+   data / version fields, or known SFX stub fingerprints, not bare `MZ`.
+3. **Stricter / larger Brotli probe** — raise `_PROBE_PREFIX`, require non-empty
+   output, and/or stop treating bare `TruncatedError` as success when the prefix
+   looks executable-shaped; measure false-negative rate on real `.br` fixtures.
+4. **Hybrid** — weak cue → scan-first; strong PE/ELF → scan-first + stricter
+   probe gate on miss.
+
+**Acceptance for the investigation:** silent SFX→Brotli path stays red–green
+covered; at least one constructed “Brotli whose prefix looks weakly executable”
+case still detects as Brotli (or documents why that case is vanishingly rare and
+accepted).
 
 ## Decisions
 
-### 1. SFX scan runs before content probes when the prefix looks executable
-If the peeked prefix matches executable cues (`MZ` / ELF), run the SFX magic scan
-first (RAR / 7z / ZIP local-header needles). Only if no match is found may content
-probes / extension fallback run. **Rejected:** scan after probes (preserves today’s
-silent BROTLI bug). **Rejected:** RAR/7z-only scan (leaves ZIP SFX at
-`FormatDetectionError` for a file forced `format=ZIP` already reads — #253 F1 = A).
+### 1. SFX scan runs before content probes when the prefix looks executable-shaped
+If the peeked prefix matches the (investigation-refined) executable cues, run the
+SFX magic scan first (RAR / 7z / ZIP local-header needles). Probe policy on miss
+is **not** “always disable Brotli” — it follows the differentiation investigation
+above. **Rejected:** scan after probes (preserves today’s silent BROTLI bug).
+**Rejected:** RAR/7z-only scan (leaves ZIP SFX at `FormatDetectionError` for a
+file forced `format=ZIP` already reads — #253 F1 = A).
+**Rejected (MD2):** nesting the no-silent-wrong-answer rule only inside the SFX
+requirement (easy to narrow away later; split into its own requirement).
+**Rejected without measurement:** hard-disable content probes on bare `MZ`
+(risks missing real Brotli — maintainer note on MD2).
 
 ### 2. Bounded forward window aligned with RAR’s existing SFX_MAX (2 MiB)
 Reuse the same order-of-magnitude bound as `rar_parser.SFX_MAX` for detection so
@@ -94,8 +136,10 @@ and RAR’s own scanner still finds magic at the new origin.
 
 ## Risks / Trade-offs
 
-- [Brotli-of-EXE false negative] → Only suppress/reorder probes when the prefix is
-  executable-shaped; bare brotli streams unchanged.
+- [Real Brotli with executable-looking prefix] → Do not hard-disable probes on
+  bare `MZ`; complete the differentiation investigation (stronger cues / stricter
+  probe / scan-first-then-probe). Bare brotli streams with non-executable prefixes
+  stay unchanged.
 - [7z auto-open still broken until sibling] → Tasks call out dependency; forced
   `format=SEVEN_Z` fixed by sibling alone.
 - [Large SFX stubs beyond window] → Same limit as RAR parser today; document.
@@ -108,5 +152,7 @@ and RAR’s own scanner still finds magic at the new origin.
 
 ## Open Questions
 
-None for proposal scope — window size defaults to RAR’s 2 MiB unless implementation
-finds a reason to share one constant.
+- **Differentiation policy (blocking for implement, not for this proposal):** which
+  combination of stronger executable cues vs stricter Brotli probe vs
+  scan-first-then-probe lands — see Investigations. Window size still defaults to
+  RAR’s 2 MiB unless implementation finds a reason to share one constant.
