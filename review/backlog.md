@@ -220,6 +220,24 @@ alone: an inaccurate doc is a bug, an unpolished one is not.
 snippets file) turn accuracy from a recurring manual review into a CI failure. That is
 the difference between doing this pass once and doing it every release.
 
+**Follow-ups parked from #252 review (2026-08-18):**
+
+- **A-34 SFX silent misdetect — raised priority (MD1 = B):** implement
+  `sfx-format-detection` + `sevenz-sfx-start-offset` (#253) ahead of ordinary
+  docs prose fixes. Regression must cover silent `BROTLI` success, not only
+  `FormatDetectionError`. Blocks writing `formats.md` Detection / SFX.
+- **claims.md completeness validator** (review MD4): assert every claim ID has a
+  non-empty `V` cell and that stated totals match row counts. Would have caught F1
+  (bare `G-25a`). Fits Definition-of-done row 8's "accuracy ends as a test" intent;
+  no CI reads `review/` today. Do with the doctest/snippets guardrail, not as a
+  separate programme.
+- **gotchas.md accelerator containment clarity** (review F5): the
+  “contains the upstream fault” bullet is true for its own trigger (don’t close a
+  source under a live stream) but invites a general reading that contradicts the
+  path-source `std::terminate` residual on `access-and-cost.md`. Fix in the
+  `gotchas.md` page PR — name the trigger or cross-link the residual. Not a
+  verification contradiction.
+
 ## Topic 9 — Simplicity & consistency (behavioural uniformity) — **DONE**
 
 **Archived 2026-08-15** as
