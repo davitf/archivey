@@ -445,6 +445,65 @@ negatives on a corpus deliberately stocked with the streams most likely to trip 
 `.br` files keep working — that is what the 0/150 means, and it is the constraint the brief
 puts above the others.
 
+### 7.1 Should the probe run at all? (raised by the maintainer)
+
+Given §5 — ordinary `.h` files detecting as Brotli — the fair question is whether content
+probing should be off by default, gated on an archive-like extension, or merely documented.
+Three measurements decide it.
+
+**What disabling would actually cost is small.** With the Brotli probe forced off, `.br`
+files are *still* detected, by the extension guess at step 4 — at `GUESS` instead of
+`PROBABLE`. So disabling loses only **extensionless** raw Brotli. And raw Brotli is rare:
+on this system, **2 `.br` files against 1797 `.gz`**, ~900:1. Both `.br` files are Ubuntu's
+`libjs-underscore` pre-compressed web assets, sitting beside the original and a `.gz` twin
+— which is what raw Brotli in the wild *is*: static assets a web server sends with
+`Content-Encoding: br`, and they always carry the extension.
+
+**What extension-gating would achieve is large.** 0 of 400 sampled false positives carried
+a known archive extension, so corroboration would remove all of them.
+
+**But both contradict the founding use case.** `VISION.md` is explicit:
+
+> *"index and deduplicate decades of messy backups — old downloads with **wrong
+> extensions**…"* … *"**Identification must be evidence-based.** Wrong extensions are
+> normal; magic-first detection with honest confidence reporting is a feature, not
+> plumbing."*
+
+A Brotli stream named `.dat` in a backup corpus is precisely what archivey exists to
+identify. Gating discovery on the extension removes that; disabling by default removes it
+and *also* makes a real `.br` file report less confidence than the bytes can support. The
+same "this format is rare, stop looking for it" argument would apply to LZMA Alone, which
+is equally magic-less and equally rare — but whose probe costs 0% false positives. Turning
+Brotli's discovery off rather than fixing Brotli's probe treats the symptom.
+
+**The defect is what the probe claims, not that it runs.** `detect_format` reports
+`/usr/include/lzma.h` as `BROTLI` at **`PROBABLE`** confidence. Under the same
+honest-confidence principle, that is the bug. So:
+
+| lever | verdict |
+| --- | --- |
+| structural gate (§4) | **do it** — sound, no policy change, 1377 → 14 on real data |
+| extension as a *confidence input* | **do it** — probe + `.br` → `PROBABLE`; probe alone → `GUESS` |
+| honest error on probe-only results | **do it** — this is where the user-visible harm is |
+| extension as a *hard gate* | no — contradicts "wrong extensions are normal" |
+| off by default | no — same, and it under-reports confirmed `.br` files |
+| config knob to disable | not now — at 0.035% it does not earn the API surface, docs and test matrix; if one is ever wanted, make it a general "content probes off" strictness setting, not a Brotli special case |
+| documentation warning | subsumed — a `GUESS` verdict and an honest error *are* the warning, delivered where the user is |
+
+The gate is what makes this affordable: it takes the real-world rate from 3.5% of files
+under `/usr` to **14 / 39 859 = 0.035%**, a 100× cut, without giving up discovery.
+
+**Deferred, deliberately: extension-first ordering.** Content probes run at step 2, before
+the extension guess at step 4, so a probe result preempts the extension entirely — a file
+named `x.lzma` whose bytes trip the Brotli probe is reported as Brotli and never reaches
+its own extension. The maintainer's suggestion is to invert this: try the formats matching
+the extension first, and fall back to the rest only on a miss or when there is no filename.
+That is strictly better than either the status quo or a hard extension gate — it uses the
+extension as a *priority order* rather than a filter, so wrong-extension files still get
+identified. It is also a larger structural change to `_detect_format_body` that touches
+every format, not just Brotli, and it should land as its own change rather than riding
+along with the probe fix.
+
 On the brief's four:
 
 | option | verdict |
