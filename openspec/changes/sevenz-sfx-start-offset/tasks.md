@@ -5,7 +5,7 @@
 
 ## 2. Forced-format SFX scan
 
-- [ ] 2.1 When magic is missing at the open position, scan forward within a bound ≥ RAR `SFX_MAX` for `MAGIC_7Z`
+- [ ] 2.1 When magic is missing at the open position, scan forward within the shared `SFX_MAX` for `MAGIC_7Z` (same constant as RAR / detection — do not introduce a second bound)
 - [ ] 2.2 On miss within bound, raise `CorruptionError` (no silent empty archive)
 
 ## 3. Reader / pipeline wiring

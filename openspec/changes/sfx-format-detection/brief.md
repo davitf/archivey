@@ -6,7 +6,7 @@
 
 **What it does:** Implements the bounded SFX magic scan in detect_format (RAR, 7z, and ZIP local-header needles), sets payload_offset, teaches open_archive to honour that offset, and splits out a requirement that executable-shaped prefixes must not silently become the wrong stream format. The probe policy is not “disable Brotli on MZ” — the implement PR investigates how to tell real Brotli (or peers) from SFX stubs (stronger PE/ELF cues, stricter/larger Brotli probe, scan-first-then-probe, hybrids).
 
-**Decided:** ZIP needle in (PR #253 F1 = A). No-silent-wrong-answer is its own requirement (MD2 = A). Window size aligns with the RAR parser’s two-megabyte SFX limit. Open hands off the offset rather than copying the file. Silent-success regressions mandatory. Maintainer raised priority (MD1 option B).
+**Decided:** ZIP needle in (PR #253 F1 = A). No-silent-wrong-answer is its own requirement (MD2 = A). One shared `SFX_MAX` (2 MiB) for RAR, detection, and 7z (MD3 = A). Open hands off the offset rather than copying the file. Silent-success regressions mandatory. Maintainer raised priority (MD1 option B).
 
 **Your call later:** Differentiation mechanism — settled as “investigate then pick,” not pre-locked. Land the seven-zip start-offset sibling in the same train so seven-zip SFX auto-open works end to end.
 

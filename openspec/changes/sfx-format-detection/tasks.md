@@ -3,7 +3,7 @@
 - [ ] 1.0 Investigate Brotli/content-probe vs executable-shaped prefixes (stronger PE/ELF/SFX cues; larger/stricter `_PROBE_PREFIX` / `TruncatedError` handling; scan-first-then-probe; hybrids). Record chosen rule + FP/FN trade-offs in `design.md`. Fixture: real Brotli whose prefix coincides with a weak executable cue must still detect as Brotli (or document accepted residual).
 - [ ] 1.1 Add bounded SFX magic scan (`MZ` / ELF / refined cues → RAR / 7z / ZIP `PK\x03\x04` needles) in `detect_format`, setting `payload_offset` and `detected_by`
 - [ ] 1.2 Apply the investigated probe policy so SFX stubs cannot silently become Brotli fabricated members, without hard-disabling Brotli on bare `MZ`
-- [ ] 1.3 Share or align the window size with `rar_parser.SFX_MAX` (document the chosen bound)
+- [ ] 1.3 Promote `rar_parser.SFX_MAX` to one shared constant (2 MiB) used by RAR parser, detection, and 7z forced-format scan; import it from detection (do not keep a second copy)
 
 ## 2. Open-path hand-off
 

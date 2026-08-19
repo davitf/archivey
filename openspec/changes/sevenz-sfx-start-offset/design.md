@@ -42,9 +42,12 @@ honesty).
 
 ### 2. Also scan when magic is missing at the open position (forced-format parity)
 When `format=SEVEN_Z` is forced and magic is not at the current origin, scan
-forward within a bound aligned with RAR’s `SFX_MAX` (2 MiB) for `MAGIC_7Z`, then
-continue from that offset. **Rejected:** forced-format-only failure until the
-caller passes an offset (breaks today’s RAR-shaped escape hatch for 7z).
+forward within the **shared** `SFX_MAX` (same constant as RAR’s parser and
+`detect_format`; today 2 MiB) for `MAGIC_7Z`, then continue from that offset.
+**Rejected:** forced-format-only failure until the caller passes an offset (breaks
+today’s RAR-shaped escape hatch for 7z).
+**Rejected:** a separate 7z-only bound described as “≥ RAR’s window” (#253 MD3 = A —
+one constant, three call sites).
 
 ### 3. Keep absolute geometry relative to the signature origin
 Once the signature is found at offset S, treat subsequent header/pack seeks as

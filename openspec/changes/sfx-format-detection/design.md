@@ -102,12 +102,15 @@ requirement (easy to narrow away later; split into its own requirement).
 **Rejected without measurement:** hard-disable content probes on bare `MZ`
 (risks missing real Brotli — maintainer note on MD2).
 
-### 2. Bounded forward window aligned with RAR’s existing SFX_MAX (2 MiB)
-Reuse the same order-of-magnitude bound as `rar_parser.SFX_MAX` for detection so
-forced-format RAR and auto-detect agree on what is reachable. Near-EOF search is
-optional if the forward window already covers typical stubs; document the chosen
-bound in the delta. **Rejected:** unbounded scan; **Rejected:** tiny window that
-misses real SFX stubs RAR already accepts.
+### 2. One shared `SFX_MAX` (2 MiB) for RAR, detection, and 7z
+Promote today’s `rar_parser.SFX_MAX` to a single shared constant (module/name
+flexible) consumed by the RAR parser SFX scan, `detect_format`’s forward window,
+and the 7z forced-format SFX scan. Value remains 2 MiB unless a later measured
+change moves it for everyone. Near-EOF search is optional if the forward window
+already covers typical stubs.
+**Rejected:** three relative bounds (“≥ RAR’s window”) that can drift — #253 MD3 = A.
+**Rejected:** unbounded scan; **Rejected:** a tinier detection-only window that
+misses stubs RAR already accepts.
 
 ### 3. Open path honours `payload_offset` via start-offset arg or offset view
 After detection returns `payload_offset > 0`, the opener SHALL either pass an
@@ -142,7 +145,8 @@ and RAR’s own scanner still finds magic at the new origin.
   stay unchanged.
 - [7z auto-open still broken until sibling] → Tasks call out dependency; forced
   `format=SEVEN_Z` fixed by sibling alone.
-- [Large SFX stubs beyond window] → Same limit as RAR parser today; document.
+- [Large SFX stubs beyond window] → Shared `SFX_MAX` (2 MiB); raising it is one
+  edit for RAR, detection, and 7z.
 - [RAR stream temp spill × `payload_offset` (E-71 / P11)] → Seekable-stream RAR
   already copies to a temp path for `unrar` (`RarReader._ensure_archive_path`).
   Once detection supplies a non-zero `payload_offset`, decide in the implement
@@ -154,5 +158,5 @@ and RAR’s own scanner still finds magic at the new origin.
 
 - **Differentiation policy (blocking for implement, not for this proposal):** which
   combination of stronger executable cues vs stricter Brotli probe vs
-  scan-first-then-probe lands — see Investigations. Window size still defaults to
-  RAR’s 2 MiB unless implementation finds a reason to share one constant.
+  scan-first-then-probe lands — see Investigations. SFX window size is decided:
+  one shared `SFX_MAX` (#253 MD3 = A).

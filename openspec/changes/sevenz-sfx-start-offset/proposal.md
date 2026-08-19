@@ -11,7 +11,7 @@ it is not a separate `open-issues.md` P-entry.
 ## What Changes
 
 - Teach the 7z parser/reader to accept a start offset (and/or scan for `7z` magic
-  within a bounded SFX window when magic is not at the open position), matching RAR’s
+  within the shared `SFX_MAX` when magic is not at the open position), matching RAR’s
   “forced format still works on SFX” behaviour.
 - Read the archive in place from that offset — no whole-file copy.
 - Align `format-7z` with the start-offset obligation already in `format-detection`.
