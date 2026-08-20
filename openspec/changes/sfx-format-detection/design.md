@@ -216,6 +216,35 @@ macOS self-extracting stub is **Mach-O** (`0xfeedfacf`, or `0xcafebabe` for a un
 binary), which matches no cue, so an archive appended to one still falls through to the
 content probes — the defect this change closes for the other two shapes.
 
+**"Falls through to the content probes" is too gentle: on a thin 64-bit stub they always
+claim it.** The Brotli investigation (`dev-docs/investigations/brotli-content-probe-results.md`
+§7.2) found that `cf fa ed fe` is *structurally* a valid Brotli uncompressed meta-block
+header — WBITS 24, `ISLAST` 0, six nibbles, a non-zero top MLEN nibble from `0xFE`,
+`ISUNCOMPRESSED` from its bit 7, and zero padding. That depends on the four magic bytes
+alone, so **every** thin 64-bit little-endian Mach-O qualifies regardless of `cputype`
+(200 real hits on a macOS CI runner). Measured against this branch at `34db1b0`:
+
+| stub + appended 7z | `executable_cue` | `detect_format` | `open_archive` |
+| --- | --- | --- | --- |
+| PE | `STRONG` | `SEVEN_Z`, `payload_offset=8132` | real members |
+| ELF | `STRONG` | `SEVEN_Z`, `payload_offset=8192` | real members |
+| **Mach-O (thin arm64)** | **`NONE`** | **`BROTLI`** | **one fabricated `.uncompressed` member** |
+
+So the silent-wrong-answer defect this change exists to close is **intact on macOS** after
+it lands — not "might be claimed", but reliably claimed. Two details for whoever fixes it:
+
+- **Brotli is not the only claimant.** With a realistic arm64 header the answer is
+  `BROTLI`; with a zero-filled stub, LZMA Alone's probe bites first and it is
+  `LZMA_ALONE`. Both fabricate a single `.uncompressed` member, so the user-visible defect
+  is identical — the fall-through lands on whichever content probe accepts first.
+- **Only a *thin* stub is silent.** A universal (`0xcafebabe`) stub is rejected by both
+  probes and fails loudly with `FormatDetectionError`. That makes the fat case the *safe*
+  one, which is the opposite of what the `0xcafebabe`/Java-class-file caveat below might
+  lead a reader to assume.
+
+The fix is proposed as `openspec/changes/prefixed-archive-detection`, which widens the cue
+set — the spec change this section defers.
+
 Surfaced by CI rather than reasoned about in advance: the first version of
 `test_a_real_elf_binary_is_a_strong_cue` sampled `/usr/bin/env`, which is ELF on Linux
 and a Mach-O universal binary on macOS, so both macOS legs went red on a real
