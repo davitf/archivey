@@ -12,7 +12,11 @@ RAR or 7z magic within a bounded forward window.* The cue is easy to misread as 
 false-positive defence — a reviewer of the sibling Brotli change read it that way — but it
 is not. It exists so that opening an ordinary file does not read up to `SFX_MAX` (2 MiB)
 looking for a stub that is not there. `sfx.py` makes that explicit: the window is stepped in
-geometric peeks of 64 KiB → 256 KiB → 1 MiB, so a *miss* costs roughly twice the window.
+geometric peeks of 64 KiB → 256 KiB → 1 MiB → 2 MiB, and **each peek re-reads from the
+source origin**. A full miss therefore reads 64 + 256 + 1024 + 2048 KiB = 3392 KiB to
+cover a 2048 KiB window — **1.66× the window in bytes read**, measured by counting the
+peeks rather than taken from the comment in `sfx.py`, which says "a little over 2×" and
+overstates it.
 
 Getting the rationale right is what unlocks the design. If the cue were a correctness gate,
 widening it would be dangerous. Because it is a cost gate, widening it is free wherever the
@@ -23,7 +27,7 @@ cost does not change — and irrelevant wherever the cost was never there to beg
 | tier | bound | who bounds it |
 | --- | --- | --- |
 | tail probe (ZIP) | 65535 + 22 bytes, one seek | **the format** — the EOCD comment length is a `uint16` |
-| forward scan (7z/RAR/TAR) | `SFX_MAX` = 2 MiB, ~2× on a miss | a constant we chose |
+| forward scan (7z/RAR/TAR) | `SFX_MAX` = 2 MiB window, 3392 KiB read on a miss (1.66×) | a constant we chose |
 | exhaustive scan | the whole source | nothing |
 
 Tier 1 is not a tuning parameter. No valid EOCD can sit further back, so searching further

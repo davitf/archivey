@@ -44,3 +44,4 @@
 - [ ] 5.1 Write the ADR once this is applied: *detection cost is tiered by what the format guarantees* — stable, load-bearing, and currently blocked from ADR status only by the open question in `design.md`
 - [ ] 5.2 Settle that open question with the maintainer's SFX corpus (old installers, media images): are there prefixed 7z/RAR that are not self-extracting executables? If so, widen the cue rather than abandon the tiering
 - [ ] 5.3 Consider whether `prefix_kind == OTHER_FORMAT` deserves a diagnostic, so a caller sweeping a directory can notice polyglots without inspecting every result
+- [ ] 5.4 Fix the stale cost comment in `sfx.py` (from #254): it says the geometric peeks cap the worst case "at a little over 2× the window". Counted, a full miss reads 64 + 256 + 1024 + 2048 KiB = 3392 KiB for a 2048 KiB window — **1.66×**. Small, but it is the number the tiering argument rests on, so it should be right where an implementer will read it
