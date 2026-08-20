@@ -301,6 +301,18 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    disproven, escalated, or deferred-with-a-written-home. Nothing is dropped silently, and
    nothing is "fixed" without being reproduced first.
 
+3. **An agent may pick the review up without being asked.** A session subscribed to PR
+   activity reacts to a review comment or a CI failure as an *event*, from its own generic
+   posture — it never invokes a skill nobody named, so the two-skill handoff above does not
+   reach it on its own. Two things close that: `code-review-skill` names the responder skill
+   in the review body (addendum §10), and `.claude/skills/steward/SKILL.md` is read by
+   Claude Code watchers *before* they act on a CI or review event. `steward` is a router,
+   not a third process — it hands off to `address-review-findings` and records only the
+   deltas from a watcher's defaults, including where it may push autonomously (small,
+   reproduced, in-scope, gate-clean) and where it must escalate instead. Why the two skills
+   stay separate rather than merging into one review-and-fix mode: ADR
+   [0018](dev-docs/decisions/0018-review-and-address-stay-separate-skills.md).
+
 Two things about this repo make the handoff sharper than it looks:
 
 - **Agents post through the maintainer's GitHub account**, unless the host has its own bot

@@ -633,6 +633,21 @@ Two mechanisms satisfy this; use whichever your environment gives you:
   Other hosts use their own equivalent — the requirement is the *identifiability*, not that
   specific string. Do not sign a comment with a tool that did not write it.
 
+### Name the responder skill in the review body
+
+End block 3 with a one-line pointer to the responder skill:
+
+```
+Addressing these: `.claude/skills/address-review-findings/SKILL.md`.
+```
+
+The findings are not always picked up by an agent that was asked to address them. A
+session subscribed to PR activity reacts to the review as an *event*, from its own
+generic posture, and never invokes a skill nobody named — so the pointer is the only
+thing in the PR that says which process applies. Claude Code watchers also read
+`.claude/skills/steward/SKILL.md` before acting; the line in the body is what covers
+everyone else.
+
 ### Do not fix while reviewing
 
 `/code-review-skill` reports; it does not edit (SKILL.md, repo default). Leaving the fix to
