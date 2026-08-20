@@ -706,10 +706,45 @@ fat `ca fe ba be`) are all rejected. This is the exact mirror of ELF, which §3 
 *impossible*.
 
 It matters beyond this investigation: archivey's `executable_cue` handles `MZ` and ELF
-only, so **a macOS SFX stub gets no cue at all *and* is claimed by the Brotli probe** —
+only, so **a macOS SFX stub gets no cue at all *and* is claimed by a content probe** —
 the `sfx-format-detection` defect, on a platform that change never considered. The framing
 gate rescues it (a Mach-O's MLEN comes from its `cputype` field — 16 636 918 for arm64 —
 which no ordinary binary can honour), but the missing cue is worth registering separately.
+
+**Confirmed from the other direction, and the two halves compose badly.**
+`sfx-format-detection` reached the same gap independently at `34db1b0`, from a CI failure:
+its ELF-cue test sampled `/usr/bin/env`, which is Mach-O on macOS, so both macOS legs went
+red. That change now pins the gap with `test_a_mach_o_binary_is_not_a_cue_today` and a
+`design.md` note — and it independently hit the same `0xcafebabe` Java-class-file collision
+that bit the survey script in §7.2. Two encounters from two directions make that a real
+footgun rather than a quirk.
+
+But its note says a Mach-O stub *"still falls through to the content probes"*, and §7.2
+says the probes always accept `cf fa ed fe`. Together that is not a fall-through, it is a
+**reliable misdetection**. Reproduced end-to-end against `34db1b0` itself:
+
+| stub | cue | `detect_format` | `open_archive` |
+| --- | --- | --- | --- |
+| PE + 7z | `STRONG` | `SEVEN_Z`, `off=8132` | real members |
+| ELF + 7z | `STRONG` | `SEVEN_Z`, `off=8192` | real members |
+| **Mach-O + 7z** | **`NONE`** | **`BROTLI`** | **one fabricated `.uncompressed` member** |
+
+So the silent-wrong-answer defect the change exists to close is **fully intact on macOS**
+after it lands. Two refinements to the claim, both measured:
+
+- **It is structural, not probabilistic.** Whether `cf fa ed fe` parses as an uncompressed
+  meta-block depends only on those four bytes — WBITS 24, `ISLAST` 0, six nibbles, non-zero
+  top nibble from `0xFE`, `ISUNCOMPRESSED` from its bit 7, zero padding. Every thin 64-bit
+  little-endian Mach-O qualifies, whatever its `cputype`.
+- **Brotli is not the only claimant.** With a realistic arm64 header the answer is
+  `BROTLI`; with a zero-filled stub, LZMA Alone's probe bites first and the answer is
+  `LZMA_ALONE`. Both fabricate a single `.uncompressed` member, so the user-visible defect
+  is identical — the Mach-O fall-through lands on *whichever* content probe accepts first.
+  A universal (`ca fe ba be`) stub is rejected by both and fails loudly with
+  `FormatDetectionError`, so a **thin** arm64 stub is the silent case and a fat one is not.
+
+Widening the cue is a spec change, which is why `sfx-format-detection` deliberately did not
+do it. `prefixed-archive-detection` is where it lands.
 
 *A correction to my own tooling, recorded because it would otherwise have become a claim
 in this document:* the survey script first reported "Mach-O: 66" on **Windows**, which is

@@ -13,6 +13,7 @@
 ## 2. Widen the cue, validate the scan
 
 - [ ] 2.1 Extend the prefix cue from `MZ`/ELF to also accept Mach-O magics and a `#!` shebang; keep the same `SFX_MAX` window and peek schedule
+- [ ] 2.1a Red–green the Mach-O case specifically: a thin 64-bit stub (`cf fa ed fe`) plus an appended 7z currently returns `BROTLI` with a fabricated member on `sfx-format-detection`'s HEAD, where PE and ELF stubs open the real members. Assert the real members, not merely that no error is raised. Watch the two traps: `0xcafebabe` is also the Java class-file magic (a weak match on it would gate probes on every `.class` file — `sfx-format-detection`'s `design.md` flags this too), and a *fat* stub already fails loudly while only a *thin* one fails silently, so both need covering
 - [ ] 2.2 Comment the cue as a **cost gate, not a correctness gate**, so the next reader does not re-derive it as a false-positive defence (a reviewer already did)
 - [ ] 2.3 Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader, and `offset + 32 + NextHeaderOffset + NextHeaderSize <= source length`, preferring an exact end match when several candidates validate
 - [ ] 2.4 Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a parseable main header

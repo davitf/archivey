@@ -34,6 +34,15 @@ tier detection accordingly instead of applying one rule to all of them.
   to "leading bytes look like a *prefix*": `MZ`, ELF, **Mach-O**, or a `#!` shebang. Same
   window, same cost, and it covers the `.run` installer family (makeself, NVIDIA, Anaconda)
   for every payload format — the one case the ZIP tail probe cannot reach.
+
+  **The Mach-O half is a live defect, not a tidy-up.** `sfx-format-detection` names `MZ`
+  and ELF, so a macOS SFX stub matches no cue — and `cf fa ed fe` is *structurally
+  guaranteed* to parse as a Brotli uncompressed meta-block header. Measured against that
+  change's own HEAD (`34db1b0`): a PE stub and an ELF stub both open the real 7z members,
+  while a Mach-O stub returns `BROTLI` with one fabricated `.uncompressed` member. The
+  silent-wrong-answer defect #254 exists to close is therefore intact on macOS after it
+  lands. That change records the gap and deliberately defers the fix, because widening the
+  cue set is a spec change; **this is that spec change**.
 - **Validate a scan hit instead of trusting the magic.** A 7z signature self-checks from
   its own 32 bytes (`StartHeaderCRC` over the 20-byte StartHeader, plus
   `offset + 32 + NextHeaderOffset + NextHeaderSize` landing at EOF); RAR5's 8-byte marker
