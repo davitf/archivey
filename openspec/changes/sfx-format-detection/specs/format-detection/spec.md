@@ -10,7 +10,9 @@ SFX RAR/7z/ZIP: EXE stub precedes payload. If leading bytes look like executable
 before running content probes. Match → embedded format
 with `payload_offset` = payload start and `detected_by` indicating an SFX scan.
 No match → fall through per the differentiation policy from the sibling
-requirement (content probes / extension / `FormatDetectionError`).
+requirement, which is graded by cue strength: a strong cue suppresses the content
+probes, a weak one does not. "No silent fabricated member" is therefore guaranteed for
+a **strong** cue only — see that requirement for the measured reason.
 
 Which magic the scan hunts for SHALL be **backend-declared data**, like every other
 detection signal, rather than a table maintained inside the detector. A backend declares
@@ -24,6 +26,13 @@ already locates the EOCD from the tail, so a leading stub is tolerated without a
 separate parser scan; detection still SHALL return `ZIP` with `payload_offset`
 rather than a stream codec when the ZIP needle matches.
 
+The scan takes the **earliest** matching needle in the window. A stub that itself
+contains one of these magics therefore decides `payload_offset`, and the backend opens
+there rather than at a later real payload. That is a **loud** failure, not a silent one
+— 7z raises `CorruptionError` on the signature CRC — and is accepted for now;
+validating a hit and resuming the scan past a rejected one is deliberately out of scope
+(see the change's design).
+
 #### Scenario: SFX matrix
 
 | Case | Expected |
@@ -32,7 +41,9 @@ rather than a stream codec when the ZIP needle matches.
 | `MZ` + RAR magic at offset N | `RAR`, `payload_offset == N`; backend opens at N |
 | `MZ` + ZIP local magic (`PK\x03\x04`) at offset N | `ZIP`, `payload_offset == N`; real ZIP members listed |
 | `MZ` + low-entropy filler + RAR/7z/ZIP magic in window | Same as above — **not** `BROTLI` / fabricated single-file member |
-| Executable-shaped header, no RAR/7z/ZIP in window | Per differentiation policy (see sibling requirement) — never silent fabricated member |
+| **Strong** executable cue (validated PE / ELF), no RAR/7z/ZIP in window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
+| **Weak** executable cue (bare `MZ` / `\x7fELF`), no RAR/7z/ZIP in window | Content probes run unchanged, so a probe may still claim the stub — the accepted residual, per the sibling requirement and `open-issues.md` P12 |
+| Stub containing a decoy needle before the real payload | Earliest match wins; the backend opens at the decoy and fails **loudly** (7z: `CorruptionError`). ZIP usually still succeeds via EOCD-from-tail |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
 
 ## ADDED Requirements

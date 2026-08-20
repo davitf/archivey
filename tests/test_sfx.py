@@ -534,3 +534,49 @@ def test_a_stub_carrying_a_decoy_zip_header_does_not_move_the_answer(
         assert {
             m.name: archive.read(m) for m in archive.members() if m.is_file
         } == _FILES
+
+
+@requires("py7zr")
+def test_a_decoy_needle_in_the_stub_wins_and_fails_loudly(tmp_path: Path) -> None:
+    """A known scanner limit, pinned: earliest match wins, even against a real payload.
+
+    ``detect_format`` takes the first needle in the window, so a stub carrying one
+    decides ``payload_offset`` and the backend opens *there* rather than at a later real
+    archive. What makes it acceptable for now is that the failure is loud — 7z rejects
+    the signature CRC — rather than the fabricated-member silence this change exists to
+    close. Validate-and-continue would turn detection into a trial-open loop; if that
+    ever lands, this test is the one to rewrite.
+    """
+    inner = tmp_path / "real-inner.7z"
+    _write_7z(inner)
+    stub = b"MZ" + b"\x90" * 512 + MAGIC_7Z + b"\x90" * 3576
+    path = tmp_path / "decoy-auto.exe"
+    path.write_bytes(stub + inner.read_bytes())
+
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.payload_offset == 514, "the decoy, not the real payload at 4096"
+
+    with pytest.raises(CorruptionError):
+        open_archive(path)
+
+    # The real payload is reachable the moment something supplies the right offset.
+    with _open_with(path, start_offset=len(stub)) as archive:
+        assert {m.name for m in archive.members() if m.is_file} == set(_FILES)
+
+
+def test_a_decoy_zip_needle_still_opens_via_the_tail(tmp_path: Path) -> None:
+    """ZIP survives the same decoy, because zipfile locates the EOCD from the tail.
+
+    Recorded next to the 7z case so the asymmetry is visible: the scanner limit bites
+    per-format, and only where the backend trusts the offset as the archive origin.
+    """
+    stub = b"MZ" + b"\x90" * 512 + b"PK\x03\x04" + b"\x90" * 3576
+    path = tmp_path / "decoy-zip.exe"
+    path.write_bytes(stub + _zip_bytes())
+
+    assert detect_format(path).payload_offset == 514
+    with open_archive(path) as archive:
+        assert {
+            m.name: archive.read(m) for m in archive.members() if m.is_file
+        } == _FILES

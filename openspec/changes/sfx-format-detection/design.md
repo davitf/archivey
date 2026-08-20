@@ -194,8 +194,32 @@ its parse at the origin. Formats that cannot carry a stub refuse a nonzero value
 (`reject_start_offset`) rather than silently reading from byte 0.
 **Note:** all three SFX backends can already find the payload unaided (RAR scans, ZIP
 reads the EOCD from the tail, 7z scans after the sibling change), so the offset is not
-what makes SFX open. It is what pins *which* payload: a stub carrying its own
-`PK\x03\x04` or `Rar!\x1a\x07` cannot move the answer.
+what makes SFX open. It is what pins *which* payload — for a caller that knows the
+offset independently.
+
+**Corrected after review (Cursor F2, 2026-08-20).** The first version of this note said a
+stub carrying its own `PK\x03\x04` or `Rar!\x1a\x07` "cannot move the answer". That is
+only true when the offset comes from somewhere other than the scan. On the *auto-detect*
+path it does not: `detect_format` derives `payload_offset` from the same earliest-match
+scan, so a decoy in the stub becomes the offset and the backend opens there. Measured on
+this branch — stub `MZ` + `\x90`×512 + `MAGIC_7Z` + filler, real 7z at 4096:
+
+| | detect | auto-open |
+| --- | --- | --- |
+| decoy + real 7z | `SEVEN_Z`, `payload_offset=514` (the decoy) | `CorruptionError: 7z signature header CRC mismatch` |
+| decoy + real ZIP | `ZIP`, `payload_offset=514` (the decoy) | succeeds — `zipfile` finds the EOCD from the tail of the slice |
+
+What the offset *does* still guarantee is the explicit hand-off: `open_read(source,
+start_offset=N)` opens at N and never re-scans, which is what
+`test_start_offset_is_believed_rather_than_rescanned` pins.
+
+**Accepted for this change, as a known scanner limitation.** The failure is loud, not
+silent, so it is not the defect class this change exists to close, and it needs a
+hostile or unlucky stub to reach. Fixing it means validate-and-continue — on a
+header/CRC rejection after an SFX hit, resume the scan past the decoy — which turns
+detection into a trial-open loop and belongs in its own change if wild stubs ever show
+it. `test_a_decoy_needle_in_the_stub_wins_and_fails_loudly` pins today's behaviour so
+the choice stays visible.
 
 ### 4. Silent-success regression is mandatory
 At least one test builds a low-entropy `MZ` stub + real RAR, one with ZIP, and

@@ -80,9 +80,15 @@ class ExecutableCue(Enum):
 def executable_cue(prefix: bytes) -> ExecutableCue:
     """Classify ``prefix`` as :class:`ExecutableCue`.
 
-    Reads only the peeked detection prefix — a few KiB is far more than the DOS header
-    and ELF ident block need — so a source whose leading bytes are not executable-shaped
-    costs two byte comparisons.
+    Reads only ``prefix`` — the bytes detection already peeked — so a source whose
+    leading bytes are not executable-shaped costs two byte comparisons, and nothing here
+    ever reaches back to the source for more.
+
+    That bounds how strong ``STRONG`` can get: a DOS header whose ``e_lfanew`` points
+    past the end of ``prefix`` grades ``WEAK``, because the ``PE\\0\\0`` it promises is not
+    in hand to confirm. Real PE files put the header within a few hundred bytes, so this
+    costs nothing in practice; when it does bite, the result is the ordinary weak-cue
+    path (scan, then probes on a miss), never a wrong answer.
     """
     if prefix.startswith(_MZ):
         return ExecutableCue.STRONG if _is_pe(prefix) else ExecutableCue.WEAK

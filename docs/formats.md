@@ -223,6 +223,8 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
 
 - Magic bytes first, then extension; wrong extensions are expected.
 - Self-extracting (SFX) stubs are detected when the archive payload sits behind an
-  executable header.
+  executable header — today a Windows (`MZ`/PE) or Linux (ELF) one. A macOS
+  Mach-O stub is **not** recognised yet, so a `.7z`/`.rar`/`.zip` appended to one is
+  still misidentified; pass `format=` explicitly for those until that gap closes.
 - Confidence and evidence are part of `detect_format` / `FormatInfo` — see
   `format-detection` spec.
