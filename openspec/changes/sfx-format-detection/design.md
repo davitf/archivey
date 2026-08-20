@@ -209,6 +209,27 @@ SFX then fails until the sibling lands. Land 7z start-offset first or in the sam
 PR train. RAR auto-open works once detection sets offset *or* once the opener seeks
 and RAR’s own scanner still finds magic at the new origin.
 
+## Known gap — Mach-O stubs are not a cue
+
+`format-detection` names `MZ` and ELF, and `executable_cue` implements exactly those. A
+macOS self-extracting stub is **Mach-O** (`0xfeedfacf`, or `0xcafebabe` for a universal
+binary), which matches no cue, so an archive appended to one still falls through to the
+content probes — the defect this change closes for the other two shapes.
+
+Surfaced by CI rather than reasoned about in advance: the first version of
+`test_a_real_elf_binary_is_a_strong_cue` sampled `/usr/bin/env`, which is ELF on Linux
+and a Mach-O universal binary on macOS, so both macOS legs went red on a real
+platform difference. The test now skips where the platform's binaries are not ELF, and
+`test_a_mach_o_binary_is_not_a_cue_today` pins the gap so it is recorded behaviour
+rather than a surprise.
+
+Widening the cue is a **spec change**, not an implementation detail, so it is
+deliberately not done here. If it is wanted: the magics are the four Mach-O variants
+plus the two fat ones, and a strong cue would validate `cputype` / `filetype` the way
+the PE path validates `e_lfanew`. One caveat for whoever picks it up — the fat magic
+`0xcafebabe` is also the Java class-file magic, so a bare-magic (weak) match would gate
+content probes on `.class` files unless the strong check is required.
+
 ## Risks / Trade-offs
 
 - [Real Brotli with executable-looking prefix] — **Closed by the two-tier cue.** A

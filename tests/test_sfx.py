@@ -286,10 +286,35 @@ def test_executable_cue_grades_the_evidence() -> None:
 
 
 def test_a_real_elf_binary_is_a_strong_cue() -> None:
-    binary = Path("/usr/bin/env")
-    if not binary.is_file():  # pragma: no cover - platform dependent
-        pytest.skip("no ELF binary to sample")
-    assert executable_cue(binary.read_bytes()[:4096]) is ExecutableCue.STRONG
+    """The strong cue against a shipped binary, not a hand-built header.
+
+    Sampling the platform's own binaries is the point — a synthetic ELF header only
+    proves the parser reads what this file wrote. Skipped where those binaries are not
+    ELF: macOS ships Mach-O (`0xcafebabe` / `0xfeedfacf`) and Windows PE, and
+    `executable_cue` knows only the two shapes `format-detection` names, so there is
+    nothing to assert on those platforms.
+    """
+    for candidate in (Path("/usr/bin/env"), Path("/bin/ls"), Path("/usr/bin/python3")):
+        if not candidate.is_file():
+            continue
+        prefix = candidate.read_bytes()[:4096]
+        if prefix.startswith(b"\x7fELF"):
+            assert executable_cue(prefix) is ExecutableCue.STRONG
+            return
+    pytest.skip("no ELF binary on this platform to sample")
+
+
+def test_a_mach_o_binary_is_not_a_cue_today() -> None:
+    """Records the known gap rather than leaving it to a platform-dependent surprise.
+
+    A macOS self-extracting stub is Mach-O, which no cue matches, so an archive behind
+    one still falls through to the content probes. `format-detection` names `MZ` and ELF
+    only; widening it is a spec change, not an implementation detail.
+    """
+    fat_universal = b"\xca\xfe\xba\xbe" + b"\x00" * 4092
+    mach_o_64 = b"\xcf\xfa\xed\xfe" + b"\x00" * 4092
+    assert executable_cue(fat_universal) is ExecutableCue.NONE
+    assert executable_cue(mach_o_64) is ExecutableCue.NONE
 
 
 # --- detection: the SFX matrix ----------------------------------------------------------
