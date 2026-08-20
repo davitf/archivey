@@ -1,0 +1,13 @@
+# brotli-probe-framing-gate — stop the Brotli probe claiming files that are not Brotli
+
+**Status:** Ready to implement. Depends on nothing; blocks nothing. It changes two visible answers, so treat it as behaviour-breaking: junk that used to be reported as Brotli now raises a detection error, and a bare Brotli stream with no file extension reports GUESS confidence instead of PROBABLE. Effort: medium.
+
+**Why it matters:** Brotli has no magic number, so we identify it by decoding a couple of hundred bytes and seeing whether the decoder complains. That accepts about eight percent of arbitrary binary data and, worse, three and a half percent of ordinary files on a real Linux system — a C header opening with a Doxygen comment is enough. The library then lists one made-up member and fails the read with a truncation error, blaming the file for being truncated and naming a format it never was.
+
+**What it does:** Adds a soundness check instead of a tuned threshold. A Brotli block can declare a length and then just copy bytes, and a complete valid file must physically contain what it declares. So the probe compares the declared length against the size of the source, and optionally walks the chain of self-describing blocks. Anything declaring more than the file can hold is not a complete Brotli file, by definition.
+
+**Decided:** Probe tuning is dead — a longer prefix only hands the copying path more bytes to copy. Window-size whitelists are dead too; real files use at least six of the fifteen legal values. Discovery stays on rather than being disabled or gated behind extensions, because the founding use case is a backup corpus where wrong extensions are normal. The confidence downgrade is Brotli-only; zlib and LZMA Alone scored zero false positives and keep PROBABLE. No configuration knob, and no magic denylist even though compound-document files survive the gate systematically — that residual gets named and fixtured instead, because the value here is that the rule is provably sound.
+
+**Your call later:** None on the core design. Two small ones while building: whether the unconfirmed-format diagnostic reuses the existing extension-unconfirmed code or gets its own, and how far the chain walk should follow before giving up.
+
+**Bottom line:** The mechanism is fully understood and the fix is a consistency check the file already implies — ready to build whenever it reaches the top of the queue.
