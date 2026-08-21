@@ -825,7 +825,7 @@ after it lands. Two refinements to the claim, both measured:
   `FormatDetectionError`, so a **thin** arm64 stub is the silent case and a fat one is not.
 
 Widening the cue is a spec change, which is why `sfx-format-detection` deliberately did not
-do it. `prefixed-archive-detection` is where it lands.
+do it. `prefixed-archive-detection` (PR #257) is where it lands.
 
 *A correction to my own tooling, recorded because it would otherwise have become a claim
 in this document:* the survey script first reported "Mach-O: 66" on **Windows**, which is

@@ -266,8 +266,8 @@ it lands — not "might be claimed", but reliably claimed. Two details for whoev
   one, which is the opposite of what the `0xcafebabe`/Java-class-file caveat below might
   lead a reader to assume.
 
-The fix is proposed as `openspec/changes/prefixed-archive-detection`, which widens the cue
-set — the spec change this section defers.
+The fix is proposed as `openspec/changes/prefixed-archive-detection` (PR #257), which widens
+the cue set — the spec change this section defers.
 
 Surfaced by CI rather than reasoned about in advance: the first version of
 `test_a_real_elf_binary_is_a_strong_cue` sampled `/usr/bin/env`, which is ELF on Linux
