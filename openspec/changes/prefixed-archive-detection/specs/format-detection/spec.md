@@ -10,11 +10,25 @@ look. Detection SHALL try, in order:
 2. **Tail probe for self-locating containers** (see the ZIP requirement in `format-zip`).
    Runs whenever the source is seekable, with no cue, because the cost is bounded by the
    format rather than by a constant we chose.
-3. **Prefix-cued forward scan** for containers that cannot locate themselves: RAR
-   (`52 61 72 21 1A 07`), 7z (`37 7A BC AF 27 1C`), and TAR's `ustar`. Runs only when the
-   leading bytes look like a *prefix* — `MZ`, `\x7fELF`, a Mach-O magic, or a `#!` shebang
-   — within the shared `SFX_MAX` window.
+3. **Prefix-cued forward scan** for containers that cannot locate themselves, within the
+   shared `SFX_MAX` window (today 2 MiB; same binding as the RAR and 7z SFX scanners), run
+   before content probes. Needles: RAR (`52 61 72 21 1A 07`), 7z (`37 7A BC AF 27 1C`),
+   TAR's `ustar`, and ZIP's local-file header (`50 4B 03 04`).
 4. **Exhaustive scan**, only when the caller opts in (`archive-reading`).
+
+Which magic tier 3 hunts for SHALL remain **backend-declared data**, not a table inside the
+detector, and a backend SHALL declare only magic that can legitimately *begin* an appended
+payload — ZIP declares its local-file header and NOT the end-of-central-directory or
+spanned markers, which as needles inside a 2 MiB window would claim any executable
+containing those four bytes.
+
+ZIP keeps its tier-3 needle even though tier 2 now finds prefixed ZIPs more cheaply,
+because tier 2 needs a seekable source and tier 3 does not.
+
+The tier-3 cue SHALL fire on `MZ`, `\x7fELF`, **any Mach-O magic**, or a **`#!` shebang**.
+The weak/strong grading is retained: a strong cue (a validated PE, a valid ELF ident block,
+or a Mach-O whose `cputype`/`filetype` parse) suppresses the content probes; a weak one
+does not.
 
 A match SHALL report the embedded format with `payload_offset` = payload start and a
 `detected_by` naming which tier found it. No match SHALL fall through to content probes,
@@ -22,21 +36,32 @@ extension, then `FormatDetectionError`. Native RAR/7z parsers SHALL accept a sta
 (read in place, no copy).
 
 The cue at tier 3 is a **cost gate, not a correctness gate**: its purpose is to avoid
-reading up to `SFX_MAX` from every source, not to prevent false matches — tier 3
-validation (below) does that. Widening the cue is therefore a cost decision, and MUST NOT
+reading up to `SFX_MAX` from every source, not to prevent false matches — the validation
+requirement below does that. Widening the cue is therefore a cost decision, and MUST NOT
 be justified by, or traded against, false-positive rate.
+
+**Earliest-match is replaced by earliest-*valid*-match.** The superseded requirement took
+the earliest matching needle and accepted that a decoy inside the stub would send the
+backend to the wrong offset, failing loudly; it deliberately deferred validating a hit and
+resuming the scan. The validation requirement below closes that: a candidate that fails
+its structural check SHALL NOT be reported and the scan SHALL continue past it.
 
 #### Scenario: SFX matrix
 
 | Case | Expected |
 | --- | --- |
 | `MZ` + 7z magic at offset N | `SEVEN_Z`, `payload_offset == N`; backend opens at N |
+| `MZ` + RAR magic at offset N | `RAR`, `payload_offset == N` |
 | `\x7fELF` + RAR magic at offset N (a `rar a -sfx` stub) | `RAR`, `payload_offset == N` |
-| Mach-O magic + 7z magic at offset N | `SEVEN_Z`, `payload_offset == N` — the cue covers Mach-O |
+| **Mach-O (thin 64-bit) + 7z magic at offset N** | `SEVEN_Z`, `payload_offset == N` — previously `BROTLI` with a fabricated member |
 | `#!/bin/sh` + tar.gz (a makeself `.run`) | `TAR_GZ`, `payload_offset` at the gzip magic |
-| Executable header, no archive magic in window | No match; content probe, extension, or `FormatDetectionError` |
-| Prefix + ZIP | Found at tier 2 by the tail probe, not by the scan |
+| `MZ` + ZIP local magic at offset N, non-seekable source | `ZIP`, `payload_offset == N` — tier 3, since tier 2 needs a seek |
+| Prefix + ZIP, seekable source | Found at tier 2 by the tail probe, not by the scan |
+| **Strong** cue, no needle in window | No content probe runs; extension guess or `FormatDetectionError` |
+| **Weak** cue, no needle in window | Content probes run unchanged |
+| Stub containing a decoy needle before the real payload | Decoy fails validation; scan resumes and finds the real payload |
 | Archive magic beyond `SFX_MAX`, caller did not opt in | No match; `FormatDetectionError` rather than an unbounded read |
+| Bare brotli / non-executable stream | Unchanged content-probe behaviour |
 
 ## ADDED Requirements
 

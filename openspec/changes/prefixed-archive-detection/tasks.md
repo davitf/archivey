@@ -1,6 +1,7 @@
 ## 0. Prerequisite
 
-- [ ] 0.1 Land `sfx-format-detection` (#254) first — this change rewrites the requirement it modifies and needs its `payload_offset` hand-off through `open_archive` and the backends
+- [x] 0.1 ~~Land `sfx-format-detection` (#254) first~~ — merged as `6e71eba`. Its `payload_offset` hand-off is on `main`
+- [ ] 0.2 **Archive `sfx-format-detection` before archiving this change.** #254 merged the implementation but left the `openspec archive` step for a finishing commit, so `openspec/specs/format-detection/spec.md` still carries the *pre-#254* SFX requirement while `openspec/changes/sfx-format-detection/` holds the newer one. Both that change and this one MODIFY the same requirement. This change's delta is written against **#254's** version, not the currently-shipped text — so archiving them out of order would silently drop #254's additions (the ZIP local-header needle, the backend-declared-needles rule, the weak/strong cue grading). Verify after archiving that the merged requirement still contains all three
 
 ## 1. Tail probe for self-locating containers
 
