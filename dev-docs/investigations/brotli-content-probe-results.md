@@ -486,6 +486,87 @@ So the fix belongs in Brotli, not at the probe layer generally. The transferable
 narrower: a probe is only as strong as the weakest thing the format lets a stream *declare*
 without proving.
 
+### 6.1 LZMA Alone is not quite zero — and its residual has the same shape
+
+"0/20 000" is right for uniform random (re-measured: 0 at 4 KiB × 20 000 *and* 0 at 64 KiB
+× 4 000), but it is not the whole picture. Over **40 000 real files**, the LZMA Alone probe
+accepts **4** — 0.010%:
+
+| file | contents | size |
+| --- | --- | --- |
+| `cryptography.egg-info/top_level.txt` | `cryptography\n` | **13** |
+| `cryptography-41.0.7.dist-info/top_level.txt` | `cryptography\n` | **13** |
+| `launchpadlib-1.11.0.egg-info/top_level.txt` | `launchpadlib\n` | **13** |
+| `/usr/lib/php/packaging` | `deb.sury.org\n` | **13** |
+
+Every one is **exactly 13 bytes — the Alone header size**. The whole file is consumed as a
+header, the decoder immediately runs out of input, and `TruncatedError` counts as
+acceptance. The first byte just has to be ≤ 224 to pass the properties gate, which any
+lowercase letter is.
+
+**The fix is the same shape as the Brotli framing gate**: a real `.lzma` is 13 header bytes
+*plus* range-coder payload, so a file that is only the header cannot be one. Requiring
+`file_size > 13` removes **4 of 4**, leaving zero real-world residual. Same principle —
+check the declared framing against what the source can actually hold.
+
+Two footnotes. The Alone properties gate does almost nothing (~88% of random data passes
+it), so the *decoder* is the real filter — unlike zlib, where the gate does the work. And
+`cf fa ed fe` passes the Alone gate too (`0xcf` = 207 ≤ 224), which is why the zero-filled
+Mach-O stub in §7.2 came back `LZMA_ALONE` rather than `BROTLI`.
+
+### 6.2 Compressed-first is ~1000× stronger evidence than uncompressed-first
+
+Raised by the maintainer: should an uncompressed first meta-block carry less confidence
+than a compressed one, on the reasoning that real streams are mostly compressed? Measured,
+and the gap is larger than the question assumed.
+
+**Random data, by first-meta-block class** (20 000 × 4 KiB):
+
+| first block | share of random data | accepted | share of all false positives | acceptance *within* the class |
+| --- | --- | --- | --- | --- |
+| compressed | 35.78% | **1** | 0.1% | **0.014%** |
+| uncompressed | 6.69% | 1338 | **80.7%** | **~100%** |
+| metadata | 3.21% | 320 | 19.3% | ~50% |
+
+**Real streams in the wild: 25 of 25 are compressed-first** — both `.br` files and 23 WOFF2
+payloads. Not one uncompressed.
+
+But uncompressed-first is not *invalid*, and that is the cost. The reference encoder emits
+it exactly when the payload is incompressible — verified across qualities:
+
+| payload | first meta-block |
+| --- | --- |
+| text, 1 KiB and 1 MiB | compressed at every quality |
+| random, 4 KiB and 1 MiB | **uncompressed** at every quality |
+| 12 bytes | mixed |
+
+So a genuine `.br` of already-compressed data *is* uncompressed-first. Downgrading the
+class would mis-rank those — though in practice they carry the `.br` extension, which the
+§7 rule already treats as corroboration.
+
+**And the MLEN answer, which is the part that matters.** For a real uncompressed-first
+stream, MLEN is the payload size and the declared end lands one byte short of EOF:
+
+| payload | MLEN | file | declared end |
+| --- | --- | --- | --- |
+| 4 096 B random | 4 096 | 4 100 | 4 099 |
+| 65 536 B random | 65 536 | 65 540 | 65 539 |
+| 1 048 576 B random | 1 048 576 | 1 048 581 | 1 048 580 |
+
+For random data accepted as Brotli (1 282 uncompressed-first hits): MLEN median **236 929**,
+max **16 715 621**, against a 4 KiB file — and **96.7% declare more than the file holds**.
+
+That is the whole finding in one line: **the confidence split and the framing gate are
+measuring the same thing, and the gate measures it better.** "Uncompressed-first" is a
+proxy for "probably fabricated"; "the declared length overruns the source" is the direct
+test, and it keeps the 3.3% of genuine incompressible streams the proxy would penalise.
+
+Where the split still adds something is the *residual*: everything that survives the gate
+is uncompressed or metadata (§5.1), never compressed. So a probe-only hit whose first block
+is **compressed** is ~1000× better evidence than one that is not, and could reasonably keep
+`PROBABLE` where the rest drops to `GUESS`. That is a refinement of §7's Brotli-only
+`GUESS` rule, not a replacement for the gate.
+
 ## 7. What detection should do (brief Q5)
 
 The brief listed four options. With the measurements in, three of them are worse than the

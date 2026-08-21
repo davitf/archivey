@@ -8,12 +8,14 @@
 
 - [ ] 2.1 Parse the first meta-block header per RFC 7932 §9.1–9.2 (WBITS, ISLAST/ISLASTEMPTY, MNIBBLES, MLEN, metadata skip, ISUNCOMPRESSED, pad-to-byte-boundary) — enough to recover `(outcome, consumed_bytes, declared_length)`, no Huffman decoding
 - [ ] 2.2 Reject when a declared meta-block overruns the source; keep today's answer when the outcome is compressed or the length is unknown
+- [ ] 2.2a Apply the same invariant to the LZMA Alone probe: reject a source no longer than its 13-byte header, which carries no range-coder payload. That is the entire measured real-world Alone residual — 4 files of 40 000, all exactly 13 bytes (`cryptography\n`, `launchpadlib\n`, `deb.sury.org\n`), accepted because the decoder runs out of input and `TruncatedError` counts as a match
 - [ ] 2.3 Chain-walk form: follow byte-aligned self-describing meta-blocks, bounded in link count, stopping at the first compressed block; reject a link that overruns or a declared end with trailing bytes
 - [ ] 2.4 Confirm the gate costs no decompression and at most a bounded number of small reads
 
 ## 3. Confidence and error provenance
 
-- [ ] 3.1 Report `GUESS` for a content-probe match with no corroborating extension, `PROBABLE` when the extension agrees; check the interaction with `EXTENSION_FORMAT_UNCONFIRMED`, which keys on `detected_by="extension"` and should not start double-reporting
+- [ ] 3.1 Report `GUESS` for a Brotli content-probe match with no corroborating extension, `PROBABLE` when the extension agrees; zlib and LZMA Alone keep `PROBABLE` unconditionally. Check the interaction with `EXTENSION_FORMAT_UNCONFIRMED`, which keys on `detected_by="extension"` and should not start double-reporting
+- [ ] 3.1a Optionally keep `PROBABLE` for a probe-only Brotli hit whose **first meta-block is compressed**: measured 0.014% acceptance on random data against ~100% for uncompressed-first, and 25/25 real-world streams are compressed-first. Note this is a *refinement* of the gate, not a substitute — the gate already separates real incompressible streams (declared length fits, verified at 4 KiB / 64 KiB / 1 MiB) from fabricated ones (96.7% overrun the source), and it keeps the genuine uncompressed-first `.br` files that a class-based downgrade would penalise
 - [ ] 3.2 A read failure on a probe-only (`GUESS`) single-file result names the unconfirmed identification instead of presenting as a truncation; a corroborated result keeps today's error
 - [ ] 3.3 Do not refuse the open on probe-only evidence — a clean read stays a success
 

@@ -39,10 +39,15 @@ confidence SHALL be `PROBABLE` when the file extension corroborates the format a
 evidence than the other probes' claims. This does not change *what* is detected — only
 what the system claims to know about it.
 
-The zlib and LZMA Alone probes keep `PROBABLE` unconditionally. Both are gated before
-decoding (zlib on 4 of 65 536 two-byte prefixes; LZMA Alone on a plausible 13-byte
-header) and both measured **0 false positives in 20 000 random blobs**, so the
-confidence downgrade would cost honesty rather than buy it.
+The zlib and LZMA Alone probes keep `PROBABLE` unconditionally. Both measured **0 false
+positives in 24 000 random blobs**, so the confidence downgrade would cost honesty rather
+than buy it.
+
+Within Brotli, a probe-only hit whose **first meta-block is compressed** MAY keep
+`PROBABLE`: measured on random data, that class is accepted 0.014% of the time against
+~100% for an uncompressed first block, and 25 of 25 real streams found in the wild are
+compressed-first. An uncompressed or metadata first block is the class every false
+positive comes from, and takes `GUESS`.
 
 The LZMA Alone probe SHALL attempt a bounded `FORMAT_ALONE` decode and MUST NOT
 claim streams that already matched exact magic (notably lzip `LZIP` and xz
@@ -79,6 +84,12 @@ violates that invariant, and MAY follow the chain of byte-aligned self-describin
 meta-blocks — whose successors' offsets are known without decompressing — rejecting a
 link that overruns the source or that reaches the declared end with bytes left over.
 
+The same principle SHALL apply to the **LZMA Alone** probe, whose only measured
+real-world false positives are files that are *exactly* its 13-byte header: a source no
+longer than the header carries no range-coder payload and cannot be an Alone stream.
+Rejecting those removed 4 of 4 measured hits across 40 000 real files. This is the same
+invariant, not a second heuristic — the framing a source declares must fit what it holds.
+
 The check SHALL be skipped, not guessed at, when the source length is unknown (a
 non-seekable stream longer than the peeked prefix); detection then behaves as before.
 No decompression beyond today's bounded prefix is required, and the chain walk SHALL be
@@ -101,6 +112,7 @@ roughly one-for-one, or to reject real `.br` files.
 | Arbitrary data whose declared block happens to fit | Probe may still accept; residual is accepted and documented |
 | OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | **Still accepted** — its constant magic declares MLEN 7422, which always fits. Known systematic residual, not a gate failure |
 | COFF object (`64 86 …`, e.g. a Go `.syso`) | Still accepted — same shape |
+| A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |
 | Non-seekable source of unknown length | Gate skipped; today's behaviour |
 | Source length known to be shorter than the declared metadata skip | Rejected |
 
