@@ -36,6 +36,11 @@ one.
    of two automated findings was a false positive that had been checked against the wrong
    test file. Verify first, then act.
 
+**Arrived here without being asked?** If you are reacting to a PR event on autopilot
+rather than to a person, read `.claude/skills/steward/SKILL.md` alongside this file. It is
+a router, not a second process — it carries the autonomy boundary (what you may fix and
+push without asking, and what stops for a human) that this skill does not state.
+
 ---
 
 ## 1. Gather everything (all four channels)
