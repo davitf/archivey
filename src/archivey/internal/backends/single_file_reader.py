@@ -32,7 +32,11 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.exceptions import ArchiveyError, StreamNotSeekableError
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    BaseArchiveReader,
+    ReadBackend,
+    reject_start_offset,
+)
 from archivey.internal.config import AcceleratorMode, stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.naming import infer_member_name_from_archive
@@ -498,7 +502,9 @@ class SingleFileBackend(ReadBackend):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> SingleFileReader:
+        reject_start_offset(start_offset, format, archive_name)
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.
         return SingleFileReader(

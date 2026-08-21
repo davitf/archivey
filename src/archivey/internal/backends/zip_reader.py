@@ -401,6 +401,7 @@ class ZipReader(BaseArchiveReader):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> None:
         super().__init__(
             ArchiveFormat.ZIP,
@@ -447,12 +448,22 @@ class ZipReader(BaseArchiveReader):
             )
 
         zip_source: Path | BinaryIO = source
-        if self._measure:
+        if self._measure or start_offset:
+            handle: BinaryIO
             if isinstance(source, Path):
                 self._owned_fp = open(source, "rb")
-                zip_source = self._track_source_seeks(self._owned_fp)
+                handle = cast("BinaryIO", self._track_source_seeks(self._owned_fp))
             else:
-                zip_source = self._track_source_seeks(source)
+                handle = cast("BinaryIO", self._track_source_seeks(source))
+            if start_offset:
+                # stdlib zipfile finds the central directory from the tail and
+                # self-adjusts past a stub on its own, but "adjust past whatever
+                # precedes the EOCD" is not the same promise as "the archive starts
+                # here": a stub carrying its own EOCD-shaped bytes would move the
+                # answer. Slicing makes the payload the whole world, which is what
+                # start_offset means.
+                handle = SlicingStream(handle, start=start_offset)
+            zip_source = handle
 
         try:
             # `metadata_encoding` (3.11+) decodes names stored without the UTF-8 flag with
@@ -1443,6 +1454,12 @@ class ZipReadBackend(ReadBackend):
         ),  # empty archive (EOCD)
         MagicSignature(0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned marker
     )
+    # Local header only. The EOCD and spanned markers are legitimate ZIP magic *at
+    # offset 0*, but as needles inside a 2 MiB stub window they would claim any
+    # executable that happens to contain those four bytes.
+    SFX_MAGIC: tuple[MagicSignature, ...] = (
+        MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),
+    )
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
     # so even a forward-only pass needs a seekable source.
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
@@ -1460,6 +1477,7 @@ class ZipReadBackend(ReadBackend):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
@@ -1473,6 +1491,7 @@ class ZipReadBackend(ReadBackend):
             collector=collector,
             member_streams=member_streams,
             open_site=open_site,
+            start_offset=start_offset,
         )
 
 

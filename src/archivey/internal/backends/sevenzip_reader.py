@@ -52,6 +52,7 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipFolder,
     compression_method_for_coder,
     empty_archive,
+    find_signature_offset,
     folder_is_encrypted,
     materialize_archive,
     parse_header_block,
@@ -178,6 +179,7 @@ class SevenZipReader(BaseArchiveReader):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> None:
         super().__init__(
             ArchiveFormat.SEVEN_Z,
@@ -206,15 +208,35 @@ class SevenZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.SEVEN_Z,
             )
         self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
+        # Every offset a 7z archive records is relative to its signature header, so the
+        # whole file geometry is rebased once here instead of each seek learning about
+        # stubs: ``_view`` is the only thing that knows byte 0 of the archive is not
+        # byte 0 of the source. ``start_offset`` is detection's ``payload_offset``; the
+        # scan on top of it is what makes forced ``format=SEVEN_Z`` work on an SFX file
+        # with no detection involved.
+        probe = self._shared.view(start_offset)
+        try:
+            self._origin = start_offset + find_signature_offset(probe)
+        finally:
+            probe.close()
         self._volume_count = getattr(source, "volume_count", 1)
         self._archive = self._load_archive()
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
 
+    def _view(self, start: int, length: int | None = None) -> BinaryIO:
+        """A source view whose ``start`` is measured from the signature header.
+
+        The single place the self-extracting stub is subtracted: pack offsets, the
+        next-header seek and the encoded-header slices are all signature-relative
+        already, so they keep working unchanged for an archive that begins mid-file.
+        """
+        return self._shared.view(self._origin + start, length)
+
     def _load_archive(self) -> SevenZipArchive:
         """Two-phase header load: parse → decode encoded → re-parse → materialize."""
-        fp = self._shared.view(0)
+        fp = self._view(0)
         signature = read_signature_and_next_header(fp)
         if not signature.header_data:
             return empty_archive(signature)
@@ -527,7 +549,7 @@ class SevenZipReader(BaseArchiveReader):
             raise CorruptionError("7z folder references a missing packed stream")
         pack_offset = self._archive.pack_pos + self._archive.pack_positions[pack_index]
         pack_size = self._archive.pack_sizes[pack_index]
-        return self._shared.view(pack_offset, pack_size)
+        return self._view(pack_offset, pack_size)
 
     def _folder_unpack_size(self, folder_index: int) -> int:
         members = self._folder_members.get(folder_index, [])
@@ -773,6 +795,7 @@ class SevenZipReadBackend(ReadBackend):
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(0, b"7z\xbc\xaf'\x1c", ArchiveFormat.SEVEN_Z),
     )
+    SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SUPPORTS_PASSWORD = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     OPTIONAL_DEPENDENCY = None
@@ -789,6 +812,7 @@ class SevenZipReadBackend(ReadBackend):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> SevenZipReader:
         del format
         return SevenZipReader(
@@ -801,6 +825,7 @@ class SevenZipReadBackend(ReadBackend):
             collector=collector,
             member_streams=member_streams,
             open_site=open_site,
+            start_offset=start_offset,
         )
 
 

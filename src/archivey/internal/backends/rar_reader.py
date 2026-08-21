@@ -39,6 +39,7 @@ from archivey.exceptions import (
     EncryptionError,
     StreamNotSeekableError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
@@ -367,6 +368,7 @@ class RarReader(BaseArchiveReader):
         open_site: OpenSite | None = None,
         *,
         volume_count: int = 1,
+        start_offset: int = 0,
     ) -> None:
         super().__init__(
             ArchiveFormat.RAR,
@@ -396,7 +398,21 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
             )
 
+        # Where the RAR proper starts inside `source`: detection's payload_offset for a
+        # self-extracting file, 0 otherwise. The parser would find the same magic by
+        # scanning, so this is not what makes SFX work — it makes the parse start at the
+        # offset detection already paid for, and it pins the answer: bytes before the
+        # origin are not part of this archive, so a stub carrying its own `Rar!\x1a\x07`
+        # cannot be picked up instead of the real payload.
+        self._origin = start_offset
         self._shared = self._open_shared_source(source)
+        if self._origin and len(self._volume_paths) > 1:
+            raise UnsupportedFeatureError(
+                "A start offset cannot be combined with a multi-volume RAR set: the "
+                "offset describes one file, and the volumes are separate ones.",
+                archive_name=archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
         self._archive, self._unrar_password = self._parse_archive()
         if self._archive.is_volume or self._volume_count > 1:
             self._volume_count = max(self._volume_count, len(self._volume_paths) or 1)
@@ -474,11 +490,12 @@ class RarReader(BaseArchiveReader):
             # already materialized into _volume_paths of length 1, or a lone file.
             if self._volume_paths:
                 with self._volume_paths[0].open("rb") as handle:
+                    handle.seek(self._origin)
                     return parse_rar_archive(handle, password=password)
 
             view = self._shared.view(0)
             try:
-                view.seek(0)
+                view.seek(self._origin)
                 archive = parse_rar_archive(view, password=password)
                 if archive.needs_next_volume or archive.is_volume:
                     raise TruncatedError(
@@ -538,7 +555,11 @@ class RarReader(BaseArchiveReader):
         path = Path(name)
         try:
             with os.fdopen(fd, "wb") as out:
-                view = self._shared.view(0)
+                # From the origin, so the temp holds the payload alone. A path source
+                # keeps its own path here and `unrar` sees the stub, which it handles
+                # natively; this branch is the stream case, where making the temp a
+                # plain RAR is both smaller and one less thing to rely on.
+                view = self._shared.view(self._origin)
                 try:
                     while True:
                         chunk = view.read(1 << 20)
@@ -988,6 +1009,9 @@ class RarReadBackend(ReadBackend):
         MagicSignature(0, RAR5_ID, ArchiveFormat.RAR),
         MagicSignature(0, RAR_ID, ArchiveFormat.RAR),
     )
+    # Both ids, so the scan resolves RAR4 vs RAR5 by which one comes first rather than
+    # matching their shared `Rar!\x1a\x07` prefix and re-reading to disambiguate.
+    SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SUPPORTS_PASSWORD = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     OPTIONAL_DEPENDENCY = None
@@ -1004,6 +1028,7 @@ class RarReadBackend(ReadBackend):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> RarReader:
         del format
         return RarReader(
@@ -1016,6 +1041,7 @@ class RarReadBackend(ReadBackend):
             collector=collector,
             member_streams=member_streams,
             open_site=open_site,
+            start_offset=start_offset,
         )
 
 

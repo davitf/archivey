@@ -44,6 +44,7 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     ReadError,
     TruncatedError,
+    UnsupportedFeatureError,
     UnsupportedOperationError,
 )
 from archivey.internal.diagnostics_collector import (
@@ -126,6 +127,25 @@ class _Materialized:
     by_name_lists: Mapping[str, list[ArchiveMember]]
 
 
+def reject_start_offset(
+    start_offset: int, fmt: ArchiveFormat, archive_name: str | None
+) -> None:
+    """Refuse a nonzero ``open_read(start_offset=…)`` for a format that cannot honour it.
+
+    Only the self-extracting formats (RAR / 7z / ZIP) are ever handed a nonzero offset,
+    because only they can carry an executable stub and only they are scanned for one by
+    ``detect_format``. Reaching here with an offset means a caller invented one, and
+    reading from byte 0 instead would answer with the wrong bytes rather than say so.
+    """
+    if start_offset:
+        raise UnsupportedFeatureError(
+            f"{fmt.display_name} cannot be opened at a nonzero start offset "
+            f"({start_offset}): the format carries no self-extracting stub.",
+            source_format=fmt,
+            archive_name=archive_name,
+        )
+
+
 class ReadBackend(ABC):
     """Stateless factory for creating ArchiveReader instances.
 
@@ -141,6 +161,15 @@ class ReadBackend(ABC):
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     # Exact magic-byte signals as data (offset, bytes, format), accepted on the byte match.
     MAGIC: tuple[MagicSignature, ...] = ()
+    # Magic to hunt for *behind an executable stub*, for the formats that ship as
+    # self-extracting archives (RAR / 7z / ZIP). The offset is 0 because these are
+    # magic at offset 0 of the *payload*, wherever in the file that starts; the
+    # detector searches for them within the shared SFX_MAX window when the leading
+    # bytes look executable-shaped, and reports the match position as
+    # ``FormatInfo.payload_offset``. Deliberately a separate, narrower table than
+    # ``MAGIC``: ZIP declares only its local-file header here, because scanning a stub
+    # for the EOCD or spanned markers would claim any file containing those four bytes.
+    SFX_MAGIC: tuple[MagicSignature, ...] = ()
     # Formats this backend reads that have no exact magic and are recognized by a content
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
@@ -184,6 +213,7 @@ class ReadBackend(ABC):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        start_offset: int = 0,
     ) -> "BaseArchiveReader":
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller). A
@@ -192,6 +222,15 @@ class ReadBackend(ABC):
 
         ``collector`` is the prospective reader's diagnostic collector (created before
         detection). When omitted, the reader creates one from ``config``.
+
+        ``start_offset`` is where the archive proper begins inside ``source`` — nonzero
+        only for a self-extracting archive behind an executable stub, where it carries
+        detection's ``FormatInfo.payload_offset``. A backend that accepts it MUST behave
+        exactly as if it had been handed a view of ``source`` starting at that offset:
+        nothing before it belongs to the archive. (The one visible difference is that a
+        backend may still use the original path for an external tool that finds the
+        payload itself — ``unrar`` on an SFX file.) Backends whose formats never carry a
+        stub reject a nonzero value rather than silently reading from byte 0.
         """
         ...
 
