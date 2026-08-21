@@ -47,17 +47,21 @@ posture. Where the two disagree, this file and `address-review-findings` win.
 **Small fixes go in autonomously.** Do not open an `AskUserQuestion` for work that meets
 all of these:
 
-- It is confined to code this PR already touches, or to a file the PR added.
+- **The failure is this PR's.** Code the PR touches, a file it added, or anything the
+  diff broke — a test that was green on the base branch, a gate the change turned red.
+  The *file* does not have to be one the PR already edited; the *failure* has to be one
+  the PR caused. A failure that reproduces on the base branch too is not this PR's: say
+  so once and leave it, rather than widening the diff to fix it here.
 - It implies no change to `openspec/specs/`, `dev-docs/threat-model.md`, a public API
   shape, or a published doc under `docs/`.
 - You **reproduced** it first — a failing test, a red gate, or a traced execution path.
   Bug fixes are red–green, and you verified the test fails against the unfixed code.
 - The full gate below passes locally.
 
-Typical: a lint or type error, a test the diff broke, a genuine off-by-one a review bot
-found, a missing `encoding="utf-8"`, a docstring that no longer matches the code, a
-cross-platform trap (`AGENTS.md` §"Cross-platform traps") that would only fail on the
-Windows or macOS runner.
+Typical: a lint or type error, a test the diff broke — **including one in a file the PR
+never edited** — a genuine off-by-one a review bot found, a missing `encoding="utf-8"`, a
+docstring that no longer matches the code, a cross-platform trap (`AGENTS.md`
+§"Cross-platform traps") that would only fail on the Windows or macOS runner.
 
 **Stop and ask** — `address-review-findings` §6, one at a time — when the fix needs a
 contract or product call (a VISION trade-off, a spec that would have to move, a

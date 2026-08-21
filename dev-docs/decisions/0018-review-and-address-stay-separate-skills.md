@@ -38,10 +38,12 @@ own. Three options were considered.
    session, a later round by a different bot. But it is advisory prose inside a comment,
    read by an agent already running its own posture. Good as a second layer, not as the
    mechanism.
-3. **A repo-side file the watcher already reads.** A Claude Code session watching a PR is
-   instructed to read `.claude/skills/steward/SKILL.md` (or `babysit/`) from the head
-   branch *before* acting on a CI or review event, and to let it take precedence on
-   conventions and on how proactive to be. This repo had neither file.
+3. **A repo-side file the watcher already reads.** A Claude Code session subscribed to PR
+   activity is told — in the operating instructions it starts the session with — to read
+   `.claude/skills/steward/SKILL.md` (or `babysit/`) from the head branch *before* acting
+   on a CI or review event, and to let it take precedence on conventions and on how
+   proactive to be. This repo had neither file. See "Where the filename comes from" below
+   for what that instruction is and is not.
 
 ## Decision
 
@@ -63,6 +65,24 @@ own. Three options were considered.
 - Option 2 is adopted **as well**: addendum §10 now requires the review body to name the
   responder skill, which covers hosts that never read `steward`.
 
+### Where the filename comes from
+
+Worth stating plainly, because it is load-bearing and easy to mistake for a documented
+extension point. The instruction to read `.claude/skills/steward/SKILL.md` before acting
+on a PR event arrives in the **operating instructions a Claude Code session receives when
+it is subscribed to PR activity**. It is a harness convention, not a published API: the
+public Claude Code documentation describes skill loading by description matching and
+`CLAUDE.md` auto-load, and does not document this filename. Two consequences follow.
+
+- **Do not rename the directory.** Nothing here references it through a mechanism that
+  would fail loudly. A rename would silently return watchers to their generic posture, and
+  the repo would look correctly configured while the file was read by nobody. `babysit/`
+  is the alternative name the same instruction names; it is deliberately *not* also added,
+  since `steward/` takes precedence where both exist.
+- **Treat it as revocable.** A convention delivered through a system prompt can change
+  without a deprecation notice. The review-body pointer (addendum §10) does not depend on
+  it, which is a second reason to keep both rather than picking one.
+
 ## Consequences
 
 - **The rules live in one place.** `steward` restating `address-review-findings` would
@@ -71,10 +91,12 @@ own. Three options were considered.
 - **The review stays a second opinion.** No mode exists in which the agent that found a
   problem is also the one that judges its own fix.
 - **The autonomy boundary is written down**, so it is a repo decision rather than
-  whichever posture the watching session happened to start from. It also resolves a real
-  conflict: the default watcher posture is "push now, don't wait for a human", while
-  `address-review-findings` §6 says "escalate and wait". Without a stated boundary the two
-  documents fight and the agent follows whichever it read last.
+  whichever posture the watching session happened to start from. The gap it closes is real
+  but narrower than "two documents disagree": a watcher's default is push-first, and
+  `address-review-findings` §6 says *when* to escalate without ruling on what an agent may
+  fix unasked — it explicitly tells you **not** to escalate routine implementation choices.
+  Neither text answers the question directly, so an unguided agent generalises from
+  whichever it read last, and every finding becomes either an escalation or a push.
 - **Coverage is still partial, deliberately.** `steward` is a Claude Code convention;
   `cursor[bot]`, `qodo-code-review[bot]` and any future GitHub-Action reviewer do not read
   it. Those get the review-body pointer and nothing stronger. Accepted: the alternative is
