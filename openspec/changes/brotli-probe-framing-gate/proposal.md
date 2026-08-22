@@ -35,14 +35,16 @@ halves are worth fixing.
 
 ## What Changes
 
-- **Gate the Brotli probe on the framing invariant.** Before accepting, verify that a
-  first meta-block declaring a length fits inside the source; in the chain-walk form,
-  follow byte-aligned self-describing meta-blocks until the first compressed one. Sound by
-  construction: a complete valid Brotli file cannot fail it.
+- **Gate the Brotli probe on the framing invariant (first-block form).** Before accepting,
+  verify that a first meta-block declaring a length fits inside the source. Sound by
+  construction: a complete valid Brotli file cannot fail it. The stronger **chain-walk**
+  form (follow byte-aligned self-describing meta-blocks until the first compressed one) is
+  measured and deferred — it needs reads past the peeked prefix; see design Decision
+  2026-08-22 and task 5.7.
 - **Give the probe the source size it needs.** `content_probe(prefix) -> bool` cannot see
   it. Extend the codec-probe interface so a probe may consult the source length when
-  detection knows it (path, seekable stream, or a short peek that reveals the whole file),
-  and degrade to today's behaviour when it does not.
+  detection knows it via existing `source_byte_size()`, and degrade to today's behaviour
+  when that returns `None`.
 - **Report probe-only *Brotli* results as `GUESS`, not `PROBABLE`.** A Brotli match with no
   corroborating extension is not "probable" evidence; probe + `.br` stays `PROBABLE`.
   **Scoped to Brotli**, not to magic-less probes generally: zlib and LZMA Alone measured
@@ -82,10 +84,10 @@ Recorded because they were considered and rejected on measurement, not overlooke
   remove exactly the discovery it calls for. Disabling would also make a genuine `.br`
   file report *less* confidence than its bytes support — with the probe off, `.br` still
   detects via the extension guess, at `GUESS`.
-- **No `disable_brotli_probe` config field.** After the gate the real-world rate is
-  0.035%, which does not earn the API surface, documentation and test matrix. If a knob is
-  ever wanted it should be a general "content probes off" strictness setting, not a
-  per-format special case.
+- **No `disable_brotli_probe` config field.** After the first-block gate the real-world rate
+  is ~0.15% (chain walk would take it to ~0.035%), which does not earn the API surface,
+  documentation and test matrix. If a knob is ever wanted it should be a general "content
+  probes off" strictness setting, not a per-format special case.
 - **No WBITS whitelist.** The encoder emits exactly the requested `lgwin` at quality ≥ 2,
   and real files use the range: the two `.br` files on the measurement system are WBITS 15
   and 16, and twelve WOFF2 fonts split 19/22. Whitelisting the observed union is worth

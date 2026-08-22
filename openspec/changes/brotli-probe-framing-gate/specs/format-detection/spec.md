@@ -53,10 +53,12 @@ real streams — see *A content probe SHALL NOT accept framing the source cannot
 
 The residual — arbitrary non-archive data that the Brotli probe claims, which is a far
 wider problem than executable prefixes — remains out of scope *here* and stays tracked
-separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10). The framing
-requirement narrows it from 3.5% of a real `/usr` tree to ~0.035%; it does not close it,
-and the registered wording needs three clauses, not one: the listing is wrong, a full read
-raises, and a prefix of fabricated bytes may already have been produced.
+separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10). The
+**first-block** framing check narrows it from 3.5% of a real `/usr` tree to ~0.15%
+(61/39 859 measured); the deferred chain walk would cut further to ~0.035%. It does not
+close the residual, and the registered wording needs three clauses, not one: the listing
+is wrong, a full read raises, and a prefix of fabricated bytes may already have been
+produced.
 
 #### Scenario: no silent wrong answer on executable-shaped prefix
 
@@ -129,21 +131,25 @@ data** and **3.5% of a real `/usr` tree**, the latter dominated by files opening
 A **complete, valid** stream always satisfies
 `header_bytes + declared_length <= source_length` for a declared (uncompressed or
 metadata) meta-block, because those bytes must physically be present. When the source
-length is known, the Brotli probe SHALL reject a prefix whose first declared meta-block
-violates that invariant, and MAY follow the chain of byte-aligned self-describing
-meta-blocks — whose successors' offsets are known without decompressing — rejecting a
-link that overruns the source or that reaches the declared end with bytes left over.
+length is known, the Brotli probe SHALL reject a prefix whose **first** declared
+meta-block violates that invariant. Detection supplies that length via the existing
+cheap size probe (`source_byte_size`); when the length is unknown the check is skipped,
+not guessed, and detection behaves as before.
 
-The same principle SHALL apply to the **LZMA Alone** probe, whose only measured
-real-world false positives are files that are *exactly* its 13-byte header: a source no
-longer than the header carries no range-coder payload and cannot be an Alone stream.
-Rejecting those removed 4 of 4 measured hits across 40 000 real files. This is the same
-invariant, not a second heuristic — the framing a source declares must fit what it holds.
+A stronger **chain walk** — following byte-aligned self-describing meta-blocks and
+rejecting a later link that overruns, or a declared end with trailing bytes — is
+measured and sound (results doc; design Decision 2026-08-22) but is **not required by
+this change**. It needs reads past the peeked prefix and is deferred to a follow-up
+(`tasks.md` 5.7). This requirement is satisfied by the first-block check alone.
 
-The check SHALL be skipped, not guessed at, when the source length is unknown (a
-non-seekable stream longer than the peeked prefix); detection then behaves as before.
-No decompression beyond today's bounded prefix is required, and the chain walk SHALL be
-bounded in the number of links it follows.
+The same first-block principle SHALL apply to the **LZMA Alone** probe, whose only
+measured real-world false positives are files that are *exactly* its 13-byte header: a
+source no longer than the header carries no range-coder payload and cannot be an Alone
+stream. Rejecting those removed 4 of 4 measured hits across 40 000 real files. This is
+the same invariant, not a second heuristic — the framing a source declares must fit what
+it holds.
+
+No decompression beyond today's bounded prefix is required for the first-block check.
 
 This requirement is about *soundness*, not tuning: it MUST NOT reject any complete valid
 stream, so the real-stream corpus in `testing-contract` is the binding constraint.
@@ -161,11 +167,11 @@ prohibition on knobs.
 
 | Case | Expected |
 | --- | --- |
-| Real `.br` file whose first meta-block is compressed | Accepted (chain stops immediately) |
+| Real `.br` file whose first meta-block is compressed | Accepted (no declared length to check) |
 | Real `.br` file whose first meta-block is uncompressed (incompressible payload) | Accepted — declared length fits by construction |
 | `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
 | A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
-| Arbitrary data whose declared block happens to fit | Probe may still accept; residual is accepted and documented |
+| Arbitrary data whose first declared block happens to fit | Probe may still accept; residual is accepted and documented (first-block-only floor; chain walk is follow-up 5.7) |
 | OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | **Still accepted** — its constant magic declares MLEN 7422, which always fits. Known systematic residual, not a gate failure |
 | COFF object (`64 86 …`, e.g. a Go `.syso`) | Still accepted — same shape |
 | A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |

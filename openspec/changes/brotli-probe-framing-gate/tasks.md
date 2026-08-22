@@ -1,17 +1,17 @@
 ## 1. Give probes the source length
 
 - [ ] 1.1 Extend the `StreamCodec` content-probe interface so a probe may consult the source length (e.g. `content_probe(prefix, *, source_length: int | None = None)`), defaulting to today's behaviour; leave the zlib and LZMA Alone probes unchanged in substance
-- [ ] 1.2 Supply the length from `detect_format`: `os.path.getsize` for a path, end-relative seek for a seekable stream (restoring position per the stream-position contract), and the peek itself when it came back short — a file below `DETECTION_LIMIT` already reveals its exact size
-- [ ] 1.3 Pass `None` for a non-seekable source longer than the peek; assert the probe then behaves exactly as before
-- [ ] 1.4 Write 1.2 as a reusable `_source_length(source)` helper beside `_peek_prefix`, mirroring its four-way dispatch (`Path` / `PeekableStream` / seekable / raw). `prefixed-archive-detection` (PR #257) needs the same predicate for its ZIP tail probe — "is this source's end reachable, and where is it?" — and there is no such helper today. Two parallel ones is the likely outcome if neither change names it; this is the cheaper half to generalise, since the tail probe additionally needs to *read* there
+- [ ] 1.2 Supply the length from `detect_format` via the existing `source_byte_size()` helper (`streams/streamtools/binaryio.py`) — path `stat`, stream `.size` / `try_get_size()`, cheap `SEEK_END` only when O(1). Do not reimplement that dispatch. A short peek that returned fewer bytes than requested still reveals the whole file and may be used as a cross-check, but `source_byte_size` is the authoritative answer
+- [ ] 1.3 Pass `None` when `source_byte_size` returns `None` (non-seekable / unknown length); assert the probe then behaves exactly as before
+- [ ] 1.4 Expose or reuse `source_byte_size` at the detection call site (import it; do not invent a parallel `_source_length`). `prefixed-archive-detection` (PR #257) needs the same predicate for its ZIP tail probe — "is this source's end reachable, and where is it?" — and should call the same helper rather than a second one
 
 ## 2. The framing gate
 
 - [ ] 2.1 Parse the first meta-block header per RFC 7932 §9.1–9.2 (WBITS, ISLAST/ISLASTEMPTY, MNIBBLES, MLEN, metadata skip, ISUNCOMPRESSED, pad-to-byte-boundary) — enough to recover `(outcome, consumed_bytes, declared_length)`, no Huffman decoding
-- [ ] 2.2 Reject when a declared meta-block overruns the source; keep today's answer when the outcome is compressed or the length is unknown
+- [ ] 2.2 Reject when the **first** declared meta-block overruns the source; keep today's answer when the outcome is compressed or the length is unknown
 - [ ] 2.2a Apply the same invariant to the LZMA Alone probe: reject a source no longer than its 13-byte header, which carries no range-coder payload. That is the entire measured real-world Alone residual — 4 files of 40 000, all exactly 13 bytes (`cryptography\n`, `launchpadlib\n`, `deb.sury.org\n`), accepted because the decoder runs out of input and `TruncatedError` counts as a match
-- [ ] 2.3 Chain-walk form: follow byte-aligned self-describing meta-blocks, bounded in link count, stopping at the first compressed block; reject a link that overruns or a declared end with trailing bytes
-- [ ] 2.4 Confirm the gate costs no decompression and at most a bounded number of small reads
+- [ ] ~~2.3 Chain-walk form~~ — **deferred** (maintainer 2026-08-22). See design.md Decision and task **5.7**. This change ships the first-block check only
+- [ ] 2.4 Confirm the gate costs no decompression and no I/O beyond the already-peeked prefix plus the cheap `source_byte_size` probe
 
 ## 3. Confidence and error provenance
 
@@ -30,7 +30,7 @@
 - [ ] 4.6 Confidence: bare Brotli stream → `GUESS`; `x.br` → `PROBABLE`; both still `BROTLI`
 - [ ] 4.7 `./scripts/test.sh --all-configs` (the Brotli extra is optional — the probe must stay skipped, not crash, when it is absent)
 - [ ] 4.8 `openspec validate --strict brotli-probe-framing-gate`
-- [ ] 4.9 Re-scope `dev-docs/open-issues.md` P12 and `dev-docs/threat-model.md` O10 to three clauses, not one: the listing is wrong; a full read raises; **and a prefix of fabricated bytes may already have been produced** (65 536 bytes measured — see results doc §5.1). The registered "silent wrong answer" is overstated, but so was the first correction to it: "every read failed" describes the terminal exception, not the bytes delivered. Residual after this change is ~0.035% of a real filesystem
+- [ ] 4.9 Re-scope `dev-docs/open-issues.md` P12 and `dev-docs/threat-model.md` O10 to three clauses, not one: the listing is wrong; a full read raises; **and a prefix of fabricated bytes may already have been produced** (65 536 bytes measured — see results doc §5.1). The registered "silent wrong answer" is overstated, but so was the first correction to it: "every read failed" describes the terminal exception, not the bytes delivered. Residual after **this** change (first-block only) is ~61/39 859 ≈ **0.15%** on the measured `/usr` tree; the chain walk's further cut to ~0.035% is task 5.7
 - [ ] 4.10 Archive this change in the finishing PR (`openspec archive brotli-probe-framing-gate --yes`)
 
 ## 5. Follow-ups (explicitly not in this change)
@@ -41,3 +41,4 @@
 - [ ] 5.4 Revisit the `e_lfanew` bound in `_is_pe` (`src/archivey/internal/sfx.py`, from the now-archived `sfx-format-detection`) — **but scoped to SFX stubs** (maintainer ruling, results doc §7.3). 12 887 Windows PEs give a maximum of 11 648, from `tcblaunch.exe`, which is not and will never be a self-extracting archive. The general-PE counterexamples (EFI kernel image, `.winmd` metadata assemblies) do not constrain a cue aimed at stubs. If a bound is wanted for read-size reasons, exceeding it should mean "cannot confirm cheaply", not "not an executable"
 - [ ] 5.5 Build a real SFX corpus (maintainer, later): generate stubs with current *and* old tools (WinRAR, 7-Zip, installer-era self-extractors) and pull from old installation archives and media images. That is the only way to learn what a 16-bit NE/LE self-extractor actually looks like; until it exists, §3.1/§7.2's executable-header conclusions are bounds on the general PE population, not on the stub population
 - [x] 5.6 ~~Delete `.github/workflows/brotli-field-survey.yml` once §7.2 is settled~~ — **done in this PR**, not deferred. §7.2 is written, so the workflow had served its purpose, and leaving it in the merge set would have put a job named TEMPORARY on `main` with a push trigger on a branch that will not exist. `scripts/exploration/brotli_probe_field_survey.py` stays: anyone with a new machine can still run the survey by hand
+- [ ] 5.7 **Brotli framing chain walk** (deferred from 2.3, maintainer 2026-08-22): follow byte-aligned self-describing meta-blocks, bounded in link count, stopping at the first compressed block; reject a link that overruns or a declared end with trailing bytes. Measured win over first-block alone: 61 → 14 survivors on the `/usr` tree, and the only form that helps files ≥ 16 MiB where MLEN's 2²⁴ ceiling makes the first-block check vacuous. Open when designing it: whether the detector owns the reads (via `peek_more` / seek) or the probe gains a bounded read-at callback; link-count bound (survey script used 64); accept vs reject when the bound is hit. Reference implementation: `chain_walk` in `scripts/exploration/brotli_probe_field_survey.py`. See `design.md` Decision (2026-08-22)
