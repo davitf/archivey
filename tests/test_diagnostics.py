@@ -763,10 +763,13 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
     """The preset and the taxonomy cannot drift apart silently."""
     assert ARCHIVE_INTEGRITY_CODES <= set(DiagnosticCode)
     excluded = set(DiagnosticCode) - ARCHIVE_INTEGRITY_CODES
+    # Soft probe-only unconfirmed stays out of strict= — the typed TruncatedError /
+    # CorruptionError already carries format_unconfirmed; RAISE would replace it.
     assert excluded == {
         DiagnosticCode.EMPTY_ARCHIVE,
         DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY,
         DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
         DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+        DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
     }
