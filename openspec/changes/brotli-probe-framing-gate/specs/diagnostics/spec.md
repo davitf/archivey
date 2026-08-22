@@ -105,6 +105,19 @@ Default disposition is COLLECT. When a caller's policy resolves this code to RAI
 via `escalate_as` (carrying `format_unconfirmed=True`) rather than
 `DiagnosticRaisedError`. The diagnostic is emitted at most once per reader.
 
+That once-per-reader bound SHALL hold under **every** policy, RAISE included: an
+escalating emit MUST NOT leave a second count, retention, log line or callback behind on
+a later occurrence.
+
+The per-code policy contract's deduplication rule (*"deduplication is a presentation
+concern; escalation is not"*) is what makes that safe to state. Its guarantee is that no
+qualifying occurrence passes **silently** under RAISE — a guard that disarms after firing
+once is not a guard. For this code the raise does not come from the diagnostic: every
+qualifying occurrence re-raises the stamped typed error with `format_unconfirmed=True`
+whether or not the diagnostic fires again, so the second and later reads stop the caller
+exactly as the first did. The escalation obligation is therefore met by the read path
+itself, and re-emitting would buy a duplicate record rather than a stop.
+
 #### Scenario: dual channel
 
 | Case | Expected |
@@ -113,3 +126,4 @@ via `escalate_as` (carrying `format_unconfirmed=True`) rather than
 | Corroborated decode failure | `exc.format_unconfirmed is False`; no probe-unconfirmed diagnostic |
 | `pedantic()`, probe-only decode failure | Same typed `TruncatedError`/`CorruptionError` with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
 | Three retried reads on one probe-only member | Diagnostic count stays 1; each exception still has `format_unconfirmed=True` |
+| `pedantic()`, three retried reads on one probe-only member | Count and retention stay 1; every read still raises the typed error with `format_unconfirmed=True` |

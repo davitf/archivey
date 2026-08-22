@@ -985,6 +985,15 @@ class BaseArchiveReader(ArchiveReader):
                 "format_unconfirmed": True,
             }
 
+        # Set before emitting: under RAISE the emit does not return, and a flag set
+        # afterwards would never be reached — every retried read would record the
+        # diagnostic again. `diagnostics` splits those concerns ("deduplication is a
+        # presentation concern; escalation is not"), and normally a deduplicated code
+        # still escalates on later occurrences via `escalate_only`. This code needs no
+        # such re-escalation: the caller re-raises the stamped `exc` — same type, same
+        # `format_unconfirmed=True` — on every occurrence, so a caller who asked to be
+        # stopped is stopped whether or not the diagnostic fires a second time.
+        self._probe_unconfirmed_emitted = True
         self._emit_unconfirmed_format(
             "content_probe",
             self._format.display_name,
@@ -992,7 +1001,6 @@ class BaseArchiveReader(ArchiveReader):
             escalate_message=escalate_message,
             escalate_kwargs=escalate_kwargs,
         )
-        self._probe_unconfirmed_emitted = True
 
     def _publish_materialized(
         self,
