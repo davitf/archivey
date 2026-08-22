@@ -36,6 +36,10 @@ from archivey.internal.sfx import (
     executable_cue,
     scan_for_magic,
 )
+from archivey.internal.streams.brotli_framing import (
+    BrotliFirstBlock,
+    parse_first_metablock,
+)
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.types import ArchiveFormat
@@ -416,15 +420,25 @@ def test_executable_prefix_with_a_pe_header_never_becomes_a_stream_codec(
 def test_a_weak_cue_still_lets_a_content_probe_answer(tmp_path: Path) -> None:
     """`MZ` is two bytes: a probe-matched stream that starts with them stays detectable.
 
-    The synthetic stub *is* a Brotli-probe hit (that is the whole A-34 defect), so it
-    doubles as the "weak cue does not gate the probes" fixture: with no archive in the
-    window, detection is unchanged from before this change.
+    The short A-34 stub (`MZ` + ``\\x90`` × 4094) is no longer a probe hit — the framing
+    gate rejects its declared meta-block overrun. A longer stream with the same weak cue
+    and a *fitting* first block still answers ``BROTLI``, which is what proves the weak
+    cue does not suppress content probes.
     """
     brotli = pytest.importorskip("brotli")
     del brotli
+    # Smallest MZ-leading uncompressed first-block the bit layout allows (~1 MiB body).
+    header = bytes.fromhex("4d5a0088")
+    framing = parse_first_metablock(header)
+    assert framing.outcome is BrotliFirstBlock.UNCOMPRESSED
+    assert framing.consumed is not None and framing.declared_length is not None
+    need = framing.consumed + framing.declared_length
     path = tmp_path / "weak.bin"
-    path.write_bytes(_STUB)
-    assert detect_format(path).format == ArchiveFormat.BROTLI
+    path.write_bytes(header + b"\x90" * (need - len(header)))
+    assert executable_cue(path.read_bytes()[:8]) is ExecutableCue.WEAK
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.BROTLI
+    assert detected.detected_by == "content_probe"
 
 
 def test_a_real_brotli_stream_is_unaffected(tmp_path: Path) -> None:
