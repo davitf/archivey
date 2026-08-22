@@ -66,3 +66,4 @@ A corroborated result (`PROBABLE`, extension agrees) keeps today's type, message
 | Probe match corroborated by extension (`PROBABLE`), decode fails | Ordinary truncation/corruption message; `format_unconfirmed is False`; no probe-unconfirmed diagnostic |
 | Probe-only `GUESS` result, decode succeeds | Success; no error and no diagnostic |
 | Decode fails after bytes were already delivered | Error still raised; message does not claim zero output |
+| `DiagnosticPolicy.pedantic()`, probe-only decode fails | Same typed error with `format_unconfirmed=True` — not `DiagnosticRaisedError` |

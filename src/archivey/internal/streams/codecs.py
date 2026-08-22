@@ -55,6 +55,7 @@ from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
+from archivey.internal.streams.brotli_framing import first_block_overruns_source
 from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
     Deflate64DecompressorStream,
@@ -1544,10 +1545,6 @@ class BrotliCodec(StreamCodec):
         sound for any complete valid stream; see ``brotli_framing``.
         """
         if source_length is not None:
-            from archivey.internal.streams.brotli_framing import (
-                first_block_overruns_source,
-            )
-
             if first_block_overruns_source(prefix, source_length):
                 return False
         return self._decodes_sample(prefix)

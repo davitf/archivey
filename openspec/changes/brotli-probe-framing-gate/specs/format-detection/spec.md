@@ -182,10 +182,11 @@ prohibition on knobs.
 | `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
 | A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
 | Arbitrary data whose first declared block happens to fit | Probe may still accept; residual is accepted and documented (first-block-only floor; chain walk is follow-up 5.7) |
-| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | **Still accepted** — its constant magic declares MLEN 7422, which always fits. Known systematic residual, not a gate failure |
-| COFF object (`64 86 …`, e.g. a Go `.syso`) | Still accepted — same shape |
+| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` today claims **LZMA Alone at `PROBABLE`** (Alone wins probe order) — not a Brotli residual at the detection layer |
+| COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Same split: Brotli gate accepts; end-to-end Alone at `PROBABLE` |
 | A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |
-| Non-seekable source of unknown length | Gate skipped; today's behaviour |
+| Non-seekable source of unknown length (≥ `DETECTION_LIMIT` peek) | Gate skipped; today's behaviour |
+| Non-seekable source shorter than the detection peek | Length inferred from the short peek; gate applies |
 | Source length known to be shorter than the declared metadata skip | Rejected |
 
 ### Requirement: A read failure on probe-only evidence names its provenance

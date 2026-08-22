@@ -100,7 +100,10 @@ neither replaces the other.
 `PROBE_FORMAT_UNCONFIRMED` SHALL NOT be a member of the `ARCHIVE_INTEGRITY_CODES`
 strict set: it is emitted while stamping a typed `TruncatedError` / `CorruptionError`,
 and putting it in `strict` would replace that typed error with `DiagnosticRaisedError`.
-Default disposition is COLLECT.
+Default disposition is COLLECT. When a caller's policy resolves this code to RAISE
+(notably `DiagnosticPolicy.pedantic()`), the emit SHALL surface the same typed error
+via `escalate_as` (carrying `format_unconfirmed=True`) rather than
+`DiagnosticRaisedError`. The diagnostic is emitted at most once per reader.
 
 #### Scenario: dual channel
 
@@ -108,3 +111,5 @@ Default disposition is COLLECT.
 | --- | --- |
 | Probe-only decode failure | `exc.format_unconfirmed is True` **and** a `PROBE_FORMAT_UNCONFIRMED` diagnostic |
 | Corroborated decode failure | `exc.format_unconfirmed is False`; no probe-unconfirmed diagnostic |
+| `pedantic()`, probe-only decode failure | Same typed `TruncatedError`/`CorruptionError` with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
+| Three retried reads on one probe-only member | Diagnostic count stays 1; each exception still has `format_unconfirmed=True` |

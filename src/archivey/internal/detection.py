@@ -55,6 +55,10 @@ from archivey.internal.sfx import (
     executable_cue,
     find_magic_in_prefix,
 )
+from archivey.internal.streams.brotli_framing import (
+    BrotliFirstBlock,
+    parse_first_metablock,
+)
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -89,7 +93,10 @@ _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
 class DetectionConfidence(Enum):
     CERTAIN = "certain"  # exact magic-byte match at the expected offset
     PROBABLE = "probable"  # structural/content probe (inner-tar probe, SFX scan)
-    GUESS = "guess"  # file extension only, no content confirmation
+    # No confirmation strong enough to rely on: an extension-only guess, or a content
+    # probe hit in the weak evidence class (today: extensionless Brotli whose first
+    # meta-block is uncompressed/metadata).
+    GUESS = "guess"
 
 
 @dataclass(frozen=True)
@@ -281,11 +288,6 @@ def _brotli_probe_confidence(
     """
     if ext_match is not None and ext_match[0].stream is StreamFormat.BROTLI:
         return DetectionConfidence.PROBABLE
-    from archivey.internal.streams.brotli_framing import (
-        BrotliFirstBlock,
-        parse_first_metablock,
-    )
-
     if parse_first_metablock(prefix).outcome is BrotliFirstBlock.COMPRESSED:
         return DetectionConfidence.PROBABLE
     return DetectionConfidence.GUESS
@@ -475,8 +477,13 @@ def _detect_format_body(
     #    answer. A WEAK cue does not gate the probes: `MZ` alone is two bytes, and a
     #    genuine Brotli stream that happens to start with them must still be detectable.
     if cue is not ExecutableCue.STRONG:
-        # Cheap source length for framing gates (Brotli / LZMA Alone). Unknown → None;
-        # a short peek that returned the whole file also reveals the size.
+        # Cheap upper bound on reachable bytes for framing gates (Brotli / LZMA Alone).
+        # ``source_byte_size`` is total size from offset 0; the short-peek fallback is
+        # bytes remaining from the current position. When they differ (caller positioned
+        # mid-file), the total can *over*-estimate what the probe can reach — that is
+        # the safe direction (never rejects a complete valid stream). Unknown → None;
+        # a short peek that returned fewer bytes than requested also reveals the size
+        # of a non-seekable source that ended early (< DETECTION_LIMIT).
         length = source_byte_size(source)
         if length is None and len(data) < near_needed:
             length = len(data)

@@ -258,7 +258,11 @@ nor `DIRECTORY`. Original write-up below.
 - **Now (first-block framing gate):** when the source length is known, a first meta-block
   that declares more bytes than the source holds is rejected. On the measured `/usr`
   tree that cuts hits from 1377 → **~61 (~0.15%)**. Residual families (OLE/CFB, COFF,
-  lucky fits) remain. A deferred **chain walk** (task 5.7) would cut further to ~0.035%.
+  lucky fits) remain — and end-to-end those structured residuals are usually claimed by
+  the **LZMA Alone** probe at `PROBABLE` (not Brotli), so the Brotli `GUESS` /
+  `format_unconfirmed` channel does not fire for them. A deferred **chain walk**
+  (task 5.7) would cut the Brotli residual further to ~0.035%; making the unconfirmed
+  channel provenance-based (any probe-only claim) is task 5.8.
 - **Confidence / errors:** probe-only Brotli is `PROBABLE` when the first meta-block is
   compressed (or `.br` corroborates), else `GUESS`. A decode failure on `GUESS` sets
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.

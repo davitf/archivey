@@ -31,7 +31,7 @@ from tests.conftest import requires
 
 @requires("brotli")
 def test_partial_output_then_error_on_fitting_uncompressed_prefix() -> None:
-    # First uncompressed block fits; decoder may copy a buffer of input before failing.
+    # First uncompressed block fits; decoder copies a full buffer before failing.
     framing = parse_first_metablock(b"/**\n")
     assert framing.consumed is not None and framing.declared_length is not None
     need = framing.consumed + framing.declared_length
@@ -40,18 +40,11 @@ def test_partial_output_then_error_on_fitting_uncompressed_prefix() -> None:
         member = next(iter(reader))
         stream = reader.open(member)
         chunk = stream.read(65536)
-        # Either we already got bytes, or the next read raises — both are the
-        # bytes-then-error shape the provenance wording must not deny.
-        if chunk:
-            assert len(chunk) > 0
-            with pytest.raises((TruncatedError, CorruptionError)) as caught:
-                while stream.read(65536):
-                    pass
-            assert caught.value.format_unconfirmed is True
-        else:
-            with pytest.raises((TruncatedError, CorruptionError)) as caught:
-                stream.read(1)
-            assert caught.value.format_unconfirmed is True
+        assert len(chunk) == 65536
+        with pytest.raises((TruncatedError, CorruptionError)) as caught:
+            while stream.read(65536):
+                pass
+        assert caught.value.format_unconfirmed is True
 
 
 @requires("brotli")
@@ -135,13 +128,31 @@ def test_lzma_alone_rejects_header_only_source() -> None:
 
 
 @requires("brotli")
-def test_ole_survives_brotli_framing_gate_directly() -> None:
-    # Named residual: OLE/CFB magic declares MLEN 7422, so the first-block gate always
-    # fits for files ≥ 7425 bytes. Alone may win detect_format probe order; the Brotli
-    # gate itself must still accept — sound, not exhaustive.
+def test_ole_and_coff_residuals_honest_detect_format() -> None:
+    # Named residual families survive the Brotli first-block gate, but end-to-end
+    # detect_format claims them via LZMA Alone at PROBABLE (probe order) — so the
+    # Brotli GUESS / format_unconfirmed channel does not cover them (task 5.8).
     ole = bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 8000
     assert first_block_overruns_source(ole, len(ole)) is False
     assert BrotliCodec().content_probe(ole, source_length=len(ole)) is True
+    ole_info = detect_format(io.BytesIO(ole))
+    assert ole_info.format == ArchiveFormat.LZMA_ALONE
+    assert ole_info.confidence == DetectionConfidence.PROBABLE
+
+    # COFF AMD64 machine word + crafted trailer that is a fitting uncompressed Brotli
+    # first block (IMAGE_FILE_MACHINE_AMD64 = 0x8664 little-endian).
+    coff_header = bytes.fromhex("6486100100")
+    framing = parse_first_metablock(coff_header)
+    assert framing.outcome is BrotliFirstBlock.UNCOMPRESSED
+    assert framing.consumed is not None and framing.declared_length is not None
+    coff = coff_header + b"\x00" * (
+        framing.consumed + framing.declared_length - len(coff_header)
+    )
+    assert first_block_overruns_source(coff, len(coff)) is False
+    assert BrotliCodec().content_probe(coff, source_length=len(coff)) is True
+    coff_info = detect_format(io.BytesIO(coff))
+    assert coff_info.format == ArchiveFormat.LZMA_ALONE
+    assert coff_info.confidence == DetectionConfidence.PROBABLE
 
 
 @requires("brotli")
@@ -205,6 +216,78 @@ def test_unknown_length_skips_framing_gate() -> None:
     assert BrotliCodec().content_probe(blob, source_length=len(blob)) is False
 
 
+@requires("brotli")
+def test_nonseekable_pipe_skips_gate_at_detection_limit() -> None:
+    # End-to-end: short non-seekable peeks still get a length (peek came back short);
+    # at DETECTION_LIMIT the length is unknown and the A-34 stub remains a probe hit.
+    from archivey.internal.streams.peekable import PeekableStream
+    from tests.streams_util import NonSeekableBytesIO
+
+    stub = b"MZ" + b"\x90" * 4094
+    short = stub[:3000]
+    with pytest.raises(FormatDetectionError):
+        detect_format(PeekableStream(NonSeekableBytesIO(short)))
+    info = detect_format(PeekableStream(NonSeekableBytesIO(stub)))
+    assert info.format == ArchiveFormat.BROTLI
+
+
+@requires("brotli")
+def test_pedantic_keeps_typed_error_on_probe_unconfirmed() -> None:
+    from archivey import ArchiveyConfig, DiagnosticPolicy
+    from archivey.exceptions import DiagnosticRaisedError
+
+    framing = parse_first_metablock(b"/**\n")
+    assert framing.consumed is not None and framing.declared_length is not None
+    need = framing.consumed + framing.declared_length
+    blob = b"/**\n" + b"x" * (need + 64)
+    cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
+    with open_archive(io.BytesIO(blob), config=cfg) as reader:
+        member = next(iter(reader))
+        with pytest.raises((TruncatedError, CorruptionError)) as caught:
+            reader.open(member).read()
+        assert not isinstance(caught.value, DiagnosticRaisedError)
+        assert caught.value.format_unconfirmed is True
+        assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in {
+            d.code for d in reader.diagnostics.retained
+        }
+
+
+@requires("brotli")
+def test_probe_unconfirmed_diagnostic_emitted_once_across_retries() -> None:
+    framing = parse_first_metablock(b"/**\n")
+    assert framing.consumed is not None and framing.declared_length is not None
+    need = framing.consumed + framing.declared_length
+    blob = b"/**\n" + b"x" * (need + 64)
+    with open_archive(io.BytesIO(blob)) as reader:
+        stream = reader.open(next(iter(reader)))
+        for _ in range(3):
+            with pytest.raises((TruncatedError, CorruptionError)) as caught:
+                stream.read()
+            assert caught.value.format_unconfirmed is True
+        assert reader.diagnostics.counts[DiagnosticCode.PROBE_FORMAT_UNCONFIRMED] == 1
+
+
+@requires("brotli")
+def test_probe_unconfirmed_context_carries_detected_format() -> None:
+    framing = parse_first_metablock(b"/**\n")
+    assert framing.consumed is not None and framing.declared_length is not None
+    need = framing.consumed + framing.declared_length
+    blob = b"/**\n" + b"x" * (need + 64)
+    with open_archive(io.BytesIO(blob)) as reader:
+        with pytest.raises((TruncatedError, CorruptionError)):
+            reader.open(next(iter(reader))).read()
+        probe_diags = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
+        ]
+        assert len(probe_diags) == 1
+        ctx = probe_diags[0].context
+        assert ctx.chosen_by == "content_probe"
+        assert ctx.format == "BROTLI"
+        assert ctx.detected_format == "BROTLI"
+
+
 def test_zlib_probe_ignores_source_length() -> None:
     data = zlib.compress(b"zlib payload")
     info = detect_format(io.BytesIO(data))
@@ -220,3 +303,22 @@ def test_first_metablock_parser_vectors() -> None:
     assert parse_first_metablock(b"MZ\x00\x00").outcome is BrotliFirstBlock.UNDECIDED
     assert parse_first_metablock(b"MZA\x00").outcome is BrotliFirstBlock.UNDECIDED
     assert parse_first_metablock(b"/**\n").outcome is BrotliFirstBlock.UNCOMPRESSED
+
+
+def test_first_metablock_matches_survey_self_test_vectors() -> None:
+    """Keep ``brotli_framing`` aligned with the exploration script's SELF_TEST_VECTORS."""
+    # Outcomes the survey names that map onto BrotliFirstBlock (exuberant / bad-pad →
+    # UNDECIDED). WBITS / MLEN checked where the survey asserts them.
+    cases = [
+        (b"MZ" + b"\x90" * 254, BrotliFirstBlock.UNCOMPRESSED, 2_171_061),
+        (b"MZ" + b"\x00" * 254, BrotliFirstBlock.UNDECIDED, None),
+        (b"MZ" + b"A" * 254, BrotliFirstBlock.COMPRESSED, None),
+        (b"\x7fELF" + b"\x00" * 60, BrotliFirstBlock.UNDECIDED, None),
+        (b"\x06" + b"\x00" * 60, BrotliFirstBlock.EMPTY_LAST, None),
+        (b"MZ\x90\x00" + b"\x90" * 252, BrotliFirstBlock.UNDECIDED, None),
+    ]
+    for data, want_outcome, want_mlen in cases:
+        got = parse_first_metablock(data)
+        assert got.outcome is want_outcome, data[:6]
+        if want_mlen is not None:
+            assert got.declared_length == want_mlen

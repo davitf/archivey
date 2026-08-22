@@ -353,6 +353,9 @@ first meta-block that declares more bytes than the source holds is rejected. Res
 the measured tree is ~**0.15%** (61/39 859); a deferred chain walk would cut further.
 Probe-only confidence is `GUESS` for the uncompressed/metadata-first class; a decode
 failure there sets `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
+Structured residual families named in the investigation (OLE/CFB, COFF) are usually
+claimed end-to-end by the **LZMA Alone** probe at `PROBABLE`, so that honesty channel
+does not cover them yet (follow-up: provenance-based unconfirmed, task 5.8).
 
 **Three clauses remain:** the listing can be wrong; a full read raises; **and** a prefix
 of fabricated bytes (65 536 measured) may already have been produced before that raise.

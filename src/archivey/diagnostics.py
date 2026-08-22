@@ -171,15 +171,18 @@ class EmptyArchiveContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class UnconfirmedFormatContext(_JsonSafeContext):
-    """An empty listing under a format the archive's bytes never confirmed.
+    """A format claim the archive's bytes did not (or no longer) support.
 
-    ``detected_format`` is what content detection says now — ``None`` when it refuses
-    the bytes outright, which is also the only possible value for the ``"extension"``
-    variant (the extension fallback runs *because* every content signal declined).
+    Two events share this context:
 
-    ``chosen_by="content_probe"`` is the decode-failure channel: a single-file format
-    claimed only by a ``GUESS`` content probe, where a later read raised. Distinct from
-    the empty-listing ``"extension"`` / ``"argument"`` cases.
+    * **Empty listing** (``chosen_by="argument"`` / ``"extension"``): listing finished
+      with zero members under a format chosen by an override or the filename, not by
+      content. ``detected_format`` is what a fresh content detection reports now —
+      ``None`` when every content signal declines (the extension fallback's usual case).
+    * **Probe-only decode failure** (``chosen_by="content_probe"``): listing succeeded
+      (typically one fabricated single-file member) and a later read raised. ``format``
+      is the probe's claim; ``detected_format`` is the same claim restated (there is no
+      separate re-detection step — the probe *was* content detection).
     """
 
     kind: Literal["unconfirmed_format"] = "unconfirmed_format"
