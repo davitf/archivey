@@ -268,6 +268,39 @@ def test_probe_unconfirmed_diagnostic_emitted_once_across_retries() -> None:
 
 
 @requires("brotli")
+def test_probe_unconfirmed_dedup_holds_under_a_raising_policy() -> None:
+    # The dedup bound covers counting/retention, and a RAISE policy must not smuggle a
+    # second record in through the escalating emit. Each retry still raises the typed
+    # error, which is what stops a caller who asked to be stopped.
+    from archivey import ArchiveyConfig, DiagnosticPolicy
+    from archivey.exceptions import DiagnosticRaisedError
+
+    framing = parse_first_metablock(b"/**\n")
+    assert framing.consumed is not None and framing.declared_length is not None
+    need = framing.consumed + framing.declared_length
+    blob = b"/**\n" + b"x" * (need + 64)
+    cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
+    with open_archive(io.BytesIO(blob), config=cfg) as reader:
+        stream = reader.open(next(iter(reader)))
+        for _ in range(3):
+            with pytest.raises((TruncatedError, CorruptionError)) as caught:
+                stream.read()
+            assert not isinstance(caught.value, DiagnosticRaisedError)
+            assert caught.value.format_unconfirmed is True
+        assert reader.diagnostics.counts[DiagnosticCode.PROBE_FORMAT_UNCONFIRMED] == 1
+        assert (
+            len(
+                [
+                    d
+                    for d in reader.diagnostics.retained
+                    if d.code is DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
+                ]
+            )
+            == 1
+        )
+
+
+@requires("brotli")
 def test_probe_unconfirmed_context_carries_detected_format() -> None:
     framing = parse_first_metablock(b"/**\n")
     assert framing.consumed is not None and framing.declared_length is not None
