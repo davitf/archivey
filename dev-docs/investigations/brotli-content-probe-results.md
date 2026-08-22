@@ -686,8 +686,8 @@ three binaries. So:
   **1024** keeps 100/100 with ~3.6× headroom over the observed maximum. But the FP gain is
   ~2⁻⁵² → ~2⁻⁵⁴ — invisible, because the 2⁻³² signature match dominates and the range term
   was already the smaller factor. The real reason to cap it is **bounding the read**: the
-  `_is_pe` helper proposed in `sfx-format-detection` (#254 — **not** in `main`; there is no
-  `_is_pe` in `src/` today) allows `e_lfanew` anywhere up to `len(prefix) - 4`, so resolving
+  `_is_pe` helper from `sfx-format-detection` (`src/archivey/internal/sfx.py:100`, on `main`
+  since #254 merged) allows `e_lfanew` anywhere up to `len(prefix) - 4`, so resolving
   the check can require the whole 4096-byte prefix; a 1 KiB cap makes the cue answerable
   from 1 KiB and keeps it answerable if `DETECTION_LIMIT` ever grows. Treat it as hygiene,
   not as detection strength.

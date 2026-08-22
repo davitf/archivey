@@ -101,6 +101,16 @@ Probe-parameter tuning (larger prefix, minimum decoded output, WBITS whitelists)
 NOT be used in its place — each was measured to trade false positives for false negatives
 roughly one-for-one, or to reject real `.br` files.
 
+That is also the sense in which "the system SHALL NOT tighten the Brotli probe itself"
+in *Executable-looking prefixes must not silently become a wrong stream format* is to be
+read: it forbids buying a lower false-positive rate with a *threshold* — a bigger prefix,
+a minimum decoded size, an allowed-WBITS list — because every such knob costs real streams.
+It does not forbid a check derived from the format's own invariant, which by construction
+costs none. The two requirements therefore stand together, and the executable-prefix
+residual that requirement defers to `open-issues.md` P12 / `threat-model.md` O10 is narrowed
+by this change (from 3.5% of a real `/usr` tree to ~0.035%) rather than closed: P12 and O10
+stay open, re-scoped.
+
 #### Scenario: framing gate matrix
 
 | Case | Expected |
