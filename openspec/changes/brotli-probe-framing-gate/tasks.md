@@ -34,9 +34,11 @@
 - [ ] 4.8 `openspec validate --strict brotli-probe-framing-gate`
 - [ ] 4.9 Re-scope `dev-docs/open-issues.md` P12 and `dev-docs/threat-model.md` O10 to three clauses, not one: the listing is wrong; a full read raises; **and a prefix of fabricated bytes may already have been produced** (65 536 bytes measured — see results doc §5.1). The registered "silent wrong answer" is overstated, but so was the first correction to it: "every read failed" describes the terminal exception, not the bytes delivered. Residual after **this** change (first-block only) is ~61/39 859 ≈ **0.15%** on the measured `/usr` tree; the chain walk's further cut to ~0.035% is task 5.7
 - [ ] 4.9a User docs (D6 → B): light note in `docs/formats.md` (and gotchas if needed) — Brotli detection is content-probe + framing gate; probe-only confidence is compressed-first `PROBABLE` / uncompressed-metadata `GUESS`; GUESS read failures set `format_unconfirmed`
-- [ ] 4.10 Archive this change in the finishing PR (`openspec archive brotli-probe-framing-gate --yes`)
+- [ ] 4.10 ~~Archive this change in the finishing PR~~ — **do not archive** (maintainer 2026-08-22, D7 → A). Leave this box and all of §5 unchecked; the change stays in-flight until an explicit later archive
 
 ## 5. Follow-ups (explicitly not in this change)
+
+Leave these unchecked when the implementing PR finishes (D7 → A). Do not strip them.
 
 - [ ] 5.1 Extension-first detection ordering: try formats matching the extension before the rest, falling back on a miss or when there is no filename. Better than the status quo *and* than a hard extension gate, but it restructures `_detect_format_body` for every format — its own proposal
 - [ ] 5.2 ~~Field survey of `e_lfanew` maxima and real-world WBITS on Windows/macOS~~ — **done**, see results doc §7.2. Two consequences below

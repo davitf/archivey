@@ -114,6 +114,14 @@ Light touch in `docs/formats.md` (and gotchas if a one-liner helps): framing gat
 confidence split, `format_unconfirmed` on GUESS failures. Specs + P12/O10 alone are not
 enough — those answers are user-visible.
 
+### Decision (2026-08-22): leave §5 unchecked; do not archive (D7 → A)
+
+Maintainer ruling while applying: at the end of the implementing PR, **leave all §5
+follow-up boxes unchecked** and **do not** run `openspec archive`. Task 4.10 stays open.
+The change remains in-flight under `openspec/changes/brotli-probe-framing-gate/` until a
+later explicit archive. Unchecked §5 items (including 5.7 chain walk) are the durable
+record of what was deferred.
+
 ## Why the probe needs the source length
 
 `content_probe(prefix: bytes) -> bool` cannot see it. Detection already can, via the
