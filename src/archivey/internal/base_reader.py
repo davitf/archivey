@@ -35,7 +35,7 @@ from archivey.diagnostics import (
     MemberListReport,
     UnconfirmedFormatContext,
 )
-from archivey.escaping import quoted
+from archivey.escaping import escape_control_chars, quoted
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -173,7 +173,7 @@ class ReadBackend(ABC):
     # Formats this backend reads that have no exact magic and are recognized by a content
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
-    CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
+    CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[..., bool]], ...] = ()
     # Whether open_archive(streaming=True) may open a NON-SEEKABLE source: true for
     # formats walkable front-to-back (TAR, the single-file codecs), false for formats
     # whose index/metadata is not at the front (ZIP's central directory, ISO's
@@ -900,23 +900,31 @@ class BaseArchiveReader(ArchiveReader):
 
     def _emit_unconfirmed_format(
         self,
-        chosen_by: Literal["argument", "extension"],
+        chosen_by: Literal["argument", "extension", "content_probe"],
         detected_format: str | None,
     ) -> None:
-        code = (
-            DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
-            if chosen_by == "argument"
-            else DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
-        )
+        if chosen_by == "argument":
+            code = DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
+        elif chosen_by == "extension":
+            code = DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
+        else:
+            code = DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
         format_name = self._format.display_name
-        detected_text = detected_format or "nothing (detection refuses these bytes)"
-        self._diagnostics_collector.emit(
-            code=code,
-            message=(
+        if chosen_by == "content_probe":
+            message = (
+                f"Decode failed for {format_name}, which was identified only by a "
+                f"content probe at GUESS confidence; the source may not be that format"
+            )
+        else:
+            detected_text = detected_format or "nothing (detection refuses these bytes)"
+            message = (
                 f"Listed no members as {format_name}, which was chosen by "
                 f"{chosen_by} and not confirmed by the archive's bytes; "
                 f"content detection reports {detected_text}"
-            ),
+            )
+        self._diagnostics_collector.emit(
+            code=code,
+            message=message,
             context=UnconfirmedFormatContext(
                 archive_name=self._archive_name,
                 format=format_name,
@@ -924,6 +932,24 @@ class BaseArchiveReader(ArchiveReader):
                 detected_format=detected_format,
             ),
         )
+
+    def _mark_format_unconfirmed(self, exc: ArchiveyError) -> None:
+        """Stamp a probe-only GUESS decode failure and emit the matching diagnostic."""
+        if exc.format_unconfirmed:
+            return
+        format_name = (exc.source_format or self._format).display_name
+        detail = exc.raw_message
+        new_msg = (
+            f"Format identification was unconfirmed (content probe only); "
+            f"the source may not be {format_name}. Decode failed: {detail}. "
+            f"Partial output may already have been produced"
+        )
+        escaped = escape_control_chars(new_msg)
+        exc.raw_message = new_msg
+        exc.message = escaped
+        exc.args = (escaped,)
+        exc.format_unconfirmed = True
+        self._emit_unconfirmed_format("content_probe", None)
 
     def _publish_materialized(
         self,
@@ -1886,6 +1912,13 @@ class BaseArchiveReader(ArchiveReader):
             exc.archive_name = self._archive_name
         if exc.member_name is None and member_name is not None:
             exc.member_name = member_name
+        provenance = self._format_provenance
+        if (
+            provenance is not None
+            and provenance.probe_guess
+            and isinstance(exc, (TruncatedError, CorruptionError))
+        ):
+            self._mark_format_unconfirmed(exc)
 
     def io_stats(self) -> "IoStats | None":
         """Return I/O counters if measurement is enabled, else ``None``.

@@ -913,11 +913,14 @@ class StreamCodec:
         """Fill ``ArchiveMember`` fields from the source. Default: no extra metadata."""
         return
 
-    def content_probe(self, prefix: bytes) -> bool:
+    def content_probe(self, prefix: bytes, *, source_length: int | None = None) -> bool:
         """Whether ``prefix`` is recognized as this codec's stream.
 
         Default: this codec has no content probe (it is identified by exact magic). Codecs
-        without a usable magic (Brotli; zlib's too-unspecific header) override this.
+        without a usable magic (Brotli; zlib's too-unspecific header; LZMA Alone) override
+        this. ``source_length`` is optional: when detection knows the cheap byte size of
+        the source it is passed through so a probe can reject declared framing that
+        cannot fit; ``None`` means "unknown — do not reject on that basis."
         """
         return False
 
@@ -1311,9 +1314,16 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         if size != _ALONE_UNKNOWN_SIZE:
             member.size = size
 
-    def content_probe(self, prefix: bytes) -> bool:
-        """Recognize LZMA Alone: plausible 13-byte header that then yields decode output."""
+    def content_probe(self, prefix: bytes, *, source_length: int | None = None) -> bool:
+        """Recognize LZMA Alone: plausible 13-byte header that then yields decode output.
+
+        A source no longer than the 13-byte header carries no range-coder payload and
+        cannot be an Alone stream — the whole of the measured real-world false-positive
+        set. When ``source_length`` is unknown the check is skipped.
+        """
         if not _alone_header_plausible(prefix) or not self.available:
+            return False
+        if source_length is not None and source_length <= _ALONE_HEADER_SIZE:
             return False
         try:
             with open_codec_stream(
@@ -1427,7 +1437,7 @@ class ZlibCodec(_ZlibErrorCodec):
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         return _translate_rapidgzip(exc, "zlib")
 
-    def content_probe(self, prefix: bytes) -> bool:
+    def content_probe(self, prefix: bytes, *, source_length: int | None = None) -> bool:
         """Recognize a zlib stream: a known CMF/FLG header (fail-fast) that then decodes."""
         return prefix[:2] in _ZLIB_HEADERS and self._decodes_sample(prefix)
 
@@ -1526,8 +1536,20 @@ class BrotliCodec(StreamCodec):
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning("brotli")
 
-    def content_probe(self, prefix: bytes) -> bool:
-        """Recognize a raw Brotli stream — which has no magic — by decoding a bounded prefix."""
+    def content_probe(self, prefix: bytes, *, source_length: int | None = None) -> bool:
+        """Recognize a raw Brotli stream — which has no magic — by decoding a bounded prefix.
+
+        When ``source_length`` is known, reject a first meta-block that *declares* more
+        bytes than the source can hold (uncompressed / metadata). That invariant is
+        sound for any complete valid stream; see ``brotli_framing``.
+        """
+        if source_length is not None:
+            from archivey.internal.streams.brotli_framing import (
+                first_block_overruns_source,
+            )
+
+            if first_block_overruns_source(prefix, source_length):
+                return False
         return self._decodes_sample(prefix)
 
 

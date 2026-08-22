@@ -162,13 +162,16 @@ class BackendRegistry:
             entries.extend(cls.SFX_MAGIC)
         return entries
 
-    def content_probes(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
+    def content_probes(
+        self,
+    ) -> list[tuple[ArchiveFormat, Callable[..., bool]]]:
         """(format, probe) pairs for formats recognized by a content probe.
 
         Drawn from the backends and from the stream codecs that override the no-op base
         content probe (Brotli, which has no magic; zlib, whose 2-byte header is too
         unspecific to trust on its own; LZMA Alone, whose properties byte is similarly
-        too weak for exact magic).
+        too weak for exact magic). Probes accept ``prefix`` and optional
+        ``source_length=``.
         """
         probes: list[tuple[ArchiveFormat, Callable[[bytes], bool]]] = []
         for cls in self._reader_classes:

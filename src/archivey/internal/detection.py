@@ -60,6 +60,7 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
     read_exact,
+    source_byte_size,
     source_name,
 )
 from archivey.types import (
@@ -268,6 +269,28 @@ def _probe_inner_tar(
     return head[257:262] == b"ustar"
 
 
+def _brotli_probe_confidence(
+    prefix: bytes,
+    ext_match: tuple[ArchiveFormat, str] | None,
+) -> DetectionConfidence:
+    """PROBABLE when ``.br`` (or a TAR+Brotli extension) agrees, or first block is compressed.
+
+    Uncompressed/metadata-first with no corroborating extension is the residual
+    false-positive class and reports ``GUESS`` — that is what gates
+    ``format_unconfirmed`` on a later decode failure.
+    """
+    if ext_match is not None and ext_match[0].stream is StreamFormat.BROTLI:
+        return DetectionConfidence.PROBABLE
+    from archivey.internal.streams.brotli_framing import (
+        BrotliFirstBlock,
+        parse_first_metablock,
+    )
+
+    if parse_first_metablock(prefix).outcome is BrotliFirstBlock.COMPRESSED:
+        return DetectionConfidence.PROBABLE
+    return DetectionConfidence.GUESS
+
+
 def _resolve_single_file_or_tar(
     fmt: ArchiveFormat,
     base_confidence: "DetectionConfidence",
@@ -452,10 +475,18 @@ def _detect_format_body(
     #    answer. A WEAK cue does not gate the probes: `MZ` alone is two bytes, and a
     #    genuine Brotli stream that happens to start with them must still be detectable.
     if cue is not ExecutableCue.STRONG:
+        # Cheap source length for framing gates (Brotli / LZMA Alone). Unknown → None;
+        # a short peek that returned the whole file also reveals the size.
+        length = source_byte_size(source)
+        if length is None and len(data) < near_needed:
+            length = len(data)
         for probe_fmt, probe in registry.content_probes():
-            if probe(data):
+            if probe(data, source_length=length):
+                confidence = DetectionConfidence.PROBABLE
+                if probe_fmt.stream is StreamFormat.BROTLI:
+                    confidence = _brotli_probe_confidence(data, ext_match)
                 info = _resolve_single_file_or_tar(
-                    probe_fmt, DetectionConfidence.PROBABLE, "content_probe", peek_more
+                    probe_fmt, confidence, "content_probe", peek_more
                 )
                 _warn_on_conflict(collector, name, ext_match, info.format)
                 return info

@@ -36,6 +36,11 @@ that filter diagnostics — without inspecting exception attributes — see the 
 fact. The exception attribute and the diagnostic are two views of one provenance;
 neither replaces the other.
 
+`PROBE_FORMAT_UNCONFIRMED` SHALL NOT be a member of the `ARCHIVE_INTEGRITY_CODES`
+strict set: it is emitted while stamping a typed `TruncatedError` / `CorruptionError`,
+and putting it in `strict` would replace that typed error with `DiagnosticRaisedError`.
+Default disposition is COLLECT.
+
 #### Scenario: dual channel
 
 | Case | Expected |

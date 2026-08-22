@@ -7,6 +7,10 @@ case is known at open; whether the listing is empty is not known until it comple
 record carries the first fact forward to the place that learns the second
 (``BaseArchiveReader._publish_materialized``).
 
+It also carries whether a content-probe match was only a ``GUESS`` (probe-only Brotli
+whose first meta-block was uncompressed/metadata): a later decode failure then stamps
+``format_unconfirmed`` and emits ``PROBE_FORMAT_UNCONFIRMED``.
+
 It lives on the reader rather than in ``ReadBackend.open_read``'s signature because no
 backend uses it: adding a parameter would touch every backend for a fact none of them
 reads.
@@ -37,4 +41,12 @@ class FormatProvenance:
     Only used for the ``"argument"`` case, which skipped detection and therefore has
     nothing recorded to compare against, and only when it is a :class:`Path`: reopening a
     file cannot disturb the reader, while seeking a live stream back to its origin can.
+    """
+
+    probe_guess: bool = False
+    """True when detection chose the format via a content probe at ``GUESS`` confidence.
+
+    That is the channel for ``format_unconfirmed`` on a later decode failure. Magic,
+    SFX, extension, and ``PROBABLE`` probe hits (including compressed-first Brotli)
+    leave this ``False``.
     """

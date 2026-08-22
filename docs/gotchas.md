@@ -102,6 +102,12 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   lives inside a member header, so an empty one has nothing to match and reaches the TAR
   reader only by file extension or an explicit `format=`.
   → [Errors and diagnostics](errors-and-diagnostics.md)
+- **Brotli without a `.br` name is identified by a content probe.** A framing check
+  rejects declared lengths that cannot fit the source, but a residual (~0.15% on a
+  measured filesystem) can still open as a single fabricated member. If the probe was
+  only a `GUESS` (uncompressed/metadata-first), a failed read sets
+  `format_unconfirmed=True` — and may already have delivered a buffer of copied bytes.
+  → [Formats — Detection](formats.md#detection)
 - **Prefer `reader.diagnostics` and the extraction report over logs.** Advisories are
   queryable data, not just log lines.
   → [Errors and diagnostics](errors-and-diagnostics.md)

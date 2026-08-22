@@ -247,33 +247,26 @@ nor `DIRECTORY`. Original write-up below.
   [`review/docs-content/claims.md`](../review/docs-content/claims.md) **E-71**, a gap row —
   no page states the behaviour at all.
 
-### P12. The Brotli content probe accepts ~8% of arbitrary binary data
+### P12. The Brotli content probe accepts arbitrary binary data — **narrowed**
 
-- **Today:** Brotli has no magic at all, so `detect_format` identifies it by decoding a
-  256-byte prefix (`BrotliCodec.content_probe` → `StreamCodec._decodes_sample`,
-  `codecs.py:968`). Measured 2026-08-19: **8.27%** of uniformly random 4 KiB blobs pass
-  that probe, and end-to-end **146/2000 (7.3%)** of such blobs come back from
-  `detect_format` as `ArchiveFormat.BROTLI`. `open_archive` then returns a
-  `SingleFileReader` with one fabricated `<name>.uncompressed` member — a silent wrong
-  answer on arbitrary bytes, not an error.
-- **Probe tuning provably does not fix it.** A 4096-byte prefix leaves the rate at
-  8.13%; requiring ≥512 bytes of output drops it to 1.60% but loses 10 of 15 real Brotli
-  streams (small payloads, empty payloads, high-quality compression). The full matrix is
-  in the brief below. The looseness is in the format — a header-light bitstream — not in
-  the probe's parameters.
-- **Why it is filed separately from the SFX work.** `sfx-format-detection` closed the
-  *archive-behind-a-stub* half of A-34 by scanning for archive magic before the probes,
-  which needed no probe change and left this free to be investigated properly. What
-  remains is the general case: bytes that are not an archive and not Brotli either.
-- **Next step is an investigation, not a patch:**
-  [`investigations/brotli-content-probe-brief.md`](investigations/brotli-content-probe-brief.md)
-  — why the bitstream is this permissive, whether a legal Brotli stream can begin with
-  `MZ` (which would let the SFX cue tighten), whether a structural pre-gate exists like
-  zlib's and LZMA Alone's, and what detection should do with the residual.
-- **Security framing:** `threat-model.md` O10 — the input is attacker-supplied and the
-  failure is silent.
-- **Provenance:** measured 2026-08-19 while implementing `sfx-format-detection`, from
-  the maintainer's instruction not to lock a probe policy without understanding Brotli.
+- **Was:** Brotli has no magic, so `detect_format` identified it by decoding a 256-byte
+  prefix. Measured **~8.2%** of random blobs and **~3.5%** of a real `/usr` tree
+  (`/**\n` Doxygen openers dominated). `open_archive` listed one fabricated
+  `.uncompressed` member; a full read raised `TruncatedError` naming a format the file
+  never was — and a prefix of fabricated bytes (65 536 measured) may already have been
+  produced.
+- **Now (first-block framing gate):** when the source length is known, a first meta-block
+  that declares more bytes than the source holds is rejected. On the measured `/usr`
+  tree that cuts hits from 1377 → **~61 (~0.15%)**. Residual families (OLE/CFB, COFF,
+  lucky fits) remain. A deferred **chain walk** (task 5.7) would cut further to ~0.035%.
+- **Confidence / errors:** probe-only Brotli is `PROBABLE` when the first meta-block is
+  compressed (or `.br` corroborates), else `GUESS`. A decode failure on `GUESS` sets
+  `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
+- **Still three clauses, not one:** the listing can be wrong; a full read raises; **and**
+  a prefix of fabricated bytes may already have been produced. Not a silent success.
+- **Refs:** `openspec/changes/brotli-probe-framing-gate/`; investigation
+  [`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md);
+  threat-model O10.
 
 ### P10. `format_availability()` fabricates a verdict for a wrong-typed argument — **CLOSED**
 
