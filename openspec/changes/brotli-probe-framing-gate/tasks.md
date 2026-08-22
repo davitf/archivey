@@ -3,6 +3,7 @@
 - [ ] 1.1 Extend the `StreamCodec` content-probe interface so a probe may consult the source length (e.g. `content_probe(prefix, *, source_length: int | None = None)`), defaulting to today's behaviour; leave the zlib and LZMA Alone probes unchanged in substance
 - [ ] 1.2 Supply the length from `detect_format`: `os.path.getsize` for a path, end-relative seek for a seekable stream (restoring position per the stream-position contract), and the peek itself when it came back short — a file below `DETECTION_LIMIT` already reveals its exact size
 - [ ] 1.3 Pass `None` for a non-seekable source longer than the peek; assert the probe then behaves exactly as before
+- [ ] 1.4 Write 1.2 as a reusable `_source_length(source)` helper beside `_peek_prefix`, mirroring its four-way dispatch (`Path` / `PeekableStream` / seekable / raw). `prefixed-archive-detection` (PR #257) needs the same predicate for its ZIP tail probe — "is this source's end reachable, and where is it?" — and there is no such helper today. Two parallel ones is the likely outcome if neither change names it; this is the cheaper half to generalise, since the tail probe additionally needs to *read* there
 
 ## 2. The framing gate
 
