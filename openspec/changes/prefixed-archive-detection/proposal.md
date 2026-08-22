@@ -95,6 +95,6 @@ tier detection accordingly instead of applying one rule to all of them.
 - Tests: `zipapp`, Spring Boot exec JAR, polyglot, makeself, 7z/RAR SFX with PE, ELF,
   Mach-O and shebang stubs; non-seekable sources; the opt-in scan.
 - Docs: `docs/formats.md` detection prose.
-- **Supersedes** the SFX requirement that `sfx-format-detection` (#254) modifies. That
-  change should land first — this one rewrites the requirement it establishes, and its
-  `payload_offset` plumbing is a prerequisite.
+- **Supersedes** the SFX requirement `sfx-format-detection` (#254) established, and modifies
+  the *Executable-looking prefixes* requirement it added alongside — both now live, since
+  #258 archived that change. The prerequisite is satisfied; see `design.md` §Sequencing.

@@ -33,7 +33,9 @@ does not.
 A match SHALL report the embedded format with `payload_offset` = payload start and a
 `detected_by` naming which tier found it. No match SHALL fall through to content probes,
 extension, then `FormatDetectionError`. Native RAR/7z parsers SHALL accept a start offset
-(read in place, no copy).
+(read in place, no copy). A prefixed ZIP SHALL be reported as `ZIP` with a `payload_offset`
+— never as a stream codec — whichever tier finds it; ZIP needs no separate parser scan,
+since the reader already locates the central directory from the tail.
 
 The cue at tier 3 is a **cost gate, not a correctness gate**: its purpose is to avoid
 reading up to `SFX_MAX` from every source, not to prevent false matches — the validation
@@ -62,6 +64,62 @@ its structural check SHALL NOT be reported and the scan SHALL continue past it.
 | Stub containing a decoy needle before the real payload | Decoy fails validation; scan resumes and finds the real payload |
 | Archive magic beyond `SFX_MAX`, caller did not opt in | No match; `FormatDetectionError` rather than an unbounded read |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
+
+### Requirement: Executable-looking prefixes must not silently become a wrong stream format
+
+When a source’s leading bytes look executable-shaped, detection SHALL NOT let a
+content probe (notably Brotli) claim a stream codec and allow `open_archive` to
+succeed with a fabricated single-file member (e.g. `*.uncompressed`). That is a
+silent wrong answer.
+
+This obligation is **outcome-shaped**, not “disable Brotli whenever the prefix is
+`MZ`”. A genuine Brotli (or other probe-matched) stream whose first bytes happen
+to look executable MUST remain detectable.
+
+The rule, settled by measurement in `sfx-format-detection`'s design (now archived) and
+extended by this change's, grades the evidence:
+
+- A **weak** cue — a bare `MZ`, `\x7fELF`, Mach-O magic, or `#!` prefix — SHALL trigger the
+  forward scan and nothing else. When the scan finds no archive magic, content probes run
+  unchanged. Two or four bytes are not proof, and refusing a probe on them would reject real
+  streams.
+- A **strong** cue — a DOS header whose `e_lfanew` points at a `PE\0\0` signature, an
+  ELF identification block with valid `EI_CLASS` / `EI_DATA` / `EI_VERSION`, or a Mach-O
+  header whose `cputype` and `filetype` parse — with no archive magic in the window SHALL
+  suppress content probes entirely; detection falls through to the extension guess or
+  `FormatDetectionError`. A structurally confirmed executable is not a compressed stream.
+
+The set of prefixes that raise a cue at all is a **cost** decision, governed by the sibling
+requirement; the weak/strong grading above is what decides the *outcome* once a cue exists.
+The two are independent: widening the cue set does not weaken this rule, and this rule does
+not license reading `SFX_MAX` from sources the cost gate excludes.
+
+**A prefix outside the cue set gets neither treatment, and that is where this obligation was
+being broken.** Before this change the cue recognised `MZ` and ELF only, so a thin
+little-endian Mach-O stub raised no cue — while `cf fa ed fe` is *structurally guaranteed*
+to parse as an uncompressed Brotli meta-block header. Measured end to end: PE and ELF stubs
+in front of a 7z opened the real members, and a Mach-O stub returned `BROTLI` with one
+fabricated `.uncompressed` member. Adding Mach-O to the cue set is what closes it; the
+grading above was already correct.
+
+The system SHALL NOT tighten the Brotli probe itself to satisfy this requirement:
+measured, a larger probe prefix does not reduce false positives (8.27% → 8.13% of random
+data at 16x the prefix) and requiring decoded output loses real streams roughly
+one-for-one. The residual — arbitrary non-archive data that the Brotli probe claims,
+which is a far wider problem than executable prefixes — is out of scope here and is
+tracked separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10).
+
+#### Scenario: no silent wrong answer on executable-shaped prefix
+
+| Case | Expected |
+| --- | --- |
+| Low-entropy `MZ` stub + RAR/7z/ZIP payload in window | Detected as that archive — **not** `BROTLI` / fabricated member |
+| **Thin little-endian Mach-O stub + 7z payload** | `SEVEN_Z` — previously `BROTLI` (or `LZMA_ALONE`) with a fabricated member |
+| `#!/bin/sh` + tar.gz in window | Detected as that archive, not claimed by a probe |
+| Real Brotli stream with non-executable prefix | Unchanged — still `BROTLI` via content probe |
+| Real Brotli (or other probe format) whose prefix coincides with a **weak** executable cue | Still detected as that stream — **not** forced to `FormatDetectionError` solely because two bytes were `MZ` |
+| **Strong** executable cue (validated PE / ELF / Mach-O), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
+| Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
 
 ## ADDED Requirements
 

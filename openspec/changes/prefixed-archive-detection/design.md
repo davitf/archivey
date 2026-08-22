@@ -129,6 +129,14 @@ this file is written so that write-up is a summary rather than a re-derivation.
 
 ## Sequencing
 
-`sfx-format-detection` (#254) should land first. This change rewrites the requirement that
+`sfx-format-detection` (#254) had to land first — this change rewrites the requirement that
 one modifies, and depends on its `payload_offset` plumbing through `open_archive` and the
-backends. Landing this first would mean writing the same requirement twice.
+backends. Both are done: #254 merged as `6e71eba` and #258 archived the change into the live
+specs at `da427a0`, so the deltas here are written against shipped text.
+
+The archive also promoted a second requirement, *Executable-looking prefixes must not
+silently become a wrong stream format*, which this change now modifies too: it enumerates
+the cue as `MZ` / `\x7fELF`, and widening that set is the fix for the macOS defect below.
+`brotli-probe-framing-gate` (PR #255) touches neither requirement — it cross-references the
+executable-prefix one from its own added framing requirement rather than modifying it — so
+the two changes archive in either order.
