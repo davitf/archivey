@@ -137,6 +137,8 @@ specs at `da427a0`, so the deltas here are written against shipped text.
 The archive also promoted a second requirement, *Executable-looking prefixes must not
 silently become a wrong stream format*, which this change now modifies too: it enumerates
 the cue as `MZ` / `\x7fELF`, and widening that set is the fix for the macOS defect below.
-`brotli-probe-framing-gate` (PR #255) touches neither requirement — it cross-references the
-executable-prefix one from its own added framing requirement rather than modifying it — so
-the two changes archive in either order.
+`brotli-probe-framing-gate` (PR #255) also modifies that same executable-prefix
+requirement — for its confidence rows and its probe-tightening paragraph, disjoint from the
+cue enumeration this change rewrites. Since OpenSpec replaces a MODIFIED requirement whole,
+the two are **not** archive-order independent: whichever lands second rebuilds on the
+other's text. See task 0.3 for what to inherit.
