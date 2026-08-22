@@ -47,12 +47,13 @@ halves are worth fixing.
   it. Extend the codec-probe interface so a probe may consult the source length when
   detection knows it via existing `source_byte_size()`, and degrade to today's behaviour
   when that returns `None`.
-- **Report probe-only *Brotli* results as `GUESS`, not `PROBABLE`.** A Brotli match with no
-  corroborating extension is not "probable" evidence; probe + `.br` stays `PROBABLE`.
-  **Scoped to Brotli**, not to magic-less probes generally: zlib and LZMA Alone measured
-  0/20 000 false positives and stay `PROBABLE` (see Decisions). The sibling "table sources"
-  requirement is MODIFIED in the same delta so the archived spec does not contradict itself
-  on confidence.
+- **Report probe-only *Brotli* results as `GUESS` or `PROBABLE` by evidence class.** A
+  Brotli match with no corroborating extension is `GUESS` when the first meta-block is
+  uncompressed or metadata, and `PROBABLE` when it is compressed (or when `.br`
+  corroborates). **Scoped to Brotli**, not to magic-less probes generally: zlib and LZMA
+  Alone measured 0/20 000 false positives and stay `PROBABLE` unconditionally. The sibling
+  "table sources" requirement is MODIFIED in the same delta so the archived spec does not
+  contradict itself on confidence.
 - **Make the failure honest.** When a read fails on a single-file result whose only
   evidence was a content probe, the error SHALL say the format identification was
   unconfirmed rather than presenting as a plain truncation.

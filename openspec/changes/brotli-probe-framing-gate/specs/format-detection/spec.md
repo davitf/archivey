@@ -18,7 +18,8 @@ confidence value this change moves.
 | `.gz` / `.zst` | Same result as before; magic from codec descriptors |
 | zlib / LZMA Alone | `PROBABLE` / `content_probe` from descriptor functions — unchanged |
 | Brotli, extension corroborates | `PROBABLE` / `content_probe` |
-| Brotli, no corroborating extension | `GUESS` / `content_probe` |
+| Brotli, first meta-block compressed, no corroborating extension | `PROBABLE` / `content_probe` |
+| Brotli, first meta-block uncompressed/metadata, no corroborating extension | `GUESS` / `content_probe` |
 | ZIP / TAR / ISO | Container backend `MAGIC`, merged into the same table |
 
 ### Requirement: Executable-looking prefixes must not silently become a wrong stream format
@@ -66,7 +67,8 @@ produced.
 | --- | --- |
 | Low-entropy `MZ` stub + RAR/7z/ZIP payload in window | Detected as that archive — **not** `BROTLI` / fabricated member |
 | Real Brotli stream with non-executable prefix, `.br` extension | Unchanged — `BROTLI` / `PROBABLE` via content probe |
-| Real Brotli stream with non-executable prefix, no corroborating extension | Still `BROTLI` via content probe, now at `GUESS` |
+| Real Brotli stream with non-executable prefix, compressed-first, no corroborating extension | Still `BROTLI` via content probe, at `PROBABLE` |
+| Real Brotli stream with non-executable prefix, uncompressed/metadata-first, no corroborating extension | Still `BROTLI` via content probe, at `GUESS` |
 | Real Brotli (or other probe format) whose prefix coincides with a **weak** executable cue | Still detected as that stream — **not** forced to `FormatDetectionError` solely because two bytes were `MZ` |
 | **Strong** executable cue (validated PE / ELF), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
@@ -83,11 +85,14 @@ decompressor backend is missing (fall through to extension). Extension MAY overr
 a disagreeing probe (false-positive risk on short/adversarial input).
 
 A probe match SHALL report `detected_by="content_probe"`. For **Brotli specifically**,
-confidence SHALL be `PROBABLE` when the file extension corroborates the format and
-`GUESS` otherwise: Brotli's probe is the only one measured to accept ordinary files
-(3.5% of a real `/usr` tree), so a Brotli claim with nothing else agreeing is weaker
-evidence than the other probes' claims. This does not change *what* is detected — only
-what the system claims to know about it.
+confidence SHALL be `PROBABLE` when the file extension corroborates the format **or**
+when the first meta-block is compressed, and `GUESS` when the only evidence is a
+probe hit whose first meta-block is uncompressed or metadata. Brotli's probe is the
+only one measured to accept ordinary files (3.5% of a real `/usr` tree before the
+framing gate), and that false-positive mass concentrates in the uncompressed/metadata
+first-block class — so those claims are weaker evidence than a compressed-first hit or
+an extension-backed one. This does not change *what* is detected — only what the system
+claims to know about it.
 
 The zlib and LZMA Alone probes keep `PROBABLE` unconditionally. Both measured **0 false
 positives in 20 000 random blobs**, so the confidence downgrade would cost honesty rather
@@ -95,11 +100,15 @@ than buy it. (Alone was additionally re-measured at 0 over 4 000 blobs of 64 KiB
 real-world residual is a framing problem, not a confidence one — see the framing
 requirement.)
 
-Within Brotli, a probe-only hit whose **first meta-block is compressed** MAY keep
+Within Brotli, a probe-only hit whose **first meta-block is compressed** SHALL keep
 `PROBABLE`: measured on random data, that class is accepted 0.014% of the time against
 ~100% for an uncompressed first block, and 25 of 25 real streams found in the wild are
 compressed-first. An uncompressed or metadata first block is the class every false
-positive comes from, and takes `GUESS`.
+positive comes from, and takes `GUESS`. This split is load-bearing for error provenance:
+`format_unconfirmed` / `PROBE_FORMAT_UNCONFIRMED` apply only to `GUESS` failures, so a
+compressed-first probe-only hit takes the corroborated failure path. Uncompressed-first
+remains a valid stream class (incompressible payloads); the framing gate keeps those
+streams — they are not rejected for being uncompressed-first.
 
 The LZMA Alone probe SHALL attempt a bounded `FORMAT_ALONE` decode and MUST NOT
 claim streams that already matched exact magic (notably lzip `LZIP` and xz
@@ -110,7 +119,8 @@ claim streams that already matched exact magic (notably lzip `LZIP` and xz
 | Case | Expected |
 | --- | --- |
 | No magic; bounded prefix decompresses as Brotli, name is `x.br` | `BROTLI`, `PROBABLE`, `content_probe` |
-| No magic; bounded prefix decompresses as Brotli, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
+| No magic; bounded prefix decompresses as Brotli, first meta-block compressed, no corroborating extension | `BROTLI`, `PROBABLE`, `content_probe` |
+| No magic; bounded prefix decompresses as Brotli, first meta-block uncompressed/metadata, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
 | zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE`, `content_probe` — unchanged |
 | zlib-looking header, decode fails | No zlib claim; fall through to extension / fail |
 | `.br`, Brotli extra missing | Probe skipped; extension guess `BROTLI`/`GUESS` |

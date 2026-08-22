@@ -90,6 +90,24 @@ Maintainer ruling while applying: when a probe-only (`GUESS`) single-file read f
 Corroborated (`.br` / `PROBABLE`) failures stay unchanged: `format_unconfirmed=False`,
 today's message, no probe-unconfirmed diagnostic.
 
+### Decision (2026-08-22): compressed-first probe-only keeps PROBABLE
+
+Maintainer ruling while applying: implement task **3.1a**. A Brotli content-probe match
+whose **first meta-block is compressed** reports `PROBABLE` even without a corroborating
+extension; uncompressed- or metadata-first probe-only hits stay `GUESS`.
+
+Why now (tied to the exception flag): `format_unconfirmed` / `PROBE_FORMAT_UNCONFIRMED`
+fire only on **GUESS**. So GUESS vs PROBABLE is not a cosmetic `FormatInfo` label — it
+gates whether a later decode failure is stamped as "format may have been wrong."
+Compressed-first measured ~0.014% acceptance on random data (vs ~100% for
+uncompressed-first) and 25/25 wild streams; that evidence is strong enough that those
+hits should take the corroborated failure path, not the unconfirmed one.
+
+Pin against drift: uncompressed-first remains **valid** (incompressible /
+already-compressed payloads). The framing gate keeps those streams; they must stay
+accepted. They report `GUESS` when extensionless, which is the honest residual class —
+not a claim that uncompressed-first is illegal.
+
 ## Why the probe needs the source length
 
 `content_probe(prefix: bytes) -> bool` cannot see it. Detection already can, via the
