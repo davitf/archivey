@@ -720,10 +720,16 @@ three binaries. So:
 currently see. The brief is explicit that this must land as an OpenSpec change rather than
 in passing, and that remains right. The proposal should cover: the framing invariant as a
 normative requirement, the size-availability fallback (including the non-seekable case),
-the `content_probe` signature change and what it means for the zlib/LZMA probes that do not
-need it, and the error-message provenance item above. The residual (§5) does not close and
-should stay registered — P12/O10 want rewording to "misleading listing and misattributed
-read error" rather than "silent wrong answer", which §5 measured as not occurring.
+the `content_probe` signature change and what it means for the other probes, and the
+error-message provenance item above. On that signature: zlib genuinely does not need the
+length, but **LZMA Alone does** — §6.1 found its entire real-world false-positive set is
+files that are exactly its 13-byte header, which the same invariant rejects.
+
+The residual (§5) does not close and should stay registered. P12/O10 want rewording, but to
+**three** clauses rather than the two this note originally proposed: the listing is wrong,
+a full read raises, and a prefix of fabricated bytes may already have been produced.
+"Silent wrong answer" is overstated; so is "misleading listing and misattributed read
+error", which §5.1 measured as missing the 65 536 bytes delivered before the exception.
 
 **One thing that will not close, ever.** A crafted file *is* a valid Brotli stream — §3
 builds a 2 MB one starting with `MZ`. Brotli has no magic, so "this file is simultaneously

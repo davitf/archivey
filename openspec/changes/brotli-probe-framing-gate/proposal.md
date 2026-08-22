@@ -26,8 +26,11 @@ establishes the cause and the fix:
   heuristic. It cuts false positives 25× (4 KiB) to 162× (chain-walk form) with **0/150**
   false negatives on real streams — 56 of which take the uncompressed path themselves.
 
-The residual is not a silent wrong answer (across 364 false positives, every read failed),
-so this is a **wrong-answer-then-wrong-error** defect rather than data fabrication. Both
+Across 364 false positives every read *ended* in an exception, so this is a
+**wrong-answer-then-wrong-error** defect rather than a silently wrong success. It is not
+quite "no data fabricated", though: when the first uncompressed meta-block fits, the
+decoder hands back a full buffer of verbatim input bytes — 65 536 measured — before it
+raises, so a caller streaming to disk has already written that prefix (§5.1). All three
 halves are worth fixing.
 
 ## What Changes
@@ -59,10 +62,13 @@ halves are worth fixing.
 ### Modified Capabilities
 
 - `format-detection` — the magic-less content-probe requirement gains a normative framing
-  gate for Brotli, and probe-only results for magic-less single-file formats report
-  `GUESS` rather than `PROBABLE` unless the extension corroborates.
-- `compressed-streams` — the content-probe interface may consult the source length;
-  probes that do not need it (zlib, LZMA Alone) are unaffected.
+  gate, and a probe-only **Brotli** result reports `GUESS` rather than `PROBABLE` unless
+  the extension corroborates. zlib and LZMA Alone keep `PROBABLE` (round-1 MD1 → A). The
+  sibling "table sources" requirement moves with it, and so does the SFX requirement's
+  confidence row, which would otherwise still promise `PROBABLE` after archive.
+- `compressed-streams` — the content-probe interface may consult the source length. Brotli
+  uses it for the framing gate and **LZMA Alone** for the same invariant's weaker form (a
+  source no longer than its 13-byte header cannot be an Alone stream); zlib is unaffected.
 - `error-handling` — a read failure on a probe-only single-file result names the weak
   provenance instead of presenting as a truncation.
 
@@ -116,6 +122,8 @@ Recorded because they were considered and rejected on measurement, not overlooke
 - Docs: `docs/formats.md` detection prose; the confidence table in
   `openspec/specs/format-detection/spec.md`.
 - Related: closes the deep-dive obligation from `sfx-format-detection`; lets
-  `open-issues.md` P12 and `threat-model.md` O10 be re-scoped (the investigation found the
-  registered "silent wrong answer" wording overstated — listing is wrong, every read
-  fails).
+  `open-issues.md` P12 and `threat-model.md` O10 be re-scoped to **three** clauses — the
+  listing is wrong, a full read raises, and a prefix of fabricated bytes may already have
+  been produced. The registered "silent wrong answer" wording is overstated, but so was the
+  first correction to it: "every read failed" names the terminal exception, not the 65 536
+  bytes delivered first (§5.1, task 4.9).

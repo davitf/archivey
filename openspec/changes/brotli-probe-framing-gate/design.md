@@ -68,7 +68,7 @@ decoder never reaches the end within the prefix. The gate supplies the missing h
 | --- | --- |
 | larger prefix | 4096-byte prefix: 7.94% vs 8.19%. The uncompressed path just gets more bytes to copy |
 | require decoded output | ≥1 byte: 24/150 real streams missed. ≥512 bytes: 90/150. One-for-one trade |
-| WBITS whitelist | `{22}` is 10.5× but rejects both real `.br` files on the measurement system (WBITS 15 and 16) and 4/12 WOFF2 fonts. The observed union `{15,16,19,22}` is worth 2.1%, because it must admit 16 — a **one-bit** encoding that alone is 50% of random data |
+| WBITS whitelist | `{22}` is 10.5× but rejects both real `.br` files on the measurement system (WBITS 15 and 16) and 4/12 WOFF2 fonts. An observed union is worth only 2.1%, because it must admit 16 — a **one-bit** encoding that alone is 50% of random data. And "observed" is not a stable set: this machine's `{15,16,19,22}` did not survive one independent run, which added 18 and 21 from real Fira Sans / Source Code Pro. The union across two machines is now `{15,16,18,19,21,22}` — six of fifteen legal values, from two samples that disagreed on first contact (results doc §4.1) |
 | first-byte legality table | 54/256 first bytes are provably impossible (including `\x7fELF`, which is why 0/887 ELF binaries were ever accepted). Free, but only 21% |
 | extension gate / off by default | contradicts `VISION.md`'s founding use case ("wrong extensions are normal"); see proposal Decisions |
 

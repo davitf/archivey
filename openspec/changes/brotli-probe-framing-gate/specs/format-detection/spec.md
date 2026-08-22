@@ -21,6 +21,54 @@ confidence value this change moves.
 | Brotli, no corroborating extension | `GUESS` / `content_probe` |
 | ZIP / TAR / ISO | Container backend `MAGIC`, merged into the same table |
 
+### Requirement: Executable-looking prefixes must not silently become a wrong stream format
+
+When a source's leading bytes look executable-shaped, detection SHALL NOT let a
+content probe (notably Brotli) claim a stream codec and allow `open_archive` to
+succeed with a fabricated single-file member (e.g. `*.uncompressed`). That is a
+silent wrong answer.
+
+This obligation is **outcome-shaped**, not "disable Brotli whenever the prefix is
+`MZ`". A genuine Brotli (or other probe-matched) stream whose first bytes happen
+to look executable MUST remain detectable.
+
+The rule, settled by measurement in the archived `sfx-format-detection` design, grades the
+evidence:
+
+- A **weak** cue — a bare `MZ` or `\x7fELF` prefix — SHALL trigger the SFX scan and
+  nothing else. When the scan finds no archive magic, content probes run unchanged. Two
+  or four bytes are not proof, and refusing a probe on them would reject real streams.
+- A **strong** cue — a DOS header whose `e_lfanew` points at a `PE\0\0` signature, or an
+  ELF identification block with valid `EI_CLASS` / `EI_DATA` / `EI_VERSION` — with no
+  archive magic in the window SHALL suppress content probes entirely; detection falls
+  through to the extension guess or `FormatDetectionError`. A structurally confirmed
+  executable is not a compressed stream.
+
+The system SHALL NOT tighten the Brotli probe with a **threshold** to satisfy this
+requirement: measured, a larger probe prefix does not reduce false positives (8.27% →
+8.13% of random data at 16x the prefix) and requiring decoded output loses real streams
+roughly one-for-one. That prohibition is about knobs traded against a false-positive rate,
+and it does **not** reach a check derived from the format's own invariant, which costs no
+real streams — see *A content probe SHALL NOT accept framing the source cannot hold*.
+
+The residual — arbitrary non-archive data that the Brotli probe claims, which is a far
+wider problem than executable prefixes — remains out of scope *here* and stays tracked
+separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10). The framing
+requirement narrows it from 3.5% of a real `/usr` tree to ~0.035%; it does not close it,
+and the registered wording needs three clauses, not one: the listing is wrong, a full read
+raises, and a prefix of fabricated bytes may already have been produced.
+
+#### Scenario: no silent wrong answer on executable-shaped prefix
+
+| Case | Expected |
+| --- | --- |
+| Low-entropy `MZ` stub + RAR/7z/ZIP payload in window | Detected as that archive — **not** `BROTLI` / fabricated member |
+| Real Brotli stream with non-executable prefix, `.br` extension | Unchanged — `BROTLI` / `PROBABLE` via content probe |
+| Real Brotli stream with non-executable prefix, no corroborating extension | Still `BROTLI` via content probe, now at `GUESS` |
+| Real Brotli (or other probe format) whose prefix coincides with a **weak** executable cue | Still detected as that stream — **not** forced to `FormatDetectionError` solely because two bytes were `MZ` |
+| **Strong** executable cue (validated PE / ELF), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
+| Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
+
 ### Requirement: Magic-less formats are detected by a content probe
 
 When the magic-byte table yields no match, the system SHALL run each registered
@@ -40,8 +88,10 @@ evidence than the other probes' claims. This does not change *what* is detected 
 what the system claims to know about it.
 
 The zlib and LZMA Alone probes keep `PROBABLE` unconditionally. Both measured **0 false
-positives in 24 000 random blobs**, so the confidence downgrade would cost honesty rather
-than buy it.
+positives in 20 000 random blobs**, so the confidence downgrade would cost honesty rather
+than buy it. (Alone was additionally re-measured at 0 over 4 000 blobs of 64 KiB; its
+real-world residual is a framing problem, not a confidence one — see the framing
+requirement.)
 
 Within Brotli, a probe-only hit whose **first meta-block is compressed** MAY keep
 `PROBABLE`: measured on random data, that class is accepted 0.014% of the time against
@@ -101,15 +151,11 @@ Probe-parameter tuning (larger prefix, minimum decoded output, WBITS whitelists)
 NOT be used in its place — each was measured to trade false positives for false negatives
 roughly one-for-one, or to reject real `.br` files.
 
-That is also the sense in which "the system SHALL NOT tighten the Brotli probe itself"
-in *Executable-looking prefixes must not silently become a wrong stream format* is to be
-read: it forbids buying a lower false-positive rate with a *threshold* — a bigger prefix,
-a minimum decoded size, an allowed-WBITS list — because every such knob costs real streams.
-It does not forbid a check derived from the format's own invariant, which by construction
-costs none. The two requirements therefore stand together, and the executable-prefix
-residual that requirement defers to `open-issues.md` P12 / `threat-model.md` O10 is narrowed
-by this change (from 3.5% of a real `/usr` tree to ~0.035%) rather than closed: P12 and O10
-stay open, re-scoped.
+That distinction — a threshold traded against a false-positive rate, versus a check the
+format's own framing already implies — is what *Executable-looking prefixes must not
+silently become a wrong stream format* is stating when it forbids "tightening the Brotli
+probe". The two requirements stand together; this one is the invariant, that one is the
+prohibition on knobs.
 
 #### Scenario: framing gate matrix
 
