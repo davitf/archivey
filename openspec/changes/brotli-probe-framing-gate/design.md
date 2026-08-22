@@ -71,6 +71,25 @@ the first-block invariant.
 Follow-up home: task **5.7** (was 2.3). Bound, ownership (detector vs richer probe
 callback), and accept-vs-reject on link-cap remain open until that change.
 
+### Decision (2026-08-22): probe-only decode failure = same type + flag + new diagnostic
+
+Maintainer ruling while applying: when a probe-only (`GUESS`) single-file read fails:
+
+- **Keep** `TruncatedError` / `CorruptionError` (no new subclass — `except TruncatedError`
+  must still catch).
+- **Rewrite** the message so it names unconfirmed identification and does not claim zero
+  output was produced.
+- Add `ArchiveyError.format_unconfirmed: bool = False`, set `True` on these raises;
+  `__str__` appends `format_unconfirmed=True`. Fits the existing raw-attribute pattern
+  (`source_format`, `member_name`, …) better than a new type or stuffing
+  `DetectionConfidence` onto every error.
+- Emit a **new** diagnostic code `PROBE_FORMAT_UNCONFIRMED` with
+  `UnconfirmedFormatContext.chosen_by="content_probe"`. Do **not** reuse
+  `EXTENSION_FORMAT_UNCONFIRMED` (that keys on empty listing + extension fallback).
+
+Corroborated (`.br` / `PROBABLE`) failures stay unchanged: `format_unconfirmed=False`,
+today's message, no probe-unconfirmed diagnostic.
+
 ## Why the probe needs the source length
 
 `content_probe(prefix: bytes) -> bool` cannot see it. Detection already can, via the

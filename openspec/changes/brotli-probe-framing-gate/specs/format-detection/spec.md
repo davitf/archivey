@@ -195,6 +195,6 @@ cleanly is a success.
 
 | Case | Expected |
 | --- | --- |
-| Probe-only `GUESS` result, read fails | Error names the unconfirmed identification; not a bare truncation |
-| Probe + `.br` extension (`PROBABLE`), read fails | Ordinary truncation/corruption error — the format is corroborated |
+| Probe-only `GUESS` result, read fails | Same exception type; `format_unconfirmed=True`; message names unconfirmed identification; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
+| Probe + `.br` extension (`PROBABLE`), read fails | Ordinary truncation/corruption error — the format is corroborated; `format_unconfirmed=False` |
 | Probe-only `GUESS` result, read succeeds | Success; no error, no downgrade |
