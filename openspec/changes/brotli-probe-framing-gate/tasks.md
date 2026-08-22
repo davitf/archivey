@@ -33,6 +33,7 @@
 - [ ] 4.7 `./scripts/test.sh --all-configs` (the Brotli extra is optional — the probe must stay skipped, not crash, when it is absent)
 - [ ] 4.8 `openspec validate --strict brotli-probe-framing-gate`
 - [ ] 4.9 Re-scope `dev-docs/open-issues.md` P12 and `dev-docs/threat-model.md` O10 to three clauses, not one: the listing is wrong; a full read raises; **and a prefix of fabricated bytes may already have been produced** (65 536 bytes measured — see results doc §5.1). The registered "silent wrong answer" is overstated, but so was the first correction to it: "every read failed" describes the terminal exception, not the bytes delivered. Residual after **this** change (first-block only) is ~61/39 859 ≈ **0.15%** on the measured `/usr` tree; the chain walk's further cut to ~0.035% is task 5.7
+- [ ] 4.9a User docs (D6 → B): light note in `docs/formats.md` (and gotchas if needed) — Brotli detection is content-probe + framing gate; probe-only confidence is compressed-first `PROBABLE` / uncompressed-metadata `GUESS`; GUESS read failures set `format_unconfirmed`
 - [ ] 4.10 Archive this change in the finishing PR (`openspec archive brotli-probe-framing-gate --yes`)
 
 ## 5. Follow-ups (explicitly not in this change)

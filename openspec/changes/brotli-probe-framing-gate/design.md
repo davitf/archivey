@@ -108,6 +108,12 @@ already-compressed payloads). The framing gate keeps those streams; they must st
 accepted. They report `GUESS` when extensionless, which is the honest residual class —
 not a claim that uncompressed-first is illegal.
 
+### Decision (2026-08-22): update user docs in this change (D6 → B)
+
+Light touch in `docs/formats.md` (and gotchas if a one-liner helps): framing gate,
+confidence split, `format_unconfirmed` on GUESS failures. Specs + P12/O10 alone are not
+enough — those answers are user-visible.
+
 ## Why the probe needs the source length
 
 `content_probe(prefix: bytes) -> bool` cannot see it. Detection already can, via the
