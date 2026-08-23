@@ -355,7 +355,10 @@ Probe-only confidence is `GUESS` for the uncompressed/metadata-first class; a de
 failure there sets `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
 Structured residual families named in the investigation (OLE/CFB, COFF) are usually
 claimed end-to-end by the **LZMA Alone** probe at `PROBABLE`, so that honesty channel
-does not cover them yet (follow-up: provenance-based unconfirmed, task 5.8).
+does not cover them yet — measured, **68 of 128** fabricated probe claims on a real
+tree carry no signal (follow-up: `probe-provenance-unconfirmed`). A further
+`probe-completeness-gate` rejects a source that is fully visible and does not decode to
+completion, removing 91 of those 128.
 
 **Three clauses remain:** the listing can be wrong; a full read raises; **and** a prefix
 of fabricated bytes (65 536 measured) may already have been produced before that raise.
@@ -363,7 +366,7 @@ Not a silent success — but also not “every read failed with no output.”
 
 Product triage: `open-issues.md` P12. Investigation:
 [`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md).
-Change: `openspec/changes/brotli-probe-framing-gate/`.
+Change: `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate/`.
 
 **Adjacent and already closed:** the *archive-behind-a-stub* case (Topic 8 A-34) via
 `sfx-format-detection`.

@@ -19,11 +19,16 @@ the check", never "reject".
 Two uses follow from those two inputs together, and neither requires a new one:
 
 - **Framing.** A probe MAY test a declared framing length against the bytes the source can
-  actually hold (see `format-detection`).
+  actually hold (see `format-detection`). Brotli tests a declared meta-block length against
+  the source. **LZMA Alone** tests the weaker version of the same invariant: its 13-byte
+  header is followed by range-coder payload, so a source no longer than the header cannot
+  be an Alone stream — which was the whole of its measured real-world false-positive set,
+  4 files in 40 000, each exactly 13 bytes.
 - **Completeness.** When `source_length` does not exceed the prefix the probe was handed,
   the probe holds the whole source, and a decode ending in "needs more input" SHALL be a
   rejection (see `format-detection`). This is available to every probe without any
-  interface change.
+  interface change, and it is why the sentence above no longer names zlib as a probe that
+  has no use for the length: completeness applies to every probe that decodes.
 
 A probe MUST NOT use the source length to read beyond the prefix it was given, **except**
 through a bounded read facility the caller supplies explicitly for that purpose. Where such

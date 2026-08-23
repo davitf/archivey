@@ -1,9 +1,10 @@
-## 0. Relationship to the unarchived framing gate
+## 0. Relationship to the archived framing gate
 
-- [ ] 0.1 **`brotli-probe-framing-gate` is implemented but deliberately not archived** (its D7 → A, `bee7735` / #261). Its requirements therefore live in `openspec/changes/brotli-probe-framing-gate/specs/`, not in `openspec/specs/`. This change **ADDs** two requirements rather than MODIFYing that change's *A content probe SHALL NOT accept framing the source cannot hold*, so the deltas do not depend on it being archived and the two may archive in either order
-- [ ] 0.2 **On archiving whichever goes second**, reconcile one sentence: the framing requirement says a probe "**MAY** follow the chain of byte-aligned self-describing meta-blocks", which this change's chain-walk requirement supersedes with a stronger obligation. Keep this change's version; delete the permissive clause rather than leaving both
-- [ ] 0.3 This change **closes** `brotli-probe-framing-gate` task **5.7** (chain walk, deferred from its 2.3). Check that box when this lands rather than leaving two records of the same work
-- [ ] 0.4 The completeness rule is **new** — it is not one of that change's follow-ups. It came out of `scripts/exploration/probe_residual_census.py` while sizing 5.8, and it is 71% of the remaining residual against the chain walk's much smaller share
+- [x] 0.1 ~~`brotli-probe-framing-gate` is implemented but deliberately not archived~~ — **archived** as `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate`, its deltas synced into `openspec/specs/`. Its requirements are therefore **live**, and this change's deltas are written against shipped text rather than against another change's pending block
+- [x] 0.2 ~~On archiving whichever goes second, reconcile the "MAY follow the chain" clause~~ — **done up front instead.** Now that the framing requirement is live, this change MODIFIES it directly: the paragraph that deferred the chain walk to "`tasks.md` 5.7" pointed at a task list that is now inside an archive directory, so it is replaced by a pointer to this change's own chain-walk requirement. No dangling reference, and no two requirements claiming the same rule
+- [x] 0.3 ~~This change closes `brotli-probe-framing-gate` task 5.7~~ — **done**: that task is checked and marked as relocated here in the archived list
+- [ ] 0.4 The completeness rule is **new** — it was not one of that change's follow-ups. It came out of `scripts/exploration/probe_residual_census.py` while sizing 5.8, and it is 71% of the remaining residual against the chain walk's much smaller share
+- [ ] 0.5 **Archive order against the sibling.** `probe-provenance-unconfirmed` MODIFIES `error-handling` and ADDs to `format-detection`; this change MODIFIES `format-detection`'s framing requirement and `compressed-streams`. **No requirement is touched by both**, so the two archive in either order. The *sequencing* recommendation (this one first) is about measurement, not deltas — see 4.1
 
 ## 1. Completeness when the source is fully visible
 
