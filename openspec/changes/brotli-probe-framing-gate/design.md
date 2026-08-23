@@ -49,13 +49,87 @@ uncompressed and metadata blocks are byte-aligned and self-describing — their 
 offsets are known without decompressing anything. On a real `.br` file whose first
 meta-block is compressed (79 of 150) the walk stops immediately, having read four bytes.
 
+### Decision (2026-08-22): ship first-block only; defer the chain walk
+
+Maintainer ruling while applying: **this change implements the first-block framing check
+only.** The chain walk stays documented and measured, but is **out of scope** here.
+
+Why: the probe interface is `prefix` + optional `source_length`. That is enough for
+`header + declared_length <= source_length` on the first meta-block, with no extra I/O.
+The chain walk needs bytes at successor offsets that often lie past the peeked prefix
+(OLE's next header is ~7425). Putting those reads inside the probe would break the
+"MUST NOT read beyond the prefix" rule; putting them in the detector is a second
+shape that deserves its own change once the first-block gate has landed.
+
+Consequence for residual numbers claimed by *this* change: on the measured `/usr` tree
+the first-block check alone rejects 1316 of 1377 probe hits (leaves **61**, ≈0.15%); the
+chain walk's further cut to 14 (0.035%) is the follow-up's win, not this one's. Random-blob
+rates at large sizes stay closer to today's until the walk lands — at 16 MiB first-block
+is vacuous. Zero false negatives is unchanged: every complete valid stream still satisfies
+the first-block invariant.
+
+Follow-up home: task **5.7** (was 2.3). Bound, ownership (detector vs richer probe
+callback), and accept-vs-reject on link-cap remain open until that change.
+
+### Decision (2026-08-22): probe-only decode failure = same type + flag + new diagnostic
+
+Maintainer ruling while applying: when a probe-only (`GUESS`) single-file read fails:
+
+- **Keep** `TruncatedError` / `CorruptionError` (no new subclass — `except TruncatedError`
+  must still catch).
+- **Rewrite** the message so it names unconfirmed identification and does not claim zero
+  output was produced.
+- Add `ArchiveyError.format_unconfirmed: bool = False`, set `True` on these raises;
+  `__str__` appends `format_unconfirmed=True`. Fits the existing raw-attribute pattern
+  (`source_format`, `member_name`, …) better than a new type or stuffing
+  `DetectionConfidence` onto every error.
+- Emit a **new** diagnostic code `PROBE_FORMAT_UNCONFIRMED` with
+  `UnconfirmedFormatContext.chosen_by="content_probe"`. Do **not** reuse
+  `EXTENSION_FORMAT_UNCONFIRMED` (that keys on empty listing + extension fallback).
+
+Corroborated (`.br` / `PROBABLE`) failures stay unchanged: `format_unconfirmed=False`,
+today's message, no probe-unconfirmed diagnostic.
+
+### Decision (2026-08-22): compressed-first probe-only keeps PROBABLE
+
+Maintainer ruling while applying: implement task **3.1a**. A Brotli content-probe match
+whose **first meta-block is compressed** reports `PROBABLE` even without a corroborating
+extension; uncompressed- or metadata-first probe-only hits stay `GUESS`.
+
+Why now (tied to the exception flag): `format_unconfirmed` / `PROBE_FORMAT_UNCONFIRMED`
+fire only on **GUESS**. So GUESS vs PROBABLE is not a cosmetic `FormatInfo` label — it
+gates whether a later decode failure is stamped as "format may have been wrong."
+Compressed-first measured ~0.014% acceptance on random data (vs ~100% for
+uncompressed-first) and 25/25 wild streams; that evidence is strong enough that those
+hits should take the corroborated failure path, not the unconfirmed one.
+
+Pin against drift: uncompressed-first remains **valid** (incompressible /
+already-compressed payloads). The framing gate keeps those streams; they must stay
+accepted. They report `GUESS` when extensionless, which is the honest residual class —
+not a claim that uncompressed-first is illegal.
+
+### Decision (2026-08-22): update user docs in this change (D6 → B)
+
+Light touch in `docs/formats.md` (and gotchas if a one-liner helps): framing gate,
+confidence split, `format_unconfirmed` on GUESS failures. Specs + P12/O10 alone are not
+enough — those answers are user-visible.
+
+### Decision (2026-08-22): leave §5 unchecked; do not archive (D7 → A)
+
+Maintainer ruling while applying: at the end of the implementing PR, **leave all §5
+follow-up boxes unchecked** and **do not** run `openspec archive`. Task 4.10 stays open.
+The change remains in-flight under `openspec/changes/brotli-probe-framing-gate/` until a
+later explicit archive. Unchecked §5 items (including 5.7 chain walk) are the durable
+record of what was deferred.
+
 ## Why the probe needs the source length
 
-`content_probe(prefix: bytes) -> bool` cannot see it. Detection can: `getsize` for a path,
-an end-relative seek for a seekable stream, and — free — the peek itself, since
-`_peek_prefix` returns short when the file is smaller than the request, so any file below
-`DETECTION_LIMIT` already reveals its exact size. Only a non-seekable stream longer than
-the peek has no answer, and there the gate is skipped rather than guessed.
+`content_probe(prefix: bytes) -> bool` cannot see it. Detection already can, via the
+existing `source_byte_size()` helper (`streams/streamtools/binaryio.py`): path → `stat`,
+then a stream's `.size`, then `try_get_size()`, then a cheap `SEEK_END` only when that
+seek is O(1). Do **not** reimplement that dispatch beside `_peek_prefix`. When
+`source_byte_size` returns `None` (non-seekable / unknown length), the gate is skipped
+rather than guessed.
 
 Note the decoder *already* enforces the mirror-image rule at the other end: `b"\x06"`
 decodes to `b""` but `b"\x06" + anything` is rejected — trailing bytes after a finished
@@ -95,9 +169,10 @@ work (task 5.1), where heuristics are the point.
 
 A crafted file genuinely *is* a valid Brotli stream — the investigation builds a 2 171 066-byte
 one starting with `MZ` and round-trips it through the reference decoder. Brotli has no magic,
-so "simultaneously valid Brotli and something else" is a property of the format. The residual
-after the chain walk was 14 of 39 859 files on a real `/usr` tree (0.035%); that is the floor
-this change reaches, and the honest-error requirement is what covers it.
+so "simultaneously valid Brotli and something else" is a property of the format. After the
+**first-block** check, 61 of 39 859 files on a real `/usr` tree still hit (~0.15%); the
+deferred chain walk would cut that to 14 (0.035%). That residual, and the honest-error
+requirement, are what cover what this change leaves.
 
 ## Implementation notes
 
@@ -110,5 +185,7 @@ this change reaches, and the honest-error requirement is what covers it.
   bearing — they are exactly what rejects `MZ\x00…` and real PE DOS headers.
 - A metadata meta-block **may** carry `ISLAST=1`; an early version of the parser rejected
   that and disagreed with the reference decoder on 13% of the metadata class.
-- Bound the chain walk's link count. It is a file-driven loop over attacker-supplied
-  offsets.
+- **No chain walk in this change** (see Decision above). When the follow-up lands, bound
+  its link count — it is a file-driven loop over attacker-supplied offsets. The survey
+  script's reference is `chain_walk(..., max_links=64)` in
+  `scripts/exploration/brotli_probe_field_survey.py`.

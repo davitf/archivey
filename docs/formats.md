@@ -226,5 +226,15 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   executable header — today a Windows (`MZ`/PE) or Linux (ELF) one. A macOS
   Mach-O stub is **not** recognised yet, so a `.7z`/`.rar`/`.zip` appended to one is
   still misidentified; pass `format=` explicitly for those until that gap closes.
+- **Brotli** has no magic, so detection uses a content probe plus a framing check
+  **when the source length is known** (paths, `BytesIO`, and short non-seekable
+  peeks): a first meta-block that *declares* more bytes than the source holds is
+  rejected. On a non-seekable stream of unknown length the gate is skipped and today's
+  probe behaviour remains. Probe-only confidence is `PROBABLE` when the first meta-block
+  is compressed (or when the name ends in `.br`), and `GUESS` for uncompressed/metadata-first
+  without that extension. A later decode failure on a `GUESS` result sets
+  `ArchiveyError.format_unconfirmed` and emits `PROBE_FORMAT_UNCONFIRMED` — the bytes
+  may never have been Brotli, and a prefix of fabricated output may already have been
+  delivered before the error.
 - Confidence and evidence are part of `detect_format` / `FormatInfo` — see
   `format-detection` spec.

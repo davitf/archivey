@@ -64,6 +64,7 @@ class DiagnosticCode(str, Enum):
     FORMAT_EXTENSION_CONFLICT = "format_extension_conflict"
     EXPLICIT_FORMAT_LISTED_EMPTY = "explicit_format_listed_empty"
     EXTENSION_FORMAT_UNCONFIRMED = "extension_format_unconfirmed"
+    PROBE_FORMAT_UNCONFIRMED = "probe_format_unconfirmed"
     EMPTY_ARCHIVE = "empty_archive"
     ENCODING_ARGUMENT_UNUSED = "encoding_argument_unused"
     PASSWORD_ARGUMENT_UNUSED = "password_argument_unused"
@@ -170,17 +171,24 @@ class EmptyArchiveContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class UnconfirmedFormatContext(_JsonSafeContext):
-    """An empty listing under a format the archive's bytes never confirmed.
+    """A format claim the archive's bytes did not (or no longer) support.
 
-    ``detected_format`` is what content detection says now — ``None`` when it refuses
-    the bytes outright, which is also the only possible value for the ``"extension"``
-    variant (the extension fallback runs *because* every content signal declined).
+    Two events share this context:
+
+    * **Empty listing** (``chosen_by="argument"`` / ``"extension"``): listing finished
+      with zero members under a format chosen by an override or the filename, not by
+      content. ``detected_format`` is what a fresh content detection reports now —
+      ``None`` when every content signal declines (the extension fallback's usual case).
+    * **Probe-only decode failure** (``chosen_by="content_probe"``): listing succeeded
+      (typically one fabricated single-file member) and a later read raised. ``format``
+      is the probe's claim; ``detected_format`` is the same claim restated (there is no
+      separate re-detection step — the probe *was* content detection).
     """
 
     kind: Literal["unconfirmed_format"] = "unconfirmed_format"
     archive_name: str | None = None
     format: str = ""
-    chosen_by: Literal["argument", "extension"] = "argument"
+    chosen_by: Literal["argument", "extension", "content_probe"] = "argument"
     detected_format: str | None = None
 
 
@@ -316,6 +324,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.FORMAT_EXTENSION_CONFLICT: "format_conflict",
         DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY: "unconfirmed_format",
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: "unconfirmed_format",
+        DiagnosticCode.PROBE_FORMAT_UNCONFIRMED: "unconfirmed_format",
         DiagnosticCode.EMPTY_ARCHIVE: "empty_archive",
         DiagnosticCode.ENCODING_ARGUMENT_UNUSED: "unused_argument",
         DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: "unused_argument",
@@ -351,7 +360,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The membership of :meth:`DiagnosticPolicy.strict`. Five codes are deliberately **out**,
+The membership of :meth:`DiagnosticPolicy.strict`. Seven codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -363,6 +372,11 @@ and the reasons are part of the contract rather than an oversight:
   halts the caller is not an override.
 - ``STREAM_REWIND_REDECOMPRESSES`` — reports the caller's access pattern rather than the
   archive, and is most useful as a deliberately targeted tripwire.
+- ``PROBE_FORMAT_UNCONFIRMED`` — emitted while stamping a typed ``TruncatedError`` /
+  ``CorruptionError`` that already carries ``format_unconfirmed=True``. Putting it in
+  ``strict`` would replace that typed error with ``DiagnosticRaisedError`` mid-raise.
+  Default disposition is COLLECT (via ``DiagnosticPolicy``'s default); it is not a
+  member of :data:`ARCHIVE_INTEGRITY_CODES`.
 """
 
 

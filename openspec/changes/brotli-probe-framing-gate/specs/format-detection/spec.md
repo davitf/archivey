@@ -18,7 +18,8 @@ confidence value this change moves.
 | `.gz` / `.zst` | Same result as before; magic from codec descriptors |
 | zlib / LZMA Alone | `PROBABLE` / `content_probe` from descriptor functions — unchanged |
 | Brotli, extension corroborates | `PROBABLE` / `content_probe` |
-| Brotli, no corroborating extension | `GUESS` / `content_probe` |
+| Brotli, first meta-block compressed, no corroborating extension | `PROBABLE` / `content_probe` |
+| Brotli, first meta-block uncompressed/metadata, no corroborating extension | `GUESS` / `content_probe` |
 | ZIP / TAR / ISO | Container backend `MAGIC`, merged into the same table |
 
 ### Requirement: Executable-looking prefixes must not silently become a wrong stream format
@@ -53,10 +54,12 @@ real streams — see *A content probe SHALL NOT accept framing the source cannot
 
 The residual — arbitrary non-archive data that the Brotli probe claims, which is a far
 wider problem than executable prefixes — remains out of scope *here* and stays tracked
-separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10). The framing
-requirement narrows it from 3.5% of a real `/usr` tree to ~0.035%; it does not close it,
-and the registered wording needs three clauses, not one: the listing is wrong, a full read
-raises, and a prefix of fabricated bytes may already have been produced.
+separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10). The
+**first-block** framing check narrows it from 3.5% of a real `/usr` tree to ~0.15%
+(61/39 859 measured); the deferred chain walk would cut further to ~0.035%. It does not
+close the residual, and the registered wording needs three clauses, not one: the listing
+is wrong, a full read raises, and a prefix of fabricated bytes may already have been
+produced.
 
 #### Scenario: no silent wrong answer on executable-shaped prefix
 
@@ -64,7 +67,8 @@ raises, and a prefix of fabricated bytes may already have been produced.
 | --- | --- |
 | Low-entropy `MZ` stub + RAR/7z/ZIP payload in window | Detected as that archive — **not** `BROTLI` / fabricated member |
 | Real Brotli stream with non-executable prefix, `.br` extension | Unchanged — `BROTLI` / `PROBABLE` via content probe |
-| Real Brotli stream with non-executable prefix, no corroborating extension | Still `BROTLI` via content probe, now at `GUESS` |
+| Real Brotli stream with non-executable prefix, compressed-first, no corroborating extension | Still `BROTLI` via content probe, at `PROBABLE` |
+| Real Brotli stream with non-executable prefix, uncompressed/metadata-first, no corroborating extension | Still `BROTLI` via content probe, at `GUESS` |
 | Real Brotli (or other probe format) whose prefix coincides with a **weak** executable cue | Still detected as that stream — **not** forced to `FormatDetectionError` solely because two bytes were `MZ` |
 | **Strong** executable cue (validated PE / ELF), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
@@ -81,11 +85,14 @@ decompressor backend is missing (fall through to extension). Extension MAY overr
 a disagreeing probe (false-positive risk on short/adversarial input).
 
 A probe match SHALL report `detected_by="content_probe"`. For **Brotli specifically**,
-confidence SHALL be `PROBABLE` when the file extension corroborates the format and
-`GUESS` otherwise: Brotli's probe is the only one measured to accept ordinary files
-(3.5% of a real `/usr` tree), so a Brotli claim with nothing else agreeing is weaker
-evidence than the other probes' claims. This does not change *what* is detected — only
-what the system claims to know about it.
+confidence SHALL be `PROBABLE` when the file extension corroborates the format **or**
+when the first meta-block is compressed, and `GUESS` when the only evidence is a
+probe hit whose first meta-block is uncompressed or metadata. Brotli's probe is the
+only one measured to accept ordinary files (3.5% of a real `/usr` tree before the
+framing gate), and that false-positive mass concentrates in the uncompressed/metadata
+first-block class — so those claims are weaker evidence than a compressed-first hit or
+an extension-backed one. This does not change *what* is detected — only what the system
+claims to know about it.
 
 The zlib and LZMA Alone probes keep `PROBABLE` unconditionally. Both measured **0 false
 positives in 20 000 random blobs**, so the confidence downgrade would cost honesty rather
@@ -93,11 +100,15 @@ than buy it. (Alone was additionally re-measured at 0 over 4 000 blobs of 64 KiB
 real-world residual is a framing problem, not a confidence one — see the framing
 requirement.)
 
-Within Brotli, a probe-only hit whose **first meta-block is compressed** MAY keep
+Within Brotli, a probe-only hit whose **first meta-block is compressed** SHALL keep
 `PROBABLE`: measured on random data, that class is accepted 0.014% of the time against
 ~100% for an uncompressed first block, and 25 of 25 real streams found in the wild are
 compressed-first. An uncompressed or metadata first block is the class every false
-positive comes from, and takes `GUESS`.
+positive comes from, and takes `GUESS`. This split is load-bearing for error provenance:
+`format_unconfirmed` / `PROBE_FORMAT_UNCONFIRMED` apply only to `GUESS` failures, so a
+compressed-first probe-only hit takes the corroborated failure path. Uncompressed-first
+remains a valid stream class (incompressible payloads); the framing gate keeps those
+streams — they are not rejected for being uncompressed-first.
 
 The LZMA Alone probe SHALL attempt a bounded `FORMAT_ALONE` decode and MUST NOT
 claim streams that already matched exact magic (notably lzip `LZIP` and xz
@@ -108,7 +119,8 @@ claim streams that already matched exact magic (notably lzip `LZIP` and xz
 | Case | Expected |
 | --- | --- |
 | No magic; bounded prefix decompresses as Brotli, name is `x.br` | `BROTLI`, `PROBABLE`, `content_probe` |
-| No magic; bounded prefix decompresses as Brotli, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
+| No magic; bounded prefix decompresses as Brotli, first meta-block compressed, no corroborating extension | `BROTLI`, `PROBABLE`, `content_probe` |
+| No magic; bounded prefix decompresses as Brotli, first meta-block uncompressed/metadata, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
 | zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE`, `content_probe` — unchanged |
 | zlib-looking header, decode fails | No zlib claim; fall through to extension / fail |
 | `.br`, Brotli extra missing | Probe skipped; extension guess `BROTLI`/`GUESS` |
@@ -129,21 +141,25 @@ data** and **3.5% of a real `/usr` tree**, the latter dominated by files opening
 A **complete, valid** stream always satisfies
 `header_bytes + declared_length <= source_length` for a declared (uncompressed or
 metadata) meta-block, because those bytes must physically be present. When the source
-length is known, the Brotli probe SHALL reject a prefix whose first declared meta-block
-violates that invariant, and MAY follow the chain of byte-aligned self-describing
-meta-blocks — whose successors' offsets are known without decompressing — rejecting a
-link that overruns the source or that reaches the declared end with bytes left over.
+length is known, the Brotli probe SHALL reject a prefix whose **first** declared
+meta-block violates that invariant. Detection supplies that length via the existing
+cheap size probe (`source_byte_size`); when the length is unknown the check is skipped,
+not guessed, and detection behaves as before.
 
-The same principle SHALL apply to the **LZMA Alone** probe, whose only measured
-real-world false positives are files that are *exactly* its 13-byte header: a source no
-longer than the header carries no range-coder payload and cannot be an Alone stream.
-Rejecting those removed 4 of 4 measured hits across 40 000 real files. This is the same
-invariant, not a second heuristic — the framing a source declares must fit what it holds.
+A stronger **chain walk** — following byte-aligned self-describing meta-blocks and
+rejecting a later link that overruns, or a declared end with trailing bytes — is
+measured and sound (results doc; design Decision 2026-08-22) but is **not required by
+this change**. It needs reads past the peeked prefix and is deferred to a follow-up
+(`tasks.md` 5.7). This requirement is satisfied by the first-block check alone.
 
-The check SHALL be skipped, not guessed at, when the source length is unknown (a
-non-seekable stream longer than the peeked prefix); detection then behaves as before.
-No decompression beyond today's bounded prefix is required, and the chain walk SHALL be
-bounded in the number of links it follows.
+The same first-block principle SHALL apply to the **LZMA Alone** probe, whose only
+measured real-world false positives are files that are *exactly* its 13-byte header: a
+source no longer than the header carries no range-coder payload and cannot be an Alone
+stream. Rejecting those removed 4 of 4 measured hits across 40 000 real files. This is
+the same invariant, not a second heuristic — the framing a source declares must fit what
+it holds.
+
+No decompression beyond today's bounded prefix is required for the first-block check.
 
 This requirement is about *soundness*, not tuning: it MUST NOT reject any complete valid
 stream, so the real-stream corpus in `testing-contract` is the binding constraint.
@@ -161,15 +177,16 @@ prohibition on knobs.
 
 | Case | Expected |
 | --- | --- |
-| Real `.br` file whose first meta-block is compressed | Accepted (chain stops immediately) |
+| Real `.br` file whose first meta-block is compressed | Accepted (no declared length to check) |
 | Real `.br` file whose first meta-block is uncompressed (incompressible payload) | Accepted — declared length fits by construction |
 | `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
 | A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
-| Arbitrary data whose declared block happens to fit | Probe may still accept; residual is accepted and documented |
-| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | **Still accepted** — its constant magic declares MLEN 7422, which always fits. Known systematic residual, not a gate failure |
-| COFF object (`64 86 …`, e.g. a Go `.syso`) | Still accepted — same shape |
+| Arbitrary data whose first declared block happens to fit | Probe may still accept; residual is accepted and documented (first-block-only floor; chain walk is follow-up 5.7) |
+| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` today claims **LZMA Alone at `PROBABLE`** (Alone wins probe order) — not a Brotli residual at the detection layer |
+| COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Same split: Brotli gate accepts; end-to-end Alone at `PROBABLE` |
 | A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |
-| Non-seekable source of unknown length | Gate skipped; today's behaviour |
+| Non-seekable source of unknown length (≥ `DETECTION_LIMIT` peek) | Gate skipped; today's behaviour |
+| Non-seekable source shorter than the detection peek | Length inferred from the short peek; gate applies |
 | Source length known to be shorter than the declared metadata skip | Rejected |
 
 ### Requirement: A read failure on probe-only evidence names its provenance
@@ -189,6 +206,6 @@ cleanly is a success.
 
 | Case | Expected |
 | --- | --- |
-| Probe-only `GUESS` result, read fails | Error names the unconfirmed identification; not a bare truncation |
-| Probe + `.br` extension (`PROBABLE`), read fails | Ordinary truncation/corruption error — the format is corroborated |
+| Probe-only `GUESS` result, read fails | Same exception type; `format_unconfirmed=True`; message names unconfirmed identification; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
+| Probe + `.br` extension (`PROBABLE`), read fails | Ordinary truncation/corruption error — the format is corroborated; `format_unconfirmed=False` |
 | Probe-only `GUESS` result, read succeeds | Success; no error, no downgrade |

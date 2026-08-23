@@ -23,8 +23,10 @@ establishes the cause and the fix:
 - **The missing information is the file size.** A declared uncompressed/metadata
   meta-block asserts bytes the file must physically contain, so
   `header + declared_length <= file_size` is an *invariant of a complete valid file*, not a
-  heuristic. It cuts false positives 25× (4 KiB) to 162× (chain-walk form) with **0/150**
-  false negatives on real streams — 56 of which take the uncompressed path themselves.
+  heuristic. The **first-block** form cuts false positives ~25× at 4 KiB with **0/150**
+  false negatives on real streams — 56 of which take the uncompressed path themselves. A
+  stronger chain-walk form is measured (up to ~162×) but deferred (design Decision
+  2026-08-22).
 
 Across 364 false positives every read *ended* in an exception, so this is a
 **wrong-answer-then-wrong-error** defect rather than a silently wrong success. It is not
@@ -35,20 +37,23 @@ halves are worth fixing.
 
 ## What Changes
 
-- **Gate the Brotli probe on the framing invariant.** Before accepting, verify that a
-  first meta-block declaring a length fits inside the source; in the chain-walk form,
-  follow byte-aligned self-describing meta-blocks until the first compressed one. Sound by
-  construction: a complete valid Brotli file cannot fail it.
+- **Gate the Brotli probe on the framing invariant (first-block form).** Before accepting,
+  verify that a first meta-block declaring a length fits inside the source. Sound by
+  construction: a complete valid Brotli file cannot fail it. The stronger **chain-walk**
+  form (follow byte-aligned self-describing meta-blocks until the first compressed one) is
+  measured and deferred — it needs reads past the peeked prefix; see design Decision
+  2026-08-22 and task 5.7.
 - **Give the probe the source size it needs.** `content_probe(prefix) -> bool` cannot see
   it. Extend the codec-probe interface so a probe may consult the source length when
-  detection knows it (path, seekable stream, or a short peek that reveals the whole file),
-  and degrade to today's behaviour when it does not.
-- **Report probe-only *Brotli* results as `GUESS`, not `PROBABLE`.** A Brotli match with no
-  corroborating extension is not "probable" evidence; probe + `.br` stays `PROBABLE`.
-  **Scoped to Brotli**, not to magic-less probes generally: zlib and LZMA Alone measured
-  0/20 000 false positives and stay `PROBABLE` (see Decisions). The sibling "table sources"
-  requirement is MODIFIED in the same delta so the archived spec does not contradict itself
-  on confidence.
+  detection knows it via existing `source_byte_size()`, and degrade to today's behaviour
+  when that returns `None`.
+- **Report probe-only *Brotli* results as `GUESS` or `PROBABLE` by evidence class.** A
+  Brotli match with no corroborating extension is `GUESS` when the first meta-block is
+  uncompressed or metadata, and `PROBABLE` when it is compressed (or when `.br`
+  corroborates). **Scoped to Brotli**, not to magic-less probes generally: zlib and LZMA
+  Alone measured 0/20 000 false positives and stay `PROBABLE` unconditionally. The sibling
+  "table sources" requirement is MODIFIED in the same delta so the archived spec does not
+  contradict itself on confidence.
 - **Make the failure honest.** When a read fails on a single-file result whose only
   evidence was a content probe, the error SHALL say the format identification was
   unconfirmed rather than presenting as a plain truncation.
@@ -69,8 +74,12 @@ halves are worth fixing.
 - `compressed-streams` — the content-probe interface may consult the source length. Brotli
   uses it for the framing gate and **LZMA Alone** for the same invariant's weaker form (a
   source no longer than its 13-byte header cannot be an Alone stream); zlib is unaffected.
-- `error-handling` — a read failure on a probe-only single-file result names the weak
-  provenance instead of presenting as a truncation.
+- `error-handling` — a read failure on a probe-only single-file result keeps the same
+  exception type, sets `format_unconfirmed=True`, rewrites the message, and pairs with a
+  new diagnostic (below).
+- `diagnostics` — new `PROBE_FORMAT_UNCONFIRMED` code;
+  `UnconfirmedFormatContext.chosen_by` gains `"content_probe"`. Not a reuse of
+  `EXTENSION_FORMAT_UNCONFIRMED`.
 
 ## Decisions
 
@@ -82,10 +91,10 @@ Recorded because they were considered and rejected on measurement, not overlooke
   remove exactly the discovery it calls for. Disabling would also make a genuine `.br`
   file report *less* confidence than its bytes support — with the probe off, `.br` still
   detects via the extension guess, at `GUESS`.
-- **No `disable_brotli_probe` config field.** After the gate the real-world rate is
-  0.035%, which does not earn the API surface, documentation and test matrix. If a knob is
-  ever wanted it should be a general "content probes off" strictness setting, not a
-  per-format special case.
+- **No `disable_brotli_probe` config field.** After the first-block gate the real-world rate
+  is ~0.15% (chain walk would take it to ~0.035%), which does not earn the API surface,
+  documentation and test matrix. If a knob is ever wanted it should be a general "content
+  probes off" strictness setting, not a per-format special case.
 - **No WBITS whitelist.** The encoder emits exactly the requested `lgwin` at quality ≥ 2,
   and real files use the range: the two `.br` files on the measurement system are WBITS 15
   and 16, and twelve WOFF2 fonts split 19/22. Whitelisting the observed union is worth
