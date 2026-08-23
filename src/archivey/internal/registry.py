@@ -11,11 +11,10 @@ errors, rather than silently dropping a format whose dependency is absent (see
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from archivey.internal.base_reader import ReadBackend, WriteBackend
@@ -42,8 +41,22 @@ from archivey.types import (
     StreamFormat,
 )
 
+
+class ContentProbe(Protocol):
+    """Callable shape for registry content probes.
+
+    ``source_length`` is optional: when detection knows a cheap byte size it is passed
+    through so a probe can reject declared framing that cannot fit.
+    """
+
+    def __call__(
+        self, prefix: bytes, /, *, source_length: int | None = None
+    ) -> bool: ...
+
+
 __all__ = [
     "BackendRegistry",
+    "ContentProbe",
     "FormatAvailability",
     "FormatSupport",
     "MissingComponent",
@@ -162,15 +175,18 @@ class BackendRegistry:
             entries.extend(cls.SFX_MAGIC)
         return entries
 
-    def content_probes(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
+    def content_probes(
+        self,
+    ) -> list[tuple[ArchiveFormat, ContentProbe]]:
         """(format, probe) pairs for formats recognized by a content probe.
 
         Drawn from the backends and from the stream codecs that override the no-op base
         content probe (Brotli, which has no magic; zlib, whose 2-byte header is too
         unspecific to trust on its own; LZMA Alone, whose properties byte is similarly
-        too weak for exact magic).
+        too weak for exact magic). Probes accept ``prefix`` and optional
+        ``source_length=``.
         """
-        probes: list[tuple[ArchiveFormat, Callable[[bytes], bool]]] = []
+        probes: list[tuple[ArchiveFormat, ContentProbe]] = []
         for cls in self._reader_classes:
             probes.extend(cls.CONTENT_PROBES)
         for codec in SINGLE_FILE_CODECS:

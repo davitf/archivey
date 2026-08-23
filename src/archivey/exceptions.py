@@ -54,6 +54,10 @@ class ArchiveyError(Exception):
     ``SymlinkEscapeError("Symlink target escapes destination", member_name=name,
     link_target=target)``.
 
+    ``format_unconfirmed`` is a boolean (default ``False``): ``True`` when the format
+    claim rested only on a content probe at ``GUESS`` confidence, so a decode failure
+    should not be read as "this known format truncated."
+
     **Escape exactly once, at the outermost message.** Everything a message
     interpolates should therefore be raw when it goes in — which is what the two
     helpers are for, and why neither of them is a matter of taste:
@@ -76,6 +80,7 @@ class ArchiveyError(Exception):
         archive_name: str | None = None,
         member_name: str | None = None,
         link_target: str | None = None,
+        format_unconfirmed: bool = False,
     ) -> None:
         self.raw_message = message
         message = escape_control_chars(message)
@@ -85,6 +90,7 @@ class ArchiveyError(Exception):
         self.archive_name = archive_name
         self.member_name = member_name
         self.link_target = link_target
+        self.format_unconfirmed = format_unconfirmed
 
     def __str__(self) -> str:
         parts = [self.message]
@@ -97,6 +103,8 @@ class ArchiveyError(Exception):
         if self.source_format:
             # Human label (ZIP / TAR_GZ / SEVEN_Z), not ArchiveFormat.ZIP repr.
             parts.append(f"format={self.source_format.display_name}")
+        if self.format_unconfirmed:
+            parts.append("format_unconfirmed=True")
         if len(parts) == 1:
             return self.message
         return f"{self.message} ({', '.join(parts[1:])})"

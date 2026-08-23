@@ -342,37 +342,31 @@ Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Th
 Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a
 Unix-only test, because a name containing control bytes cannot be created on NTFS.
 
-### O10. A content probe fabricates a member from arbitrary attacker bytes — open
+### O10. A content probe fabricates a member from arbitrary attacker bytes — narrowed
 
-Brotli has no magic number, so `detect_format` recognizes it by decoding a 256-byte
-prefix (`BrotliCodec.content_probe`). Measured 2026-08-19: **8.27%** of uniformly random
-4 KiB blobs pass that probe, and **7.3%** of them come back from `detect_format` as
-`ArchiveFormat.BROTLI` end to end. `open_archive` on such a file does not fail — it
-returns a reader with one fabricated `<name>.uncompressed` member whose contents are
-whatever the decoder produced from bytes that were never a Brotli stream.
+Brotli has no magic number, so `detect_format` recognizes it by a content probe. Before
+the framing gate that accepted **~8.2%** of random data and **~3.5%** of a real `/usr`
+tree. `open_archive` listed one fabricated `<name>.uncompressed` member.
 
-That is a trust-boundary issue rather than a gotcha: the source is untrusted input by
-definition (`archive bytes` is the primary attacker-controlled surface in this model),
-and the failure mode is a *plausible answer* rather than an error, so a caller
-extracting from a directory of unknown files gets a file it has no reason to distrust.
-Nothing is executed and no path escapes — the impact is a wrong answer, not a write
-outside the destination — which is why this is ranked as a correctness gap and not as a
-containment one.
+**Mitigation shipped (first-block framing gate):** when the source length is known, a
+first meta-block that declares more bytes than the source holds is rejected. Residual on
+the measured tree is ~**0.15%** (61/39 859); a deferred chain walk would cut further.
+Probe-only confidence is `GUESS` for the uncompressed/metadata-first class; a decode
+failure there sets `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
+Structured residual families named in the investigation (OLE/CFB, COFF) are usually
+claimed end-to-end by the **LZMA Alone** probe at `PROBABLE`, so that honesty channel
+does not cover them yet (follow-up: provenance-based unconfirmed, task 5.8).
 
-The obvious mitigation does not work: a larger probe prefix leaves the rate at 8.13%,
-and demanding decoded output trades the false positives for false negatives roughly
-one-for-one (10 of 15 real Brotli streams lost at the setting that halves the FP rate).
-The looseness is in the bitstream, so closing it needs an understanding of the format
-rather than a parameter change — hence an investigation brief rather than a fix:
-[`investigations/brotli-content-probe-brief.md`](investigations/brotli-content-probe-brief.md).
-Product triage of the same defect: `open-issues.md` P12.
+**Three clauses remain:** the listing can be wrong; a full read raises; **and** a prefix
+of fabricated bytes (65 536 measured) may already have been produced before that raise.
+Not a silent success — but also not “every read failed with no output.”
 
-**Adjacent and already closed:** the *archive-behind-a-stub* case, where a real RAR / 7z
-/ ZIP payload behind an executable stub was claimed by this probe and opened as a
-fabricated member (Topic 8 A-34). `sfx-format-detection` fixed that by searching for
-archive magic before running any content probe, and by refusing content probes outright
-on a structurally confirmed PE/ELF prefix. What remains under O10 is the case where the
-bytes are not an archive at all.
+Product triage: `open-issues.md` P12. Investigation:
+[`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md).
+Change: `openspec/changes/brotli-probe-framing-gate/`.
+
+**Adjacent and already closed:** the *archive-behind-a-stub* case (Topic 8 A-34) via
+`sfx-format-detection`.
 
 ## OPEN gaps — compatibility
 

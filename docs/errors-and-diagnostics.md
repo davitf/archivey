@@ -55,6 +55,7 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | --- | --- |
 | `EMPTY_ARCHIVE` | The listing finished, with no error, and there were no members. Not an error: an empty tar is a real thing (`tar cf empty.tar --files-from /dev/null`), and it is byte-identical to a zero-filled junk file of the same size. |
 | `EXTENSION_FORMAT_UNCONFIRMED` | The format came from the **filename**, nothing in the bytes confirmed it, and the listing came back empty. The classic shape is 32 KiB of zeros called `z.tar`. |
+| `PROBE_FORMAT_UNCONFIRMED` | A single-file format came from a content probe at `GUESS` confidence (today: extensionless Brotli whose first meta-block was uncompressed/metadata), and a later decode failed. The matching exception also has `format_unconfirmed=True`. Partial output may already have been produced. |
 | `EXPLICIT_FORMAT_LISTED_EMPTY` | You passed `format=`, the listing came back empty, and detection disagrees. `format=` stays an override — wrong extensions are exactly what it is for — so this tells you rather than refusing. |
 | `PASSWORD_ARGUMENT_UNUSED` | You passed `password=` to a format with no encryption. Passing a keyring across a batch of mixed archives is the intended use, so it is accepted and simply never consulted. |
 | `ENCODING_ARGUMENT_UNUSED` | You passed `encoding=` to a backend that decodes names another way — 7z stores UTF-16, RAR decodes in its own parser, directory and single-file names come from the filesystem. |

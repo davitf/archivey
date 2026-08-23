@@ -23,19 +23,21 @@ from typing import (
 
 if TYPE_CHECKING:
     from archivey.internal.password import _PasswordCandidates
+    from archivey.internal.registry import ContentProbe
     from archivey.measurement import IoStats
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.diagnostics import (
     DiagnosticCode,
+    DiagnosticDisposition,
     DiagnosticSummary,
     EmptyArchiveContext,
     ExtractionReport,
     MemberListReport,
     UnconfirmedFormatContext,
 )
-from archivey.escaping import quoted
+from archivey.escaping import escape_control_chars, quoted
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -173,7 +175,7 @@ class ReadBackend(ABC):
     # Formats this backend reads that have no exact magic and are recognized by a content
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
-    CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
+    CONTENT_PROBES: tuple[tuple[ArchiveFormat, ContentProbe], ...] = ()
     # Whether open_archive(streaming=True) may open a NON-SEEKABLE source: true for
     # formats walkable front-to-back (TAR, the single-file codecs), false for formats
     # whose index/metadata is not at the front (ZIP's central directory, ISO's
@@ -378,6 +380,9 @@ class BaseArchiveReader(ArchiveReader):
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
         self._format_provenance: FormatProvenance | None = None
+        # PROBE_FORMAT_UNCONFIRMED is one provenance fact per reader, not per raised
+        # exception — retries must not multiply the diagnostic (or burn retention slots).
+        self._probe_unconfirmed_emitted: bool = False
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
         # When true, progressive registration enforces ListingLimits (scan_members).
@@ -900,29 +905,101 @@ class BaseArchiveReader(ArchiveReader):
 
     def _emit_unconfirmed_format(
         self,
-        chosen_by: Literal["argument", "extension"],
+        chosen_by: Literal["argument", "extension", "content_probe"],
         detected_format: str | None,
+        *,
+        escalate_as: type[BaseException] | None = None,
+        escalate_message: str | None = None,
+        escalate_kwargs: dict[str, object] | None = None,
     ) -> None:
-        code = (
-            DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
-            if chosen_by == "argument"
-            else DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
-        )
+        if chosen_by == "argument":
+            code = DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
+        elif chosen_by == "extension":
+            code = DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
+        else:
+            code = DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
         format_name = self._format.display_name
-        detected_text = detected_format or "nothing (detection refuses these bytes)"
-        self._diagnostics_collector.emit(
-            code=code,
-            message=(
+        if chosen_by == "content_probe":
+            message = (
+                f"Decode failed for {format_name}, which was identified only by a "
+                f"content probe at GUESS confidence; the source may not be that format"
+            )
+        else:
+            detected_text = detected_format or "nothing (detection refuses these bytes)"
+            message = (
                 f"Listed no members as {format_name}, which was chosen by "
                 f"{chosen_by} and not confirmed by the archive's bytes; "
                 f"content detection reports {detected_text}"
-            ),
+            )
+        self._diagnostics_collector.emit(
+            code=code,
+            message=message,
             context=UnconfirmedFormatContext(
                 archive_name=self._archive_name,
                 format=format_name,
                 chosen_by=chosen_by,
                 detected_format=detected_format,
             ),
+            escalate_as=escalate_as,
+            escalate_message=escalate_message,
+            escalate_kwargs=escalate_kwargs,
+        )
+
+    def _mark_format_unconfirmed(self, exc: ArchiveyError) -> None:
+        """Stamp a probe-only GUESS decode failure and emit the matching diagnostic."""
+        if not exc.format_unconfirmed:
+            format_name = (exc.source_format or self._format).display_name
+            detail = exc.raw_message
+            new_msg = (
+                f"Format identification was unconfirmed (content probe only); "
+                f"the source may not be {format_name}. Decode failed: {detail}. "
+                f"Partial output may already have been produced"
+            )
+            escaped = escape_control_chars(new_msg)
+            exc.raw_message = new_msg
+            exc.message = escaped
+            exc.args = (escaped,)
+            exc.format_unconfirmed = True
+
+        if self._probe_unconfirmed_emitted:
+            return
+
+        # Under pedantic() (default=RAISE), a bare emit would raise DiagnosticRaisedError
+        # mid-raise and destroy the typed TruncatedError/CorruptionError. escalate_as
+        # keeps that type when RAISE fires; under COLLECT we leave escalate_as unset so
+        # the already-stamped ``exc`` is re-raised by the caller.
+        escalate_as: type[BaseException] | None = None
+        escalate_kwargs: dict[str, object] | None = None
+        escalate_message: str | None = None
+        disposition = self._diagnostics_collector.policy.resolve(
+            DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
+        )
+        if disposition is DiagnosticDisposition.RAISE:
+            escalate_as = type(exc)
+            escalate_message = exc.raw_message
+            escalate_kwargs = {
+                "source_format": exc.source_format,
+                "archive_name": exc.archive_name,
+                "member_name": exc.member_name,
+                "link_target": exc.link_target,
+                "format_unconfirmed": True,
+            }
+
+        # Set before emitting: under RAISE the emit does not return, and a flag set
+        # afterwards would never be reached — every retried read would record the
+        # diagnostic again. `diagnostics` splits those concerns ("deduplication is a
+        # presentation concern; escalation is not"), and normally a deduplicated code
+        # still escalates on later occurrences via `escalate_only`. This code needs no
+        # such re-escalation: the caller re-raises the stamped `exc` — same type, same
+        # `format_unconfirmed=True` — on every occurrence, so a caller who asked to be
+        # stopped is stopped whether or not the diagnostic fires a second time.
+        self._probe_unconfirmed_emitted = True
+        self._emit_unconfirmed_format(
+            "content_probe",
+            self._format.display_name,
+            escalate_as=escalate_as,
+            escalate_message=escalate_message,
+            escalate_kwargs=escalate_kwargs,
         )
 
     def _publish_materialized(
@@ -1886,6 +1963,13 @@ class BaseArchiveReader(ArchiveReader):
             exc.archive_name = self._archive_name
         if exc.member_name is None and member_name is not None:
             exc.member_name = member_name
+        provenance = self._format_provenance
+        if (
+            provenance is not None
+            and provenance.probe_guess
+            and isinstance(exc, (TruncatedError, CorruptionError))
+        ):
+            self._mark_format_unconfirmed(exc)
 
     def io_stats(self) -> "IoStats | None":
         """Return I/O counters if measurement is enabled, else ``None``.
