@@ -62,9 +62,11 @@ than `(offset, magic, format)`:
 class DetectionEvidence:
     kind: EvidenceKind
     strength: EvidenceStrength
+    anchor: EvidenceAnchor
     offset: int
     bytes_examined: int
     validation: ValidationState
+    estimated_random_bits: float | None = None
     detail: str | None = None
 
 
@@ -107,6 +109,26 @@ Use a partial order with these classes, strongest first:
 Do not assign points and add them. Evidence is correlated: a `.br` suffix and a Brotli
 probe are not two random independent observations, and the base rate differs radically
 between `/usr`, a browser cache, and a backup corpus.
+
+### Anchoring and "bits of constraint"
+
+Whether evidence is anchored to a fixed string/offset is useful metadata. It explains why
+a decode behind a validated gzip or 7z header is categorically safer than an unconstrained
+Brotli decode, and a declaration may carry a conservative random-data constraint estimate
+for review and scheduling.
+
+It is **not** the top-level ordering rule, and constraint bits are not a score:
+
+- a short anchored gzip header can still be weaker than unrun far ISO evidence;
+- zlib has mandatory header grammar but no single fixed byte string;
+- v7 TAR has no `ustar` anchor but can have a checksum-valid 512-byte header;
+- CRC bits and grammar fields are not automatically independent, and real corpora are not
+  IID random bytes.
+
+Therefore "all anchored evidence first; cost within that class; stop on a hit" recreates
+the original defect in a different form: a weak near anchor can stop before stronger far
+evidence. Anchor kind and estimated bits may refine evidence classes and schedule equal
+classes, but the stopping rule remains "no unrun detector can tie or dominate".
 
 Compare candidates lexicographically:
 
@@ -167,6 +189,23 @@ proof that a later offset is reachable. A size gate may skip a detector only whe
 remaining source is provably too short.
 
 The extension is now available as metadata, but it cannot answer yet.
+
+### Bounded prefix workspace
+
+Use one detection-owned, monotonically growing prefix workspace for steps 1, 2, 4, and 6:
+
+- a path keeps one detection handle open;
+- a seekable caller stream records its entry position, reads forward once, and restores
+  once in an exception-safe exit path;
+- a non-seekable source uses the same replay buffer the backend will consume.
+
+Consumers request candidate-relative ranges from that workspace. Extending from 256 KiB to
+1 MiB reads only the delta, so the 2 MiB SFX window costs 2 MiB of unique source I/O rather
+than 3.31 MiB of overlapping path/stream reads. This is the bounded implementation of the
+`peek_range` contract needed by makeself, TAR SFX, and the Brotli chain walk.
+
+The workspace does not make exhaustive scan, tail access, or arbitrary range reads free.
+Its retained-byte ceiling and copied bytes remain part of the budget.
 
 ### Step 1 — near evidence
 
@@ -254,6 +293,10 @@ currently requests:
 
 to cover a 2,097,152-byte window: 1.65625× for paths/seekable streams, 1× underlying I/O
 plus repeated copying for `PeekableStream`.
+
+The bounded prefix workspace above should reduce the recommended implementation to 1×
+unique I/O for every source kind. The 1.65625× figure remains the cost of today's
+`peek_more(first_n_bytes)` implementation, not a desirable permanent contract.
 
 Every hit must pass its format-declared validator. Resume one byte past a rejected
 candidate; do not let an early decoy terminate the scan. Prefer an exact declared EOF as a
@@ -401,7 +444,7 @@ The validator strengthens or diagnoses the match; it is not always a hard gate.
 | bzip2 | `BZh`, block size ASCII `1`–`9`, then block magic `314159265359` or the empty-stream EOS marker | Strong and cheap at stream start. Treat a short source as incomplete. Later blocks are bit-aligned, but the first marker after the byte-aligned stream header is suitable here. |
 | compress `.Z` | `1f 9d`; max-code width at least 9 and supported up to 16; inspect block-mode and reserved bits | Width is structural. Historical decoders warn and continue when reserved bits are set, so reserved bits should downrank/warn rather than erase identity unless archivey intentionally rejects that compatibility. |
 | XZ | six-byte magic; two Stream Flags; CRC32 over flags; first flag byte zero; reserved high nibble zero | CRC is mandatory and ideal. A CRC-valid but unsupported check ID is "XZ with unsupported feature", not "not XZ". |
-| zstd | four-byte magic; reserved frame-header bit zero; parse the descriptor and present fields within bounds | Safe for the current frame version. Skippable-frame magic is a separate valid family and should be declared explicitly if supported. |
+| zstd | regular-frame magic or one of the 16 skippable-frame magics; reserved frame-header bit zero; parse the descriptor and present fields within bounds | Safe for the current frame version. A local check confirmed the installed decoder accepts a legal skippable frame before a regular frame while `detect_format` raises `FormatDetectionError`, so skippable-first detection is a current correctness gap. |
 | LZ4 frame | four-byte magic; FLG version `01`; reserved bits/BD legal; parse optional fields; verify the one-byte xxHash header checksum | The checksum is the strongest cheap check. Failure identifies a damaged header; it need not erase the four-byte format identity. |
 | lzip | `LZIP`; version 1; coded dictionary size resolves to 4 KiB–512 MiB | Mandatory for the current format. A future version is "lzip version unsupported", not arbitrary data. |
 | TAR | parse the full 512-byte header and accept the stored checksum against both unsigned POSIX and historical signed sums | This should replace bare `ustar`. It also permits a conservative v7-TAR candidate without `ustar`; require plausible numeric/type/name fields because checksum-only detection has a different collision surface. All-zero "empty TAR" remains fundamentally indistinguishable from padding. |
@@ -417,7 +460,9 @@ Two local checks confirmed the compatibility points:
 
 - a Python-produced LZMA Alone stream still decoded correctly after its dictionary field
   was changed to zero;
-- a gzip stream still decoded after changing `XFL` to 1 and `OS` to 254.
+- a gzip stream still decoded after changing `XFL` to 1 and `OS` to 254;
+- `backports.zstd` decoded a skippable-first stream that archivey's current detector did
+  not recognize.
 
 The first is not merely permissive decoder behaviour: the LZMA specification explicitly
 allows the zero value. Therefore `_alone_header_plausible()`'s `dict_size != 0` rejection
@@ -546,6 +591,14 @@ more structure, not a threshold:
 - walk byte-aligned metadata/uncompressed links;
 - parse compressed blocks through the real decoder under input/output limits;
 - accept a strong result when EOS is reached on the whole source.
+
+One suggested discriminator is
+`decoded_output_bytes >= consumed_input_bytes` for compressed-first hits. It may be useful
+telemetry, but it is not a Brotli invariant: the format permits a compressed meta-block
+whose representation expands, and an unusual encoder need not make the reference
+encoder's profitability choice. Never make it a hard rejection rule. It is worth adding
+the ratio to the residual census to see whether it improves ranking without false
+negatives on the positive corpus.
 
 ## 10. Cost model and presets
 
@@ -677,6 +730,13 @@ Specific experiments:
 - generate zlib streams for every legal `CINFO` and with `FDICT`;
 - build a `.br`-rich positive corpus with compressed-, uncompressed-, metadata-, and
   empty-first streams;
+- record decoded-output/input ratios for every compressed-first Brotli hit, as a possible
+  ranking feature rather than a validity gate;
+- add a skippable-first zstd fixture and decide how concatenated/skippable frames compose
+  into one detected stream;
+- compare a one-shot 65,557-byte ZIP tail read with a 4 KiB-then-expand strategy on the
+  residual population: ordinary ZIPs usually stop at near magic, so most tail attempts
+  may be non-ZIP misses where the adaptive strategy reads more, not less;
 - survey non-executable prefixed 7z/RAR files before treating the cue set as complete;
 - seed multi-archive polyglots to force an explicit ambiguity policy.
 
