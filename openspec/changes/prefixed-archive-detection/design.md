@@ -178,8 +178,16 @@ cue enumeration this change rewrites. Since OpenSpec replaces a MODIFIED require
 the two are **not** archive-order independent: whichever lands second rebuilds on the
 other's text.
 
-**That order is now settled: the framing gate archived first, in #262.** So this change is
-the one that rebuilds, and its MODIFIED block here still reflects the pre-archive text —
-rebasing it onto the live requirement is task 0.3, which lists the four specific things to
-inherit. Do that before implementing, not at archive time, or the rebuild lands in the same
-PR as the code and gets reviewed as if it were a behaviour change.
+**The expected order is that the framing gate archives first — #262 does that — but #262 is
+still open, so nothing is settled yet.** Two consequences, and they point opposite ways:
+
+- **Today the block below is correct.** It was written against the live text, and `main`
+  still carries that text, so this delta validates and reads accurately as things stand.
+- **The moment #262 merges it goes stale**, and this change becomes the one that rebuilds.
+
+So the block is deliberately *not* pre-rebased onto #262's not-yet-merged text — doing that
+would make it wrong against `main` now, in exchange for being right later, and would couple
+this proposal's review to another PR's outcome. Task 0.3 carries the inherit list, diffed
+against what #262 currently proposes, so the rebuild is mechanical when the time comes. Do
+it after #262 lands and before implementing here, not at archive time, or the rewrite
+arrives in the same PR as the code and gets reviewed as if it were a behaviour change.

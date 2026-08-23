@@ -49,14 +49,17 @@ decoding a bounded prefix — the magic alone is not the evidence.
 ZIP keeps its tier-3 needle even though tier 2 now finds prefixed ZIPs more cheaply,
 because tier 2 needs a seekable source and tier 3 does not.
 
-The tier-3 cue SHALL fire on `MZ`, `\x7fELF`, **any Mach-O magic**, or a **`#!` shebang**.
-The weak/strong grading is retained: a strong cue (a validated PE, a valid ELF ident block,
-or a Mach-O whose `cputype`/`filetype` parse) suppresses the content probes; a weak one
-does not.
+The tier-3 cue SHALL fire on `MZ`, `\x7fELF`, a **`#!` shebang**, or a **Mach-O header that
+parses** (thin `cputype`/`filetype`, or a fat arch table). The weak/strong grading is
+retained: a strong cue (a validated PE, a valid ELF ident block, or a parsing Mach-O header)
+suppresses the content probes; a weak one does not. Mach-O magic that does not parse raises
+**no** cue rather than a weak one — see the sibling requirement for why the shared
+`ca fe ba be` forces that asymmetry.
 
 A match SHALL report the embedded format with `payload_offset` = payload start and a
 `detected_by` naming which tier found it. No match SHALL fall through to content probes,
-extension, then `FormatDetectionError`. Native RAR/7z parsers SHALL accept a start offset
+far magic, extension, then `FormatDetectionError` — the order fixed by *Magic-first
+detection with extension fallback and confidence scoring*. Native RAR/7z parsers SHALL accept a start offset
 (read in place, no copy). A prefixed ZIP SHALL be reported as `ZIP` with a `payload_offset`
 — never as a stream codec — whichever tier finds it; ZIP needs no separate parser scan,
 since the reader already locates the central directory from the tail.
@@ -106,10 +109,12 @@ to look executable MUST remain detectable.
 The rule, settled by measurement in `sfx-format-detection`'s design (now archived) and
 extended by this change's, grades the evidence:
 
-- A **weak** cue — a bare `MZ`, `\x7fELF`, Mach-O magic, or `#!` prefix — SHALL trigger the
+- A **weak** cue — a bare `MZ`, `\x7fELF`, or `#!` prefix — SHALL trigger the
   forward scan and nothing else. When the scan finds no archive magic, content probes run
   unchanged. Two or four bytes are not proof, and refusing a probe on them would reject real
-  streams.
+  streams. **Mach-O magic alone is not a weak cue**: it raises no cue until its header
+  parses, because `ca fe ba be` is shared with Java class files and a weak cue would still
+  cost them the scan.
 - A **strong** cue — a DOS header whose `e_lfanew` points at a `PE\0\0` signature, an
   ELF identification block with valid `EI_CLASS` / `EI_DATA` / `EI_VERSION`, or a Mach-O
   header whose `cputype` and `filetype` parse — with no archive magic in the window SHALL
@@ -147,15 +152,22 @@ tracked separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O1
 | Real Brotli (or other probe format) whose prefix coincides with a **weak** executable cue | Still detected as that stream — **not** forced to `FormatDetectionError` solely because two bytes were `MZ` |
 | **Strong** executable cue (validated PE / ELF / Mach-O), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
-| **Fat (universal) Mach-O stub + 7z payload** | `SEVEN_Z` — the fat header must not stop the scan before the payload |
-| **Java `.class` file** (`ca fe ba be`, shared with the Mach-O fat magic) | Cue MUST NOT fire on the shared four bytes alone; a `.class` file SHALL NOT pay the `SFX_MAX` scan, and its content-probe behaviour is unchanged |
-| Mach-O magic whose `cputype` / `filetype` do not parse | **Weak** cue at most — four bytes are not proof, and the probes still run |
+| **Fat (universal) Mach-O stub + 7z payload** | `SEVEN_Z` — the fat header parses, so the cue fires, and it must not stop the scan before the payload |
+| **Java `.class` file** (`ca fe ba be`, shared with the Mach-O fat magic) | **No cue at all.** The bytes after the magic do not parse as a fat header, so a `.class` file SHALL NOT pay the `SFX_MAX` scan, and its content-probe behaviour is unchanged |
+| Mach-O magic whose `cputype` / `filetype` (or fat arch table) do not parse | **No cue** — not a weak one. Four bytes are not evidence for a magic this change is adding, and the probes still run |
 
-The `ca fe ba be` collision is the reason the Mach-O cue is graded rather than accepted on
-magic alone: it is simultaneously the Java class-file magic, so an ungraded cue would put
-every `.class` file in a source tree through a 2 MiB scan. The fat-versus-thin distinction
-matters for the opposite reason — a *fat* stub fails loudly today while a *thin* one is the
-shape that fails silently, so both belong in the matrix rather than in tasks prose.
+**Mach-O is the one cue that requires a successful header parse to fire at all**, and the
+rule differs from `MZ` / `\x7fELF` / `#!` deliberately. Those three raise a weak cue on their
+leading bytes alone; Mach-O SHALL NOT. `ca fe ba be` is simultaneously the Java class-file
+magic, so a bare-magic cue would put every `.class` file in a source tree through a 2 MiB
+scan — and grading it *weak* would not help, because a weak cue still triggers the forward
+scan. Only "no cue" actually spares it.
+
+Nothing is lost by requiring the parse: a real Mach-O SFX stub is a real executable, so its
+header parses by construction. So Mach-O has two states rather than three — parses (strong,
+suppressing the content probes) or does not (no cue, probes run unchanged) — and the
+fat/thin split matters within the first: a *fat* stub fails loudly today while a *thin* one
+is the shape that fails silently, so both belong in the matrix rather than in tasks prose.
 
 ### Requirement: detect_format() returns a FormatInfo
 
@@ -208,19 +220,11 @@ reports what precedes the payload*.
 
 **The exhaustive-scan opt-in is a config field, not a keyword argument.** `detect_format`
 takes no per-call operational keywords, so a flag that must work on both `detect_format`
-and `open_archive` has exactly one place to live:
-
-```python
-@dataclass(frozen=True)
-class ArchiveyConfig:
-    ...
-    exhaustive_prefix_scan: bool = False
-```
-
-This follows `strict_archive_eof`, the existing precedent for a cost-bearing behaviour
-flag: both default off, both are O(source) rather than O(constant), and both carry that
-cost in a comment where an implementer will read it. It SHALL NOT be added as a keyword
-argument to `open_archive`, which would leave `detect_format` unable to express it.
+and `open_archive` has exactly one place to live: `ArchiveyConfig.exhaustive_prefix_scan`,
+whose declaration is in the `archive-reading` *Explicit configuration object* requirement —
+**that dataclass is the freeze surface, and this requirement does not restate it.** It
+SHALL NOT be added as a keyword argument to `open_archive`, which would leave
+`detect_format` unable to express it.
 
 **Collectors:**
 
@@ -246,25 +250,53 @@ argument to `open_archive`, which would leave `detect_format` unable to express 
 
 The system SHALL execute format detection with this algorithm:
 
+The steps below are **ordered attempts, not a chain of alternatives**: each step that does
+not produce a match falls through to the next, and a step being *attempted* never prevents a
+later step from running. In particular a seekable source whose tail probe finds nothing SHALL
+still reach the forward scan, the content probes, far magic, and the extension fallback.
+
 1. Read up to `DETECTION_LIMIT` bytes (default 4096) from the source.
-2. Match against the magic-byte table (exact offsets). Match → `CERTAIN` /
-   `detected_by="magic"`.
-3. Else, if the source is seekable, run the **tail probe** for self-locating containers
-   (`format-zip`). A validated hit → `CERTAIN` / `detected_by="zip_tail_probe"`. This tier
-   runs with no prefix cue, because the format bounds its cost; it therefore runs even
-   when nothing about the leading bytes looks executable.
-4. Else, if a prefix cue fires, run the **bounded forward scan** within `SFX_MAX`. A
-   validated hit → `detected_by="sfx_scan"`.
-5. Else, if the caller set `exhaustive_prefix_scan`, run the **unbounded scan**. A
-   validated hit → `detected_by="exhaustive_scan"`.
-6. Else, if `Path` with known extension → `GUESS` / `detected_by="extension"`.
-7. Else → content probes, then fail (`FormatDetectionError` when nothing matches).
+2. **Near magic** — the magic-byte table at exact offsets within that window. Match →
+   `CERTAIN` / `detected_by="magic"`.
+3. **Tail probe** for self-locating containers (`format-zip`), when the source is seekable.
+   A validated hit → `CERTAIN` / `detected_by="zip_tail_probe"`. This tier runs with no
+   prefix cue, because the format bounds its cost; it therefore runs even when nothing
+   about the leading bytes looks executable.
+4. **Bounded forward scan** within `SFX_MAX`, when a prefix cue fires. A validated hit →
+   `detected_by="sfx_scan"`.
+5. **Unbounded scan**, only when the caller set `exhaustive_prefix_scan`. A validated hit →
+   `detected_by="exhaustive_scan"`.
+6. **Content probes** — formats with no exact magic (Brotli, zlib, LZMA Alone). Match →
+   `detected_by="content_probe"`, at the confidence the magic-less-formats requirement
+   specifies. Skipped entirely on a **strong** executable cue, per *Executable-looking
+   prefixes must not silently become a wrong stream format*; a weak cue does not gate them.
+7. **Far magic** — signatures outside the default window, today ISO 9660's `CD001` at offset
+   32 769, peeked on demand. Match → `CERTAIN` / `detected_by="magic"`. A source shorter
+   than the extended window yields no match and falls through; it is never rejected for
+   being too short.
+8. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
+9. `FormatDetectionError` when nothing matched.
 
 Steps 3–5 are the cost tiers specified in *Self-extracting (SFX) archives are detected
 behind an executable stub*; this requirement is where their placement relative to the
-extension fallback and the content probes is fixed. A **strong** executable cue at step 4
-that finds no needle suppresses step 7's content probes, per *Executable-looking prefixes
-must not silently become a wrong stream format*.
+content probes, far magic and the extension fallback is fixed.
+
+**The extension fallback SHALL remain last, after the content probes and far magic.** This
+matters beyond ordering aesthetics: *An unconfirmed format choice is reported when the
+listing is empty* defines `detected_by="extension"` as the state where magic, the content
+probes **and** far magic all declined, and the Brotli confidence split in *Magic-less
+formats are detected by a content probe* only has meaning if the probe runs before the
+extension can answer. Moving the extension earlier would silently downgrade a real `.br`
+stream from a probe result to an extension guess, and change what `format_unconfirmed`
+reports, without either requirement saying so.
+
+> **Note for the archiver.** The live text of this requirement lists the extension fallback
+> *before* the content probes and omits far magic entirely. That is a pre-existing defect,
+> not something this change introduces: shipped `detection.py` runs magic → SFX → probes →
+> far magic → extension → fail, and the unconfirmed-format requirement above describes that
+> same order. Because a MODIFIED requirement replaces its predecessor whole, restating the
+> live order verbatim would have re-shipped the error, so this block states the order the
+> implementation actually has.
 
 #### Scenario: unrecognised bytes, no path
 
@@ -280,7 +312,13 @@ must not silently become a wrong stream format*.
 | Prefixed ZIP, seekable, no executable cue (`#!` or otherwise) | Found at step 3, before any extension guess |
 | Prefixed ZIP whose extension is also known (`.pyz`) | Step 3 wins; `CERTAIN`, not the `GUESS` an extension would give |
 | Prefixed 7z behind an `MZ` stub | Not found at step 3 (7z cannot self-locate); found at step 4 |
-| Archive beyond `SFX_MAX`, opt-in off | Steps 3–4 miss; extension or `FormatDetectionError`; source not read past the window |
+| Archive beyond `SFX_MAX`, opt-in off | Steps 3–5 miss; probes, far magic, extension still run; source not read past the window |
+| **Seekable source, tail probe finds nothing, `MZ` stub with a 7z inside** | Scan still runs — a tail-probe miss SHALL NOT short-circuit step 4 |
+| **`x.br` holding a real Brotli stream, no cue** | `BROTLI` via the **content probe** at step 6, at the probe's confidence — **not** an extension `GUESS`; the extension never gets to answer first |
+| **Extensionless file holding a real Brotli stream** | Still reaches step 6 and is detected; nothing about a missing extension skips the probes |
+| **ISO 9660 image with `CD001` at offset 32 769** | `CERTAIN` / `"magic"` at step 7 — far magic is part of the algorithm, and precedes the extension |
+| ISO-less source shorter than the extended window | No far-magic match; falls through to extension rather than erroring |
+| Non-archive `.zip` (extension only, nothing matches) | `GUESS` / `"extension"` at step 8, reached only because 2–7 all declined — which is what makes `format_unconfirmed` meaningful |
 
 ## ADDED Requirements
 

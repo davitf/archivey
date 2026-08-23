@@ -1,3 +1,77 @@
+## MODIFIED Requirements
+
+### Requirement: Explicit configuration object
+
+The system SHALL define these complete frozen schemas:
+
+```python
+@dataclass(frozen=True)
+class ExtractionLimits:
+    max_extracted_bytes: int | None = 2 * 2**30
+    max_ratio: float | None = 1000.0
+    ratio_activation_threshold: int = 5 * 2**20
+    max_entries: int | None = 1_048_576
+    UNLIMITED: ClassVar["ExtractionLimits"]
+
+@dataclass(frozen=True)
+class ListingLimits:
+    max_members: int | None = 1_048_576
+    max_metadata_bytes: int | None = 64 * 2**20
+    UNLIMITED: ClassVar["ListingLimits"]
+
+@dataclass(frozen=True)
+class ArchiveyConfig:
+    use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
+    use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    strict_archive_eof: bool = False
+    exhaustive_prefix_scan: bool = False
+    extraction_limits: ExtractionLimits = ExtractionLimits()
+    listing_limits: ListingLimits = ListingLimits()
+    diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
+    max_retained_diagnostic_references: int = 256
+    on_diagnostic: Callable[[Diagnostic], None] | None = None
+```
+
+`max_retained_diagnostic_references` SHALL be non-negative. Policy/default/override
+mappings and the dataclasses SHALL be defensively immutable. `config=None` →
+immutable library default. No mutable global/context-local diagnostic policy or
+callback.
+
+A reader carries its open config, including `listing_limits` for its lifetime.
+Later `extract_all(config=...)` MAY override policy/callback/strictness/
+accelerators/`extraction_limits` for new work, but SHALL NOT change the
+reader's effective `listing_limits` or
+`max_retained_diagnostic_references` (see `diagnostics`). Per-call `limits`
+still beat `config.extraction_limits`, then reader/library default. Other
+per-call operational args stay outside `ArchiveyConfig`.
+
+`strict_archive_eof=False` follows ordinary diagnostic policy for failed EOF check;
+`True` forces `TruncatedError` after ordered diagnostic rules in `error-handling`.
+
+`exhaustive_prefix_scan=False` leaves detection's prefix search bounded by `SFX_MAX` and
+gated on a cue; `True` searches the whole source for the same validated signatures. It sits
+here rather than on `open_archive` because `detect_format` accepts no per-call operational
+keywords and both must be able to express it. Like `strict_archive_eof` it is a
+**cost-bearing behaviour flag, not a tuning constant**: the cost is O(source size) rather
+than O(constant), which is why it is opt-in and why it SHALL NOT be enabled implicitly. The
+behaviour it selects is specified below and in `format-detection`.
+
+`on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
+reads from a callback are allowed. Starting another operation on the same
+emitting reader/stream SHALL raise `UnsupportedOperationError`; other readers OK.
+Callbacks hold no Archivey collector/reader/stream/backend/registry lock
+(`diagnostics` / `reader-concurrency`).
+
+#### Scenario: config matrix
+
+| Case | Expected |
+| --- | --- |
+| `ArchiveyConfig()` | AUTO accelerators; EOF strictness false; **exhaustive prefix scan false**; documented extraction and listing defaults; COLLECT; budget 256; no callback |
+| Reader budget 10, then `extract_all(config=…budget=1000)` | New policy/callback may apply; diagnostics still under budget 10 |
+| `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
+| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime even if later `extract_all(config=...)` omits listing_limits |
+| `ArchiveyConfig(exhaustive_prefix_scan=True)` passed to `detect_format` or `open_archive` | Whole-source scan enabled for that call, with unchanged validation |
+
 ## ADDED Requirements
 
 ### Requirement: An exhaustive prefix scan is available and off by default

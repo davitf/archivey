@@ -44,6 +44,13 @@ number for a caller and consistent with the value the forward scan already repor
 `MZ`-prefixed ZIP. It is deliberately **not** the EOCD adjustment, which is 0 for `zipapp`
 and would report the motivating case as unprefixed.
 
+**One exception, because the definition has no subject there.** An empty archive
+(`total_entries == 0`) has no local file header to point at, so `min(header_offset)` is
+undefined. There `payload_offset` SHALL be the **EOCD-derived base** — the position the
+central directory occupies, `eocd_pos - size_cd`, which for an empty archive is where the
+ZIP data ends and also where it began. This is the only case where the two definitions are
+not interchangeable, and it is stated here rather than left to the validation matrix.
+
 The search bound is **derived from the format, not chosen**: the EOCD comment length field
 is a `uint16`, so the record cannot begin more than 65535 + 22 bytes before the end. The
 system SHALL NOT search further back than that, and SHALL NOT make the bound configurable —
@@ -108,5 +115,5 @@ concluding the source is not a ZIP.
 | Planted `PK\x05\x06` whose `comment_length` overruns the source | Rejected |
 | Planted EOCD pointing at bytes that are not `PK\x01\x02` | Rejected |
 | Valid EOCD preceded by an earlier decoy `PK\x05\x06` in member data | The real record is found; the decoy does not end the search |
-| Empty ZIP (`total_entries == 0`) | Accepted; `payload_offset` at the EOCD-derived base |
+| Empty ZIP (`total_entries == 0`) | Accepted; `payload_offset` at the EOCD-derived base — the stated exception to the earliest-local-header definition, since there is no local header |
 | ZIP64 archive behind a prefix | Followed via the locator and accepted |
