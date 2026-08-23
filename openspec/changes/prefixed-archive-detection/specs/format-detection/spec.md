@@ -120,6 +120,140 @@ tracked separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O1
 | Real Brotli (or other probe format) whose prefix coincides with a **weak** executable cue | Still detected as that stream — **not** forced to `FormatDetectionError` solely because two bytes were `MZ` |
 | **Strong** executable cue (validated PE / ELF / Mach-O), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
+| **Fat (universal) Mach-O stub + 7z payload** | `SEVEN_Z` — the fat header must not stop the scan before the payload |
+| **Java `.class` file** (`ca fe ba be`, shared with the Mach-O fat magic) | Cue MUST NOT fire on the shared four bytes alone; a `.class` file SHALL NOT pay the `SFX_MAX` scan, and its content-probe behaviour is unchanged |
+| Mach-O magic whose `cputype` / `filetype` do not parse | **Weak** cue at most — four bytes are not proof, and the probes still run |
+
+The `ca fe ba be` collision is the reason the Mach-O cue is graded rather than accepted on
+magic alone: it is simultaneously the Java class-file magic, so an ungraded cue would put
+every `.class` file in a source tree through a 2 MiB scan. The fat-versus-thin distinction
+matters for the opposite reason — a *fat* stub fails loudly today while a *thin* one is the
+shape that fails silently, so both belong in the matrix rather than in tasks prose.
+
+### Requirement: detect_format() returns a FormatInfo
+
+The system SHALL expose:
+
+```python
+archivey.detect_format(
+    source: str | Path | BinaryIO,
+    *,
+    config: ArchiveyConfig | None = None,
+) -> FormatInfo
+```
+
+```python
+class DetectionConfidence(Enum):
+    CERTAIN = "certain"
+    PROBABLE = "probable"
+    GUESS = "guess"
+
+class PrefixKind(Enum):
+    NONE = "none"
+    EXECUTABLE = "executable"
+    SCRIPT = "script"
+    OTHER_FORMAT = "other_format"
+    UNKNOWN = "unknown"
+
+@dataclass(frozen=True)
+class FormatInfo:
+    format: ArchiveFormat
+    confidence: DetectionConfidence
+    detected_by: str
+    encoding_hint: str | None
+    payload_offset: int = 0
+    diagnostics: DiagnosticSummary = DiagnosticSummary.empty()
+    prefix_kind: PrefixKind = PrefixKind.NONE
+```
+
+`config=None` → library default. `confidence` = magic / structural probe /
+extension-guess. `encoding_hint` is format-signal only (never a member scan).
+`payload_offset > 0` marks an SFX payload start.
+
+`prefix_kind` SHALL always be present, defaulting to `NONE`, so a caller may read it
+without testing `payload_offset` first. `NONE` SHALL correspond exactly to
+`payload_offset == 0`; the classification of a non-zero prefix is specified in *Detection
+reports what precedes the payload*.
+
+`detected_by` SHALL name the tier that produced the match, drawn from `"magic"`,
+`"zip_tail_probe"`, `"sfx_scan"`, `"exhaustive_scan"`, `"content_probe"`, and
+`"extension"`.
+
+**The exhaustive-scan opt-in is a config field, not a keyword argument.** `detect_format`
+takes no per-call operational keywords, so a flag that must work on both `detect_format`
+and `open_archive` has exactly one place to live:
+
+```python
+@dataclass(frozen=True)
+class ArchiveyConfig:
+    ...
+    exhaustive_prefix_scan: bool = False
+```
+
+This follows `strict_archive_eof`, the existing precedent for a cost-bearing behaviour
+flag: both default off, both are O(source) rather than O(constant), and both carry that
+cost in a comment where an implementer will read it. It SHALL NOT be added as a keyword
+argument to `open_archive`, which would leave `detect_format` unable to express it.
+
+**Collectors:**
+
+| Path | Behavior |
+| --- | --- |
+| Standalone `detect_format` | One finite collector; policy/callback/logging/budget; final summary on `FormatInfo.diagnostics` |
+| Inside `open_archive` | Open creates prospective-reader collector + detection watermark, passes that collector into detection. On success the reader owns it — no seed/merge/replay/copy; each retained occurrence charged once. Internal detection-range `FormatInfo.diagnostics` is not retained after handoff; same events remain on the reader's cumulative summary |
+
+#### Scenario: detect / handoff matrix
+
+| Case | Expected |
+| --- | --- |
+| Standalone detect with magic/extension conflict | `FormatInfo.diagnostics` has exact conflict count + retained detail under default budget |
+| Auto-detect inside `open_archive` retains conflict, open succeeds | Reader continues same collector/order/budget; no copied aggregate |
+| Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
+| Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
+| Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
+| Plain archive at offset 0 | `prefix_kind == NONE`, `payload_offset == 0` |
+| Prefixed archive found by any tier | `prefix_kind` set, `payload_offset > 0`, `detected_by` naming the tier |
+| `exhaustive_prefix_scan` left at its default | No unbounded read; a beyond-window archive stays undetected |
+
+### Requirement: Magic-first detection with extension fallback and confidence scoring
+
+The system SHALL execute format detection with this algorithm:
+
+1. Read up to `DETECTION_LIMIT` bytes (default 4096) from the source.
+2. Match against the magic-byte table (exact offsets). Match → `CERTAIN` /
+   `detected_by="magic"`.
+3. Else, if the source is seekable, run the **tail probe** for self-locating containers
+   (`format-zip`). A validated hit → `CERTAIN` / `detected_by="zip_tail_probe"`. This tier
+   runs with no prefix cue, because the format bounds its cost; it therefore runs even
+   when nothing about the leading bytes looks executable.
+4. Else, if a prefix cue fires, run the **bounded forward scan** within `SFX_MAX`. A
+   validated hit → `detected_by="sfx_scan"`.
+5. Else, if the caller set `exhaustive_prefix_scan`, run the **unbounded scan**. A
+   validated hit → `detected_by="exhaustive_scan"`.
+6. Else, if `Path` with known extension → `GUESS` / `detected_by="extension"`.
+7. Else → content probes, then fail (`FormatDetectionError` when nothing matches).
+
+Steps 3–5 are the cost tiers specified in *Self-extracting (SFX) archives are detected
+behind an executable stub*; this requirement is where their placement relative to the
+extension fallback and the content probes is fixed. A **strong** executable cue at step 4
+that finds no needle suppresses step 7's content probes, per *Executable-looking prefixes
+must not silently become a wrong stream format*.
+
+#### Scenario: unrecognised bytes, no path
+
+| Case | Expected |
+| --- | --- |
+| Non-seekable `BinaryIO`, no filename, no magic | `FormatDetectionError` |
+
+#### Scenario: tier ordering
+
+| Case | Expected |
+| --- | --- |
+| Seekable non-archive file with no executable cue | Tail probe still runs; finds nothing; falls through |
+| Prefixed ZIP, seekable, no executable cue (`#!` or otherwise) | Found at step 3, before any extension guess |
+| Prefixed ZIP whose extension is also known (`.pyz`) | Step 3 wins; `CERTAIN`, not the `GUESS` an extension would give |
+| Prefixed 7z behind an `MZ` stub | Not found at step 3 (7z cannot self-locate); found at step 4 |
+| Archive beyond `SFX_MAX`, opt-in off | Steps 3–4 miss; extension or `FormatDetectionError`; source not read past the window |
 
 ## ADDED Requirements
 
@@ -155,10 +289,18 @@ sources than the cost gate allows.
 
 ### Requirement: Detection reports what precedes the payload
 
-When `payload_offset > 0`, `FormatInfo` SHALL carry a `prefix_kind` describing what sits in
-front, so a caller can distinguish an archive meant to be extracted from an archive that
-merely happens to be embedded. archivey SHALL report what it observed and SHALL NOT infer
-the producer's intent beyond that.
+`FormatInfo` SHALL always carry a `prefix_kind` describing what sits in front of the
+payload, so a caller can distinguish an archive meant to be extracted from an archive that
+merely happens to be embedded, and can read the field without first testing
+`payload_offset`. archivey SHALL report what it observed and SHALL NOT infer the producer's
+intent beyond that.
+
+`prefix_kind == NONE` SHALL hold exactly when `payload_offset == 0`. The two are reported
+together and cannot disagree: a prefix that detection could not classify is `UNKNOWN`, not
+`NONE`. This is why `payload_offset` is defined in `format-zip` as the position of the
+earliest local file header rather than as the ZIP's internal offset adjustment — under the
+adjustment definition a `zipapp` file would report `0`, and the headline case for this
+change would be indistinguishable from an unprefixed archive.
 
 | `prefix_kind` | meaning |
 | --- | --- |

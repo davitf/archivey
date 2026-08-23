@@ -42,8 +42,43 @@ to about 32×. The tiering argument survives that comfortably — it does not de
 inefficiency.
 
 Getting the rationale right is what unlocks the design. If the cue were a correctness gate,
-widening it would be dangerous. Because it is a cost gate, widening it is free wherever the
-cost does not change — and irrelevant wherever the cost was never there to begin with.
+widening it would be dangerous — it would be trading away a defence. Because it is a cost
+gate, widening it is a **cost** decision, and the honest way to state that cost is as a
+*population*: the cue does not change what a matching file pays, it changes **which files
+match**.
+
+Today only `MZ` and ELF enter the `SFX_MAX` path. Adding Mach-O and `#!` enrolls every
+shell and Python script a caller points at — including the ordinary non-archive scripts in
+a backup corpus, which is VISION's founding use case. Counted on this container's `/usr`
+tree, 72 100 files:
+
+| prefix | files | share | status |
+| --- | --- | --- | --- |
+| `#!` shebang | 734 | 1.0% | **newly enrolled** |
+| Mach-O | 8 | 0.01% | **newly enrolled** |
+| ELF | 2 837 | 3.9% | already paying |
+| `MZ` | 31 | 0.04% | already paying |
+
+So the scanned population grows by 742 files against 2 868 — about **26% more files**
+paying the scan. That is the real cost move, and it is not free.
+
+What keeps it small is that the scan is bounded by the source as well as by `SFX_MAX`: a
+2 KB shell script costs 2 KB, not 2 MiB. Across those 734 shebang files the median is
+2 959 B, the mean 14 781 B, and exactly **one** file reaches `SFX_MAX` at all — a total of
+**10.3 MiB** of additional reads to sweep the entire tree. The population grows by a
+quarter; the bytes do not, because the newly enrolled population is made of small files.
+
+Both halves belong in the argument. "Widening is free" is wrong, and "every `#!` file now
+reads 2 MiB" is wrong by two orders of magnitude in the other direction. The claim that
+survives is: *widening enrolls more files, each bounded by `min(size, SFX_MAX)`, and for
+the shebang population that bound is small in practice.*
+
+Two consequences for the implementation. A tier-2 hit SHOULD short-circuit tier 3 — a
+`zipapp` or Spring Boot JAR is a seekable ZIP, so the tail probe answers it and it should
+never reach the scan at all, which removes the most common shebang case from the new
+population. And the cost regression (task 4.8) needs a shebang row: a `#!` non-archive
+source must read no more than `min(size, SFX_MAX)`, so the bound is pinned by a test rather
+than by this paragraph.
 
 ## The cost asymmetry
 
@@ -141,4 +176,10 @@ the cue as `MZ` / `\x7fELF`, and widening that set is the fix for the macOS defe
 requirement — for its confidence rows and its probe-tightening paragraph, disjoint from the
 cue enumeration this change rewrites. Since OpenSpec replaces a MODIFIED requirement whole,
 the two are **not** archive-order independent: whichever lands second rebuilds on the
-other's text. See task 0.3 for what to inherit.
+other's text.
+
+**That order is now settled: the framing gate archived first, in #262.** So this change is
+the one that rebuilds, and its MODIFIED block here still reflects the pre-archive text —
+rebasing it onto the live requirement is task 0.3, which lists the four specific things to
+inherit. Do that before implementing, not at archive time, or the rebuild lands in the same
+PR as the code and gets reviewed as if it were a behaviour change.

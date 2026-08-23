@@ -88,13 +88,18 @@ tier detection accordingly instead of applying one rule to all of them.
 
 - Modules: `src/archivey/internal/detection.py` (tier order, tail probe, widened cue,
   `prefix_kind`), `src/archivey/internal/sfx.py` (cue + validated scan), the ZIP backend's
-  prefix handling, `open_archive`'s new argument.
-- Public API: `FormatInfo` gains `prefix_kind`; `open_archive` / `detect_format` gain the
-  exhaustive-scan opt-in. Files that used to raise `FormatDetectionError` now open — a
-  behaviour change, and the point of the change.
-- Tests: `zipapp`, Spring Boot exec JAR, polyglot, makeself, 7z/RAR SFX with PE, ELF,
-  Mach-O and shebang stubs; non-seekable sources; the opt-in scan.
-- Docs: `docs/formats.md` detection prose.
+  prefix handling, `src/archivey/config.py` (the opt-in field).
+- Public API: `FormatInfo` gains `prefix_kind` (always present, default `NONE`) and a
+  `PrefixKind` enum; `ArchiveyConfig` gains `exhaustive_prefix_scan: bool = False`. The
+  opt-in is a **config field, not a keyword argument** — `detect_format` takes no per-call
+  operational keywords, so a kwarg on `open_archive` could not be expressed there. Files
+  that used to raise `FormatDetectionError` now open — a behaviour change, and the point of
+  the change.
+- Tests: `zipapp` (offsets from byte 0) *and* a concatenated ZIP (offsets from the payload),
+  Spring Boot exec JAR, polyglot, makeself, 7z/RAR SFX with PE, ELF, Mach-O and shebang
+  stubs; tail-probe validation against planted EOCD records; non-seekable sources; the
+  opt-in scan; the shebang cost bound.
+- Docs: `docs/formats.md` detection prose — tracked as task 4.11, not left implicit.
 - **Supersedes** the SFX requirement `sfx-format-detection` (#254) established, and modifies
   the *Executable-looking prefixes* requirement it added alongside — both now live, since
   #258 archived that change. The prerequisite is satisfied; see `design.md` §Sequencing.

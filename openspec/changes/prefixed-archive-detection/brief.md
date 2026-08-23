@@ -10,4 +10,4 @@
 
 **Your call later:** Whether there are prefixed 7z or RAR files in the wild that are not self-extracting executables. Everything seen so far says no, and your planned survey of old installers and media images would settle it. If something turns up, widen the cue again rather than abandon the tiering.
 
-**Bottom line:** A real correctness gap with a design that follows from getting one rationale straight — worth doing once the sibling SFX change lands.
+**Bottom line:** A real correctness gap with a design that follows from getting one rationale straight. The prerequisite is already met, so this is ready to pick up now.
