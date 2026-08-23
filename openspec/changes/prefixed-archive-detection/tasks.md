@@ -41,7 +41,10 @@
 - [ ] 2.3 Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader, and `offset + 32 + NextHeaderOffset + NextHeaderSize <= source length`, preferring an exact end match when several candidates validate
 - [ ] 2.4 Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a parseable main header
 - [ ] 2.5 Continue scanning past a candidate that fails validation rather than giving up
-- [ ] 2.6 Add TAR's `ustar` to the scanned needles so script-wrapped tarballs resolve
+- [ ] 2.6 Add TAR's `ustar` to the container needles so script-wrapped *uncompressed* tarballs resolve
+- [ ] 2.7 Add **compressor needles under a `#!` cue only** (maintainer decision, this round), so the makeself / NVIDIA / Anaconda `.run` family resolves. A shebang stub followed by a bare compressed stream is the one real production shape of "stub + stream codec"; under `MZ` / ELF / Mach-O the needle set stays container-only. Include the compression-method byte: measured over 497 ELF binaries (176 MB), gzip's 2-byte `1f 8b` collides **423** times (0.85 per binary) while the 3-byte `1f 8b 08` collides **3** times. A codec whose magic cannot reach that selectivity does not get a needle
+- [ ] 2.8 Resolve a compressor hit through the **existing inner-TAR probe** at the hit offset so a script-wrapped gzipped tar reports `TAR_GZ`, not `GZIP`, and validate it by decoding a bounded prefix — for these needles the decode is the evidence, not the magic
+- [ ] 2.9 Update the policy comment in `registry.sfx_magic_entries()` (`src/archivey/internal/registry.py`), which currently reads "the stream codecs never do, since a stub plus a bare compressed stream is not a thing anyone produces". That premise is false for shebang stubs and true for executable ones; the comment should say so and name the cue restriction, rather than being quietly contradicted by the code below it
 
 ## 3. Exhaustive scan and prefix reporting
 
@@ -55,7 +58,7 @@
 ## 4. Verify
 
 - [ ] 4.1 Red–green: `zipapp` output, a Spring Boot-style `#!/bin/sh` + ZIP, and a JPEG + appended ZIP all detect as `ZIP` and list their members. All three currently raise `FormatDetectionError` while opening fine with `format=ZIP` — assert the members, not just the absence of an error
-- [ ] 4.2 Red–green: a makeself-style `#!/bin/sh` + tar.gz detects and opens
+- [ ] 4.2 Red–green: a makeself-style `#!/bin/sh` + tar.gz detects as `TAR_GZ` and opens its members. Cover the negatives that define the scoping too: an `MZ` stub containing the same gzip bytes yields no scan claim, a `#!` stub whose own text contains `1f 8b 08` is rejected by the bounded decode, and a `#!` + non-tar gzip stream reports `GZIP`
 - [ ] 4.3 SFX matrix across stub kinds: PE, ELF (a real `rar a -sfx`), Mach-O, and shebang, for 7z and RAR
 - [ ] 4.4 Scan validation: the 6 magic bytes embedded in unrelated data are not claimed; a 7z whose declared end overruns the source is not claimed; a 7z with trailing bytes appended still is
 - [ ] 4.5 Non-seekable prefixed ZIP falls through rather than crashing or buffering the stream

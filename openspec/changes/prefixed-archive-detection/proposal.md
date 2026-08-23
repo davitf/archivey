@@ -32,8 +32,18 @@ tier detection accordingly instead of applying one rule to all of them.
   65535 + 22 bytes is a hard ceiling, not a tuning choice.
 - **Keep the forward scan gated, but widen the gate** from "leading bytes look executable"
   to "leading bytes look like a *prefix*": `MZ`, ELF, **Mach-O**, or a `#!` shebang. Same
-  window, same cost, and it covers the `.run` installer family (makeself, NVIDIA, Anaconda)
-  for every payload format — the one case the ZIP tail probe cannot reach.
+  window and the same per-file bound, but a **larger population** — counted on a `/usr`
+  tree, 742 more files enter the scan against 2 868 already there, about 26% more. Each is
+  still bounded by `min(size, SFX_MAX)`, and since the newly enrolled files are mostly small
+  scripts (median 2 959 B, one file in 734 reaching the window at all) the whole tree costs
+  10.3 MiB more. Not free, and not the 2 MiB-per-script the bound alone suggests;
+  `design.md` carries both halves.
+
+  What it buys is the `.run` installer family (makeself, NVIDIA, Anaconda) — the one case
+  the ZIP tail probe cannot reach. Those wrap a *compressed stream*, not a container, so
+  they need a compressor needle; that needle is searched **under the `#!` cue only**, since
+  a stub plus a bare compressed stream is a real shape for script stubs and not for
+  executable ones.
 
   **The Mach-O half is a live defect, not a tidy-up.** `sfx-format-detection` names `MZ`
   and ELF, so a macOS SFX stub matches no cue — and `cf fa ed fe` is *structurally

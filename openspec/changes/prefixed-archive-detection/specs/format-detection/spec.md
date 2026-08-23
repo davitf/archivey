@@ -12,8 +12,9 @@ look. Detection SHALL try, in order:
    format rather than by a constant we chose.
 3. **Prefix-cued forward scan** for containers that cannot locate themselves, within the
    shared `SFX_MAX` window (today 2 MiB; same binding as the RAR and 7z SFX scanners), run
-   before content probes. Needles: RAR (`52 61 72 21 1A 07`), 7z (`37 7A BC AF 27 1C`),
-   TAR's `ustar`, and ZIP's local-file header (`50 4B 03 04`).
+   before content probes. **Container needles**, searched under every cue: RAR
+   (`52 61 72 21 1A 07`), 7z (`37 7A BC AF 27 1C`), TAR's `ustar`, and ZIP's local-file
+   header (`50 4B 03 04`).
 4. **Exhaustive scan**, only when the caller opts in (`archive-reading`).
 
 Which magic tier 3 hunts for SHALL remain **backend-declared data**, not a table inside the
@@ -21,6 +22,29 @@ detector, and a backend SHALL declare only magic that can legitimately *begin* a
 payload — ZIP declares its local-file header and NOT the end-of-central-directory or
 spanned markers, which as needles inside a 2 MiB window would claim any executable
 containing those four bytes.
+
+**Compressor needles are searched under a `#!` cue only.** A script stub followed by a bare
+compressed stream — `#!/bin/sh` then a gzipped tar — is the makeself / NVIDIA / Anaconda
+`.run` installer family, and it is the one place where a stub plus a *stream codec* rather
+than a container is a real production shape. Under a `#!` cue the scan SHALL additionally
+search for stream-codec magic; under `MZ`, ELF or Mach-O it SHALL NOT.
+
+The restriction is a cost decision like the cue itself, and rests on needle length.
+Compressor magic is short, so it collides: measured across 497 ELF binaries (176 MB), gzip's
+2-byte `1f 8b` occurs **423** times — 0.85 per binary — while the 3-byte `1f 8b 08`, which
+pins the compression method to deflate, occurs **3** times in the same 176 MB. A
+stream-codec needle SHALL therefore include the method or equivalent discriminating byte
+where the format has one, and a codec whose magic cannot reach that selectivity SHALL NOT
+be declared as a needle at all.
+
+This narrows, rather than reverses, the standing rule that stream codecs declare no SFX
+magic. That rule's stated reason — that a stub plus a bare compressed stream is not a thing
+anyone produces — is false for shebang stubs specifically and remains true for executable
+ones, so the exception is scoped to where the counterexample actually lives.
+
+A compressor hit SHALL be resolved through the existing inner-TAR probe at the hit offset,
+so a script + gzipped tar reports `TAR_GZ` rather than `GZIP`, and SHALL be validated by
+decoding a bounded prefix — the magic alone is not the evidence.
 
 ZIP keeps its tier-3 needle even though tier 2 now finds prefixed ZIPs more cheaply,
 because tier 2 needs a seekable source and tier 3 does not.
@@ -56,7 +80,10 @@ its structural check SHALL NOT be reported and the scan SHALL continue past it.
 | `MZ` + RAR magic at offset N | `RAR`, `payload_offset == N` |
 | `\x7fELF` + RAR magic at offset N (a `rar a -sfx` stub) | `RAR`, `payload_offset == N` |
 | **Mach-O (thin 64-bit) + 7z magic at offset N** | `SEVEN_Z`, `payload_offset == N` — previously `BROTLI` with a fabricated member |
-| `#!/bin/sh` + tar.gz (a makeself `.run`) | `TAR_GZ`, `payload_offset` at the gzip magic |
+| `#!/bin/sh` + tar.gz (a makeself `.run`) | `TAR_GZ`, `payload_offset` at the gzip magic — compressor needle, reached only because the cue is `#!` |
+| `#!/bin/sh` + a gzip stream that is not a tar | `GZIP` at that offset; the inner-TAR probe declines and the honest answer is the stream codec |
+| `MZ` or ELF stub containing gzip magic | **No compressor needle is searched under an executable cue**; no claim from the scan |
+| `#!` stub whose own text happens to contain `1f 8b 08` | Bounded decode fails; not reported; scan continues |
 | `MZ` + ZIP local magic at offset N, non-seekable source | `ZIP`, `payload_offset == N` — tier 3, since tier 2 needs a seek |
 | Prefix + ZIP, seekable source | Found at tier 2 by the tail probe, not by the scan |
 | **Strong** cue, no needle in window | No content probe runs; extension guess or `FormatDetectionError` |
@@ -271,6 +298,11 @@ carries about itself:
 - **RAR 5**: the 8-byte marker SHALL be followed by a main archive header whose CRC32
   matches.
 - **RAR 4**: the 7-byte marker block SHALL be followed by a parseable main header.
+- **Stream codecs** (shebang cue only): the magic SHALL include the compression-method
+  byte where the format has one, and the candidate SHALL decode a bounded prefix
+  successfully. A hit that decodes SHALL then be run through the existing inner-TAR probe,
+  so a script-wrapped gzipped tar resolves to `TAR_GZ` rather than `GZIP`. These needles
+  are the shortest in the set, so the decode is doing the work the magic cannot.
 
 A candidate that fails validation SHALL NOT be reported, and the scan SHALL continue.
 Validation exists so that a hit can be reported at high confidence and so a scan cannot
@@ -282,6 +314,8 @@ sources than the cost gate allows.
 | Case | Expected |
 | --- | --- |
 | Stub + real 7z, CRC and end-offset agree | `SEVEN_Z` at that offset, `CERTAIN` |
+| `#!` stub + gzipped tar, bounded decode succeeds | `TAR_GZ` at the gzip offset |
+| `#!` stub + gzip magic that fails a bounded decode | Not reported; scan continues |
 | The 6 magic bytes appear in unrelated data | CRC fails; not reported; scan continues |
 | 7z whose declared end overruns the source | Not reported |
 | 7z with trailing bytes appended after the archive | Still reported — declared end within the source |
