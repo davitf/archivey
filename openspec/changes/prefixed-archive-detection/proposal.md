@@ -105,6 +105,14 @@ tier detection accordingly instead of applying one rule to all of them.
   operational keywords, so a kwarg on `open_archive` could not be expressed there. Files
   that used to raise `FormatDetectionError` now open — a behaviour change, and the point of
   the change.
+- **Detection order changes once, deliberately: far magic moves ahead of the content
+  probes.** Writing the tiers down exposed that exact magic at a fixed offset currently
+  loses to the weakest signal archivey has. A bootable ISO — whose reserved 32 KiB system
+  area holds bootloader code, the data class the Brotli probe accepts — is detected as
+  `BROTLI` / `GUESS` and opened as one fabricated `*.uncompressed` member, while its
+  filesystem stays perfectly readable by other tools. Reproduced on a real `pycdlib` image
+  by changing only the reserved area. Gated on source size so small files pay nothing;
+  `design.md` §Ordering has the measurements.
 - Tests: `zipapp` (offsets from byte 0) *and* a concatenated ZIP (offsets from the payload),
   Spring Boot exec JAR, polyglot, makeself, 7z/RAR SFX with PE, ELF, Mach-O and shebang
   stubs; tail-probe validation against planted EOCD records; non-seekable sources; the

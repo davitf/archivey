@@ -250,45 +250,83 @@ SHALL NOT be added as a keyword argument to `open_archive`, which would leave
 
 The system SHALL execute format detection with this algorithm:
 
+**The ordering principle is strength of evidence first, cost second.** A signal that proves
+little must never be consulted before one that proves a lot, because the cheap weak signal
+answers first and the strong one is never asked. Cost decides only between signals of
+comparable strength. Ranked by what each actually establishes:
+
+| evidence | what it proves | measured |
+| --- | --- | --- |
+| exact magic at a fixed offset — **near or far** | specific bytes in a specific place | ISO's 5-byte `CD001` collides by chance at ~2⁻⁴⁰ |
+| a validated structural hit (tail probe, 7z/RAR scan) | magic **and** self-consistency | near-certain by construction |
+| a content probe | a bounded decode did not fail | **weakest** — accepts 8.2% of arbitrary binary data, 3.5% of a real `/usr` tree, ~0.15% after the framing gate |
+| an extension | what someone named the file | no evidence about content at all |
+
+The content probe is the weakest signal in the system by a wide margin, so it SHALL run
+after **every** form of exact magic and after every validated structural hit.
+
 The steps below are **ordered attempts, not a chain of alternatives**: each step that does
 not produce a match falls through to the next, and a step being *attempted* never prevents a
 later step from running. In particular a seekable source whose tail probe finds nothing SHALL
-still reach the forward scan, the content probes, far magic, and the extension fallback.
+still reach the forward scan, the content probes, and the extension fallback.
 
 1. Read up to `DETECTION_LIMIT` bytes (default 4096) from the source.
 2. **Near magic** — the magic-byte table at exact offsets within that window. Match →
    `CERTAIN` / `detected_by="magic"`.
-3. **Tail probe** for self-locating containers (`format-zip`), when the source is seekable.
+3. **Far magic** — signatures outside the default window, today ISO 9660's `CD001` at offset
+   32 769. Match → `CERTAIN` / `detected_by="magic"`. This SHALL be attempted **before** the
+   content probes, because it is exact magic and they are the weakest signal available. It
+   SHALL be skipped when the source size is known to be smaller than the extended window,
+   and a source too short for it SHALL fall through rather than be rejected.
+4. **Tail probe** for self-locating containers (`format-zip`), when the source is seekable.
    A validated hit → `CERTAIN` / `detected_by="zip_tail_probe"`. This tier runs with no
    prefix cue, because the format bounds its cost; it therefore runs even when nothing
    about the leading bytes looks executable.
-4. **Bounded forward scan** within `SFX_MAX`, when a prefix cue fires. A validated hit →
+5. **Bounded forward scan** within `SFX_MAX`, when a prefix cue fires. A validated hit →
    `detected_by="sfx_scan"`.
-5. **Unbounded scan**, only when the caller set `exhaustive_prefix_scan`. A validated hit →
+6. **Unbounded scan**, only when the caller set `exhaustive_prefix_scan`. A validated hit →
    `detected_by="exhaustive_scan"`.
-6. **Content probes** — formats with no exact magic (Brotli, zlib, LZMA Alone). Match →
+7. **Content probes** — formats with no exact magic (Brotli, zlib, LZMA Alone). Match →
    `detected_by="content_probe"`, at the confidence the magic-less-formats requirement
    specifies. Skipped entirely on a **strong** executable cue, per *Executable-looking
    prefixes must not silently become a wrong stream format*; a weak cue does not gate them.
-7. **Far magic** — signatures outside the default window, today ISO 9660's `CD001` at offset
-   32 769, peeked on demand. Match → `CERTAIN` / `detected_by="magic"`. A source shorter
-   than the extended window yields no match and falls through; it is never rejected for
-   being too short.
 8. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
 9. `FormatDetectionError` when nothing matched.
 
-Steps 3–5 are the cost tiers specified in *Self-extracting (SFX) archives are detected
+Steps 4–6 are the cost tiers specified in *Self-extracting (SFX) archives are detected
 behind an executable stub*; this requirement is where their placement relative to the
 content probes, far magic and the extension fallback is fixed.
 
-**The extension fallback SHALL remain last, after the content probes and far magic.** This
-matters beyond ordering aesthetics: *An unconfirmed format choice is reported when the
-listing is empty* defines `detected_by="extension"` as the state where magic, the content
-probes **and** far magic all declined, and the Brotli confidence split in *Magic-less
-formats are detected by a content probe* only has meaning if the probe runs before the
-extension can answer. Moving the extension earlier would silently downgrade a real `.br`
-stream from a probe result to an extension guess, and change what `format_unconfirmed`
-reports, without either requirement saying so.
+**Far magic ahead of the content probes closes a silent wrong answer.** ISO 9660 reserves
+its first 32 KiB as a system area for a bootloader, so every bootable or hybrid image
+carries real executable code exactly where detection peeks — and the Brotli probe accepts
+such data at the rate above. Reproduced on a genuine `pycdlib`-built ISO: with a zeroed
+system area it detects as `ISO` / `CERTAIN` and lists its members, and with that area
+overwritten by boot-code-shaped bytes (the `isohybrid` shape, filesystem byte-identical) the
+same image detects as `BROTLI` / `GUESS`, opens as a single fabricated
+`*.uncompressed` member, and raises `CorruptionError` on read — while the ISO remains
+readable by other tools. Exact magic at a known offset was available the whole time and was
+never consulted.
+
+The size precondition keeps the move cheap. `source_byte_size()` is already computed for the
+framing gate at the probe step, so hoisting it costs nothing, and no ISO is smaller than the
+extended window — so a small source never pays the extended peek, and the only sources that
+do are ones nothing cheaper has identified.
+
+**The extension fallback SHALL remain last, after the content probes.** *An unconfirmed
+format choice is reported when the listing is empty* defines `detected_by="extension"` as
+the state where magic, the content probes **and** far magic all declined, and the Brotli
+confidence split in *Magic-less formats are detected by a content probe* only has meaning if
+the probe runs before the extension can answer. Moving the extension earlier would silently
+downgrade a real `.br` stream from a probe result to an extension guess, and change what
+`format_unconfirmed` reports, without either requirement saying so.
+
+**The extension is nonetheless read up front, and is a corroborator throughout, not only a
+final tier.** Its value is available from the first step and SHALL be used to grade other
+evidence — it decides the Brotli probe's `PROBABLE`-versus-`GUESS` split, and it is what a
+`FORMAT_EXTENSION_CONFLICT` is raised against. Being *last to answer* and *available
+throughout* are not in tension: the extension never outvotes evidence drawn from the bytes,
+and it still sharpens what that evidence is worth.
 
 > **Note for the archiver.** The live text of this requirement lists the extension fallback
 > *before* the content probes and omits far magic entirely. That is a pre-existing defect,
@@ -309,15 +347,18 @@ reports, without either requirement saying so.
 | Case | Expected |
 | --- | --- |
 | Seekable non-archive file with no executable cue | Tail probe still runs; finds nothing; falls through |
-| Prefixed ZIP, seekable, no executable cue (`#!` or otherwise) | Found at step 3, before any extension guess |
-| Prefixed ZIP whose extension is also known (`.pyz`) | Step 3 wins; `CERTAIN`, not the `GUESS` an extension would give |
-| Prefixed 7z behind an `MZ` stub | Not found at step 3 (7z cannot self-locate); found at step 4 |
-| Archive beyond `SFX_MAX`, opt-in off | Steps 3–5 miss; probes, far magic, extension still run; source not read past the window |
-| **Seekable source, tail probe finds nothing, `MZ` stub with a 7z inside** | Scan still runs — a tail-probe miss SHALL NOT short-circuit step 4 |
-| **`x.br` holding a real Brotli stream, no cue** | `BROTLI` via the **content probe** at step 6, at the probe's confidence — **not** an extension `GUESS`; the extension never gets to answer first |
-| **Extensionless file holding a real Brotli stream** | Still reaches step 6 and is detected; nothing about a missing extension skips the probes |
-| **ISO 9660 image with `CD001` at offset 32 769** | `CERTAIN` / `"magic"` at step 7 — far magic is part of the algorithm, and precedes the extension |
-| ISO-less source shorter than the extended window | No far-magic match; falls through to extension rather than erroring |
+| Prefixed ZIP, seekable, no executable cue (`#!` or otherwise) | Found at step 4, before any extension guess |
+| Prefixed ZIP whose extension is also known (`.pyz`) | Step 4 wins; `CERTAIN`, not the `GUESS` an extension would give |
+| Prefixed 7z behind an `MZ` stub | Not found at step 4 (7z cannot self-locate); found at step 5 |
+| Archive beyond `SFX_MAX`, opt-in off | Steps 4–6 miss; probes and extension still run; source not read past the window |
+| **Seekable source, tail probe finds nothing, `MZ` stub with a 7z inside** | Scan still runs — a tail-probe miss SHALL NOT short-circuit step 5 |
+| **`x.br` holding a real Brotli stream, no cue** | `BROTLI` via the **content probe** at step 7, at the probe's confidence — **not** an extension `GUESS`; the extension never gets to answer first |
+| **Extensionless file holding a real Brotli stream** | Still reaches step 7 and is detected; nothing about a missing extension skips the probes |
+| **Bootable/hybrid ISO whose 32 KiB system area is boot code the Brotli probe accepts** | `ISO` / `CERTAIN` / `"magic"` at step 3 — **not** `BROTLI` with a fabricated member. This is the ordering's reason for existing |
+| Plain ISO with a zeroed system area | `ISO` / `CERTAIN` / `"magic"`; unchanged from today |
+| Source smaller than the extended window, size known | Step 3 skipped without an extended peek; falls through |
+| Source too short for the ISO window, size unknown | Extended peek returns short; no match; falls through rather than erroring |
+| **Real Brotli stream larger than 32 KiB, no extension** | Step 3 attempts the extended peek and misses, then step 7 detects it — the reorder costs one bounded peek, never a detection |
 | Non-archive `.zip` (extension only, nothing matches) | `GUESS` / `"extension"` at step 8, reached only because 2–7 all declined — which is what makes `format_unconfirmed` meaningful |
 
 ## ADDED Requirements

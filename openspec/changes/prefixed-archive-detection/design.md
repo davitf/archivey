@@ -105,6 +105,56 @@ The first three are pure detection bugs: the reader already works, and stdlib `z
 opens all three, so archivey is currently worse than `zipfile` on a file the standard
 library itself produces. The cue never fires because the prefix is `#!`, not `MZ`.
 
+## Ordering: strength of evidence first, cost second
+
+Writing the tiers down forced the question of where they sit relative to everything else,
+and answering it surfaced a defect that has nothing to do with prefixes.
+
+The rule has to be **evidence strength first, cost only as a tie-break between comparable
+signals.** A weak signal placed early answers first, and the strong one is never asked — so
+ordering by cost alone silently trades correctness for latency. Ranked by what each actually
+establishes:
+
+| evidence | proves | measured |
+| --- | --- | --- |
+| exact magic at a fixed offset, near **or far** | specific bytes in a specific place | ISO's 5-byte `CD001` collides at ~2⁻⁴⁰ |
+| validated structural hit (tail probe, 7z/RAR scan) | magic **and** self-consistency | near-certain by construction |
+| content probe | a bounded decode did not fail | **8.2%** of arbitrary binary data, **3.5%** of a real `/usr` tree, ~0.15% after the framing gate |
+| extension | what someone named the file | nothing about the content |
+
+The content probe is the weakest signal archivey has, by a wide margin and by measurement.
+Shipped, it runs **fourth of five — ahead of far magic.** That inverts the rule, and ISO is
+where it bites: ISO 9660 reserves its first 32 KiB as a system area for a bootloader, so
+every bootable or hybrid image has real executable code sitting exactly where detection
+peeks, and executable code is the data class the Brotli probe accepts.
+
+Reproduced on a genuine `pycdlib`-built ISO, changing **only** the reserved area — the
+filesystem stays byte-identical, and other tools keep reading it:
+
+| system area | `detect_format` | `open_archive` |
+| --- | --- | --- |
+| zeroed | `ISO` / `CERTAIN` / `magic` | lists `README.`, reads correctly |
+| boot-code-shaped | **`BROTLI` / `GUESS` / `content_probe`** | one fabricated `*.uncompressed`; read raises `CorruptionError` |
+
+Exact magic was available at a known offset the entire time and was never consulted. This is
+the same silent-wrong-answer shape as the Mach-O defect, reached from the other end — there
+a missing cue let a probe claim a stub, here a late tier let a probe claim a whole
+filesystem.
+
+So far magic moves to second, right behind near magic. The cost is one bounded peek on
+sources that nothing cheaper identified, and it is gated on the source being at least as
+large as the window — `source_byte_size()` is already computed at the probe step for the
+framing gate, so hoisting it is free, and no ISO is under 32 KiB. Small files pay nothing.
+
+**A note on the extension, because "extension versus probes" is a false dichotomy.** The
+extension is read up front and used as a *corroborator* throughout: it is what
+`_brotli_probe_confidence` consults to split `PROBABLE` from `GUESS`, and what a format
+conflict is raised against. It is last to *answer* and available *throughout*, and those two
+facts are not in tension — it never outvotes evidence drawn from the bytes, but it does
+sharpen what that evidence is worth. The live requirement's "magic → extension → probes"
+reads as though the extension competes with the probes, which is what made it easy to
+restate wrongly.
+
 ## Why the scan can trust itself
 
 Not the reason to scan — cost decides that — but the reason a hit can be reported at
