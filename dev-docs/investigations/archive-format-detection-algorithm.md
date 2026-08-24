@@ -1,23 +1,26 @@
 # Archive format detection: independent design analysis
 
 **Date:** 2026-08-23  
-**Status:** complete analysis, not a normative specification  
+
+**Status:** complete analysis, not a normative specification; accepted as redesign input for
+PR #257 before that proposal is implemented
+
 **Inputs:** current `main` at `bee7735`, PR
 [#257](https://github.com/davitf/archivey/pull/257), PR
 [#262](https://github.com/davitf/archivey/pull/262), the measured Brotli investigation,
-the current detector, and the format specifications linked in §14.
+the current detector, and the format specifications linked in §15.
 
 ## Executive recommendation
 
 Keep an **ordered acquisition plan**, but do not keep **first match wins**.
 
-The detector should collect typed evidence for candidates, compare candidates by a
-small dominance relation, and stop only when no unrun detector can change the winner.
+The detector should collect typed evidence for candidates, compare totally ranked evidence
+classes with ordered tie-breakers, and stop only when no unrun detector can change the winner.
 This is not an additive score: adding a filename to a weak decode must never outweigh a
 checksum-validated header, and two correlated weak signals must never be promoted above
 one stronger signal.
 
-The default acquisition order should be:
+The full acquisition order should be:
 
 1. read the name, source capabilities, cheap size, and up to 4096 prefix bytes;
 2. evaluate every near signature and its format-declared structural validator;
@@ -31,8 +34,13 @@ The default acquisition order should be:
    try-hard/discovery policy;
 7. run **all** applicable magic-less content probes and retain all hits;
 8. use the filename as corroboration and, only now, as a last-resort candidate;
-9. select a unique undominated candidate, return an explicit ambiguity if there is no
-   unique winner, or raise `FormatDetectionError` if there is no candidate.
+9. select a unique maximal candidate; raise a dedicated `AmbiguousFormatError` carrying
+   tied maximal candidates when there is no unique winner, or `FormatDetectionError` when
+   there is no candidate.
+
+This is an evidence order, not a claim that every tier is enabled by the default budget.
+In particular, the always-on ZIP tail tier is blocked from `BALANCED` until its aggregate
+cost is measured on the founding backup workload (§10 and §13).
 
 PR #257 is substantially right about putting far magic and validated prefix searches
 ahead of content probes. I disagree with four load-bearing parts:
@@ -59,6 +67,15 @@ than `(offset, magic, format)`:
 
 ```python
 @dataclass(frozen=True)
+class DetectionDeclaration:
+    name: str
+    max_evidence: EvidenceStrength
+    required_capabilities: frozenset[DetectionCapability]
+    estimated_cost: DetectionCostEstimate
+    evaluate: DetectionEvaluator
+
+
+@dataclass(frozen=True)
 class DetectionEvidence:
     kind: EvidenceKind
     strength: EvidenceStrength
@@ -78,24 +95,34 @@ class FormatCandidate:
     prefix_kind: PrefixKind
 ```
 
+`DetectionDeclaration` is scheduler input: `max_evidence` is the strongest result that
+detector can possibly produce, capabilities say when it can run, and `estimated_cost`
+orders declarations whose ceilings are equal. `DetectionEvidence` is achieved output.
+The branch-and-bound check compares every unrun declaration's ceiling with the current
+winner; it does not infer ceilings from result objects or run every detector to discover
+them.
+
 The important fields omitted by today's `FormatInfo` are:
 
 - **all provenance**, not one `detected_by` string;
 - **validation state** (`VALID`, `INVALID`, `INCOMPLETE`, `NOT_APPLICABLE`);
 - **search completeness**: which tiers were unavailable or skipped by budget;
-- **alternatives**, when two candidates survive.
+- **retained candidates**, when more than one interpretation survives.
 
-`payload_offset=None` means "not computed within the index budget"; it must not be
-collapsed into zero, which means "confirmed at the detection origin". The compatibility
-`FormatInfo` view can require the exact offset and pay for it, while a candidate-reporting
-API can expose a strongly identified ZIP before walking an arbitrarily large directory.
+`payload_offset=None` exists only on the proposed internal/extended `FormatCandidate` and
+means "not computed within the index budget". Public `FormatInfo.payload_offset` remains
+an `int`: zero means "confirmed at the detection origin" and a positive value marks SFX,
+exactly as the shipped spec requires. The compatibility `detect_format()` view must either
+pay to compute the offset or raise a budget/incomplete-detection error; it must never turn
+unknown into zero. Exposing optional offsets publicly would require an explicit OpenSpec
+API change and migration, not an incidental type widening in this design.
 
 `detected_by` can remain as a compatibility summary of the winning candidate's primary
 evidence. It is not rich enough to drive exception semantics.
 
 ### Evidence classes
 
-Use a partial order with these classes, strongest first:
+Evidence classes are totally ranked, strongest first:
 
 | class | examples | what it establishes |
 | --- | --- | --- |
@@ -130,7 +157,7 @@ the original defect in a different form: a weak near anchor can stop before stro
 evidence. Anchor kind and estimated bits may refine evidence classes and schedule equal
 classes, but the stopping rule remains "no unrun detector can tie or dominate".
 
-Compare candidates lexicographically:
+Resolve equal-class candidates with ordered priority keys:
 
 1. strongest content-evidence class;
 2. semantic position: a format beginning at the detection origin outranks an unrelated
@@ -140,6 +167,11 @@ Compare candidates lexicographically:
 4. independent corroboration, including a matching extension, only as a tie-break;
 5. if incompatible candidates remain tied, report ambiguity rather than using registry
    order.
+
+These are priority keys, not an additive score vector. The class decides first, each
+subsequent key is consulted only on a tie, and candidates still equal after the last
+settled key remain ambiguous. "Undominated" below means maximal under this class-plus-
+priority relation, not a separate mathematical partial order.
 
 The `(container, stream)` pair is refinement, not competition. A gzip candidate whose
 decoded prefix contains a checksum-valid TAR header becomes `TAR_GZ`; it does not leave
@@ -170,6 +202,27 @@ The exact failure disposition is format-declared:
 
 No error path should branch on `confidence`. Error provenance should ask whether the
 winner was probe-only, name-only, structurally validated, or explicit.
+
+### Proposed evidence map for current formats
+
+This map prevents a cheap validator from being promoted ad hoc into an early-stop class:
+
+| detector after cheap validation | achieved class on success |
+| --- | --- |
+| gzip (`CM` + reserved `FLG`) · compress `.Z` header | `SIGNATURE_ONLY` |
+| bzip2 header + first marker · zstd/lzip header · ISO descriptor · validated ZIP local header | `DISCRIMINATING_HEADER` |
+| XZ flags CRC · LZ4 header checksum · TAR checksum · 7z StartHeader CRC · RAR main-header CRC · validated ZIP tail/CD linkage | `SELF_VALIDATING` |
+| zlib/LZMA Alone/Brotli bounded decode without exact EOS | `BOUNDED_PROBE` |
+| exact whole-source decode/complete container validation | `COMPLETE` |
+| filename only | `NAME` |
+
+Under the default correctness profile, **no near candidate stops before reachable far
+fixed-offset declarations have run**, even when the near candidate is `SELF_VALIDATING`:
+far ISO can tie it and reveal an intentional polyglot. A far declaration is skipped only
+when remaining size proves it impossible or the caller explicitly excluded it and the
+result records an incomplete search. Whether an origin candidate may skip ZIP tail or SFX
+discovery depends on the still-explicit primary/alternative policy, not on a maintainer
+silently reclassifying a header.
 
 ## 2. Precise acquisition and stopping algorithm
 
@@ -214,11 +267,11 @@ entry. Each declaration returns zero or one candidate plus validation details.
 
 Stopping condition:
 
-- in single-result mode, a unique `SELF_VALIDATING` candidate at the detection origin may
-  stop if the caller did not request alternatives;
+- do not stop until every enabled fixed-offset declaration whose ceiling can tie or
+  dominate the winner has run; in `BALANCED`, reachable ISO far evidence is mandatory;
 - a short or unvalidated signature may **not** stop while an unrun far/tail/scan detector
   can produce stronger evidence;
-- in alternatives/polyglot mode, do not stop.
+- when collecting non-maximal/polyglot candidates, do not stop.
 
 This keeps cheap common archives cheap without allowing two-byte gzip magic in an ISO
 system area to hide the ISO descriptor.
@@ -237,7 +290,7 @@ Cost under the current primitive:
 
 A strong direct-format result may stop in single-result mode. A miss falls through.
 
-### Step 3 — ZIP tail evidence
+### Step 3 — ZIP tail evidence (explicit opt-in until the default-cost gate is met)
 
 When the source is seekable and the remaining size is at least 22 bytes:
 
@@ -256,7 +309,7 @@ present), central-directory data, and at least one local header. Computing the e
 earliest local-header offset may require walking the entire central directory, whose size
 is not bounded by 65,557 bytes. Therefore:
 
-- a cheap candidate may be `SUPPORTED` after bounded geometry plus a few referenced
+- a cheap candidate may be `DISCRIMINATING_HEADER` after bounded geometry plus a few referenced
   records, with `payload_offset=None`;
 - a `SELF_VALIDATING` result with exact `payload_offset` charges all central-directory
   bytes against an index budget;
@@ -271,8 +324,9 @@ complete search bound relative to physical EOF; the result must say that.
 
 A validated tail hit is `SELF_VALIDATING`. If the prefix carries an executable/script cue,
 continue the bounded scan before deciding: an executable can contain both a ZIP payload
-and a different SFX payload, and stage order must not silently choose intent. With no cue
-and no alternatives request, the ZIP candidate may stop.
+and a different SFX payload, and stage order must not silently choose intent. It may stop
+only after every enabled declaration capable of tying/dominating it has run; explicit
+non-maximal-candidate collection suppresses that early stop.
 
 ### Step 4 — cue-gated bounded forward scan
 
@@ -323,7 +377,7 @@ archive found in arbitrary bytes may be:
 - an archive nested inside another format;
 - one member of a polyglot.
 
-The result therefore needs `prefix_kind=UNKNOWN`, alternatives, and an explicit
+The result therefore needs `prefix_kind=UNKNOWN`, retained candidates, and an explicit
 embedded/discovery provenance. A validated hit is not evidence of producer intent.
 
 The current `peek_more(n) -> first n bytes` interface also makes a whole-source scan
@@ -340,8 +394,8 @@ not merely an opt-in CPU scan.
 ### Step 6 — magic-less content probes
 
 Run all available content probes over the same bounded input. Do not return from the first
-one that accepts. If zlib, LZMA Alone, and Brotli produce competing hits, compare their
-declared evidence and report ambiguity when no candidate dominates.
+one that accepts. If zlib, LZMA Alone, and Brotli produce competing maximal hits, compare
+their declared evidence and raise `AmbiguousFormatError` when no candidate dominates.
 
 Before selecting a probe result:
 
@@ -369,9 +423,24 @@ Never use it to restrict near/far magic, ZIP tail detection, or container SFX ne
 Wrong extensions are a founding use case. It may authorize extra expensive work under a
 caller-selected budget, but it must not suppress other formats.
 
-Select the unique undominated candidate. If two incompatible candidates remain at the
-same class, return an ambiguity (or expose them through `detect_formats`) rather than
-using backend registration order.
+Select the unique maximal candidate. If two incompatible candidates remain tied after all
+settled priority keys, raise `AmbiguousFormatError`, a dedicated `FormatDetectionError`
+subclass carrying the tied candidates. This preserves existing broad
+`except FormatDetectionError` handling while making the wrong-format choice loud.
+`open_archive()` and `open_stream()` propagate the ambiguity by default; an explicit
+`format=` continues to bypass detection.
+
+| detection state | `detect_format()` | `open_archive()` / `open_stream()` |
+| --- | --- | --- |
+| unique winner, search complete for primary | return `FormatInfo` | open it |
+| unique winner, explicit budget skipped a detector that could tie/dominate | return only through a result shape that reports `search_complete=False`; otherwise raise an incomplete-detection error | refuse automatic open unless policy explicitly accepts incomplete detection |
+| tied maximal candidates | raise `AmbiguousFormatError(candidates=…)` | propagate; do not try registry order |
+| no candidate | raise `FormatDetectionError` | propagate |
+
+A future candidate-reporting API can return all interpretations without raising; its name
+is deliberately left open. Default exhaustive try-open behavior is also deferred because
+it must define validation depth, replay/cost limits, and aggregate failure semantics
+(`dev-docs/IDEAS.md`).
 
 For `open_archive`, a tentative raw-stream result must not silently expose a synthetic
 member as though the format were confirmed. Either:
@@ -400,8 +469,8 @@ header immediately. The policy still belongs in the caller, not in confidence la
    validation can require the whole central directory.
 6. **Cued scan and validated resume: agree.** The cue is a cost gate; validation is the
    correctness gate.
-7. **Tail hit always skips scan: disagree when the prefix itself is a cue or alternatives
-   were requested.** That is exactly where multiple SFX payloads are plausible.
+7. **Tail hit always skips scan: disagree when the prefix itself is a cue or non-maximal
+   candidates were requested.** That is exactly where multiple SFX payloads are plausible.
 8. **Exhaustive scan as a normal next tier: disagree.** It is embedded discovery with a
    different result and resource contract.
 9. **Extension as up-front corroborator and last answer: mostly agree.** It must not
@@ -410,7 +479,7 @@ header immediately. The policy still belongs in the caller, not in confidence la
    real-file measurement does not support that public label. Keep the class as telemetry.
 11. **Strong executable cue suppresses content probes: agree as a selection rule.** It
     should not prevent probes from being run for diagnostics if a caller explicitly asks
-    for alternatives.
+    for non-maximal candidates.
 12. **Confidence driving `format_unconfirmed`: disagree.** PR #262's provenance-based
     follow-up is the correct design.
 13. **Per-probe `dict_size != 0` guard: disagree and remove.** Zero is legal LZMA Alone;
@@ -421,7 +490,7 @@ header immediately. The policy still belongs in the caller, not in confidence la
 
 ## 4. Required cases
 
-| §6 case | result under this algorithm |
+| Required case | result under this algorithm |
 | --- | --- |
 | (a) `zipapp` and concatenated ZIP | Seekable: bounded EOCD/geometry validation yields ZIP; walking the central directory yields `CERTAIN` and exact `payload_offset` at the earliest local header (EOCD-derived base for empty ZIP), with the two offset conventions handled explicitly. If the index budget is exhausted, retain ZIP with `payload_offset=None`. Non-seekable: only a cue scan can identify it, and automatic open still needs explicit spooling. |
 | (b) PE/ELF + 7z/RAR | Cue-gated scan; reject decoys; validate 7z StartHeader CRC/bounds or RAR main header; return the container and payload offset. |
@@ -616,25 +685,32 @@ class DetectionBudget:
     max_index_bytes: int
     max_probe_links: int
     spool_non_seekable_up_to: int
-    collect_alternatives: bool
+    collect_nonmaximal_candidates: bool
 ```
 
 Suggested policies:
 
 | policy | behavior |
 | --- | --- |
-| `BALANCED` (default) | 4096 near; ISO far; validated ZIP tail; 2 MiB scan only on cues; bounded probes/inner TAR; no exhaustive scan; no implicit spool |
+| `BALANCED` (default) | 4096 near; ISO far; ZIP tail disabled until the corpus-cost gate below passes; 2 MiB scan only on cues; bounded probes/inner TAR; no exhaustive scan; no implicit spool |
 | `FAST` | caller-selected smaller tail/scan/decode budgets; returns `search_complete=False`; must not silently let a weak result stand in for skipped stronger evidence |
-| `THOROUGH` | balanced plus alternative collection, bounded full-stream completion where affordable, and explicit embedded scan on a reopenable/seekable source |
+| `THOROUGH` | balanced plus explicit ZIP tail, non-maximal candidate collection, bounded full-stream completion where affordable, and explicit embedded scan on a reopenable/seekable source |
 
 The founding backup-corpus use case argues for `BALANCED`, not extension-first and not
-exhaustive. However, the always-on ZIP tail tier is under-measured. The fact that 65,557
-bytes is format-bounded proves completeness, not affordability. Before freezing it as the
-default, measure aggregate bytes, seeks, and cold-cache wall time over the backup corpus.
+exhaustive. The always-on ZIP tail tier is a **hard implementation gate**, not a
+provisional default: the fact that 65,557 bytes is format-bounded proves completeness, not
+affordability. Before enabling it in `BALANCED`, measure aggregate bytes, seeks,
+central-directory reads, and cold-cache wall time over the backup corpus and make the
+acceptance threshold explicit. Until then it may exist only behind an explicit
+`THOROUGH`/experimental budget.
 
 The detector should return the actual cost receipt already aligned with archivey's cost
 philosophy: prefix bytes requested, unique bytes read, tail bytes, index/central-directory
 bytes, seeks/range requests, decoded input/output, and buffered/spooled bytes.
+This is detection-specific measured work, complementary to the existing `ListingCost` /
+`AccessCost` / `StreamCapability` axes and `CostReceipt`: reuse their vocabulary for
+capabilities and kinds of work, but do not overload an archive-open receipt with detection
+I/O that happened before a reader existed.
 
 ## 11. Non-seekable sources
 
@@ -676,10 +752,10 @@ with libmagic or another file detector.
 
 When two archive candidates survive:
 
-- expose a ranked tuple through a new `detect_formats()` or an `alternatives` field;
-- let `detect_format()` return the unique dominant candidate;
-- if neither dominates, raise an ambiguity carrying both candidates rather than selecting
-  whichever backend was registered first.
+- return the unique dominant candidate when one exists;
+- if neither dominates, raise `AmbiguousFormatError` carrying both candidates rather than
+  selecting whichever backend was registered first;
+- leave the name and exact shape of a future all-candidates inspection API open.
 
 Without this, the acquisition order becomes an undocumented intent policy. For example,
 an executable can contain both an EOF-anchored ZIP and a CRC-valid 7z payload. "ZIP tail
@@ -738,15 +814,39 @@ Specific experiments:
   residual population: ordinary ZIPs usually stop at near magic, so most tail attempts
   may be non-ZIP misses where the adaptive strategy reads more, not less;
 - survey non-executable prefixed 7z/RAR files before treating the cue set as complete;
-- seed multi-archive polyglots to force an explicit ambiguity policy.
+- survey PE/ELF/Mach-O and non-shebang script wrappers whose first archive-shaped payload
+  is a bare gzip/xz/zstd/bzip2 stream with no container magic; use the result to keep the
+  `#!`-only rule, widen it with validated needles, or record the false-negative policy;
+- seed multi-archive polyglots to exercise the chosen ambiguity policy.
 
-Until those results exist, three choices remain underdetermined:
+The immediate ambiguity policy is now fixed (`AmbiguousFormatError`), but the probe-overlap
+matrix remains a release/migration measurement: quantify how often zlib, LZMA Alone, and
+Brotli tie on real negatives and positives so release notes and compatibility guidance can
+describe the behavior cliff rather than discovering it from user reports.
 
-- whether the 65,557-byte tail probe belongs in the default corpus budget;
+Until those results exist, two product choices and one release gate remain open:
+
+- **release gate:** what measured aggregate I/O/latency threshold is sufficient to enable
+  the 65,557-byte tail probe in the default corpus budget;
 - numeric thresholds behind `CERTAIN`/`PROBABLE`;
-- the product policy for two equally valid archive interpretations.
+- the eventual behavior/name of the all-candidates inspection API and exhaustive
+  ambiguity fallback (the immediate policy is settled: raise `AmbiguousFormatError`).
 
-## 14. Primary format references
+## 14. Relationship to PR #257
+
+This investigation is the redesign input for
+[`prefixed-archive-detection` PR #257](https://github.com/davitf/archivey/pull/257), not a
+sibling OpenSpec change and not advisory material to defer until after implementation.
+Before #257 implements production code, it should revise its detection-order requirement,
+selection/stopping rules, declaration metadata, ambiguity behavior, and ZIP-tail default
+gate to match the decisions here. That keeps one OpenSpec change responsible for the
+overlapping `format-detection` requirement and avoids another archive-order conflict.
+
+This document remains non-normative: #257's revised delta becomes the contract only after
+review and archive. Until that revision exists, #257's first-match algorithm should not be
+implemented as written.
+
+## 15. Primary format references
 
 - [RFC 1952 — gzip](https://www.rfc-editor.org/rfc/rfc1952)
 - [RFC 1950 — zlib](https://www.rfc-editor.org/rfc/rfc1950)

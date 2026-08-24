@@ -105,6 +105,18 @@
 
 ## API & ergonomics
 
+- **Exhaustive ambiguity fallback for `open_archive()` / `open_stream()`** — when
+  evidence-based detection yields two or more tied maximal candidates, the near-term
+  contract should raise a dedicated ambiguity error rather than choose by registry order.
+  Much later, opening could deliberately try every tied candidate and return the first
+  one that validates deeply enough. This is not merely a loop: define what counts as
+  success for synthetic single-file readers versus indexed containers, preserve/replay
+  caller-owned and non-seekable sources, cap cumulative seeks/bytes/decode work, retain
+  every failed candidate's typed error, and decide what happens when multiple candidates
+  open successfully. An all-candidates inspection API likely belongs beside it, but its
+  name is deliberately unsettled. Promote only with an OpenSpec change covering both
+  archive and stream opening plus the cost/error model.
+
 - **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
   policy already sketched in `safe-extraction` (re-root/collapse unsafe paths instead of
   rejecting) is also the right home for **renaming members the destination cannot
