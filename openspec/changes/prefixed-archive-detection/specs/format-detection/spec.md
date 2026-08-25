@@ -46,6 +46,22 @@ A compressor hit SHALL be resolved through the existing inner-TAR probe at the h
 so a script + gzipped tar reports `TAR_GZ` rather than `GZIP`, and SHALL be validated by
 decoding a bounded prefix — the magic alone is not the evidence.
 
+**Every needle SHALL declare the offset at which it sits inside its own format, and a hit
+SHALL be converted to a candidate origin before any validator or probe runs.** This is not
+a detail: TAR's `ustar` lives at offset **257** of a tar header, so a hit at absolute offset
+`H` means the candidate begins at `H - 257`, not at `H`. A gzip needle begins at candidate
+offset 0, and 7z's and RAR's markers likewise. Reporting `payload_offset = H` for a TAR hit
+would be wrong by 257 bytes and would hand the backend a misaligned source.
+
+Validators and probes therefore SHALL receive a view **relative to the candidate origin**,
+not to the source origin. Today's `peek_more(length)` always returns the first `length`
+bytes of the *source*, so it cannot express that view: with it alone, a scan hit at a
+non-zero offset cannot be validated in place, and the inner-TAR probe cannot run at the hit.
+A bounded candidate-relative read — `peek_range(origin, length)` or an equivalent view — is
+therefore a **prerequisite** for the TAR and compressor needles, not an optimisation. The
+existing 7z and RAR scanners avoid the problem only because their native parsers already
+accept a start offset.
+
 ZIP keeps its tier-3 needle even though tier 2 now finds prefixed ZIPs more cheaply,
 because tier 2 needs a seekable source and tier 3 does not.
 
@@ -57,9 +73,11 @@ suppresses the content probes; a weak one does not. Mach-O magic that does not p
 `ca fe ba be` forces that asymmetry.
 
 A match SHALL report the embedded format with `payload_offset` = payload start and a
-`detected_by` naming which tier found it. No match SHALL fall through to content probes,
-far magic, extension, then `FormatDetectionError` — the order fixed by *Magic-first
-detection with extension fallback and confidence scoring*. Native RAR/7z parsers SHALL accept a start offset
+`detected_by` naming which tier found it. No match SHALL fall through to the content probes
+and then the extension fallback, ending in `FormatDetectionError` — the complete order,
+including where far magic sits, is fixed by *Magic-first detection with extension fallback
+and confidence scoring* and is **not** restated here. Far magic has already run by this
+point; it precedes the probes rather than following them. Native RAR/7z parsers SHALL accept a start offset
 (read in place, no copy). A prefixed ZIP SHALL be reported as `ZIP` with a `payload_offset`
 — never as a stream codec — whichever tier finds it; ZIP needs no separate parser scan,
 since the reader already locates the central directory from the tail.
@@ -272,16 +290,19 @@ still reach the forward scan, the content probes, and the extension fallback.
 
 1. Read up to `DETECTION_LIMIT` bytes (default 4096) from the source.
 2. **Near magic** — the magic-byte table at exact offsets within that window. Match →
-   `CERTAIN` / `detected_by="magic"`.
+   `CERTAIN` / `detected_by="magic"` (see the provisional note below: a uniform `CERTAIN`
+   across signatures of wildly differing strength is known to be wrong, and is retained
+   here only because changing it is a separate piece of work).
 3. **Far magic** — signatures outside the default window, today ISO 9660's `CD001` at offset
    32 769. Match → `CERTAIN` / `detected_by="magic"`. This SHALL be attempted **before** the
    content probes, because it is exact magic and they are the weakest signal available. It
    SHALL be skipped when the source size is known to be smaller than the extended window,
    and a source too short for it SHALL fall through rather than be rejected.
 4. **Tail probe** for self-locating containers (`format-zip`), when the source is seekable.
-   A validated hit → `CERTAIN` / `detected_by="zip_tail_probe"`. This tier runs with no
-   prefix cue, because the format bounds its cost; it therefore runs even when nothing
-   about the leading bytes looks executable.
+   A validated hit → `CERTAIN` / `detected_by="zip_tail_probe"`. This tier needs no prefix
+   cue — the format bounds the *locator's* cost — so it runs even when nothing about the
+   leading bytes looks executable. Whether it is enabled **by default** is gated on
+   measurement; see the cost note below.
 5. **Bounded forward scan** within `SFX_MAX`, when a prefix cue fires. A validated hit →
    `detected_by="sfx_scan"`.
 6. **Unbounded scan**, only when the caller set `exhaustive_prefix_scan`. A validated hit →
@@ -296,6 +317,62 @@ still reach the forward scan, the content probes, and the extension fallback.
 Steps 4–6 are the cost tiers specified in *Self-extracting (SFX) archives are detected
 behind an executable stub*; this requirement is where their placement relative to the
 content probes, far magic and the extension fallback is fixed.
+
+> **Provisional: two parts of this requirement are known to be wrong and are scheduled to
+> change.** The independent design analysis in
+> `dev-docs/investigations/archive-format-detection-algorithm.md` was accepted as redesign
+> input for this change, and it identifies two defects that this change deliberately does
+> **not** fix, because fixing either is a larger piece of work than prefixed-archive
+> detection:
+>
+> 1. **A uniform `CERTAIN` for all near magic is unsound.** gzip's two bytes and
+>    `unix-compress`'s two bytes are not the same evidence as XZ's stream-flags CRC, 7z's
+>    `StartHeaderCRC`, or TAR's header checksum. Signature length and the presence of a
+>    structural validator should grade the result; flattening them to one confidence value
+>    is the same failure mode that let a content probe outrank ISO's far magic.
+> 2. **First-match-wins is not a sound selection rule.** Where several detectors can accept
+>    the same bytes — notably the three magic-less probes, and genuine polyglots — returning
+>    the first hit in registry order picks by accident. Selection should compare typed
+>    evidence once every tier that could dominate has run.
+>
+> Until that redesign lands, this requirement states the **acquisition order**, which is
+> what prefixed-archive detection needs and which the analysis endorses. It does not settle
+> evidence strength or the selection rule, and an implementer SHALL NOT read the uniform
+> `CERTAIN` above as a considered decision that those signatures are equally strong.
+
+**The tail probe's cost is bounded for the locator, not for the whole tier.** Two separate
+numbers, and conflating them overstates how cheap "format-bounded" is:
+
+- **Locating** the EOCD reads at most `min(remaining, 65535 + 22)` bytes from the end, plus
+  the positioning and restoration operations. That bound is real and comes from the format.
+- **Validating** it, and computing an exact `payload_offset`, additionally reads the ZIP64
+  record where present, central-directory bytes, and at least one local header. The earliest
+  local-header offset may require walking the **entire** central directory, whose size is
+  **not** bounded by 65,557 bytes.
+
+So a cheap result may report ZIP after bounded geometry checks, while an exact
+`payload_offset` charges the central-directory walk. A requirement that says "one seek and
+64 KiB" is describing only the first of those.
+
+Aggregate cost, measured over 71,983 files under `/usr`:
+
+| | |
+| --- | --- |
+| files at least 65,557 B, which pay the locator in full | 3,195 — **4.4%** |
+| median file size | 2,239 B |
+| **actual aggregate locator bytes** | **0.61 GiB** |
+| worst case if every file paid in full | 4.39 GiB |
+
+The worst case overstates the real cost by roughly 7×, because the locator is also bounded
+by the source and most files are small. But 0.61 GiB of reads — and, more importantly,
+**one additional seek per file across the whole sweep** — is a real cost on the founding
+backup-corpus workload, and seek latency rather than byte count is likely to dominate on a
+network or spinning-disk source.
+
+Therefore: enabling this tier **by default** SHALL be gated on a measurement of that
+workload, including seek latency and not only bytes. Until that measurement exists the tier
+is specified and available, and the default remains a maintainer decision rather than an
+assumption inherited from the phrase "format-bounded".
 
 **Far magic ahead of the content probes closes a silent wrong answer.** ISO 9660 reserves
 its first 32 KiB as a system area for a bootloader, so every bootable or hybrid image

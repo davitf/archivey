@@ -107,6 +107,16 @@ library itself produces. The cue never fires because the prefix is `#!`, not `MZ
 
 ## Ordering: strength of evidence first, cost second
 
+> Since this section was written, an independent design analysis
+> (`dev-docs/investigations/archive-format-detection-algorithm.md`) reviewed it and was
+> accepted as redesign input. It **agrees** that far magic must precede the content probes
+> and calls the bootable-ISO reproduction decisive. It **disagrees** with two things this
+> change kept: that all near magic deserves one `CERTAIN`, and that first-match-wins is a
+> sound selection rule. Both are now marked provisional in the spec rather than quietly
+> retained. It also found an implementability gap nobody here had: needles carry an anchor
+> offset inside their own format, so a TAR `ustar` hit is 257 bytes past its candidate
+> origin, and the current peek primitive cannot express a candidate-relative view at all.
+
 Writing the tiers down forced the question of where they sit relative to everything else,
 and answering it surfaced a defect that has nothing to do with prefixes.
 
