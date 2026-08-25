@@ -1,8 +1,9 @@
 # Brotli meta-block shapes: two proposed shortcuts, both unsound
 
-**Two questions, both from the PR #265 review discussion**, both about whether the
-completeness gate's chain walk can be cheapened. §1–§5 answer the first; §6 answers a
-follow-up — whether `ISLAST` is only ever set on an empty meta-block. Both answers are no.
+**Three questions from the PR #265 review discussion.** §1–§5: can the chain walk collapse
+to "the block after the first must be compressed"? §6: is `ISLAST` only ever set on an empty
+meta-block? Both answers are no. §7 is the descriptive one — what metadata meta-blocks are
+actually used for, since the format says almost nothing about their contents.
 
 **Question 1.** The completeness gate walks Brotli's
 self-describing meta-block chain so that it can reject headers that declare an
@@ -21,7 +22,7 @@ false-positive reduction** over the chain walk. Keep the chain walk.
 **Date:** 2026-08-25.
 **Environment.** `main` @ `3dafac1`, PR #265 head `fc6bcc1`, CPython 3.11.15,
 `Brotli` 1.2.0 (the C extension), reference sources `google/brotli` @ `8e10eeb` (v1.2.0),
-Linux 6.18.44. Method and scripts in §8.
+Linux 6.18.44. Method and scripts in §9.
 
 ---
 
@@ -37,6 +38,8 @@ Linux 6.18.44. Method and scripts in §8.
 | The encoder always terminates with an *empty* last meta-block | **No** — 92.1% end with a non-empty last compressed block | §6 |
 | …so "reject ISLAST-but-not-empty" would work | **No** — it rejects 91.4% of valid streams | §6.2 |
 | "Second block must be compressed" is a safe simplification | **No** — 74/1914 false negatives | §5 |
+| The library itself stores anything in metadata meta-blocks | **No** — it only originates *empty* ones, as flush padding | §7.1 |
+| Anything stores data there | **Yes** — the reference CLI's `--comment`, and any caller | §7.2 |
 | …it at least reduces false positives more | **No** — within ±0.3 pp of the chain walk | §5.2 |
 
 ---
@@ -217,7 +220,8 @@ uncompressed blocks by construction.
 
 ### 4.3 Injected metadata — `BROTLI_OPERATION_EMIT_METADATA`
 
-A caller can inject a metadata meta-block of up to 16 MiB **anywhere**, including first:
+A caller can inject a metadata meta-block of up to 16 MiB **anywhere**, including first
+(§7 covers what actually goes in them, and who does it):
 
 ```
 metadata ×2, then payload      1 098 B   MMUMUE
@@ -288,7 +292,7 @@ to the choice — the earlier survey's "fonts are the wild" framing does not cov
 The two rules are within **0.33 percentage points** of each other everywhere, and they trade
 places by row. That is the crux: the simplification's entire value proposition was that it
 would be *nearly as good* — it is, but "nearly as good" is not a reason to accept 74 false
-negatives, and the chain walk is not paying for its depth in cost either (§7).
+negatives, and the chain walk is not paying for its depth in cost either (§8).
 
 ## 6. Does the encoder always end with an *empty* last meta-block?
 
@@ -381,7 +385,127 @@ from the header grammar. `brotli_framing.py` already encodes it correctly, readi
 `UNCOMPRESSED`; and `chain_proves_invalid` already handles the one declaring block that *can*
 be last (metadata) with `if info.is_last: return nxt != source_length`. No change available.
 
-## 7. What the chain walk actually costs on real files
+## 7. What is actually stored in metadata meta-blocks?
+
+The format is nearly silent on this: a metadata meta-block declares `MSKIPLEN` bytes that are
+skipped and contribute nothing to the output, and the only use the specification motivates is
+appending an empty one to force byte alignment. Nothing says what a non-empty one may hold.
+So: does anything put data there?
+
+*(RFC 7932's own text could not be fetched from this environment — `ietf.org` is blocked by
+the egress proxy — so the format statements below are read off the reference decoder's
+grammar in `c/dec/decode.c`, which is what actually reads archivey's bytes, and off the
+library's documented API contract.)*
+
+### 7.1 What the library originates on its own: empty blocks, and only for alignment
+
+Exactly one code path in the encoder emits a metadata block without being asked to, and it is
+the RFC's motivating case, verbatim:
+
+```c
+static void InjectBytePaddingBlock(BrotliEncoderState* s) {
+  ...
+  /* is_last = 0, data_nibbles = 11, reserved = 0, meta_nibbles = 00 */
+  seal |= 0x6u << seal_bits;
+  seal_bits += 6;
+```
+
+Six bits — a metadata header declaring `MSKIPLEN` 0 — appended to seal a partial byte. It
+fires only from `InjectFlushOrPushOutput` when `stream_state_ == BROTLI_STREAM_FLUSH_REQUESTED
+&& s->last_bytes_bits_ != 0`, i.e. only when a flush happened to leave the bit stream
+mid-byte. `encode.h` documents it as contract: *"Encoder may emit empty metadata blocks
+internally, to pad encoded data."*
+
+That is the `M:0` seen throughout §2.3 — `CMCMCME`, `UCMCME` and friends are flush padding,
+not payload.
+
+### 7.2 What callers can store: arbitrary bytes, and the reference CLI does
+
+Non-empty metadata is entirely caller-driven, through a documented pair of APIs:
+
+- **Write:** `BROTLI_OPERATION_EMIT_METADATA` (`ProcessMetadata` → `WriteMetadataHeader`).
+  Up to **16 MiB per block** (`if (*available_in > (1u << 24)) return BROTLI_FALSE;`), stored
+  **verbatim and uncompressed**, invisible to the decompressed output.
+- **Read:** `BrotliDecoderSetMetadataCallbacks(start_func, chunk_func, opaque)`. Without it
+  the decoder simply skips the block (`BROTLI_STATE_METADATA` → `SkipMetadataBlock`).
+
+And the reference **CLI uses this itself** — `brotli -C B64` / `--comment=B64`:
+
+```
+  -C B64, --comment=B64       set comment; argument is base64-decoded first;
+                              (maximal decoded length: 80)
+                              when decoding: check stream comment;
+                              when encoding: embed comment (fingerprint)
+```
+
+`CompressFile` emits it as a **prologue**, before any input is processed
+(`BROTLI_BOOL prologue = !!context->comment_len;`), so a `-C` file *begins* with a metadata
+meta-block; on decode the CLI installs metadata callbacks and byte-compares. It is mutually
+exclusive with `-K` (`allow_concatenated && comment_len` → `COMMAND_INVALID`).
+
+Built and dumped, the layout is as plain as it sounds:
+
+```
+$ brotli -q 5 -C "$(base64 <<< 'archivey-test-fingerprint')" -o x.br input
+$ od -A d -t x1z x.br | head -1
+0000000 67 61 00 61 72 63 68 69 76 65 79 2d 74 65 73 74  >ga.archivey-test<
+
+  byte 0  0x67  WBITS=20, ISLAST=0, MNIBBLES code 3 (metadata), reserved=0
+  byte 1-2      MSKIPBYTES=1, MSKIPLEN-1=24 → 25 bytes, then padding to the byte boundary
+  byte 3+       the comment, in the clear
+```
+
+Block sequence `M:25  U:786432  U:213571  E:0`. A plain `brotli -d`, and
+`brotli.decompress()`, ignore it completely and return the original 1 000 003 bytes.
+
+**The Python binding exposes neither side** — no `EMIT_METADATA` operation, and
+`Decompressor` has only `process` / `is_finished` / `can_accept_more_data`. So archivey can
+neither read nor write metadata contents, whatever a file carries.
+
+### 7.3 Does anything in the wild use it?
+
+Over the same 1915 valid streams, dumping contents through the decoder's metadata callbacks:
+
+| | count |
+| --- | --- |
+| streams containing ≥1 metadata meta-block | 47 |
+| total metadata meta-blocks | 131 153 |
+| …of which **empty** (flush padding) | 65 603 |
+| …of which non-empty | 65 550 |
+| **streams with non-empty metadata** | **9** |
+
+The 9 are not organic: seven are this investigation's own constructions, and the other two are
+`tests/testdata/empty.compressed.16` and `.18` from the reference corpus — deliberate
+single-byte (`X`) fixtures, with `.18` repeating one 65 536 times, which is where nearly all
+131 153 blocks come from. **Zero** of the 1717 real WOFF2 streams and neither shipped `.br`
+file carries any metadata at all.
+
+So the honest summary is: the mechanism is real, first-party, and documented; its use is
+rare enough that a survey of this size finds none of it outside test fixtures and things
+someone deliberately made.
+
+### 7.4 Why this matters here, and a check that passes
+
+Metadata is the one place a valid Brotli stream carries **arbitrary bytes in the clear, near
+offset 0**, that never appear in the output — the mirror image of the earlier investigation's
+"arbitrary data parses as Brotli". A `--comment` file puts them at byte 3.
+
+Since #257 taught detection to look for archive magic at nonzero offsets, that is worth
+testing rather than assuming. Five `.br` files were built with 7z, RAR5 and ZIP magic as the
+comment (both at the start of the comment and offset inside it), and run through
+`detect_format` on `main` and on #265's head, with and without a `.br` extension:
+
+| | verdict |
+| --- | --- |
+| all 5, `.br`, both branches | `BROTLI`, `PROBABLE`, `content_probe` |
+| all 5, `.bin`, both branches | `BROTLI`, `GUESS`, `content_probe` |
+| `chain_proves_invalid` on all 5 (#265) | `False` — accepted, correctly |
+
+No misdetection in either direction: the embedded magic never wins, and the chain walk
+handles the `M U U E` shape a prologue comment produces. Recorded here so the next reader
+does not have to re-derive it.
+
+## 8. What the chain walk actually costs on real files
 
 The census also answers whether the depth is doing anything. Block-sequence census over the
 1914 valid streams (first 10 blocks):
@@ -403,7 +527,7 @@ proposed rule would have produced a false negative. `CHAIN_MAX_LINKS = 8` is nev
 binding constraint on a valid file: exceeding it returns "cannot disprove", which is the
 safe direction, and that is what happens on the 40-block random streams.
 
-## 8. Method and reproduction
+## 9. Method and reproduction
 
 Everything lives under a scratch tree; the load-bearing pieces:
 
@@ -443,6 +567,11 @@ early on `ISLASTEMPTY` with all three flags clear, so a block reported as
 `BROTLI_PARAM_STREAM_OFFSET` advanced per part and `BROTLI_OPERATION_FLUSH` between them;
 and a single encoder driven with `BROTLI_OPERATION_EMIT_METADATA`.
 
+**Metadata contents** (`metadump.c`, for §7.3): the same driver with
+`BrotliDecoderSetMetadataCallbacks(s, &OnStart, &OnChunk, NULL)` installed, printing each
+block's declared size and bytes. Without those callbacks the decoder skips metadata
+silently, which is why the block dump alone cannot answer "what is in there".
+
 **WOFF2 extraction:** parse `totalCompressedSize` at offset 20 and the meta/priv offsets at
 28/36, then search start offsets from 48 and keep the first that round-trips through
 `brotli.decompress` — 1716/1716 extracted, zero failures.
@@ -452,7 +581,7 @@ and a single encoder driven with `BROTLI_OPERATION_EMIT_METADATA`.
 `src/archivey/internal/streams/brotli_framing.py` unmodified; the alternative rule is
 implemented in ~14 lines against the same parser, so the two differ only in policy.
 
-## 9. Recommendation
+## 10. Recommendation
 
 **Keep the chain walk as implemented in PR #265.** The premise it was questioned on —
 that a valid Brotli stream cannot hold consecutive declaring meta-blocks — is false at

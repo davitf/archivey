@@ -218,6 +218,26 @@ def false_negatives(corpus: list[tuple[str, bytes]]) -> None:
         print(f"      … and {len(fixed_rejects) - 15} more")
 
 
+def first_block_metadata(corpus: list[tuple[str, bytes]]) -> None:
+    """Streams that open with a metadata meta-block, and what it holds.
+
+    `brotli --comment=B64` emits its comment as a prologue metadata block, so a `.br`
+    written that way starts with one and the bytes sit in the clear right after the header.
+    """
+    hits = 0
+    for name, blob in corpus:
+        info = parse_first_metablock(blob[:PREFIX])
+        if info.outcome is not BrotliFirstBlock.METADATA:
+            continue
+        hits += 1
+        assert info.consumed is not None and info.declared_length is not None
+        body = blob[info.consumed : info.consumed + min(info.declared_length, 64)]
+        shown = "".join(chr(b) if 32 <= b < 127 else "." for b in body)
+        print(f"  {name}: MSKIPLEN={info.declared_length} {shown!r}")
+    if not hits:
+        print("  none — no stream in this corpus opens with a metadata meta-block")
+
+
 def first_block_shapes(corpus: list[tuple[str, bytes]]) -> None:
     """What detection actually sees. `ISLAST` on a non-empty block is the common case."""
     shapes: Counter[str] = Counter()
@@ -338,6 +358,8 @@ def main() -> int:
     false_negatives(corpus)
     print("\n== first-block shapes (a non-empty ISLAST block is the common case) ==")
     first_block_shapes(corpus)
+    print("\n== streams opening with a metadata meta-block ==")
+    first_block_metadata(corpus)
     print("\n== first-block uncompressed lengths ==")
     declared_lengths(corpus)
     print(f"\n== false positives ({args.trials} random blobs per size) ==")
