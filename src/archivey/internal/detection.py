@@ -116,6 +116,26 @@ class FormatInfo:
         0  # nonzero only for SFX archives (is-SFX == payload_offset > 0)
     )
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
+    # Internal provenance for ``format_unconfirmed``: True when a matching extension or
+    # an inner-TAR upgrade corroborated a content-probe claim. Not part of the public
+    # ``detect_format`` contract — see ``probe-provenance-unconfirmed`` task 5.1.
+    corroborated: bool = False
+
+
+def _extension_corroborates(
+    ext_match: tuple[ArchiveFormat, str] | None,
+    resolved: ArchiveFormat,
+) -> bool:
+    """Whether the filename extension agrees with ``resolved``'s stream format.
+
+    Generalizes the existing ``.br`` rule: ``.br`` and ``.tar.br`` both corroborate a
+    Brotli (or TAR+Brotli) probe hit. Exact container match is not required — a deferred
+    inner-TAR case (``foo.tar.br`` reported as bare ``BROTLI``) still has the extension
+    agreeing on the codec.
+    """
+    if ext_match is None:
+        return False
+    return ext_match[0].stream == resolved.stream
 
 
 def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
@@ -343,8 +363,9 @@ def _brotli_probe_confidence(
     """PROBABLE when ``.br`` (or a TAR+Brotli extension) agrees, or first block is compressed.
 
     Uncompressed/metadata-first with no corroborating extension is the residual
-    false-positive class and reports ``GUESS`` — that is what gates
-    ``format_unconfirmed`` on a later decode failure.
+    false-positive class and reports ``GUESS``. Confidence grades evidence strength
+    only; whether a later decode failure is stamped ``format_unconfirmed`` is a
+    separate provenance question (probe-only vs corroborated).
     """
     if ext_match is not None and ext_match[0].stream is StreamFormat.BROTLI:
         return DetectionConfidence.PROBABLE
@@ -358,14 +379,18 @@ def _resolve_single_file_or_tar(
     base_confidence: "DetectionConfidence",
     base_detected_by: str,
     peek_more: Callable[[int], bytes],
+    *,
+    ext_match: tuple[ArchiveFormat, str] | None = None,
 ) -> FormatInfo:
     """Upgrade a single-file-compressor match to its TAR combo when the payload is a tarball.
 
     A ``RAW_STREAM`` compressor (``.gz``/``.bz2``/``.xz``/…) is probed for an inner TAR; on a
     hit it becomes ``(TAR, <stream>)`` (e.g. ``TAR_GZ``) reported as ``PROBABLE`` /
     ``content_probe`` (the inner-TAR test is structural, weaker than an exact magic).
-    Otherwise the original single-file/container match stands. ``peek_more`` gives the probe
-    a bounded, non-consuming view of the source to decode from.
+    An inner-TAR upgrade is corroboration for a probe hit — two independent signals had
+    to hold — so ``corroborated`` is set. Otherwise a matching extension (same stream
+    format) is the corroborating signal. ``peek_more`` gives the probe a bounded,
+    non-consuming view of the source to decode from.
     """
     if (
         fmt.container == ContainerFormat.RAW_STREAM
@@ -373,8 +398,16 @@ def _resolve_single_file_or_tar(
     ):
         if _probe_inner_tar(fmt.stream, peek_more):
             tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
-            return FormatInfo(tar_fmt, DetectionConfidence.PROBABLE, "content_probe")
-    return FormatInfo(fmt, base_confidence, base_detected_by)
+            return FormatInfo(
+                tar_fmt,
+                DetectionConfidence.PROBABLE,
+                "content_probe",
+                corroborated=True,
+            )
+    corroborated = base_detected_by == "content_probe" and _extension_corroborates(
+        ext_match, fmt
+    )
+    return FormatInfo(fmt, base_confidence, base_detected_by, corroborated=corroborated)
 
 
 def _is_deferred_inner_tar(ext_fmt: ArchiveFormat, resolved: ArchiveFormat) -> bool:
@@ -509,7 +542,11 @@ def _detect_format_body(
     magic_fmt = _match_magic(data, near)
     if magic_fmt is not None:
         info = _resolve_single_file_or_tar(
-            magic_fmt, DetectionConfidence.CERTAIN, "magic", peek_more
+            magic_fmt,
+            DetectionConfidence.CERTAIN,
+            "magic",
+            peek_more,
+            ext_match=ext_match,
         )
         _warn_on_conflict(collector, name, ext_match, info.format)
         return info
@@ -570,7 +607,11 @@ def _detect_format_body(
                     if probe_fmt.stream is StreamFormat.BROTLI:
                         confidence = _brotli_probe_confidence(data, ext_match)
                     info = _resolve_single_file_or_tar(
-                        probe_fmt, confidence, "content_probe", peek_more
+                        probe_fmt,
+                        confidence,
+                        "content_probe",
+                        peek_more,
+                        ext_match=ext_match,
                     )
                     _warn_on_conflict(collector, name, ext_match, info.format)
                     return info

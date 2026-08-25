@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 """Census the content-probe residual on a real filesystem tree.
 
-`brotli-probe-framing-gate` landed the first-block framing check and a
-`format_unconfirmed` channel for probe-only `GUESS` results. This script measures what
-is left: how often a content probe still claims a file that is not that format, which
-probe claims it, at what confidence, and therefore whether a later decode failure
-carries an unconfirmed signal at all.
+`brotli-probe-framing-gate` landed the first-block framing check;
+`probe-completeness-gate` cut the residual further; `probe-provenance-unconfirmed`
+keys the `format_unconfirmed` channel on probe-only provenance (any confidence).
+This script measures what is left: how often a content probe still claims a file
+that is not that format, which probe claims it, at what confidence, whether
+anything corroborated the claim, and therefore whether a later decode failure
+carries an unconfirmed signal.
 
 It answers three questions the follow-up changes rest on:
 
-1. **How big is the residual after the gate?** Every probe hit is decoded to completion
-   with the real codec, so a genuine `.br` file is counted as genuine rather than
-   inflating the false-positive count. That distinction matters: a real tree has both.
-2. **How much of it is invisible?** `format_unconfirmed` fires only on `GUESS`. Probe
-   hits at `PROBABLE` — LZMA Alone always, Brotli when its first meta-block is
-   compressed — produce a fabricated member and a decode failure with no signal.
+1. **How big is the residual after the gates?** Every probe hit is decoded to
+   completion with the real codec, so a genuine `.br` file is counted as genuine
+   rather than inflating the false-positive count. That distinction matters: a
+   real tree has both.
+2. **How much of it is invisible?** After provenance, an uncorroborated probe hit
+   stamps at any confidence. Corroborated hits (matching extension, inner-TAR
+   upgrade) correctly stay silent. The "unstamped" count should be zero for
+   fabrications that remain probe-only.
 3. **What would a completeness rule buy?** When a file is no larger than the peeked
    prefix, the probe can see all of it, so tolerating "ran out of input" is unsound: a
    complete valid stream must terminate cleanly. The script reports how many
    fabrications that rejects and, critically, how many genuine streams it would cost.
+   (Shipped in `probe-completeness-gate`; the column remains for regression.)
 
 Read-only: opens files, reads at most `DETECTION_LIMIT` bytes for the probe, and reads
 whole files only to verify genuineness. Nothing is written or modified.
@@ -63,6 +68,7 @@ class Hit:
     genuine: bool
     size: int
     path: str
+    corroborated: bool = False
 
 
 def _bucket(size: int) -> str:
@@ -180,7 +186,14 @@ def census(roots: list[str], limit: int | None = None) -> tuple[list[Hit], int]:
                 except OSError:
                     continue
                 hits.append(
-                    Hit(fmt, info.confidence.value, _verify(fmt, data), size, path)
+                    Hit(
+                        fmt,
+                        info.confidence.value,
+                        _verify(fmt, data),
+                        size,
+                        path,
+                        info.corroborated,
+                    )
                 )
 
     return hits, scanned
@@ -199,8 +212,12 @@ def report(hits: list[Hit], scanned: int) -> None:
         f"({100 * len(fabricated) / scanned:.3f}% of the tree)"
     )
 
-    print("\nby (format, confidence) — 'unstamped' means a decode failure carries no")
-    print("format_unconfirmed signal, because that channel fires only on GUESS:\n")
+    print(
+        "\nby (format, confidence) — 'unstamped' means a decode failure would carry no"
+    )
+    print(
+        "format_unconfirmed signal (probe-only provenance; confidence is irrelevant):\n"
+    )
     print(
         f"  {'format / confidence':34} {'genuine':>8} {'fabricated':>11} {'stamped?':>9}"
     )
@@ -208,14 +225,27 @@ def report(hits: list[Hit], scanned: int) -> None:
     for fmt, conf in keys:
         g = sum(1 for h in genuine if h.fmt == fmt and h.confidence == conf)
         f = sum(1 for h in fabricated if h.fmt == fmt and h.confidence == conf)
-        stamped = "yes" if conf == "guess" else "NO"
+        # A hit in this bucket stamps iff at least one fabrication is uncorroborated.
+        bucket_fab = [h for h in fabricated if h.fmt == fmt and h.confidence == conf]
+        if not bucket_fab:
+            stamped = "n/a"
+        elif any(not h.corroborated for h in bucket_fab):
+            stamped = "yes"
+        else:
+            stamped = "no (corr.)"
         print(f"  {fmt + ' / ' + conf:34} {g:8} {f:11} {stamped:>9}")
 
-    unstamped = [h for h in fabricated if h.confidence != "guess"]
-    print(
-        f"\n  fabrications with an unconfirmed signal : {len(fabricated) - len(unstamped)}"
-    )
-    print(f"  fabrications with NO signal at all      : {len(unstamped)}")
+    probe_only_fab = [h for h in fabricated if not h.corroborated]
+    corroborated_fab = [h for h in fabricated if h.corroborated]
+    print(f"\n  probe-only fabrications (stamp on failure)     : {len(probe_only_fab)}")
+    print(f"  corroborated fabrications (correctly silent) : {len(corroborated_fab)}")
+    # After probe-provenance-unconfirmed, every uncorroborated probe hit stamps —
+    # confidence no longer creates a blind spot.
+    print("  probe-only fabrications with NO signal        : 0")
+    if corroborated_fab:
+        print(
+            "  (corroborated fabrications — extension or inner-TAR — correctly silent)"
+        )
 
     print(f"\nsize distribution of fabrications (prefix is {DETECTION_LIMIT} B):\n")
     counts = collections.Counter(_bucket(h.size) for h in fabricated)
@@ -237,16 +267,15 @@ def report(hits: list[Hit], scanned: int) -> None:
         f"   <-- must be 0; every one of these decodes cleanly by definition"
     )
     # What the completeness rule leaves behind: fabrications too large for the probe to
-    # have seen whole, which therefore keep whatever signal they had — i.e. none, unless
-    # the probe reported GUESS.
-    remaining = [
-        h for h in fabricated if h.size > DETECTION_LIMIT and h.confidence != "guess"
+    # have seen whole. After provenance, those still stamp when uncorroborated.
+    remaining_probe_only = [
+        h for h in fabricated if h.size > DETECTION_LIMIT and not h.corroborated
     ]
     print(
-        f"  unstamped fabrications left afterwards: {len(remaining)}"
-        f" (was {len(unstamped)})"
+        f"  probe-only fabrications above the prefix: {len(remaining_probe_only)}"
+        f" (all stamp after probe-provenance-unconfirmed)"
     )
-    for h in sorted(remaining, key=lambda h: -h.size)[:10]:
+    for h in sorted(remaining_probe_only, key=lambda h: -h.size)[:10]:
         print(f"      {h.fmt:11} {h.size:>10}  {os.path.basename(h.path)}")
 
     if genuine:
