@@ -65,20 +65,16 @@
   | SFX (MZ stub + appended ZIP) | `sfx_scan` | False |
   | extension-only fallback | `extension` | False |
 
-  Rows 1/2 and rows 4/6 are indistinguishable in the output, though the extension agrees in one and contradicts in the other. No rename fixes that; the shape is wrong. What a caller actually wants is *which* signals fired:
+  Rows 1/2 and rows 4/6 are indistinguishable in the output, though the extension agrees in one and contradicts in the other. No rename fixes that; the shape is wrong.
 
-  ```python
-  class FormatEvidence(Flag):
-      MAGIC = auto()          # exact magic at the offset the format specifies
-      MAGIC_SCANNED = auto()  # magic found by searching a stub window (SFX)
-      CONTENT_PROBE = auto()  # a codec decoded a bounded prefix
-      INNER_TAR = auto()      # the decompressed prefix carried a TAR header
-      EXTENSION = auto()      # the filename extension agrees with the result
-  ```
+  **The replacement shape is already designed elsewhere — do not invent a parallel one here.** PR #263 (`dev-docs/investigations/archive-format-detection-algorithm.md`, accepted as redesign input by `prefixed-archive-detection`) §1 specifies an **evidence ledger**: typed `DetectionEvidence` records on an internal `FormatCandidate`, with **totally ranked** evidence classes — `COMPLETE` > `SELF_VALIDATING` > `DISCRIMINATING_HEADER` > `SIGNATURE_ONLY` > `BOUNDED_PROBE` > `NAME` — and ordered tie-breakers. It names the same gap this task found: *"The important fields omitted by today's `FormatInfo` are: all provenance, not one `detected_by` string; validation state; search completeness; retained candidates"*, and *"`detected_by` … is not rich enough to drive exception semantics"* — which is exactly what this change made it do.
 
-  Then `a.zip` is `MAGIC | EXTENSION`, `b.tar` is `MAGIC`, and both internal predicates become honest one-liners: `probe_only = evidence == CONTENT_PROBE`, `corroborated = evidence.bit_count() > 1`. It also retires `detected_by`'s stringly-typed `# "magic", "extension", "content_probe", "sfx_scan"`, and closes an existing asymmetry — extension *disagreement* is already public via `FORMAT_EXTENSION_CONFLICT`, extension *agreement* is not observable at all.
+  Two constraints from that analysis bind any fix here:
 
-  Not small, and breaking: `detected_by` is a public field pinned by `openspec/specs/format-detection` and by `tests/test_detection.py`'s full-equality assertion, and carrying both fields would be redundant-by-construction. Wants its own proposal — parked in [`dev-docs/IDEAS.md`](../../../../dev-docs/IDEAS.md) §API & ergonomics so it is not buried in an archived change. Open question it must settle: whether a *contradicting* extension is represented too (a `Flag` cannot hold "disagrees" — separate field, or leave it to the diagnostic).
+  - **Not an additive score.** *"Do not assign points and add them. Evidence is correlated: a `.br` suffix and a Brotli probe are not two random independent observations."* So a bit-set with `corroborated = popcount > 1` is the wrong shape too — ranked classes, not counted signals.
+  - **Rich provenance is internal.** §1 keeps the ledger on `FormatCandidate` and holds public `FormatInfo` narrow, on the stated principle that widening it *"would require an explicit OpenSpec API change and migration, not an incidental type widening"*. That is the same reasoning as the interim fix below.
+
+  So the disposition of 5.1 is: **the public-field question is answered "no, not as a bool", and the replacement belongs to the #263 redesign, not to a follow-up of this change.** Sequencing: after `prefixed-archive-detection`, which adds two more `detected_by` values (`"zip_tail_probe"`, `"exhaustive_scan"`) and would otherwise have to be redone.
 
   Interim (#267 review): `corroborated` is `field(default=False, compare=False, repr=False)`, so it stays out of `__eq__` and `__repr__` and constrains nothing while the shape is undecided
 - [ ] 5.2 `brotli-probe-framing-gate` task 3.1a's compressed-first `PROBABLE` split stands on its random-data measurement, but that number does not describe real files (64 fabrications against 4 genuine streams on the measured tree). This change makes the split harmless — it no longer steers error behaviour — so retuning it is now a pure confidence question, worth revisiting only with a corpus of real extensionless Brotli streams
