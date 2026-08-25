@@ -425,6 +425,8 @@ def test_a_weak_cue_still_lets_a_content_probe_answer(tmp_path: Path) -> None:
     and a *fitting* first block still answers ``BROTLI``, which is what proves the weak
     cue does not suppress content probes.
     """
+    from archivey.internal.streams.brotli_framing import parse_metablock
+
     brotli = pytest.importorskip("brotli")
     del brotli
     # Smallest MZ-leading uncompressed first-block the bit layout allows (~1 MiB body).
@@ -433,8 +435,17 @@ def test_a_weak_cue_still_lets_a_content_probe_answer(tmp_path: Path) -> None:
     assert framing.outcome is BrotliFirstBlock.UNCOMPRESSED
     assert framing.consumed is not None and framing.declared_length is not None
     need = framing.consumed + framing.declared_length
+    # Pad a compressed second link so the chain walk stops rather than rejecting
+    # exact EOF-without-ISLAST (same residual shape as OLE/COFF fixtures).
+    second = None
+    for seed in range(4096):
+        hdr = bytes([(seed + j * 13) % 256 for j in range(24)])
+        if parse_metablock(hdr, first=False).outcome is BrotliFirstBlock.COMPRESSED:
+            second = hdr
+            break
+    assert second is not None
     path = tmp_path / "weak.bin"
-    path.write_bytes(header + b"\x90" * (need - len(header)))
+    path.write_bytes(header + b"\x90" * (need - len(header)) + second + b"\x00" * 8)
     assert executable_cue(path.read_bytes()[:8]) is ExecutableCue.WEAK
     detected = detect_format(path)
     assert detected.format == ArchiveFormat.BROTLI
