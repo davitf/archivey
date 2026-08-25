@@ -45,7 +45,7 @@
 - [x] 4.5 A probe-only result that reads **cleanly** stays a success — no error, no diagnostic, no downgrade. This change must add no new failures
 - [x] 4.6 `pedantic()` with `RAISE` on a probe-only failure still produces the typed error with the flag, not `DiagnosticRaisedError`
 - [x] 4.7 Confidence values are unchanged by this change — pin the existing `GUESS`/`PROBABLE` matrix so a future reader cannot mistake this for a confidence retune
-- [ ] 4.8 `./scripts/test.sh --all-configs`
+- [x] 4.8 `./scripts/test.sh --all-configs`
 - [x] 4.9 `openspec validate --strict probe-provenance-unconfirmed`
 - [x] 4.10 Update `docs/formats.md`, whose sentence from #261 describes the rule as confidence-keyed
 - [x] 4.11 Re-run `scripts/exploration/probe_residual_census.py` and record the stamped/unstamped split in `dev-docs/investigations/brotli-content-probe-results.md`. The target is zero fabrications with no signal

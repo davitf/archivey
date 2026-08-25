@@ -64,9 +64,20 @@ without re-scanning the name. `chosen_by` ∈ `{"argument","extension","content_
 `PROBE_FORMAT_UNCONFIRMED` is a **separate code**, not a widening of
 `EXTENSION_FORMAT_UNCONFIRMED`. The two describe different provenance and fire on
 different events: the extension code keys on `detected_by="extension"` **and an empty
-listing**; the probe code keys on `detected_by="content_probe"` at `GUESS` confidence
-**and a decode failure**. A probe-only read failure MUST NOT double-report under the
-extension code.
+listing**; the probe code keys on **probe-only provenance** — `detected_by="content_probe"`
+with nothing corroborating the claim (no matching extension, no inner-TAR upgrade) — **and
+a decode failure**. A probe-only read failure MUST NOT double-report under the extension
+code.
+
+**Confidence is not part of that trigger.** The probe code fires on a probe-only failure at
+*any* `DetectionConfidence`, so an LZMA Alone hit (always `PROBABLE`) and a compressed-first
+Brotli hit (`PROBABLE`) are stamped exactly as an uncorroborated `GUESS` hit is. Confidence
+grades how strong the evidence looked; this code answers whether anything independent
+corroborated it. Keying the diagnostic on confidence left 53% of measured fabrications
+unsignalled, and made a probe's confidence value double as a switch for error behaviour.
+This matches `error-handling`'s `format_unconfirmed`, and the two SHALL agree by
+construction: the diagnostic is emitted while stamping that attribute, never on a separate
+test.
 
 `ExtractionOutcomeContext`, `NameCollisionContext` and `NameSanitizedContext` SHALL
 NOT exist: per-member extraction outcomes are carried by `ExtractionResult` (see
@@ -90,9 +101,12 @@ and cross-run id stability are not promised.
 | Member blocked by a universal/policy check | No diagnostic; a `BLOCKED` `ExtractionResult` is the whole record |
 | `password=["a","b"]` on a format with no encryption | `PASSWORD_ARGUMENT_UNUSED`; context carries no candidate value and no count |
 | Non-zero byte past a complete TAR trailer under `strict_archive_eof` | `ARCHIVE_TRAILING_DATA` sharing `ArchiveEofContext`; distinguished by `expected_marker` |
-| Probe-only (`GUESS`) single-file read raises | `PROBE_FORMAT_UNCONFIRMED` with `chosen_by="content_probe"` |
+| Probe-only single-file read raises, uncorroborated `GUESS` | `PROBE_FORMAT_UNCONFIRMED` with `chosen_by="content_probe"` |
+| Probe-only single-file read raises, uncorroborated **`PROBABLE`** (compressed-first Brotli) | `PROBE_FORMAT_UNCONFIRMED` too — **changed**; confidence is not the trigger |
+| Probe-only **LZMA Alone** read raises (always `PROBABLE`) | `PROBE_FORMAT_UNCONFIRMED` — **changed**; previously unsignalled |
 | Extension-only empty listing | Still `EXTENSION_FORMAT_UNCONFIRMED` only — unchanged |
-| Probe + `.br` (`PROBABLE`) read raises | No `PROBE_FORMAT_UNCONFIRMED` — the format was corroborated |
+| Probe + `.br` (`PROBABLE`) read raises | No `PROBE_FORMAT_UNCONFIRMED` — the format was corroborated, and corroboration is still what matters |
+| Probe hit upgraded to `TAR_*` by the inner-TAR probe, read raises | No `PROBE_FORMAT_UNCONFIRMED` — the upgrade is independent corroboration |
 | Probe-only read succeeds | No diagnostic |
 
 ### Requirement: Exact bounded diagnostic summaries
