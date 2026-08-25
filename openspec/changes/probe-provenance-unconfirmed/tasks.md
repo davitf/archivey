@@ -1,5 +1,9 @@
 ## 0. Sequencing — read before writing any code
 
+- [ ] 0.0 **Implement this change second: after `probe-completeness-gate`, before `prefixed-archive-detection`.** It is small by design — behaviour-changing only in what failures *say*, never in which reads fail — and landing it before the large detection change is worth doing for a practical reason beyond ordering: while implementing that change, every probe-only failure you hit will already be correctly attributed. A striking number of bugs in this family were misattributed first and diagnosed second.
+
+  **Do not let this change slip past `prefixed-archive-detection`** without re-anchoring task 4.1 (see the warning there). Its reproduction depends on a detection bug that change fixes.
+
 - [x] 0.1 ~~Archive `brotli-probe-framing-gate` before archiving this change.~~ — **done**: archived as `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate` and its deltas synced into `openspec/specs/`. This change's `error-handling` delta is therefore written against **shipped** text. Verified after the sync that the merged requirements carry all four things this delta builds on: the `format_unconfirmed` attribute row, the four-step failure contract, the no-refusal clause, and the "message must not claim zero output" rule
 - [ ] 0.2 **Land `probe-completeness-gate` first and re-run the census.** It removes 91 of the 128 measured fabrications, including 57 of the 64 compressed-first ones. The argument here survives unchanged — the blind spot is structural, not a matter of count — but every number quoted in a PR description should be the post-completeness one. Re-run `scripts/exploration/probe_residual_census.py`
 - [ ] 0.3 This change **closes** `brotli-probe-framing-gate` tasks **5.8** (provenance-based `format_unconfirmed`) and **5.9** (inner-TAR corroboration). Check those boxes when this lands rather than keeping two records
@@ -30,7 +34,11 @@
 
 ## 4. Verify
 
-- [ ] 4.1 Red–green from the reproduction: a thin little-endian Mach-O stub in front of a real 7z detects as `LZMA_ALONE` / `PROBABLE` / `content_probe` on `bee7735`, lists one fabricated `*.uncompressed` member, and fails with `CorruptionError` carrying **`format_unconfirmed=False`**. After this change the flag is `True` and `PROBE_FORMAT_UNCONFIRMED` is emitted. Assert the flag and the diagnostic, not just the exception type
+- [ ] 4.1 Red–green on a fixture that is **not** executable-prefixed. The blind spot is uncorroborated probe-only evidence at any confidence, so anchor on a plain file with no cue, no corroborating extension, and a size above `DETECTION_LIMIT`: an ordinary text file whose prefix the Brotli probe accepts **compressed-first**. Measured on a `/usr` tree, ordinary Perl modules of 5–13 KiB do exactly this — `BROTLI` / `PROBABLE` / `content_probe` — so the class is easy to sample and easy to synthesise. Today the read raises `CorruptionError` with **`format_unconfirmed=False`** and no diagnostic; after this change the flag is `True` and `PROBE_FORMAT_UNCONFIRMED` is emitted. Assert the flag **and** the diagnostic, not just the exception type
+
+  ⚠️ **Do not anchor this on the Mach-O stub + 7z reproduction**, even though that is how the blind spot was found. It reproduces today (`LZMA_ALONE` / `PROBABLE`, one fabricated `*.uncompressed` member, `format_unconfirmed=False`), but `prefixed-archive-detection` makes that same file detect as `SEVEN_Z` with real members — so a test built on it would stop exercising the provenance path the moment that change lands, and would read as a regression test for a detection bug rather than for this one. Keep the Mach-O case as the *motivating* history in the design; keep the *assertion* on a fixture nothing else is about to fix
+
+  The fixture must also survive `probe-completeness-gate`, which lands first: a file no larger than the peeked prefix would be rejected outright by the completeness rule and never reach a decode failure at all. Above `DETECTION_LIMIT` is the durable side of that line
 - [ ] 4.2 Probe-only **LZMA Alone** failure stamps, at `PROBABLE`
 - [ ] 4.3 Probe-only **compressed-first Brotli** failure stamps, at `PROBABLE`
 - [ ] 4.4 Corroborated cases do **not** stamp: `.br` extension; `TAR_BROTLI` via inner-TAR; exact magic
