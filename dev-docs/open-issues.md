@@ -259,8 +259,9 @@ nor `DIRECTORY`. Original write-up below.
   meta-block that declares more bytes than the source holds is rejected; a fully visible
   source that does not decode to completion is rejected; and a bounded self-describing
   block-chain walk rejects later overruns / trailing bytes. Re-measured after
-  `probe-completeness-gate` (`scripts/exploration/probe_residual_census.py`, 147 601 files
-  under `/usr`): **30 fabricated claims (0.020%)**, down from 128 (0.193%) after the
+  `probe-completeness-gate` with the 64 KiB completeness drain
+  (`scripts/exploration/probe_residual_census.py`, 150 623 files under `/usr`):
+  **29 fabricated claims (0.019%)**, down from 128 (0.193%) after the
   first-block gate alone. Residual families (OLE/CFB, COFF, lucky compressed-first fits
   above the prefix) remain — and end-to-end those structured residuals are usually claimed
   by the **LZMA Alone** probe at `PROBABLE` (not Brotli), so the Brotli `GUESS` /

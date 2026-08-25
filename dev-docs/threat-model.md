@@ -352,13 +352,13 @@ tree. `open_archive` listed one fabricated `<name>.uncompressed` member.
 known, a first meta-block that declares more bytes than the source holds is rejected; a
 fully visible source that does not decode to completion is rejected; and a bounded
 self-describing block-chain walk rejects later overruns / trailing bytes. Residual after
-`probe-completeness-gate` on a re-measured tree (147 601 files): **30 fabricated claims
-(0.020%)**, down from 128 (0.193%) after the first-block gate alone. Probe-only confidence
+`probe-completeness-gate` on a re-measured tree (150 623 files): **29 fabricated claims
+(0.019%)**, down from 128 (0.193%) after the first-block gate alone. Probe-only confidence
 is `GUESS` for the uncompressed/metadata-first class; a decode failure there sets
 `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. Structured residual
 families named in the investigation (OLE/CFB, COFF) are usually claimed end-to-end by the
 **LZMA Alone** probe at `PROBABLE`, so that honesty channel does not cover them yet —
-measured, **27 of 30** fabricated probe claims on the re-measured tree carry no signal
+measured, **26 of 29** fabricated probe claims on the re-measured tree carry no signal
 (follow-up: `probe-provenance-unconfirmed`).
 
 **Three clauses remain:** the listing can be wrong; a full read raises; **and** a prefix

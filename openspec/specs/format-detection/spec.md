@@ -511,9 +511,10 @@ here. The check MUST NOT be implemented as a minimum source size. A 9-byte
 `brotli.compress(b"hello")` finishes within the drain and SHALL still be accepted.
 
 The rule SHALL apply to every probe that decodes, not to Brotli alone: it follows from
-bounded decoding rather than from any one format's framing. Measured on 66 361 real files,
-it rejects **91 of 128** fabricated probe claims (71%) — 67 of them under 16 bytes — while
-costing **zero** genuine streams.
+bounded decoding rather than from any one format's framing. Measured on 66 361 real files
+(at the then-256-byte completeness drain; the drain is now 64 KiB, which only strengthens
+the rule), it rejects **91 of 128** fabricated probe claims (71%) — 67 of them under
+16 bytes — while costing **zero** genuine streams.
 
 The check SHALL be skipped when the source length is unknown, exactly as the framing gate
 is; detection then behaves as before.

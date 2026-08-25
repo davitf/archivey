@@ -1028,26 +1028,30 @@ class StreamCodec:
                 if fully_visible:
                     # Drain up to the budget in chunks. A truncated high-ratio stream
                     # often yields its whole expansion on the first large read without
-                    # raising; the next read is what surfaces TruncatedError. Hitting
-                    # the budget with more output still available means the bounded
-                    # check cannot disprove completeness — accept.
-                    parts: list[bytes] = []
+                    # raising; the next read is what surfaces TruncatedError.
+                    #
+                    # After filling the budget without a clean EOF, one extra byte
+                    # distinguishes three outcomes: TruncatedError (reject — including
+                    # a stream that ends *exactly* on the budget), more output (accept —
+                    # complete stream larger than the drain), or empty (accept —
+                    # terminated on the last budgeted byte). ``produced`` alone is
+                    # enough; only Alone's ``require_output`` cares that any bytes
+                    # came out.
                     produced = 0
                     while produced < out_budget:
                         chunk = stream.read(min(8192, out_budget - produced))
                         if not chunk:
                             break
-                        parts.append(chunk)
                         produced += len(chunk)
-                    else:
+                    if produced >= out_budget:
                         more = stream.read(1)
                         if more:
-                            parts.append(more)
-                    out = b"".join(parts)
+                            produced += len(more)
+                    out_len = produced
                 else:
-                    out = stream.read(out_budget)
+                    out_len = len(stream.read(out_budget))
             if require_output:
-                return len(out) > 0
+                return out_len > 0
             return True
         except TruncatedError:
             if fully_visible:

@@ -36,7 +36,7 @@
 - [x] 3.6 Regression: the OLE/CFB and COFF fixtures from `brotli-probe-framing-gate` task 4.3 **still** pass both rules. This change does not close that family, and a test asserting otherwise would be wrong
 - [x] 3.7 Non-seekable source of unknown length keeps today's behaviour for both rules
 - [x] 3.8 Cost regression: completeness adds no I/O at all; the walk adds a bounded number of small reads and no decompression
-- [x] 3.9 Re-run `scripts/exploration/probe_residual_census.py` and record the new residual in the investigation. Re-measured: **30 fabricated / 147 601 (0.020%)**, down from 128 (0.193%) after the first-block gate alone
+- [x] 3.9 Re-run `scripts/exploration/probe_residual_census.py` and record the new residual in the investigation. Re-measured after the 64 KiB completeness drain: **29 fabricated / 150 623 (0.019%)**, down from 128 (0.193%) after the first-block gate alone (earlier post-gate census at the 256-byte drain was 30 / 147 601)
 - [x] 3.10 `./scripts/test.sh --all-configs` (the Brotli extra is optional — the probe must stay skipped, not crash, when it is absent)
 - [x] 3.11 `openspec validate --strict probe-completeness-gate`
 - [x] 3.12 Update `dev-docs/open-issues.md` P12 and `dev-docs/threat-model.md` O10 with the new residual figure. The three-clause wording from #261 stands: the listing is wrong, a full read raises, and a prefix of fabricated bytes may already have been produced
