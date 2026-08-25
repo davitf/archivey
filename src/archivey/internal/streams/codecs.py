@@ -55,7 +55,10 @@ from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
-from archivey.internal.streams.brotli_framing import first_block_overruns_source
+from archivey.internal.streams.brotli_framing import (
+    chain_proves_invalid,
+    first_block_overruns_source,
+)
 from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
     Deflate64DecompressorStream,
@@ -809,6 +812,10 @@ _ALONE_UNKNOWN_SIZE = (1 << 64) - 1
 # decompressing the whole payload.
 _PROBE_PREFIX = 256
 
+# Optional bounded read-at callback for probes that follow a self-describing block chain
+# past the peeked prefix (``compressed-streams``). ``None`` means the caller declined.
+ProbeReadAt = Callable[[int, int], bytes | None]
+
 # zlib's 2-byte CMF/FLG header is not a true magic (the same prefix begins many raw-deflate
 # streams and can occur in arbitrary data), so the probe uses it only as a cheap fail-fast
 # gate before attempting the decode that actually confirms a zlib stream.
@@ -914,14 +921,23 @@ class StreamCodec:
         """Fill ``ArchiveMember`` fields from the source. Default: no extra metadata."""
         return
 
-    def content_probe(self, prefix: bytes, *, source_length: int | None = None) -> bool:
+    def content_probe(
+        self,
+        prefix: bytes,
+        *,
+        source_length: int | None = None,
+        read_at: ProbeReadAt | None = None,
+    ) -> bool:
         """Whether ``prefix`` is recognized as this codec's stream.
 
         Default: this codec has no content probe (it is identified by exact magic). Codecs
         without a usable magic (Brotli; zlib's too-unspecific header; LZMA Alone) override
         this. ``source_length`` is optional: when detection knows the cheap byte size of
         the source it is passed through so a probe can reject declared framing that
-        cannot fit; ``None`` means "unknown — do not reject on that basis."
+        cannot fit, or an incomplete decode when the whole source is visible; ``None``
+        means "unknown — do not reject on that basis." ``read_at`` is an optional bounded
+        read facility for probes that follow a self-describing block chain past the
+        peeked prefix; absent by default.
         """
         return False
 
@@ -969,23 +985,35 @@ class StreamCodec:
 
     # --- shared probe primitive ---
 
-    def _decodes_sample(self, prefix: bytes) -> bool:
+    def _decodes_sample(
+        self, prefix: bytes, *, source_length: int | None = None
+    ) -> bool:
         """Whether a bounded ``prefix`` decodes cleanly through this codec (the probe primitive).
 
         A valid stream decodes some output (or runs out of the bounded prefix →
         ``TruncatedError``), while non-matching data raises a corruption error. Returns
         ``False`` when the backend is absent, so detection falls through to the extension
         guess. Operates on already-peeked bytes, so it consumes nothing from the source.
+
+        **Completeness:** when ``source_length`` is known and does not exceed ``len(prefix)``,
+        the probe holds the whole source. A decode that ends wanting more input is then a
+        rejection — a complete valid stream decoded in full terminates. When the source is
+        larger than the prefix, ``TruncatedError`` remains a match (there genuinely is more
+        input).
         """
         if not self.available:
             return False
+        fully_visible = source_length is not None and source_length <= len(prefix)
+        # Feed the whole source when it is fully visible so "needs more input" means
+        # incomplete; otherwise keep the bounded probe sample.
+        sample = prefix[:source_length] if fully_visible else prefix[:_PROBE_PREFIX]
         try:
-            with open_codec_stream(
-                self.codec, io.BytesIO(prefix[:_PROBE_PREFIX])
-            ) as stream:
-                stream.read(_PROBE_PREFIX)
+            with open_codec_stream(self.codec, io.BytesIO(sample)) as stream:
+                stream.read(max(len(sample), _PROBE_PREFIX))
             return True
         except TruncatedError:
+            if fully_visible:
+                return False  # whole file in hand; stream did not terminate
             return True  # decoded fine, just ran out of the bounded prefix
         except ArchiveyError:
             return False
@@ -1315,25 +1343,36 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         if size != _ALONE_UNKNOWN_SIZE:
             member.size = size
 
-    def content_probe(self, prefix: bytes, *, source_length: int | None = None) -> bool:
+    def content_probe(
+        self,
+        prefix: bytes,
+        *,
+        source_length: int | None = None,
+        read_at: ProbeReadAt | None = None,
+    ) -> bool:
         """Recognize LZMA Alone: plausible 13-byte header that then yields decode output.
 
         A source no longer than the 13-byte header carries no range-coder payload and
         cannot be an Alone stream — the whole of the measured real-world false-positive
         set. When ``source_length`` is unknown the check is skipped.
+
+        Completeness (shared with every decoding probe): when the whole source is
+        visible in ``prefix``, a decode that ends wanting more input is a rejection.
         """
         if not _alone_header_plausible(prefix) or not self.available:
             return False
         if source_length is not None and source_length <= _ALONE_HEADER_SIZE:
             return False
+        fully_visible = source_length is not None and source_length <= len(prefix)
+        sample = prefix[:source_length] if fully_visible else prefix[:_PROBE_PREFIX]
         try:
-            with open_codec_stream(
-                self.codec, io.BytesIO(prefix[:_PROBE_PREFIX])
-            ) as stream:
-                out = stream.read(_PROBE_PREFIX)
+            with open_codec_stream(self.codec, io.BytesIO(sample)) as stream:
+                out = stream.read(max(len(sample), _PROBE_PREFIX))
             # An empty successful read (e.g. usize=0) is not a positive Alone claim.
             return len(out) > 0
         except TruncatedError:
+            if fully_visible:
+                return False
             return True  # started decoding, ran out of the bounded prefix
         except ArchiveyError:
             return False
@@ -1438,9 +1477,17 @@ class ZlibCodec(_ZlibErrorCodec):
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         return _translate_rapidgzip(exc, "zlib")
 
-    def content_probe(self, prefix: bytes, *, source_length: int | None = None) -> bool:
+    def content_probe(
+        self,
+        prefix: bytes,
+        *,
+        source_length: int | None = None,
+        read_at: ProbeReadAt | None = None,
+    ) -> bool:
         """Recognize a zlib stream: a known CMF/FLG header (fail-fast) that then decodes."""
-        return prefix[:2] in _ZLIB_HEADERS and self._decodes_sample(prefix)
+        return prefix[:2] in _ZLIB_HEADERS and self._decodes_sample(
+            prefix, source_length=source_length
+        )
 
 
 class ZstdCodec(StreamCodec):
@@ -1537,17 +1584,27 @@ class BrotliCodec(StreamCodec):
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning("brotli")
 
-    def content_probe(self, prefix: bytes, *, source_length: int | None = None) -> bool:
+    def content_probe(
+        self,
+        prefix: bytes,
+        *,
+        source_length: int | None = None,
+        read_at: ProbeReadAt | None = None,
+    ) -> bool:
         """Recognize a raw Brotli stream — which has no magic — by decoding a bounded prefix.
 
         When ``source_length`` is known, reject a first meta-block that *declares* more
-        bytes than the source can hold (uncompressed / metadata). That invariant is
-        sound for any complete valid stream; see ``brotli_framing``.
+        bytes than the source can hold (uncompressed / metadata), then follow the
+        self-describing block chain when a ``read_at`` facility (or the prefix alone)
+        can reach successor offsets. Completeness — whole source visible and decode
+        wants more input — is applied inside ``_decodes_sample``.
         """
         if source_length is not None:
             if first_block_overruns_source(prefix, source_length):
                 return False
-        return self._decodes_sample(prefix)
+            if chain_proves_invalid(prefix, source_length, read_at=read_at):
+                return False
+        return self._decodes_sample(prefix, source_length=source_length)
 
 
 class UnixCompressCodec(StreamCodec):

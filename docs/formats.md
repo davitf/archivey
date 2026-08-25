@@ -226,10 +226,13 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   executable header — today a Windows (`MZ`/PE) or Linux (ELF) one. A macOS
   Mach-O stub is **not** recognised yet, so a `.7z`/`.rar`/`.zip` appended to one is
   still misidentified; pass `format=` explicitly for those until that gap closes.
-- **Brotli** has no magic, so detection uses a content probe plus a framing check
+- **Brotli** has no magic, so detection uses a content probe plus framing checks
   **when the source length is known** (paths, `BytesIO`, and short non-seekable
   peeks): a first meta-block that *declares* more bytes than the source holds is
-  rejected. On a non-seekable stream of unknown length the gate is skipped and today's
+  rejected; when the whole source fits in the peeked prefix, a decode that wants more
+  input is rejected (completeness); and a bounded walk of self-describing meta-blocks
+  rejects a later link that overruns or a declared end with trailing bytes. On a
+  non-seekable stream of unknown length those checks are skipped and today's
   probe behaviour remains. Probe-only confidence is `PROBABLE` when the first meta-block
   is compressed (or when the name ends in `.br`), and `GUESS` for uncompressed/metadata-first
   without that extension. A later decode failure on a `GUESS` result sets

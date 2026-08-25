@@ -65,11 +65,11 @@ every declared length fits and the first-block check is vacuous. The walk is the
 that helps there. On a real `.br` file whose first meta-block is compressed (79 of 150 in
 the corpus) the walk stops immediately, having read four bytes.
 
-### The open question this change must settle: who owns the reads
+### Decision: who owns the reads — **B**, with an explicit decline signal
 
-`compressed-streams` says a probe "MUST NOT use [the source length] to read beyond the
+`compressed-streams` said a probe "MUST NOT use [the source length] to read beyond the
 prefix it was given". The chain walk needs exactly that — OLE/CFB's second header sits at
-~7425, past the 4096-byte prefix. Three shapes:
+~7425, past the 4096-byte prefix. Three shapes were considered:
 
 | shape | cost | objection |
 | --- | --- | --- |
@@ -77,21 +77,36 @@ prefix it was given". The chain walk needs exactly that — OLE/CFB's second hea
 | **B.** Probe gains a bounded `read_at(offset, length)` callback | one new optional parameter | widens the probe contract for every codec to serve one |
 | **C.** Detector peeks a larger prefix when a probe asks | reuses `peek_more` | the ask is unbounded in principle; needs its own cap |
 
-**Recommendation: B**, with the callback optional and absent by default, so a probe that
-does not take it behaves exactly as today. It keeps Brotli's framing knowledge inside
-`BrotliCodec` — the reason `content_probe` is a codec method at all — and the bound is
-explicit in the signature rather than implied. A is cheaper to write and worse to live
-with; C hides the bound.
+**Settled: B.** Optional, absent by default. Signature:
 
-Not settled here because it is a contract move that deserves the implementer's eye on the
-actual call sites. Whichever is chosen, the walk MUST stay bounded in link count.
+```python
+read_at(offset: int, length: int) -> bytes | None
+```
 
-### Link-cap semantics
+- full `bytes` → success
+- short / empty `bytes` → EOF at that offset (walk may reject)
+- `None` → caller declined; walk stops and keeps the earlier verdict (*cannot disprove*)
 
-Hitting the cap means **cannot disprove**, so the probe keeps whatever verdict the earlier
-rules reached — it does not reject. That is the same discipline as an unknown source
-length: absence of evidence is not evidence. The survey script used 64 links; that is a
-starting point, not a measured optimum.
+That distinguishes "bytes aren't there" from "I won't buffer that far" — the latter matters
+for non-seekable sources, where reaching offset *N* means `PeekableStream` buffers
+`[0, N)`.
+
+**Non-seekable max offset: 1 MiB.** Enough to follow a second link after a 4- or 5-nibble
+first block (MLEN up to 64 KiB / 1 MiB). A 6-nibble first block (up to 16 MiB) is the
+known compromise: `read_at` returns `None`, walk cannot disprove. Seekable sources seek;
+the 1 MiB cap does not apply to them.
+
+### Link-cap and byte-fetch semantics
+
+Hitting either budget means **cannot disprove**, so the probe keeps whatever verdict the
+earlier rules reached — it does not reject. That is the same discipline as an unknown
+source length: absence of evidence is not evidence.
+
+| Bound | Value | Notes |
+| --- | --- | --- |
+| Max links | **8** | Real-tree census on this image: among 2 832 first-block acceptors, every chain rejection happened by link index ≤ 1; live probe hits never walked past 1. Random blobs plateau by 4. **Revisit with hard data if a future corpus shows deeper rejecting chains.** The survey's 64 was a resource-guard default, not a measured optimum. |
+| Max bytes fetched via `read_at` | **4 KiB** | Header-sized reads; not the offset span |
+| Max offset (non-seekable only) | **1 MiB** | See above |
 
 ## What this change deliberately does not do
 

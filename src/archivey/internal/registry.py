@@ -11,6 +11,7 @@ errors, rather than silently dropping a format whose dependency is absent (see
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from types import ModuleType
@@ -46,11 +47,19 @@ class ContentProbe(Protocol):
     """Callable shape for registry content probes.
 
     ``source_length`` is optional: when detection knows a cheap byte size it is passed
-    through so a probe can reject declared framing that cannot fit.
+    through so a probe can reject declared framing that cannot fit, or an incomplete
+    decode when the whole source is visible. ``read_at`` is an optional bounded read
+    facility for probes that follow a self-describing block chain past the peeked
+    prefix; absent by default.
     """
 
     def __call__(
-        self, prefix: bytes, /, *, source_length: int | None = None
+        self,
+        prefix: bytes,
+        /,
+        *,
+        source_length: int | None = None,
+        read_at: Callable[[int, int], bytes | None] | None = None,
     ) -> bool: ...
 
 

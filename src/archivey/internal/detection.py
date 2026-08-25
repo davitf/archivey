@@ -89,6 +89,11 @@ _INNER_TAR_PROBE_BYTES = 512
 # header region from the ordinary prefix and never triggers this larger read.
 _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
 
+# Non-seekable ``read_at`` ceiling for content-probe chain walks: reaching offset N means
+# buffering [0, N). 1 MiB covers a second link after a 4- or 5-nibble first block; a
+# 6-nibble first block (up to 16 MiB) is declined (``None`` → cannot disprove).
+_PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE = 1 << 20
+
 
 class DetectionConfidence(Enum):
     CERTAIN = "certain"  # exact magic-byte match at the expected offset
@@ -136,6 +141,51 @@ def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
     # longer reach. Detection still works, but the prefix is gone — the opener avoids this
     # by wrapping non-seekable sources in a PeekableStream.
     return read_exact(source, length)
+
+
+def _make_probe_read_at(
+    source: str | Path | BinaryIO,
+    prefix: bytes,
+    *,
+    seekable: bool,
+) -> Callable[[int, int], bytes | None]:
+    """Build the optional ``read_at`` callback for content-probe chain walks.
+
+    Returns ``bytes`` at the given absolute offset (relative to the archive origin —
+    the position detection started from), short/empty on EOF, or ``None`` when the
+    caller declines (non-seekable past ``_PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE``).
+    Bytes already in ``prefix`` are served without I/O.
+    """
+
+    def read_at(offset: int, length: int) -> bytes | None:
+        if offset < 0 or length < 0:
+            return None
+        end = offset + length
+        if end <= len(prefix):
+            return prefix[offset:end]
+        if not seekable and end > _PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE:
+            return None
+        if isinstance(source, (str, Path)):
+            with open(source, "rb") as f:
+                f.seek(offset)
+                return f.read(length)
+        if isinstance(source, PeekableStream):
+            # Growing peek buffers [0, end); refuse past the non-seekable cap above.
+            buf = source.peek(end)
+            if offset >= len(buf):
+                return b""
+            return buf[offset:end]
+        if is_seekable(source):
+            origin = source.tell()
+            try:
+                source.seek(origin + offset)
+                return source.read(length)
+            finally:
+                source.seek(origin)
+        # Raw non-seekable without PeekableStream: cannot reposition; decline.
+        return None
+
+    return read_at
 
 
 def _match_magic(
@@ -487,8 +537,17 @@ def _detect_format_body(
         length = source_byte_size(source)
         if length is None and len(data) < near_needed:
             length = len(data)
+        # Bounded read-at for the Brotli chain walk. Paths and seekable streams seek;
+        # PeekableStream may grow its buffer up to the non-seekable cap.
+        if isinstance(source, (str, Path)):
+            probe_seekable = True
+        elif isinstance(source, PeekableStream):
+            probe_seekable = False
+        else:
+            probe_seekable = is_seekable(source)
+        read_at = _make_probe_read_at(source, data, seekable=probe_seekable)
         for probe_fmt, probe in registry.content_probes():
-            if probe(data, source_length=length):
+            if probe(data, source_length=length, read_at=read_at):
                 confidence = DetectionConfidence.PROBABLE
                 if probe_fmt.stream is StreamFormat.BROTLI:
                     confidence = _brotli_probe_confidence(data, ext_match)

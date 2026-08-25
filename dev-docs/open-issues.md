@@ -255,15 +255,16 @@ nor `DIRECTORY`. Original write-up below.
   `.uncompressed` member; a full read raised `TruncatedError` naming a format the file
   never was — and a prefix of fabricated bytes (65 536 measured) may already have been
   produced.
-- **Now (first-block framing gate):** when the source length is known, a first meta-block
-  that declares more bytes than the source holds is rejected. On the measured `/usr`
-  tree that cuts hits from 1377 → **~61 (~0.15%)**. Residual families (OLE/CFB, COFF,
-  lucky fits) remain — and end-to-end those structured residuals are usually claimed by
-  the **LZMA Alone** probe at `PROBABLE` (not Brotli), so the Brotli `GUESS` /
-  `format_unconfirmed` channel does not fire for them. Two follow-ups now carry
-  the rest: **`probe-completeness-gate`** (the deferred chain walk, which would cut the
-  Brotli residual to ~0.035%, plus a new rule — a source no larger than the peeked prefix
-  must decode to *completion*, which alone rejects 91 of 128 measured fabrications) and
+- **Now (framing + completeness + chain walk):** when the source length is known, a first
+  meta-block that declares more bytes than the source holds is rejected; a fully visible
+  source that does not decode to completion is rejected; and a bounded self-describing
+  block-chain walk rejects later overruns / trailing bytes. Re-measured after
+  `probe-completeness-gate` (`scripts/exploration/probe_residual_census.py`, 147 601 files
+  under `/usr`): **30 fabricated claims (0.020%)**, down from 128 (0.193%) after the
+  first-block gate alone. Residual families (OLE/CFB, COFF, lucky compressed-first fits
+  above the prefix) remain — and end-to-end those structured residuals are usually claimed
+  by the **LZMA Alone** probe at `PROBABLE` (not Brotli), so the Brotli `GUESS` /
+  `format_unconfirmed` channel does not fire for them. The remaining follow-up is
   **`probe-provenance-unconfirmed`** (key the unconfirmed channel on provenance rather
   than `GUESS` confidence).
 - **Confidence / errors:** probe-only Brotli is `PROBABLE` when the first meta-block is
@@ -271,12 +272,7 @@ nor `DIRECTORY`. Original write-up below.
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
 - **Still three clauses, not one:** the listing can be wrong; a full read raises; **and**
   a prefix of fabricated bytes may already have been produced. Not a silent success.
-- **Re-measured after the gate** (`scripts/exploration/probe_residual_census.py`,
-  66 361 files under `/usr`): 132 probe claims, 4 of them genuine `.br`/`.brotli` files,
-  **128 fabricated (0.193%)**. Of those, **68 — 53% — carry no unconfirmed signal at
-  all**, because the channel keys on `GUESS` while LZMA Alone reports `PROBABLE`
-  unconditionally.
-- **Refs:** `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate/`; investigation
+- **Refs:** `openspec/changes/probe-completeness-gate/`; investigation
   [`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md);
   threat-model O10.
 
