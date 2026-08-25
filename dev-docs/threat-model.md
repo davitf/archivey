@@ -348,17 +348,18 @@ Brotli has no magic number, so `detect_format` recognizes it by a content probe.
 the framing gate that accepted **~8.2%** of random data and **~3.5%** of a real `/usr`
 tree. `open_archive` listed one fabricated `<name>.uncompressed` member.
 
-**Mitigation shipped (first-block framing gate):** when the source length is known, a
-first meta-block that declares more bytes than the source holds is rejected. Residual on
-the measured tree is ~**0.15%** (61/39 859); a deferred chain walk would cut further.
-Probe-only confidence is `GUESS` for the uncompressed/metadata-first class; a decode
-failure there sets `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
-Structured residual families named in the investigation (OLE/CFB, COFF) are usually
-claimed end-to-end by the **LZMA Alone** probe at `PROBABLE`, so that honesty channel
-does not cover them yet — measured, **68 of 128** fabricated probe claims on a real
-tree carry no signal (follow-up: `probe-provenance-unconfirmed`). A further
-`probe-completeness-gate` rejects a source that is fully visible and does not decode to
-completion, removing 91 of those 128.
+**Mitigation shipped (framing + completeness + chain walk):** when the source length is
+known, a first meta-block that declares more bytes than the source holds is rejected; a
+fully visible source that does not decode to completion is rejected; and a bounded
+self-describing block-chain walk rejects later overruns / trailing bytes. Residual after
+`probe-completeness-gate` on a re-measured tree (150 623 files): **29 fabricated claims
+(0.019%)**, down from 128 (0.193%) after the first-block gate alone. Probe-only confidence
+is `GUESS` for the uncompressed/metadata-first class; a decode failure there sets
+`format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. Structured residual
+families named in the investigation (OLE/CFB, COFF) are usually claimed end-to-end by the
+**LZMA Alone** probe at `PROBABLE`, so that honesty channel does not cover them yet —
+measured, **26 of 29** fabricated probe claims on the re-measured tree carry no signal
+(follow-up: `probe-provenance-unconfirmed`).
 
 **Three clauses remain:** the listing can be wrong; a full read raises; **and** a prefix
 of fabricated bytes (65 536 measured) may already have been produced before that raise.
@@ -366,7 +367,8 @@ Not a silent success — but also not “every read failed with no output.”
 
 Product triage: `open-issues.md` P12. Investigation:
 [`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md).
-Change: `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate/`.
+Changes: `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate/`,
+`openspec/changes/archive/2026-08-25-probe-completeness-gate/`.
 
 **Adjacent and already closed:** the *archive-behind-a-stub* case (Topic 8 A-34) via
 `sfx-format-detection`.

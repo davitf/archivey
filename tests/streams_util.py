@@ -196,3 +196,18 @@ def lzma2_raw_filters() -> list[dict]:
 
 def compress_lzma2_raw(data: bytes) -> bytes:
     return lzma.compress(data, format=lzma.FORMAT_RAW, filters=lzma2_raw_filters())
+
+
+def brotli_compressed_metablock_header(*, first: bool = False) -> bytes:
+    """Synthesize a 24-byte meta-block header that classifies as ``COMPRESSED``.
+
+    Used by framing / completeness / SFX tests that need a chain walk to stop at a
+    successor link without depending on a real Brotli encoder for that header alone.
+    """
+    from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
+
+    for seed in range(4096):
+        hdr = bytes([(seed + j * 13) % 256 for j in range(24)])
+        if parse_metablock(hdr, first=first).outcome is BrotliBlock.COMPRESSED:
+            return hdr
+    raise RuntimeError("no compressed meta-block header pattern found")

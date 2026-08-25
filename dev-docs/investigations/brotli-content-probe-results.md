@@ -952,12 +952,35 @@ corpora that one Linux container cannot make representative:
 Running it on Linux is what turned up the `/**\n` result in §5. Windows and macOS runs are
 the ones still missing.
 
+## 11. Residual after `probe-completeness-gate` (2026-08-25)
+
+Re-ran `scripts/exploration/probe_residual_census.py` on this image after shipping
+completeness + the chain walk, **and again after raising the completeness output drain
+from 256 bytes to 64 KiB** (review F4; link cap 8, non-seekable `read_at` max offset
+1 MiB unchanged):
+
+| | count | share of tree |
+| --- | --- | --- |
+| files scanned | 150 623 | — |
+| content-probe claims | 30 | — |
+| genuine streams | 1 | — |
+| **fabricated** | **29** | **0.019%** |
+
+The previous post-gate census on this image (256-byte drain) was 30 / 147 601 (0.020%).
+The larger drain rejects a few more fully-visible truncations before the walk; the tree
+also grew slightly between runs. Compare with the post-first-block census on a smaller
+tree: 128 fabricated (0.193%). Of the 29 survivors, 26 carry no `format_unconfirmed`
+signal (PROBABLE Alone / compressed-first Brotli) — that is
+`probe-provenance-unconfirmed`'s remaining argument. OLE/CFB and COFF above the prefix
+still survive both rules by construction.
+
 ## Refs
 
 - `src/archivey/internal/streams/codecs.py` — `_PROBE_PREFIX`, `_decodes_sample`,
   `BrotliCodec.content_probe`, `_ZLIB_HEADERS`, `_alone_header_plausible`
-- `src/archivey/internal/detection.py` — `_peek_prefix`, `DetectionConfidence`, and where
-  a probe result becomes the answer
+- `src/archivey/internal/streams/brotli_framing.py` — first-block gate + `chain_proves_invalid`
+- `src/archivey/internal/detection.py` — `_peek_prefix`, `_make_probe_read_at`,
+  `DetectionConfidence`, and where a probe result becomes the answer
 - `src/archivey/internal/streams/peekable.py` — `DETECTION_LIMIT = 4096`
 - `openspec/specs/format-detection/spec.md` — the normative probe requirements
 - RFC 7932 §1.5 (bit order), §9.1 (WBITS), §9.2 (meta-block header)

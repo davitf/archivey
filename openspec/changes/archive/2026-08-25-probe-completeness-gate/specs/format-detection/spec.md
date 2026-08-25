@@ -67,19 +67,22 @@ prohibition on knobs.
 A content probe decodes a bounded prefix and treats "the decoder wants more input" as a
 match, because a real stream usually continues past the prefix. When the probe knows the
 source length and that length does not exceed the bytes it was handed, there is no more
-input: the probe is holding the entire file. A **complete valid stream decoded in full
-terminates**, so a decode that ends wanting more input SHALL be a rejection rather than a
-match.
+input: the probe is holding the entire file. A **complete valid stream that finishes within
+a declared output drain terminates**, so a decode that still wants more input after that
+bounded drain SHALL be a rejection rather than a match.
 
-This is an invariant, not a threshold. Its false-negative set — complete valid streams
-that fail to decode completely — is empty by construction, which is why it MUST NOT be
-implemented as a minimum size. A 9-byte `brotli.compress(b"hello")` decodes to completion
-and SHALL still be accepted.
+This is a **bounded** completeness check, not a full drain of the decoded output: the
+implementation SHALL declare an output budget (today: 64 KiB) so a highly-compressible
+fully-visible sample cannot expand into an unbounded decode. Streams whose expansion
+exceeds that budget without the decoder signalling "needs more input" are not rejected
+here. The check MUST NOT be implemented as a minimum source size. A 9-byte
+`brotli.compress(b"hello")` finishes within the drain and SHALL still be accepted.
 
 The rule SHALL apply to every probe that decodes, not to Brotli alone: it follows from
-bounded decoding rather than from any one format's framing. Measured on 66 361 real files,
-it rejects **91 of 128** fabricated probe claims (71%) — 67 of them under 16 bytes — while
-costing **zero** genuine streams.
+bounded decoding rather than from any one format's framing. Measured on 66 361 real files
+(at the then-256-byte completeness drain; the drain is now 64 KiB, which only strengthens
+the rule), it rejects **91 of 128** fabricated probe claims (71%) — 67 of them under
+16 bytes — while costing **zero** genuine streams.
 
 The check SHALL be skipped when the source length is unknown, exactly as the framing gate
 is; detection then behaves as before.
@@ -89,7 +92,9 @@ is; detection then behaves as before.
 | Case | Expected |
 | --- | --- |
 | 9-byte real Brotli stream, whole file in the prefix, decodes to completion | Accepted |
-| 5-byte text file whose first meta-block parses as compressed, decode wants more input | **Rejected** — the file is fully visible and does not terminate |
+| 5-byte text file whose first meta-block parses as compressed, decode wants more input within the output drain | **Rejected** — the file is fully visible and does not terminate |
+| Truncated high-ratio zlib (fully visible; expands past the old 256-byte probe read, within ~64 KiB) | **Rejected** within the declared output drain |
+| Truncated high-ratio zlib whose expansion exceeds the output drain before signalling truncation | Not rejected here — bounded check cannot disprove |
 | Real Brotli file larger than the prefix, decode wants more input | Accepted — there genuinely is more input |
 | Real Brotli file exactly the size of the prefix, decodes to completion | Accepted |
 | Source length unknown (non-seekable stream longer than the peek) | Rule skipped; today's behaviour |
@@ -106,19 +111,21 @@ format outside that scope is unaffected — this is not an obligation on every p
 
 The walk is mandatory rather than optional because the alternative is a probe whose
 false-positive rate silently depends on whether an implementer felt like walking. What is
-*bounded* is the work, not the obligation: the budget below is the escape hatch, and
-exhausting it is a defined outcome rather than a licence to skip the walk.
+*bounded* is the work, not the obligation: the budgets below are the escape hatch, and
+exhausting either is a defined outcome rather than a licence to skip the walk.
 
 The walk exists because the first-block check goes **vacuous on large sources**: Brotli's
 MLEN field tops out at 2²⁴, so past ~16 MiB every declared length fits trivially. Measured
 on random blobs, the walk takes 16 MiB acceptance from 8.33% (where the first-block check
 buys nothing) to 2.00%, and a `/usr` tree from 61 survivors to 14.
 
-The walk SHALL be **bounded in both the number of links followed and the bytes read**, and
-both bounds SHALL be declared rather than implicit. Reaching either means *cannot disprove*:
-the probe SHALL keep the verdict the earlier rules reached and MUST NOT reject on that
-basis. This is the same discipline as an unknown source length — absence of evidence is not
-evidence against, so budget exhaustion can never manufacture a false negative.
+The walk SHALL be **bounded by a declared link count** (today: 8) and, on forward-only
+sources, by a **declared maximum absolute offset** for probe reads (today: 1 MiB). Reaching
+either means *cannot disprove*: the probe SHALL keep the verdict the earlier rules reached
+and MUST NOT reject on that basis. This is the same discipline as an unknown source length
+— absence of evidence is not evidence against, so budget exhaustion can never manufacture a
+false negative. The 1 MiB figure is the memory-governing ceiling for a non-seekable
+`read_at` (buffering `[0, offset)`); seekable sources and paths may seek past it.
 
 The walk stops at the first compressed block, which carries no declared length to check.
 On a real Brotli file whose first meta-block is compressed — 79 of 150 in the corpus — it
@@ -126,7 +133,7 @@ therefore terminates immediately, having read four bytes.
 
 Following the chain requires bytes at offsets that may lie past the peeked prefix. The
 mechanism by which a probe reaches them is settled in this change's design; whatever it
-is, the reads SHALL stay bounded and SHALL NOT decompress.
+is, the reads SHALL stay within the declared bounds and SHALL NOT decompress.
 
 #### Scenario: chain walk matrix
 
@@ -138,4 +145,6 @@ is, the reads SHALL stay bounded and SHALL NOT decompress.
 | Fabrication whose chain reaches a declared end with bytes left over | **Rejected** |
 | 16 MiB source whose first declared block fits trivially (MLEN ceiling) | Walk decides; first-block check alone would have accepted |
 | Chain longer than the link bound | Verdict unchanged from the earlier rules; **not** a rejection |
+| Non-seekable `read_at` past the 1 MiB offset ceiling | Declined → cannot disprove; earlier verdict stands |
 | OLE/CFB file ≥ 7425 bytes | Still accepted — its constant magic yields a fitting chain. Known residual, unchanged |
+
