@@ -260,15 +260,23 @@ nor `DIRECTORY`. Original write-up below.
   tree that cuts hits from 1377 → **~61 (~0.15%)**. Residual families (OLE/CFB, COFF,
   lucky fits) remain — and end-to-end those structured residuals are usually claimed by
   the **LZMA Alone** probe at `PROBABLE` (not Brotli), so the Brotli `GUESS` /
-  `format_unconfirmed` channel does not fire for them. A deferred **chain walk**
-  (task 5.7) would cut the Brotli residual further to ~0.035%; making the unconfirmed
-  channel provenance-based (any probe-only claim) is task 5.8.
+  `format_unconfirmed` channel does not fire for them. Two follow-ups now carry
+  the rest: **`probe-completeness-gate`** (the deferred chain walk, which would cut the
+  Brotli residual to ~0.035%, plus a new rule — a source no larger than the peeked prefix
+  must decode to *completion*, which alone rejects 91 of 128 measured fabrications) and
+  **`probe-provenance-unconfirmed`** (key the unconfirmed channel on provenance rather
+  than `GUESS` confidence).
 - **Confidence / errors:** probe-only Brotli is `PROBABLE` when the first meta-block is
   compressed (or `.br` corroborates), else `GUESS`. A decode failure on `GUESS` sets
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
 - **Still three clauses, not one:** the listing can be wrong; a full read raises; **and**
   a prefix of fabricated bytes may already have been produced. Not a silent success.
-- **Refs:** `openspec/changes/brotli-probe-framing-gate/`; investigation
+- **Re-measured after the gate** (`scripts/exploration/probe_residual_census.py`,
+  66 361 files under `/usr`): 132 probe claims, 4 of them genuine `.br`/`.brotli` files,
+  **128 fabricated (0.193%)**. Of those, **68 — 53% — carry no unconfirmed signal at
+  all**, because the channel keys on `GUESS` while LZMA Alone reports `PROBABLE`
+  unconditionally.
+- **Refs:** `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate/`; investigation
   [`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md);
   threat-model O10.
 

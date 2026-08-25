@@ -105,6 +105,18 @@
 
 ## API & ergonomics
 
+- **Extension-first detection ordering** — try the formats a filename's extension
+  suggests before the rest, falling back to the full sweep on a miss or when there is no
+  filename. Strictly better than today's fixed order *and* than a hard extension gate: a
+  `.br` file stops being identified by whichever content probe happens to run first, while
+  a wrongly-named file is still found — which matters, because `VISION.md`'s founding use
+  case is a backup corpus where wrong extensions are normal. It is also where a magic
+  *denylist* would become reasonable (compound-document files falling out of
+  `detect_format` is a feature once the extension has had first refusal), which
+  `brotli-probe-framing-gate` declined precisely because a sound rule should not be mixed
+  with a heuristic. Not small: it restructures `_detect_format_body` for every format, so
+  it wants its own proposal. Parked from that change's task 5.1.
+
 - **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
   policy already sketched in `safe-extraction` (re-root/collapse unsafe paths instead of
   rejecting) is also the right home for **renaming members the destination cannot

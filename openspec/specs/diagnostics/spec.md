@@ -37,6 +37,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `FORMAT_EXTENSION_CONFLICT` | `FormatConflictContext`: `kind="format_conflict"`, `source_name`, `extension`, `extension_format`, `detected_format` |
 | `EXPLICIT_FORMAT_LISTED_EMPTY` | `UnconfirmedFormatContext`: `kind="unconfirmed_format"`, `archive_name`, `format`, `chosen_by="argument"`, `detected_format` |
 | `EXTENSION_FORMAT_UNCONFIRMED` | `UnconfirmedFormatContext`: `kind="unconfirmed_format"`, `archive_name`, `format`, `chosen_by="extension"`, `detected_format=None` |
+| `PROBE_FORMAT_UNCONFIRMED` | `UnconfirmedFormatContext`: `kind="unconfirmed_format"`, `archive_name`, `format`, `chosen_by="content_probe"`, `detected_format` |
 | `EMPTY_ARCHIVE` | `EmptyArchiveContext`: `kind="empty_archive"`, `archive_name`, `format` |
 | `ENCODING_ARGUMENT_UNUSED` | `UnusedArgumentContext`: `kind="unused_argument"`, `archive_name`, `argument="encoding"`, `format`, `reason` |
 | `PASSWORD_ARGUMENT_UNUSED` | `UnusedArgumentContext`: `kind="unused_argument"`, `archive_name`, `argument="password"`, `format`, `reason` |
@@ -57,8 +58,15 @@ exactly this union — no backend-defined variants. `observed_kind` ∈
 offset of the first non-zero byte past the trailer). `member_id` MAY be `None` only before registration.
 `controls` SHALL be the comma-joined `U+XXXX` spellings of the bidi codepoints
 found, in the order they occur, so a caller can tell an override from a mark
-without re-scanning the name. `chosen_by` ∈ `{"argument","extension"}`;
+without re-scanning the name. `chosen_by` ∈ `{"argument","extension","content_probe"}`;
 `detected_format` is `None` when detection refuses the bytes outright.
+
+`PROBE_FORMAT_UNCONFIRMED` is a **separate code**, not a widening of
+`EXTENSION_FORMAT_UNCONFIRMED`. The two describe different provenance and fire on
+different events: the extension code keys on `detected_by="extension"` **and an empty
+listing**; the probe code keys on `detected_by="content_probe"` at `GUESS` confidence
+**and a decode failure**. A probe-only read failure MUST NOT double-report under the
+extension code.
 
 `ExtractionOutcomeContext`, `NameCollisionContext` and `NameSanitizedContext` SHALL
 NOT exist: per-member extraction outcomes are carried by `ExtractionResult` (see
@@ -82,6 +90,10 @@ and cross-run id stability are not promised.
 | Member blocked by a universal/policy check | No diagnostic; a `BLOCKED` `ExtractionResult` is the whole record |
 | `password=["a","b"]` on a format with no encryption | `PASSWORD_ARGUMENT_UNUSED`; context carries no candidate value and no count |
 | Non-zero byte past a complete TAR trailer under `strict_archive_eof` | `ARCHIVE_TRAILING_DATA` sharing `ArchiveEofContext`; distinguished by `expected_marker` |
+| Probe-only (`GUESS`) single-file read raises | `PROBE_FORMAT_UNCONFIRMED` with `chosen_by="content_probe"` |
+| Extension-only empty listing | Still `EXTENSION_FORMAT_UNCONFIRMED` only — unchanged |
+| Probe + `.br` (`PROBABLE`) read raises | No `PROBE_FORMAT_UNCONFIRMED` — the format was corroborated |
+| Probe-only read succeeds | No diagnostic |
 
 ### Requirement: Exact bounded diagnostic summaries
 
@@ -347,7 +359,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `MEMBER_TIMESTAMP_INVALID`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES` |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `MEMBER_TIMESTAMP_INVALID`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED` |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
@@ -357,7 +369,10 @@ speculatively passes a password to every call would otherwise raise on every
 unencrypted archive; `EXPLICIT_FORMAT_LISTED_EMPTY` because `format=` is an override
 and an override that halts the caller is not an override; and
 `STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
-than the archive, and is most useful as a deliberately targeted tripwire.
+than the archive, and is most useful as a deliberately targeted tripwire;
+`PROBE_FORMAT_UNCONFIRMED` because it is emitted while stamping a typed
+`TruncatedError` / `CorruptionError` that already carries `format_unconfirmed=True`,
+and putting it in `strict` would replace that typed error with `DiagnosticRaisedError`.
 
 Presets SHALL return ordinary frozen `DiagnosticPolicy` values with per-code
 overrides — no new resolution axis, and no field on `Diagnostic`. A caller MAY build
@@ -380,6 +395,13 @@ remains a breaking change.
 | `strict()`, legitimately empty tar | No raise; `EMPTY_ARCHIVE` collected |
 | Preset value compared to an equivalent hand-built policy | Equal; presets add no resolution axis |
 | A new code added in a later minor release | `strict()` membership is explicit; a `default=RAISE` policy silently gains it |
+
+#### Scenario: probe code stays out of strict
+
+| Case | Expected |
+| --- | --- |
+| `PROBE_FORMAT_UNCONFIRMED in ARCHIVE_INTEGRITY_CODES` | False |
+| `DiagnosticPolicy.strict()` disposition for that code | COLLECT (via default) |
 
 ### Requirement: Diagnostic messages are inert for terminal display
 
@@ -409,3 +431,42 @@ values interpolated into it SHALL be raw, via `quoted()` rather than `!r`.
 | `context.member_name` for the same diagnostic | The raw name, unescaped |
 | `to_dict()["context"]` | Raw values, suitable for a structured sink |
 | A message with no control bytes | Unchanged |
+
+### Requirement: A probe-only decode failure is filterable as unconfirmed
+
+When a single-file decode fails and `ArchiveyError.format_unconfirmed` is true (see
+`error-handling`), the system SHALL also emit `PROBE_FORMAT_UNCONFIRMED` so callers
+that filter diagnostics — without inspecting exception attributes — see the same
+fact. The exception attribute and the diagnostic are two views of one provenance;
+neither replaces the other.
+
+`PROBE_FORMAT_UNCONFIRMED` SHALL NOT be a member of the `ARCHIVE_INTEGRITY_CODES`
+strict set: it is emitted while stamping a typed `TruncatedError` / `CorruptionError`,
+and putting it in `strict` would replace that typed error with `DiagnosticRaisedError`.
+Default disposition is COLLECT. When a caller's policy resolves this code to RAISE
+(notably `DiagnosticPolicy.pedantic()`), the emit SHALL surface the same typed error
+via `escalate_as` (carrying `format_unconfirmed=True`) rather than
+`DiagnosticRaisedError`. The diagnostic is emitted at most once per reader.
+
+That once-per-reader bound SHALL hold under **every** policy, RAISE included: an
+escalating emit MUST NOT leave a second count, retention, log line or callback behind on
+a later occurrence.
+
+The per-code policy contract's deduplication rule (*"deduplication is a presentation
+concern; escalation is not"*) is what makes that safe to state. Its guarantee is that no
+qualifying occurrence passes **silently** under RAISE — a guard that disarms after firing
+once is not a guard. For this code the raise does not come from the diagnostic: every
+qualifying occurrence re-raises the stamped typed error with `format_unconfirmed=True`
+whether or not the diagnostic fires again, so the second and later reads stop the caller
+exactly as the first did. The escalation obligation is therefore met by the read path
+itself, and re-emitting would buy a duplicate record rather than a stop.
+
+#### Scenario: dual channel
+
+| Case | Expected |
+| --- | --- |
+| Probe-only decode failure | `exc.format_unconfirmed is True` **and** a `PROBE_FORMAT_UNCONFIRMED` diagnostic |
+| Corroborated decode failure | `exc.format_unconfirmed is False`; no probe-unconfirmed diagnostic |
+| `pedantic()`, probe-only decode failure | Same typed `TruncatedError`/`CorruptionError` with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
+| Three retried reads on one probe-only member | Diagnostic count stays 1; each exception still has `format_unconfirmed=True` |
+| `pedantic()`, three retried reads on one probe-only member | Count and retention stay 1; every read still raises the typed error with `format_unconfirmed=True` |
