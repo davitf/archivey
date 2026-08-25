@@ -156,6 +156,37 @@
   Stated as a rule: agreement between two independent signals outranks an unconsulted
   *expensive* alternative, never an unconsulted *cheap and stronger* one.
 
+- **Public `FormatEvidence` set, replacing `detected_by` + internal `corroborated`** —
+  `FormatInfo` currently reports *one* winning signal (`detected_by: str`, stringly-typed:
+  `"magic"` / `"extension"` / `"content_probe"` / `"sfx_scan"`) plus an internal
+  `corroborated: bool` that `probe-provenance-unconfirmed` added for the
+  `format_unconfirmed` channel. Neither can answer the question a caller actually has —
+  *how well evidenced is this identification, and by what?* — because `corroborated=False`
+  is overloaded: it means both "a probe with nothing corroborating it" and "not a probe at
+  all". Measured over every reachable detection path, a ZIP named `a.zip` (extension
+  agrees) and a ZIP named `b.tar` (extension contradicts) produce **identical** output —
+  `magic` / `certain` / `False` — and so do an extensionless Brotli probe hit and one whose
+  `.zip` name contradicts it. A rename does not fix that; the shape is wrong.
+
+  The shape that works is a set of the signals that fired — `MAGIC` (exact magic at the
+  format's own offset), `MAGIC_SCANNED` (found by searching a stub window, i.e. SFX),
+  `CONTENT_PROBE`, `INNER_TAR` (the decompressed prefix carried a `ustar` header),
+  `EXTENSION` (the filename agrees). `a.zip` becomes `MAGIC | EXTENSION`, `b.tar` becomes
+  `MAGIC`, an extensionless brotli'd tar becomes `CONTENT_PROBE | INNER_TAR`. Both internal
+  predicates then read as what they mean — `probe_only = evidence == CONTENT_PROBE`,
+  `corroborated = evidence.bit_count() > 1` — and `corroborated` becomes true for `a.zip`,
+  as it always should have been. It also closes an asymmetry that exists today: extension
+  *disagreement* is publicly observable (`FORMAT_EXTENSION_CONFLICT` lands in
+  `info.diagnostics`), extension *agreement* is not observable at all.
+
+  Not small, and breaking: it subsumes `detected_by`, which is public, pinned in
+  `openspec/specs/format-detection`, asserted by full-equality in `tests/test_detection.py`,
+  and printed by `archivey info`. Keeping both fields would be redundant-by-construction.
+  Open question for the proposal: whether a *contradicting* extension is represented too — a
+  `Flag` cannot hold "disagrees", so that is either a separate field or stays with the
+  diagnostic. Parked from `probe-provenance-unconfirmed` task 5.1 (which carries the full
+  truth table), rescoped there after the #267 review.
+
 - **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
   policy already sketched in `safe-extraction` (re-root/collapse unsafe paths instead of
   rejecting) is also the right home for **renaming members the destination cannot

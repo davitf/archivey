@@ -117,9 +117,14 @@ class FormatInfo:
     )
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
     # Internal provenance for ``format_unconfirmed``: True when a matching extension or
-    # an inner-TAR upgrade corroborated a content-probe claim. Not part of the public
-    # ``detect_format`` contract — see ``probe-provenance-unconfirmed`` task 5.1.
-    corroborated: bool = False
+    # an inner-TAR upgrade corroborated a content-probe claim. ``compare=False`` keeps it
+    # out of the generated ``__eq__``, ``repr=False`` out of ``__repr__``; that is what
+    # actually holds it outside the public ``detect_format`` contract — the field is
+    # reachable but constrains nothing. Deliberate: ``False`` here is overloaded — it means
+    # both "a probe with no corroboration" and "not a probe at all", so an exact magic hit
+    # reads False — and a bool cannot separate those. ``probe-provenance-unconfirmed``
+    # task 5.1 tracks the public evidence-set shape that could.
+    corroborated: bool = field(default=False, compare=False, repr=False)
 
 
 def _extension_corroborates(

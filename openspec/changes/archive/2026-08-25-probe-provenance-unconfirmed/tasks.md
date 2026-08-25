@@ -52,5 +52,33 @@
 
 ## 5. Follow-ups (explicitly not in this change)
 
-- [ ] 5.1 Whether `FormatInfo` should expose corroboration as a public field rather than an internal provenance detail. Task 1.3 may make it internal; a caller wanting to know "was this identification corroborated?" before reading has no way to ask
+- [ ] 5.1 **Replace `detected_by: str` + internal `corroborated: bool` with a public evidence set.** Rescoped after review of #267 — the original question ("should `FormatInfo` expose corroboration as a public field?") has a definite answer: **not as this bool.** `corroborated=False` means two different things — "a probe, with nothing corroborating it" *and* "not a probe at all" — and the second case is most detections, so a public reader sees `False` on an exact magic match. Measured truth table over every reachable path:
+
+  | case | `detected_by` | `corroborated` |
+  | --- | --- | --- |
+  | ZIP magic, name **agrees** (`a.zip`) | `magic` | False |
+  | ZIP magic, name **contradicts** (`b.tar`) | `magic` | False |
+  | `d.tar.gz` — magic + inner-TAR | `content_probe` | True |
+  | brotli probe, no extension | `content_probe` | False |
+  | brotli probe, `.br` agrees | `content_probe` | True |
+  | brotli probe, `.zip` contradicts | `content_probe` | False |
+  | SFX (MZ stub + appended ZIP) | `sfx_scan` | False |
+  | extension-only fallback | `extension` | False |
+
+  Rows 1/2 and rows 4/6 are indistinguishable in the output, though the extension agrees in one and contradicts in the other. No rename fixes that; the shape is wrong. What a caller actually wants is *which* signals fired:
+
+  ```python
+  class FormatEvidence(Flag):
+      MAGIC = auto()          # exact magic at the offset the format specifies
+      MAGIC_SCANNED = auto()  # magic found by searching a stub window (SFX)
+      CONTENT_PROBE = auto()  # a codec decoded a bounded prefix
+      INNER_TAR = auto()      # the decompressed prefix carried a TAR header
+      EXTENSION = auto()      # the filename extension agrees with the result
+  ```
+
+  Then `a.zip` is `MAGIC | EXTENSION`, `b.tar` is `MAGIC`, and both internal predicates become honest one-liners: `probe_only = evidence == CONTENT_PROBE`, `corroborated = evidence.bit_count() > 1`. It also retires `detected_by`'s stringly-typed `# "magic", "extension", "content_probe", "sfx_scan"`, and closes an existing asymmetry — extension *disagreement* is already public via `FORMAT_EXTENSION_CONFLICT`, extension *agreement* is not observable at all.
+
+  Not small, and breaking: `detected_by` is a public field pinned by `openspec/specs/format-detection` and by `tests/test_detection.py`'s full-equality assertion, and carrying both fields would be redundant-by-construction. Wants its own proposal — parked in [`dev-docs/IDEAS.md`](../../../../dev-docs/IDEAS.md) §API & ergonomics so it is not buried in an archived change. Open question it must settle: whether a *contradicting* extension is represented too (a `Flag` cannot hold "disagrees" — separate field, or leave it to the diagnostic).
+
+  Interim (#267 review): `corroborated` is `field(default=False, compare=False, repr=False)`, so it stays out of `__eq__` and `__repr__` and constrains nothing while the shape is undecided
 - [ ] 5.2 `brotli-probe-framing-gate` task 3.1a's compressed-first `PROBABLE` split stands on its random-data measurement, but that number does not describe real files (64 fabrications against 4 genuine streams on the measured tree). This change makes the split harmless — it no longer steers error behaviour — so retuning it is now a pure confidence question, worth revisiting only with a corpus of real extensionless Brotli streams
