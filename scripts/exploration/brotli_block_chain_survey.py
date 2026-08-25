@@ -14,6 +14,11 @@ This script re-measures the two numbers that settled it, on whatever machine you
 2. **False positives.** Random blobs at several declared source sizes, counting what each
    rule rejects among the ones the content probe accepts.
 
+It also censuses the shape of each stream's **first** meta-block, which answers the doc's
+second question: whether `ISLAST` is only ever set on an empty meta-block (it is not — 91%
+of real streams are a single compressed meta-block with `ISLAST` set, so a rule rejecting
+"final but not empty" would reject them all).
+
 Every corpus entry is verified by a full `brotli.decompress` round-trip before it counts,
 so a "false negative" here is always a genuinely valid stream.
 
@@ -213,6 +218,27 @@ def false_negatives(corpus: list[tuple[str, bytes]]) -> None:
         print(f"      … and {len(fixed_rejects) - 15} more")
 
 
+def first_block_shapes(corpus: list[tuple[str, bytes]]) -> None:
+    """What detection actually sees. `ISLAST` on a non-empty block is the common case."""
+    shapes: Counter[str] = Counter()
+    for _, blob in corpus:
+        info = parse_first_metablock(blob[:PREFIX])
+        if info.outcome is BrotliFirstBlock.EMPTY_LAST:
+            shapes["empty-last"] += 1
+        else:
+            last = " ISLAST" if getattr(info, "is_last", False) else ""
+            shapes[f"{info.outcome.value}{last}"] += 1
+    total = sum(shapes.values())
+    for shape, count in shapes.most_common():
+        print(f"  {count:5d}  ({100 * count / total:5.1f}%)  {shape}")
+    if not HAVE_CHAIN_WALK:
+        print("  (ISLAST not annotated: BrotliFraming.is_last lands with #265)")
+    print(
+        "  (the synthetic corpus is skewed toward incompressible payloads by design —"
+    )
+    print("   --scan a real font/.br population for the distribution the doc reports)")
+
+
 def declared_lengths(corpus: list[tuple[str, bytes]]) -> None:
     """Is there an exploitable granularity in non-last uncompressed block lengths?"""
     lengths: Counter[int] = Counter()
@@ -310,6 +336,8 @@ def main() -> int:
 
     print("\n== false negatives (valid streams a rule rejects — must be zero) ==")
     false_negatives(corpus)
+    print("\n== first-block shapes (a non-empty ISLAST block is the common case) ==")
+    first_block_shapes(corpus)
     print("\n== first-block uncompressed lengths ==")
     declared_lengths(corpus)
     print(f"\n== false positives ({args.trials} random blobs per size) ==")

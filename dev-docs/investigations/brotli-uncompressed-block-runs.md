@@ -1,6 +1,10 @@
-# Can a Brotli stream carry consecutive uncompressed meta-blocks?
+# Brotli meta-block shapes: two proposed shortcuts, both unsound
 
-**Question (from PR #265 review discussion).** The completeness gate walks Brotli's
+**Two questions, both from the PR #265 review discussion**, both about whether the
+completeness gate's chain walk can be cheapened. §1–§5 answer the first; §6 answers a
+follow-up — whether `ISLAST` is only ever set on an empty meta-block. Both answers are no.
+
+**Question 1.** The completeness gate walks Brotli's
 self-describing meta-block chain so that it can reject headers that declare an
 uncompressed stream longer than the source. The chain walk is the expensive part. If a
 real encoder only ever emits **one** uncompressed meta-block — "compression was not
@@ -17,7 +21,7 @@ false-positive reduction** over the chain walk. Keep the chain walk.
 **Date:** 2026-08-25.
 **Environment.** `main` @ `3dafac1`, PR #265 head `fc6bcc1`, CPython 3.11.15,
 `Brotli` 1.2.0 (the C extension), reference sources `google/brotli` @ `8e10eeb` (v1.2.0),
-Linux 6.18.44. Method and scripts in §7.
+Linux 6.18.44. Method and scripts in §8.
 
 ---
 
@@ -30,6 +34,8 @@ Linux 6.18.44. Method and scripts in §7.
 | Uncompressed block sizes have an exploitable granularity | **No** — gcd of all observed non-last lengths is **1** | §3 |
 | Concatenated Brotli streams are a thing | Not for a single-stream decoder; but 1.2.0 added `brcat` / `-K` | §4.1 |
 | Stream *stitching* produces such runs | **Yes** — official `BROTLI_PARAM_STREAM_OFFSET` | §4.2 |
+| The encoder always terminates with an *empty* last meta-block | **No** — 92.1% end with a non-empty last compressed block | §6 |
+| …so "reject ISLAST-but-not-empty" would work | **No** — it rejects 91.4% of valid streams | §6.2 |
 | "Second block must be compressed" is a safe simplification | **No** — 74/1914 false negatives | §5 |
 | …it at least reduces false positives more | **No** — within ±0.3 pp of the chain walk | §5.2 |
 
@@ -282,9 +288,100 @@ to the choice — the earlier survey's "fonts are the wild" framing does not cov
 The two rules are within **0.33 percentage points** of each other everywhere, and they trade
 places by row. That is the crux: the simplification's entire value proposition was that it
 would be *nearly as good* — it is, but "nearly as good" is not a reason to accept 74 false
-negatives, and the chain walk is not paying for its depth in cost either (§6).
+negatives, and the chain walk is not paying for its depth in cost either (§7).
 
-## 6. What the chain walk actually costs on real files
+## 6. Does the encoder always end with an *empty* last meta-block?
+
+Asked as a follow-up, because §2's sequences end in `E` so often: if `ISLAST` were only ever
+set on the empty terminator, detection could reject any header that is final but not empty —
+technically laxer than RFC 7932, but detection-only.
+
+**It does not, and the rule would reject 91% of real Brotli files.**
+
+### 6.1 Why `E` looks universal in §2 and is not
+
+The empty terminator is not an encoder habit; it is **forced by a format rule, and only in
+one direction**. `ISUNCOMPRESSED` is read *only when `ISLAST` is clear* — see the decoder's
+`BROTLI_STATE_METABLOCK_HEADER_UNCOMPRESSED` case, and the encoder saying it outright:
+
+```c
+  /* Write ISLAST bit.
+     Uncompressed block cannot be the last one, so set to 0. */
+  BrotliWriteBits(1, 0, storage_ix, storage);
+```
+
+So an uncompressed meta-block can *never* be last, and a stream whose final data block is
+uncompressed **must** be closed with a separate empty-last block. §2 is full of `E` precisely
+because §2 is about incompressible payloads. It is a biased sample of the question being
+asked here.
+
+A *compressed* meta-block has no such restriction: `ISLAST` is set on the block itself and
+the stream ends there. Over the same 1914 valid streams:
+
+| last meta-block of the stream | count | share |
+| --- | --- | --- |
+| **compressed, `ISLAST` set, `MLEN` > 0** | **1763** | **92.1%** |
+| empty-last (`ISLAST` + `ISLASTEMPTY`) | 149 | 7.8% |
+| metadata, `ISLAST` set | 2 | 0.1% |
+| uncompressed | **0** | — (impossible, as above) |
+
+And of the 149 that do end with `E`, the block before it is uncompressed in 84 cases and
+metadata in 32 — the forced cases — plus 16 where a flush emitted a compressed block and the
+following `finish` had nothing left to encode (`WriteMetaBlockInternal` with `bytes == 0`
+writes `ISLAST`+`ISLASTEMPTY` and returns), and 17 streams that are *only* an empty-last
+block.
+
+The two metadata-terminated streams are `tests/testdata/empty.compressed.15` and `.16` from
+the reference corpus, so a last metadata block is real too, not just legal.
+
+### 6.2 What the rule would cost
+
+The shape detection actually sees is the *first* block, and for a single-meta-block stream
+the first block **is** the last one:
+
+| first meta-block | count | share |
+| --- | --- | --- |
+| **compressed, `ISLAST` set** | **1748** | **91.3%** |
+| uncompressed, not last | 105 | 5.5% |
+| compressed, not last | 30 | 1.6% |
+| empty-last | 17 | 0.9% |
+| metadata, not last | 12 | 0.6% |
+| metadata, `ISLAST` set | 2 | 0.1% |
+
+Every WOFF2 font in the corpus (1717 of them) is exactly one compressed meta-block with
+`ISLAST` set, and so are both `.br` files shipped on this image and most of Brotli's own
+`tests/testdata/*.compressed`. Measured, against the same corpus and the same random-blob
+harness as §5:
+
+| rule | false negatives | residual FP @4 KiB / 64 KiB / 1 MiB / 16 MiB |
+| --- | --- | --- |
+| chain walk (PR #265) | **0 / 1914** | 0.000% / 1.205% / 1.430% / 2.695% |
+| **V1** — reject a first block that is `ISLAST`-not-empty | **1750 / 1914 (91.4%)** | 7.010% / 6.935% / 7.150% / 7.190% |
+| **V2** — chain walk, plus reject any *reached* block that is `ISLAST`-not-empty | **1752 / 1914 (91.5%)** | 0.000% / 0.580% / 0.780% / 1.445% |
+
+V1 is bad on both axes at once: it rejects nine valid streams in ten and barely moves the
+false-positive rate, because the probe accepts almost no blob whose first block parses as
+compressed anyway (0.006 pp of the 8%, per the earlier investigation).
+
+**V2 is the instructive one.** Its false-positive number is genuinely good — roughly half the
+chain walk's residual at every size — because in random data a meta-block reached mid-chain
+carries `ISLAST` about half the time, and the walk currently stops there saying "cannot
+disprove". But that is the same shape as "an ordinary `.br` file is one compressed
+meta-block". The rule is a sharp discriminator aimed squarely at the single most common
+valid Brotli stream, which is why it scores 91.5%. A gate cannot separate them: there is
+nothing else in a last compressed block's header to check, since `MLEN` there is the
+*uncompressed* output length and Brotli's compression ratio has no useful upper bound.
+
+### 6.3 What *is* sound here, and is already in place
+
+The half of this that holds is the format rule, not the encoder habit: **an uncompressed
+meta-block is never last** — confirmed over all 1914 streams, zero exceptions, and provable
+from the header grammar. `brotli_framing.py` already encodes it correctly, reading
+`ISUNCOMPRESSED` only when `ISLAST` is clear and never classifying a last block as
+`UNCOMPRESSED`; and `chain_proves_invalid` already handles the one declaring block that *can*
+be last (metadata) with `if info.is_last: return nxt != source_length`. No change available.
+
+## 7. What the chain walk actually costs on real files
 
 The census also answers whether the depth is doing anything. Block-sequence census over the
 1914 valid streams (first 10 blocks):
@@ -306,7 +403,7 @@ proposed rule would have produced a false negative. `CHAIN_MAX_LINKS = 8` is nev
 binding constraint on a valid file: exceeding it returns "cannot disprove", which is the
 safe direction, and that is what happens on the 40-block random streams.
 
-## 7. Method and reproduction
+## 8. Method and reproduction
 
 Everything lives under a scratch tree; the load-bearing pieces:
 
@@ -355,7 +452,7 @@ and a single encoder driven with `BROTLI_OPERATION_EMIT_METADATA`.
 `src/archivey/internal/streams/brotli_framing.py` unmodified; the alternative rule is
 implemented in ~14 lines against the same parser, so the two differ only in policy.
 
-## 8. Recommendation
+## 9. Recommendation
 
 **Keep the chain walk as implemented in PR #265.** The premise it was questioned on —
 that a valid Brotli stream cannot hold consecutive declaring meta-blocks — is false at
@@ -364,6 +461,16 @@ incompressible input, false for streaming flush, false for stitching, and false 
 files in Brotli's own test corpus. Replacing the walk with a fixed second-block test would
 buy nothing measurable in false positives and would misdetect roughly 4% of the valid
 streams surveyed here.
+
+**And do not add an `ISLAST`-must-be-empty rule** (§6). The empty terminator that dominates
+§2's sequences is a consequence of one format rule — an uncompressed meta-block cannot be
+last — not an encoder convention. 92.1% of valid streams end with a non-empty last
+compressed meta-block, and for the 91.3% that are a single meta-block that is also the
+*first* block, so the rule fires on the very first header of an ordinary `.br` file. The
+variant that keeps the chain walk and only rejects a *reached* `ISLAST`-not-empty block
+(§6.2, V2) halves the residual false-positive rate and is the tempting one; it still
+misdetects 91.5% of the corpus, because the shape it keys on is what an ordinary Brotli
+file looks like.
 
 Two small follow-ups this turned up, neither blocking:
 
