@@ -238,16 +238,20 @@ cue enumeration this change rewrites. Since OpenSpec replaces a MODIFIED require
 the two are **not** archive-order independent: whichever lands second rebuilds on the
 other's text.
 
-**The expected order is that the framing gate archives first — #262 does that — but #262 is
-still open, so nothing is settled yet.** Two consequences, and they point opposite ways:
+**That order is now settled: the framing gate archived first, in #262 (`49d8b4a`), so this
+change is the one that rebuilt.** The MODIFIED block below has been rebased onto the
+resulting live text, and task 0.3 lists the five things it inherited — the narrowed
+threshold prohibition, the three-clause residual paragraph with its figures, three
+confidence rows in place of one, the changed attribution line, and the normalised quotes.
 
-- **Today the block below is correct.** It was written against the live text, and `main`
-  still carries that text, so this delta validates and reads accurately as things stand.
-- **The moment #262 merges it goes stale**, and this change becomes the one that rebuilds.
+The rebuild was done at rebase time rather than at archive time on purpose. Doing it later
+would land a wholesale rewrite of a requirement in the same PR as the implementation, where
+a reviewer would have to separate "text inherited from a sibling change" from "behaviour
+this PR is proposing" — and those read identically in a diff. Doing it now keeps this PR
+proposal-only and leaves the implementation PR to contain only code.
 
-So the block is deliberately *not* pre-rebased onto #262's not-yet-merged text — doing that
-would make it wrong against `main` now, in exchange for being right later, and would couple
-this proposal's review to another PR's outcome. Task 0.3 carries the inherit list, diffed
-against what #262 currently proposes, so the rebuild is mechanical when the time comes. Do
-it after #262 lands and before implementing here, not at archive time, or the rewrite
-arrives in the same PR as the code and gets reviewed as if it were a behaviour change.
+Both changes edited **disjoint parts** of that requirement — the framing gate the
+probe-tightening paragraph and the confidence rows, this change the cue enumeration and the
+Mach-O defect — so the merge lost nothing. That was verified rather than assumed: the
+rebuilt block was diffed against live, and every remaining difference is an edit this change
+intends to make.

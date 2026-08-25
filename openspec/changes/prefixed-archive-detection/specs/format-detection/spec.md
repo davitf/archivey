@@ -115,16 +115,16 @@ its structural check SHALL NOT be reported and the scan SHALL continue past it.
 
 ### Requirement: Executable-looking prefixes must not silently become a wrong stream format
 
-When a source’s leading bytes look executable-shaped, detection SHALL NOT let a
+When a source's leading bytes look executable-shaped, detection SHALL NOT let a
 content probe (notably Brotli) claim a stream codec and allow `open_archive` to
 succeed with a fabricated single-file member (e.g. `*.uncompressed`). That is a
 silent wrong answer.
 
-This obligation is **outcome-shaped**, not “disable Brotli whenever the prefix is
-`MZ`”. A genuine Brotli (or other probe-matched) stream whose first bytes happen
+This obligation is **outcome-shaped**, not "disable Brotli whenever the prefix is
+`MZ`". A genuine Brotli (or other probe-matched) stream whose first bytes happen
 to look executable MUST remain detectable.
 
-The rule, settled by measurement in `sfx-format-detection`'s design (now archived) and
+The rule, settled by measurement in the archived `sfx-format-detection` design and
 extended by this change's, grades the evidence:
 
 - A **weak** cue — a bare `MZ`, `\x7fELF`, or `#!` prefix — SHALL trigger the
@@ -152,12 +152,21 @@ in front of a 7z opened the real members, and a Mach-O stub returned `BROTLI` wi
 fabricated `.uncompressed` member. Adding Mach-O to the cue set is what closes it; the
 grading above was already correct.
 
-The system SHALL NOT tighten the Brotli probe itself to satisfy this requirement:
-measured, a larger probe prefix does not reduce false positives (8.27% → 8.13% of random
-data at 16x the prefix) and requiring decoded output loses real streams roughly
-one-for-one. The residual — arbitrary non-archive data that the Brotli probe claims,
-which is a far wider problem than executable prefixes — is out of scope here and is
-tracked separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10).
+The system SHALL NOT tighten the Brotli probe with a **threshold** to satisfy this
+requirement: measured, a larger probe prefix does not reduce false positives (8.27% →
+8.13% of random data at 16x the prefix) and requiring decoded output loses real streams
+roughly one-for-one. That prohibition is about knobs traded against a false-positive rate,
+and it does **not** reach a check derived from the format's own invariant, which costs no
+real streams — see *A content probe SHALL NOT accept framing the source cannot hold*.
+
+The residual — arbitrary non-archive data that the Brotli probe claims, which is a far
+wider problem than executable prefixes — remains out of scope *here* and stays tracked
+separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10). The
+**first-block** framing check narrows it from 3.5% of a real `/usr` tree to ~0.15%
+(61/39 859 measured); the deferred chain walk would cut further to ~0.035%. It does not
+close the residual, and the registered wording needs three clauses, not one: the listing
+is wrong, a full read raises, and a prefix of fabricated bytes may already have been
+produced.
 
 #### Scenario: no silent wrong answer on executable-shaped prefix
 
@@ -166,7 +175,9 @@ tracked separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O1
 | Low-entropy `MZ` stub + RAR/7z/ZIP payload in window | Detected as that archive — **not** `BROTLI` / fabricated member |
 | **Thin little-endian Mach-O stub + 7z payload** | `SEVEN_Z` — previously `BROTLI` (or `LZMA_ALONE`) with a fabricated member |
 | `#!/bin/sh` + tar.gz in window | Detected as that archive, not claimed by a probe |
-| Real Brotli stream with non-executable prefix | Unchanged — still `BROTLI` via content probe |
+| Real Brotli stream with non-executable prefix, `.br` extension | Unchanged — `BROTLI` / `PROBABLE` via content probe |
+| Real Brotli stream with non-executable prefix, compressed-first, no corroborating extension | Still `BROTLI` via content probe, at `PROBABLE` |
+| Real Brotli stream with non-executable prefix, uncompressed/metadata-first, no corroborating extension | Still `BROTLI` via content probe, at `GUESS` |
 | Real Brotli (or other probe format) whose prefix coincides with a **weak** executable cue | Still detected as that stream — **not** forced to `FormatDetectionError` solely because two bytes were `MZ` |
 | **Strong** executable cue (validated PE / ELF / Mach-O), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
