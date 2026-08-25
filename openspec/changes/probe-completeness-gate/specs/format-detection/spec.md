@@ -52,7 +52,7 @@ prohibition on knobs.
 | Real `.br` file whose first meta-block is uncompressed (incompressible payload) | Accepted — declared length fits by construction |
 | `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
 | A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
-| Arbitrary data whose first declared block happens to fit | Probe may still accept; residual is accepted and documented (first-block-only floor; chain walk is follow-up 5.7) |
+| Arbitrary data whose first declared block happens to fit | Probe may still accept at *this* requirement's floor; the residual is then narrowed by *A content probe SHALL follow a format's self-describing block chain* below |
 | OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` today claims **LZMA Alone at `PROBABLE`** (Alone wins probe order) — not a Brotli residual at the detection layer |
 | COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Same split: Brotli gate accepts; end-to-end Alone at `PROBABLE` |
 | A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |
@@ -96,22 +96,29 @@ is; detection then behaves as before.
 | LZMA Alone: 51-byte low-entropy file, fully visible, does not terminate | **Rejected** — same rule, not a Brotli special case |
 | Any source larger than the prefix | Rule does not apply; other rules decide |
 
-### Requirement: A content probe MAY follow a format's self-describing block chain
+### Requirement: A content probe SHALL follow a format's self-describing block chain
 
-Where a format's blocks are byte-aligned and self-describing — so a successor's offset is
-known without decompressing — a probe SHALL be permitted to follow that chain to test the
-same framing invariant beyond the first block, and SHALL reject a link that overruns the
-source or a declared end that leaves trailing bytes.
+**Scope: formats whose blocks are byte-aligned and self-describing, so a successor's offset
+is known without decompressing. Brotli is the only such format today.** For those, a probe
+SHALL follow the chain to test the same framing invariant beyond the first block, and SHALL
+reject a link that overruns the source or a declared end that leaves trailing bytes. A
+format outside that scope is unaffected — this is not an obligation on every probe.
+
+The walk is mandatory rather than optional because the alternative is a probe whose
+false-positive rate silently depends on whether an implementer felt like walking. What is
+*bounded* is the work, not the obligation: the budget below is the escape hatch, and
+exhausting it is a defined outcome rather than a licence to skip the walk.
 
 The walk exists because the first-block check goes **vacuous on large sources**: Brotli's
 MLEN field tops out at 2²⁴, so past ~16 MiB every declared length fits trivially. Measured
 on random blobs, the walk takes 16 MiB acceptance from 8.33% (where the first-block check
 buys nothing) to 2.00%, and a `/usr` tree from 61 survivors to 14.
 
-The walk SHALL be **bounded in the number of links** it follows. Reaching that bound means
-*cannot disprove*: the probe SHALL keep the verdict the earlier rules reached and MUST NOT
-reject on that basis. This is the same discipline as an unknown source length — absence of
-evidence is not evidence against.
+The walk SHALL be **bounded in both the number of links followed and the bytes read**, and
+both bounds SHALL be declared rather than implicit. Reaching either means *cannot disprove*:
+the probe SHALL keep the verdict the earlier rules reached and MUST NOT reject on that
+basis. This is the same discipline as an unknown source length — absence of evidence is not
+evidence against, so budget exhaustion can never manufacture a false negative.
 
 The walk stops at the first compressed block, which carries no declared length to check.
 On a real Brotli file whose first meta-block is compressed — 79 of 150 in the corpus — it

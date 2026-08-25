@@ -236,7 +236,10 @@ def report(hits: list[Hit], scanned: int) -> None:
         f"  genuine streams it costs: {len(fits_gen)}"
         f"   <-- must be 0; every one of these decodes cleanly by definition"
     )
-    remaining = [h for h in fits_fab if False] + [
+    # What the completeness rule leaves behind: fabrications too large for the probe to
+    # have seen whole, which therefore keep whatever signal they had — i.e. none, unless
+    # the probe reported GUESS.
+    remaining = [
         h for h in fabricated if h.size > DETECTION_LIMIT and h.confidence != "guess"
     ]
     print(

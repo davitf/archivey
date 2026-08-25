@@ -103,6 +103,8 @@ starting point, not a measured optimum.
 - **No magic denylist.** OLE/CFB survives both rules by construction (its constant 8-byte
   magic always declares a fitting MLEN). That was declined in `brotli-probe-framing-gate`
   with the reason recorded, and nothing here reopens it.
-- **No archive of `brotli-probe-framing-gate`.** That change is deliberately still
-  in-flight (its D7 → A). See tasks 0.1–0.2 for how these deltas relate to its unarchived
-  requirement.
+- **`brotli-probe-framing-gate` is archived and synced**, in the same PR that opens this
+  change. Its requirements are therefore live text, and these deltas edit shipped wording
+  rather than a pending block. That is also why this change MODIFIES the framing
+  requirement rather than only ADDing beside it: the deferral paragraph pointed at a task
+  list that now lives inside an archive directory. See tasks 0.1–0.2.

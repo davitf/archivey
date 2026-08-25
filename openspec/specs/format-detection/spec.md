@@ -453,8 +453,9 @@ not guessed, and detection behaves as before.
 A stronger **chain walk** — following byte-aligned self-describing meta-blocks and
 rejecting a later link that overruns, or a declared end with trailing bytes — is
 measured and sound (results doc; design Decision 2026-08-22) but is **not required by
-this change**. It needs reads past the peeked prefix and is deferred to a follow-up
-(`tasks.md` 5.7). This requirement is satisfied by the first-block check alone.
+this requirement**. It needs reads past the peeked prefix and is carried by the
+`probe-completeness-gate` change. This requirement is satisfied by the first-block check
+alone.
 
 The same first-block principle SHALL apply to the **LZMA Alone** probe, whose only
 measured real-world false positives are files that are *exactly* its 13-byte header: a
@@ -485,7 +486,7 @@ prohibition on knobs.
 | Real `.br` file whose first meta-block is uncompressed (incompressible payload) | Accepted — declared length fits by construction |
 | `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
 | A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
-| Arbitrary data whose first declared block happens to fit | Probe may still accept; residual is accepted and documented (first-block-only floor; chain walk is follow-up 5.7) |
+| Arbitrary data whose first declared block happens to fit | Probe may still accept; residual is accepted and documented (first-block-only floor; the chain walk is carried by `probe-completeness-gate`) |
 | OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` today claims **LZMA Alone at `PROBABLE`** (Alone wins probe order) — not a Brotli residual at the detection layer |
 | COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Same split: Brotli gate accepts; end-to-end Alone at `PROBABLE` |
 | A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |
