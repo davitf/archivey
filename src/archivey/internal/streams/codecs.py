@@ -811,6 +811,10 @@ _ALONE_UNKNOWN_SIZE = (1 << 64) - 1
 # Bytes fed to a content probe — enough to trip a malformed-stream error without
 # decompressing the whole payload.
 _PROBE_PREFIX = 256
+# Output drain when the whole source is visible and completeness is checked. Caps
+# expansion bomb cost (a 4 KiB zlib sample can expand to ~4 MiB); large enough to
+# catch the small/medium truncations that dominate measured fabrications.
+_PROBE_COMPLETENESS_OUTPUT = 64 * 1024
 
 # Optional bounded read-at callback for probes that follow a self-describing block chain
 # past the peeked prefix (``compressed-streams``). ``None`` means the caller declined.
@@ -986,7 +990,11 @@ class StreamCodec:
     # --- shared probe primitive ---
 
     def _decodes_sample(
-        self, prefix: bytes, *, source_length: int | None = None
+        self,
+        prefix: bytes,
+        *,
+        source_length: int | None = None,
+        require_output: bool = False,
     ) -> bool:
         """Whether a bounded ``prefix`` decodes cleanly through this codec (the probe primitive).
 
@@ -995,11 +1003,14 @@ class StreamCodec:
         ``False`` when the backend is absent, so detection falls through to the extension
         guess. Operates on already-peeked bytes, so it consumes nothing from the source.
 
-        **Completeness:** when ``source_length`` is known and does not exceed ``len(prefix)``,
-        the probe holds the whole source. A decode that ends wanting more input is then a
-        rejection — a complete valid stream decoded in full terminates. When the source is
+        **Completeness (bounded):** when ``source_length`` is known and does not exceed
+        ``len(prefix)``, the probe holds the whole source. A decode that still wants more
+        input after a bounded output drain (``_PROBE_COMPLETENESS_OUTPUT``) is then a
+        rejection — a complete valid stream that finishes within that drain terminates.
+        Streams whose full expansion exceeds the drain without hitting "needs more input"
+        are not rejected here (the check is bounded, not a full drain). When the source is
         larger than the prefix, ``TruncatedError`` remains a match (there genuinely is more
-        input).
+        input). ``require_output`` rejects an empty successful read (LZMA Alone).
         """
         if not self.available:
             return False
@@ -1007,9 +1018,36 @@ class StreamCodec:
         # Feed the whole source when it is fully visible so "needs more input" means
         # incomplete; otherwise keep the bounded probe sample.
         sample = prefix[:source_length] if fully_visible else prefix[:_PROBE_PREFIX]
+        out_budget = (
+            _PROBE_COMPLETENESS_OUTPUT
+            if fully_visible
+            else max(len(sample), _PROBE_PREFIX)
+        )
         try:
             with open_codec_stream(self.codec, io.BytesIO(sample)) as stream:
-                stream.read(max(len(sample), _PROBE_PREFIX))
+                if fully_visible:
+                    # Drain up to the budget in chunks. A truncated high-ratio stream
+                    # often yields its whole expansion on the first large read without
+                    # raising; the next read is what surfaces TruncatedError. Hitting
+                    # the budget with more output still available means the bounded
+                    # check cannot disprove completeness — accept.
+                    parts: list[bytes] = []
+                    produced = 0
+                    while produced < out_budget:
+                        chunk = stream.read(min(8192, out_budget - produced))
+                        if not chunk:
+                            break
+                        parts.append(chunk)
+                        produced += len(chunk)
+                    else:
+                        more = stream.read(1)
+                        if more:
+                            parts.append(more)
+                    out = b"".join(parts)
+                else:
+                    out = stream.read(out_budget)
+            if require_output:
+                return len(out) > 0
             return True
         except TruncatedError:
             if fully_visible:
@@ -1356,26 +1394,16 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         cannot be an Alone stream — the whole of the measured real-world false-positive
         set. When ``source_length`` is unknown the check is skipped.
 
-        Completeness (shared with every decoding probe): when the whole source is
-        visible in ``prefix``, a decode that ends wanting more input is a rejection.
+        Completeness and the bounded decode share ``_decodes_sample``; Alone additionally
+        requires a positive output length (an empty successful read is not a claim).
         """
         if not _alone_header_plausible(prefix) or not self.available:
             return False
         if source_length is not None and source_length <= _ALONE_HEADER_SIZE:
             return False
-        fully_visible = source_length is not None and source_length <= len(prefix)
-        sample = prefix[:source_length] if fully_visible else prefix[:_PROBE_PREFIX]
-        try:
-            with open_codec_stream(self.codec, io.BytesIO(sample)) as stream:
-                out = stream.read(max(len(sample), _PROBE_PREFIX))
-            # An empty successful read (e.g. usize=0) is not a positive Alone claim.
-            return len(out) > 0
-        except TruncatedError:
-            if fully_visible:
-                return False
-            return True  # started decoding, ran out of the bounded prefix
-        except ArchiveyError:
-            return False
+        return self._decodes_sample(
+            prefix, source_length=source_length, require_output=True
+        )
 
 
 class _RawLzmaCodec(_LzmaErrorCodec):

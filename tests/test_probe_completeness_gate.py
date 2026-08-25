@@ -17,25 +17,20 @@ from archivey import (
 from archivey.exceptions import FormatDetectionError
 from archivey.internal.streams.brotli_framing import (
     CHAIN_MAX_LINKS,
-    BrotliFirstBlock,
+    BrotliBlock,
     chain_proves_invalid,
     first_block_overruns_source,
-    parse_first_metablock,
     parse_metablock,
 )
 from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec, ZlibCodec
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
 from tests.conftest import requires
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, brotli_compressed_metablock_header
 
 
 def _compressed_second_header() -> bytes:
     """A non-first meta-block header that classifies as COMPRESSED (walk stops)."""
-    for seed in range(4096):
-        hdr = bytes([(seed + j * 13) % 256 for j in range(24)])
-        if parse_metablock(hdr, first=False).outcome is BrotliFirstBlock.COMPRESSED:
-            return hdr
-    raise RuntimeError("no compressed second-header pattern found")
+    return brotli_compressed_metablock_header(first=False)
 
 
 def _guess_residual_surviving_chain() -> bytes:
@@ -45,7 +40,7 @@ def _guess_residual_surviving_chain() -> bytes:
     trailing bytes are examined. Replace the second link with a compressed header so the
     walk stops, matching the OLE/COFF residual shape while keeping Alone out of the way.
     """
-    framing = parse_first_metablock(b"/**\n")
+    framing = parse_metablock(b"/**\n")
     assert framing.declares_length
     assert framing.consumed is not None and framing.declared_length is not None
     return (
@@ -70,9 +65,55 @@ def test_small_real_brotli_survives_completeness() -> None:
 
 
 @requires("brotli")
+def test_mid_positioned_stream_detects_valid_brotli() -> None:
+    """Archive-relative ``source_length``: padding before the origin must not reject."""
+    import brotli
+
+    from archivey import open_archive
+
+    raw = os.urandom(1000)
+    payload = brotli.compress(raw, quality=0)
+    for pad in (16, 4096):
+        buf = io.BytesIO(b"\x00" * pad + payload)
+        buf.seek(pad)
+        info = detect_format(buf)
+        assert info.format == ArchiveFormat.BROTLI, f"pad={pad}"
+        buf.seek(pad)
+        with open_archive(buf) as archive:
+            assert archive.read(next(iter(archive))) == raw
+
+
+@requires("brotli")
+def test_chain_prefix_exhaustion_without_read_at_cannot_disprove() -> None:
+    """Prefix-only walk must not treat prefix end as EOF when more source remains."""
+    import brotli
+
+    data = brotli.compress(os.urandom(300_000), quality=0, lgwin=10)
+    # Cut mid-header of a later link (review F2: 1028/1029 on this shape).
+    for cut in (1028, 1029):
+        assert cut < len(data)
+        assert chain_proves_invalid(data[:cut], len(data), read_at=None) is False, (
+            f"cut={cut}"
+        )
+
+
+def test_zlib_completeness_rejects_truncated_high_ratio_stream() -> None:
+    """Bounded completeness output (~64 KiB) must reject truncations that expand within it."""
+    full = zlib.compress(b"A" * 200_000, 9)
+    # 20B → ~1.8 KiB and 60B → ~43 KiB expand inside the drain and then TruncatedError.
+    # A 100B truncate expands ~84 KiB — past the declared drain — so the bounded check
+    # correctly cannot disprove (see format-detection completeness requirement).
+    for n in (20, 60):
+        blob = full[:n]
+        assert ZlibCodec().content_probe(blob, source_length=len(blob)) is False
+    over_drain = full[:100]
+    assert ZlibCodec().content_probe(over_drain, source_length=len(over_drain)) is True
+
+
+@requires("brotli")
 def test_completeness_rejects_tiny_nonterminating_file() -> None:
     blob = b"hello"
-    assert parse_first_metablock(blob).outcome is BrotliFirstBlock.COMPRESSED
+    assert parse_metablock(blob).outcome is BrotliBlock.COMPRESSED
     assert BrotliCodec().content_probe(blob, source_length=len(blob)) is False
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(blob))
@@ -122,15 +163,15 @@ def test_lzma_alone_completeness_on_fully_visible_nonterminating() -> None:
     alone = LzmaAloneCodec()
     header = bytes([0x5D, 0x00, 0x00, 0x01, 0x00]) + b"\xff" * 8
     blob = header + b"\x00" * 40
-    # When the bounded sample matches but the whole source is visible and does not
-    # terminate, completeness must reject.
-    if alone.content_probe(blob, source_length=None):
-        assert alone.content_probe(blob, source_length=len(blob)) is False
+    # Prefix-only must match; when the whole source is visible and does not terminate,
+    # completeness must reject.
+    assert alone.content_probe(blob, source_length=None) is True
+    assert alone.content_probe(blob, source_length=len(blob)) is False
 
 
 @requires("brotli")
 def test_chain_walk_rejects_second_link_overrun() -> None:
-    framing = parse_first_metablock(b"/**\n")
+    framing = parse_metablock(b"/**\n")
     assert framing.consumed is not None and framing.declared_length is not None
     # Source long enough for the first block, too short for a second declaring MLEN.
     source_length = framing.consumed + framing.declared_length + 8
@@ -147,7 +188,7 @@ def test_chain_walk_rejects_second_link_overrun() -> None:
 
 @requires("brotli")
 def test_chain_walk_rejects_trailing_bytes_after_declared_end() -> None:
-    assert parse_first_metablock(b"\x06").outcome is BrotliFirstBlock.EMPTY_LAST
+    assert parse_metablock(b"\x06").outcome is BrotliBlock.EMPTY_LAST
     # Prefix must be long enough for the header read; trailing bytes past consumed=1.
     blob = b"\x06" + b"\x00" * 40
     assert chain_proves_invalid(blob, len(blob)) is True
@@ -161,9 +202,9 @@ def test_chain_walk_link_cap_does_not_reject() -> None:
     info = None
     for seed in range(256):
         cand = bytes([seed]) + b"\x00" * 23
-        got = parse_first_metablock(cand)
+        got = parse_metablock(cand)
         if (
-            got.outcome is BrotliFirstBlock.UNCOMPRESSED
+            got.outcome is BrotliBlock.UNCOMPRESSED
             and got.declared_length is not None
             and got.declared_length <= 4
             and got.consumed is not None
@@ -192,7 +233,7 @@ def test_chain_walk_stops_immediately_on_compressed_first() -> None:
     import brotli
 
     data = brotli.compress(b"payload " * 40)
-    assert parse_first_metablock(data).outcome is BrotliFirstBlock.COMPRESSED
+    assert parse_metablock(data).outcome is BrotliBlock.COMPRESSED
     reads: list[tuple[int, int]] = []
 
     def read_at(offset: int, length: int) -> bytes | None:
@@ -222,8 +263,8 @@ def test_ole_coff_residuals_still_accepted_above_prefix() -> None:
     assert ole_info.format in (ArchiveFormat.LZMA_ALONE, ArchiveFormat.BROTLI)
 
     coff_header = bytes.fromhex("6486100100")
-    framing = parse_first_metablock(coff_header)
-    assert framing.outcome is BrotliFirstBlock.UNCOMPRESSED
+    framing = parse_metablock(coff_header)
+    assert framing.outcome is BrotliBlock.UNCOMPRESSED
     assert framing.consumed is not None and framing.declared_length is not None
     second = _compressed_second_header()
     coff = (
@@ -254,7 +295,7 @@ def test_nonseekable_unknown_length_skips_both_rules() -> None:
 @requires("brotli")
 def test_sixteen_mib_vacuous_first_block_caught_by_walk(tmp_path: Path) -> None:
     """MLEN ceiling makes the first-block check vacuous; the walk still decides."""
-    framing = parse_first_metablock(b"/**\n")
+    framing = parse_metablock(b"/**\n")
     assert framing.consumed is not None and framing.declared_length is not None
     # 16 MiB source: first declaring block fits trivially; second link overruns.
     size = 16 * 1024 * 1024

@@ -56,8 +56,8 @@ from archivey.internal.sfx import (
     find_magic_in_prefix,
 )
 from archivey.internal.streams.brotli_framing import (
-    BrotliFirstBlock,
-    parse_first_metablock,
+    BrotliBlock,
+    parse_metablock,
 )
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
 from archivey.internal.streams.streamtools import (
@@ -148,14 +148,17 @@ def _make_probe_read_at(
     prefix: bytes,
     *,
     seekable: bool,
-) -> Callable[[int, int], bytes | None]:
+) -> tuple[Callable[[int, int], bytes | None], Callable[[], None]]:
     """Build the optional ``read_at`` callback for content-probe chain walks.
 
-    Returns ``bytes`` at the given absolute offset (relative to the archive origin —
-    the position detection started from), short/empty on EOF, or ``None`` when the
-    caller declines (non-seekable past ``_PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE``).
-    Bytes already in ``prefix`` are served without I/O.
+    Returns ``(read_at, close)``. ``read_at`` yields ``bytes`` at the given absolute
+    offset (relative to the archive origin — the position detection started from),
+    short/empty on EOF, or ``None`` when the caller declines (non-seekable past
+    ``_PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE``). Bytes already in ``prefix`` are served
+    without I/O. Path sources keep one open handle for the walk; call ``close`` when
+    the probe loop finishes.
     """
+    path_handle: list[BinaryIO] = []
 
     def read_at(offset: int, length: int) -> bytes | None:
         if offset < 0 or length < 0:
@@ -166,9 +169,11 @@ def _make_probe_read_at(
         if not seekable and end > _PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE:
             return None
         if isinstance(source, (str, Path)):
-            with open(source, "rb") as f:
-                f.seek(offset)
-                return f.read(length)
+            if not path_handle:
+                path_handle.append(open(source, "rb"))
+            f = path_handle[0]
+            f.seek(offset)
+            return read_exact(f, length)
         if isinstance(source, PeekableStream):
             # Growing peek buffers [0, end); refuse past the non-seekable cap above.
             buf = source.peek(end)
@@ -179,13 +184,18 @@ def _make_probe_read_at(
             origin = source.tell()
             try:
                 source.seek(origin + offset)
-                return source.read(length)
+                return read_exact(source, length)
             finally:
                 source.seek(origin)
         # Raw non-seekable without PeekableStream: cannot reposition; decline.
         return None
 
-    return read_at
+    def close() -> None:
+        for f in path_handle:
+            f.close()
+        path_handle.clear()
+
+    return read_at, close
 
 
 def _match_magic(
@@ -338,7 +348,7 @@ def _brotli_probe_confidence(
     """
     if ext_match is not None and ext_match[0].stream is StreamFormat.BROTLI:
         return DetectionConfidence.PROBABLE
-    if parse_first_metablock(prefix).outcome is BrotliFirstBlock.COMPRESSED:
+    if parse_metablock(prefix).outcome is BrotliBlock.COMPRESSED:
         return DetectionConfidence.PROBABLE
     return DetectionConfidence.GUESS
 
@@ -527,14 +537,19 @@ def _detect_format_body(
     #    answer. A WEAK cue does not gate the probes: `MZ` alone is two bytes, and a
     #    genuine Brotli stream that happens to start with them must still be detectable.
     if cue is not ExecutableCue.STRONG:
-        # Cheap upper bound on reachable bytes for framing gates (Brotli / LZMA Alone).
-        # ``source_byte_size`` is total size from offset 0; the short-peek fallback is
-        # bytes remaining from the current position. When they differ (caller positioned
-        # mid-file), the total can *over*-estimate what the probe can reach — that is
-        # the safe direction (never rejects a complete valid stream). Unknown → None;
+        # Archive-relative reachable length for framing / completeness / chain walk.
+        # ``source_byte_size`` is total size from offset 0 of the underlying object;
+        # ``read_at`` and the chain walk are relative to the archive origin (current
+        # stream position). Paths open at origin 0, so the totals match; for a
+        # mid-positioned seekable stream, subtract ``tell()`` so equality checks
+        # (declared end with trailing bytes) use the same yardstick. Unknown → None;
         # a short peek that returned fewer bytes than requested also reveals the size
         # of a non-seekable source that ended early (< DETECTION_LIMIT).
         length = source_byte_size(source)
+        if length is not None and not isinstance(source, (str, Path)):
+            if is_seekable(source):
+                remaining = length - source.tell()
+                length = remaining if remaining >= 0 else None
         if length is None and len(data) < near_needed:
             length = len(data)
         # Bounded read-at for the Brotli chain walk. Paths and seekable streams seek;
@@ -545,17 +560,22 @@ def _detect_format_body(
             probe_seekable = False
         else:
             probe_seekable = is_seekable(source)
-        read_at = _make_probe_read_at(source, data, seekable=probe_seekable)
-        for probe_fmt, probe in registry.content_probes():
-            if probe(data, source_length=length, read_at=read_at):
-                confidence = DetectionConfidence.PROBABLE
-                if probe_fmt.stream is StreamFormat.BROTLI:
-                    confidence = _brotli_probe_confidence(data, ext_match)
-                info = _resolve_single_file_or_tar(
-                    probe_fmt, confidence, "content_probe", peek_more
-                )
-                _warn_on_conflict(collector, name, ext_match, info.format)
-                return info
+        read_at, close_read_at = _make_probe_read_at(
+            source, data, seekable=probe_seekable
+        )
+        try:
+            for probe_fmt, probe in registry.content_probes():
+                if probe(data, source_length=length, read_at=read_at):
+                    confidence = DetectionConfidence.PROBABLE
+                    if probe_fmt.stream is StreamFormat.BROTLI:
+                        confidence = _brotli_probe_confidence(data, ext_match)
+                    info = _resolve_single_file_or_tar(
+                        probe_fmt, confidence, "content_probe", peek_more
+                    )
+                    _warn_on_conflict(collector, name, ext_match, info.format)
+                    return info
+        finally:
+            close_read_at()
 
     # 4. Far magic (ISO's CD001 at offset 32 769): peek the extended 32 774-byte window on
     #    demand. A stream shorter than the window simply yields no match and falls through —

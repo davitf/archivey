@@ -272,7 +272,7 @@ nor `DIRECTORY`. Original write-up below.
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
 - **Still three clauses, not one:** the listing can be wrong; a full read raises; **and**
   a prefix of fabricated bytes may already have been produced. Not a silent success.
-- **Refs:** `openspec/changes/probe-completeness-gate/`; investigation
+- **Refs:** `openspec/changes/archive/2026-08-25-probe-completeness-gate/`; investigation
   [`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md);
   threat-model O10.
 

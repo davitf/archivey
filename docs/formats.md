@@ -229,8 +229,9 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
 - **Brotli** has no magic, so detection uses a content probe plus framing checks
   **when the source length is known** (paths, `BytesIO`, and short non-seekable
   peeks): a first meta-block that *declares* more bytes than the source holds is
-  rejected; when the whole source fits in the peeked prefix, a decode that wants more
-  input is rejected (completeness); and a bounded walk of self-describing meta-blocks
+  rejected; when the whole source fits in the peeked prefix, a bounded completeness
+  check rejects a decode that still wants more input after a declared output drain; and
+  a bounded walk of self-describing meta-blocks
   rejects a later link that overruns or a declared end with trailing bytes. On a
   non-seekable stream of unknown length those checks are skipped and today's
   probe behaviour remains. Probe-only confidence is `PROBABLE` when the first meta-block

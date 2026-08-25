@@ -105,8 +105,7 @@ source length: absence of evidence is not evidence.
 | Bound | Value | Notes |
 | --- | --- | --- |
 | Max links | **8** | Real-tree census on this image: among 2 832 first-block acceptors, every chain rejection happened by link index ≤ 1; live probe hits never walked past 1. Random blobs plateau by 4. **Revisit with hard data if a future corpus shows deeper rejecting chains.** The survey's 64 was a resource-guard default, not a measured optimum. |
-| Max bytes fetched via `read_at` | **4 KiB** | Header-sized reads; not the offset span |
-| Max offset (non-seekable only) | **1 MiB** | See above |
+| Max offset (non-seekable only) | **1 MiB** | Memory-governing forward-only ceiling for `read_at` (buffers `[0, offset)`). Declared in the live requirement; the former 4 KiB "bytes fetched" counter was dead code under the link cap and measured the wrong cost. |
 
 ## What this change deliberately does not do
 

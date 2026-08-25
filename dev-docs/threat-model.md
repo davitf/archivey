@@ -368,7 +368,7 @@ Not a silent success — but also not “every read failed with no output.”
 Product triage: `open-issues.md` P12. Investigation:
 [`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md).
 Changes: `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate/`,
-`openspec/changes/probe-completeness-gate/`.
+`openspec/changes/archive/2026-08-25-probe-completeness-gate/`.
 
 **Adjacent and already closed:** the *archive-behind-a-stub* case (Topic 8 A-34) via
 `sfx-format-detection`.
