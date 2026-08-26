@@ -143,16 +143,10 @@ API change and migration, not an incidental type widening in this design.
 > central-directory walk, or turning a successful identification into a failure over one
 > derived field — and there may be a third: separating identification from offset
 > resolution, and letting the ledger's search-completeness record say "identified; exact
-> offset not computed". That, and the separate question of whether `payload_offset > 0`
-> should keep meaning "self-extracting archive" when it also covers JPEG+ZIP polyglots and
-> files where the archive *is* the program (`zipapp`, JAR launchers), are taken up in
-> [`discussions/2026-08-prefixed-payload-semantics`](../discussions/2026-08-prefixed-payload-semantics/prefixed-payload-semantics.md)
-> rather than here — that brief asks whether a caller should care what is inside an archive
-> at all, which is a question about what the library *says*, not about how detection
-> decides. Two findings there bear directly on this document: on 3 320 system executables,
-> **zero** carry a real appended ZIP, and all six `PK\x05\x06` tail matches are string
-> constants inside zip-handling binaries that parse to nonsense — a concrete instance of why
-> the tail tier must *validate* rather than locate.
+> offset not computed". The related question of whether `payload_offset > 0` should keep
+> meaning "self-extracting archive" is a naming one and is taken up under *The public
+> surface* below; whether a caller should care what is *inside* a given archive is a
+> separate post-1.0 idea, parked in [`dev-docs/IDEAS.md`](../IDEAS.md).
 
 ### The public surface: who sees the ledger, and in what form
 
@@ -228,6 +222,26 @@ coexist without being a second ranking: they summarize different columns of the 
 record. `detected_by` names *which detector answered*; `confidence` names *how strong the
 answer is*. Neither is rich enough to drive exception semantics — that keys on the class
 directly, per §6 and §9.
+
+> **Rename `SFX_SCAN` while these values are still changeable.** Shipped code defines
+> self-extraction as an offset — `detection.py:115` reads
+> `# nonzero only for SFX archives (is-SFX == payload_offset > 0)` — and the same tier that
+> finds a real 7z installer also finds a JPEG with a ZIP appended, a `zipapp` (where the
+> archive *is* the program and is meant to be run, not extracted), and junk prepended to a
+> tar. `detected_by="sfx_scan"` is simply wrong for three of those four. Nothing here needs
+> to classify the stub — `PrefixKind` already reports what the prefix *is*, and whether a
+> caller should care about the payload is a separate post-1.0 question parked in
+> [`dev-docs/IDEAS.md`](../IDEAS.md) — but the *name* should stop asserting intent.
+> `prefixed_scan` or `embedded_scan` costs nothing now and is a public-value migration once
+> this redesign ships.
+>
+> Two measurements bear on the tier itself, from 3 320 ELF/PE files under `/usr/bin`,
+> `/usr/lib`, `/usr/local` and `/opt`: **zero** carry a real appended ZIP, and all **six**
+> `PK\x05\x06` tail matches are false positives — `zip`, `zipnote`, `zipsplit`,
+> `zipcloak`, `libzip.so`, `librevenge-stream.so`, carrying the signature as a string
+> constant, every one parsing to nonsense (entry counts 19 280–55 381, central-directory
+> offsets past EOF). A concrete instance of this document's own requirement that the tail
+> tier *validate* rather than locate, on a directory every developer machine has.
 
 Making them properties rather than fields is the point, not an implementation detail. Most
 callers who care at all want one honest number and not the mechanism, so translating
