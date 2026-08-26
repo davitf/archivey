@@ -331,7 +331,7 @@ content probes, far magic and the extension fallback is fixed.
 
 > **Provisional: two parts of this requirement are known to be wrong and are scheduled to
 > change.** The independent design analysis in
-> `dev-docs/investigations/archive-format-detection-algorithm.md` was accepted as redesign
+> `dev-docs/investigations/archive-format-detection-algorithm.md` (added by PR #263) was accepted as redesign
 > input for this change, and it identifies two defects that this change deliberately does
 > **not** fix, because fixing either is a larger piece of work than prefixed-archive
 > detection:

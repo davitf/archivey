@@ -224,7 +224,7 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 | `archive_name` | `str \| None` | Path or source stream `name`; `None` for anonymous streams; never fabricated; **raw** |
 | `member_name` | `str \| None` | Member in context, if any; **raw** |
 | `link_target` | `str \| None` | Symlink/hardlink target in context, if any; **raw** |
-| `format_unconfirmed` | `bool` | `True` when the format claim rested only on a content probe with no corroborating extension (`detected_by="content_probe"` at `GUESS`); default `False` for every other raise |
+| `format_unconfirmed` | `bool` | `True` when the format claim rested on a content probe alone, with nothing corroborating it (`detected_by="content_probe"`, no matching extension and no inner-TAR upgrade) — **whatever confidence detection reported**; default `False` for every other raise |
 | `__cause__` | `BaseException \| None` | Original exception via `raise ... from exc` when wrapping |
 
 `__str__` SHALL append `format_unconfirmed=True` when the flag is set (alongside
@@ -238,6 +238,8 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 | `FormatDetectionError` before any member | `member_name is None`; `format_unconfirmed is False` |
 | Probe-only Brotli read fails as `TruncatedError` | `format_unconfirmed is True`; `str(exc)` contains `format_unconfirmed=True` |
 | Probe + `.br` read fails | `format_unconfirmed is False` — extension corroborated |
+| Probe-only **LZMA Alone** read fails | `format_unconfirmed is True` — `PROBABLE` confidence, but nothing corroborated it |
+| Probe-only Brotli, **compressed-first** (`PROBABLE`), read fails | `format_unconfirmed is True` — confidence is not the test |
 
 ### Requirement: Original cause and traceback are preserved centrally
 
@@ -360,9 +362,8 @@ escape: there `%r` is what makes an interpolated name inert and SHALL be kept.
 
 ### Requirement: A decode failure on probe-only evidence names its provenance
 
-When a single-file member's format was chosen by a content probe with no corroborating
-extension (`detected_by="content_probe"` at `GUESS` confidence), a decoding failure while
-reading that member SHALL:
+When a single-file member's format was chosen by a content probe and **nothing else
+agreed**, a decoding failure while reading that member SHALL:
 
 1. Keep the same exception **type** (`TruncatedError` / `CorruptionError` as today) — no
    new subclass; callers catching those types must keep working.
@@ -372,27 +373,87 @@ reading that member SHALL:
    rather than presenting as a plain truncation or corruption of a file whose format is
    settled. The message MUST NOT imply that nothing was produced: a read may already have
    delivered a full buffer (65 536 bytes measured) of bytes copied verbatim from the
-   source before the decoder errors.
+   source before the decoder errors. The message MUST NOT name a confidence level, which
+   is no longer what the stamp keys on.
 4. Emit diagnostic `PROBE_FORMAT_UNCONFIRMED` (see `diagnostics`) — a new code, not a
    stretch of `EXTENSION_FORMAT_UNCONFIRMED`.
 
-Today such a source raises `TruncatedError (member=…, format=BROTLI)`, which asserts two
-things that are not known: that the bytes are Brotli, and that the file is truncated. For
-a magic-less format identified only by decoding a bounded prefix, the likelier explanation
-is that the file was never that format — measured at 3.5% of an ordinary `/usr` tree
-before the framing gate.
+**The trigger is provenance, not confidence.** The question this signal answers is "was
+there any evidence besides one probe?", which `DetectionConfidence` does not track:
+confidence grades *how strong* the evidence is. Keying on `GUESS` left 68 of 128 measured
+real-world fabrications unstamped — LZMA Alone, which reports `PROBABLE` unconditionally,
+and Brotli's compressed-first class, which was moved to `PROBABLE` precisely *because* the
+flag was confidence-keyed. Separating them also lets confidence be retuned later without
+silently changing which errors are stamped.
+
+A claim SHALL count as **corroborated**, and therefore not stamped, when either of these
+holds: the filename agrees with the detected format; or the probe hit was upgraded to a
+`TAR_*` format because a TAR header was found in the decompressed prefix, which is a
+second independent signal obtained by actually decompressing. Exact magic and SFX scans do
+not reach this requirement at all, being different detection paths.
+
+**"The filename agrees" SHALL be the exact negation of what raises a
+`FORMAT_EXTENSION_CONFLICT`** — the extension's format equals the detected format, or is
+the documented *deferred inner-TAR* case where a `TAR_*` extension stands over a bare
+compressor result because the inner-TAR probe could not run. So `foo.tar.br` reported as
+bare `BROTLI` corroborates, and the rule generalizes past `.br` to every magic-less codec
+(`.lzma`, `.zz`). One predicate SHALL serve both, so the system cannot both warn that a
+name conflicts and count it as corroboration.
+
+Agreement SHALL NOT be reduced to the `stream` component alone. Every container format
+shares `StreamFormat.UNCOMPRESSED`, so a `stream`-only test makes a `.zip` name corroborate
+a `TAR` result. No content probe can produce a container format today — every one is a
+`RAW_STREAM` codec — but `ReadBackend.CONTENT_PROBES` exists so a container backend can
+register one, and that seam MUST NOT silently arm this.
+
+> **Contested, and scheduled for replacement.** PR #263's design analysis holds that the
+> filename must not decide whether a failure is stamped, keying the signal on the winning
+> candidate's **content-evidence class** instead: `NAME` ranks below `BOUNDED_PROBE`, so a
+> matching extension is retained as evidence but cannot promote the class, and a failure
+> whose winning class is still `BOUNDED_PROBE` is stamped whether or not the name agrees
+> (§6). Its §9 goes further and drops the `.br`-raises-confidence rule too, so a bounded
+> Brotli probe is `GUESS` with or without the extension. It accepts the consequence
+> explicitly — a genuinely truncated `x.br` carries the flag — on the grounds that
+> `format_unconfirmed` must mean "the bytes did not confirm this identity", not "the
+> identity is probably wrong", and requires the winning evidence ledger to be a public
+> outcome so a caller can see the `NAME` item and present the error accordingly.
+>
+> **Scope of that follow-up: two sites, not one.** The filename decides the stamp here via
+> `_extension_corroborates`, and in `_brotli_probe_confidence` via the `.br`-to-`PROBABLE`
+> rule shipped in #261. They are the same rule expressed twice; removing only the first
+> leaves the second contradicting §9. Neither is introduced by this change.
+>
+> **Sequencing, measured.** This requirement never suppresses a stamp that the previous
+> confidence-keyed rule produced: "old stamps, new does not" reduces to `GUESS` **and**
+> corroborated, and that pair is unreachable — every extension that corroborates a Brotli
+> result has `stream is BROTLI`, which is exactly what makes `_brotli_probe_confidence`
+> report `PROBABLE`; the inner-TAR arm forces `PROBABLE`; and the zlib and LZMA Alone
+> probes are unconditionally `PROBABLE`. Measured on the residual fixtures, against the
+> pre-change tree: extensionless Brotli and extensionless LZMA Alone went from silent to
+> stamped, and the `.br` / `.lzma` cases were silent before and after. So this change is a
+> strict increase in what is stamped, and reverting it would restore a larger blind spot
+> (Alone and zlib never stamped at all) rather than remove the contested rule.
+
+Today an uncorroborated source raises `TruncatedError (member=…, format=BROTLI)` — or
+`CorruptionError (format=LZMA_ALONE)` — asserting two things that are not known: that the
+bytes are that format, and that the file is truncated or corrupt. For a magic-less format
+identified only by decoding a bounded prefix, the likelier explanation is that the file was
+never that format.
 
 This SHALL NOT refuse the open: a probe-only identification that reads cleanly is a
 success, and an extensionless stream the probe identified correctly must stay readable.
-A corroborated result (`PROBABLE`, extension agrees) keeps today's type, message, and
-`format_unconfirmed=False`.
+A corroborated result keeps today's type, message, and `format_unconfirmed=False`.
 
 #### Scenario: unconfirmed-format decode failure
 
 | Case | Expected |
 | --- | --- |
-| Probe-only `GUESS` result, decode fails | Same `TruncatedError`/`CorruptionError` type; `format_unconfirmed is True`; message names unconfirmed identification; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
-| Probe match corroborated by extension (`PROBABLE`), decode fails | Ordinary truncation/corruption message; `format_unconfirmed is False`; no probe-unconfirmed diagnostic |
-| Probe-only `GUESS` result, decode succeeds | Success; no error and no diagnostic |
+| Probe-only Brotli result (`GUESS`), decode fails | Same `TruncatedError`/`CorruptionError` type; `format_unconfirmed is True`; message names unconfirmed identification; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
+| Probe-only Brotli result, **compressed-first** (`PROBABLE`), decode fails | Same treatment — stamped. Confidence does not gate the signal |
+| Probe-only **LZMA Alone** result (`PROBABLE`), decode fails | Same treatment — stamped |
+| Probe match corroborated by extension, decode fails | Ordinary truncation/corruption message; `format_unconfirmed is False`; no probe-unconfirmed diagnostic |
+| Probe hit upgraded to `TAR_BROTLI` via an inner-TAR header, decode fails | Corroborated: `format_unconfirmed is False` |
+| Probe-only result, decode succeeds | Success; no error and no diagnostic |
 | Decode fails after bytes were already delivered | Error still raised; message does not claim zero output |
 | `DiagnosticPolicy.pedantic()`, probe-only decode fails | Same typed error with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
+| Format came from exact magic, decode fails | Untouched — this requirement does not apply |

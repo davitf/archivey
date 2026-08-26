@@ -974,6 +974,25 @@ signal (PROBABLE Alone / compressed-first Brotli) — that is
 `probe-provenance-unconfirmed`'s remaining argument. OLE/CFB and COFF above the prefix
 still survive both rules by construction.
 
+## 12. Residual after `probe-provenance-unconfirmed` (2026-08-25)
+
+After keying `format_unconfirmed` / `PROBE_FORMAT_UNCONFIRMED` on probe-only provenance
+(rather than `GUESS` confidence), the fabrication *count* is unchanged — this change does
+not reject claims — but the honesty channel covers every uncorroborated probe hit.
+Re-ran `scripts/exploration/probe_residual_census.py` on this image (default roots,
+147 601 files):
+
+| | count |
+| --- | --- |
+| content-probe claims | 30 |
+| genuine streams | 1 |
+| fabricated | 29 (0.020%) |
+| probe-only fabrications (stamp on failure) | **29** |
+| probe-only fabrications with **no** signal | **0** |
+
+Confidence values are untouched; the previously-silent `PROBABLE` Alone / compressed-first
+Brotli failures now stamp exactly as the `GUESS` class already did.
+
 ## Refs
 
 - `src/archivey/internal/streams/codecs.py` — `_PROBE_PREFIX`, `_decodes_sample`,
