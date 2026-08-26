@@ -194,13 +194,36 @@ independent `GZ` and `TAR_GZ` candidates tied.
 
 ### Confidence mapping
 
-Keep the current enum for compatibility, but define it only as identity strength:
+Keep the current enum for compatibility, but define it as **a projection of the winning
+candidate's strongest content-evidence class** — not as a second, parallel score:
 
 | confidence | meaning |
 | --- | --- |
 | `CERTAIN` | complete or self-validating evidence, or a format-specific header whose declared false-match risk is accepted as decisive |
 | `PROBABLE` | signature-only or a well-calibrated bounded structural/decode probe |
-| `GUESS` | name-only or an empirically weak bounded probe, notably uncorroborated Brotli |
+| `GUESS` | name-only, or a bounded probe — **whether or not a matching `NAME` item is present** |
+
+**A `NAME` item never raises confidence**, for the same reason it never suppresses
+`format_unconfirmed`: it is not content evidence, and `NAME` ranks below `BOUNDED_PROBE`.
+Letting it move the scalar would create exactly the second ranking this design exists to
+remove — two candidates in the same evidence class reporting different confidences, with
+no way to tell from the scalar which signal did it. The ledger carries the `NAME` item, so
+a caller who wants to weigh it can, without the class pretending the bytes said more than
+they did.
+
+`GUESS` therefore means **"the bytes did not confirm this identity"**, not "this is
+probably the wrong format" — the same reframing this document applies to
+`format_unconfirmed`. A genuine `asset.js.br` that a bounded probe accepted is `GUESS`:
+the answer is very likely right, and the bytes did not establish it. If that reads wrong
+for a public enum, the fix is the enum's labels or the exposed ledger, not re-admitting
+the filename to the scalar.
+
+This is a deliberate change to shipped behaviour, and it is **not confined to Brotli**.
+`_brotli_probe_confidence` currently returns `PROBABLE` when the name ends in `.br`
+(shipped in #261), and the zlib and LZMA Alone probes return `PROBABLE`
+*unconditionally*. All three are `BOUNDED_PROBE`, so all three become `GUESS` under this
+mapping. The Alone and zlib move is the larger one and is easy to miss, because those
+probes never had a name-based branch to notice.
 
 `CERTAIN` does **not** mean the whole archive is uncorrupted. A 7z signature can identify
 a damaged 7z archive even when its StartHeader CRC fails. Validation failure should often
@@ -495,8 +518,11 @@ header immediately. The policy still belongs in the caller, not in confidence la
 11. **Strong executable cue suppresses content probes: agree as a selection rule.** It
     should not prevent probes from being run for diagnostics if a caller explicitly asks
     for non-maximal candidates.
-12. **Confidence driving `format_unconfirmed`: disagree.** PR #262's provenance-based
-    follow-up is the correct design.
+12. **Confidence driving `format_unconfirmed`: disagree.** The provenance-based follow-up
+    (#262, implemented in #267) is the correct direction. Its *mechanism* is not: keying
+    the stamp on a `corroborated` Boolean that a matching filename can set is a second
+    predicate over the same question. The stamp should key on the winning content-evidence
+    class — see §6 and §9.
 13. **Per-probe `dict_size != 0` guard: disagree and remove.** Zero is legal LZMA Alone;
     the guard is a false-negative compatibility bug introduced to compensate for ISO's
     ordering.
@@ -586,12 +612,45 @@ its name supports Brotli, but neither bounded decoding nor the truncated stream 
 content-confirming endpoint. The exposed ledger makes that distinction visible instead
 of forcing one Boolean to pretend the filename was absent or conclusive.
 
-This deliberately contests the still-pending PR #267/#268 design reviewed on 2026-08-26,
-which treats a matching extension as `corroborated=True` and suppresses the flag. Its
-post-completeness census found 29 fabrications and no matching-extension fabrication, so
-that rule does not improve the measured false-positive population; its behavioral effect
-is on genuine damaged files. That is a presentation trade-off, not evidence that a
-filename confirms content.
+This deliberately contests the rule shipped in PR #267/#268 (merged 2026-08-26 as
+`a3dc408`), which treats a matching extension as `corroborated=True` and suppresses the
+flag. It is therefore a **scheduled replacement of shipped behaviour**, not an objection
+to a pending change.
+
+**Measured on two independent trees, the rule buys nothing on the false-positive side.**
+#267's post-completeness census: 29 fabrications, none with a matching extension. Re-run
+on `a3dc408` over a different tree (63 343 files): 23 content-probe claims, 19
+fabrications (0.030%), all 19 stamping, and again **zero** corroborated fabrications.
+
+**Its cost, on genuine damaged files, is now sized rather than asserted.** The same run
+found 4 genuine streams, and the whole tree holds exactly 4 files with any magic-less-codec
+extension — the same 4. They split:
+
+| genuine stream | name | corroborated | stamps today |
+| --- | --- | --- | --- |
+| `underscore.min.js.br` | `.br` | yes | no |
+| `underscore.min.js.map.br` | `.br` | yes | no |
+| `jquery.min.js.brotli` | `.brotli` | **no** | **yes** |
+| `jquery.min.map.brotli` | `.brotli` | **no** | **yes** |
+
+`.brotli` is not a registered extension (only `.br` and `.tar.br` are), so two genuine
+Brotli streams already carry `format_unconfirmed` on shipped `main`. So removing extension
+corroboration newly affects **two files here**, on a tree where two files of the same kind
+already pay that exact cost silently. The trade is real but small, and half of it is
+already incurred by an unrelated naming gap.
+
+That is a presentation trade-off, not evidence that a filename confirms content. Note also
+that `/usr` is the friendliest possible sample for filenames — packaged software has
+curated names — so 4-of-4 genuine should not be read as establishing the extension as a
+discriminator on the backup corpus `VISION.md` names as the founding workload.
+
+**Reverting #267 is not the way to remove this rule.** #267 never suppressed a stamp the
+previous confidence-keyed rule produced: "old stamps, new does not" reduces to `GUESS`
+**and** corroborated, which is unreachable — every extension that corroborates a Brotli
+result has `stream is BROTLI`, exactly what made `_brotli_probe_confidence` report
+`PROBABLE`, the inner-TAR arm forces `PROBABLE`, and zlib and Alone are unconditionally
+`PROBABLE`. Reverting would restore the larger blind spot (Alone and zlib never stamping
+at all) while leaving the filename rule in place via confidence.
 
 The 98.9% number in the prompt argues **against** an extension-agreement shortcut as a
 default optimization: near evidence has already captured almost the entire population
@@ -657,15 +716,25 @@ Recommended mapping:
   `CERTAIN` content evidence;
 - bounded probe refined by a checksum-valid inner TAR: `PROBABLE` or stronger according
   to the resulting TAR evidence;
-- bounded Brotli probe, compressed or uncompressed first, with or without a matching
-  `.br` name: `GUESS`; retain the first-block class and optional `NAME` item as separate
-  evidence.
+- bounded probe without exact EOS — Brotli compressed or uncompressed first, zlib, or
+  LZMA Alone, with or without a matching name: `GUESS`; retain the first-block class and
+  the optional `NAME` item as separate evidence.
+
+This follows from the confidence mapping above rather than being a Brotli-specific rule:
+`BOUNDED_PROBE` projects to `GUESS`, and a `NAME` item cannot raise it. Note the scope —
+zlib and LZMA Alone report `PROBABLE` unconditionally today, so they move too.
 
 More importantly, every failure whose winning content class remains `BOUNDED_PROBE`
-carries `format_unconfirmed=True`. PR #262's move away from confidence is correct; the
-final predicate should be the strongest content-evidence class, not a `corroborated`
-Boolean. A matching filename may choose between otherwise equal bounded candidates, but
-it neither confirms the bytes nor suppresses the signal.
+carries `format_unconfirmed=True`. The move away from confidence (#262, implemented in
+#267) is correct; the final predicate should be the strongest content-evidence class, not
+a `corroborated` Boolean. A matching filename may choose between otherwise equal bounded
+candidates, but it neither confirms the bytes nor suppresses the signal.
+
+**The follow-up that lands this touches two sites, not one.** The filename decides the
+stamp through `_extension_corroborates` (#267), and decides confidence through
+`_brotli_probe_confidence`'s `.br`-to-`PROBABLE` rule (#261). They are the same rule
+expressed twice; removing only the first leaves the second contradicting this mapping.
+`openspec/specs/error-handling` on `main` already records that scope.
 
 ### Completeness
 
