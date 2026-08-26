@@ -145,10 +145,14 @@ API change and migration, not an incidental type widening in this design.
 > resolution, and letting the ledger's search-completeness record say "identified; exact
 > offset not computed". That, and the separate question of whether `payload_offset > 0`
 > should keep meaning "self-extracting archive" when it also covers JPEG+ZIP polyglots and
-> executables that merely embed an archive, are taken up in
+> files where the archive *is* the program (`zipapp`, JAR launchers), are taken up in
 > [`discussions/2026-08-prefixed-payload-semantics`](../discussions/2026-08-prefixed-payload-semantics/prefixed-payload-semantics.md)
-> rather than here — they are about what the library *says* about a prefixed payload, not
-> about how detection decides.
+> rather than here — that brief asks whether a caller should care what is inside an archive
+> at all, which is a question about what the library *says*, not about how detection
+> decides. Two findings there bear directly on this document: on 3 320 system executables,
+> **zero** carry a real appended ZIP, and all six `PK\x05\x06` tail matches are string
+> constants inside zip-handling binaries that parse to nonsense — a concrete instance of why
+> the tail tier must *validate* rather than locate.
 
 ### The public surface: who sees the ledger, and in what form
 
