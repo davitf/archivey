@@ -76,8 +76,16 @@ leg "[all]" bash -c '
 '
 
 # 2. minimum supported versions
+# Prefer g++ when the default ``c++`` (clang on some cloud images) cannot see
+# libstdc++ headers — otherwise lowest-direct builds of ``ncompress==1.0.0`` fail
+# with ``fatal error: 'istream' file not found`` before any tests run.
 leg "[all-lowest]" bash -c '
   set -e
+  if ! printf "#include <istream>\nint main(){}" | c++ -std=c++17 -x c++ -c - -o /dev/null 2>/dev/null; then
+    if command -v g++ >/dev/null 2>&1; then
+      export CXX=g++
+    fi
+  fi
   uv sync --group dev --extra all --resolution lowest-direct
   uv run --no-sync pytest
 '

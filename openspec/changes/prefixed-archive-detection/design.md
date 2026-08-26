@@ -108,7 +108,7 @@ library itself produces. The cue never fires because the prefix is `#!`, not `MZ
 ## Ordering: strength of evidence first, cost second
 
 > Since this section was written, an independent design analysis
-> (`dev-docs/investigations/archive-format-detection-algorithm.md`) reviewed it and was
+> (`dev-docs/investigations/archive-format-detection-algorithm.md`, added by PR #263) reviewed it and was
 > accepted as redesign input. It **agrees** that far magic must precede the content probes
 > and calls the bootable-ISO reproduction decisive. It **disagrees** with two things this
 > change kept: that all near magic deserves one `CERTAIN`, and that first-match-wins is a

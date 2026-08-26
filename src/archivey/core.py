@@ -109,11 +109,11 @@ def _format_provenance(
     """
     if detected is not None:
         chosen_by = "extension" if detected.detected_by == "extension" else "content"
-        probe_guess = (
-            detected.detected_by == "content_probe"
-            and detected.confidence is DetectionConfidence.GUESS
+        # Provenance, not confidence: stamp when a probe was the sole evidence.
+        probe_only = (
+            detected.detected_by == "content_probe" and not detected.corroborated
         )
-        return FormatProvenance(chosen_by=chosen_by, probe_guess=probe_guess)
+        return FormatProvenance(chosen_by=chosen_by, probe_only=probe_only)
     if requested_format is None:
         return FormatProvenance(chosen_by="directory")
     path = Path(source) if isinstance(source, (str, Path)) else None

@@ -236,7 +236,8 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   non-seekable stream of unknown length those checks are skipped and today's
   probe behaviour remains. Probe-only confidence is `PROBABLE` when the first meta-block
   is compressed (or when the name ends in `.br`), and `GUESS` for uncompressed/metadata-first
-  without that extension. A later decode failure on a `GUESS` result sets
+  without that extension. A later decode failure on a **probe-only** result (no matching
+  extension and no inner-TAR upgrade), at any confidence, sets
   `ArchiveyError.format_unconfirmed` and emits `PROBE_FORMAT_UNCONFIRMED` — the bytes
   may never have been Brotli, and a prefix of fabricated output may already have been
   delivered before the error.

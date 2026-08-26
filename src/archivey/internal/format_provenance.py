@@ -7,9 +7,10 @@ case is known at open; whether the listing is empty is not known until it comple
 record carries the first fact forward to the place that learns the second
 (``BaseArchiveReader._publish_materialized``).
 
-It also carries whether a content-probe match was only a ``GUESS`` (probe-only Brotli
-whose first meta-block was uncompressed/metadata): a later decode failure then stamps
-``format_unconfirmed`` and emits ``PROBE_FORMAT_UNCONFIRMED``.
+It also carries whether a content-probe match was the *sole* evidence (no matching
+extension, no inner-TAR upgrade): a later decode failure then stamps
+``format_unconfirmed`` and emits ``PROBE_FORMAT_UNCONFIRMED``. Confidence is not part of
+that channel.
 
 It lives on the reader rather than in ``ReadBackend.open_read``'s signature because no
 backend uses it: adding a parameter would touch every backend for a fact none of them
@@ -43,10 +44,10 @@ class FormatProvenance:
     file cannot disturb the reader, while seeking a live stream back to its origin can.
     """
 
-    probe_guess: bool = False
-    """True when detection chose the format via a content probe at ``GUESS`` confidence.
+    probe_only: bool = False
+    """True when detection chose the format via a content probe with no corroboration.
 
-    That is the channel for ``format_unconfirmed`` on a later decode failure. Magic,
-    SFX, extension, and ``PROBABLE`` probe hits (including compressed-first Brotli)
-    leave this ``False``.
+    That is the channel for ``format_unconfirmed`` on a later decode failure, at any
+    ``DetectionConfidence``. Magic, SFX, extension, and probe hits corroborated by a
+    matching extension or an inner-TAR upgrade leave this ``False``.
     """

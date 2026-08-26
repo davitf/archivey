@@ -264,12 +264,12 @@ nor `DIRECTORY`. Original write-up below.
   **29 fabricated claims (0.019%)**, down from 128 (0.193%) after the
   first-block gate alone. Residual families (OLE/CFB, COFF, lucky compressed-first fits
   above the prefix) remain — and end-to-end those structured residuals are usually claimed
-  by the **LZMA Alone** probe at `PROBABLE` (not Brotli), so the Brotli `GUESS` /
-  `format_unconfirmed` channel does not fire for them. The remaining follow-up is
-  **`probe-provenance-unconfirmed`** (key the unconfirmed channel on provenance rather
-  than `GUESS` confidence).
+  by the **LZMA Alone** probe at `PROBABLE` (not Brotli). **`probe-provenance-unconfirmed`**
+  keys the unconfirmed channel on provenance rather than `GUESS` confidence, so those
+  failures stamp too (re-measured: **0 of 29** fabrications carry no signal).
 - **Confidence / errors:** probe-only Brotli is `PROBABLE` when the first meta-block is
-  compressed (or `.br` corroborates), else `GUESS`. A decode failure on `GUESS` sets
+  compressed (or `.br` corroborates), else `GUESS`. A decode failure on a **probe-only**
+  result (any confidence; no matching extension, no inner-TAR upgrade) sets
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
 - **Still three clauses, not one:** the listing can be wrong; a full read raises; **and**
   a prefix of fabricated bytes may already have been produced. Not a silent success.

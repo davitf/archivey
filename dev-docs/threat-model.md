@@ -357,9 +357,9 @@ self-describing block-chain walk rejects later overruns / trailing bytes. Residu
 is `GUESS` for the uncompressed/metadata-first class; a decode failure there sets
 `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. Structured residual
 families named in the investigation (OLE/CFB, COFF) are usually claimed end-to-end by the
-**LZMA Alone** probe at `PROBABLE`, so that honesty channel does not cover them yet —
-measured, **26 of 29** fabricated probe claims on the re-measured tree carry no signal
-(follow-up: `probe-provenance-unconfirmed`).
+**LZMA Alone** probe at `PROBABLE`; after `probe-provenance-unconfirmed` those failures
+stamp too — measured, **0 of 29** fabricated probe claims on the re-measured tree carry
+no signal.
 
 **Three clauses remain:** the listing can be wrong; a full read raises; **and** a prefix
 of fabricated bytes (65 536 measured) may already have been produced before that raise.

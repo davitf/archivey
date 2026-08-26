@@ -55,8 +55,9 @@ class ArchiveyError(Exception):
     link_target=target)``.
 
     ``format_unconfirmed`` is a boolean (default ``False``): ``True`` when the format
-    claim rested only on a content probe at ``GUESS`` confidence, so a decode failure
-    should not be read as "this known format truncated."
+    claim rested only on a content probe with nothing corroborating it (no matching
+    extension, no inner-TAR upgrade), so a decode failure should not be read as "this
+    known format truncated." Confidence is irrelevant to the flag.
 
     **Escape exactly once, at the outermost message.** Everything a message
     interpolates should therefore be raw when it goes in — which is what the two

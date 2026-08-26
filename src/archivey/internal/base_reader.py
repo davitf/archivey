@@ -922,7 +922,7 @@ class BaseArchiveReader(ArchiveReader):
         if chosen_by == "content_probe":
             message = (
                 f"Decode failed for {format_name}, which was identified only by a "
-                f"content probe at GUESS confidence; the source may not be that format"
+                f"content probe; the source may not be that format"
             )
         else:
             detected_text = detected_format or "nothing (detection refuses these bytes)"
@@ -946,7 +946,7 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _mark_format_unconfirmed(self, exc: ArchiveyError) -> None:
-        """Stamp a probe-only GUESS decode failure and emit the matching diagnostic."""
+        """Stamp a probe-only decode failure and emit the matching diagnostic."""
         if not exc.format_unconfirmed:
             format_name = (exc.source_format or self._format).display_name
             detail = exc.raw_message
@@ -1966,7 +1966,7 @@ class BaseArchiveReader(ArchiveReader):
         provenance = self._format_provenance
         if (
             provenance is not None
-            and provenance.probe_guess
+            and provenance.probe_only
             and isinstance(exc, (TruncatedError, CorruptionError))
         ):
             self._mark_format_unconfirmed(exc)

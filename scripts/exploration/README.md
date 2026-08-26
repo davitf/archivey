@@ -42,6 +42,33 @@ python3 scripts/exploration/brotli_block_chain_survey.py --scan ~/fonts /usr/sha
 Pointing `--scan` at a machine with a different font or `.br` population is the useful
 variation — the results doc's real-world corpus was 1717 WOFF2 streams from npm.
 
+## Content-probe residual — census on a real tree
+
+`probe_residual_census.py` measures what the framing, completeness and chain-walk gates
+left behind: how often a content probe still claims a file that is not that format, which
+probe claims it, at what confidence, whether anything corroborated the claim, and whether
+a later decode failure would carry a `format_unconfirmed` signal. It is the source of the
+residual numbers in `dev-docs/investigations/brotli-content-probe-results.md` and the
+`0 of N carry no signal` line in `dev-docs/threat-model.md`.
+
+Like the chain-walk survey, it **imports the real predicate rather than a copy** — the
+stamp column comes from `archivey.core._format_provenance(...).probe_only`, not a local
+restatement of the rule. That is the point of the script: the previous confidence-keyed
+rule left 53% of fabrications unsignalled, and this census is what found it. It also
+cross-checks the stamp against `FormatInfo.corroborated` and shouts if the two drift.
+
+Read-only: it opens files, reads at most `DETECTION_LIMIT` bytes for the probe, and reads
+whole files only to verify genuineness. Nothing is written.
+
+```bash
+uv run python scripts/exploration/probe_residual_census.py            # system roots
+uv run python scripts/exploration/probe_residual_census.py ~/Downloads
+```
+
+`uv run` matters — the probes and the verification step both need the optional `brotli`
+decoder importable. A tree with real `.br` assets (web caches, font directories) is the
+useful variation; `/usr` has almost no genuine Brotli.
+
 ## ZipCrypto disambiguation — exploration notes
 
 Scripts supporting
