@@ -432,9 +432,12 @@ def _extension_corroborates(
     ``ReadBackend.CONTENT_PROBES`` exists precisely so a container backend can register
     one, and that seam must not silently arm this.
 
-    Contested: PR #263's analysis §6 holds that the filename must not decide whether a
-    later failure is stamped ``format_unconfirmed`` at all, keying it on content-evidence
-    class instead. If that lands, this predicate leaves the stamp path entirely.
+    Contested: PR #263's analysis §6 keys the stamp on the winning candidate's
+    content-evidence class, under which a matching name is retained as evidence but cannot
+    promote it — so this predicate leaves the stamp path entirely if that lands, together
+    with ``_brotli_probe_confidence``'s ``.br``-to-``PROBABLE`` rule, which is the same
+    rule expressed twice. See ``openspec/specs/error-handling`` for the scope and why the
+    two must move together.
     """
     if ext_match is None:
         return False
