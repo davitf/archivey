@@ -109,6 +109,19 @@ The important fields omitted by today's `FormatInfo` are:
 - **search completeness**: which tiers were unavailable or skipped by budget;
 - **retained candidates**, when more than one interpretation survives.
 
+The winning candidate's evidence ledger is a required public outcome of this redesign,
+not merely an internal implementation detail or a polyglot convenience:
+
+- standalone detection must return the winning `DetectionEvidence` records;
+- `open_archive()` / `open_stream()` must retain the same detection result for callers;
+- a read error marked `format_unconfirmed` must carry that evidence (or a stable reference
+  to the retained result), so the exception explains *why* the Boolean is true without
+  requiring the caller to repeat detection and correlate two independent operations.
+
+This requirement is narrower than an API that enumerates every non-winning candidate.
+The all-candidates API's name and shape may stay open; exposure of the winner's evidence
+cannot, because error-provenance semantics depend on it.
+
 `payload_offset=None` exists only on the proposed internal/extended `FormatCandidate` and
 means "not computed within the index budget". Public `FormatInfo.payload_offset` remains
 an `int`: zero means "confirmed at the detection origin" and a positive value marks SFX,
@@ -164,7 +177,9 @@ Resolve equal-class candidates with ordered priority keys:
    embedded payload at a later offset;
 3. end anchoring (`declared_end == source_end` before merely `<=`) within the same format
    and evidence class;
-4. independent corroboration, including a matching extension, only as a tie-break;
+4. corroboration only as a tie-break: content-derived evidence (for example an inner-TAR
+   checksum) is independent; a matching extension is recorded as correlated `NAME`
+   metadata;
 5. if incompatible candidates remain tied, report ambiguity rather than using registry
    order.
 
@@ -542,7 +557,8 @@ remove that workaround.
 
 The filename belongs in several places, but never as an exclusion filter:
 
-- **prior/corroborator:** available from the start and recorded when it agrees;
+- **naming prior:** available from the start; when it agrees, append a `NAME` item to the
+  candidate's evidence ledger rather than collapsing agreement into a Boolean;
 - **work authorizer:** under a constrained budget, it may justify an otherwise optional
   expensive format-specific check;
 - **tie-break:** only between candidates with the same content-evidence class;
@@ -553,7 +569,29 @@ It must not:
 - prevent a detector for a different format from running;
 - promote extension + bounded probe above unconsulted exact/validated evidence;
 - suppress a conflict diagnostic;
-- change whether a later failure is marked probe-only.
+- raise the winning candidate above `BOUNDED_PROBE`, or change whether a later failure is
+  marked probe-only.
+
+The last rule follows from the class ranking rather than discarding filename agreement.
+`NAME` ranks below `BOUNDED_PROBE`; adding it preserves both observations in the ledger
+but cannot change the strongest content-evidence class. A later decode failure is
+`format_unconfirmed=True` when the chosen format still rests on `BOUNDED_PROBE`, whether
+or not a matching `NAME` item is present. A checksum-valid inner-TAR upgrade is different:
+it adds stronger **content** evidence and may move the candidate out of the bounded-probe
+class.
+
+`format_unconfirmed` must mean "the bytes did not confirm this identity", not "the
+identity is probably wrong". A genuinely truncated `x.br` may therefore carry the flag:
+its name supports Brotli, but neither bounded decoding nor the truncated stream reached a
+content-confirming endpoint. The exposed ledger makes that distinction visible instead
+of forcing one Boolean to pretend the filename was absent or conclusive.
+
+This deliberately contests the still-pending PR #267/#268 design reviewed on 2026-08-26,
+which treats a matching extension as `corroborated=True` and suppresses the flag. Its
+post-completeness census found 29 fabrications and no matching-extension fabrication, so
+that rule does not improve the measured false-positive population; its behavioral effect
+is on genuine damaged files. That is a presentation trade-off, not evidence that a
+filename confirms content.
 
 The 98.9% number in the prompt argues **against** an extension-agreement shortcut as a
 default optimization: near evidence has already captured almost the entire population
@@ -617,13 +655,17 @@ Recommended mapping:
 
 - complete decode to EOS with the entire source and no forbidden trailing bytes:
   `CERTAIN` content evidence;
-- bounded probe + independent corroboration (`.br` or checksum-valid inner TAR):
-  `PROBABLE`;
-- bounded probe alone, compressed or uncompressed first: `GUESS`, with the first-block
-  class retained as evidence detail.
+- bounded probe refined by a checksum-valid inner TAR: `PROBABLE` or stronger according
+  to the resulting TAR evidence;
+- bounded Brotli probe, compressed or uncompressed first, with or without a matching
+  `.br` name: `GUESS`; retain the first-block class and optional `NAME` item as separate
+  evidence.
 
-More importantly, all bounded probe-only failures carry `format_unconfirmed=True`. PR
-#262's provenance change is correct; confidence must not steer this signal.
+More importantly, every failure whose winning content class remains `BOUNDED_PROBE`
+carries `format_unconfirmed=True`. PR #262's move away from confidence is correct; the
+final predicate should be the strongest content-evidence class, not a `corroborated`
+Boolean. A matching filename may choose between otherwise equal bounded candidates, but
+it neither confirms the bytes nor suppresses the signal.
 
 ### Completeness
 
@@ -757,6 +799,11 @@ When two archive candidates survive:
   selecting whichever backend was registered first;
 - leave the name and exact shape of a future all-candidates inspection API open.
 
+That future API is separate from the required exposure of the **winning** candidate's
+evidence in §1. The latter must land with the evidence-class redesign so
+`format_unconfirmed` errors are self-explanatory; it does not need to wait for polyglot
+enumeration.
+
 Without this, the acquisition order becomes an undocumented intent policy. For example,
 an executable can contain both an EOF-anchored ZIP and a CRC-valid 7z payload. "ZIP tail
 runs first" is not evidence that the producer intended ZIP.
@@ -824,13 +871,16 @@ matrix remains a release/migration measurement: quantify how often zlib, LZMA Al
 Brotli tie on real negatives and positives so release notes and compatibility guidance can
 describe the behavior cliff rather than discovering it from user reports.
 
-Until those results exist, two product choices and one release gate remain open:
+Until those results exist, one release gate and three API/calibration decisions remain
+open:
 
 - **release gate:** what measured aggregate I/O/latency threshold is sufficient to enable
   the 65,557-byte tail probe in the default corpus budget;
 - numeric thresholds behind `CERTAIN`/`PROBABLE`;
 - the eventual behavior/name of the all-candidates inspection API and exhaustive
   ambiguity fallback (the immediate policy is settled: raise `AmbiguousFormatError`).
+- the exact public field/type names for exposing the winning evidence on detection,
+  readers, and `format_unconfirmed` errors; the exposure itself is required.
 
 ## 14. Relationship to PR #257
 
