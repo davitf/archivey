@@ -52,5 +52,29 @@
 
 ## 5. Follow-ups (explicitly not in this change)
 
-- [ ] 5.1 Whether `FormatInfo` should expose corroboration as a public field rather than an internal provenance detail. Task 1.3 may make it internal; a caller wanting to know "was this identification corroborated?" before reading has no way to ask
+- [ ] 5.1 **Replace `detected_by: str` + internal `corroborated: bool` with a public evidence set.** Rescoped after review of #267 — the original question ("should `FormatInfo` expose corroboration as a public field?") has a definite answer: **not as this bool.** `corroborated=False` means two different things — "a probe, with nothing corroborating it" *and* "not a probe at all" — and the second case is most detections, so a public reader sees `False` on an exact magic match. Measured truth table over every reachable path:
+
+  | case | `detected_by` | `corroborated` |
+  | --- | --- | --- |
+  | ZIP magic, name **agrees** (`a.zip`) | `magic` | False |
+  | ZIP magic, name **contradicts** (`b.tar`) | `magic` | False |
+  | `d.tar.gz` — magic + inner-TAR | `content_probe` | True |
+  | brotli probe, no extension | `content_probe` | False |
+  | brotli probe, `.br` agrees | `content_probe` | True |
+  | brotli probe, `.zip` contradicts | `content_probe` | False |
+  | SFX (MZ stub + appended ZIP) | `sfx_scan` | False |
+  | extension-only fallback | `extension` | False |
+
+  Rows 1/2 and rows 4/6 are indistinguishable in the output, though the extension agrees in one and contradicts in the other. No rename fixes that; the shape is wrong.
+
+  **The replacement shape is already designed elsewhere — do not invent a parallel one here.** PR #263 (`dev-docs/investigations/archive-format-detection-algorithm.md`, accepted as redesign input by `prefixed-archive-detection`) §1 specifies an **evidence ledger**: typed `DetectionEvidence` records on an internal `FormatCandidate`, with **totally ranked** evidence classes — `COMPLETE` > `SELF_VALIDATING` > `DISCRIMINATING_HEADER` > `SIGNATURE_ONLY` > `BOUNDED_PROBE` > `NAME` — and ordered tie-breakers. It names the same gap this task found: *"The important fields omitted by today's `FormatInfo` are: all provenance, not one `detected_by` string; validation state; search completeness; retained candidates"*, and *"`detected_by` … is not rich enough to drive exception semantics"* — which is exactly what this change made it do.
+
+  Two constraints from that analysis bind any fix here:
+
+  - **Not an additive score.** *"Do not assign points and add them. Evidence is correlated: a `.br` suffix and a Brotli probe are not two random independent observations."* So a bit-set with `corroborated = popcount > 1` is the wrong shape too — ranked classes, not counted signals.
+  - **Rich provenance is internal.** §1 keeps the ledger on `FormatCandidate` and holds public `FormatInfo` narrow, on the stated principle that widening it *"would require an explicit OpenSpec API change and migration, not an incidental type widening"*. That is the same reasoning as the interim fix below.
+
+  So the disposition of 5.1 is: **the public-field question is answered "no, not as a bool", and the replacement belongs to the #263 redesign, not to a follow-up of this change.** Sequencing: after `prefixed-archive-detection`, which adds two more `detected_by` values (`"zip_tail_probe"`, `"exhaustive_scan"`) and would otherwise have to be redone.
+
+  Interim (#267 review): `corroborated` is `field(default=False, compare=False, repr=False)`, so it stays out of `__eq__` and `__repr__` and constrains nothing while the shape is undecided
 - [ ] 5.2 `brotli-probe-framing-gate` task 3.1a's compressed-first `PROBABLE` split stands on its random-data measurement, but that number does not describe real files (64 fabrications against 4 genuine streams on the measured tree). This change makes the split harmless — it no longer steers error behaviour — so retuning it is now a pure confidence question, worth revisiting only with a corpus of real extensionless Brotli streams

@@ -156,6 +156,21 @@
   Stated as a rule: agreement between two independent signals outranks an unconsulted
   *expensive* alternative, never an unconsulted *cheap and stronger* one.
 
+- **`FormatInfo.corroborated` is interim — it belongs in the detection evidence ledger** —
+  `probe-provenance-unconfirmed` added an internal `corroborated: bool` to `FormatInfo` to
+  key the `format_unconfirmed` channel. It cannot become public as a bool: `False` means
+  both "a probe with nothing corroborating it" and "not a probe at all", so a ZIP named
+  `a.zip` (extension agrees) and one named `b.tar` (extension contradicts) produce
+  identical output — `magic` / `certain` / `False` — as do an extensionless Brotli probe
+  hit and one whose `.zip` name contradicts it. The replacement is **not** a wider public
+  field here: PR #263's analysis §1 already specifies the evidence ledger (typed
+  `DetectionEvidence` on an internal `FormatCandidate`, totally ranked classes, ordered
+  tie-breakers) and explicitly rejects additive scoring over correlated signals, so a
+  counted bit-set would be wrong too. Recorded here only so the interim field is not
+  mistaken for a settled design; the work belongs to that redesign, after
+  `prefixed-archive-detection` adds its two further `detected_by` values. Full truth table
+  in `probe-provenance-unconfirmed` task 5.1.
+
 - **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
   policy already sketched in `safe-extraction` (re-root/collapse unsafe paths instead of
   rejecting) is also the right home for **renaming members the destination cannot

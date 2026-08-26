@@ -117,25 +117,14 @@ class FormatInfo:
     )
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
     # Internal provenance for ``format_unconfirmed``: True when a matching extension or
-    # an inner-TAR upgrade corroborated a content-probe claim. Not part of the public
-    # ``detect_format`` contract — see ``probe-provenance-unconfirmed`` task 5.1.
-    corroborated: bool = False
-
-
-def _extension_corroborates(
-    ext_match: tuple[ArchiveFormat, str] | None,
-    resolved: ArchiveFormat,
-) -> bool:
-    """Whether the filename extension agrees with ``resolved``'s stream format.
-
-    Generalizes the existing ``.br`` rule: ``.br`` and ``.tar.br`` both corroborate a
-    Brotli (or TAR+Brotli) probe hit. Exact container match is not required — a deferred
-    inner-TAR case (``foo.tar.br`` reported as bare ``BROTLI``) still has the extension
-    agreeing on the codec.
-    """
-    if ext_match is None:
-        return False
-    return ext_match[0].stream == resolved.stream
+    # an inner-TAR upgrade corroborated a content-probe claim. ``compare=False`` keeps it
+    # out of the generated ``__eq__``, ``repr=False`` out of ``__repr__``; that is what
+    # actually holds it outside the public ``detect_format`` contract — the field is
+    # reachable but constrains nothing. Deliberate: ``False`` here is overloaded — it means
+    # both "a probe with no corroboration" and "not a probe at all", so an exact magic hit
+    # reads False — and a bool cannot separate those. ``probe-provenance-unconfirmed``
+    # task 5.1 tracks the public evidence-set shape that could.
+    corroborated: bool = field(default=False, compare=False, repr=False)
 
 
 def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
@@ -423,6 +412,37 @@ def _is_deferred_inner_tar(ext_fmt: ArchiveFormat, resolved: ArchiveFormat) -> b
         and ext_fmt.container == ContainerFormat.TAR
         and ext_fmt.stream == resolved.stream
     )
+
+
+def _extension_corroborates(
+    ext_match: tuple[ArchiveFormat, str] | None,
+    resolved: ArchiveFormat,
+) -> bool:
+    """Whether the filename agrees with ``resolved`` — the same test as "no conflict".
+
+    Deliberately the negation of what :func:`_warn_on_conflict` warns about, sharing
+    :func:`_is_deferred_inner_tar` with it, so the module gives one answer to "does the
+    name agree?" rather than two. That covers the ``.br`` rule and generalizes it to every
+    magic-less codec (``.lzma``, ``.zz``), plus the deferred inner-TAR case where
+    ``foo.tar.br`` is reported as bare ``BROTLI`` because the inner-TAR probe could not run.
+
+    Comparing only ``stream`` would be wrong: every container shares
+    ``StreamFormat.UNCOMPRESSED``, so a ``.zip`` name would "agree" with a ``TAR`` result.
+    Unreachable while every content probe is a ``RAW_STREAM`` codec, but
+    ``ReadBackend.CONTENT_PROBES`` exists precisely so a container backend can register
+    one, and that seam must not silently arm this.
+
+    Contested: PR #263's analysis §6 keys the stamp on the winning candidate's
+    content-evidence class, under which a matching name is retained as evidence but cannot
+    promote it — so this predicate leaves the stamp path entirely if that lands, together
+    with ``_brotli_probe_confidence``'s ``.br``-to-``PROBABLE`` rule, which is the same
+    rule expressed twice. See ``openspec/specs/error-handling`` for the scope and why the
+    two must move together.
+    """
+    if ext_match is None:
+        return False
+    ext_fmt = ext_match[0]
+    return ext_fmt == resolved or _is_deferred_inner_tar(ext_fmt, resolved)
 
 
 def _warn_on_conflict(
