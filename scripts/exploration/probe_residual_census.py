@@ -17,8 +17,9 @@ It answers three questions the follow-up changes rest on:
    real tree has both.
 2. **How much of it is invisible?** After provenance, an uncorroborated probe hit
    stamps at any confidence. Corroborated hits (matching extension, inner-TAR
-   upgrade) correctly stay silent. The "unstamped" count should be zero for
-   fabrications that remain probe-only.
+   upgrade) correctly stay silent. Whether a given file would stamp is read from
+   the library's own predicate rather than restated here, so this column can
+   still report a regression instead of echoing one.
 3. **What would a completeness rule buy?** When a file is no larger than the peeked
    prefix, the probe can see all of it, so tolerating "ran out of input" is unsound: a
    complete valid stream must terminate cleanly. The script reports how many
@@ -69,6 +70,15 @@ class Hit:
     size: int
     path: str
     corroborated: bool = False
+    stamps: bool = False
+    """Whether a decode failure on this file would actually be stamped.
+
+    Read from the library's own predicate (``core._format_provenance(...).probe_only``),
+    never restated here. The point of this census is to catch the stamp and the fabricated
+    population drifting apart — the previous keying left 53% of fabrications unsignalled,
+    and this script is what found that. A local reimplementation of the rule, or a constant,
+    cannot detect the next such drift.
+    """
 
 
 def _bucket(size: int) -> str:
@@ -129,6 +139,7 @@ def _verify(fmt: str, data: bytes) -> bool:
 
 def census(roots: list[str], limit: int | None = None) -> tuple[list[Hit], int]:
     from archivey import detect_format
+    from archivey.core import _format_provenance
     from archivey.exceptions import ArchiveyError
     from archivey.internal.detection import DETECTION_LIMIT
     from archivey.internal.registry import get_registry
@@ -193,6 +204,7 @@ def census(roots: list[str], limit: int | None = None) -> tuple[list[Hit], int]:
                         size,
                         path,
                         info.corroborated,
+                        _format_provenance(path, None, info).probe_only,
                     )
                 )
 
@@ -229,23 +241,38 @@ def report(hits: list[Hit], scanned: int) -> None:
         bucket_fab = [h for h in fabricated if h.fmt == fmt and h.confidence == conf]
         if not bucket_fab:
             stamped = "n/a"
-        elif any(not h.corroborated for h in bucket_fab):
+        elif any(h.stamps for h in bucket_fab):
             stamped = "yes"
         else:
             stamped = "no (corr.)"
         print(f"  {fmt + ' / ' + conf:34} {g:8} {f:11} {stamped:>9}")
 
-    probe_only_fab = [h for h in fabricated if not h.corroborated]
+    stamped_fab = [h for h in fabricated if h.stamps]
     corroborated_fab = [h for h in fabricated if h.corroborated]
-    print(f"\n  probe-only fabrications (stamp on failure)     : {len(probe_only_fab)}")
-    print(f"  corroborated fabrications (correctly silent) : {len(corroborated_fab)}")
-    # After probe-provenance-unconfirmed, every uncorroborated probe hit stamps —
-    # confidence no longer creates a blind spot.
-    print("  probe-only fabrications with NO signal        : 0")
-    if corroborated_fab:
+    unstamped_fab = [h for h in fabricated if not h.stamps]
+    print(f"\n  fabrications that stamp on failure           : {len(stamped_fab)}")
+    print(f"  corroborated fabrications (correctly silent): {len(corroborated_fab)}")
+    print(f"  fabrications with NO signal at all          : {len(unstamped_fab)}")
+
+    # The two must agree: after probe-provenance-unconfirmed, "stamps" is exactly
+    # "uncorroborated", so a divergence means the stamp predicate and the corroboration
+    # field have drifted apart — which is the regression this census exists to catch.
+    drift = [h for h in fabricated if h.stamps == h.corroborated]
+    if drift:
         print(
-            "  (corroborated fabrications — extension or inner-TAR — correctly silent)"
+            f"\n  !! {len(drift)} fabrication(s) where stamps != (not corroborated) —"
+            " the stamp predicate and FormatInfo.corroborated disagree:"
         )
+        for h in drift[:10]:
+            print(
+                f"      {h.fmt:11} corroborated={h.corroborated!s:5}"
+                f" stamps={h.stamps!s:5}  {os.path.basename(h.path)}"
+            )
+
+    if unstamped_fab:
+        print("\n  unstamped fabrications (a decode failure names no doubt):")
+        for h in sorted(unstamped_fab, key=lambda h: -h.size)[:10]:
+            print(f"      {h.fmt:11} {h.size:>10}  {os.path.basename(h.path)}")
 
     print(f"\nsize distribution of fabrications (prefix is {DETECTION_LIMIT} B):\n")
     counts = collections.Counter(_bucket(h.size) for h in fabricated)
@@ -269,12 +296,9 @@ def report(hits: list[Hit], scanned: int) -> None:
     # What the completeness rule leaves behind: fabrications too large for the probe to
     # have seen whole. After provenance, those still stamp when uncorroborated.
     remaining_probe_only = [
-        h for h in fabricated if h.size > DETECTION_LIMIT and not h.corroborated
+        h for h in fabricated if h.size > DETECTION_LIMIT and h.stamps
     ]
-    print(
-        f"  probe-only fabrications above the prefix: {len(remaining_probe_only)}"
-        f" (all stamp after probe-provenance-unconfirmed)"
-    )
+    print(f"  stamping fabrications above the prefix: {len(remaining_probe_only)}")
     for h in sorted(remaining_probe_only, key=lambda h: -h.size)[:10]:
         print(f"      {h.fmt:11} {h.size:>10}  {os.path.basename(h.path)}")
 
