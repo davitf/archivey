@@ -417,6 +417,43 @@ re-verified failing against the unfixed code). Original write-up below.
 - **Not a docs defect.** No published page states anything false about this; the guide
   never passes a `StreamFormat` to `format_availability()`.
 
+### P13. `.brotli` is not a registered extension, so genuine streams read as uncorroborated
+
+- **What:** the extension map holds `.br` and `.tar.br` only. A genuine Brotli stream named
+  `*.brotli` is identified by the content probe with nothing corroborating it, so a decode
+  failure stamps `format_unconfirmed=True` on a file that really is Brotli.
+- **Measured** (2026-08-26, `main` @ `a3dc408`, 63 343 files): the tree holds exactly four
+  files with any magic-less-codec extension, and they split two/two —
+  `underscore.min.js.br` / `.map.br` corroborate and stay silent, while
+  `jquery.min.js.brotli` / `jquery.min.map.brotli` do not and would stamp. Both `.brotli`
+  files are genuine, verified by full decode.
+- **Why it is not just a missing table row:** it changes how much the *design* argument in
+  PR #263 §6 costs. That section proposes the filename stop suppressing the stamp at all,
+  and prices the cost at "genuine damaged files". Half that cost is already being paid here
+  for an unrelated reason.
+- **Open:** what the ecosystem actually emits. The reference CLI writes `.br`; `.brotli`
+  clearly occurs in asset pipelines. Adding an extension is public detection data and has
+  its own false-positive risk, so this wants a quick survey rather than a reflex fix.
+- **Refs:** `src/archivey/internal/registry.py` `extension_map()`; census via
+  `scripts/exploration/probe_residual_census.py`.
+
+### P14. Several exported names are documented nowhere
+
+- **What:** `docs/api.md` opens with "Everything documented here is re-exported from the
+  top-level `archivey` package and listed in `archivey.__all__`" — true, but not the
+  converse. 31 of the 87 names in `__all__` have no mkdocstrings page anywhere in `docs/`,
+  including `FormatInfo`, `DetectionConfidence`, `FormatAvailability`, `FormatSupport`,
+  `MissingComponent`, `ExtractionProgress`, `DiagnosticContext`,
+  `ARCHIVE_INTEGRITY_CODES`, and every exception class.
+- **Why it matters now:** `FormatInfo` is the return type of the public `detect_format`,
+  and PR #263 proposes adding an evidence ledger to it. A type users are expected to read
+  fields off, with no rendered reference, is where an "internal" field quietly becomes
+  public — which is exactly what happened with `FormatInfo.corroborated` in #267 (held
+  back with `compare=False, repr=False` in the follow-up).
+- **Note:** the exceptions may be deliberate — they are described narratively in
+  `docs/errors-and-diagnostics.md`. The data types are the gap.
+- **Check:** compare `archivey.__all__` against `^::: archivey\.(\S+)` across `docs/*.md`.
+
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
 - **Today:** Solid ALL-pipe demux must match what `unrar` actually emits (RAR5

@@ -129,6 +129,8 @@ This requirement is narrower than an API that enumerates every non-winning candi
 The all-candidates API's name and shape may stay open; exposure of the winner's evidence
 cannot, because error-provenance semantics depend on it.
 
+`payload_offset` is **already public** — a field on `FormatInfo`, which is in
+`archivey.__all__` — and this design keeps it that way rather than withdrawing it.
 `payload_offset=None` exists only on the proposed internal/extended `FormatCandidate` and
 means "not computed within the index budget". Public `FormatInfo.payload_offset` remains
 an `int`: zero means "confirmed at the detection origin" and a positive value marks SFX,
@@ -136,6 +138,17 @@ exactly as the shipped spec requires. The compatibility `detect_format()` view m
 pay to compute the offset or raise a budget/incomplete-detection error; it must never turn
 unknown into zero. Exposing optional offsets publicly would require an explicit OpenSpec
 API change and migration, not an incidental type widening in this design.
+
+> Both of those options have a cost — charging a caller who wanted the *format* for a full
+> central-directory walk, or turning a successful identification into a failure over one
+> derived field — and there may be a third: separating identification from offset
+> resolution, and letting the ledger's search-completeness record say "identified; exact
+> offset not computed". That, and the separate question of whether `payload_offset > 0`
+> should keep meaning "self-extracting archive" when it also covers JPEG+ZIP polyglots and
+> executables that merely embed an archive, are taken up in
+> [`discussions/2026-08-prefixed-payload-semantics`](../discussions/2026-08-prefixed-payload-semantics/prefixed-payload-semantics.md)
+> rather than here — they are about what the library *says* about a prefixed payload, not
+> about how detection decides.
 
 ### The public surface: who sees the ledger, and in what form
 
