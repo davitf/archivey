@@ -386,11 +386,34 @@ and Brotli's compressed-first class, which was moved to `PROBABLE` precisely *be
 flag was confidence-keyed. Separating them also lets confidence be retuned later without
 silently changing which errors are stamped.
 
-A claim SHALL count as **corroborated**, and therefore not stamped, when any of these
-holds: the file extension matches the detected format; or the probe hit was upgraded to a
+A claim SHALL count as **corroborated**, and therefore not stamped, when either of these
+holds: the filename agrees with the detected format; or the probe hit was upgraded to a
 `TAR_*` format because a TAR header was found in the decompressed prefix, which is a
 second independent signal obtained by actually decompressing. Exact magic and SFX scans do
 not reach this requirement at all, being different detection paths.
+
+**"The filename agrees" SHALL be the exact negation of what raises a
+`FORMAT_EXTENSION_CONFLICT`** — the extension's format equals the detected format, or is
+the documented *deferred inner-TAR* case where a `TAR_*` extension stands over a bare
+compressor result because the inner-TAR probe could not run. So `foo.tar.br` reported as
+bare `BROTLI` corroborates, and the rule generalizes past `.br` to every magic-less codec
+(`.lzma`, `.zz`). One predicate SHALL serve both, so the system cannot both warn that a
+name conflicts and count it as corroboration.
+
+Agreement SHALL NOT be reduced to the `stream` component alone. Every container format
+shares `StreamFormat.UNCOMPRESSED`, so a `stream`-only test makes a `.zip` name corroborate
+a `TAR` result. No content probe can produce a container format today — every one is a
+`RAW_STREAM` codec — but `ReadBackend.CONTENT_PROBES` exists so a container backend can
+register one, and that seam MUST NOT silently arm this.
+
+> **Contested, and scheduled for review.** PR #263's design analysis (§6, *The filename's
+> role*) holds that the filename must not decide whether a later failure is stamped at all,
+> keying the signal on content-evidence class (`BOUNDED_PROBE` versus `COMPLETE`) instead —
+> under which a matching extension raises *confidence* but never suppresses the stamp. That
+> bullet is asserted rather than argued there, and the cost it implies is unmeasured: a
+> large, genuinely truncated `.br` never reaches EOS within the detection budget, so it
+> would stamp "identification unconfirmed" about a file that really is Brotli. Recorded so
+> this requirement is not read as settled against that analysis.
 
 Today an uncorroborated source raises `TruncatedError (member=…, format=BROTLI)` — or
 `CorruptionError (format=LZMA_ALONE)` — asserting two things that are not known: that the

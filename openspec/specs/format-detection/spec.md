@@ -599,6 +599,8 @@ cleanly is a success.
 | --- | --- |
 | Probe-only result at any confidence, read fails | Same exception type; `format_unconfirmed=True`; message names unconfirmed identification; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
 | Probe + `.br` extension, read fails | Ordinary truncation/corruption error — the format is corroborated; `format_unconfirmed=False` |
+| Probe + `.tar.br` extension reported as bare `BROTLI`, read fails | Corroborated — the deferred inner-TAR case is agreement, not conflict; `format_unconfirmed=False` |
+| Probe + an extension that **disagrees** (`.zip` over Brotli bytes), read fails | Not corroborated; `format_unconfirmed=True`, and a `FORMAT_EXTENSION_CONFLICT` is raised |
 | Probe hit upgraded to `TAR_*` via inner-TAR, read fails | Corroborated; `format_unconfirmed=False` |
 | Probe-only result, read succeeds | Success; no error, no downgrade |
 

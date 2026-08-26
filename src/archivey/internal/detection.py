@@ -127,22 +127,6 @@ class FormatInfo:
     corroborated: bool = field(default=False, compare=False, repr=False)
 
 
-def _extension_corroborates(
-    ext_match: tuple[ArchiveFormat, str] | None,
-    resolved: ArchiveFormat,
-) -> bool:
-    """Whether the filename extension agrees with ``resolved``'s stream format.
-
-    Generalizes the existing ``.br`` rule: ``.br`` and ``.tar.br`` both corroborate a
-    Brotli (or TAR+Brotli) probe hit. Exact container match is not required — a deferred
-    inner-TAR case (``foo.tar.br`` reported as bare ``BROTLI``) still has the extension
-    agreeing on the codec.
-    """
-    if ext_match is None:
-        return False
-    return ext_match[0].stream == resolved.stream
-
-
 def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
     """Return the source's next ``length`` bytes without consuming them.
 
@@ -428,6 +412,34 @@ def _is_deferred_inner_tar(ext_fmt: ArchiveFormat, resolved: ArchiveFormat) -> b
         and ext_fmt.container == ContainerFormat.TAR
         and ext_fmt.stream == resolved.stream
     )
+
+
+def _extension_corroborates(
+    ext_match: tuple[ArchiveFormat, str] | None,
+    resolved: ArchiveFormat,
+) -> bool:
+    """Whether the filename agrees with ``resolved`` — the same test as "no conflict".
+
+    Deliberately the negation of what :func:`_warn_on_conflict` warns about, sharing
+    :func:`_is_deferred_inner_tar` with it, so the module gives one answer to "does the
+    name agree?" rather than two. That covers the ``.br`` rule and generalizes it to every
+    magic-less codec (``.lzma``, ``.zz``), plus the deferred inner-TAR case where
+    ``foo.tar.br`` is reported as bare ``BROTLI`` because the inner-TAR probe could not run.
+
+    Comparing only ``stream`` would be wrong: every container shares
+    ``StreamFormat.UNCOMPRESSED``, so a ``.zip`` name would "agree" with a ``TAR`` result.
+    Unreachable while every content probe is a ``RAW_STREAM`` codec, but
+    ``ReadBackend.CONTENT_PROBES`` exists precisely so a container backend can register
+    one, and that seam must not silently arm this.
+
+    Contested: PR #263's analysis §6 holds that the filename must not decide whether a
+    later failure is stamped ``format_unconfirmed`` at all, keying it on content-evidence
+    class instead. If that lands, this predicate leaves the stamp path entirely.
+    """
+    if ext_match is None:
+        return False
+    ext_fmt = ext_match[0]
+    return ext_fmt == resolved or _is_deferred_inner_tar(ext_fmt, resolved)
 
 
 def _warn_on_conflict(

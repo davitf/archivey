@@ -26,6 +26,7 @@ from archivey.exceptions import (
     DiagnosticRaisedError,
     TruncatedError,
 )
+from archivey.internal.detection import _extension_corroborates
 from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
 from archivey.internal.streams.peekable import DETECTION_LIMIT
 from archivey.types import ContainerFormat, StreamFormat
@@ -125,6 +126,68 @@ def test_br_extension_failure_does_not_stamp(tmp_path: Path) -> None:
         assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {
             d.code for d in reader.diagnostics.retained
         }
+
+
+@requires("brotli")
+def test_deferred_tar_br_extension_corroborates(tmp_path: Path) -> None:
+    """``foo.tar.br`` over a bare-Brotli payload: the extension still agrees on the codec.
+
+    The inner-TAR probe finds no tar, so detection reports bare ``BROTLI`` while the
+    extension says ``TAR_BROTLI`` — the documented deferred case, not a conflict.
+    """
+    path = tmp_path / "x.tar.br"
+    path.write_bytes(_probable_brotli_probe_only_residual())
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.BROTLI
+    assert info.detected_by == "content_probe"
+    assert info.corroborated is True
+
+    with open_archive(path) as reader:
+        with pytest.raises((TruncatedError, CorruptionError)) as caught:
+            reader.open(next(iter(reader))).read()
+        assert caught.value.format_unconfirmed is False
+
+
+@requires("brotli")
+@pytest.mark.parametrize("name", ["y.zip", "z.tar", "w.gz"])
+def test_disagreeing_extension_does_not_corroborate(tmp_path: Path, name: str) -> None:
+    """A name that disagrees must not corroborate — including across containers.
+
+    ``z.tar`` is the case a bare ``stream``-only comparison got wrong: every container
+    shares ``StreamFormat.UNCOMPRESSED``, so ``.tar``/``.zip`` would have "agreed" with any
+    other container result. Pinned so ``ReadBackend.CONTENT_PROBES`` gaining a container
+    probe cannot silently suppress the stamp.
+    """
+    path = tmp_path / name
+    path.write_bytes(_probable_brotli_probe_only_residual())
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.BROTLI
+    assert info.detected_by == "content_probe"
+    assert info.corroborated is False
+
+    with open_archive(path) as reader:
+        with pytest.raises((TruncatedError, CorruptionError)) as caught:
+            reader.open(next(iter(reader))).read()
+        assert caught.value.format_unconfirmed is True
+
+
+def test_extension_corroborates_rejects_cross_container_stream_match() -> None:
+    """Unit pin on the predicate itself, for pairs no probe can produce today."""
+    assert (
+        _extension_corroborates((ArchiveFormat.ZIP, "zip"), ArchiveFormat.TAR) is False
+    )
+    assert (
+        _extension_corroborates((ArchiveFormat.TAR, "tar"), ArchiveFormat.ZIP) is False
+    )
+    assert (
+        _extension_corroborates((ArchiveFormat.RAR, "rar"), ArchiveFormat.ISO) is False
+    )
+    # Still true for what it is for.
+    assert (
+        _extension_corroborates((ArchiveFormat.BROTLI, "br"), ArchiveFormat.BROTLI)
+        is True
+    )
+    assert _extension_corroborates((TAR_BROTLI, "tar.br"), ArchiveFormat.BROTLI) is True
 
 
 @requires("brotli")
