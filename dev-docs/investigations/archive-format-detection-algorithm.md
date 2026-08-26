@@ -60,6 +60,13 @@ Confidence and provenance must be separate. In particular, every probe-only fail
 should carry `format_unconfirmed`, regardless of whether the probe result was labelled
 `GUESS` or `PROBABLE`.
 
+The winning candidate's evidence ledger is a public outcome, exposed as an always-present
+field on `ArchiveReader` and `ArchiveStream` as well as from standalone detection, with
+`confidence` and `detected_by` **derived** from it rather than stored beside it. See
+*The public surface* in §1 for the measured gap this closes, the declared-evidence kinds
+that keep the field non-optional, and why the derivation is the library's judgement to
+make on the caller's behalf.
+
 ## 1. The result should be an evidence ledger, not one winning string
 
 The backend registry should continue to own detection data, but a declaration needs more
@@ -130,8 +137,94 @@ pay to compute the offset or raise a budget/incomplete-detection error; it must 
 unknown into zero. Exposing optional offsets publicly would require an explicit OpenSpec
 API change and migration, not an incidental type widening in this design.
 
-`detected_by` can remain as a compatibility summary of the winning candidate's primary
-evidence. It is not rich enough to drive exception semantics.
+### The public surface: who sees the ledger, and in what form
+
+Measured on shipped `main` (`a3dc408`), a caller who opens an archive sees essentially
+none of this — and the result object is not merely unexposed, it is **discarded**:
+
+| surface | what the caller gets |
+| --- | --- |
+| `reader.format` | the answer, ungraded |
+| `reader.info` (`ArchiveInfo`) | `format`, `format_version`, `is_solid`, `member_count`, `comment`, `is_encrypted`, `is_multivolume`, `cost`, `extra` — nothing about detection |
+| the reader itself | no public detection attribute; `_format_provenance` is private |
+| the raised error | `format_unconfirmed: bool` and `source_format` — no *why* |
+| `reader.diagnostics` | the one partial channel: detection emits into the reader's collector |
+| `open_stream()` | worst case — the helper returns `detected.format.stream` and nothing else survives; the caller gets a stream and not even the container |
+
+`open_archive()` reads four things off the `FormatInfo` (`format`, `encoding_hint`,
+`payload_offset`, and `chosen_by`/`probe_only` via `_format_provenance`) and drops the
+object at `core.py:386`. Confidence, `detected_by` and corroboration are lost at open time.
+
+Two consequences worth stating plainly, because both are evidence rather than opinion:
+
+- **The diagnostics channel is asymmetric.** A caller *can* observe
+  `FORMAT_EXTENSION_CONFLICT` and `PROBE_FORMAT_UNCONFIRMED`, because those are emitted
+  into the reader's collector. So the **negative** signals are public and the **positive**
+  ones are not: you can learn that the name contradicted the bytes, never that it agreed,
+  nor how strong the evidence was.
+- **Archivey's own CLI already pays for the gap.** `cli/info_cmd.py:run_info` calls
+  `detect_format(archive)` and then `open_archive(archive)` — detecting twice, because the
+  reader will not tell it. `VISION.md` calls the CLI "a wedge and second consumer …
+  useful evidence of API gaps"; this is that evidence, and on a non-seekable source the
+  workaround is not even available.
+
+#### Requirement: the detection result is a field on the reader and the stream
+
+`ArchiveReader` and `ArchiveStream` SHALL each expose the detection result as a field.
+It SHALL always be present — never `None` — on the same reasoning that makes
+`prefix_kind` always present: a caller should read it without first testing whether
+detection happened to run.
+
+Where detection did not run, the ledger SHALL say so as **declared evidence**, which is
+truthful provenance rather than absent provenance. Two distinct kinds, and conflating them
+would be a real loss:
+
+| kind | source | strength |
+| --- | --- | --- |
+| `DECLARED_BY_CALLER` | the `format=` argument, which skipped detection | class `ASSERTED` — not content evidence; nothing verified it |
+| `DECLARED_BY_CONTAINER` | a member stream's format read from the archive's own metadata (ZIP's compression method, 7z's coder chain) | **inherits the container's class** — a `SELF_VALIDATING` container declaring its member's codec is a far stronger claim than a caller's assertion |
+
+`DECLARED_BY_CALLER` projects to `GUESS`, and under this document's reframing that is
+exactly right rather than insulting: `GUESS` means *"the bytes did not confirm this
+identity"*, and when the caller supplied the format the bytes were never consulted. The
+existing `EXPLICIT_FORMAT_LISTED_EMPTY` diagnostic already encodes the same judgement —
+`format=` is an override that gets reported, not trusted.
+
+`DECLARED_BY_CONTAINER` is the case that makes a single `DECLARED` value insufficient.
+A member stream inside a CRC-validated 7z is not a guess; the container structurally
+declares its codec and the container itself was validated. Ranking it with the caller's
+assertion would understate it as badly as ranking it with a bounded probe would overstate
+a probe.
+
+#### `confidence` and `detected_by` are both derived, from different fields
+
+Both stay in the public API, and neither is stored:
+
+- `confidence` — a property over the winning record's **class** (`COMPLETE` …
+  `BOUNDED_PROBE`, `NAME`), projected onto the existing three-value enum.
+- `detected_by` — a property over the winning record's **kind** (`MAGIC`,
+  `ZIP_TAIL_PROBE`, `SFX_SCAN`, `EXHAUSTIVE_SCAN`, `CONTENT_PROBE`, `NAME`,
+  `DECLARED_BY_CALLER`, `DECLARED_BY_CONTAINER`), preserving today's string values.
+
+That `DetectionEvidence` carries **both** `kind` and `strength` is what lets these two
+coexist without being a second ranking: they summarize different columns of the same
+record. `detected_by` names *which detector answered*; `confidence` names *how strong the
+answer is*. Neither is rich enough to drive exception semantics — that keys on the class
+directly, per §6 and §9.
+
+Making them properties rather than fields is the point, not an implementation detail. Most
+callers who care at all want one honest number and not the mechanism, so translating
+evidence into trust is the **library's** judgement to make and publish. A stored scalar
+can be constructed inconsistent with the ledger it claims to summarize; a derived one
+cannot. It also stops equality and golden-value tests from pinning a redundant field.
+
+The full ledger belongs in `__str__` / `__repr__`, where "bounded probe **and** a matching
+name" can be rendered for a human, a log line, or `archivey info` — the composition that a
+single scalar deliberately does not carry.
+
+Per-record detail (`bytes_examined`, `estimated_random_bits`, anchors) SHOULD be treated as
+advisory and unstable. The stable public commitments are the **kinds**, the **classes**,
+and their ordering — the same conservatism that keeps public `payload_offset` an `int`.
 
 ### Evidence classes
 
@@ -145,6 +238,15 @@ Evidence classes are totally ranked, strongest first:
 | `SIGNATURE_ONLY` | a strong fixed-position signature whose validator is unavailable, or a damaged header after a strong signature | identity evidence without structural confirmation |
 | `BOUNDED_PROBE` | a prefix decoder accepted Brotli, zlib, or LZMA Alone but did not reach source end | the prefix is compatible with the format; it does not establish a complete stream |
 | `NAME` | `.zip`, `.tar.gz`, `.br` | a prior supplied by the caller's namespace, not content evidence |
+| `ASSERTED` | the `format=` argument, which skipped detection entirely | an instruction, not an observation — nothing was consulted |
+
+`ASSERTED` is bottom of the ranking for the same reason `NAME` is near it: neither is
+evidence about the bytes. It is not "no evidence" — recording it is what lets the result
+say *why* nothing was measured, and what makes the reader's detection field always
+present (see *The public surface* above). The other non-detection kind,
+`DECLARED_BY_CONTAINER`, is **not** a class of its own: a member stream whose codec the
+archive's own metadata declares inherits the class the container itself achieved, so a
+member of a `SELF_VALIDATING` 7z is `SELF_VALIDATING`, not a guess.
 
 Do not assign points and add them. Evidence is correlated: a `.br` suffix and a Brotli
 probe are not two random independent observations, and the base rate differs radically
