@@ -37,13 +37,14 @@ from archivey.internal.sfx import (
     scan_for_magic,
 )
 from archivey.internal.streams.brotli_framing import (
-    BrotliFirstBlock,
-    parse_first_metablock,
+    BrotliBlock,
+    parse_metablock,
 )
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.types import ArchiveFormat
 from tests.conftest import requires, requires_binary
+from tests.streams_util import brotli_compressed_metablock_header
 
 # The stub shape from Topic 8 A-34: `MZ` plus low-entropy filler. Deliberately the
 # *synthetic* one — real PE/ELF stubs are the easy case, this one is what the Brotli
@@ -429,12 +430,15 @@ def test_a_weak_cue_still_lets_a_content_probe_answer(tmp_path: Path) -> None:
     del brotli
     # Smallest MZ-leading uncompressed first-block the bit layout allows (~1 MiB body).
     header = bytes.fromhex("4d5a0088")
-    framing = parse_first_metablock(header)
-    assert framing.outcome is BrotliFirstBlock.UNCOMPRESSED
+    framing = parse_metablock(header)
+    assert framing.outcome is BrotliBlock.UNCOMPRESSED
     assert framing.consumed is not None and framing.declared_length is not None
     need = framing.consumed + framing.declared_length
+    # Pad a compressed second link so the chain walk stops rather than rejecting
+    # exact EOF-without-ISLAST (same residual shape as OLE/COFF fixtures).
+    second = brotli_compressed_metablock_header(first=False)
     path = tmp_path / "weak.bin"
-    path.write_bytes(header + b"\x90" * (need - len(header)))
+    path.write_bytes(header + b"\x90" * (need - len(header)) + second + b"\x00" * 8)
     assert executable_cue(path.read_bytes()[:8]) is ExecutableCue.WEAK
     detected = detect_format(path)
     assert detected.format == ArchiveFormat.BROTLI

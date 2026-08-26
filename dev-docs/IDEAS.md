@@ -116,6 +116,56 @@
   open successfully. An all-candidates inspection API likely belongs beside it, but its
   name is deliberately unsettled. Promote only with an OpenSpec change covering both
   archive and stream opening plus the cost/error model.
+- **Extension-first detection ordering** — try the formats a filename's extension
+  suggests before the rest, falling back to the full sweep on a miss or when there is no
+  filename. Strictly better than today's fixed order *and* than a hard extension gate: a
+  `.br` file stops being identified by whichever content probe happens to run first, while
+  a wrongly-named file is still found — which matters, because `VISION.md`'s founding use
+  case is a backup corpus where wrong extensions are normal. It is also where a magic
+  *denylist* would become reasonable (compound-document files falling out of
+  `detect_format` is a feature once the extension has had first refusal), which
+  `brotli-probe-framing-gate` declined precisely because a sound rule should not be mixed
+  with a heuristic. Not small: it restructures `_detect_format_body` for every format, so
+  it wants its own proposal. Parked from that change's task 5.1.
+
+  **Variant worth separating: an agreement short-circuit.** The entry above reorders *which
+  format's checks run first*. A distinct idea is to *stop early*: when the extension's
+  suggested format is confirmed by the content, return immediately and never run the
+  remaining tiers. That is the one with the cost payoff, because `prefixed-archive-detection`
+  makes the later tiers expensive — an always-on ZIP tail probe (seek + ≤64 KiB) and a
+  hoisted far-magic peek (≤32 KiB, ahead of the content probes). A magic-less file pays both
+  before a probe ever answers, so a short-circuit saves ~96 KiB per file.
+
+  Measured on 71 983 files under `/usr`, and the numbers point in an unexpected direction:
+
+  | | files |
+  | --- | --- |
+  | with an extension archivey knows | 1 303 |
+  | **already answered by near magic — free, at step 2** | **1 289 (98.9%)** |
+  | extension + content **probe** agree ← the short-circuit's real population | **2** |
+  | no agreement | 10 |
+  | of those 2, how many would skip a *different* format's exact far magic | **0** |
+
+  So near magic already handles almost everything an extension could confirm, and the
+  short-circuit only helps where near magic misses — the magic-less formats (Brotli, zlib,
+  LZMA Alone). `/usr` has essentially none, so **this corpus bounds the risk well and the
+  benefit badly.** A `.br`-heavy corpus (web assets) is where it would pay, and measuring one
+  is the precondition for proposing this. That survey pairs naturally with
+  `prefixed-archive-detection` task 5.2, which already needs corpus legwork.
+
+  **The naive form is unsound, and the fix is cheap.** "Agree → return" lets two weakish
+  signals short-circuit a stronger one never consulted — exactly the bootable-ISO defect
+  `prefixed-archive-detection` fixes, where an ISO's boot-code system area is claimed by the
+  Brotli probe. An ISO *misnamed* `.br` would satisfy agreement and skip the far magic that
+  identifies it. Zero instances measured, so this is a bounded risk rather than an unmeasured
+  one — but the sound version costs nothing to state: **agreement may skip the expensive
+  structural tiers (tail probe, cued scan, exhaustive scan) but never the cheap exact-magic
+  ones.** Far magic is one bounded, size-gated peek and is *exact* evidence; the tiers worth
+  skipping are the ones that are both costly and no stronger than the corroboration itself.
+  That keeps the ISO fix intact while capturing most of the saving.
+
+  Stated as a rule: agreement between two independent signals outranks an unconsulted
+  *expensive* alternative, never an unconsulted *cheap and stronger* one.
 
 - **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
   policy already sketched in `safe-extraction` (re-root/collapse unsafe paths instead of

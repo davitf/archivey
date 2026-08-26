@@ -255,20 +255,25 @@ nor `DIRECTORY`. Original write-up below.
   `.uncompressed` member; a full read raised `TruncatedError` naming a format the file
   never was — and a prefix of fabricated bytes (65 536 measured) may already have been
   produced.
-- **Now (first-block framing gate):** when the source length is known, a first meta-block
-  that declares more bytes than the source holds is rejected. On the measured `/usr`
-  tree that cuts hits from 1377 → **~61 (~0.15%)**. Residual families (OLE/CFB, COFF,
-  lucky fits) remain — and end-to-end those structured residuals are usually claimed by
-  the **LZMA Alone** probe at `PROBABLE` (not Brotli), so the Brotli `GUESS` /
-  `format_unconfirmed` channel does not fire for them. A deferred **chain walk**
-  (task 5.7) would cut the Brotli residual further to ~0.035%; making the unconfirmed
-  channel provenance-based (any probe-only claim) is task 5.8.
+- **Now (framing + completeness + chain walk):** when the source length is known, a first
+  meta-block that declares more bytes than the source holds is rejected; a fully visible
+  source that does not decode to completion is rejected; and a bounded self-describing
+  block-chain walk rejects later overruns / trailing bytes. Re-measured after
+  `probe-completeness-gate` with the 64 KiB completeness drain
+  (`scripts/exploration/probe_residual_census.py`, 150 623 files under `/usr`):
+  **29 fabricated claims (0.019%)**, down from 128 (0.193%) after the
+  first-block gate alone. Residual families (OLE/CFB, COFF, lucky compressed-first fits
+  above the prefix) remain — and end-to-end those structured residuals are usually claimed
+  by the **LZMA Alone** probe at `PROBABLE` (not Brotli), so the Brotli `GUESS` /
+  `format_unconfirmed` channel does not fire for them. The remaining follow-up is
+  **`probe-provenance-unconfirmed`** (key the unconfirmed channel on provenance rather
+  than `GUESS` confidence).
 - **Confidence / errors:** probe-only Brotli is `PROBABLE` when the first meta-block is
   compressed (or `.br` corroborates), else `GUESS`. A decode failure on `GUESS` sets
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
 - **Still three clauses, not one:** the listing can be wrong; a full read raises; **and**
   a prefix of fabricated bytes may already have been produced. Not a silent success.
-- **Refs:** `openspec/changes/brotli-probe-framing-gate/`; investigation
+- **Refs:** `openspec/changes/archive/2026-08-25-probe-completeness-gate/`; investigation
   [`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md);
   threat-model O10.
 

@@ -16,6 +16,7 @@ needs.
 | `backend-registry` | Container `MAGIC` / `EXTENSIONS` / `CONTENT_PROBES` |
 | `compressed-streams` | Codec descriptors supply stream-codec magic/probes |
 ## Requirements
+
 ### Requirement: detect_format() returns a FormatInfo
 
 The system SHALL expose:
@@ -104,14 +105,20 @@ Detector tables SHALL come from container backends (`ReadBackend.MAGIC` /
 `EXTENSIONS` / `CONTENT_PROBES`) and stream-codec descriptors — no per-format
 `detect()` logic. Stream-codec rows come from descriptors (not hand-listed on
 `SingleFileBackend`). A content probe is the codec's `content_probe` function.
-Detected formats/confidence/`detected_by` MUST match prior behavior.
+Detected formats and `detected_by` MUST match prior behavior. Confidence MUST also
+match prior behavior **except** for an uncorroborated Brotli content-probe match,
+which reports `GUESS` (see the magic-less-formats requirement); that is the only
+confidence value this change moves.
 
 #### Scenario: table sources matrix
 
 | Case | Expected |
 | --- | --- |
 | `.gz` / `.zst` | Same result as before; magic from codec descriptors |
-| zlib / Brotli | `PROBABLE` / `content_probe` from descriptor functions |
+| zlib / LZMA Alone | `PROBABLE` / `content_probe` from descriptor functions — unchanged |
+| Brotli, extension corroborates | `PROBABLE` / `content_probe` |
+| Brotli, first meta-block compressed, no corroborating extension | `PROBABLE` / `content_probe` |
+| Brotli, first meta-block uncompressed/metadata, no corroborating extension | `GUESS` / `content_probe` |
 | ZIP / TAR / ISO | Container backend `MAGIC`, merged into the same table |
 
 ### Requirement: Magic-byte table
@@ -149,11 +156,37 @@ content probe only.
 When the magic-byte table yields no match, the system SHALL run each registered
 content probe on the peeked prefix (consumes nothing). This covers Brotli (no
 signature), zlib (too-unspecific CMF/FLG), and LZMA Alone (13-byte header whose
-properties byte is too weak for exact magic). Match → `PROBABLE` /
-`detected_by="content_probe"`. Probes typically decode a bounded prefix; MAY gate
-on cheap structural bytes first. Skip when the decompressor backend is missing
-(fall through to extension). Extension MAY override a disagreeing probe
-(false-positive risk on short/adversarial input).
+properties byte is too weak for exact magic). Probes typically decode a bounded
+prefix; MAY gate on cheap structural bytes first; and MAY consult the source length
+when detection knows it (see the framing requirement below). Skip when the
+decompressor backend is missing (fall through to extension). Extension MAY override
+a disagreeing probe (false-positive risk on short/adversarial input).
+
+A probe match SHALL report `detected_by="content_probe"`. For **Brotli specifically**,
+confidence SHALL be `PROBABLE` when the file extension corroborates the format **or**
+when the first meta-block is compressed, and `GUESS` when the only evidence is a
+probe hit whose first meta-block is uncompressed or metadata. Brotli's probe is the
+only one measured to accept ordinary files (3.5% of a real `/usr` tree before the
+framing gate), and that false-positive mass concentrates in the uncompressed/metadata
+first-block class — so those claims are weaker evidence than a compressed-first hit or
+an extension-backed one. This does not change *what* is detected — only what the system
+claims to know about it.
+
+The zlib and LZMA Alone probes keep `PROBABLE` unconditionally. Both measured **0 false
+positives in 20 000 random blobs**, so the confidence downgrade would cost honesty rather
+than buy it. (Alone was additionally re-measured at 0 over 4 000 blobs of 64 KiB; its
+real-world residual is a framing problem, not a confidence one — see the framing
+requirement.)
+
+Within Brotli, a probe-only hit whose **first meta-block is compressed** SHALL keep
+`PROBABLE`: measured on random data, that class is accepted 0.014% of the time against
+~100% for an uncompressed first block, and 25 of 25 real streams found in the wild are
+compressed-first. An uncompressed or metadata first block is the class every false
+positive comes from, and takes `GUESS`. This split is load-bearing for error provenance:
+`format_unconfirmed` / `PROBE_FORMAT_UNCONFIRMED` apply only to `GUESS` failures, so a
+compressed-first probe-only hit takes the corroborated failure path. Uncompressed-first
+remains a valid stream class (incompressible payloads); the framing gate keeps those
+streams — they are not rejected for being uncompressed-first.
 
 The LZMA Alone probe SHALL attempt a bounded `FORMAT_ALONE` decode and MUST NOT
 claim streams that already matched exact magic (notably lzip `LZIP` and xz
@@ -163,11 +196,13 @@ claim streams that already matched exact magic (notably lzip `LZIP` and xz
 
 | Case | Expected |
 | --- | --- |
-| No magic; bounded prefix decompresses as Brotli | `BROTLI`, `PROBABLE`, `content_probe` |
-| zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE`, `content_probe` |
+| No magic; bounded prefix decompresses as Brotli, name is `x.br` | `BROTLI`, `PROBABLE`, `content_probe` |
+| No magic; bounded prefix decompresses as Brotli, first meta-block compressed, no corroborating extension | `BROTLI`, `PROBABLE`, `content_probe` |
+| No magic; bounded prefix decompresses as Brotli, first meta-block uncompressed/metadata, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
+| zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE`, `content_probe` — unchanged |
 | zlib-looking header, decode fails | No zlib claim; fall through to extension / fail |
 | `.br`, Brotli extra missing | Probe skipped; extension guess `BROTLI`/`GUESS` |
-| No magic; bounded prefix decompresses as LZMA Alone | `LZMA_ALONE`, `PROBABLE`, `content_probe` |
+| No magic; bounded prefix decompresses as LZMA Alone | `LZMA_ALONE`, `PROBABLE`, `content_probe` — unchanged |
 | Stream starts with `LZIP` | lzip magic wins; Alone probe not claimed |
 | Alone-looking bytes that fail `FORMAT_ALONE` decode | No Alone claim; fall through |
 
@@ -276,16 +311,17 @@ validating a hit and resuming the scan past a rejected one is deliberately out o
 
 ### Requirement: Executable-looking prefixes must not silently become a wrong stream format
 
-When a source’s leading bytes look executable-shaped, detection SHALL NOT let a
+When a source's leading bytes look executable-shaped, detection SHALL NOT let a
 content probe (notably Brotli) claim a stream codec and allow `open_archive` to
 succeed with a fabricated single-file member (e.g. `*.uncompressed`). That is a
 silent wrong answer.
 
-This obligation is **outcome-shaped**, not “disable Brotli whenever the prefix is
-`MZ`”. A genuine Brotli (or other probe-matched) stream whose first bytes happen
+This obligation is **outcome-shaped**, not "disable Brotli whenever the prefix is
+`MZ`". A genuine Brotli (or other probe-matched) stream whose first bytes happen
 to look executable MUST remain detectable.
 
-The rule, settled by measurement in the change's design, grades the evidence:
+The rule, settled by measurement in the archived `sfx-format-detection` design, grades the
+evidence:
 
 - A **weak** cue — a bare `MZ` or `\x7fELF` prefix — SHALL trigger the SFX scan and
   nothing else. When the scan finds no archive magic, content probes run unchanged. Two
@@ -296,19 +332,30 @@ The rule, settled by measurement in the change's design, grades the evidence:
   through to the extension guess or `FormatDetectionError`. A structurally confirmed
   executable is not a compressed stream.
 
-The system SHALL NOT tighten the Brotli probe itself to satisfy this requirement:
-measured, a larger probe prefix does not reduce false positives (8.27% → 8.13% of random
-data at 16x the prefix) and requiring decoded output loses real streams roughly
-one-for-one. The residual — arbitrary non-archive data that the Brotli probe claims,
-which is a far wider problem than executable prefixes — is out of scope here and is
-tracked separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10).
+The system SHALL NOT tighten the Brotli probe with a **threshold** to satisfy this
+requirement: measured, a larger probe prefix does not reduce false positives (8.27% →
+8.13% of random data at 16x the prefix) and requiring decoded output loses real streams
+roughly one-for-one. That prohibition is about knobs traded against a false-positive rate,
+and it does **not** reach a check derived from the format's own invariant, which costs no
+real streams — see *A content probe SHALL NOT accept framing the source cannot hold*.
+
+The residual — arbitrary non-archive data that the Brotli probe claims, which is a far
+wider problem than executable prefixes — remains out of scope *here* and stays tracked
+separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10). The
+**first-block** framing check narrows it from 3.5% of a real `/usr` tree to ~0.15%
+(61/39 859 measured); the deferred chain walk would cut further to ~0.035%. It does not
+close the residual, and the registered wording needs three clauses, not one: the listing
+is wrong, a full read raises, and a prefix of fabricated bytes may already have been
+produced.
 
 #### Scenario: no silent wrong answer on executable-shaped prefix
 
 | Case | Expected |
 | --- | --- |
 | Low-entropy `MZ` stub + RAR/7z/ZIP payload in window | Detected as that archive — **not** `BROTLI` / fabricated member |
-| Real Brotli stream with non-executable prefix | Unchanged — still `BROTLI` / `PROBABLE` via content probe |
+| Real Brotli stream with non-executable prefix, `.br` extension | Unchanged — `BROTLI` / `PROBABLE` via content probe |
+| Real Brotli stream with non-executable prefix, compressed-first, no corroborating extension | Still `BROTLI` via content probe, at `PROBABLE` |
+| Real Brotli stream with non-executable prefix, uncompressed/metadata-first, no corroborating extension | Still `BROTLI` via content probe, at `GUESS` |
 | Real Brotli (or other probe format) whose prefix coincides with a **weak** executable cue | Still detected as that stream — **not** forced to `FormatDetectionError` solely because two bytes were `MZ` |
 | **Strong** executable cue (validated PE / ELF), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
@@ -387,3 +434,169 @@ The check SHALL cost nothing on a non-empty listing — it is a comparison of th
 | A legitimately empty tar (all zeros, hence extension-only) | `EXTENSION_FORMAT_UNCONFIRMED` too — the bytes genuinely did not confirm it, and that is the honest answer, not a false positive |
 | Empty archive opened with an explicit `format=` | `EXPLICIT_FORMAT_LISTED_EMPTY` instead — no extension fallback ran |
 
+### Requirement: A content probe SHALL NOT accept framing the source cannot hold
+
+RFC 7932 lets a Brotli meta-block *declare* a length and then emit literal bytes: a
+non-last uncompressed meta-block is a four-byte header after which the decoder copies.
+A bounded-prefix decode therefore cannot distinguish a real stream from any data whose
+first bytes happen to parse as such a header — measured at **8.2% of arbitrary binary
+data** and **3.5% of a real `/usr` tree**, the latter dominated by files opening `/**\n`.
+
+A **complete, valid** stream always satisfies
+`header_bytes + declared_length <= source_length` for a declared (uncompressed or
+metadata) meta-block, because those bytes must physically be present. When the source
+length is known, the Brotli probe SHALL reject a prefix whose **first** declared
+meta-block violates that invariant. Detection supplies that length via the existing
+cheap size probe (`source_byte_size`); when the length is unknown the check is skipped,
+not guessed, and detection behaves as before.
+
+A stronger **chain walk** — following byte-aligned self-describing meta-blocks and
+rejecting a later link that overruns, or a declared end with trailing bytes — is
+required by its own requirement, *A content probe SHALL follow a format's self-describing
+block chain*, which supersedes the deferral this paragraph used to record. This
+requirement remains satisfied by the first-block check alone; the walk is what covers
+sources large enough for the first-block check to go vacuous.
+
+The same first-block principle SHALL apply to the **LZMA Alone** probe, whose only
+measured real-world false positives are files that are *exactly* its 13-byte header: a
+source no longer than the header carries no range-coder payload and cannot be an Alone
+stream. Rejecting those removed 4 of 4 measured hits across 40 000 real files. This is
+the same invariant, not a second heuristic — the framing a source declares must fit what
+it holds.
+
+No decompression beyond today's bounded prefix is required for the first-block check.
+
+This requirement is about *soundness*, not tuning: it MUST NOT reject any complete valid
+stream, so the real-stream corpus in `testing-contract` is the binding constraint.
+Probe-parameter tuning (larger prefix, minimum decoded output, WBITS whitelists) SHALL
+NOT be used in its place — each was measured to trade false positives for false negatives
+roughly one-for-one, or to reject real `.br` files.
+
+That distinction — a threshold traded against a false-positive rate, versus a check the
+format's own framing already implies — is what *Executable-looking prefixes must not
+silently become a wrong stream format* is stating when it forbids "tightening the Brotli
+probe". The two requirements stand together; this one is the invariant, that one is the
+prohibition on knobs.
+
+#### Scenario: framing gate matrix
+
+| Case | Expected |
+| --- | --- |
+| Real `.br` file whose first meta-block is compressed | Accepted (no declared length to check) |
+| Real `.br` file whose first meta-block is uncompressed (incompressible payload) | Accepted — declared length fits by construction |
+| `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
+| A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
+| Arbitrary data whose first declared block happens to fit | Probe may still accept at *this* requirement's floor; the residual is then narrowed by *A content probe SHALL follow a format's self-describing block chain* below |
+| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` today claims **LZMA Alone at `PROBABLE`** (Alone wins probe order) — not a Brotli residual at the detection layer |
+| COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Same split: Brotli gate accepts; end-to-end Alone at `PROBABLE` |
+| A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |
+| Non-seekable source of unknown length (≥ `DETECTION_LIMIT` peek) | Gate skipped; today's behaviour |
+| Non-seekable source shorter than the detection peek | Length inferred from the short peek; gate applies |
+| Source length known to be shorter than the declared metadata skip | Rejected |
+
+### Requirement: A content probe SHALL NOT accept an incomplete stream it can see whole
+
+A content probe decodes a bounded prefix and treats "the decoder wants more input" as a
+match, because a real stream usually continues past the prefix. When the probe knows the
+source length and that length does not exceed the bytes it was handed, there is no more
+input: the probe is holding the entire file. A **complete valid stream that finishes within
+a declared output drain terminates**, so a decode that still wants more input after that
+bounded drain SHALL be a rejection rather than a match.
+
+This is a **bounded** completeness check, not a full drain of the decoded output: the
+implementation SHALL declare an output budget (today: 64 KiB) so a highly-compressible
+fully-visible sample cannot expand into an unbounded decode. Streams whose expansion
+exceeds that budget without the decoder signalling "needs more input" are not rejected
+here. The check MUST NOT be implemented as a minimum source size. A 9-byte
+`brotli.compress(b"hello")` finishes within the drain and SHALL still be accepted.
+
+The rule SHALL apply to every probe that decodes, not to Brotli alone: it follows from
+bounded decoding rather than from any one format's framing. Measured on 66 361 real files
+(at the then-256-byte completeness drain; the drain is now 64 KiB, which only strengthens
+the rule), it rejects **91 of 128** fabricated probe claims (71%) — 67 of them under
+16 bytes — while costing **zero** genuine streams.
+
+The check SHALL be skipped when the source length is unknown, exactly as the framing gate
+is; detection then behaves as before.
+
+#### Scenario: completeness matrix
+
+| Case | Expected |
+| --- | --- |
+| 9-byte real Brotli stream, whole file in the prefix, decodes to completion | Accepted |
+| 5-byte text file whose first meta-block parses as compressed, decode wants more input within the output drain | **Rejected** — the file is fully visible and does not terminate |
+| Truncated high-ratio zlib (fully visible; expands past the old 256-byte probe read, within ~64 KiB) | **Rejected** within the declared output drain |
+| Truncated high-ratio zlib whose expansion exceeds the output drain before signalling truncation | Not rejected here — bounded check cannot disprove |
+| Real Brotli file larger than the prefix, decode wants more input | Accepted — there genuinely is more input |
+| Real Brotli file exactly the size of the prefix, decodes to completion | Accepted |
+| Source length unknown (non-seekable stream longer than the peek) | Rule skipped; today's behaviour |
+| LZMA Alone: 51-byte low-entropy file, fully visible, does not terminate | **Rejected** — same rule, not a Brotli special case |
+| Any source larger than the prefix | Rule does not apply; other rules decide |
+
+### Requirement: A content probe SHALL follow a format's self-describing block chain
+
+**Scope: formats whose blocks are byte-aligned and self-describing, so a successor's offset
+is known without decompressing. Brotli is the only such format today.** For those, a probe
+SHALL follow the chain to test the same framing invariant beyond the first block, and SHALL
+reject a link that overruns the source or a declared end that leaves trailing bytes. A
+format outside that scope is unaffected — this is not an obligation on every probe.
+
+The walk is mandatory rather than optional because the alternative is a probe whose
+false-positive rate silently depends on whether an implementer felt like walking. What is
+*bounded* is the work, not the obligation: the budgets below are the escape hatch, and
+exhausting either is a defined outcome rather than a licence to skip the walk.
+
+The walk exists because the first-block check goes **vacuous on large sources**: Brotli's
+MLEN field tops out at 2²⁴, so past ~16 MiB every declared length fits trivially. Measured
+on random blobs, the walk takes 16 MiB acceptance from 8.33% (where the first-block check
+buys nothing) to 2.00%, and a `/usr` tree from 61 survivors to 14.
+
+The walk SHALL be **bounded by a declared link count** (today: 8) and, on forward-only
+sources, by a **declared maximum absolute offset** for probe reads (today: 1 MiB). Reaching
+either means *cannot disprove*: the probe SHALL keep the verdict the earlier rules reached
+and MUST NOT reject on that basis. This is the same discipline as an unknown source length
+— absence of evidence is not evidence against, so budget exhaustion can never manufacture a
+false negative. The 1 MiB figure is the memory-governing ceiling for a non-seekable
+`read_at` (buffering `[0, offset)`); seekable sources and paths may seek past it.
+
+The walk stops at the first compressed block, which carries no declared length to check.
+On a real Brotli file whose first meta-block is compressed — 79 of 150 in the corpus — it
+therefore terminates immediately, having read four bytes.
+
+Following the chain requires bytes at offsets that may lie past the peeked prefix. The
+mechanism by which a probe reaches them is settled in this change's design; whatever it
+is, the reads SHALL stay within the declared bounds and SHALL NOT decompress.
+
+#### Scenario: chain walk matrix
+
+| Case | Expected |
+| --- | --- |
+| Real `.br` file, first meta-block compressed | Walk stops at once; accepted |
+| Real `.br` file, uncompressed first block, all links fit | Accepted — every declared length is honoured |
+| Fabrication whose first block fits but whose second link overruns the source | **Rejected** |
+| Fabrication whose chain reaches a declared end with bytes left over | **Rejected** |
+| 16 MiB source whose first declared block fits trivially (MLEN ceiling) | Walk decides; first-block check alone would have accepted |
+| Chain longer than the link bound | Verdict unchanged from the earlier rules; **not** a rejection |
+| Non-seekable `read_at` past the 1 MiB offset ceiling | Declined → cannot disprove; earlier verdict stands |
+| OLE/CFB file ≥ 7425 bytes | Still accepted — its constant magic yields a fitting chain. Known residual, unchanged |
+
+### Requirement: A read failure on probe-only evidence names its provenance
+
+When a single-file result's format came from a content probe with no corroborating
+extension (`detected_by="content_probe"`, confidence `GUESS`), a decode failure while
+reading the fabricated single member SHALL report that the format identification was
+unconfirmed, rather than presenting as a plain truncation of a file whose format is
+settled. Today such a file raises `TruncatedError (format=BROTLI)`, which blames the
+source for being truncated and names a format it never was.
+
+The system SHALL NOT refuse the open on this basis — a genuine extensionless stream that
+the probe correctly identified must still be readable, and a probe-only result that reads
+cleanly is a success.
+
+#### Scenario: unconfirmed-format read failure
+
+| Case | Expected |
+| --- | --- |
+| Probe-only `GUESS` result, read fails | Same exception type; `format_unconfirmed=True`; message names unconfirmed identification; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
+| Probe + `.br` extension (`PROBABLE`), read fails | Ordinary truncation/corruption error — the format is corroborated; `format_unconfirmed=False` |
+| Probe-only `GUESS` result, read succeeds | Success; no error, no downgrade |

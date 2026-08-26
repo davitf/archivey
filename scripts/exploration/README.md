@@ -21,6 +21,27 @@ python3 scripts/exploration/brotli_probe_field_survey.py ~/Downloads --out repor
 Windows and macOS runs are the valuable ones — the results doc was measured entirely on
 one Linux container.
 
+## Brotli meta-block chains — consecutive uncompressed blocks
+
+`brotli_block_chain_survey.py` supports
+`dev-docs/investigations/brotli-uncompressed-block-runs.md`, which asked whether the
+completeness gate's chain walk could collapse to a single fixed test ("the meta-block after
+the first must be compressed"). It cannot: consecutive uncompressed meta-blocks are the
+normal shape for incompressible input, and the shortest counterexample is a 13-byte stream.
+
+The script rebuilds both halves of that trade — false negatives on valid streams, false
+positives on random blobs — importing the real gate rather than a copy. It needs the
+`Brotli` binding and archivey importable; the two comparison columns only appear on a
+checkout that has the chain walk.
+
+```bash
+python3 scripts/exploration/brotli_block_chain_survey.py
+python3 scripts/exploration/brotli_block_chain_survey.py --scan ~/fonts /usr/share
+```
+
+Pointing `--scan` at a machine with a different font or `.br` population is the useful
+variation — the results doc's real-world corpus was 1717 WOFF2 streams from npm.
+
 ## ZipCrypto disambiguation — exploration notes
 
 Scripts supporting
