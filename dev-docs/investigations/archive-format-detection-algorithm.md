@@ -1,14 +1,27 @@
 # Archive format detection: independent design analysis
 
-**Date:** 2026-08-23  
+**Date:** 2026-08-23; revised 2026-08-26 after review.
 
-**Status:** complete analysis, not a normative specification; accepted as redesign input for
-PR #257 before that proposal is implemented
+**Status:** complete analysis, **not a normative specification**. Accepted as redesign
+input for PR #257 — meaning #257's selection and stopping rules should be revised against
+it before implementation. It becomes binding only through #257's revised delta, not by
+sitting here (§14).
 
-**Inputs:** current `main` at `bee7735`, PR
+**Inputs:** the original analysis was written against `main` at `bee7735`, PR
 [#257](https://github.com/davitf/archivey/pull/257), PR
 [#262](https://github.com/davitf/archivey/pull/262), the measured Brotli investigation,
-the current detector, and the format specifications linked in §15.
+the current detector, and the format specifications linked in §15. Measurements added in
+the 2026-08-26 revision were taken against `main` at `a3dc408` (which carries #267/#268);
+each states its tree explicitly.
+
+> **On the measurements.** Every corpus number in this document was taken on **one
+> Debian-family Linux container** — one distribution, one toolchain, largely one set of
+> compression defaults. That is a genuine limit, not a formality: a homogeneous build
+> environment understates how much producers vary. A count of zero here means "this
+> distribution's tools do not do it", never "nothing in the wild does it" — the gzip
+> `FHCRC` result in §5 is exactly that trap. Read every measurement as *"measured on X"*,
+> and treat any rule that would reject inputs on the strength of a zero count as needing a
+> heterogeneous corpus first.
 
 ## Executive recommendation
 
@@ -39,8 +52,8 @@ The full acquisition order should be:
    there is no candidate.
 
 This is an evidence order, not a claim that every tier is enabled by the default budget.
-In particular, the always-on ZIP tail tier is blocked from `BALANCED` until its aggregate
-cost is measured on the founding backup workload (§10 and §13).
+In particular, #257's proposed always-on ZIP tail tier is held out of `BALANCED` until its
+aggregate cost is measured on the founding backup workload (§10 and §13).
 
 PR #257 is substantially right about putting far magic and validated prefix searches
 ahead of content probes. I disagree with four load-bearing parts:
@@ -109,6 +122,40 @@ The branch-and-bound check compares every unrun declaration's ceiling with the c
 winner; it does not infer ceilings from result objects or run every detector to discover
 them.
 
+#### The ceiling rule: one declaration, or two?
+
+Several detectors can reach more than one class depending on what the source turns out to
+be, which makes "the strongest result it can possibly produce" ambiguous unless the rule is
+stated:
+
+> **`max_evidence` is a ceiling, not a prediction.** The achieved class may be lower. Split
+> a detector into **two declarations** only when reaching the higher class costs
+> *materially more*, so the scheduler can price and exclude the expensive half separately.
+
+Both cases occur, and getting this wrong breaks the stopping rule outright:
+
+- **Magic-less content probes → split.** A bounded prefix decode reaches `BOUNDED_PROBE`;
+  an exact whole-source decode to EOS reaches `COMPLETE`, the top of the lattice. Declaring
+  a single ceiling of `COMPLETE` would mean *no detector can ever stop while probes are
+  unrun* — every gzip, ZIP and 7z would pay for three probe decodes, contradicting §7's own
+  "validated XZ header + `.xz` may stop" example. Declaring `BOUNDED_PROBE` would let §9's
+  completeness rule produce evidence *above* the declared ceiling, breaking the invariant
+  branch-and-bound depends on. So: a cheap prefix-probe declaration with ceiling
+  `BOUNDED_PROBE`, and a separate **whole-source completion** declaration with ceiling
+  `COMPLETE`, its own cost, and a capability requirement that the remaining size is known
+  and within budget. The completion declaration should be able to reuse the prefix work
+  rather than redo it.
+
+  This composes with the stopping rule already stated rather than needing an exception:
+  under `BALANCED` the completion declaration is **excluded by budget**, which is the stop
+  predicate's own third arm, so a `SELF_VALIDATING` winner stops legitimately and the result
+  records the search as incomplete in that respect. The consequence is explainable to a
+  user: a small genuine `.br` is `GUESS` under `BALANCED` and `CERTAIN` under `THOROUGH`.
+
+- **gzip → do not split.** Verifying `FHCRC` is free once the header has been read, so gzip
+  is one declaration whose ceiling is `SELF_VALIDATING` and whose achieved class is
+  `SIGNATURE_ONLY` whenever `FHCRC` is absent (§5).
+
 The important fields omitted by today's `FormatInfo` are:
 
 - **all provenance**, not one `detected_by` string;
@@ -139,11 +186,12 @@ pay to compute the offset or raise a budget/incomplete-detection error; it must 
 unknown into zero. Exposing optional offsets publicly would require an explicit OpenSpec
 API change and migration, not an incidental type widening in this design.
 
-> Both of those options have a cost — charging a caller who wanted the *format* for a full
-> central-directory walk, or turning a successful identification into a failure over one
-> derived field — and there may be a third: separating identification from offset
-> resolution, and letting the ledger's search-completeness record say "identified; exact
-> offset not computed". The related question of whether `payload_offset > 0` should keep
+> **This is not settled — see §13.** Both stated options have a cost: charging a caller who
+> wanted the *format* for a full central-directory walk, or turning a successful
+> identification into a failure over one derived field. A third exists — separate
+> identification from offset resolution, and let the ledger's search-completeness record say
+> "identified; exact offset not computed". The paragraph above states the conservative
+> default (never turn unknown into zero), which holds whichever way the question resolves. The related question of whether `payload_offset > 0` should keep
 > meaning "self-extracting archive" is a naming one and is taken up under *The public
 > surface* below; whether a caller should care what is *inside* a given archive is a
 > separate post-1.0 idea, parked in [`dev-docs/IDEAS.md`](../IDEAS.md).
@@ -215,7 +263,14 @@ Both stay in the public API, and neither is stored:
   `BOUNDED_PROBE`, `NAME`), projected onto the existing three-value enum.
 - `detected_by` — a property over the winning record's **kind** (`MAGIC`,
   `ZIP_TAIL_PROBE`, `SFX_SCAN`, `EXHAUSTIVE_SCAN`, `CONTENT_PROBE`, `NAME`,
-  `DECLARED_BY_CALLER`, `DECLARED_BY_CONTAINER`), preserving today's string values.
+  `DECLARED_BY_CALLER`, `DECLARED_BY_CONTAINER`).
+
+  Today's four values — `"magic"`, `"extension"`, `"content_probe"`, `"sfx_scan"` — keep
+  their spelling and meaning, mapping to `MAGIC`, `NAME`, `CONTENT_PROBE` and `SFX_SCAN`.
+  The rest are **new**: `ZIP_TAIL_PROBE` and `EXHAUSTIVE_SCAN` describe tiers that do not
+  exist yet, and `DECLARED_BY_CALLER` / `DECLARED_BY_CONTAINER` describe results that are
+  currently discarded before any caller sees them. So this is a widening of the value set,
+  not a pure re-spelling, and it belongs in the migration list (§14).
 
 That `DetectionEvidence` carries **both** `kind` and `strength` is what lets these two
 coexist without being a second ranking: they summarize different columns of the same
@@ -235,11 +290,11 @@ directly, per §6 and §9.
 > `prefixed_scan` or `embedded_scan` costs nothing now and is a public-value migration once
 > this redesign ships.
 >
-> Two measurements bear on the tier itself, from 3 320 ELF/PE files under `/usr/bin`,
+> Two measurements bear on the tier itself, from 3,320 ELF/PE files under `/usr/bin`,
 > `/usr/lib`, `/usr/local` and `/opt`: **zero** carry a real appended ZIP, and all **six**
 > `PK\x05\x06` tail matches are false positives — `zip`, `zipnote`, `zipsplit`,
 > `zipcloak`, `libzip.so`, `librevenge-stream.so`, carrying the signature as a string
-> constant, every one parsing to nonsense (entry counts 19 280–55 381, central-directory
+> constant, every one parsing to nonsense (entry counts 19,280–55,381, central-directory
 > offsets past EOF). A concrete instance of this document's own requirement that the tail
 > tier *validate* rather than locate, on a directory every developer machine has.
 
@@ -332,9 +387,20 @@ candidate's strongest content-evidence class** — not as a second, parallel sco
 
 | confidence | meaning |
 | --- | --- |
-| `CERTAIN` | complete or self-validating evidence, or a format-specific header whose declared false-match risk is accepted as decisive |
-| `PROBABLE` | signature-only or a well-calibrated bounded structural/decode probe |
-| `GUESS` | name-only, or a bounded probe — **whether or not a matching `NAME` item is present** |
+| `CERTAIN` | `COMPLETE` or `SELF_VALIDATING` |
+| `PROBABLE` | `DISCRIMINATING_HEADER` or `SIGNATURE_ONLY` |
+| `GUESS` | `BOUNDED_PROBE`, `NAME` or `ASSERTED` — **whether or not a matching `NAME` item is present** |
+
+The rows are the evidence classes, one-for-one and with no overlap. That is the point: an
+earlier revision described `PROBABLE` as "signature-only or a **well-calibrated** bounded
+structural/decode probe" while the surrounding text said `BOUNDED_PROBE` projects to
+`GUESS` unconditionally — the two rows then both matched every bounded probe, on the exact
+case this document is about, with "well-calibrated" left undefined. Likewise `CERTAIN`
+carried a third arm, "a format-specific header whose declared false-match risk is accepted
+as decisive", which quietly reintroduced per-format judgement into what is claimed to be a
+mechanical projection: accepted by whom, recorded where? Both are gone. If a bounded probe
+should ever count as more than `GUESS`, that is a change to its **class** (with the
+measurement in §13 to justify it), not a second opinion applied at projection time.
 
 **A `NAME` item never raises confidence**, for the same reason it never suppresses
 `format_unconfirmed`: it is not content evidence, and `NAME` ranks below `BOUNDED_PROBE`.
@@ -380,20 +446,60 @@ This map prevents a cheap validator from being promoted ad hoc into an early-sto
 
 | detector after cheap validation | achieved class on success |
 | --- | --- |
-| gzip (`CM` + reserved `FLG`) · compress `.Z` header | `SIGNATURE_ONLY` |
+| gzip (`CM` + reserved `FLG`) — `SELF_VALIDATING` instead when `FHCRC` is present and verifies (§5) · compress `.Z` header | `SIGNATURE_ONLY` |
 | bzip2 header + first marker · zstd/lzip header · ISO descriptor · validated ZIP local header | `DISCRIMINATING_HEADER` |
 | XZ flags CRC · LZ4 header checksum · TAR checksum · 7z StartHeader CRC · RAR main-header CRC · validated ZIP tail/CD linkage | `SELF_VALIDATING` |
 | zlib/LZMA Alone/Brotli bounded decode without exact EOS | `BOUNDED_PROBE` |
 | exact whole-source decode/complete container validation | `COMPLETE` |
 | filename only | `NAME` |
 
-Under the default correctness profile, **no near candidate stops before reachable far
-fixed-offset declarations have run**, even when the near candidate is `SELF_VALIDATING`:
-far ISO can tie it and reveal an intentional polyglot. A far declaration is skipped only
-when remaining size proves it impossible or the caller explicitly excluded it and the
-result records an incomplete search. Whether an origin candidate may skip ZIP tail or SFX
-discovery depends on the still-explicit primary/alternative policy, not on a maintainer
-silently reclassifying a header.
+**Far fixed-offset evidence runs before the content probes — and that needs no special
+rule.** `DISCRIMINATING_HEADER` dominates `BOUNDED_PROBE`, so a probe result can never let
+the scheduler stop while a reachable far declaration is unrun. The measured defect this
+closes is exactly a probe one: a bootable ISO's system area is claimed by the Brotli probe
+when far magic was available at a known offset the whole time. The ordering falls out of
+the ranking rather than being stipulated on top of it.
+
+An earlier revision went further and required far declarations to run *even when the near
+candidate is `SELF_VALIDATING`*, on the grounds that "far ISO can tie it and reveal an
+intentional polyglot". That was wrong by this document's own table: the ISO descriptor
+check is `DISCRIMINATING_HEADER`, which cannot tie `SELF_VALIDATING`, so running it would
+change no selection outcome — it would only add a losing candidate to the retained list.
+Under the default profile a `SELF_VALIDATING` near winner may therefore stop before far
+declarations, and a far declaration is skipped when remaining size proves it impossible or
+the caller excluded it and the result records an incomplete search.
+
+**Recording losing candidates is what `THOROUGH` is for.** Stated generally, because it
+applies well beyond ISO:
+
+> Under `THOROUGH`, **every bounded declaration runs to completion even when its ceiling
+> cannot beat the current winner**, so the ledger records everything the source could be
+> said to be. `BALANCED` runs only what can change the answer.
+
+Unbounded discovery is *not* part of that: `exhaustive_prefix_scan` is a separate opt-in
+axis (§2 step 6, §10), not a budget level, precisely because its cost is not bounded by the
+format.
+
+Two placements in the table above are worth justifying rather than asserting, since they
+are the rows most likely to be challenged:
+
+- **TAR at `SELF_VALIDATING`** — `ustar` is the format-specific identifier and the header
+  checksum is an independent consistency check, which is the class definition exactly. The
+  obvious objection is that a 512-byte sum carries far fewer constraint bits than the CRC32s
+  beside it. Measured, that objection does not survive: **0 hits in 2,000,000 random
+  512-byte blocks**, and across **80,378 real files** the gate accepted 175 blocks of which
+  167 are genuine tars and the other 8 are deliberately-malformed tar fixtures — i.e. zero
+  genuine false positives. The constraint is not the numeric match but that eight bytes at
+  offset 148 must *parse as octal ASCII* **and** equal the sum, which alone is worth roughly
+  2⁻³⁰ on random data. Scan mode was measured separately and behaves the same way, because
+  candidates are generated needle-first: searching 2 MiB windows across those 80,378 files
+  produced **884 `ustar` candidates in the entire corpus** — about 0.011 per file, not one
+  per offset — and the checksum is only ever tested at a position the 6-byte needle already
+  selected.
+- **v7 TAR (no `ustar`) is an anchored-only candidate, never a scan needle.** It has no
+  identifier to generate candidates from, so in a scan it would have to be tried at every
+  offset — the one case where the per-offset multiplication is real. §5's requirement of
+  plausible numeric/type/name fields applies there and is not optional.
 
 ## 2. Precise acquisition and stopping algorithm
 
@@ -683,7 +789,7 @@ The validator strengthens or diagnoses the match; it is not always a hard gate.
 
 | format | recommended check | disposition and compatibility caveat |
 | --- | --- | --- |
-| gzip | `CM == 8`; FLG reserved bits 5–7 are zero; parse optional-field bounds; verify `FHCRC` when present and fully available | Safe mandatory checks. Do **not** require `XFL in {0,2,4}` or `OS in 0..13,255`; RFC 1952 defines customary values but does not make those fields an identity gate. |
+| gzip | `CM == 8`; FLG reserved bits 5–7 are zero; parse optional-field bounds; verify `FHCRC` when present and fully available | Safe mandatory checks. Do **not** require `XFL in {0,2,4}` or `OS in 0..13,255` — see the note below. |
 | bzip2 | `BZh`, block size ASCII `1`–`9`, then block magic `314159265359` or the empty-stream EOS marker | Strong and cheap at stream start. Treat a short source as incomplete. Later blocks are bit-aligned, but the first marker after the byte-aligned stream header is suitable here. |
 | compress `.Z` | `1f 9d`; max-code width at least 9 and supported up to 16; inspect block-mode and reserved bits | Width is structural. Historical decoders warn and continue when reserved bits are set, so reserved bits should downrank/warn rather than erase identity unless archivey intentionally rejects that compatibility. |
 | XZ | six-byte magic; two Stream Flags; CRC32 over flags; first flag byte zero; reserved high nibble zero | CRC is mandatory and ideal. A CRC-valid but unsupported check ID is "XZ with unsupported feature", not "not XZ". |
@@ -699,7 +805,26 @@ The validator strengthens or diagnoses the match; it is not always a hard gate.
 | LZMA Alone | legal properties byte; any 32-bit dictionary field; size field; then bounded decode/completeness | Do **not** reject dictionary size zero. The LZMA specification allows every 32-bit value and requires decoders to round values below 4 KiB up to 4 KiB. |
 | Brotli | RFC-valid WBITS/meta-block framing; source-length overrun; whole-source completeness; bounded chain walk where permitted | No prefix check can manufacture a signature the format does not have. Keep this in the bounded-probe class unless a complete decode reaches EOS. |
 
-Two local checks confirmed the compatibility points:
+**The `FHCRC` check does two separate jobs; keep them apart.** *Verify-when-set* is a
+**precision** gate: `FLG.FHCRC` is set in about half of random data, so requiring the 16-bit
+CRC to match whenever the bit is set drops random survival from 1.0 to
+`0.5 + 0.5 × 2⁻¹⁶ ≈ 0.5` — one bit, free, and it applies regardless of class.
+*Promote-when-verified* is the separate claim that a verified `FHCRC` lifts gzip from
+`SIGNATURE_ONLY` to `SELF_VALIDATING` (§1). A header whose `FHCRC` bit is set but whose
+CRC16 is not fully available is `INCOMPLETE`, not a pass.
+
+**`XFL` / `OS` as identity gates — a future investigation, not a present rule.** Measured on
+this container, 1,115 gzip streams used `XFL` ∈ {2 ×966, 0 ×145, 4 ×4} and `OS` ∈ {3 ×1,107,
+255 ×8}. Three `XFL` values out of 256 would be a real false-positive reduction if it held.
+But this is precisely the case the methodology note at the top warns about: `OS` showing two
+values is a fact about one distribution's toolchain, not about producers in general, and
+decoders provably ignore both fields — a gzip stream still decoded here after `XFL` was set
+to 1 and `OS` to 254, so nothing stops a producer writing anything. Settling it needs a
+heterogeneous corpus (Windows and macOS producers, Java's `GZIPOutputStream`, Go's
+`compress/gzip`, browsers, CDNs) measured for false-negative risk, not just false-positive
+reduction. Until then the rule above stands: do not gate identity on them.
+
+Three local checks confirmed the compatibility points:
 
 - a Python-produced LZMA Alone stream still decoded correctly after its dictionary field
   was changed to zero;
@@ -733,11 +858,64 @@ It must not:
 
 The last rule follows from the class ranking rather than discarding filename agreement.
 `NAME` ranks below `BOUNDED_PROBE`; adding it preserves both observations in the ledger
-but cannot change the strongest content-evidence class. A later decode failure is
-`format_unconfirmed=True` when the chosen format still rests on `BOUNDED_PROBE`, whether
-or not a matching `NAME` item is present. A checksum-valid inner-TAR upgrade is different:
-it adds stronger **content** evidence and may move the candidate out of the bounded-probe
-class.
+but cannot change the strongest content-evidence class. A checksum-valid inner-TAR upgrade
+is different: it adds stronger **content** evidence and may move the candidate out of the
+bounded-probe class.
+
+#### When `format_unconfirmed` is set — stated once, normatively
+
+Every other statement in this document gives this by example. The rule is:
+
+> `ArchiveyError.format_unconfirmed` SHALL be set on a decode failure when **archivey chose
+> the format** and the strongest content-evidence class supporting that choice is at or
+> below `BOUNDED_PROBE`.
+
+| how the format was chosen | flag on decode failure |
+| --- | --- |
+| content probe (`BOUNDED_PROBE`) | **yes** |
+| filename only (`NAME`) | **yes** |
+| caller's `format=` (`ASSERTED`) | **no** |
+| magic, structural hit, or whole-source completion (`SIGNATURE_ONLY` and above) | no |
+
+The clause that carries the weight is **"archivey chose the format"**. It excludes
+`ASSERTED` without a name-based exception: *we trust what the caller says, not what the
+file says*, and when the caller passes `format=` archivey is not guessing, so it has
+nothing to be unconfident about. `ASSERTED` still projects to `GUESS` for *confidence* —
+it really is the weakest basis — because confidence and this flag answer different
+questions.
+
+**Filename-only belongs on the yes side for a reason stronger than its rank.** The
+extension fallback is reached *only because every content signal declined*. That is not
+weak evidence, it is the explicit absence of evidence after trying — arguably a better
+case for the flag than a probe hit, which at least decoded something successfully.
+
+Two consequences of stating it this way, both changes to shipped behaviour and both
+belonging in the migration list (§14):
+
+- **Filename-only failures start carrying the flag.** Measured on `a3dc408`, a 40,000-byte
+  zero-filled file named `backup.gz`, `.bz2`, `.xz`, `.zst`, `.br` or `.lzma` is detected by
+  extension at `GUESS`, opens, lists one fabricated member, and fails on read with
+  `format_unconfirmed=False` — archivey blaming the bytes for a format only the filename
+  ever claimed. Same for `backup.rar` of zeros, which raises `CorruptionError` about a file
+  that was never a RAR.
+- **The diagnostic code must become provenance-neutral.** `PROBE_FORMAT_UNCONFIRMED` names
+  one of the three sources; the event is "a decode failed on a format archivey guessed".
+  Rename it (e.g. `FORMAT_UNCONFIRMED_ON_DECODE`) and record the provenance in its context.
+
+**The empty-listing codes stay as they are, and the asymmetry is correct.** An empty listing
+raises nothing, so there is no exception to carry a flag — that channel is necessarily
+diagnostic-only. It is also far narrower than it looks: across 15 formats × 2 payloads
+(zeros and random), the only empty listing produced was a zero-filled `.tar`, because a
+zero-filled file is a structurally valid empty TAR. Every container — ZIP, RAR, 7z, ISO,
+TAR+GZ — raised `CorruptionError` instead. So `EXTENSION_FORMAT_UNCONFIRMED` fires for
+essentially one shape, while the situation it is *named* for overwhelmingly ends in a decode
+failure. That is what makes the decode-failure side the one worth getting right.
+
+> **Interacts with a shipped bug.** The single-file cases above reach *read* rather than
+> *open* only because `SingleFileReader`'s eager open-time validation opens and closes a
+> codec stream without reading, and every stdlib codec validates on first read. See
+> `dev-docs/open-issues.md` P15. Fixing that moves these failures to open time; it does not
+> by itself make them honest, which is what this rule is for.
 
 `format_unconfirmed` must mean "the bytes did not confirm this identity", not "the
 identity is probably wrong". A genuinely truncated `x.br` may therefore carry the flag:
@@ -752,7 +930,7 @@ to a pending change.
 
 **Measured on two independent trees, the rule buys nothing on the false-positive side.**
 #267's post-completeness census: 29 fabrications, none with a matching extension. Re-run
-on `a3dc408` over a different tree (63 343 files): 23 content-probe claims, 19
+on `a3dc408` over a different tree (63,343 files): 23 content-probe claims, 19
 fabrications (0.030%), all 19 stamping, and again **zero** corroborated fabrications.
 
 **Its cost, on genuine damaged files, is now sized rather than asserted.** The same run
@@ -785,7 +963,10 @@ result has `stream is BROTLI`, exactly what made `_brotli_probe_confidence` repo
 `PROBABLE`. Reverting would restore the larger blind spot (Alone and zlib never stamping
 at all) while leaving the filename rule in place via confidence.
 
-The 98.9% number in the prompt argues **against** an extension-agreement shortcut as a
+The 98.9% figure — of 1,303 files under `/usr` carrying an extension archivey knows,
+1,289 were already answered by near magic at step 2, leaving 2 where an extension and a
+content probe agree (recorded in `dev-docs/IDEAS.md`, *Extension-first detection
+ordering*) — argues **against** an extension-agreement shortcut as a
 default optimization: near evidence has already captured almost the entire population
 where agreement is cheap. The two residual files are too small a sample to justify a new
 control-flow rule.
@@ -840,7 +1021,9 @@ The compressed/uncompressed-first split is useful telemetry, but it should not d
 public confidence by itself.
 
 The random-data result (`0.014%` compressed-first) does not transfer to the measured real
-population (64 fabricated compressed-first claims versus 4 genuine streams). That is a
+population measured in the Brotli investigation
+(`dev-docs/investigations/brotli-content-probe-results.md`, pre-completeness-gate: 64
+fabricated compressed-first claims versus 4 genuine streams). That is a
 base-rate and data-distribution failure, not a contradiction in the random experiment.
 
 Recommended mapping:
@@ -1013,7 +1196,20 @@ runs first" is not evidence that the producer intended ZIP.
 ## 13. What to measure next
 
 The weakest support is not the Brotli mechanism; that is well explained. It is the use of
-corpora whose base rates do not resemble the founding workload.
+corpora whose base rates do not resemble the founding workload — and, per the methodology
+note at the top, the fact that every measurement here comes from a single Debian-family
+container.
+
+Two open questions this document deliberately does **not** settle:
+
+- **What `detect_format()` reports when an exact `payload_offset` exceeds the index
+  budget** (§1): pay for the central-directory walk, raise a budget/incomplete error, or
+  separate identification from offset resolution and let the search-completeness record say
+  "identified; exact offset not computed". Only the conservative floor is settled — never
+  turn unknown into zero.
+- **Whether `XFL` / `OS` are worth using as gzip identity gates** (§5), which needs a
+  heterogeneous producer corpus measured for false-negative risk, not just false-positive
+  reduction.
 
 Run one labelled, stratified evaluation:
 
