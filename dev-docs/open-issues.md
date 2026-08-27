@@ -454,6 +454,64 @@ re-verified failing against the unfixed code). Original write-up below.
   `docs/errors-and-diagnostics.md`. The data types are the gap.
 - **Check:** compare `archivey.__all__` against `^::: archivey\.(\S+)` across `docs/*.md`.
 
+### P15. `SingleFileReader`'s eager open-time validation is a no-op — **confirmed bug**
+
+- **What it intends.** `src/archivey/internal/backends/single_file_reader.py:183-190`:
+
+  ```python
+  if self._seekable:
+      # Eagerly open+close a codec stream so format/seekability errors surface at
+      # archive-open time rather than on a later read. Not cached — every
+      # _open_member builds a fresh codec stream.
+      probe = self._open_codec_stream()
+      probe.close()
+  ```
+
+- **What happens.** The probe opens and closes without ever reading, and **every stdlib
+  codec validates its header on first read, not at construction**. Verified directly:
+  `gzip.GzipFile`, `bz2.BZ2File` and `lzma.LZMAFile` over 40 000 zero bytes all construct
+  and close without error, and raise only on the first read (`BadGzipFile`, `OSError`,
+  `EOFError`). So the probe never triggers validation and the documented guarantee does
+  not hold.
+
+- **Observable effect** (measured on `main` @ `a3dc408`), a file of 40 000 zero bytes named
+  for each codec, detected by extension at `GUESS`:
+
+  | file | `open_archive` | listing | read |
+  | --- | --- | --- | --- |
+  | `backup.gz` / `.bz2` / `.xz` / `.zst` / `.br` | succeeds | 1 fabricated member | `CorruptionError` |
+  | `backup.lzma` | succeeds | 1 fabricated member | `TruncatedError` |
+
+  Contrast the container formats, which behave as intended: ZIP, RAR, 7z, ISO and TAR+GZ
+  all raise `CorruptionError` at open for the same payloads. Only the single-file path
+  defers.
+
+- **Why it matters beyond the immediate surprise.** This is the mechanism behind the
+  extension-fallback honesty gap discussed in PR #263: because listing *succeeds*, the
+  `EXTENSION_FORMAT_UNCONFIRMED` diagnostic (which keys on an **empty listing**) cannot
+  fire, and the failure lands on the read path where the flag is currently probe-only. So
+  a `.gz` that was never gzip reports `CorruptionError` with `format_unconfirmed=False` —
+  archivey blaming the bytes for a format only the filename ever claimed.
+
+- **Fix.** Read one byte in the probe before closing it. Verified: `read(1)` over wrong
+  bytes raises a properly *translated* `ArchiveyError` for all seven codecs tested (gz,
+  bz2, xz, zst, br, lzma, lz4) — `CorruptionError` for six, `TruncatedError` for LZMA
+  Alone. A valid empty stream returns `b""` rather than raising, so the check is safe.
+
+- **Cost, measured** (~1.8 MB payload, 20 iterations): gzip `0.43 ms → 0.49 ms`
+  (negligible); **bzip2 `3.47 ms → 6.67 ms`** — nearly double, because bzip2 must decode a
+  full block (up to 900 KB) to yield one byte. That is a real trade against the honest-cost
+  contract and should be a deliberate decision, not a silent regression.
+
+- **Non-seekable sources need separate handling.** The `else` branch keeps the opened
+  stream as `self._pending_stream` and hands it to the first `_open_member`, so a probe
+  read there would consume a byte the caller expects. It needs pushback, or the check has
+  to stay seekable-only (in which case say so in the comment).
+
+- **No test covers the guarantee.** Nothing in `tests/test_single_file.py` asserts that a
+  malformed single-file stream raises at `open_archive` time — which is why an eager check
+  that never checks anything went unnoticed. A red-green test belongs with the fix.
+
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
 - **Today:** Solid ALL-pipe demux must match what `unrar` actually emits (RAR5
