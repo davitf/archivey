@@ -770,17 +770,34 @@ header immediately. The policy still belongs in the caller, not in confidence la
 
 ## 4. Required cases
 
-| Required case | result under this algorithm |
-| --- | --- |
-| (a) `zipapp` and concatenated ZIP | Seekable: bounded EOCD/geometry validation yields ZIP; walking the central directory yields `CERTAIN` and exact `payload_offset` at the earliest local header (EOCD-derived base for empty ZIP), with the two offset conventions handled explicitly. If the index budget is exhausted, retain ZIP with `payload_offset=None`. Non-seekable: only a cue scan can identify it, and automatic open still needs explicit spooling. |
-| (b) PE/ELF + 7z/RAR | Cue-gated scan; reject decoys; validate 7z StartHeader CRC/bounds or RAR main header; return the container and payload offset. |
-| (c) makeself `.run` | `#!` authorizes `1f 8b 08` and other sufficiently discriminating stream needles; bounded decode plus checksum-valid inner TAR returns `TAR_GZ` at the gzip offset. |
-| (d) `ca fe ba be` | Parse the fat Mach-O header/arch table. A real Mach-O cues the scan; an ordinary Java class produces no cue and pays no 2 MiB scan. |
-| (e) Mach-O stub claimed by a probe | A parsed Mach-O is a strong cue. The scan finds and validates 7z; raw-stream probes cannot win on the stub. |
-| (f) bootable ISO | The descriptor tuple at 32,768–32,774 is checked before content probes; return ISO. No per-probe ISO workaround is needed. |
-| (g) JPEG + ZIP | Tail validation returns ZIP with a nonzero payload offset and non-archive/other prefix. JPEG identity remains out of scope. |
-| (h) extension/content agreement | Near evidence already answers the 98.9%. For the residual, agreement is recorded but cannot skip stronger unrun tiers. |
-| (i) conflict diagnostic | Describe the actual evidence: e.g. "extension suggests ISO; bounded Brotli probe suggests Brotli; using ISO descriptor evidence." Never hardcode "magic bytes" for a content probe. |
+**"Required" means the algorithm must produce this result under a named policy**, not that
+every case passes at the default budget. Two do not, and the policy column says so rather
+than leaving it to be discovered during implementation — §10 holds the ZIP tail tier out of
+`BALANCED` until the corpus-cost gate passes, and two cases below reach ZIP only through
+that tier.
+
+| Required case | policy | result under this algorithm |
+| --- | --- | --- |
+| (a1) `zipapp` (`#!` prefix + ZIP) | `BALANCED` | The `#!` weak cue authorizes the bounded scan (§2 step 4), which finds ZIP's declared `PK\x03\x04` needle and validates it. Reached **without** the tail tier — this is why the gap below is easy to miss. |
+| (a2) concatenated ZIP behind a non-cueing prefix | `THOROUGH` | No cue fires, so no scan; the tail tier is what finds it. Seekable: bounded EOCD/geometry validation yields ZIP; walking the central directory yields `CERTAIN` and exact `payload_offset` at the earliest local header (EOCD-derived base for empty ZIP), with the two offset conventions handled explicitly. If the index budget is exhausted the **internal** `FormatCandidate` retains ZIP with `payload_offset=None`; what the public `detect_format()` view reports in that state is the open question in §1/§13, and is *not* `None`. Non-seekable: only a cue scan can identify it, and automatic open still needs explicit spooling. |
+| (b) PE/ELF + 7z/RAR | `BALANCED` | Cue-gated scan; reject decoys; validate 7z StartHeader CRC/bounds or RAR main header; return the container and payload offset. |
+| (c) makeself `.run` | `BALANCED` | `#!` authorizes `1f 8b 08` and other sufficiently discriminating stream needles; bounded decode plus checksum-valid inner TAR returns `TAR_GZ` at the gzip offset. |
+| (d) `ca fe ba be` | `BALANCED` | Parse the fat Mach-O header/arch table. A real Mach-O cues the scan; an ordinary Java class produces no cue and pays no 2 MiB scan. |
+| (e) Mach-O stub claimed by a probe | `BALANCED` | A parsed Mach-O is a strong cue. The scan finds and validates 7z; raw-stream probes cannot win on the stub. |
+| (f) bootable ISO | `BALANCED` | The descriptor tuple at 32,768–32,774 is checked before content probes; return ISO. No per-probe ISO workaround is needed. |
+| (g) JPEG + ZIP | `THOROUGH` | `\xff\xd8\xff` is not a cue, so nothing authorizes a scan and only the tail tier finds the payload. Under `THOROUGH`, tail validation returns ZIP with a nonzero payload offset and a non-archive/other prefix; JPEG identity remains out of scope. Under `BALANCED` this is a `FormatDetectionError` — an accepted consequence of the cost gate, not an oversight. |
+| (h) extension/content agreement | `BALANCED` | Near evidence already answers the 98.9%. For the residual, agreement is recorded but cannot skip stronger unrun tiers. |
+| (i) conflict diagnostic | `BALANCED` | Describe the actual evidence: e.g. "extension suggests ISO; bounded Brotli probe suggests Brotli; using ISO descriptor evidence." Never hardcode "magic bytes" for a content probe. |
+
+Splitting (a) matters because its two halves resolve by different routes: a `zipapp` is
+found at the default budget via the cue, a bare concatenation is not found at all. An
+earlier revision described both through the tail route, which the default disables — so the
+row documented a mechanism that does not run for a case that half the time does not need it.
+
+**Accepted consequence:** archivey does not find a JPEG+ZIP polyglot at the default budget.
+That is deliberate. The founding backup-corpus workload does not need polyglot discovery,
+and paying an extra seek per file across a whole sweep to get it would invert the cost
+argument §10 makes at length.
 
 ## 5. Cheap structural validators
 
