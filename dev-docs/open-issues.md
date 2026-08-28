@@ -498,6 +498,16 @@ re-verified failing against the unfixed code). Original write-up below.
   bz2, xz, zst, br, lzma, lz4) — `CorruptionError` for six, `TruncatedError` for LZMA
   Alone. A valid empty stream returns `b""` rather than raising, so the check is safe.
 
+- **The zero-byte case is worse, and `read(1)` does not fully close it.** A file of zero
+  bytes named for each of the ten single-file codecs opens cleanly on `main` — gz, bz2, xz,
+  zst, lz4, zlib, brotli, lzma-alone, lzip and `.Z`, ten for ten — with a listing showing
+  one fabricated member, and fails only on read. With `read(1)` in the probe, **nine** raise
+  a translated `ArchiveyError` at open time; **`.Z` still opens**, because its decoder reads
+  an empty input as an empty stream rather than a truncated one. So the fix needs a
+  per-codec answer for `.Z` (a minimum-header check, most likely) rather than resting on the
+  one read. Worth noting the same patch makes the open-time error carry `member='<name>'`,
+  which reads oddly for a failure that happens before any member was requested.
+
 - **Cost, measured** (~1.8 MB payload, 20 iterations): gzip `0.43 ms → 0.49 ms`
   (negligible); **bzip2 `3.47 ms → 6.67 ms`** — nearly double, because bzip2 must decode a
   full block (up to 900 KB) to yield one byte. That is a real trade against the honest-cost

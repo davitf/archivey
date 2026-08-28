@@ -614,6 +614,69 @@ The exact failure disposition is format-declared:
 No error path should branch on `confidence`. Error provenance should ask whether the
 winner was probe-only, name-only, structurally validated, or explicit.
 
+#### Degenerate and truncated sources: what `INCOMPLETE` costs
+
+"Absence of enough bytes is `INCOMPLETE`" is stated just above, and again in §5's bzip2 row,
+but neither says what *class* an `INCOMPLETE` validation yields — so the rule currently has
+no consequence. It needs one, because shipped behaviour is worse than the rule implies.
+
+Measured on `main` (`a3dc408`): feeding each of the 15 registered magic entries a source
+consisting of **nothing but that magic** returns `CERTAIN` in all 15 cases.
+
+| source | bytes | shipped result |
+| --- | --- | --- |
+| `\x1f\x8b` | 2 | `GZ` / `CERTAIN` / `magic` |
+| `BZh` | 3 | `BZ2` / `CERTAIN` / `magic` |
+| `PK\x03\x04` | 4 | `ZIP` / `CERTAIN` / `magic` |
+| the other 12 entries | 4–32,774 | `CERTAIN`, without exception |
+
+A gzip header is at minimum 10 bytes and a bzip2 stream header is 4 plus a 6-byte block
+marker, so none of these sources can contain a valid header of the format they were just
+declared to be with certainty. Nothing here is malformed — the validator simply never ran.
+
+> **An `INCOMPLETE` validation caps the candidate at `SIGNATURE_ONLY`**, whatever the
+> declaration's `max_evidence` says. The signature matched; nothing corroborated it.
+
+This is the case the ceiling rule already anticipates rather than a new mechanism:
+`max_evidence` is what a detector could reach on a complete source, and a truncated source
+is exactly where the achieved class falls below it. It costs nothing — a validator that runs
+out of bytes already knows it did — and it composes with the rest: `SIGNATURE_ONLY` projects
+to `PROBABLE`, and being *above* `BOUNDED_PROBE` it does **not** set `format_unconfirmed`.
+That is the right reading. Two bytes of gzip magic are weak evidence, but they are evidence
+*about the bytes*, which a filename is not.
+
+Deliberately **not** proposed: rejecting a candidate whose source is shorter than the
+format's minimum header. It is cleaner in the abstract and it discards the more useful
+answer — a truncated `.gz` pulled off a damaged backup should report "GZ, truncated", not
+"unknown format". Identification and completeness are different questions, and this document
+keeps them apart everywhere else.
+
+Two adjacent behaviours, both real, neither needing a rule of its own:
+
+- **A zero-byte source with a name** is already covered by §6's filename rule, and it is
+  worth checking that it comes out right. A zero-byte `empty.gz` on `main`: detection returns
+  `GZ`/`GUESS`/`extension`, `open_archive` **succeeds**, the listing shows one fabricated
+  member, and the read raises `TruncatedError` with `format_unconfirmed=False`. Under §6 the
+  flag becomes true, which is correct — only the filename ever claimed gzip.
+
+  That the open succeeds at all is a separate confirmed bug, P15 in
+  [`dev-docs/open-issues.md`](../open-issues.md): `SingleFileReader`'s eager probe opens and
+  closes a codec stream without reading, and every stdlib codec validates on first read.
+  Verified causally here: a zero-byte file opens cleanly under **all ten** single-file
+  codecs today (gz, bz2, xz, zst, lz4, zlib, brotli, lzma-alone, lzip, Z), and patching the
+  probe to `read(1)` turns **nine** of them into open-time errors. The tenth, `.Z`, still
+  opens — its decoder treats an empty input as an empty stream rather than a truncated one,
+  so the probe fix does not reach it and P15 needs a per-codec answer for that case rather
+  than one read. This matters to this document because the deferred failure is the mechanism
+  that keeps the empty-listing diagnostic from ever firing.
+
+- **A zero-byte source with no name** raises `FormatDetectionError: no magic-byte match and
+  no usable file extension`, which is misleading — there were no bytes to match. The
+  incomplete-search record §1 already requires is the natural place to fix this: an empty or
+  sub-minimum source is a **capability shortfall**, not an exhausted search, and the error
+  should say which of the two happened. This is a message-and-record change, not a
+  behavioural one; the raised type stays `FormatDetectionError`.
+
 ### Proposed evidence map for current formats
 
 This map prevents a cheap validator from being promoted ad hoc into an early-stop class:
@@ -1730,10 +1793,12 @@ delta and its release notes can be written from one list rather than a re-read.
 | 8 | **Stored-only decodes are regraded** | a `BTYPE=00` zlib stream is `PROBABLE` on the strength of a decode that copied bytes | graded on its 2⁻¹⁰ header alone; still identified as zlib | §1, §5 |
 | 9 | **The detection result becomes a public field** | discarded at `core.py:386`; the CLI re-runs `detect_format` to see it | an always-present field on `ArchiveReader` / `ArchiveStream`, with `confidence` and `detected_by` derived from it | §1 public surface |
 | 10 | **JPEG+ZIP and bare concatenation need `THOROUGH`** | not detected at all | detected under `THOROUGH`; `FormatDetectionError` under `BALANCED` until the ZIP-tail cost gate passes | §4, §10 |
+| 11 | **A source too short to validate is regraded** | all 15 magic entries return `CERTAIN` on a source that is only the magic — 2 bytes of `\x1f\x8b` is a `CERTAIN` gzip | an `INCOMPLETE` validation caps the candidate at `SIGNATURE_ONLY` → `PROBABLE`; the format is still identified | §1 |
+| 12 | **An empty source says so** | `FormatDetectionError: no magic-byte match and no usable file extension` — for a file with no bytes to match | the same type, with the incomplete-search record distinguishing a capability shortfall from an exhausted search | §1 |
 
-Items 1, 2 and 8 change what existing callers observe without any API change, so they are
-the ones that need release-note prose rather than a changelog line. Items 3–6 are API
-surface. Items 9 and 10 are additive.
+Items 1, 2, 8 and 11 change what existing callers observe without any API change, so they
+are the ones that need release-note prose rather than a changelog line. Items 3–6 are API
+surface. Items 9, 10 and 12 are additive.
 
 Two of these are worth flagging as *deliberately* user-visible regressions rather than
 improvements: item 1 downgrades the reported confidence of genuine `.br`, `.zz` and
