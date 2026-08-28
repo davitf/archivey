@@ -334,6 +334,33 @@ present (see *The public surface* above). The other non-detection kind,
 archive's own metadata declares inherits the class the container itself achieved, so a
 member of a `SELF_VALIDATING` 7z is `SELF_VALIDATING`, not a guess.
 
+**A decode only counts as evidence when it decoded something.** A bounded probe that
+succeeds having produced *only stored/uncompressed output* has learned nothing the header
+did not already say — the decoder copied bytes. Such a candidate SHALL be graded on its
+header alone and SHALL NOT reach `BOUNDED_PROBE` on the strength of the decode.
+
+This already exists for one format and needs generalizing to the others. Brotli's
+first-block framing gate (§9) is exactly this rule: an uncompressed or metadata first
+meta-block is the class every false positive came from, and the gate exists because
+"it decoded" was not evidence there. Of the three magic-less formats:
+
+| format | has a stored mode? | status |
+| --- | --- | --- |
+| Brotli | yes — uncompressed / metadata meta-blocks | **handled** by the first-block gate |
+| zlib / deflate | yes — `BTYPE=00` stored blocks | **gap**, see §5 |
+| LZMA Alone | no — LZMA1 is always range-coded (uncompressed chunks are an LZMA2 feature) | not applicable |
+
+Measured on `a3dc408`: `zlib.compress(payload, 0)` emits stored deflate blocks, 200,000
+bytes in and 200,026 out; `detect_format` reports `ZLIB` / `PROBABLE` / `content_probe`;
+64 KiB decodes cleanly and is byte-identical to the input. The only real evidence there is
+the two-byte header, which admits **66 of 65,536 `(CMF, FLG)` pairs — about 2⁻¹⁰** — and
+that weakness is precisely why zlib needs a probe rather than a magic entry. Reporting
+`PROBABLE` for it overstates what was established.
+
+Note this is about *identification*, not resource use: stored blocks are 1:1, so they are
+the tool for a false identity, not for amplification. The separate question of bounding
+decode work is in §13.
+
 Do not assign points and add them. Evidence is correlated: a `.br` suffix and a Brotli
 probe are not two random independent observations, and the base rate differs radically
 between `/usr`, a browser cache, and a backup corpus.
@@ -818,7 +845,7 @@ The validator strengthens or diagnoses the match; it is not always a hard gate.
 | 7z | six-byte signature; version support; StartHeader CRC over the next 20 bytes; NextHeader offset/size within known source | Use this at offset zero as well as for SFX hits. CRC failure after the six-byte identifier should normally mean damaged 7z, not unknown bytes. |
 | RAR | RAR4/RAR5 marker plus parseable/CRC-valid main header | The long marker already identifies strongly; main-header validation makes scan hits safe and distinguishes corruption. |
 | ISO 9660 | at offset 32,768 require type 0–3, `CD001`, version 1; optionally inspect consecutive descriptors for a PVD and terminator under a higher budget | Seven constrained bytes need a 32,775-byte prefix and are better than five. Type 255 at sector 16 cannot start a valid set because it terminates before the mandatory PVD; invalid surrounding fields should lower confidence or indicate damage. |
-| zlib | any RFC 1950 header with `CM=8`, `CINFO<=7`, and `(CMF*256+FLG) % 31 == 0`; account for `FDICT` | The current four-header allow-list accepts only common 32 KiB-window, no-dictionary encodings. Valid streams with smaller windows begin `18`, `28`, … `68` and are currently missed. |
+| zlib | any RFC 1950 header with `CM=8`, `CINFO<=7`, and `(CMF*256+FLG) % 31 == 0`; account for `FDICT`; **require at least one entropy-coded deflate block before the decode counts as evidence** | The current four-header allow-list accepts only common 32 KiB-window, no-dictionary encodings. Valid streams with smaller windows begin `18`, `28`, … `68` and are currently missed. The stored-block clause is the zlib counterpart of Brotli's first-block gate: a `BTYPE=00`-only stream decodes perfectly while proving nothing beyond a 2⁻¹⁰ header (§1). A stored-block stream is still *valid* zlib — the clause changes its grade, not whether it can be identified. |
 | LZMA Alone | legal properties byte; any 32-bit dictionary field; size field; then bounded decode/completeness | Do **not** reject dictionary size zero. The LZMA specification allows every 32-bit value and requires decoders to round values below 4 KiB up to 4 KiB. |
 | Brotli | RFC-valid WBITS/meta-block framing; source-length overrun; whole-source completeness; bounded chain walk where permitted | No prefix check can manufacture a signature the format does not have. Keep this in the bounded-probe class unless a complete decode reaches EOS. |
 
@@ -1227,6 +1254,55 @@ Two open questions this document deliberately does **not** settle:
 - **Whether `XFL` / `OS` are worth using as gzip identity gates** (§5), which needs a
   heterogeneous producer corpus measured for false-negative risk, not just false-positive
   reduction.
+- **What bounds detection's decode work, and at what scope** (`DetectionBudget`, §10). The
+  budget lists nine limits but never says whether they are per-detection aggregates or
+  per-candidate, and the answer decides a measured amplification.
+
+  Scope first, because the terms have been used loosely: a **detection** is one
+  `detect_format()` / `open_archive()` call; a **declaration** is one detector
+  (format × tier), a fixed set; a **candidate** is one `(format, payload_offset)` under
+  consideration. Fixed-offset tiers are self-limiting — all 15 magic entries sit at fixed
+  offsets (0, 257, 32,769), so each format matches at most once. **Only the scan tiers
+  multiply candidates**, so this is a scan-tier question, not a global one.
+
+  Measured on `a3dc408`, a 2 MiB window packed with back-to-back decoys:
+
+  | | |
+  | --- | --- |
+  | valid gzip headers found (`resume one byte past` a rejected candidate) | 209,715 |
+  | needle search over the window | 27.7 ms, once |
+  | cheap header validation, all candidates | 135.6 ms — 0.65 µs each |
+  | *failing* decode attempts, all candidates | 0.2 s |
+  | **decoys that decode successfully to a 64 KiB per-candidate cap** | **1.26 s, 1,365 MiB output — 683× amplification** |
+
+  Two things this measurement settles. **Memory is not the problem**: each candidate's
+  output is discarded, so peak memory is bounded by the per-candidate cap whatever the
+  candidate count. **Time is**, and a per-candidate cap cannot bound it — 683× is
+  candidate-count × per-candidate cap, so only an aggregate does. Nor would a *ratio* limit
+  help: each decoy above is individually 683×, under `ExtractionLimits`' 1000× default, and
+  an attacker can trivially tune to 100× per decoy and still do gigabytes of aggregate work.
+  `ExtractionLimits` is scoped to `extract` / `extract_all` in any case, so detection-time
+  decoding is currently unbounded, and the threat model's O1 covers *listing*-time metadata
+  bombs rather than this.
+
+  Candidate mitigations, which fail differently and compose: an **aggregate
+  `max_decode_output`** per detection bounds the resource that actually blows up, at the
+  cost of an early legitimate candidate starving later ones; a **per-format scan-candidate
+  cap** bounds attempts and preserves per-candidate generosity, at the cost of decoy
+  resistance — N decoys before the real archive and it is missed. That trade is real and
+  unavoidable: "resume one byte past a rejected candidate" buys unlimited decoy resistance
+  and is exactly what generates the 209,715.
+
+  **What to measure before choosing:** realistic scan-candidate counts on the founding
+  backup corpus. If real prefixed archives yield ≤5 candidates, a cap in the tens closes
+  this at no cost and the trade never bites. That legwork pairs with the corpus survey this
+  section already needs.
+
+  Two smaller gaps in the same model, neither needing measurement: `DetectionBudget` has no
+  field for **far fixed-offset reads**, so `BALANCED`'s "4096 near; ISO far" is
+  self-contradictory as a config (the ISO descriptor needs a 32,775-byte prefix); and
+  "resume one byte past a rejected candidate" should say past its **start**, since past its
+  rejected *extent* would let a decoy hide a real archive inside its claimed range.
 
 Run one labelled, stratified evaluation:
 
