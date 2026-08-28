@@ -122,6 +122,88 @@ The branch-and-bound check compares every unrun declaration's ceiling with the c
 winner; it does not infer ceilings from result objects or run every detector to discover
 them.
 
+#### The supporting types
+
+The listing above names five types it does not define. They are small, but two of them
+(`DetectionCapability` and `PrefixKind`) carry rules stated elsewhere in this document, so
+they are pinned here rather than left to the implementation.
+
+**`DetectionCapability`** — what a declaration needs *from the source*, checked as
+`d.required_capabilities <= source.capabilities(budget)` in the scheduler. It is the
+mechanism behind the "unavailable" arm of the stopping rule and behind §11's degradation on
+pipes:
+
+| capability | supplied when |
+| --- | --- |
+| `PREFIX` | always — a bounded head read through the prefix workspace |
+| `SIZE_KNOWN` | a cheap total size is available (§2 step 0) |
+| `REMAINING_KNOWN` | bytes from the caller's current position are *provable*, not merely estimated |
+| `TAIL` | the source can be read near its end — seekable, or spooled by explicit policy |
+| `SEEK` | arbitrary range reads: the exhaustive tier, central-directory walks |
+| `REREAD` | the source can be consumed and still presented to a backend afterwards |
+
+The set is source-**and-budget** derived, not source-alone: an explicit spool policy makes a
+pipe `TAIL`-capable, and `max_seeks = 0` withdraws `SEEK` from an ordinary file. That is why
+the scheduler calls `source.capabilities(budget)` rather than reading a field off the
+source.
+
+**`DetectionCostEstimate`** — the *a priori* half of §10's cost model, expressed in the same
+units as the receipt it will be measured against: prefix bytes, tail bytes, seeks, scanned
+bytes, decode input, decode output, index bytes. Estimates order declarations whose ceilings
+are equal and feed `affordable()`; the receipt records what actually happened. Two objects,
+one vocabulary. A declaration that cannot estimate a field states an upper bound and never
+zero, because `affordable()` reads the estimate as a promise.
+
+**`DetectionEvaluator`** — the callable a declaration carries:
+
+```python
+DetectionEvaluator = Callable[
+    [PrefixWorkspace, DetectionSource, int, DetectionBudget, DetectionCostReceipt],
+    Iterable[FormatCandidate],
+]
+```
+
+Returning an *iterable of candidates* rather than one optional record is required by the
+tiers that find several: one scan pass over a 2 MiB window can yield several `ustar` hits at
+different offsets, and each is a separate `(format, payload_offset)` candidate. An evaluator
+that finds nothing yields nothing; absence is not signalled with `None`. The evaluator
+charges the receipt for the bytes it requests, which is what lets `affordable()` be checked
+once per declaration instead of once per read. The receipt is detection's own, not the
+archive-open `CostReceipt` — §10's "do not overload an archive-open receipt with detection
+I/O that happened before a reader existed", made structural.
+
+**`EvidenceAnchor`** — what an evidence record's `offset` is measured *relative to*, which is
+the metadata §"Anchoring and bits of constraint" needs and a bare integer cannot carry:
+
+| anchor | meaning |
+| --- | --- |
+| `ORIGIN` | a fixed offset from the detection origin — gzip magic at 0, ISO at 32,769 |
+| `CANDIDATE` | a fixed offset from *this candidate's* `payload_offset` — a TAR checksum at +257 inside an SFX payload |
+| `END` | measured back from source end — the ZIP EOCD |
+| `FLOATING` | located by scanning; no fixed relationship to either end |
+| `NONE` | not positional at all — `NAME` and `ASSERTED` evidence |
+
+`ORIGIN` and `CANDIDATE` coincide whenever `payload_offset == 0`, which is the common case.
+Keeping them distinct is what lets a prefixed archive's internal evidence stay *anchored*
+instead of degrading to `FLOATING` merely because the payload did not begin at zero — the
+distinction that answers "is a checksum-valid TAR header at +257 of a scan hit anchored
+evidence?" with yes.
+
+**`PrefixKind`** — what precedes `payload_offset`, reported and never acted on: `NONE`
+(payload at the detection origin), `ELF`, `PE`, `MACHO`, `SCRIPT` (a shebang or other text
+stub), `OTHER` (bytes matching none of these). This is the field the `SFX_SCAN` rename
+paragraph above leans on: the tier reports *what the prefix is* and stops asserting *why* it
+is there. Classifying the prefix beyond these values is out of scope — archivey is not a
+general file-type detector (§12) — and no rule in this document branches on the value.
+
+**Where `estimated_random_bits` belongs: the evidence record, not the declaration.** The
+same declaration produces different constraint on different sources — an anchored hit and a
+floating scan hit of the same magic are not equally surprising — so a static per-declaration
+number would be wrong exactly where the field is interesting. The declaration already
+carries the only quantity the scheduler reads, `max_evidence`; neither the stopping rule nor
+the priority keys consult bits, and §"The public surface" marks the field advisory and
+unstable. It exists to explain a decision after the fact, not to make one.
+
 #### The ceiling rule: one declaration, or two?
 
 Several detectors can reach more than one class depending on what the source turns out to
@@ -311,6 +393,57 @@ single scalar deliberately does not carry.
 Per-record detail (`bytes_examined`, `estimated_random_bits`, anchors) SHOULD be treated as
 advisory and unstable. The stable public commitments are the **kinds**, the **classes**,
 and their ordering — the same conservatism that keeps public `payload_offset` an `int`.
+
+#### Detecting once: the `detection=` handoff
+
+Exposing the result as a field fixes the CLI's specific complaint — `run_info` can drop its
+`detect_format(archive)` call and read the field off the reader instead — but it does not
+cover the shape the CLI stands in for: **a caller who must decide on the detection result
+before deciding whether, or how, to open.** That caller cannot use the field, because the
+field only exists after the open it was trying to inform.
+
+Today the only way to have both is to detect twice, and this document makes the second
+detection *more* expensive rather than cheaper: an always-on ZIP tail tier, a
+central-directory walk for an exact offset, whole-source completion under `THOROUGH`.
+Doubling that is not a rounding error. So `open_archive()` and `open_stream()` SHOULD accept
+a previously produced detection result and skip detection when given one:
+
+```python
+result = detect_format(source)
+if result.confidence is not DetectionConfidence.CERTAIN:
+    ...                                  # the caller's own policy
+reader = open_archive(source, detection=result)
+```
+
+Three properties this needs, each a constraint rather than a convenience:
+
+- **It is not `format=`.** `format=` is an override: it records `ASSERTED`, skips detection,
+  and suppresses `format_unconfirmed` because the caller took responsibility (§6).
+  `detection=` replays evidence *archivey itself* produced, so the reader's ledger, its
+  `confidence`, and its `format_unconfirmed` behaviour are exactly what they would have been
+  had the open detected for itself. Routing a detection result through `format=` — the only
+  option available today — silently launders a `GUESS` into a trusted assertion, which is
+  the opposite of what a caller inspecting the result wanted.
+- **The result must name the source it came from.** A result handed to a *different* source
+  is a caller bug the library should catch rather than honour: the result records an opaque
+  source token (the path, or the stream object's identity plus its entry position) and a
+  mismatch raises rather than opening the wrong bytes as the wrong format. This is a
+  typo-catcher, not a security boundary — a path can change on disk between the two calls,
+  and `detection=` inherits exactly the TOCTOU window that today's detect-then-open pattern
+  already has. Worth stating so nobody later reads the token as an integrity check.
+- **On non-seekable sources it is not an optimisation but the only way.** Detect-then-open
+  works today only because a *path* can be reopened. On a caller-supplied pipe, detection has
+  already consumed the prefix and a second detection cannot re-read it, so "look before you
+  open" is currently inexpressible there. The handoff is what makes it expressible —
+  provided the replay buffer travels with the result, which couples this parameter's design
+  to §2's prefix workspace and §11's spool policy. The consequence is worth spelling out: on
+  a non-seekable source the detection result **cannot be a pure value object**; it must carry
+  or reference the buffered bytes, and its lifetime is therefore tied to the source's.
+
+Scope: nothing else in this document depends on the parameter, and it can ship after the
+field. It is stated here so the field's design does not foreclose it — in particular the
+result must stay constructible and inspectable without a reader, which it already is. Being
+a new keyword argument with no change to existing behaviour, it needs no migration row.
 
 ### Evidence classes
 
@@ -783,7 +916,7 @@ detect(source, budget) -> Result:
     # ---- setup ------------------------------------------------------------
     origin   = detection origin (0, or the stream's current position)
     name     = filename, read once; recorded as NAME evidence, never as a gate
-    prefix   = read up to budget.max_prefix_bytes from origin
+    prefix   = prefix workspace, grown on demand to budget.max_prefix_bytes
     receipt  = new cost receipt          # bytes, seeks, decode in/out
     incomplete = []                      # why the search is not exhaustive
 
@@ -1503,6 +1636,67 @@ open:
   ambiguity fallback (the immediate policy is settled: raise `AmbiguousFormatError`).
 - the exact public field/type names for exposing the winning evidence on detection,
   readers, and `format_unconfirmed` errors; the exposure itself is required.
+
+### Test obligations this design creates
+
+Everything above is *measurement*: it chooses thresholds, once, from corpora. What follows
+is *testing*: it pins behaviour afterwards, in CI, where it has to survive later edits. They
+are separate deliverables, and only the second belongs in the OpenSpec change rather than in
+a one-off script under `scripts/exploration/`.
+
+**Golden fixtures, one per required case.** Each row of §4 needs a committed fixture and a
+pinned expected result — format, evidence class, `payload_offset`, `prefix_kind`,
+`search_complete`, and the `confidence` / `detected_by` projections — evaluated under the
+policy that row names, since two of the ten deliberately fail at `BALANCED`. Pinning the
+*ledger* and not only the format is the whole point of §1: two results with the same
+`format` can differ in what they justify, and a test asserting `format` alone cannot tell
+them apart — it would pass unchanged through every regression this document is trying to
+prevent. Negatives carry the same weight as positives: the six `PK\x05\x06` false positives
+under `/usr/bin` are a required *non*-detection, and the repo's existing corrupted and
+truncated fixtures are what keep a validator from erasing an identity it was only meant to
+grade (corpus stratum 3 above).
+
+**Property tests for the stopping rule.** This is the part most likely to break under later
+edits, because every declaration added to the registry changes it and none of its invariants
+are local to the code being edited. Over randomly generated declaration sets (ceilings,
+capabilities, cost estimates) and stub sources with scripted evaluators, assert:
+
+- **soundness** — the winner the scheduler stops on is the winner an exhaustive run of every
+  declaration would select. `stop_now` may save work; it may never trade away a stronger
+  result;
+- **order independence** — permuting declarations within a tier changes the receipt but not
+  the winner, or else raises `AmbiguousFormatError`. A registry-order-dependent answer is
+  precisely the defect §12 refuses;
+- **monotonicity in budget** — a larger budget never yields a *weaker* class for the same
+  source, and `THOROUGH` never returns a different winner than `BALANCED`, only more
+  retained candidates. This is what makes "re-run it with `THOROUGH`" honest advice instead
+  of a coin flip;
+- **`search_complete` does not lie** — whenever it is true, no declaration was skipped for
+  budget or capability reasons.
+
+These need no real archives — the source is a stub and the evaluators return scripted
+candidates — so they are cheap enough to run on every commit, which is the point of choosing
+them over more fixtures.
+
+**Fuzzing with decoy-dense inputs.** The 683× amplification above is not a corpus property;
+it was constructed, so the regression guarding it must be constructed too. `tests/atheris_fuzz`
+already carries a `detect_format` target, but it asserts only that nothing escapes as a
+non-`ArchiveyError` — it bounds *crashes*, not *work*. The addition is a seed family packed
+with back-to-back near-miss headers for each scan-tier format, plus an assertion that the
+aggregate cost receipt stays inside the budget's limits. That assertion is why the
+budget-scope question can be deferred at all: it pins the invariant — detection's decode
+work is bounded by the declared budget — rather than the mechanism that achieves it, so it
+holds whichever way the scope resolves and fails loudly if neither does. Pair it with
+structure-aware fuzzing of the §5 validators themselves: every one of them parses
+attacker-controlled length and count fields, and a validator that raises an unexpected
+exception type converts an identification into a crash.
+
+**One end-to-end pin the CLI already suggests.** `archivey info` over each golden fixture,
+output compared against a committed expectation, asserts that the ledger survives the whole
+path from detection to public rendering — the path where `main` currently drops the object
+at `core.py:386`. It costs one file and catches the class of regression where the evidence
+is computed correctly and then thrown away, which is the exact failure this document opens
+by documenting.
 
 ## 14. Relationship to PR #257
 
