@@ -392,9 +392,11 @@ Resolve equal-class candidates with ordered priority keys:
    embedded payload at a later offset;
 3. end anchoring (`declared_end == source_end` before merely `<=`) within the same format
    and evidence class;
-4. corroboration only as a tie-break: content-derived evidence (for example an inner-TAR
-   checksum) is independent; a matching extension is recorded as correlated `NAME`
-   metadata;
+4. a matching **filename**, and only here: it may separate two candidates that are equal
+   under keys 1–3, and may do nothing else. This is the tie-break role §6 grants it, and
+   it does not conflict with `NAME` never raising a class — ordering among equals is not
+   promotion. Both candidates keep the same `confidence` and the same `format_unconfirmed`
+   behaviour whichever wins;
 5. if incompatible candidates remain tied, report ambiguity rather than using registry
    order.
 
@@ -403,9 +405,21 @@ subsequent key is consulted only on a tie, and candidates still equal after the 
 settled key remain ambiguous. "Undominated" below means maximal under this class-plus-
 priority relation, not a separate mathematical partial order.
 
-The `(container, stream)` pair is refinement, not competition. A gzip candidate whose
-decoded prefix contains a checksum-valid TAR header becomes `TAR_GZ`; it does not leave
-independent `GZ` and `TAR_GZ` candidates tied.
+**Refinement is not tie-breaking, and the distinction decides which key applies.**
+Content-derived corroboration that *changes the class or the format* is refinement: it is
+consumed by key 1 and never reaches key 4. The `(container, stream)` pair is the clearest
+case — a gzip candidate whose decoded prefix contains a checksum-valid TAR header becomes
+`TAR_GZ`; it does not leave independent `GZ` and `TAR_GZ` candidates tied. An earlier
+revision offered that same inner-TAR checksum as key 4's example, which cannot happen: by
+the time keys are consulted the refinement has already decided. Key 4 is for evidence that
+distinguishes equals *without* being strong enough to promote either, which is exactly the
+filename.
+
+How often this key is reached: running all three magic-less probes independently over
+33,947 real files gave 25 single-probe hits and **0 multi-probe hits**, so same-class probe
+ties do not arise naturally on that corpus. They are reachable by construction — bytes can
+satisfy zlib's header and Brotli's framing at once — and polyglots are in scope (§12), so
+the rule has to be right; it is not a hot path.
 
 ### Confidence mapping
 
