@@ -770,6 +770,123 @@ member as though the format were confirmed. Either:
 Container guesses are less dangerous because opening normally parses a real container
 header immediately. The policy still belongs in the caller, not in confidence labels.
 
+### The scheduler in one place
+
+The rules above are stated per tier, which is how three contradictions survived review:
+the probe ceiling (§1), the mandatory-far-ISO claim (§1), and priority key 4 (below) were
+all interactions between paragraphs that never appear together. One listing is where such
+interactions are visible. This is the normative shape; the prose above is its justification.
+
+```text
+detect(source, budget) -> Result:
+
+    # ---- setup ------------------------------------------------------------
+    origin   = detection origin (0, or the stream's current position)
+    name     = filename, read once; recorded as NAME evidence, never as a gate
+    prefix   = read up to budget.max_prefix_bytes from origin
+    receipt  = new cost receipt          # bytes, seeks, decode in/out
+    incomplete = []                      # why the search is not exhaustive
+
+    # Ceilings are resolved per source, not read from a static table alone:
+    # a declaration whose capabilities are unmet cannot run, and one whose
+    # higher class needs a capability it lacks is capped at the lower class.
+    decls = [d for d in registry.declarations()
+             if d.required_capabilities <= source.capabilities(budget)]
+    for d in registry.declarations():
+        if d not in decls: incomplete.append(("unavailable", d))
+
+    candidates = []
+    winner     = None
+
+    # ---- acquisition, in evidence order ------------------------------------
+    # Ordered by what each tier can establish, not by what it costs.
+    #   1 near magic + validators          -> SIGNATURE_ONLY .. SELF_VALIDATING
+    #   2 far fixed-offset (ISO)           -> DISCRIMINATING_HEADER
+    #   3 ZIP tail (seekable)              -> SELF_VALIDATING
+    #   4 cued bounded scan                -> validated hit's own class
+    #   5 exhaustive scan (opt-in only)    -> validated hit's own class
+    #   6 magic-less prefix probes         -> BOUNDED_PROBE
+    #   7 whole-source completion          -> COMPLETE        (separate decl)
+    #   8 filename                         -> NAME
+    for tier in ACQUISITION_ORDER:
+        for d in decls_in(tier):
+
+            if not affordable(d, budget, receipt):
+                incomplete.append(("budget", d)); continue
+
+            # Branch and bound. THOROUGH suppresses this: it runs every bounded
+            # declaration even when it cannot win, so the ledger records
+            # everything the source could be said to be.
+            if winner and not budget.collect_nonmaximal_candidates:
+                if not can_dominate(d.max_evidence, winner):
+                    continue
+
+            for cand in d.evaluate(prefix, source, origin, budget, receipt):
+                # A decode is evidence only if it decoded something: output that
+                # is purely stored/uncompressed is graded on the header alone.
+                if cand.evidence_is_stored_only():
+                    cand = cand.regrade_to_header_class()
+
+                # Refinement, not competition: corroboration that changes the
+                # class or the format replaces the candidate rather than
+                # competing with it (gz + inner TAR -> TAR_GZ, one candidate).
+                candidates = merge_or_refine(candidates, cand)
+
+            winner = select(candidates)          # see priority keys below
+
+            if stop_now(winner, decls, budget):
+                break
+
+    # ---- selection ---------------------------------------------------------
+    # Ordered priority keys, consulted only on a tie, never summed:
+    #   1 strongest content-evidence class
+    #   2 semantic position (origin outranks a later embedded payload)
+    #   3 end anchoring (declared_end == source_end before <=)
+    #   4 matching filename — separates equals only, promotes nothing
+    #   5 still tied -> ambiguous
+    maximal = undominated(candidates)
+    if not maximal:            raise FormatDetectionError(receipt, incomplete)
+    if len(maximal) > 1:       raise AmbiguousFormatError(maximal, receipt, incomplete)
+
+    return Result(winner       = maximal[0],
+                  evidence     = maximal[0].evidence,   # the public ledger
+                  search_complete = not incomplete,
+                  incomplete   = incomplete,
+                  receipt      = receipt)
+
+
+stop_now(winner, decls, budget) -> bool:
+    # The stated rule, unchanged: stop when the winner is unique and every unrun
+    # declaration is incapable of dominating it, unavailable by capability, or
+    # excluded by an explicit budget recorded in the result.
+    return (winner is unique
+            and all(not can_dominate(d.max_evidence, winner)
+                    or unavailable(d) or excluded_by_budget(d)
+                    for d in unrun(decls)))
+```
+
+**What this makes visible that the prose did not.**
+
+- **Probe ceilings.** `can_dominate` reads `d.max_evidence`, so a single probe declaration
+  ceilinged at `COMPLETE` would make `stop_now` permanently false and every archive pay for probes.
+  Splitting tiers 6 and 7 is what keeps the cheap half at `BOUNDED_PROBE` and lets the
+  expensive half be excluded by budget under `BALANCED` — the third arm of `stop_now`,
+  not a special case.
+- **Mandatory far ISO.** There is no exception arm for it. Far evidence precedes probes
+  because `DISCRIMINATING_HEADER` dominates `BOUNDED_PROBE`, so `can_dominate` keeps ISO
+  unrun-and-blocking until it has run. Nothing else is needed.
+- **`THOROUGH`.** One flag, `collect_nonmaximal_candidates`, suppresses the branch-and-bound
+  skip. Unbounded discovery is *not* on this axis — the exhaustive scan is tier 5 and gated
+  by its own opt-in, because its cost is not bounded by any format.
+- **Refinement vs tie-breaking.** `merge_or_refine` runs before `select`, so class-changing
+  corroboration never reaches the priority keys. That is why key 4 is the filename and not
+  the inner-TAR checksum.
+
+**Still open, and it shows here.** `affordable()` and `excluded_by_budget()` both depend on
+whether budgets are per-detection aggregates or per-candidate — the question recorded in
+§13. Written as an aggregate above (`receipt` accumulates across candidates); with
+per-candidate budgets the scan tiers become unbounded in total work.
+
 ## 3. Where this disagrees with PR #257
 
 1. **Ordered acquisition: agree. First match wins: disagree.** Acquisition should be
@@ -1400,6 +1517,35 @@ overlapping `format-detection` requirement and avoids another archive-order conf
 This document remains non-normative: #257's revised delta becomes the contract only after
 review and archive. Until that revision exists, #257's first-match algorithm should not be
 implemented as written.
+
+### What changes for callers, in one place
+
+The behaviour changes this document proposes are argued in the sections that motivate
+them, which means nobody can see the whole set at once. Collected here so #257's revised
+delta and its release notes can be written from one list rather than a re-read.
+
+| # | change | today | proposed | where argued |
+| --- | --- | --- | --- | --- |
+| 1 | **Bounded probes report `GUESS`** | zlib and LZMA Alone are `PROBABLE` unconditionally; Brotli is `PROBABLE` when compressed-first or `.br` | all three are `GUESS`; only a whole-source completion reaches higher | §1 confidence mapping, §9 |
+| 2 | **`format_unconfirmed` covers filename-only results** | set only for content-probe failures | set whenever archivey chose the format and its strongest content evidence is at or below `BOUNDED_PROBE` — so a failing `.gz`/`.rar` identified by name alone now carries it; an explicit `format=` still does not | §6 |
+| 3 | **`PROBE_FORMAT_UNCONFIRMED` is renamed** | names one of the three provenances | provenance-neutral (e.g. `FORMAT_UNCONFIRMED_ON_DECODE`), with the provenance in its context | §6 |
+| 4 | **`detected_by` gains values** | `"magic"`, `"extension"`, `"content_probe"`, `"sfx_scan"` | those four keep their spelling, plus `zip_tail_probe`, `exhaustive_scan`, `declared_by_caller`, `declared_by_container` | §1 public surface |
+| 5 | **`sfx_scan` should be renamed** | means "payload at a nonzero offset", so it labels JPEG+ZIP polyglots and `zipapp` as self-extracting | a neutral name (`prefixed_scan` / `embedded_scan`) before these values become public | §1 public surface |
+| 6 | **`AmbiguousFormatError` is new, and reaches `open_archive`** | first registry hit wins silently | tied maximal candidates raise, carrying both | §12 |
+| 7 | **`detect_format` can report an incomplete search** | always returns or raises `FormatDetectionError` | may additionally report that tiers were skipped by budget or capability; `payload_offset` exhaustion is the open case in §13 | §1, §13 |
+| 8 | **Stored-only decodes are regraded** | a `BTYPE=00` zlib stream is `PROBABLE` on the strength of a decode that copied bytes | graded on its 2⁻¹⁰ header alone; still identified as zlib | §1, §5 |
+| 9 | **The detection result becomes a public field** | discarded at `core.py:386`; the CLI re-runs `detect_format` to see it | an always-present field on `ArchiveReader` / `ArchiveStream`, with `confidence` and `detected_by` derived from it | §1 public surface |
+| 10 | **JPEG+ZIP and bare concatenation need `THOROUGH`** | not detected at all | detected under `THOROUGH`; `FormatDetectionError` under `BALANCED` until the ZIP-tail cost gate passes | §4, §10 |
+
+Items 1, 2 and 8 change what existing callers observe without any API change, so they are
+the ones that need release-note prose rather than a changelog line. Items 3–6 are API
+surface. Items 9 and 10 are additive.
+
+Two of these are worth flagging as *deliberately* user-visible regressions rather than
+improvements: item 1 downgrades the reported confidence of genuine `.br`, `.zz` and
+`.lzma` files, and item 10 means a polyglot that a future `THOROUGH` would find returns an
+error at the default budget. Both are consequences of rules argued at length above, but a
+release note that does not say so will read as a bug.
 
 ## 15. Primary format references
 
