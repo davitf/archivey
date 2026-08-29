@@ -1394,24 +1394,41 @@ selection path.
 
 *Run the check only when the open fails* is the tempting one: zero cost on the happy path,
 and the information appears attached to the exception that would otherwise blame the bytes.
-Measurement rules it out. Opening a real ZIP under three wrong overrides:
+The obvious objection to it is not the real one, so both are worth recording.
 
-| `format=` | what happens |
+**The objection that does not hold.** On shipped `main`, a wrong override often has no
+open-time exception to attach anything to. Opening a real ZIP:
+
+| `format=` | shipped `main` |
 | --- | --- |
 | `GZ`, `BZ2`, `BROTLI` | **open succeeds**, listing succeeds with one fabricated member `real.zip.uncompressed`, failure lands on **read** |
 | `TAR` | fails at open |
 
-So for the single-file codecs there is no open-time exception to hang the check on. The
-failure surfaces inside a member stream the caller is already holding, after archivey has
-handed back a plausible-looking listing — and by then the check would have to re-read a
-source the codec has consumed, from inside an exception handler. (That the failure defers at
-all is P15, but fixing P15 moves *when* it raises, not the fact that a lazy check runs only
-on the failing path and is therefore exercised only by failure tests.)
+That is entirely P15, and P15 is meant to be fixed. Re-measured with the probe patched to
+`read(1)`, across every non-directory format asserted over three real archives (ZIP, TAR,
+GZ): **72 of 72 wrong overrides fail at open**, none at listing, none at read, and the only
+three combinations that survive end to end are the three correct ones. So once P15 is fixed
+the lazy placement has a perfectly good exception to hang the check on, and this objection
+evaporates. It is recorded because it is easy to reach for and it is contingent on a bug.
 
-The eager cost is small and bounded: measured on a 54 KB ZIP, `read(4096)` plus matching all
-14 near entries is **8.8 µs**, against **273 µs** for the whole `open_archive(format=ZIP)`
-call — **3.2%**, constant in archive size. Under this design it is smaller still, because the
-prefix workspace is shared with the backend rather than being a private extra read.
+**The objection that does hold: a lazy check can only ever report bad news.** It runs on the
+failing path, so it never runs when the open succeeds — which means it can never produce the
+corroborating record described below, and migration item 14 (`format=ZIP` over real
+`PK\x03\x04` reporting `CERTAIN` rather than a flat `GUESS`) is structurally unavailable to
+it. The two placements are equivalent on the contradiction half; they differ only on the
+agreement half, and there the eager one wins outright rather than on balance.
+
+Two smaller costs of the lazy placement, neither decisive on its own: it would have to
+re-read a source the backend has already moved, from inside an exception handler — after a
+failed `format=ZIP` on a `BytesIO`, the position is left at EOF and not restored — and a
+check that runs only on the failing path is exercised only by failure tests, which is how
+an eager check that never checks anything (P15 again) went unnoticed for as long as it did.
+
+The eager cost is what makes that affordable: measured on a 54 KB ZIP, `read(4096)` plus
+matching all 14 near entries is **8.8 µs**, against **273 µs** for the whole
+`open_archive(format=ZIP)` call — **3.2%**, constant in archive size. Under this design it is
+smaller still, because the prefix workspace is shared with the backend rather than being a
+private extra read.
 
 #### What the check produces when it agrees
 
