@@ -105,6 +105,17 @@
 
 ## API & ergonomics
 
+- **Exhaustive ambiguity fallback for `open_archive()` / `open_stream()`** — when
+  evidence-based detection yields two or more tied maximal candidates, the near-term
+  contract should raise a dedicated ambiguity error rather than choose by registry order.
+  Much later, opening could deliberately try every tied candidate and return the first
+  one that validates deeply enough. This is not merely a loop: define what counts as
+  success for synthetic single-file readers versus indexed containers, preserve/replay
+  caller-owned and non-seekable sources, cap cumulative seeks/bytes/decode work, retain
+  every failed candidate's typed error, and decide what happens when multiple candidates
+  open successfully. An all-candidates inspection API likely belongs beside it, but its
+  name is deliberately unsettled. Promote only with an OpenSpec change covering both
+  archive and stream opening plus the cost/error model.
 - **Extension-first detection ordering** — try the formats a filename's extension
   suggests before the rest, falling back to the full sweep on a miss or when there is no
   filename. Strictly better than today's fixed order *and* than a hard extension gate: a
@@ -170,6 +181,79 @@
   mistaken for a settled design; the work belongs to that redesign, after
   `prefixed-archive-detection` adds its two further `detected_by` values. Full truth table
   in `probe-provenance-unconfirmed` task 5.1.
+
+- **Archive *role*: tell the caller whether to care what is inside** — `open_archive()`
+  reads a photo backup, a `.docx`, a `.jar`, a LibreOffice icon bundle and a JPEG with an
+  appended ZIP identically, and says nothing to distinguish them. For the founding
+  backup-indexing use case only the first is worth recursing into; being able to open the
+  rest is a feature, being *told* they differ is the missing part. **Post-1.0: complicated,
+  and it does not affect extraction — a caller can already open and extract any of them.**
+
+  **Measured 2026-08-26** (`main` @ `a3dc408`), opening every file starting `PK` under
+  `/usr/share`, `/usr/lib`, `/usr/local`, `/opt` and the repo — **643 readable ZIPs**:
+
+  | recognized by | count | extensions |
+  | --- | --- | --- |
+  | `META-INF/MANIFEST.MF` (JAR) | 363 | `.jar` |
+  | `mimetype` stored first (ODF family) | 176 | `.ott`, `.otp`, `.ots`, `.odt`, `.ods`, `.odb`, `.otg`, `.stw`, `.dat`, `.bau` |
+  | `*.dist-info/WHEEL` | 11 | `.whl` |
+  | no marker | 91 | **85 × `.zip`**, 2 × `.jar`, `.sym`, `.sop`, `.sob`, `.stw` |
+
+  The unmarked bucket is not user data — LibreOffice icon themes (4 520 members each), a
+  JDK symbol file, StarOffice palettes. **Zero of the 643 are a user-data archive**, so this
+  class is large and currently invisible. *(One Linux container, heavy on LibreOffice and
+  the JDK; a `~/Downloads` would invert the ratio. It does not support a general frequency
+  claim.)*
+
+  Three findings that shape any future design:
+
+  - **`UNKNOWN` must be the default and must not mean "data".** A caller reading it as
+    "index this" would ingest 4 520 icon PNGs per file. Archivey cannot tell a resource
+    bundle from a backup — both are "a ZIP with no marker" — so this is a *recognizer*, not
+    a classifier, and must say "not recognized" rather than "this is data".
+  - **Content decides, extension corroborates** — load-bearing, not theoretical: `.zip` is
+    the commonest extension among the packaging files here, and two `.jar` files carry no
+    manifest.
+  - **Presence and value are different questions.** The `mimetype` rule (first entry, named
+    `mimetype`, stored) held **176/176** with zero compressed. But 53 of those have an
+    *empty* mimetype — LibreOffice autocorrect `.dat` and autotext `.bau` — so presence
+    reliably says "ODF-family package" while the value refines it to a subtype only 123
+    times. A design keyed on the value alone would report `UNKNOWN` for LibreOffice's own
+    data files.
+
+  **Marker shapes** are three, not one: positional + storage-constrained + self-describing
+  (the `mimetype` rule, mandated by ODF 1.2 §3.3 / EPUB OCF rather than merely conventional);
+  exact path present (`META-INF/MANIFEST.MF`, `[Content_Types].xml`, `AndroidManifest.xml`,
+  `manifest.json`, `__main__.py`); and suffix/pattern (`*.dist-info/WHEEL`).
+
+  **Cost tiers naturally.** For ZIP the central directory is parsed at open, so exact-path
+  and pattern tests are free, and the `mimetype` *presence* test is free too — both the
+  first entry's name and its `compress_type` live in the CD. Only the subtype needs one
+  small stored read. For TAR there is no index, so any marker means reading forward and
+  possibly decompressing; role recognition would be opt-in or ZIP-only to start. It needs
+  the member list either way, so it is an `ArchiveInfo` fact, never a `FormatInfo` one.
+
+  **Three open problems**, none blocking but all real:
+  1. *Precedence, not a set.* No overlap was observed on this corpus, but an APK carries
+     both `META-INF/MANIFEST.MF` and `AndroidManifest.xml`, and a signed wheel can carry
+     `META-INF/`. The rules need an ordered first-match list, and the order is a decision
+     (more specific wins) rather than a derivation.
+  2. *False positives are unavoidable.* A zip of an **extracted** JAR contains
+     `META-INF/MANIFEST.MF` and is user data. So the signal says "recognized as", never
+     "is" — and it invites the same locate-versus-validate refinement the ZIP tail probe
+     needs (does the manifest parse; does it carry `Manifest-Version`).
+  3. *Where the table lives.* `MAGIC` / `EXTENSIONS` / `CONTENT_PROBES` sit on `ReadBackend`
+     because each backend reads one format — but JAR, OOXML, ODF, APK, wheel and zipapp are
+     *all ZIP*. Per-backend keeps "new format = one subclass, no edits elsewhere" at the
+     cost of the ZIP backend accumulating a table of things that are not ZIP; a separate
+     registry keyed by container keeps that clean and is the natural place to let a caller
+     register their own marker, at the cost of a second registration mechanism.
+
+  Advisory only, never a refusal — opening a `.docx` to look inside stays legitimate, in
+  the spirit of `format=` being an override that is reported rather than overridden. Note
+  the scope line it must respect: PR #263 §12 rules that archivey "should not become a
+  general file-type detector"; this stays inside it by classifying only archives archivey
+  has already opened, by their own member structure.
 
 - **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
   policy already sketched in `safe-extraction` (re-root/collapse unsafe paths instead of

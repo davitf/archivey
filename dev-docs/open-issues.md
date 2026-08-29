@@ -417,6 +417,111 @@ re-verified failing against the unfixed code). Original write-up below.
 - **Not a docs defect.** No published page states anything false about this; the guide
   never passes a `StreamFormat` to `format_availability()`.
 
+### P13. `.brotli` is not a registered extension, so genuine streams read as uncorroborated
+
+- **What:** the extension map holds `.br` and `.tar.br` only. A genuine Brotli stream named
+  `*.brotli` is identified by the content probe with nothing corroborating it, so a decode
+  failure stamps `format_unconfirmed=True` on a file that really is Brotli.
+- **Measured** (2026-08-26, `main` @ `a3dc408`, 63 343 files): the tree holds exactly four
+  files with any magic-less-codec extension, and they split two/two —
+  `underscore.min.js.br` / `.map.br` corroborate and stay silent, while
+  `jquery.min.js.brotli` / `jquery.min.map.brotli` do not and would stamp. Both `.brotli`
+  files are genuine, verified by full decode.
+- **Why it is not just a missing table row:** it changes how much the *design* argument in
+  PR #263 §6 costs. That section proposes the filename stop suppressing the stamp at all,
+  and prices the cost at "genuine damaged files". Half that cost is already being paid here
+  for an unrelated reason.
+- **Open:** what the ecosystem actually emits. The reference CLI writes `.br`; `.brotli`
+  clearly occurs in asset pipelines. Adding an extension is public detection data and has
+  its own false-positive risk, so this wants a quick survey rather than a reflex fix.
+- **Refs:** `src/archivey/internal/registry.py` `extension_map()`; census via
+  `scripts/exploration/probe_residual_census.py`.
+
+### P14. Several exported names are documented nowhere
+
+- **What:** `docs/api.md` opens with "Everything documented here is re-exported from the
+  top-level `archivey` package and listed in `archivey.__all__`" — true, but not the
+  converse. 31 of the 87 names in `__all__` have no mkdocstrings page anywhere in `docs/`,
+  including `FormatInfo`, `DetectionConfidence`, `FormatAvailability`, `FormatSupport`,
+  `MissingComponent`, `ExtractionProgress`, `DiagnosticContext`,
+  `ARCHIVE_INTEGRITY_CODES`, and every exception class.
+- **Why it matters now:** `FormatInfo` is the return type of the public `detect_format`,
+  and PR #263 proposes adding an evidence ledger to it. A type users are expected to read
+  fields off, with no rendered reference, is where an "internal" field quietly becomes
+  public — which is exactly what happened with `FormatInfo.corroborated` in #267 (held
+  back with `compare=False, repr=False` in the follow-up).
+- **Note:** the exceptions may be deliberate — they are described narratively in
+  `docs/errors-and-diagnostics.md`. The data types are the gap.
+- **Check:** compare `archivey.__all__` against `^::: archivey\.(\S+)` across `docs/*.md`.
+
+### P15. `SingleFileReader`'s eager open-time validation is a no-op — **confirmed bug**
+
+- **What it intends.** `src/archivey/internal/backends/single_file_reader.py:183-190`:
+
+  ```python
+  if self._seekable:
+      # Eagerly open+close a codec stream so format/seekability errors surface at
+      # archive-open time rather than on a later read. Not cached — every
+      # _open_member builds a fresh codec stream.
+      probe = self._open_codec_stream()
+      probe.close()
+  ```
+
+- **What happens.** The probe opens and closes without ever reading, and **every stdlib
+  codec validates its header on first read, not at construction**. Verified directly:
+  `gzip.GzipFile`, `bz2.BZ2File` and `lzma.LZMAFile` over 40 000 zero bytes all construct
+  and close without error, and raise only on the first read (`BadGzipFile`, `OSError`,
+  `EOFError`). So the probe never triggers validation and the documented guarantee does
+  not hold.
+
+- **Observable effect** (measured on `main` @ `a3dc408`), a file of 40 000 zero bytes named
+  for each codec, detected by extension at `GUESS`:
+
+  | file | `open_archive` | listing | read |
+  | --- | --- | --- | --- |
+  | `backup.gz` / `.bz2` / `.xz` / `.zst` / `.br` | succeeds | 1 fabricated member | `CorruptionError` |
+  | `backup.lzma` | succeeds | 1 fabricated member | `TruncatedError` |
+
+  Contrast the container formats, which behave as intended: ZIP, RAR, 7z, ISO and TAR+GZ
+  all raise `CorruptionError` at open for the same payloads. Only the single-file path
+  defers.
+
+- **Why it matters beyond the immediate surprise.** This is the mechanism behind the
+  extension-fallback honesty gap discussed in PR #263: because listing *succeeds*, the
+  `EXTENSION_FORMAT_UNCONFIRMED` diagnostic (which keys on an **empty listing**) cannot
+  fire, and the failure lands on the read path where the flag is currently probe-only. So
+  a `.gz` that was never gzip reports `CorruptionError` with `format_unconfirmed=False` —
+  archivey blaming the bytes for a format only the filename ever claimed.
+
+- **Fix.** Read one byte in the probe before closing it. Verified: `read(1)` over wrong
+  bytes raises a properly *translated* `ArchiveyError` for all seven codecs tested (gz,
+  bz2, xz, zst, br, lzma, lz4) — `CorruptionError` for six, `TruncatedError` for LZMA
+  Alone. A valid empty stream returns `b""` rather than raising, so the check is safe.
+
+- **The zero-byte case is worse, and `read(1)` does not fully close it.** A file of zero
+  bytes named for each of the ten single-file codecs opens cleanly on `main` — gz, bz2, xz,
+  zst, lz4, zlib, brotli, lzma-alone, lzip and `.Z`, ten for ten — with a listing showing
+  one fabricated member, and fails only on read. With `read(1)` in the probe, **nine** raise
+  a translated `ArchiveyError` at open time; **`.Z` still opens**, because its decoder reads
+  an empty input as an empty stream rather than a truncated one. So the fix needs a
+  per-codec answer for `.Z` (a minimum-header check, most likely) rather than resting on the
+  one read. Worth noting the same patch makes the open-time error carry `member='<name>'`,
+  which reads oddly for a failure that happens before any member was requested.
+
+- **Cost, measured** (~1.8 MB payload, 20 iterations): gzip `0.43 ms → 0.49 ms`
+  (negligible); **bzip2 `3.47 ms → 6.67 ms`** — nearly double, because bzip2 must decode a
+  full block (up to 900 KB) to yield one byte. That is a real trade against the honest-cost
+  contract and should be a deliberate decision, not a silent regression.
+
+- **Non-seekable sources need separate handling.** The `else` branch keeps the opened
+  stream as `self._pending_stream` and hands it to the first `_open_member`, so a probe
+  read there would consume a byte the caller expects. It needs pushback, or the check has
+  to stay seekable-only (in which case say so in the comment).
+
+- **No test covers the guarantee.** Nothing in `tests/test_single_file.py` asserts that a
+  malformed single-file stream raises at `open_archive` time — which is why an eager check
+  that never checks anything went unnoticed. A red-green test belongs with the fix.
+
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
 - **Today:** Solid ALL-pipe demux must match what `unrar` actually emits (RAR5
