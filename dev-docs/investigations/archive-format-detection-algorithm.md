@@ -774,6 +774,77 @@ than 3.31 MiB of overlapping path/stream reads. This is the bounded implementati
 The workspace does not make exhaustive scan, tail access, or arbitrary range reads free.
 Its retained-byte ceiling and copied bytes remain part of the budget.
 
+### The I/O shape detection is allowed
+
+The workspace bounds *how many* bytes detection reads. It does not bound the **shape** of
+the access, and on a source where seeking is cheap to permit and expensive to perform — an
+HTTP range reader, a member stream from a solid block — the shape is what costs.
+
+> **Detection SHALL perform at most: one forward-only pass from the detection origin; then
+> at most one seek towards the end; then one read to end.** No backward seek, and no
+> re-reading of bytes already retrieved.
+
+This is a good shape for every source. A network source pays at most two range requests. A
+solid member stream decodes forward once and, if the tail is reached at all, never rewinds
+into a block it has already left behind. A local file loses nothing.
+
+**The non-seekable path already obeys it; the seekable path actively violates it.**
+`PeekableStream.peek` grows a forward buffer and never seeks, which is exactly the rule.
+`detection._peek_prefix` on a seekable stream does `tell()` → read → `seek(start)`, and
+`_read_at` repeats that around every far read, so every peek rewinds to the origin. There
+is also no caching between peeks. Instrumenting a seekable stream through `detect_format`
+on `a3dc408`:
+
+| source | reads | forward seeks | backward seeks |
+| --- | --- | --- | --- |
+| gzip | 5 | 0 | **5** — the same 30 bytes fetched five times |
+| ISO | 2 | 0 | **2** — 4,096 bytes, rewind, then 32,774 re-read *from zero* |
+| ZIP, TAR | 1 | 0 | **1** |
+| unrecognised, 40 KB | 2 | 0 | **2** |
+
+So the discipline exists for the source type that cannot seek, and is missing for the one
+where seeking is most expensive. Routing every source through the same monotonically growing
+workspace is what closes it — the workspace's "extending from 256 KiB to 1 MiB reads only the
+delta" property is the same property, stated for bytes rather than for seeks.
+
+**What fits the shape.** Near magic, the 32,775-byte ISO descriptor, the cue-gated 2 MiB
+scan and the magic-less prefix probes are all forward reads from the origin: one pass,
+growing. The ZIP tail tier is one seek towards the end and a read to end. Nothing in the
+acquisition order needs to interleave them.
+
+**What does not fit, and it is exactly one thing.** Resolving an exact `payload_offset`
+requires walking the central directory, which the EOCD points *backwards* to, and which
+points backwards again to the earliest local header. That cannot be monotone. It is an
+independent argument for the third option in §13's open question — separate identification
+from offset resolution, and let the search-completeness record say "identified; exact offset
+not computed" — because on a network or solid source the offset is not merely expensive, it
+breaks the access discipline that makes the rest affordable.
+
+#### When the tail read happens
+
+It cannot be cued by finding ZIP magic at the front, because a ZIP with `PK\x03\x04` at
+offset 0 is already identified by near evidence. The tier has two uses and only one of them
+can be cued:
+
+- **Discovery** — an appended or concatenated ZIP behind a prefix that produces no near
+  magic (§4 cases a2 and g). Uncued by construction: cueing it on a front hit would make it
+  find only ZIPs that were already found. This is the use that costs, because it means one
+  tail read on *every* source, and most sources are not ZIPs. It is exactly what §10's
+  cost gate is about, and why the tier stays out of `BALANCED` until that gate passes.
+- **Upgrade** — a ZIP already found at offset 0, where EOCD geometry raises the class to
+  `SELF_VALIDATING` and yields the exact offset. Cued by the near hit, and under
+  `open_archive` it is not additional work at all: the ZIP backend reads the EOCD on open
+  regardless, so detection is bringing it forward rather than adding it. Under a bare
+  `detect_format()` it is additional, which is the asymmetry the budget should price.
+
+**Nested archives are already gated, by the caller.** `open_archive`'s `seekable_members`
+defaults to `False`, so a member stream is `FORWARD_ONLY` unless the caller opted in. The
+tail tier's `TAIL` capability is therefore absent by default on exactly the sources where a
+rewind would re-decode a solid block, and the caller who sets `seekable_members=True` has
+declared they will pay for positioning. No new gate is needed for that case; the existing
+capability check does it, provided the tier is written to require the capability rather than
+to test `seekable()` directly.
+
 ### Step 1 — near evidence
 
 Call `peek_more(4096)` once. Run every matching near declaration, not only the first table
@@ -1641,15 +1712,22 @@ Open questions this document deliberately does **not** settle:
   outright — and not at all on the *source* side.
 
   This surfaced while rejecting the `format=` contradiction check (§6), but it is not
-  confined to it. `BALANCED` mandates far ISO evidence at 32,775 bytes and the ZIP tail
-  tier is 65,557 bytes from the end; on a nested archive inside a solid block, a source-head
-  read followed by a tail seek is re-decoding, and detection could trip archivey's own
-  rewind guard. §11 answers "not seekable"; nothing answers "seekable, but each seek costs
-  a round trip or a block". Options range from a third `StreamCapability` value, to a
-  source-side cost hint on `DetectionCapability`, to declaring the budget's byte and seek
-  limits the only control and accepting that they are counted in the wrong unit for such a
-  source. Needs a decision before the tail tier's cost gate is evaluated, since that gate
-  is stated in aggregate bytes and seeks.
+  confined to it. §11 answers "not seekable"; nothing answers "seekable, but each seek costs
+  a round trip or a block".
+
+  §2's *I/O shape* rule answers most of it without needing to model the cost at all — one
+  forward pass, at most one seek towards the end, one read to end, no rewinds — because that
+  shape is affordable on every source, so nothing has to ask how expensive a seek would have
+  been. Two residues remain. **Sizing**: the budget's limits are counted in bytes and seeks,
+  and on a range-request source the meaningful unit is *round trips*, so `BALANCED`'s 32,775
+  ISO bytes and the tail tier's 65,557 are priced in the wrong currency even when the shape
+  is right. That matters most for the tail tier's cost gate (§10), which is stated as an
+  aggregate byte and seek threshold. **Declaration**: nothing lets a source say which it is.
+  `seekable_members=False` already keeps nested member streams `FORWARD_ONLY` by default, so
+  the worst case is caller-declared, but a seekable network source is indistinguishable from
+  a local file. Options: a third `StreamCapability` value, a source-side cost hint on
+  `DetectionCapability`, or accepting the shape rule as sufficient and leaving the unit
+  mismatch documented.
 - **What bounds detection's decode work, and at what scope** (`DetectionBudget`, §10). The
   budget lists nine limits but never says whether they are per-detection aggregates or
   per-candidate, and the answer decides a measured amplification.
