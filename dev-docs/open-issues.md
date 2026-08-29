@@ -522,6 +522,54 @@ re-verified failing against the unfixed code). Original write-up below.
   malformed single-file stream raises at `open_archive` time — which is why an eager check
   that never checks anything went unnoticed. A red-green test belongs with the fix.
 
+### P16. A corrupt bzip2 member reads as empty under the accelerator — **confirmed bug**
+
+- **What happens.** With `[seekable]` installed and `seekable_members=True`, a bzip2
+  single-file member opens through **rapidgzip's bundled bzip2 decoder**
+  (`codecs.py: BZip2Codec.open` → `_rapidgzip_bzip2`, gated by
+  `use_indexed_bzip2.enabled_for(seekable=...)`, default `AUTO`). That decoder returns
+  **zero bytes with no error** for input the stdlib decoder rejects. The capability flag,
+  not the data, decides whether a corrupt archive raises.
+
+- **Measured** on `main` @ `e54eff7`, `rapidgzip` installed, `indexed_bzip2` **not**
+  installed — so this is rapidgzip's bundled decoder specifically, not the separate package:
+
+  | `backup.bz2` contents | `seekable_members=False` | `seekable_members=True` |
+  | --- | --- | --- |
+  | valid bzip2 | 11 bytes | 11 bytes |
+  | 40 000 zero bytes | `CorruptionError` | **0 bytes, no error** |
+  | zero-byte file | `TruncatedError` | **0 bytes, no error** |
+
+  End-to-end: `open_archive(bad, seekable_members=True).read(member)` returns `b""`.
+  Holding everything else fixed and flipping only `use_indexed_bzip2` reproduces it
+  (`AUTO` silent, `OFF` raises).
+
+- **gzip is unaffected**, which is what makes this a bzip2 decoder defect rather than a
+  general accelerator-wrapper problem: a corrupt `.gz` raises `CorruptionError` and an
+  empty one `TruncatedError` under both accelerator modes.
+
+- **Why it matters.** This is silent data loss on the founding workload. Someone verifying
+  or indexing a backup corpus gets "this archive is fine and contains nothing" for a file
+  that is corrupt — the worst available answer, and worse than P15, which at least raises
+  eventually. Note also that no spec currently forbids it: `compressed-streams`'s *Content
+  faults raise from read, never from close* explicitly scopes rapidgzip **out**.
+
+- **Interaction with P15.** It defeats P15's fix. The proposed `read(1)` probe gets `b""`
+  back on this path and concludes the stream is a valid empty one, so the two cannot be
+  fixed independently.
+
+- **Fix.** Stated as a contract rather than a patch: an accelerator SHALL raise the same
+  class of translated error, on the same inputs, as the path it replaces. Concretely, a
+  decoder ending a stream with no output, no input consumed and no valid end-of-stream
+  marker raises. If rapidgzip cannot report enough to distinguish that from a genuine empty
+  stream, decline acceleration below the codec's minimum framing size.
+
+- **Refs:** found while measuring P15's fix; both are addressed together by
+  `openspec/changes/single-file-open-time-validation/` (spec delta:
+  `compressed-streams` → *An accelerator preserves the error contract of the path it
+  replaces*). Adjacent but distinct from P5, which is an accelerator **abort**, not a
+  silent success.
+
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
 - **Today:** Solid ALL-pipe demux must match what `unrar` actually emits (RAR5

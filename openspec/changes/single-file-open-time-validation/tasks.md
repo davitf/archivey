@@ -47,8 +47,8 @@
       single-file archive now fails at `open_archive`, not on read
 - [ ] 5.2 Note the bzip2 open cost (about 14 ms on a 1.8 MB payload, proportional to the
       first block and not to archive size) wherever open costs are described
-- [ ] 5.3 Close `dev-docs/open-issues.md` P15; add the bzip2 accelerator defect and mark it
-      closed by this change
+- [ ] 5.3 Close `dev-docs/open-issues.md` P15 **and P16** (the bzip2 accelerator defect,
+      registered when it was found) — both are closed by this change
 - [ ] 5.4 Cross-reference from `dev-docs/investigations/archive-format-detection-algorithm.md`
       §1 and §6, which both lean on P15 as the mechanism behind the extension-honesty gap
 

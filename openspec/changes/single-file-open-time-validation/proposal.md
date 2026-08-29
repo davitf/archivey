@@ -98,5 +98,6 @@ path instead.
   each codec still opening and reading as empty, so the floor does not over-reject.
 - Docs: `docs/gotchas.md` and `docs/errors-and-diagnostics.md` describe read-time failure
   for wrongly-named single-file archives; the failure moves to open.
-- Closes `dev-docs/open-issues.md` P15 and adds the bzip2 accelerator defect, which has no
-  P-entry yet.
+- Closes `dev-docs/open-issues.md` P15 and P16. P16 is the bzip2 accelerator defect, found
+  while measuring P15's fix and registered on discovery so it survives independently of
+  whether this change is implemented.
