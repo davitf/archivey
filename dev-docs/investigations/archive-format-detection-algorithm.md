@@ -1342,6 +1342,94 @@ default optimization: near evidence has already captured almost the entire popul
 where agreement is cheap. The two residual files are too small a sample to justify a new
 control-flow rule.
 
+### The override's other half: checking `format=` without obeying the bytes
+
+The rule above settles what `format=` does to `format_unconfirmed`: nothing, because the
+caller took responsibility. It leaves open whether archivey should *notice* when the
+override contradicts the bytes. It should, under four constraints — and the constraints
+carry more weight than the answer.
+
+**Why it is worth doing at all.** `EXPLICIT_FORMAT_LISTED_EMPTY` already exists, so the repo
+has conceded the principle that an override producing a suspicious outcome gets reported.
+But an empty listing is a weak, late proxy. The common mistake is `format=ZIP` on a
+`.tar.gz`, which raises `CorruptionError: truncated or corrupt ZIP` — archivey blaming the
+bytes for a format only the caller ever claimed, the same honesty gap the filename rule
+above fixes, with the override standing in the filename's place.
+
+**Constraint 1 — fire on a positive contradiction, never on absence.** Of 26 known formats,
+**14 have no magic entry at all**: `BROTLI`, `ZLIB`, `LZMA_ALONE`, `DIRECTORY`, and every
+TAR combo. `format=BROTLI` is the *documented* way to open a Brotli stream precisely because
+there is no signature to find. A check that warned whenever the asserted format's magic
+failed to appear would fire on every legitimate override of a magic-less format, on v7 TAR,
+and on any caller-positioned stream. That is not a diagnostic, it is noise — and noise is
+what gets a diagnostics channel switched off. Report only when the bytes positively say
+something *else*.
+
+**Constraint 2 — compare compatibility, not equality.** `foo.tar.gz` asserted as `TAR_GZ`
+matches the `GZ` magic at offset 0, because the entry's format is `GZ` and refinement
+produces `TAR_GZ` afterwards. Naive equality reports a contradiction that does not exist.
+This is the predicate `detection._is_deferred_inner_tar` already implements for the
+extension path; the override check reuses it rather than growing a second notion of
+"agrees".
+
+**Constraint 3 — diagnostic only.** No exception, no change of format, no change to
+`format_unconfirmed`. Raising would overturn *we trust what the caller says*: the caller
+still wins on identity, and the disagreement is reported beside it.
+
+**Constraint 4 — seekable sources only, recorded when skipped.** On a non-seekable source
+`format=` currently hands bytes straight to the backend with no replay wrapper; a mandatory
+prefix read would change that buffering contract, which matters more than the microseconds.
+This needs no special case: the check is a declaration requiring `PREFIX` and `SEEK`/`REREAD`,
+and where the capability is absent it does not run and the incomplete-search record says so.
+
+#### Where it runs, and why not the two lazier placements
+
+The check is **eager**: it runs before the backend is constructed, against the prefix
+workspace, in the `else` arm of `core.py:262`'s `if resolved_format is None`. Two other
+placements suggest themselves and both are worse.
+
+*Raise immediately on mismatch* is ruled out by constraint 3 — it is the same proposal as
+letting the bytes overrule the caller, arriving through the error path instead of the
+selection path.
+
+*Run the check only when the open fails* is the tempting one: zero cost on the happy path,
+and the information appears attached to the exception that would otherwise blame the bytes.
+Measurement rules it out. Opening a real ZIP under three wrong overrides:
+
+| `format=` | what happens |
+| --- | --- |
+| `GZ`, `BZ2`, `BROTLI` | **open succeeds**, listing succeeds with one fabricated member `real.zip.uncompressed`, failure lands on **read** |
+| `TAR` | fails at open |
+
+So for the single-file codecs there is no open-time exception to hang the check on. The
+failure surfaces inside a member stream the caller is already holding, after archivey has
+handed back a plausible-looking listing — and by then the check would have to re-read a
+source the codec has consumed, from inside an exception handler. (That the failure defers at
+all is P15, but fixing P15 moves *when* it raises, not the fact that a lazy check runs only
+on the failing path and is therefore exercised only by failure tests.)
+
+The eager cost is small and bounded: measured on a 54 KB ZIP, `read(4096)` plus matching all
+14 near entries is **8.8 µs**, against **273 µs** for the whole `open_archive(format=ZIP)`
+call — **3.2%**, constant in archive size. Under this design it is smaller still, because the
+prefix workspace is shared with the backend rather than being a private extra read.
+
+#### What the check produces when it agrees
+
+The ledger already has room for the answer, and it is better than a diagnostic that fires
+only on failure. The winning candidate keeps its `ASSERTED` record — the format came from
+the caller, unconditionally — and a corroborating `MAGIC` record is recorded *beside* it.
+
+That has a consequence worth stating: `confidence` is a projection of the **strongest
+content-evidence class**, and an `ASSERTED` record is not content evidence while a `MAGIC`
+one is. So `format=ZIP` on bytes that really do start `PK\x03\x04` reports `CERTAIN`, not a
+flat `GUESS`. This does not weaken the override — the *format* is still the caller's,
+whatever the bytes say — it only stops archivey from claiming ignorance about something it
+just observed. When the check does not run, or runs and finds nothing, there is no content
+evidence and the projection is `GUESS`, exactly as the table above says.
+
+So the check earns its keep twice: it catches the contradiction, and it lets an override
+that agrees with the bytes report honestly.
+
 ## 7. When agreement may stop work
 
 Agreement may skip only tiers whose maximum evidence cannot dominate the current winner.
@@ -1795,10 +1883,12 @@ delta and its release notes can be written from one list rather than a re-read.
 | 10 | **JPEG+ZIP and bare concatenation need `THOROUGH`** | not detected at all | detected under `THOROUGH`; `FormatDetectionError` under `BALANCED` until the ZIP-tail cost gate passes | §4, §10 |
 | 11 | **A source too short to validate is regraded** | all 15 magic entries return `CERTAIN` on a source that is only the magic — 2 bytes of `\x1f\x8b` is a `CERTAIN` gzip | an `INCOMPLETE` validation caps the candidate at `SIGNATURE_ONLY` → `PROBABLE`; the format is still identified | §1 |
 | 12 | **An empty source says so** | `FormatDetectionError: no magic-byte match and no usable file extension` — for a file with no bytes to match | the same type, with the incomplete-search record distinguishing a capability shortfall from an exhausted search | §1 |
+| 13 | **`format=` gets a cheap contradiction check** | detection is skipped entirely (`core.py:262`), so a `format=ZIP` on a `.tar.gz` raises `CorruptionError` blaming the bytes | a near-magic check on seekable sources emits a diagnostic when the bytes positively say something else; never raises, never overrides, silent on absence | §6 |
+| 14 | **A corroborated override reports `CERTAIN`** | no detection result exists under `format=` | the `ASSERTED` record keeps the format; a corroborating `MAGIC` record beside it raises `confidence`, since confidence projects the strongest *content* evidence | §6 |
 
 Items 1, 2, 8 and 11 change what existing callers observe without any API change, so they
 are the ones that need release-note prose rather than a changelog line. Items 3–6 are API
-surface. Items 9, 10 and 12 are additive.
+surface. Items 9, 10, 12, 13 and 14 are additive.
 
 Two of these are worth flagging as *deliberately* user-visible regressions rather than
 improvements: item 1 downgrades the reported confidence of genuine `.br`, `.zz` and
