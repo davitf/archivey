@@ -31,10 +31,15 @@ exact one, and the fix is the reorder.
   its own — a bootable ISO, whose reserved 32 KiB system area holds bootloader code, is
   detected as `BROTLI` and opened as one fabricated `*.uncompressed` member while the
   filesystem stays readable by other tools.
-- **Remove the LZMA Alone `dict_size != 0` guard.** Zero is a legal 32-bit dictionary
-  value; the LZMA specification requires decoders to round values below 4 KiB up to 4 KiB,
-  and a Python-produced Alone stream still decodes after its dictionary field is zeroed.
-  Safe to remove only once the reorder above lands, which is why they ship together.
+- **Replace the LZMA Alone `dict_size != 0` guard with a zero-*size* one.** Zero is a legal
+  32-bit dictionary value; the LZMA specification requires decoders to round values below
+  4 KiB up to 4 KiB, and a Python-produced Alone stream still decodes after its dictionary
+  field is zeroed. Removing it needs the reorder above, which is why they ship together —
+  and, found at implementation, it also needs a replacement: 18 zero bytes are a *valid,
+  complete, empty* Alone stream, so lifting the guard alone made every zero-filled source
+  larger than the peeked prefix detect as `LZMA_ALONE`. The probe now refuses a header
+  declaring an uncompressed size of exactly zero, which carries no payload to open. The
+  two fields are independent, so the false negative is still fixed (design §5).
 - **Widen the zlib probe gate to the RFC 1950 grammar** — `CM == 8`, `CINFO <= 7`,
   `(CMF * 256 + FLG) % 31 == 0`, `FDICT` accounted for — replacing the four-entry allow-list
   `78 01 / 78 5e / 78 9c / 78 da`, which recognises only 32 KiB-window, no-dictionary

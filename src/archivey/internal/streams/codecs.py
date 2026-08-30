@@ -78,6 +78,12 @@ from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream
+from archivey.internal.streams.zstd_framing import (
+    FRAME_MAGIC as ZSTD_FRAME_MAGIC,
+)
+from archivey.internal.streams.zstd_framing import (
+    regular_frame_behind_skippable_frames,
+)
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -820,11 +826,6 @@ _PROBE_COMPLETENESS_OUTPUT = 64 * 1024
 # past the peeked prefix (``compressed-streams``). ``None`` means the caller declined.
 ProbeReadAt = Callable[[int, int], bytes | None]
 
-# zlib's 2-byte CMF/FLG header is not a true magic (the same prefix begins many raw-deflate
-# streams and can occur in arbitrary data), so the probe uses it only as a cheap fail-fast
-# gate before attempting the decode that actually confirms a zlib stream.
-_ZLIB_HEADERS = (b"\x78\x01", b"\x78\x5e", b"\x78\x9c", b"\x78\xda")
-
 
 @dataclass(frozen=True)
 class MetadataContext:
@@ -945,6 +946,18 @@ class StreamCodec:
         """
         return False
 
+    def magic_behind_prefix(self, prefix: bytes) -> bool:
+        """Whether this codec's exact magic sits behind a structural prefix it defines.
+
+        Default: this codec's magic, if it has one, starts at the offset the magic table
+        declares. zstd overrides this — a run of skippable frames may legally precede its
+        first regular frame, and their declared sizes make the walk exact arithmetic over
+        already-peeked bytes (see ``zstd_framing``). A hit is an exact magic match, so
+        detection reports it as one; it is not a magic-table entry because the structural
+        prefix alone must not be claimed as the format.
+        """
+        return False
+
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         """How to phrase ``STREAM_REWIND_REDECOMPRESSES`` for this codec.
 
@@ -986,6 +999,11 @@ class StreamCodec:
     def probes_content(self) -> bool:
         """Whether this codec overrides the no-op base content probe (the detector uses it)."""
         return type(self).content_probe is not StreamCodec.content_probe
+
+    @property
+    def walks_magic_prefix(self) -> bool:
+        """Whether this codec overrides the no-op base :meth:`magic_behind_prefix`."""
+        return type(self).magic_behind_prefix is not StreamCodec.magic_behind_prefix
 
     # --- shared probe primitive ---
 
@@ -1346,16 +1364,35 @@ def _alone_props_plausible(props: int) -> bool:
 
 
 def _alone_header_plausible(prefix: bytes) -> bool:
-    """Cheap Alone header gate before a decode probe (rejects zero-filled prefixes)."""
+    """Cheap Alone header gate before a decode probe.
+
+    The 13-byte header is a properties byte, a 32-bit dictionary size, and a 64-bit
+    uncompressed size (all-ones meaning "unknown"). Two of the three are checked:
+
+    - **Properties** must encode a legal ``(lc, lp, pb)`` triple.
+    - **Uncompressed size** must not be exactly zero. Any value but the all-ones
+      sentinel is the stream's exact output length, so zero declares a stream carrying
+      no payload — nothing archivey could open. That is the rule the probe already
+      applies after decoding (``require_output``), stated at the header because the
+      bounded probe cannot reach it: 18 zero bytes are a *valid, complete, empty* Alone
+      stream (13-byte header plus a five-byte range-coder init, which must begin with a
+      zero), so zero-filled padding decodes cleanly to nothing, and the bounded read
+      then runs off the end of the trailing zeros and reports truncation — which is a
+      match. It refuses nothing that was ever detected: an empty stream is not claimed
+      with or without this gate, because ``require_output`` already declines an empty
+      decode, and a ``.lzma`` name still opens one through the extension.
+    - **Dictionary size** is deliberately *not* gated, at any value. Every 32-bit value
+      is legal and the LZMA specification requires decoders to round one below 4 KiB up
+      to 4 KiB, so a stream whose field is zero still decodes — rejecting it was a false
+      negative on real input, and it is independent of the size field above (a
+      dictionary-zeroed stream of 700 bytes decodes fine). That rejection also served as
+      an ordering workaround, keeping a zero-filled ISO system area from decoding as an
+      empty Alone stream before far-magic ISO detection ran; far magic now runs before
+      the content probes and answers that source itself (``format-detection``).
+    """
     if len(prefix) < _ALONE_HEADER_SIZE or not _alone_props_plausible(prefix[0]):
         return False
-    dict_size = int.from_bytes(prefix[1:5], "little")
-    # Real Alone encoders never write dictionary size 0; rejecting it also keeps the
-    # zero-filled ISO system area (and similar padding) from decoding as an empty Alone
-    # stream before far-magic ISO detection runs.
-    if dict_size == 0:
-        return False
-    return True
+    return int.from_bytes(prefix[5:13], "little") != 0
 
 
 class LzmaAloneCodec(_LzmaErrorCodec):
@@ -1479,6 +1516,33 @@ class DeflateCodec(_ZlibErrorCodec):
         return _translate_rapidgzip(exc, "deflate")
 
 
+def _zlib_header_plausible(prefix: bytes) -> bool:
+    """The RFC 1950 CMF/FLG grammar — the zlib probe's cheap gate before a decode.
+
+    zlib's 2-byte header is not a true magic (the same prefix begins many raw-deflate
+    streams and can occur in arbitrary data), so it only decides whether the decode that
+    actually confirms a zlib stream is worth attempting. The grammar is *stated* rather
+    than enumerated: an allow-list of common headers reads as data, and the four-entry
+    one this replaced silently excluded six of the seven legal window sizes — a reader
+    could not tell a deliberate exclusion from an oversight.
+
+    ``FDICT`` is accepted: a preset dictionary is valid zlib, and whether archivey holds
+    that dictionary is the decode's answer, not the header's.
+
+    66 of the 65 536 ``(CMF, FLG)`` pairs satisfy this, against 4 before — a wider
+    fail-fast gate, taken deliberately in the false-negative direction (a real stream
+    archivey cannot open is a hard failure; a probe false positive is a graded one).
+    """
+    if len(prefix) < 2:
+        return False
+    cmf, flg = prefix[0], prefix[1]
+    if cmf & 0x0F != 8:  # CM: deflate is the only compression method zlib defines
+        return False
+    if cmf >> 4 > 7:  # CINFO: window sizes 512 B – 32 KiB
+        return False
+    return (cmf * 256 + flg) % 31 == 0  # FCHECK
+
+
 class ZlibCodec(_ZlibErrorCodec):
     codec = Codec.ZLIB
     stream_format = StreamFormat.ZLIB
@@ -1516,8 +1580,8 @@ class ZlibCodec(_ZlibErrorCodec):
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
     ) -> bool:
-        """Recognize a zlib stream: a known CMF/FLG header (fail-fast) that then decodes."""
-        return prefix[:2] in _ZLIB_HEADERS and self._decodes_sample(
+        """Recognize a zlib stream: an RFC 1950 CMF/FLG header (fail-fast) that then decodes."""
+        return _zlib_header_plausible(prefix) and self._decodes_sample(
             prefix, source_length=source_length
         )
 
@@ -1525,7 +1589,7 @@ class ZlibCodec(_ZlibErrorCodec):
 class ZstdCodec(StreamCodec):
     codec = Codec.ZSTD
     stream_format = StreamFormat.ZSTD
-    magic = (MagicSignature(0, b"\x28\xb5\x2f\xfd", ArchiveFormat.ZST),)
+    magic = (MagicSignature(0, ZSTD_FRAME_MAGIC, ArchiveFormat.ZST),)
     requirement = MissingComponent(
         "backports.zstd", "pip install archivey[recommended]", ("zstd",)
     )
@@ -1554,6 +1618,9 @@ class ZstdCodec(StreamCodec):
 
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         return RewindWarning("zstd")
+
+    def magic_behind_prefix(self, prefix: bytes) -> bool:
+        return regular_frame_behind_skippable_frames(prefix)
 
 
 class Lz4Codec(StreamCodec):

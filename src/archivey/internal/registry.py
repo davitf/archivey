@@ -172,6 +172,20 @@ class BackendRegistry:
             entries.extend(codec.magic)
         return entries
 
+    def magic_prefix_walks(self) -> list[tuple[ArchiveFormat, Callable[[bytes], bool]]]:
+        """(format, walk) pairs for magic that may sit behind a format's own prefix frames.
+
+        ``walk(prefix)`` answers "is my exact magic in there, behind structural frames I
+        define?" — today only zstd, whose skippable frames may precede the first regular
+        frame. Declared on the codec like every other detection signal, so the detector
+        stays format-agnostic; a hit is reported as the exact magic match it is.
+        """
+        return [
+            (codec.single_file_format, codec.magic_behind_prefix)
+            for codec in SINGLE_FILE_CODECS
+            if codec.walks_magic_prefix and codec.single_file_format is not None
+        ]
+
     def sfx_magic_entries(self) -> list[MagicSignature]:
         """Magic the SFX scan hunts for behind an executable stub.
 

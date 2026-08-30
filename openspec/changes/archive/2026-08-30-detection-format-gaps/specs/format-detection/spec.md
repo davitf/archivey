@@ -124,16 +124,33 @@ gate keeps those streams — they are not rejected for being uncompressed-first.
 
 The **zlib** probe SHALL gate on the RFC 1950 header grammar — `CM == 8`, `CINFO <= 7`,
 and `(CMF * 256 + FLG) % 31 == 0` — rather than an allow-list of common headers, and SHALL
-accept a header with `FDICT` set. All seven legal window sizes are therefore recognised; a
-preset dictionary the decoder does not hold fails the decode and the candidate falls
-through.
+accept a header with `FDICT` set. All seven legal window sizes are therefore recognised.
+`FDICT` is accepted rather than rejected because a preset dictionary is valid zlib and the
+decode, not the header, decides what archivey can read: today no dictionary is ever
+supplied to the codec layer, so every `FDICT` stream fails that decode and falls through.
+The gate does not encode that as a rejection — the day a dictionary can be supplied, the
+grammar already admits the header.
 
 The LZMA Alone probe SHALL attempt a bounded `FORMAT_ALONE` decode and MUST NOT
 claim streams that already matched exact magic (notably lzip `LZIP` and xz
-`FD 37 7A…`). It SHALL NOT reject a dictionary size of zero: every 32-bit value is legal
-and decoders round values below 4 KiB up to 4 KiB. Rejecting zero was an ordering
-workaround for a zero-filled ISO system area, which step 4 of the detection algorithm now
-answers before any probe runs.
+`FD 37 7A…`). It SHALL NOT reject a **dictionary size** of zero: every 32-bit value is
+legal and decoders round values below 4 KiB up to 4 KiB. Rejecting zero was an ordering
+workaround for a zero-filled ISO system area, which the far-magic step of the detection
+algorithm now answers before any probe runs.
+
+It SHALL, separately, refuse a header declaring an **uncompressed size** of exactly zero.
+Any value but the all-ones "unknown" sentinel is the stream's exact output length, so zero
+declares a stream carrying no payload — nothing that can be opened. This is the same rule
+as the probe's existing refusal to claim an empty successful decode, stated at the header
+because a bounded probe cannot reach it: 18 zero bytes are a *valid, complete, empty*
+Alone stream (a legal 13-byte header plus a five-byte range-coder init), so zero-filled
+padding decodes cleanly to nothing and the bounded read then reports truncation, which is
+otherwise a match. This refuses nothing that was ever detected: an empty stream is not
+claimed with or without the rule, because the probe already declines an empty decode, and
+a `.lzma` name still opens one through the extension. It is a rule about *zero output*,
+not about the sentinel — a header carrying a real uncompressed size, as the LZMA SDK's
+encoder writes, is as welcome as one carrying the sentinel. The two header fields are
+independent: a stream with a zero dictionary size and a real payload is still detected.
 
 #### Scenario: content-probe matrix
 
@@ -154,8 +171,10 @@ answers before any probe runs.
 | Case | Expected |
 | --- | --- |
 | zlib stream at any window size 512 B – 32 KiB (`18 95`, `28 91`, `38 8d`, `48 89`, `58 85`, `68 81`, `78 9c`) | `ZLIB`, `content_probe` — all seven |
-| zlib header with `FDICT` set, dictionary available | `ZLIB`, `content_probe` |
-| zlib header with `FDICT` set, dictionary unavailable | Decode fails; no zlib claim |
+| zlib header with `FDICT` set | Header passes the grammar; the decode decides. Archivey supplies no preset dictionary today, so the decode fails and no zlib claim is made |
 | Header failing `CM == 8`, `CINFO <= 7` or the mod-31 check (e.g. all-zero bytes) | No zlib claim; no decode attempted |
 | LZMA Alone stream whose dictionary-size field is zero | `LZMA_ALONE`, `content_probe` |
-| Zero-filled source with `CD001` at 32 769 | `ISO` at step 4; no Alone claim |
+| Alone header declaring an uncompressed size of exactly zero | No Alone claim; no payload to open |
+| Alone header carrying a real uncompressed size rather than the sentinel | `LZMA_ALONE`, `content_probe` — unaffected |
+| Zero-filled source of any length (padding, a sparse or zero-truncated file) | No Alone claim — the header declares zero output |
+| Zero-filled source with `CD001` at 32 769 | `ISO` at the far-magic step; no Alone claim |

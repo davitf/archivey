@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import io
 import logging
+import lzma
+import random
+import struct
 import zipfile
 import zlib
 from pathlib import Path
@@ -17,7 +20,7 @@ from archivey import ArchiveFormat, DetectionConfidence, FormatInfo, detect_form
 from archivey.exceptions import FormatDetectionError
 from archivey.internal.streams import codecs as codecs_module
 from archivey.types import MagicSignature
-from tests.conftest import requires
+from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.streams_util import NonSeekableBytesIO
 
 
@@ -511,3 +514,311 @@ def test_detection_from_mid_positioned_stream() -> None:
     info = detect_format(stream)
     assert info.format == ArchiveFormat.ZIP
     assert stream.tell() == len(junk)  # starting position restored, not rewound to 0
+
+
+# ---------------------------------------------------------------------------
+# detection-format-gaps: formats archivey decodes but could not recognise
+#
+# Confidence assertions below are **pre-ledger**. ``detection-evidence-ledger``
+# regrades ISO (DISCRIMINATING_HEADER -> PROBABLE) and caps unvalidated signatures
+# (SIGNATURE_ONLY -> PROBABLE), so the durable pins here are ``format`` and
+# ``detected_by``; a ``confidence`` assertion is provisional and that change updates
+# it deliberately.
+# ---------------------------------------------------------------------------
+
+
+_ZSTD_SKIPPABLE_MAGIC = 0x184D2A50
+
+
+def _skippable_frame(payload: bytes, *, magic: int = _ZSTD_SKIPPABLE_MAGIC) -> bytes:
+    """One zstd skippable frame: magic, little-endian uint32 size, then the payload."""
+    return struct.pack("<II", magic, len(payload)) + payload
+
+
+def _zstd_frame(payload: bytes = b"zstd payload that compresses " * 40) -> bytes:
+    return zstd_backend().compress(payload)
+
+
+@requires_zstd()
+def test_zstd_behind_one_skippable_frame() -> None:
+    data = _skippable_frame(b"\x00\x00\x00\x00") + _zstd_frame()
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.ZST
+    assert info.detected_by == "magic"
+    assert info.confidence == DetectionConfidence.CERTAIN  # pre-ledger
+    # The walk agrees with the decoder: this is a stream zstd itself reads.
+    assert zstd_backend().decompress(data)
+
+
+@requires_zstd()
+def test_zstd_behind_chained_skippable_frames() -> None:
+    # Differing payload sizes, so a fixed-stride walk would land in the wrong place.
+    data = (
+        _skippable_frame(b"a" * 4)
+        + _skippable_frame(b"b" * 17)
+        + _skippable_frame(b"c" * 4, magic=0x184D2A5F)  # the last legal skippable magic
+        + _zstd_frame()
+    )
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.ZST
+    assert info.detected_by == "magic"
+    assert zstd_backend().decompress(data)
+
+
+def test_zstd_skippable_frames_alone_are_not_a_zstd_claim() -> None:
+    # No regular frame means no compressed payload: claiming ZST here would open as one
+    # fabricated empty member.
+    data = _skippable_frame(b"x" * 10) + _skippable_frame(b"y" * 6)
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(data))
+
+
+@requires_zstd()
+def test_zstd_skippable_frame_larger_than_the_prefix_is_not_claimed() -> None:
+    # A legal 1 MiB skippable frame: the walk cannot reach the frame behind it inside the
+    # peeked prefix, and must decline rather than extend the read.
+    data = struct.pack("<II", _ZSTD_SKIPPABLE_MAGIC, 1 << 20) + _zstd_frame()
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(data))
+
+
+def test_zstd_skippable_walk_arithmetic() -> None:
+    # The walk itself: exact arithmetic over the peeked bytes, no decoding. `None` is the
+    # declined answer (a declared size past the prefix), distinct from offset 0.
+    from archivey.internal.streams.zstd_framing import skippable_prefix_end
+
+    assert skippable_prefix_end(b"\x28\xb5\x2f\xfd" + b"\x00" * 32) == 0  # regular only
+    assert skippable_prefix_end(b"\x00" * 64) == 0  # not a frame magic at all
+    assert skippable_prefix_end(_skippable_frame(b"\x00" * 4) + b"tail") == 12
+    chained = (
+        _skippable_frame(b"a" * 4)
+        + _skippable_frame(b"b" * 17)
+        + _skippable_frame(b"c" * 4)
+    )
+    assert skippable_prefix_end(chained + b"tail") == 49
+    assert skippable_prefix_end(chained) == 49  # skippable-only: an offset, not a claim
+    assert (
+        skippable_prefix_end(struct.pack("<II", _ZSTD_SKIPPABLE_MAGIC, 1 << 20)) is None
+    )
+
+
+@pytest.mark.parametrize("wbits", [9, 10, 11, 12, 13, 14, 15])
+def test_zlib_detected_at_every_legal_window_size(wbits: int) -> None:
+    # Six of the seven windows were missed by the four-entry header allow-list.
+    compressor = zlib.compressobj(6, zlib.DEFLATED, wbits)
+    data = compressor.compress(b"zlib payload " * 100) + compressor.flush()
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.ZLIB
+    assert info.detected_by == "content_probe"
+
+
+def test_zlib_grammar_accepts_a_preset_dictionary_header() -> None:
+    # FDICT is a legal zlib header bit, so the gate must not reject it: whether archivey
+    # can read the stream is the decode's answer, not the header's.
+    compressor = zlib.compressobj(6, zlib.DEFLATED, 15, zdict=b"the quick brown fox")
+    data = compressor.compress(b"payload " * 100) + compressor.flush()
+    assert (data[1] >> 5) & 1, "fixture must actually set FDICT"
+    assert codecs_module._zlib_header_plausible(data)
+    # archivey holds no preset dictionary, so the decode fails and the candidate falls
+    # through — the "dictionary available" half of the grammar is unreachable from
+    # detection until the codec layer can be handed one.
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(data))
+
+
+def test_zlib_grammar_admits_exactly_66_header_pairs() -> None:
+    # Pins the derivation, not a hand-listed set: CM == 8, CINFO <= 7, mod-31 check.
+    accepted = [
+        (cmf, flg)
+        for cmf in range(256)
+        for flg in range(256)
+        if codecs_module._zlib_header_plausible(bytes((cmf, flg)))
+    ]
+    assert len(accepted) == 66
+    assert sum(1 for _, flg in accepted if (flg >> 5) & 1) == 34  # FDICT set
+
+
+def test_zlib_grammar_rejects_a_zeroed_header() -> None:
+    # CM == 0 fails the grammar, so zero-filled padding never reaches the decode.
+    assert not codecs_module._zlib_header_plausible(b"\x00\x00")
+
+
+def test_lzma_alone_declaring_zero_output_is_not_claimed() -> None:
+    # 18 zero bytes are a *valid, complete, empty* Alone stream — a legal header (props
+    # 0 = lc0/lp0/pb0, dictionary 0, declared size 0) plus a five-byte range-coder init,
+    # which must begin with a zero. Zero-filled padding is everywhere in the founding
+    # corpus, so a stream declaring no output must not be claimed: the header says there
+    # is nothing to open, and only the header can say so here (the bounded probe reads
+    # off the end of the trailing zeros and reports truncation, which reads as a match).
+    for size in (18, 4097, 32768, 40000):
+        with pytest.raises(FormatDetectionError):
+            detect_format(io.BytesIO(b"\x00" * size))
+
+
+def test_lzma_alone_zero_output_gate_costs_no_real_stream(tmp_path: Path) -> None:
+    # Every liblzma producer writes the all-ones "unknown" sentinel — for empty input and
+    # for known-size input alike — so the gate never fires on one.
+    for payload in (b"", b"hello world", b"a" * (1 << 20)):
+        header = lzma.compress(payload, format=lzma.FORMAT_ALONE)[:13]
+        assert int.from_bytes(header[5:13], "little") == (1 << 64) - 1
+
+    # A size-*known* stream must keep detecting — that is what the gate must not widen
+    # into. The LZMA SDK's own lzma_alone writes the actual uncompressed size rather than
+    # the sentinel (`LzmaUtil.c` File_GetLength -> the 8-byte field verbatim), and this
+    # header shape was checked byte-for-byte against that tool's real output.
+    payload = b"payload data " * 8
+    known = bytearray(lzma.compress(payload, format=lzma.FORMAT_ALONE))
+    known[5:13] = len(payload).to_bytes(8, "little")
+    assert lzma.decompress(bytes(known), format=lzma.FORMAT_ALONE) == payload
+    info = detect_format(io.BytesIO(bytes(known)))
+    assert info.format == ArchiveFormat.LZMA_ALONE
+    assert info.detected_by == "content_probe"
+
+    # Size 0 *is* producible by that same tool: a 0-byte input gives a real dictionary
+    # with size 0. The gate costs that stream nothing, which is the point — it was never
+    # claimed by the probe anyway (an empty decode is not a claim), and a `.lzma` name
+    # still opens it. Verified against lzma_alone's real 18-byte output for /dev/null.
+    sdk_empty = (
+        bytes([0x5D])
+        + (1 << 25).to_bytes(4, "little")
+        + (0).to_bytes(8, "little")
+        + b"\x00" * 5  # range-coder init
+    )
+    decompressor = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+    assert decompressor.decompress(sdk_empty) == b""
+    assert decompressor.eof  # genuinely a complete, empty stream
+
+    assert (
+        codecs_module.LzmaAloneCodec().content_probe(
+            sdk_empty, source_length=len(sdk_empty)
+        )
+        is False
+    )
+    path = tmp_path / "empty.lzma"
+    path.write_bytes(sdk_empty)
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.LZMA_ALONE
+    assert info.detected_by == "extension"
+
+
+def test_lzma_alone_with_zero_dictionary_size_is_detected() -> None:
+    # Every 32-bit dictionary value is legal; decoders round below 4 KiB up to 4 KiB.
+    data = bytearray(lzma.compress(b"alone payload " * 50, format=lzma.FORMAT_ALONE))
+    data[1:5] = b"\x00\x00\x00\x00"
+    payload = bytes(data)
+    assert lzma.decompress(payload, format=lzma.FORMAT_ALONE)  # the decoder accepts it
+    info = detect_format(io.BytesIO(payload))
+    assert info.format == ArchiveFormat.LZMA_ALONE
+    assert info.detected_by == "content_probe"
+
+
+# --- far magic ahead of the content probes ---------------------------------------------
+
+_ISO_SYSTEM_AREA = 32768
+
+
+def _iso_bytes(system_area: bytes) -> bytes:
+    """A real pycdlib ISO with its reserved system area overwritten.
+
+    Only the reserved area changes — the filesystem stays byte-identical, so any other
+    tool keeps reading the image.
+    """
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    iso.add_fp(io.BytesIO(b"x" * 32), 32, "/X.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = bytearray(out.getvalue())
+    assert not any(data[:_ISO_SYSTEM_AREA]), (
+        "pycdlib should leave the system area zeroed"
+    )
+    data[: len(system_area)] = system_area
+    return bytes(data)
+
+
+def _system_area_the_brotli_probe_accepts(source_length: int) -> bytes:
+    """Boot-image-shaped system-area bytes the Brotli probe accepts, or ``pytest.skip``.
+
+    A bootable or hybrid ISO reserves its first 32 KiB for a bootloader, and that data
+    class — high-entropy packed code — is what the Brotli probe measurably accepts. The
+    bytes are *searched* rather than hard-coded so this test cannot rot into a vacuous
+    pass: if the probe stops accepting any candidate, it says so instead of passing
+    because nothing claimed the image.
+    """
+    from archivey.internal.streams.codecs import BrotliCodec
+    from archivey.internal.streams.peekable import DETECTION_LIMIT
+
+    probe = BrotliCodec()
+    for seed in range(256):
+        candidate = random.Random(seed).randbytes(_ISO_SYSTEM_AREA)
+        if probe.content_probe(
+            candidate[:DETECTION_LIMIT], source_length=source_length
+        ):
+            return candidate
+    pytest.skip(
+        "no boot-shaped system area in the search range is accepted by the probe"
+    )
+
+
+@requires("pycdlib", "brotli")
+def test_bootable_iso_is_not_claimed_by_the_content_probe() -> None:
+    # The live wrong answer the reorder closes: exact magic sits at 32 769 the whole
+    # time, and a probe hit on the boot area used to win, opening a whole filesystem as
+    # one fabricated `*.uncompressed` member.
+    length = len(_iso_bytes(b"\x00" * _ISO_SYSTEM_AREA))
+    data = _iso_bytes(_system_area_the_brotli_probe_accepts(length))
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.ISO
+    assert info.detected_by == "magic"
+    assert info.confidence == DetectionConfidence.CERTAIN  # pre-ledger
+
+
+@requires("pycdlib")
+def test_zeroed_system_area_iso_still_detected() -> None:
+    # Regression pin for removing the LZMA Alone zero-dictionary guard: a zero-filled
+    # system area is exactly what that guard was covering, and far magic now answers it
+    # before any probe runs.
+    data = _iso_bytes(b"\x00" * _ISO_SYSTEM_AREA)
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.ISO
+    assert info.detected_by == "magic"
+    assert info.confidence == DetectionConfidence.CERTAIN  # pre-ledger
+
+
+def test_small_source_takes_no_extended_peek(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The far-magic step is size-gated: a source known to be smaller than the ISO window
+    # never pays the 32 KiB peek.
+    from archivey.internal import detection as detection_module
+
+    requested: list[int] = []
+    real_peek = detection_module._peek_prefix
+
+    def spy(source, length):  # noqa: ANN001, ANN202 - test double
+        requested.append(length)
+        return real_peek(source, length)
+
+    monkeypatch.setattr(detection_module, "_peek_prefix", spy)
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(b"tiny non-archive payload"))
+    assert max(requested) <= 4096, requested
+
+
+def test_unknown_length_short_source_falls_through_to_the_extension(
+    tmp_path: Path,
+) -> None:
+    # Unknown length, far too short for the ISO window: the far-magic step takes a short
+    # peek, matches nothing and falls through — being short is never itself a rejection.
+    from archivey.internal.streams.peekable import PeekableStream
+
+    stream = PeekableStream(NonSeekableBytesIO(b"short mystery bytes"))
+    with pytest.raises(FormatDetectionError):
+        detect_format(stream)
+
+    path = tmp_path / "short.zip"
+    path.write_bytes(b"short mystery bytes")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.ZIP
+    assert info.detected_by == "extension"

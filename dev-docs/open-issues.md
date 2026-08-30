@@ -651,6 +651,7 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 | Free-threading support matrix | Document core vs ISO vs accelerators |
 | Public backend API / plugins | Home for exotic formats without libarchive-in-core |
 | CLI UX polish | CLI shipped (#120); remaining design Qs under `review/archive/2026-07-17-cli/` |
+| Trailing-data rule for the decode probes, generally | The probes have a *completeness* gate (a fully visible source whose decode still wants input is rejected) with **no counterpart for the opposite shape**: a decode that terminates cleanly *before* the source's end, leaving trailing bytes. Brotli's chain walk rejects that, but nothing codec-independent does. Evaluated for LZMA Alone in `detection-format-gaps` §5 and declined *there* — it ties the shipped rule on a 68 242-file `/usr` census (2 each), recovers nothing (`require_output` already refuses an empty decode), and cannot fire when the length is unknown, so a non-seekable pipe escapes it. As a **general** rule it is a different proposition: it would strengthen gzip, xz and the rest at once, and it wants the evidence classes to report into. → `detection-evidence-ledger`. |
 | Container CRC vs rapidgzip soft-EOF | Separate check: under `use_rapidgzip=ON`, confirm **corrupted** (and truncated) **ZIP/7z** DEFLATE *member payloads* still fail via `VerifyingStream`/CRC. Whole-archive truncation is less the worry for ZIP (missing central directory → open fails); **in-member corruption** is the sneaky case where rapidgzip soft-EOF could otherwise look like a short clean decode. Codec backstop is bare-stream only. From `rapidgzip-truncation-investigation`. |
 
 ---
@@ -659,6 +660,7 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 
 | Item | Closed by |
 | --- | --- |
+| Three false negatives from the detection-algorithm analysis §5: a zstd stream behind skippable frames, a zlib stream at any window below 32 KiB, an LZMA Alone stream with a zero dictionary size — all decoded by their own decoders, none detected. Plus the bootable ISO claimed by the Brotli probe, which the far-magic hoist that ships with them closes | `openspec/changes/detection-format-gaps/` |
 | **P10** A wrong-typed `format=` argument is refused, not answered (all four public entry points) | archived `openspec/changes/archive/2026-08-17-reject-wrong-typed-format-arguments/` |
 | **P1** TAR EOF Option F (`observed_kind` split; `strict_archive_eof` default stays `False`) | #149 / #162 — archived `openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/` |
 | Crypto F1–F5 (HASHMAC, 7z no-anchor diagnostic, NumCycles clamp, unrar stdin password, `compare_digest`) | #127 |
