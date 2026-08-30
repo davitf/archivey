@@ -662,13 +662,25 @@ def test_lzma_alone_zero_output_gate_costs_no_real_stream(tmp_path: Path) -> Non
         header = lzma.compress(payload, format=lzma.FORMAT_ALONE)[:13]
         assert int.from_bytes(header[5:13], "little") == (1 << 64) - 1
 
-    # Size 0 *is* producible, just not by liblzma: the LZMA SDK's own lzma_alone writes the
-    # actual uncompressed size, so a 0-byte input gives a real dictionary with size 0. The
-    # gate costs that stream nothing, which is the point — it was never claimed by the
-    # probe anyway (an empty decode is not a claim), and a `.lzma` name still opens it.
+    # A size-*known* stream must keep detecting — that is what the gate must not widen
+    # into. The LZMA SDK's own lzma_alone writes the actual uncompressed size rather than
+    # the sentinel (`LzmaUtil.c` File_GetLength -> the 8-byte field verbatim), and this
+    # header shape was checked byte-for-byte against that tool's real output.
+    payload = b"payload data " * 8
+    known = bytearray(lzma.compress(payload, format=lzma.FORMAT_ALONE))
+    known[5:13] = len(payload).to_bytes(8, "little")
+    assert lzma.decompress(bytes(known), format=lzma.FORMAT_ALONE) == payload
+    info = detect_format(io.BytesIO(bytes(known)))
+    assert info.format == ArchiveFormat.LZMA_ALONE
+    assert info.detected_by == "content_probe"
+
+    # Size 0 *is* producible by that same tool: a 0-byte input gives a real dictionary
+    # with size 0. The gate costs that stream nothing, which is the point — it was never
+    # claimed by the probe anyway (an empty decode is not a claim), and a `.lzma` name
+    # still opens it. Verified against lzma_alone's real 18-byte output for /dev/null.
     sdk_empty = (
         bytes([0x5D])
-        + (1 << 24).to_bytes(4, "little")
+        + (1 << 25).to_bytes(4, "little")
         + (0).to_bytes(8, "little")
         + b"\x00" * 5  # range-coder init
     )

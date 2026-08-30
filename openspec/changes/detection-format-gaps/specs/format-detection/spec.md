@@ -147,7 +147,9 @@ Alone stream (a legal 13-byte header plus a five-byte range-coder init), so zero
 padding decodes cleanly to nothing and the bounded read then reports truncation, which is
 otherwise a match. This refuses nothing that was ever detected: an empty stream is not
 claimed with or without the rule, because the probe already declines an empty decode, and
-a `.lzma` name still opens one through the extension. The two header fields are
+a `.lzma` name still opens one through the extension. It is a rule about *zero output*,
+not about the sentinel — a header carrying a real uncompressed size, as the LZMA SDK's
+encoder writes, is as welcome as one carrying the sentinel. The two header fields are
 independent: a stream with a zero dictionary size and a real payload is still detected.
 
 #### Scenario: content-probe matrix
@@ -173,5 +175,6 @@ independent: a stream with a zero dictionary size and a real payload is still de
 | Header failing `CM == 8`, `CINFO <= 7` or the mod-31 check (e.g. all-zero bytes) | No zlib claim; no decode attempted |
 | LZMA Alone stream whose dictionary-size field is zero | `LZMA_ALONE`, `content_probe` |
 | Alone header declaring an uncompressed size of exactly zero | No Alone claim; no payload to open |
+| Alone header carrying a real uncompressed size rather than the sentinel | `LZMA_ALONE`, `content_probe` — unaffected |
 | Zero-filled source of any length (padding, a sparse or zero-truncated file) | No Alone claim — the header declares zero output |
 | Zero-filled source with `CD001` at 32 769 | `ISO` at the far-magic step; no Alone claim |
