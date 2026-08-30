@@ -1,3 +1,20 @@
+## 0. Order
+
+- [ ] 0.0 **Implement this change third: after `detection-format-gaps`, before
+      `detection-evidence-ledger`.** It ships no new detection tier and changes no answer — it
+      is the plumbing the two changes after it are built on, and it fixes a measured defect of
+      its own (detecting a gzip on a seekable stream does five backward seeks for the same 30
+      bytes).
+
+  **It only follows `detection-format-gaps` to avoid a collision**, not because of a real
+  dependency: both edit `_detect_format_body`'s step order, and doing so in parallel would
+  conflict for no gain.
+
+  **It blocks two things.** `detection-evidence-ledger` needs the capabilities, budget and
+  cost receipt to schedule against, and `prefixed-archive-detection`'s makeself and TAR
+  self-extracting needles cannot be implemented correctly without the candidate-relative view
+  — today's `peek_more(length)` always starts at the source origin.
+
 ## 1. Pin the current shape, then break it
 
 - [ ] 1.1 Add an instrumented source that counts reads, forward seeks, backward seeks and

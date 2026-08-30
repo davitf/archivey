@@ -1,3 +1,19 @@
+## 0. Order
+
+- [ ] 0.0 **Implement this change first, ahead of the four other detection changes.** It is
+      the smallest of the five and the only one that fixes wrong *answers* rather than wrong
+      *grades*: three inputs whose own decoders accept them are currently undetectable. It
+      depends on nothing and blocks nothing.
+
+  **The far-magic reorder travels with it and cannot be split off.** Removing the LZMA Alone
+  zero-dictionary guard is unsafe until far magic runs before the content probes — verified
+  by lifting the guard on `main`, where a zero-system-area ISO then detects as `LZMA_ALONE`.
+  The two ship together or neither does.
+
+  **`prefixed-archive-detection` must drop its far-magic claim when it is revised**, since
+  this change ships that move. Recorded in design §Sequencing rather than left to collide at
+  archive time.
+
 ## 1. Red tests first
 
 - [ ] 1.1 Failing test: a zstd stream behind one skippable frame, and behind three chained

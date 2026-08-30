@@ -1,3 +1,21 @@
+## 0. Order
+
+- [ ] 0.0 **Implement this change second — independent of the detection chain, but land it
+      before `detection-evidence-ledger`.** It shares no code with the other four: it is a
+      reader and codec fix, not a detection one, so it can proceed in parallel with
+      `detection-format-gaps`.
+
+  **Why before the ledger.** This change moves a wrongly-named single-file archive's failure
+  from read time to open time; the ledger separately makes that failure *honest* by rekeying
+  `format_unconfirmed`. Landing this one first means the ledger's open-time scenarios have
+  something real to assert against. The spec delta states both halves explicitly, so neither
+  change asserts something that is only true after the other ships.
+
+  **Both defects here are one change.** The bzip2 accelerator returning `b""` on corrupt
+  input (P16) defeats this change's own fix — the new one-byte probe read gets `b""` back and
+  concludes the stream is a valid empty one. Splitting them ships a fix whose test cannot pass
+  on the configuration that matters most.
+
 ## 1. Red tests first
 
 - [ ] 1.1 Failing test in `tests/test_single_file.py`: for each of the ten single-file

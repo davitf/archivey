@@ -1,3 +1,18 @@
+## 0. Order
+
+- [ ] 0.0 **Implement this change last, after `detection-evidence-ledger`.** It exposes what
+      that change produces; there is nothing to expose before it, and the derived `confidence`
+      and `detected_by` properties are derivations over its evidence types.
+
+  **The `detection=` handoff may ship separately, after the field.** It additionally depends on
+  `detection-prefix-workspace` for the replay buffer and spool policy that make it work on a
+  non-seekable source. Being a new keyword argument with no change to existing behaviour, it
+  needs no migration row and can follow.
+
+  **Two public-value migrations land here** — the `sfx_scan` rename and four added
+  `detected_by` values — so they happen once, while the redesign is already changing what
+  callers observe, rather than as a second break later.
+
 ## 1. Red tests first
 
 - [ ] 1.1 Failing test: `open_archive(path).detection` (final name per design §Open Questions)

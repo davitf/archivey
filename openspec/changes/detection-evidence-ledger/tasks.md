@@ -1,3 +1,22 @@
+## 0. Order
+
+- [ ] 0.0 **Implement this change fourth: after `detection-prefix-workspace`, before
+      `detection-result-surface`.** It is the largest of the five and the only one that changes
+      what existing callers observe, so everything cheap and self-contained should already have
+      landed when it starts.
+
+  **It is blocked by the workspace change**, which supplies `DetectionCapability`,
+  `DetectionBudget` and the cost receipt the scheduler evaluates `affordable()` and
+  `stop_now()` against. Attempting it first means building those twice.
+
+  **Land it close behind `detection-format-gaps`, not long after.** That change widens the
+  zlib probe gate from 4 accepted headers to 66 without its compensating rule; the stored-only
+  regrade and the uniform `GUESS` for bounded probes are that rule, and they live here.
+
+  **`prefixed-archive-detection` rebases onto this**, adding its three tiers as declarations on
+  the scheduler rather than rewriting the tier code. Its revised delta drops the provisional
+  note and the first-match-wins algorithm, both of which this change replaces.
+
 ## 1. Red tests first — the four measured defects
 
 - [ ] 1.1 Failing test: each of the 15 registered magic entries, fed a source that is only

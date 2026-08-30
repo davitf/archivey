@@ -158,3 +158,20 @@ matters most.
   a genuine empty stream through rapidgzip's API, or whether the minimum-framing floor is
   the only reliable discriminator. Settled during implementation by inspecting what the
   accelerator reports; both paths satisfy the requirement.
+
+## Sequencing
+
+Second of the five detection-round changes, and the only one that is not a detection change:
+it touches `SingleFileReader` and the codec layer, so it shares no code with the other four
+and can proceed in parallel with `detection-format-gaps`.
+
+Land it **before `detection-evidence-ledger`**. This change moves a wrongly-named single-file
+archive's failure from read time to open time; the ledger separately makes that failure honest
+by rekeying `format_unconfirmed` onto the winning content-evidence class. In that order the
+ledger's open-time scenarios have something real to assert against. The spec delta states both
+halves — `format_unconfirmed` is `False` on that open-time raise until the ledger lands, `True`
+after — so neither change asserts something true only after the other ships.
+
+Its two defects cannot be split. P16 (the accelerated bzip2 path returning `b""` on corrupt
+input) defeats P15's own fix: the new one-byte probe read gets `b""` back and concludes the
+stream is a valid empty one.

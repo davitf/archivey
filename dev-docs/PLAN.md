@@ -40,6 +40,21 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 
 **In-flight changes unrelated to a PLAN phase** (do not block Phase 4, but may land
 alongside): `seekable-gzip-and-block-writing`, `rapidgzip-truncation-investigation`.
+
+**The detection round** (from the #263 analysis) is five changes with a fixed order; each
+states its own position and reasoning in task `0.0`, following the convention #264 set:
+
+| # | change | depends on |
+| --- | --- | --- |
+| 1 | `detection-format-gaps` — three false negatives + the far-magic reorder that unblocks one | — |
+| 2 | `single-file-open-time-validation` — P15 and P16; not a detection change, can run in parallel with 1 | — (before 4) |
+| 3 | `detection-prefix-workspace` — one monotone prefix buffer, access-shape rule, budget/capability/receipt | after 1 (avoids colliding in `_detect_format_body`) |
+| 4 | `detection-evidence-ledger` — ranked evidence classes, validators, scheduler, ambiguity | **3** |
+| 5 | `detection-result-surface` — the ledger becomes public; `detection=` handoff | **4** |
+
+`prefixed-archive-detection` is **revised**, not implemented as written: it rebases onto 3 and
+4, adding its tiers as declarations on the scheduler, and drops the far-magic move (which
+ships in 1) and its provisional first-match-wins note (which 4 replaces).
 `diagnostics-warnings-as-data` is explicitly a **Phase 5 public-API follow-on** rather
 than an unsequenced cross-cutting change; its implementation must land before Phase 6
 native readers add more diagnostic-producing paths.
