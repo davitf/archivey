@@ -225,6 +225,18 @@ None. The three fixes and the reorder are each measured above.
 
 Lands first among the detection changes; blocks nothing and is blocked by nothing.
 
-`prefixed-archive-detection`'s revision must drop its far-magic Impact bullet and the
-far-magic step from its `Magic-first detection…` delta, because this change ships that move.
+`prefixed-archive-detection` claimed the same move, so **this PR settles the overlap in that
+change directly** rather than leaving it for a future revision to discover — an earlier draft
+of this paragraph deferred it, and a review caught that annotation alone leaves two live
+copies. Done there: the far-magic Impact bullet in its `proposal.md` is struck, tasks 3.4b,
+3.4c, 3.4d and 4.9b are struck as shipped here, and 3.4a keeps only its tier-insertion half.
+Task **3.4e is deliberately left standing** — this change never touches `_warn_on_conflict`,
+whose message still hardcodes "magic bytes indicate …" on the content-probe branch.
+
+**Its `Magic-first detection…` delta keeps the far-magic step**, which is the opposite of
+what this paragraph first said. OpenSpec replaces a MODIFIED requirement whole, so a delta
+omitting the step would delete far magic from the live spec when that change archives,
+reverting what ships here. It is retained there as inherited text rather than proposed work,
+and its note-for-the-archiver now says so.
+
 Its bootable-ISO evidence stays useful as the justification recorded here.

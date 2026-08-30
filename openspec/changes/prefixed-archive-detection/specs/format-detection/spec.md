@@ -416,13 +416,24 @@ evidence — it decides the Brotli probe's `PROBABLE`-versus-`GUESS` split, and 
 throughout* are not in tension: the extension never outvotes evidence drawn from the bytes,
 and it still sharpens what that evidence is worth.
 
-> **Note for the archiver.** The live text of this requirement lists the extension fallback
-> *before* the content probes and omits far magic entirely. That is a pre-existing defect,
-> not something this change introduces: shipped `detection.py` runs magic → SFX → probes →
-> far magic → extension → fail, and the unconfirmed-format requirement above describes that
-> same order. Because a MODIFIED requirement replaces its predecessor whole, restating the
-> live order verbatim would have re-shipped the error, so this block states the order the
-> implementation actually has.
+> **Note for the archiver.** When this block was written, the live text of this requirement
+> listed the extension fallback *before* the content probes and omitted far magic entirely —
+> a pre-existing defect rather than one this change introduced. Because a MODIFIED
+> requirement replaces its predecessor whole, restating the live order verbatim would have
+> re-shipped that error, so this block states the order the implementation actually has.
+>
+> **`detection-format-gaps` has since fixed both halves of that defect in the live text**, and
+> shipped the far-magic hoist itself. **Step 3 is therefore inherited here, not proposed by
+> this change** — it is retained verbatim *because* the replacement is whole-requirement:
+> deleting it would remove far magic from the live spec when this change archives, silently
+> reverting a shipped behaviour fix. Nothing in step 3 is work for this change's implementer;
+> its tasks (3.4a's reorder clause, 3.4b, 3.4c, 3.4d) are struck accordingly. What this change
+> still proposes are the tail probe, the cued and exhaustive scans, and their placement — steps
+> 4 to 6.
+>
+> Before archiving, re-check step 3 against the then-live text and carry over any wording
+> `detection-format-gaps` settled, exactly as this block already did for
+> `brotli-probe-framing-gate`.
 
 #### Scenario: unrecognised bytes, no path
 

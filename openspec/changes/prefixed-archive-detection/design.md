@@ -261,8 +261,23 @@ intends to make.
 is unsafe until far magic precedes the content probes, and it could not wait for this one
 now that this is sequenced behind `detection-evidence-ledger`. Two in-flight changes
 MODIFYing the same requirement is the archive-order conflict the investigation §14 warns
-about, so on revision this change **drops** its far-magic Impact bullet and the far-magic
-step from its `Magic-first detection…` delta, and tasks 3.4c–3.4d go with them — but
-**not 3.4e**, the `_warn_on_conflict` wording, which that change never touches. The
-bootable-ISO reproduction above stays useful: it is the justification recorded in
+about, so this change no longer claims the move. **Done here rather than deferred to a
+revision**, in the same PR that shipped the hoist:
+
+- `proposal.md`'s far-magic Impact bullet is **dropped** — it claimed the move as this
+  change's work.
+- Tasks **3.4b, 3.4c, 3.4d and 4.9b are struck** as shipped there, and **3.4a keeps only its
+  tier-insertion half**. **3.4e is not struck**: `detection-format-gaps` never touches
+  `_warn_on_conflict`, whose message still hardcodes "magic bytes indicate …" on the
+  content-probe branch, so that defect stays this change's to fix. (The hoist routes the ISO
+  case to the far-magic branch, where the wording is accurate, so it fires less often.)
+- **The far-magic step in the `Magic-first detection…` delta stays, deliberately.** An
+  earlier draft of this paragraph said it would be dropped. That was wrong: OpenSpec
+  replaces a MODIFIED requirement whole — the reason the archiver note in that delta exists
+  at all — so a block omitting step 3 would delete far magic from the live spec the moment
+  this change archives, reverting a shipped fix. It is retained as **inherited text rather
+  than proposed work**, and the archiver note now says so and says to re-check it against
+  the then-live wording.
+
+The bootable-ISO reproduction above stays useful: it is the justification recorded in
 `detection-format-gaps`'s design for making the move.

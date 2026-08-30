@@ -77,9 +77,16 @@
 
 - [x] 6.1 `docs/formats.md` §Detection: replace "Magic bytes first, then extension" with the
       order the implementation has, including far magic ahead of the probes
-- [x] 6.2 Note in `prefixed-archive-detection`'s design §Sequencing that its far-magic Impact
-      bullet and its `Magic-first…` far-magic step are superseded here, so its revision drops
-      them instead of re-shipping the move
+- [x] 6.2 ~~Note in `prefixed-archive-detection`'s design §Sequencing that its far-magic
+      Impact bullet and its `Magic-first…` far-magic step are superseded here, so its
+      revision drops them~~ — **done, and then done properly.** Review round 1 found that an
+      annotation leaves two live copies of the move: that change's delta still specified it
+      and its tasks still instructed building it. So the overlap is now settled *in* that
+      change — Impact bullet struck, tasks 3.4b/3.4c/3.4d/4.9b struck, 3.4a reduced to its
+      tier half, 3.4e left standing (`_warn_on_conflict` is untouched here). Its
+      `Magic-first…` delta **keeps** the far-magic step: a MODIFIED requirement is replaced
+      whole, so omitting it would delete far magic from the live spec on that change's
+      archive. Retained there as inherited text, flagged as such in its archiver note
 - [x] 6.3 Close the `dev-docs/open-issues.md` / `dev-docs/IDEAS.md` references to the zstd
       skippable-frame gap and the Alone dictionary guard
 
