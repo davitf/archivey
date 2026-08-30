@@ -19,14 +19,23 @@ at all) and zlib (a 2-byte header too unspecific to trust, so its probe gates on
 header before decoding). Each probe is a function the backends declare as data — for the
 stream codecs, on the codec descriptor — so the detector stays format-agnostic.
 
-A **self-extracting** archive has no archive magic at offset 0 at all: an executable stub
-comes first. When the leading bytes look executable-shaped the detector searches forward
-for the backends' ``SFX_MAGIC`` within the shared ``SFX_MAX`` window and reports the
-payload start as ``payload_offset`` (``PROBABLE`` / ``sfx_scan``). That search runs
-*before* the content probes, because a stub is arbitrary bytes and a probe asked to judge
-arbitrary bytes will sometimes say yes — see ``executable_cue`` and
-``format-detection``'s "Executable-looking prefixes must not silently become a wrong
-stream format".
+The steps run strongest-signal-first: near magic → SFX scan → **far magic** → content
+probes → extension. Both signals ahead of the probes are there for the same reason — a
+probe is the weakest evidence archivey has, and one asked to judge arbitrary bytes will
+sometimes say yes:
+
+- A **self-extracting** archive has no archive magic at offset 0 at all: an executable
+  stub comes first. When the leading bytes look executable-shaped the detector searches
+  forward for the backends' ``SFX_MAGIC`` within the shared ``SFX_MAX`` window and reports
+  the payload start as ``payload_offset`` (``PROBABLE`` / ``sfx_scan``) — see
+  ``executable_cue`` and ``format-detection``'s "Executable-looking prefixes must not
+  silently become a wrong stream format".
+- **Far magic** is exact magic whose end offset lies outside the default window (today
+  ISO 9660's ``CD001`` at 32 769), so it needs an extended peek taken on demand. It runs
+  before the probes because a bootable or hybrid ISO reserves its first 32 KiB for
+  bootloader code — the data class a probe accepts — and the exact magic was available at
+  a known offset the whole time. The peek is size-gated: a source known to be smaller than
+  the window never pays it.
 """
 
 from __future__ import annotations
@@ -215,6 +224,21 @@ def _match_magic(
     for entry in magic_entries:
         if data[entry.offset : entry.offset + len(entry.magic)] == entry.magic:
             return entry.format
+    return None
+
+
+def _match_magic_behind_prefix(
+    data: bytes,
+    walks: list[tuple[ArchiveFormat, Callable[[bytes], bool]]],
+) -> ArchiveFormat | None:
+    """Return the format whose exact magic sits behind its own structural prefix frames.
+
+    Each walk is arithmetic over ``data`` alone (the already-peeked prefix) and never
+    triggers a larger read: a declared frame size running past those bytes is a decline.
+    """
+    for fmt, walk in walks:
+        if walk(data):
+            return fmt
     return None
 
 
@@ -559,7 +583,15 @@ def _detect_format_body(
 
     # 1. Exact magic in the default window. A single-file compressor is additionally probed
     #    for an inner TAR (so .tar.gz → TAR_GZ, not bare GZ).
+    #
+    #    A format whose magic may sit behind structural frames of its own — today only
+    #    zstd, whose skippable frames carry no compressed data and may precede the first
+    #    regular frame — declares a walk over the peeked prefix instead of a table entry,
+    #    so the structural prefix alone is never claimed as the format. Still an exact
+    #    magic match, and reported as one.
     magic_fmt = _match_magic(data, near)
+    if magic_fmt is None:
+        magic_fmt = _match_magic_behind_prefix(data, registry.magic_prefix_walks())
     if magic_fmt is not None:
         info = _resolve_single_file_or_tar(
             magic_fmt,
@@ -583,7 +615,42 @@ def _detect_format_body(
             _warn_on_conflict(collector, name, ext_match, sfx_info.format)
             return sfx_info
 
-    # 3. Formats without an exact magic, recognized by a content probe (Brotli decodes a
+    # Archive-relative reachable length, used by the far-magic size gate below and by the
+    # probes' framing / completeness / chain walk. ``source_byte_size`` is total size from
+    # offset 0 of the underlying object; ``read_at`` and the chain walk are relative to the
+    # archive origin (current stream position). Paths open at origin 0, so the totals match;
+    # for a mid-positioned seekable stream, subtract ``tell()`` so equality checks (declared
+    # end with trailing bytes) use the same yardstick. Unknown → None; a short peek that
+    # returned fewer bytes than requested also reveals the size of a non-seekable source
+    # that ended early (< DETECTION_LIMIT).
+    length = source_byte_size(source)
+    if length is not None and not isinstance(source, (str, Path)):
+        if is_seekable(source):
+            remaining = length - source.tell()
+            length = remaining if remaining >= 0 else None
+    if length is None and len(data) < near_needed:
+        length = len(data)
+
+    # 3. Far magic (ISO's CD001 at offset 32 769): peek the extended 32 774-byte window on
+    #    demand. This runs *before* the content probes: it is exact magic at a known offset
+    #    and they are the weakest signal archivey has. A bootable or hybrid ISO reserves its
+    #    first 32 KiB for bootloader code — exactly the data class the Brotli probe accepts —
+    #    so consulting the probes first claimed a whole filesystem as one fabricated
+    #    `*.uncompressed` member while the magic sat unread at a known offset.
+    #
+    #    Size-gated: a source known to be smaller than the window never pays the peek (no
+    #    ISO is that small). A source of unknown length takes a short peek, matches nothing
+    #    and falls through — it is never rejected solely for being too short.
+    if far:
+        far_needed = max(e.offset + len(e.magic) for e in far)
+        if length is None or length >= far_needed:
+            far_data = _peek_prefix(source, far_needed)
+            far_fmt = _match_magic(far_data, far)
+            if far_fmt is not None:
+                _warn_on_conflict(collector, name, ext_match, far_fmt)
+                return FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic")
+
+    # 4. Formats without an exact magic, recognized by a content probe (Brotli decodes a
     #    prefix; zlib gates on its 2-byte header then decodes). A probe is skipped when its
     #    backend is absent, so detection falls through. A matching compressor is likewise
     #    probed for an inner TAR (so .tar.br → TAR_BROTLI).
@@ -594,21 +661,6 @@ def _detect_format_body(
     #    answer. A WEAK cue does not gate the probes: `MZ` alone is two bytes, and a
     #    genuine Brotli stream that happens to start with them must still be detectable.
     if cue is not ExecutableCue.STRONG:
-        # Archive-relative reachable length for framing / completeness / chain walk.
-        # ``source_byte_size`` is total size from offset 0 of the underlying object;
-        # ``read_at`` and the chain walk are relative to the archive origin (current
-        # stream position). Paths open at origin 0, so the totals match; for a
-        # mid-positioned seekable stream, subtract ``tell()`` so equality checks
-        # (declared end with trailing bytes) use the same yardstick. Unknown → None;
-        # a short peek that returned fewer bytes than requested also reveals the size
-        # of a non-seekable source that ended early (< DETECTION_LIMIT).
-        length = source_byte_size(source)
-        if length is not None and not isinstance(source, (str, Path)):
-            if is_seekable(source):
-                remaining = length - source.tell()
-                length = remaining if remaining >= 0 else None
-        if length is None and len(data) < near_needed:
-            length = len(data)
         # Bounded read-at for the Brotli chain walk. Paths and seekable streams seek;
         # PeekableStream may grow its buffer up to the non-seekable cap.
         if isinstance(source, (str, Path)):
@@ -637,17 +689,6 @@ def _detect_format_body(
                     return info
         finally:
             close_read_at()
-
-    # 4. Far magic (ISO's CD001 at offset 32 769): peek the extended 32 774-byte window on
-    #    demand. A stream shorter than the window simply yields no match and falls through —
-    #    it is never rejected solely for being too short for the ISO probe.
-    if far:
-        far_needed = max(e.offset + len(e.magic) for e in far)
-        far_data = _peek_prefix(source, far_needed)
-        far_fmt = _match_magic(far_data, far)
-        if far_fmt is not None:
-            _warn_on_conflict(collector, name, ext_match, far_fmt)
-            return FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic")
 
     # 5. Extension-only guess.
     if ext_fmt is not None:

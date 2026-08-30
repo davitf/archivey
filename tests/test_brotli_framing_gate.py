@@ -137,7 +137,15 @@ def test_lzma_alone_rejects_header_only_source() -> None:
 def test_ole_and_coff_residuals_honest_detect_format() -> None:
     # Named residual families survive the Brotli first-block gate *and* the chain walk
     # when the source is larger than the detection peek (completeness does not apply).
-    # End-to-end detect_format claims them via LZMA Alone at PROBABLE (probe order).
+    # End-to-end detect_format claims them by probe order, and *which* probe claims each
+    # is what this pins — both are fabrications either way.
+    #
+    # The two families split since `detection-format-gaps`: the Alone probe now refuses a
+    # header declaring an uncompressed size of exactly zero (bytes 5..12), because such a
+    # stream carries no payload to open. OLE's are `B1 1A E1 00 …` — nonzero, so it still
+    # goes to Alone. COFF's are all zero, so Alone declines and Brotli takes it instead,
+    # at GUESS rather than PROBABLE: a weaker claim on the same fabrication, still
+    # probe-only and so still stamping `format_unconfirmed` on a read failure.
     from archivey.internal.streams.peekable import DETECTION_LIMIT
 
     ole = bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 8000
@@ -183,9 +191,12 @@ def test_ole_and_coff_residuals_honest_detect_format() -> None:
         )
         is True
     )
+    assert int.from_bytes(coff[5:13], "little") == 0  # why Alone declines this one
     coff_info = detect_format(io.BytesIO(coff))
-    assert coff_info.format == ArchiveFormat.LZMA_ALONE
-    assert coff_info.confidence == DetectionConfidence.PROBABLE
+    assert coff_info.format == ArchiveFormat.BROTLI
+    assert coff_info.confidence == DetectionConfidence.GUESS
+    assert coff_info.detected_by == "content_probe"
+    assert coff_info.corroborated is False  # probe-only: a read failure still stamps
 
 
 @requires("brotli")

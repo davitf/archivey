@@ -2,10 +2,17 @@
 
 - [ ] 0.0 **Implement this change third, after `probe-completeness-gate` and then `probe-provenance-unconfirmed`.** It is the largest of the three (57 tasks), the only one adding public API (`prefix_kind`, `PrefixKind`, `ArchiveyConfig.exhaustive_prefix_scan`), and it benefits from landing on a probe residual those two have already shrunk — 91 of 128 measured fabrications disappear with completeness alone, which removes a great deal of noise from the cue and tier work here. The two probe changes are independent of this one; nothing here blocks them.
 
-  **Two seams worth knowing before you start.**
+  **Two seams worth knowing before you start.** Both are now **closed by
+  `detection-format-gaps`**, which shipped the far-magic hoist and the Alone guard
+  removal together. On revision this change drops its far-magic Impact bullet, the
+  far-magic step from its `Magic-first…` delta, and tasks 3.4c–3.4e, rather than
+  re-shipping the move — see that change's design §Sequencing and this one's. The two
+  bullets are kept below as the record of why the move was owed.
 
-  - **Tasks 3.4c–3.4e can be pulled forward as their own PR.** The far-magic hoist fixes a *live* silent wrong answer — a bootable ISO detected as `BROTLI` with a fabricated `*.uncompressed` member — and it depends on neither the tail probe nor the cue work. Three tasks, one decisive reproduction. Implementing them early inside this change's task list (without archiving the change) is the way to fix that bug before the rest of this lands.
-  - **The LZMA Alone `dict_size != 0` guard must be removed *with* task 3.4c, not before.** `src/archivey/internal/streams/codecs.py` `_alone_header_plausible` rejects a zero dictionary size, and the comment says why: it stops a zero-filled ISO system area decoding as an empty Alone stream **before far-magic ISO detection runs**. That guard is a false-negative bug — verified, a stream with that field zeroed still decodes, because the LZMA SDK clamps the value to `LZMA_DIC_MIN` rather than rejecting it — but it is load-bearing until far magic precedes the probes. Remove it in the same commit as 3.4c, never earlier
+  - ~~**Tasks 3.4c–3.4e can be pulled forward as their own PR.**~~ — done by
+    `detection-format-gaps`. The far-magic hoist fixes a *live* silent wrong answer — a bootable ISO detected as `BROTLI` with a fabricated `*.uncompressed` member — and it depends on neither the tail probe nor the cue work. Three tasks, one decisive reproduction. Implementing them early inside this change's task list (without archiving the change) is the way to fix that bug before the rest of this lands.
+  - ~~**The LZMA Alone `dict_size != 0` guard must be removed *with* task 3.4c, not
+    before.**~~ — done by `detection-format-gaps`, in the same change as the hoist. `src/archivey/internal/streams/codecs.py` `_alone_header_plausible` rejects a zero dictionary size, and the comment says why: it stops a zero-filled ISO system area decoding as an empty Alone stream **before far-magic ISO detection runs**. That guard is a false-negative bug — verified, a stream with that field zeroed still decodes, because the LZMA SDK clamps the value to `LZMA_DIC_MIN` rather than rejecting it — but it is load-bearing until far magic precedes the probes. Remove it in the same commit as 3.4c, never earlier
 
 - [x] 0.1 ~~Land `sfx-format-detection` (#254) first~~ — merged as `6e71eba`. Its `payload_offset` hand-off is on `main`
 - [x] 0.2 ~~**Archive `sfx-format-detection` before archiving this change.**~~ — done in #258 (`da427a0`). Both changes MODIFY the same SFX requirement, and this one's delta was written against #254's version rather than the then-shipped text, so the ordering mattered. Verified after the archive: the live requirement's three additions all survive in this delta — the ZIP local-header needle (tier 3), the backend-declared-needles rule (verbatim), and the weak/strong cue grading (in the sibling requirement below). Also restored the live spec's "a prefixed ZIP is reported as `ZIP` with a `payload_offset`, never as a stream codec" guarantee, which the tiering had left implicit

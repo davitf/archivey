@@ -221,7 +221,22 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
 
 ## Detection
 
-- Magic bytes first, then extension; wrong extensions are expected.
+- **Strongest signal first**, and the filename is the last of them; wrong extensions are
+  expected. In order: exact magic in the first 4 KiB → an SFX scan behind an executable
+  stub → exact magic further in (ISO 9660's `CD001` at 32 769, on one extended peek that
+  a source too small for it never pays) → content probes for the formats with no magic →
+  the extension. A step that matches nothing falls through to the next; nothing is ever
+  rejected for failing an earlier one.
+- **zstd skippable frames** — a magic in `0x184D2A50`–`0x184D2A5F` plus a declared payload
+  size — may precede the first real frame, so detection walks past them by their declared
+  sizes within the peeked bytes and matches the regular frame behind. Skippable frames
+  alone are not a zstd claim: there is nothing to open.
+- **zlib** is gated on the RFC 1950 header grammar (`CM == 8`, `CINFO <= 7`, and the
+  mod-31 check, `FDICT` included) rather than a list of common headers, so all seven
+  legal window sizes are recognised. A preset dictionary archivey does not hold fails the
+  decode and the candidate falls through.
+- **LZMA Alone** accepts any 32-bit dictionary-size field, zero included — the format
+  allows every value and decoders round below 4 KiB up to 4 KiB.
 - Self-extracting (SFX) stubs are detected when the archive payload sits behind an
   executable header — today a Windows (`MZ`/PE) or Linux (ELF) one. A macOS
   Mach-O stub is **not** recognised yet, so a `.7z`/`.rar`/`.zip` appended to one is

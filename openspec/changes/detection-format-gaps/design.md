@@ -64,10 +64,13 @@ offset 32 768 returns `LZMA_ALONE` / `PROBABLE` / `content_probe`. The same sour
 guard in place, or with far magic consulted first, returns ISO. Two further observations
 from the same run:
 
-- A 40 000-byte all-zero source is **not** claimed even with the guard lifted, because the
+- ~~A 40 000-byte all-zero source is **not** claimed even with the guard lifted, because the
   completeness gate (`probe-completeness-gate`) sees the whole source and rejects a decode
-  that does not finish. The ISO case escapes that gate only because 40 000 bytes exceeds the
-  peeked prefix, so the probe is a bounded one.
+  that does not finish.~~ **Wrong, and corrected at implementation — see §5 below.** The
+  completeness gate only fires when the source fits *inside* the peeked prefix; 40 000
+  bytes does not, so the gate never runs and the source is claimed as `LZMA_ALONE`. The
+  ISO case is a bounded probe for the same reason, which is the half of this sentence that
+  was right.
 - The widened zlib grammar does **not** accept either source: an all-zero header fails
   `CM == 8`. So the zlib half of this change carries no ISO coupling and the two fixes are
   independent in that direction.
@@ -123,6 +126,14 @@ six of seven window sizes. The three-line grammar check says what the format say
 and the probe's decode — not the header — is what determines whether archivey can read it.
 A dictionary the decoder does not hold fails the decode and the candidate falls through.
 
+**Correction found at implementation.** The proposal's "detects as `ZLIB` when the
+dictionary is available" is not reachable: nothing in archivey supplies a preset
+dictionary to the codec layer, so *every* `FDICT` stream fails the decode today. Accepting
+the bit is still the right gate — it says what RFC 1950 says, and it is the header check
+that would otherwise have to be revisited the day a dictionary can be supplied — but the
+observable behaviour is one row, not two, and the spec scenario and task 1.4 were
+corrected to say so rather than pinning a case no test can reach.
+
 ### 3. A zstd skippable-frame prefix is walked, and a regular frame is still required
 
 Registering the 16 skippable magics as ordinary magic-table entries would be less code and
@@ -146,6 +157,26 @@ The compensating rule the investigation pairs with it — a decode that produced
 `detection-evidence-ledger`. Taken now anyway: a real stream archivey cannot open is a hard
 failure, a probe false positive is already graded `PROBABLE`, already stamps
 `format_unconfirmed` on a decode failure since #267, and is about to be regraded to `GUESS`.
+
+### 5. The Alone guard is replaced, not simply removed — a zero *size* is refused
+
+Found at implementation, against `tests/test_review_simplicity_consistency.py::test_content_detection_refuses_a_zero_filled_file`, which exists as a guardrail against exactly this. Lifting `dict_size == 0` on its own makes **any all-zero source larger than the peeked prefix** — 32 KiB of zeros, sparse-file padding, a zero-truncated backup — detect as `LZMA_ALONE` / `PROBABLE`. The Investigations note above claimed otherwise on faulty reasoning; the reorder is not what fails, since plain zeros hold no `CD001` for far magic to find.
+
+Measured, so the fix is aimed at the mechanism rather than the symptom:
+
+| what | finding |
+| --- | --- |
+| `00 × 13` as a header | props `0x00` = a legal `(lc 0, lp 0, pb 0)`; dictionary 0; declared size **0** |
+| `00 × 18` fed to liblzma | `eof=True`, **0 bytes out** — a *valid, complete, empty* stream (13-byte header + 5-byte range-coder init, whose first byte must be zero), not a corrupt one |
+| what the bounded probe sees | the empty stream ends, the reader continues into the trailing zeros as concatenated members, runs off the end → `TruncatedError` → the bounded path scores truncation as a match, **before** `require_output` is consulted |
+| `lzma.compress(b"")` | writes the all-ones *unknown* sentinel, never 0 |
+| dictionary 0 with a real payload | independent fields: props `0x5D`, dictionary 0, size unknown decodes 700 bytes — so the false negative this change fixes is untouched |
+
+So the probe **SHALL refuse a header declaring an uncompressed size of exactly zero**. Any value but the all-ones sentinel is the stream's exact output length, so zero declares a stream with no payload — nothing archivey could open. That is not a new policy: it is the probe's existing `require_output` ("an empty successful read is not a claim") and this change's own "skippable frames alone are not zstd", stated at the header because the bounded decode cannot reach it. A real encoder writes the sentinel even for empty input, so the gate costs no genuine stream — pinned by a test.
+
+**Rejected: honouring `require_output` on the truncated path instead.** It targets the real mechanism — claiming a format having decoded nothing — but it is unsafe, and measurably so: a genuine Alone stream of 100 KiB of incompressible data raises `TruncatedError` with no output from its bounded 256-byte prefix, exactly like the zero padding. That rule would stop detecting it. The two are separable only at the header, where one declares zero output and the other declares unknown.
+
+**Rejected: refusing an all-zero 13-byte header.** It closes the measured case with a smaller blast radius, but it is a shape guard rather than a statement about the format — the same species of workaround as the guard being removed — and it still admits a plausible-props header that declares zero output.
 
 ## Risks / Trade-offs
 
