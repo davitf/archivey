@@ -845,6 +845,29 @@ def _conflict_message(path: Path) -> str:
     return messages[0]
 
 
+def _assert_names_only(message: str, expected: str) -> None:
+    """``message`` makes ``expected``'s claim and none of the other branches' claims.
+
+    Asserting only that the right phrase is *present* would pass a regression that
+    reintroduced one hardcoded claim for every branch, as long as the expected phrase
+    survived somewhere in the string — which is close to the shape of the defect these
+    tests exist to close. The shared tail is pinned here too, once, rather than in four
+    places that could drift apart.
+
+    ``expected`` stays a literal so the wording itself is pinned; the enum is consulted
+    only to enumerate what must be *absent*, so a branch added later is excluded from
+    every other branch's message without anyone remembering to update this list.
+    """
+    from archivey.internal import detection as detection_module
+
+    phrases = {member.value for member in detection_module._ConflictEvidence}
+    assert expected in phrases, f"{expected!r} is not one of {phrases}"
+    assert expected in message, message
+    for other in phrases - {expected}:
+        assert other not in message, message
+    assert message.endswith("; using that result over the extension."), message
+
+
 def test_content_probe_conflict_names_the_probe_not_magic(tmp_path: Path) -> None:
     # The defect. On the probe branch "magic bytes indicate X" is false twice over: no
     # magic was read, and the answer that won is the weakest signal archivey has — the
@@ -852,14 +875,15 @@ def test_content_probe_conflict_names_the_probe_not_magic(tmp_path: Path) -> Non
     path = tmp_path / "compat_lzma.tlz"  # the extension says TAR_LZIP
     path.write_bytes(lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE))
     message = _conflict_message(path)
-    assert "content inspection indicates" in message
+    _assert_names_only(message, "content inspection indicates")
+    # Stricter than the shared check on this branch alone: the word itself is the lie.
     assert "magic" not in message
 
 
 def test_near_magic_conflict_still_names_magic(tmp_path: Path) -> None:
     path = tmp_path / "mislabelled.tlz"
     path.write_bytes(_zip_bytes())
-    assert "magic bytes indicate" in _conflict_message(path)
+    _assert_names_only(_conflict_message(path), "magic bytes indicate")
 
 
 @requires("pycdlib")
@@ -868,7 +892,7 @@ def test_far_magic_conflict_names_magic(tmp_path: Path) -> None:
     # so the near-magic wording is the right one to inherit.
     path = tmp_path / "mislabelled_iso.tlz"
     path.write_bytes(_iso_bytes(b"\x00" * _ISO_SYSTEM_AREA))
-    assert "magic bytes indicate" in _conflict_message(path)
+    _assert_names_only(_conflict_message(path), "magic bytes indicate")
 
 
 def test_sfx_conflict_names_the_stub_scan(tmp_path: Path) -> None:
@@ -877,5 +901,6 @@ def test_sfx_conflict_names_the_stub_scan(tmp_path: Path) -> None:
     # has something in front of the archive", which are different things to go fix.
     path = tmp_path / "installer.tlz"
     path.write_bytes(b"MZ" + b"\x90" * 4094 + _zip_bytes())
-    message = _conflict_message(path)
-    assert "archive magic behind an executable stub indicates" in message
+    _assert_names_only(
+        _conflict_message(path), "archive magic behind an executable stub indicates"
+    )

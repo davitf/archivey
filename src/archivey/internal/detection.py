@@ -484,9 +484,18 @@ class _ConflictEvidence(Enum):
 
     Deliberately not ``FormatInfo.detected_by``: those strings are public and
     ``detection-result-surface`` renames two of them, so reusing them here would tie one
-    log line's wording to a contract that is about to move. A caller who wants the
-    evidence class as data reads ``detected_by`` from the same ``FormatInfo`` that
-    carries this diagnostic.
+    log line's wording to a contract that is about to move.
+
+    **So this text is load-bearing, not a nicety.** A ``detect_format`` caller can read
+    ``detected_by`` off the returned ``FormatInfo``, but nobody on the ``open_archive``
+    path can: that object is dropped once the reader exists, ``_format_provenance``
+    collapses magic, far magic, the SFX scan and the probes to ``chosen_by="content"``
+    (and is private besides), and ``FormatConflictContext`` carries only the two formats.
+    The retained diagnostic outlives every one of them, so on the path where this warning
+    most matters the message *is* the evidence channel. Adding a typed field is
+    ``detection-result-surface``'s to make, when it reworks the values this would have to
+    spell; until then, do not weaken these phrases on the grounds that the data is
+    available elsewhere, because on that path it is not.
     """
 
     MAGIC = "magic bytes indicate"
