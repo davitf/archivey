@@ -472,11 +472,34 @@ def _extension_corroborates(
     return ext_fmt == resolved or _is_deferred_inner_tar(ext_fmt, resolved)
 
 
+class _ConflictEvidence(Enum):
+    """Which branch outranked the extension, phrased for the conflict diagnostic.
+
+    Every branch that outranks the extension calls :func:`_warn_on_conflict`, and they do
+    not all hold the same kind of evidence. Exact magic is a certainty; a content probe is
+    the weakest signal archivey has, and reports ``PROBABLE`` or ``GUESS`` precisely
+    because it can be wrong. Saying "magic bytes indicate X" from the probe branch
+    overstates the winning evidence in the one case where a reader most needs to weigh it
+    against the name we just overruled.
+
+    Deliberately not ``FormatInfo.detected_by``: those strings are public and
+    ``detection-result-surface`` renames two of them, so reusing them here would tie one
+    log line's wording to a contract that is about to move. A caller who wants the
+    evidence class as data reads ``detected_by`` from the same ``FormatInfo`` that
+    carries this diagnostic.
+    """
+
+    MAGIC = "magic bytes indicate"
+    SFX_SCAN = "archive magic behind an executable stub indicates"
+    CONTENT_PROBE = "content inspection indicates"
+
+
 def _warn_on_conflict(
     collector: DiagnosticCollector,
     name: str | None,
     ext_match: tuple[ArchiveFormat, str] | None,
     resolved: ArchiveFormat,
+    evidence: _ConflictEvidence,
 ) -> None:
     if ext_match is None:
         return
@@ -484,8 +507,8 @@ def _warn_on_conflict(
     if ext_fmt == resolved or _is_deferred_inner_tar(ext_fmt, resolved):
         return
     message = (
-        f"Format conflict for {name!r}: extension suggests {ext_fmt!r} but magic bytes "
-        f"indicate {resolved!r}; using the magic-byte result."
+        f"Format conflict for {name!r}: extension suggests {ext_fmt!r} but "
+        f"{evidence.value} {resolved!r}; using that result over the extension."
     )
     collector.emit(
         code=DiagnosticCode.FORMAT_EXTENSION_CONFLICT,
@@ -603,7 +626,9 @@ def _detect_format_body(
             peek_more,
             ext_match=ext_match,
         )
-        _warn_on_conflict(collector, name, ext_match, info.format)
+        _warn_on_conflict(
+            collector, name, ext_match, info.format, _ConflictEvidence.MAGIC
+        )
         return info
 
     # 2. Self-extracting archives: an executable stub, then real archive magic somewhere
@@ -615,7 +640,13 @@ def _detect_format_body(
     if cue is not ExecutableCue.NONE:
         sfx_info = _scan_for_sfx_payload(registry.sfx_magic_entries(), peek_more)
         if sfx_info is not None:
-            _warn_on_conflict(collector, name, ext_match, sfx_info.format)
+            _warn_on_conflict(
+                collector,
+                name,
+                ext_match,
+                sfx_info.format,
+                _ConflictEvidence.SFX_SCAN,
+            )
             return sfx_info
 
     # Archive-relative reachable length, used by the far-magic size gate below and by the
@@ -650,7 +681,9 @@ def _detect_format_body(
             far_data = _peek_prefix(source, far_needed)
             far_fmt = _match_magic(far_data, far)
             if far_fmt is not None:
-                _warn_on_conflict(collector, name, ext_match, far_fmt)
+                _warn_on_conflict(
+                    collector, name, ext_match, far_fmt, _ConflictEvidence.MAGIC
+                )
                 return FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic")
 
     # 4. Formats without an exact magic, recognized by a content probe (Brotli decodes a
@@ -688,7 +721,13 @@ def _detect_format_body(
                         peek_more,
                         ext_match=ext_match,
                     )
-                    _warn_on_conflict(collector, name, ext_match, info.format)
+                    _warn_on_conflict(
+                        collector,
+                        name,
+                        ext_match,
+                        info.format,
+                        _ConflictEvidence.CONTENT_PROBE,
+                    )
                     return info
         finally:
             close_read_at()

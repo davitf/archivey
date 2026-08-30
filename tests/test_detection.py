@@ -822,3 +822,60 @@ def test_unknown_length_short_source_falls_through_to_the_extension(
     info = detect_format(path)
     assert info.format == ArchiveFormat.ZIP
     assert info.detected_by == "extension"
+
+
+# --- the conflict diagnostic names the evidence that actually won -----------------------
+#
+# Four branches outrank the extension and all four call ``_warn_on_conflict``, which used
+# to say "magic bytes indicate X" from every one of them. These pin one message per branch
+# so the wording cannot drift back to a single hardcoded claim.
+
+
+def _conflict_message(path: Path) -> str:
+    """The one ``FORMAT_EXTENSION_CONFLICT`` message ``detect_format`` emitted."""
+    from archivey.diagnostics import DiagnosticCode
+
+    info = detect_format(path)
+    messages = [
+        d.message
+        for d in info.diagnostics.retained
+        if d.code is DiagnosticCode.FORMAT_EXTENSION_CONFLICT
+    ]
+    assert len(messages) == 1, f"expected exactly one conflict, got {messages}"
+    return messages[0]
+
+
+def test_content_probe_conflict_names_the_probe_not_magic(tmp_path: Path) -> None:
+    # The defect. On the probe branch "magic bytes indicate X" is false twice over: no
+    # magic was read, and the answer that won is the weakest signal archivey has — the
+    # one a reader deciding whether to believe us is most entitled to doubt.
+    path = tmp_path / "compat_lzma.tlz"  # the extension says TAR_LZIP
+    path.write_bytes(lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE))
+    message = _conflict_message(path)
+    assert "content inspection indicates" in message
+    assert "magic" not in message
+
+
+def test_near_magic_conflict_still_names_magic(tmp_path: Path) -> None:
+    path = tmp_path / "mislabelled.tlz"
+    path.write_bytes(_zip_bytes())
+    assert "magic bytes indicate" in _conflict_message(path)
+
+
+@requires("pycdlib")
+def test_far_magic_conflict_names_magic(tmp_path: Path) -> None:
+    # Far magic is exact magic too, just at an offset the default window does not reach,
+    # so the near-magic wording is the right one to inherit.
+    path = tmp_path / "mislabelled_iso.tlz"
+    path.write_bytes(_iso_bytes(b"\x00" * _ISO_SYSTEM_AREA))
+    assert "magic bytes indicate" in _conflict_message(path)
+
+
+def test_sfx_conflict_names_the_stub_scan(tmp_path: Path) -> None:
+    # A scan hit is magic as well, but found where the other branches never look. Saying
+    # so is the difference between "this file is not what its name claims" and "this file
+    # has something in front of the archive", which are different things to go fix.
+    path = tmp_path / "installer.tlz"
+    path.write_bytes(b"MZ" + b"\x90" * 4094 + _zip_bytes())
+    message = _conflict_message(path)
+    assert "archive magic behind an executable stub indicates" in message

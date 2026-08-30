@@ -20,10 +20,12 @@
     3.4d (the bootable-ISO red–green, built with `pycdlib` exactly as described) are done
     by `detection-format-gaps`, which is where that live silent wrong answer — a bootable
     ISO detected as `BROTLI` with a fabricated `*.uncompressed` member — was actually
-    fixed. **3.4e is not**: that change never touches `_warn_on_conflict`, whose message
-    still hardcodes "magic bytes indicate …" on the content-probe branch. The hoist makes
-    the ISO case take the far-magic branch, where the wording is accurate, so it fires less
-    often — but the defect is untouched and stays this change's to fix.
+    fixed. **3.4e was not**, and *was* pulled forward as its own PR exactly as this note
+    describes — see the task itself. `detection-format-gaps` never touched
+    `_warn_on_conflict`, whose message hardcoded "magic bytes indicate …" on all four
+    branches that call it. The hoist made the ISO case take the far-magic branch, where
+    the wording is accurate, so it fired less often — but the defect was untouched, and
+    fixing it needs nothing else from this change.
   - ~~**The LZMA Alone `dict_size != 0` guard must be removed *with* task 3.4c, not
     before.**~~ — done by `detection-format-gaps`, in the same change as the hoist. `src/archivey/internal/streams/codecs.py` `_alone_header_plausible` rejects a zero dictionary size, and the comment says why: it stops a zero-filled ISO system area decoding as an empty Alone stream **before far-magic ISO detection runs**. That guard is a false-negative bug — verified, a stream with that field zeroed still decodes, because the LZMA SDK clamps the value to `LZMA_DIC_MIN` rather than rejecting it — but it is load-bearing until far magic precedes the probes. Remove it in the same commit as 3.4c, never earlier
 
@@ -97,7 +99,7 @@
   | ISO, boot-code-shaped system area | `BROTLI` / `GUESS` / `content_probe` | one fabricated `*.uncompressed`; read raises `CorruptionError` | `ISO` / `CERTAIN`, real members |
 
   Assert the members, not merely that no error is raised, and keep the zeroed row so a future reorder cannot regress the easy case while fixing the hard one
-- [ ] 3.4e Fix the conflict diagnostic's wording in `_warn_on_conflict` (`src/archivey/internal/detection.py`). The message hardcodes *"but magic bytes indicate {X}; using the magic-byte result"*, yet the function is also called from the content-probe branch — so on the ISO fixture above it reports "magic bytes indicate BROTLI" while actually discarding a correct exact-magic answer for a probe guess. Name the evidence that actually won. The live *Conflict resolution* requirement already says "magic/content result", so this is the code catching up to the spec, not a contract change
+- [x] 3.4e ~~Fix the conflict diagnostic's wording in `_warn_on_conflict`~~ — **done, pulled forward as its own PR** (nothing else in this change is a prerequisite). `_warn_on_conflict` now takes a `_ConflictEvidence` naming the branch that won, and all four call sites pass their own: near magic and far magic *"magic bytes indicate"*, the SFX scan *"archive magic behind an executable stub indicates"*, the content probe *"content inspection indicates"*. Four tests pin one message per branch, so the wording cannot collapse back to a single hardcoded claim. Two deliberate limits: the evidence is **not** added to `FormatConflictContext`, because `detection-result-surface` renames two `detected_by` values and a caller wanting the evidence as data reads it off the same `FormatInfo`; and the tail now reads *"using that result over the extension"* rather than naming the winner twice. Original text: The message hardcodes *"but magic bytes indicate {X}; using the magic-byte result"*, yet the function is also called from the content-probe branch — so on the ISO fixture above it reports "magic bytes indicate BROTLI" while actually discarding a correct exact-magic answer for a probe guess. Name the evidence that actually won. The live *Conflict resolution* requirement already says "magic/content result", so this is the code catching up to the spec, not a contract change
 - [ ] 3.5 Short-circuit tier 3 when tier 2 already hit — a seekable `zipapp` or Spring Boot JAR should be answered by the tail probe and never reach the forward scan. This is what keeps the widened cue's population cost off the most common shebang case (`design.md` §cost)
 - [ ] 3.4 Register the missing ZIP-family extensions (`.jar`, `.pyz`, `.whl`, `.apk`) — today not even the extension fallback rescues these
 
