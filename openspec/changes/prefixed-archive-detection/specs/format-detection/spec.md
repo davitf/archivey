@@ -433,13 +433,33 @@ and it still sharpens what that evidence is worth.
 >
 > Before archiving, re-check step 3 against the then-live text and carry over any wording
 > `detection-format-gaps` settled, exactly as this block already did for
-> `brotli-probe-framing-gate`.
+> `brotli-probe-framing-gate`. That carry-over has already happened once: when that change
+> archived, `openspec validate` refused this delta for omitting its
+> *far magic precedes the content probes* scenario, which is now inherited below with this
+> requirement's step numbers. The tool enforces exactly the hazard this note describes —
+> trust it over any assumption that the blocks are disjoint.
 
 #### Scenario: unrecognised bytes, no path
 
 | Case | Expected |
 | --- | --- |
 | Non-seekable `BinaryIO`, no filename, no magic | `FormatDetectionError` |
+
+#### Scenario: far magic precedes the content probes
+
+Inherited from `detection-format-gaps`, which shipped the hoist; carried here because a
+MODIFIED requirement replaces the whole block, so omitting it would drop the scenario from
+the live spec. Step numbers are this requirement's (far magic 3, probes 7), not that
+change's (4 and 5). The rows overlap *tier ordering* below by design — that table places
+far magic among the new tiers, this one is the shipped guarantee it must not break.
+
+| Case | Expected |
+| --- | --- |
+| Bootable/hybrid ISO whose 32 KiB system area holds boot code a probe accepts | `ISO` / `CERTAIN` / `magic` — not a fabricated single-file member |
+| ISO with a zeroed system area | `ISO` / `CERTAIN` / `magic`; unchanged |
+| Source smaller than the extended window, size known | Step 3 skipped without an extended peek; falls through |
+| Source too short for the window, size unknown | Short peek, no match, falls through — never an error for being short |
+| Real Brotli stream larger than the window, no extension | One bounded peek misses at step 3, then step 7 detects it |
 
 #### Scenario: tier ordering
 

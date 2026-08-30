@@ -103,15 +103,16 @@
 ## 8. Verify
 
 - [x] 8.1 `uv run --no-sync pytest tests/test_detection.py tests/test_single_file.py`
-- [x] 8.2 `./scripts/check.sh --fix` — green apart from the `openspec archived` leg, which
-      8.5 below is what closes
+- [x] 8.2 `./scripts/check.sh --fix` — all checks passed, `openspec archived` included once
+      8.5 landed
 - [x] 8.3 `./scripts/test.sh --all-configs` — the zstd and Brotli probes are extra-gated, so
       the `[core-only]` leg is where a skipped-probe fall-through regression would show.
       All three configurations pass
 - [x] 8.4 `openspec validate --strict detection-format-gaps` — valid
-- [ ] 8.5 **Archive the change** (`/openspec-archive-change`), applying the three MODIFIED
-      requirements to `openspec/specs/format-detection/spec.md`. Left unchecked on purpose:
-      the design moved under review — §5 replaces the Alone guard rather than removing it,
-      after the plain removal regressed every zero-filled source — so the deltas should
-      land in the authoritative specs once that decision is reviewed, not before. Checking
-      this box is the claim that the work is done; archiving is what makes it true
+- [x] 8.5 **Archive the change**, applying the three MODIFIED requirements to
+      `openspec/specs/format-detection/spec.md`. Held open on purpose while the design moved
+      under review — §5 replaces the Alone guard rather than removing it, after the plain
+      removal regressed every zero-filled source, and §Sequencing grew the sibling-change
+      edits from review round 1. Both are now reviewed and approved, so the deltas land in
+      the authoritative specs. Checked *after* the archive, not before: checking this box is
+      the claim that the work is done, and archiving is what makes it true
