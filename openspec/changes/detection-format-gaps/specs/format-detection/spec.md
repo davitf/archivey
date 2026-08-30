@@ -145,9 +145,10 @@ as the probe's existing refusal to claim an empty successful decode, stated at t
 because a bounded probe cannot reach it: 18 zero bytes are a *valid, complete, empty*
 Alone stream (a legal 13-byte header plus a five-byte range-coder init), so zero-filled
 padding decodes cleanly to nothing and the bounded read then reports truncation, which is
-otherwise a match. Encoders write the sentinel even for empty input, so no genuine stream
-is refused. The two fields are independent: a stream with a zero dictionary size and a
-real payload is still detected.
+otherwise a match. This refuses nothing that was ever detected: an empty stream is not
+claimed with or without the rule, because the probe already declines an empty decode, and
+a `.lzma` name still opens one through the extension. The two header fields are
+independent: a stream with a zero dictionary size and a real payload is still detected.
 
 #### Scenario: content-probe matrix
 

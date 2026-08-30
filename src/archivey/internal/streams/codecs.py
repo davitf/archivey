@@ -1378,8 +1378,9 @@ def _alone_header_plausible(prefix: bytes) -> bool:
       stream (13-byte header plus a five-byte range-coder init, which must begin with a
       zero), so zero-filled padding decodes cleanly to nothing, and the bounded read
       then runs off the end of the trailing zeros and reports truncation — which is a
-      match. A real encoder writes the unknown-size sentinel even for empty input, so
-      no genuine stream is refused here.
+      match. It refuses nothing that was ever detected: an empty stream is not claimed
+      with or without this gate, because ``require_output`` already declines an empty
+      decode, and a ``.lzma`` name still opens one through the extension.
     - **Dictionary size** is deliberately *not* gated, at any value. Every 32-bit value
       is legal and the LZMA specification requires decoders to round one below 4 KiB up
       to 4 KiB, so a stream whose field is zero still decodes — rejecting it was a false
