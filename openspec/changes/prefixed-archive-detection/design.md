@@ -262,6 +262,7 @@ is unsafe until far magic precedes the content probes, and it could not wait for
 now that this is sequenced behind `detection-evidence-ledger`. Two in-flight changes
 MODIFYing the same requirement is the archive-order conflict the investigation §14 warns
 about, so on revision this change **drops** its far-magic Impact bullet and the far-magic
-step from its `Magic-first detection…` delta, and tasks 3.4c–3.4e go with them. The
+step from its `Magic-first detection…` delta, and tasks 3.4c–3.4d go with them — but
+**not 3.4e**, the `_warn_on_conflict` wording, which that change never touches. The
 bootable-ISO reproduction above stays useful: it is the justification recorded in
 `detection-format-gaps`'s design for making the move.

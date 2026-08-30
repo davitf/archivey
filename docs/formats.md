@@ -236,7 +236,11 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   legal window sizes are recognised. A preset dictionary archivey does not hold fails the
   decode and the candidate falls through.
 - **LZMA Alone** accepts any 32-bit dictionary-size field, zero included — the format
-  allows every value and decoders round below 4 KiB up to 4 KiB.
+  allows every value and decoders round below 4 KiB up to 4 KiB. It does *not* claim a
+  header declaring an uncompressed size of exactly zero: that stream carries no payload,
+  and 18 zero bytes are a valid empty one, so zero-filled padding would otherwise be
+  detected as `.lzma`. A real size and the all-ones "unknown" sentinel are both accepted,
+  and an empty `.lzma` still opens through its extension.
 - Self-extracting (SFX) stubs are detected when the archive payload sits behind an
   executable header — today a Windows (`MZ`/PE) or Linux (ELF) one. A macOS
   Mach-O stub is **not** recognised yet, so a `.7z`/`.rar`/`.zip` appended to one is

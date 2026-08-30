@@ -35,7 +35,10 @@ sometimes say yes:
   before the probes because a bootable or hybrid ISO reserves its first 32 KiB for
   bootloader code — the data class a probe accepts — and the exact magic was available at
   a known offset the whole time. The peek is size-gated: a source known to be smaller than
-  the window never pays it.
+  the window never pays it. A larger one does, **including when a probe then succeeds** —
+  that is a bounded read this order adds rather than moves, since a probe hit used to
+  return before far magic ran (measured at ~3% of ``detect_format`` on a 2 MB stream; see
+  ``detection-format-gaps`` design §Risks).
 """
 
 from __future__ import annotations

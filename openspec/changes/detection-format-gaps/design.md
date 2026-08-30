@@ -200,11 +200,22 @@ Worth revisiting as a **general** probe rule rather than an Alone one — the de
   regression pin is a *zero-system-area* ISO fixture as well as the boot-code one: the first
   proves the guard's removal did not reintroduce the claim, the second proves the reorder
   fixed the case the guard never covered.
-- [The reorder makes every unidentified source larger than 32 775 bytes pay one extended
-  peek before the probes] → It already pays it after the probes today; this moves the cost,
-  it does not add it. Sources below the window are size-gated out, and
-  `detection-prefix-workspace` later makes the peek a delta read rather than a re-read
-  from zero.
+- [The reorder makes every source larger than the extended window pay one extended peek
+  before the probes] → **For a source nothing identifies, this moves the cost rather than
+  adding it** — it already pays that peek after the probes today. **For a source a content
+  probe *succeeds* on, the peek is genuinely new**, and the first version of this bullet
+  was wrong to imply otherwise: a probe hit used to return before far magic ran, so a large
+  Brotli, zlib or Alone stream never took the extended peek at all. Measured on the shipped
+  order, `detect_format` on a 200 KB Brotli stream peeks `[4096, 32774, 65536]`, where the
+  32 774 is the addition.
+
+  Quantified rather than waved through, since VISION's ≤1.3× budget is load-bearing: on a
+  2 MB `.br` path the added peek is a median **11.5 µs against 448 µs for the whole of
+  `detect_format` (3%), and 1.6% of an `open_archive` + full listing**. One bounded 32 KiB
+  read on a path already being opened. Accepted at that price, not because it is free.
+  Sources below the window are size-gated out and pay nothing — verified: a small Brotli
+  stream's peeks carry no 32 774 entry. `detection-prefix-workspace` later makes it a delta
+  read rather than a re-read from zero, which removes even this.
 
 ## Open Questions
 

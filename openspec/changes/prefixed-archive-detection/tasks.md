@@ -5,12 +5,17 @@
   **Two seams worth knowing before you start.** Both are now **closed by
   `detection-format-gaps`**, which shipped the far-magic hoist and the Alone guard
   removal together. On revision this change drops its far-magic Impact bullet, the
-  far-magic step from its `Magic-first…` delta, and tasks 3.4c–3.4e, rather than
+  far-magic step from its `Magic-first…` delta, and tasks 3.4c–3.4d, rather than
   re-shipping the move — see that change's design §Sequencing and this one's. The two
   bullets are kept below as the record of why the move was owed.
 
-  - ~~**Tasks 3.4c–3.4e can be pulled forward as their own PR.**~~ — done by
-    `detection-format-gaps`. The far-magic hoist fixes a *live* silent wrong answer — a bootable ISO detected as `BROTLI` with a fabricated `*.uncompressed` member — and it depends on neither the tail probe nor the cue work. Three tasks, one decisive reproduction. Implementing them early inside this change's task list (without archiving the change) is the way to fix that bug before the rest of this lands.
+  - ~~**Tasks 3.4c–3.4e can be pulled forward as their own PR.**~~ — 3.4c (the hoist) and
+    3.4d (the bootable-ISO red–green, built with `pycdlib` exactly as described) are done
+    by `detection-format-gaps`. **3.4e is not**: that change never touches
+    `_warn_on_conflict`, whose message still hardcodes "magic bytes indicate …" on the
+    content-probe branch. The hoist makes the ISO case take the far-magic branch, where
+    the wording is accurate, so it fires less often — but the defect is untouched and
+    stays this change's to fix. The far-magic hoist fixes a *live* silent wrong answer — a bootable ISO detected as `BROTLI` with a fabricated `*.uncompressed` member — and it depends on neither the tail probe nor the cue work. Three tasks, one decisive reproduction. Implementing them early inside this change's task list (without archiving the change) is the way to fix that bug before the rest of this lands.
   - ~~**The LZMA Alone `dict_size != 0` guard must be removed *with* task 3.4c, not
     before.**~~ — done by `detection-format-gaps`, in the same change as the hoist. `src/archivey/internal/streams/codecs.py` `_alone_header_plausible` rejects a zero dictionary size, and the comment says why: it stops a zero-filled ISO system area decoding as an empty Alone stream **before far-magic ISO detection runs**. That guard is a false-negative bug — verified, a stream with that field zeroed still decodes, because the LZMA SDK clamps the value to `LZMA_DIC_MIN` rather than rejecting it — but it is load-bearing until far magic precedes the probes. Remove it in the same commit as 3.4c, never earlier
 
