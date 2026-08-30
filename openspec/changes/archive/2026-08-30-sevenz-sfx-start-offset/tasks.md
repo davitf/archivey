@@ -19,4 +19,4 @@
 - [x] 4.2 Explicit start offset N with magic at N
 - [x] 4.3 No magic within bound → `CorruptionError`
 - [x] 4.4 `openspec validate --strict sevenz-sfx-start-offset`
-- [ ] 4.5 Archive this change in the finishing PR (`openspec archive sevenz-sfx-start-offset --yes`)
+- [x] 4.5 Archive this change in the finishing PR (`openspec archive sevenz-sfx-start-offset --yes`)
