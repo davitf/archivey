@@ -85,6 +85,60 @@ the sum, worth roughly 2 to the minus 30 on random data. Scan mode behaves the s
 candidates are generated needle-first: 2 MiB windows across those files produced **884
 `ustar` candidates in the entire corpus**, about 0.011 per file.
 
+**The bounded probe is fed 256 bytes, and that is the largest single defect found here.**
+`DETECTION_LIMIT` peeks 4096 bytes; `_PROBE_PREFIX` feeds **256** of them to the codec, and
+the completeness gate only engages when the whole source fits the peeked prefix. Measured on
+a 100 477-file sweep (29 content-probe hits; 19 fabrications, 4 genuine Brotli streams) plus
+2 800 built positives (400 real files × zlib stored/min/max, LZMA Alone min/max, Brotli
+min/max — all 2 800 detected):
+
+| bounded decode over | 19 real fabrications | 4 real genuine `.br` | 2 800 built positives |
+| --- | --- | --- | --- |
+| 256 B (today) | 12 produced output, 7 zero, **0 rejected** | **all 4 produced nothing** | 2 757 produced, 43 zero |
+| 1024 B | 12 produced, **7 rejected** | all 4 produced | 2 795 produced, 5 zero |
+| 4096 B | 12 produced, **7 rejected** | all 4 produced | **all 2 800 produced** |
+
+Raising the prefix to the bytes already peeked costs no I/O and measured *faster*
+(0.018 vs 0.021 ms/file over all three probes), because rejections happen earlier. It cannot
+admit a candidate a shorter prefix rejected — verified, 0 cases.
+
+**Why the seven Perl source files parse as Brotli, in full.** `"package "` is
+`70 61 63 6b 61 67 65 20`; read LSB-first that is `WBITS=16`, `ISLAST=0`, `MNIBBLES=4`,
+`MLEN=13 848`, `ISUNCOMPRESSED=0`. The header therefore **declares** an entropy-coded
+meta-block of 13 848 bytes — which is what `parse_metablock` reports, and why a
+"first block is compressed" test says yes. But the decoder produces **0 bytes from 256
+input bytes** and fails outright at 1024. Declared block type and achieved decompression are
+different facts, and only the first is cheap.
+
+**So "it decompressed a compressed block" cannot carry a promotion, measured two ways.**
+Grading on the *declared* first-block type promotes 9 fabrications (7 Perl files plus 2 LZMA
+Alone, which has no stored mode and so is promoted unconditionally) against 4 genuine
+streams. Grading on *output produced from 256 bytes* is worse still, and inverted: it
+promotes 12 fabrications and **0 of 4** genuine streams, because the genuine files are
+quality-11 Brotli whose first block needs more than 256 bytes before emitting anything.
+At a 4096-byte prefix output-produced recovers to 100% recall, but the wild base rate is
+4 genuine to 19 fabricated, so it still yields a positive predictive value near 25%.
+
+**Whole-source completion is the only exact discriminator, and it is affordable.** It *is*
+the ground truth the tables above are labelled with. Over the 23 hits the slowest completion
+attempt was 7.29 ms on an 8 204-byte source, the median 0.023 ms, and the total 15.1 ms. The
+four genuine streams are 6 648–53 152 bytes; the fabrications that survive a 4096-byte prefix
+are 88 KB–866 KB. A 64 KiB completion window therefore separates them exactly:
+
+| with prefix 4096 B and completion at or below 64 KiB | outcome |
+| --- | --- |
+| 4 real genuine streams | **4 `COMPLETE`** → `CERTAIN` |
+| 19 real fabrications | **10 rejected outright**, 9 remain `BOUNDED_PROBE` → `GUESS` |
+
+Zero fabrications rise above `GUESS`, and every genuine stream reaches `CERTAIN` rather than
+the `PROBABLE` a heuristic would have bought. The nine survivors are all above the window and
+correctly sit at the floor.
+
+**Completing a stored stream is verified, not merely copied.** zlib's Adler-32 is checked on
+a full decode — corrupting one payload byte fails it — so a completed stored stream carries
+about 2⁻³² of constraint rather than its header's 2⁻¹⁰. That is why the stored-only rule bars
+promotion by an *unverified* bounded decode and exempts completion.
+
 **Same-class probe ties are reachable but not natural.** Running all three magic-less probes
 independently over 33 947 real files gave 25 single-probe hits and **0** multi-probe hits. So
 priority key 4 is not a hot path — but bytes can satisfy zlib's header and Brotli's framing
@@ -133,6 +187,27 @@ more. Both cases occur and getting it wrong breaks branch-and-bound outright:
 The consequence is explainable: a small genuine `.br` is `GUESS` under `BALANCED` and
 `CERTAIN` under `THOROUGH`, because the completion declaration is excluded by budget — the
 stopping rule's own third arm, not an exception.
+
+### 2a. Genuine magic-less streams earn `CERTAIN` by completing, not by a heuristic
+
+Raised in review: a probe that actually decompresses a *compressed* block ought to be worth
+more than one that copies stored bytes. The intuition is right about what matters and wrong
+about what is measurable cheaply — the Investigations above show the declared block type and
+the 256-byte output both promote more fabrications than genuine streams.
+
+The mechanism that delivers the intent already exists and is exact: whole-source completion.
+So rather than promote bounded probes, this change makes completion reachable at the default
+budget for sources within a 64 KiB window, and feeds the probe the 4096 bytes already peeked.
+A genuine small `.br` then reports `CERTAIN` — better than the `PROBABLE` the heuristic was
+reaching for — and nothing accidental is promoted.
+
+**Rejected: promote on the declared first meta-block being compressed.** This is close to
+what ships today for Brotli. It marks seven Perl source files probably-Brotli and gives LZMA
+Alone a blanket promotion, since LZMA1 has no stored mode for the test to fail.
+
+**Rejected: promote on output produced from the bounded prefix.** Inverted on the real
+corpus at today's 256-byte sample, and still only ~25% precise at wild base rates with a
+4096-byte one.
 
 ### 3. Confidence is a projection, with no third arm
 
@@ -202,6 +277,36 @@ of bytes is `INCOMPLETE` and never a proved mismatch.
 **Rejected: rejecting a candidate whose source is shorter than the format's minimum header.**
 Cleaner in the abstract and it discards the more useful answer — a truncated `.gz` off a
 damaged backup should report "GZ, truncated", not "unknown format".
+
+### 7a. `search_complete` reports policy-completion, not tier-completion
+
+Raised in review as an unresolved "or" — report a flag, *or* raise; refuse the open *unless*
+some unnamed policy accepts it. Sizing it settled the direction. The ZIP tail tier is
+`SELF_VALIDATING` and off by default, so it "could dominate" nearly every winner; over 2 029
+detected archives that marks **1 840 (90.7%)** incomplete, including every gzip (1 111) and
+every ZIP (673). Refusing to open those, or raising, would break the ordinary case; a flag
+true nine times in ten carries no information either.
+
+The fix is to stop conflating two reasons a detector did not run. *"This policy never
+intended to run it"* is by design; *"this run's budget ran out"* is the thing a caller needs
+to hear. Only the second sets the flag; the first is recorded in the ledger as **not enabled
+by policy** and stays inspectable.
+
+The tail tier is a gap in neither of its roles. **Discovery** — an appended archive could sit
+behind any prefix — is true of every source always, so flagging it is uninformative.
+**Upgrade** — raising a ZIP already found by its front signature to a checksummed class — does
+not change which format is reported.
+
+`search_complete` therefore never blocks an open. A caller who wants to refuse weak results
+branches on the evidence class, which is the thing that actually grades the answer.
+
+**Rejected: refuse the open unless an accept-incomplete knob is set.** Measured, it refuses
+ordinary gzip and ZIP files at the default budget.
+
+**Rejected: raise from `detect_format`.** Same arithmetic, same 90.7%.
+
+**Rejected: keep one flag and make it informational.** Costs no new concept, but leaves a
+field nobody can use and invites a later caller to branch on it anyway.
 
 ### 8. Ambiguity raises, and the error subclasses `FormatDetectionError`
 

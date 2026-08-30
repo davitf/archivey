@@ -8,6 +8,6 @@
 
 **Decided:** A flat shape rule rather than a source cost model, because that shape is affordable everywhere and nothing can currently tell an expensive seek from a cheap one. The ZIP tail probe stays out of the default budget until measured, in seeks as well as bytes.
 
-**Your call later:** Whether the budget's limits are per-detection totals or per-candidate. A fuzz assertion pins the invariant either way, which is what lets the question stay open.
+**Your call later:** Whether the budget's limits are per-detection totals or per-candidate. A fuzz assertion pins the invariant either way, which is what lets the question stay open. Note the default preset now also runs a full decode for sources up to sixty-four kilobytes, so a genuine small compressed stream can be confirmed outright rather than guessed at.
 
 **Bottom line:** Plumbing, but two later changes are blocked without it.

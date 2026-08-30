@@ -2,15 +2,21 @@
 
 - [ ] 1.1 Failing test: each of the 15 registered magic entries, fed a source that is only
       that magic, reports `SIGNATURE_ONLY` → `PROBABLE`, not `CERTAIN`
-- [ ] 1.2 Failing test: `zlib.compress(payload, 0)` (stored blocks only) is identified as
-      `ZLIB` but graded on its header, not on the decode
-- [ ] 1.3 Failing test: a zero-filled file named `backup.gz` (and `.rar`, `.bz2`, `.xz`,
+- [ ] 1.2 Failing test: `zlib.compress(payload, 0)` (stored blocks only), too large to
+      complete, is identified as `ZLIB` at `BOUNDED_PROBE` — not promoted by the decode; and
+      the same stream small enough to complete reaches `COMPLETE`, its Adler-32 having verified
+- [ ] 1.3 Failing test: the seven `/usr/share/perl` files whose first eight bytes are
+      `"package "` are **not** claimed as Brotli — a 4096-byte prefix rejects them, a
+      256-byte one does not
+- [ ] 1.4 Failing test: a genuine Brotli stream under 64 KiB with no extension reports
+      `CERTAIN` via completion, not `GUESS`
+- [ ] 1.5 Failing test: a zero-filled file named `backup.gz` (and `.rar`, `.bz2`, `.xz`,
       `.zst`, `.br`, `.lzma`) fails with `format_unconfirmed=True`
-- [ ] 1.4 Failing test: a genuine Brotli stream named `x.br` reports `GUESS`, and a decode
+- [ ] 1.6 Failing test: a genuine Brotli stream **above** the completion window named `x.br` reports `GUESS`, and a decode
       failure on it **is** stamped — the extension stops suppressing
-- [ ] 1.5 Failing test: two candidates tied at the same class raise `AmbiguousFormatError`,
+- [ ] 1.7 Failing test: two candidates tied at the same class raise `AmbiguousFormatError`,
       caught by `except FormatDetectionError`
-- [ ] 1.6 Failing test: a zero-byte source with no filename raises `FormatDetectionError`
+- [ ] 1.8 Failing test: a zero-byte source with no filename raises `FormatDetectionError`
       whose record names a capability shortfall, not an exhausted search
 
 ## 2. Evidence types and the ranking
@@ -57,9 +63,19 @@
 
 - [ ] 5.1 `INCOMPLETE` validation caps the candidate at `SIGNATURE_ONLY`, whatever the
       declaration's ceiling says
-- [ ] 5.2 Stored-only decode regrade: output that is purely stored/uncompressed is graded on
-      the header alone. Generalise Brotli's existing first-block gate to zlib's `BTYPE=00`
+- [ ] 5.2 Stored-only decode rule: a **bounded** decode producing only stored/uncompressed
+      output does not promote the candidate above `BOUNDED_PROBE`. Whole-source completion is
+      exempt — it verifies the format's own checksum (zlib's Adler-32 fails on one corrupted
+      payload byte), so a completed stored stream legitimately reaches `COMPLETE`
 - [ ] 5.3 A candidate is never rejected for being shorter than the format's minimum header
+- [ ] 5.4 Raise `_PROBE_PREFIX` from 256 to `DETECTION_LIMIT` (4096) — the bytes are already
+      peeked, so this is free; measured, it rejects 7 of 19 real fabrications that 256 bytes
+      accepts, and runs marginally faster because rejections happen earlier
+- [ ] 5.5 Assert the direction: a longer prefix can only reject more, never admit a candidate
+      a shorter prefix rejected
+- [ ] 5.6 Run whole-source completion under `BALANCED` when the remaining size is known and
+      within the completion window (64 KiB), so a genuine small magic-less stream reaches
+      `COMPLETE` → `CERTAIN` rather than `GUESS`
 
 ## 6. Scheduler and selection
 
@@ -76,6 +92,14 @@
       extent — otherwise a decoy can hide a real archive inside its declared range
 - [ ] 6.7 Far evidence preceding probes must fall out of the ranking; assert there is **no**
       special-case arm for it
+- [ ] 6.8 Record a skipped declaration with its **reason**: *not enabled by policy*,
+      *budget-exhausted*, or *unavailable by capability*. Only the last two set
+      `search_complete=False`
+- [ ] 6.9 Regression pin for the reason this exists: under `BALANCED`, an ordinary gzip and an
+      ordinary ZIP both report `search_complete=True` even though the ZIP tail tier is off.
+      Conflating the reasons marks 90.7% of real archives incomplete
+- [ ] 6.10 Assert `search_complete` gates nothing: `open_archive` opens regardless, and no
+      code path branches on it
 
 ## 7. Confidence, provenance, ambiguity
 
@@ -101,11 +125,17 @@
       would select
 - [ ] 8.3 **Order independence**: permuting declarations within a tier changes the receipt but
       not the winner, or raises `AmbiguousFormatError`
-- [ ] 8.4 **Monotonicity in budget**: a larger budget never yields a weaker class, and
-      `THOROUGH` never returns a different winner than `BALANCED` — only more retained
-      candidates
-- [ ] 8.5 **`search_complete` does not lie**: when true, no declaration was skipped for budget
-      or capability
+- [ ] 8.4 **Monotonicity in budget**, stated as two separate properties because conflating
+      them contradicts the preset contract:
+      (a) *for a winner both budgets find*, a larger budget never yields a weaker class and
+      never yields a different winner — only more retained candidates;
+      (b) enabling additional tiers may turn "no candidate" into a candidate, or a winner
+      into one that **dominates** it, but never into an unrelated weaker one.
+      A JPEG with an appended ZIP is the case that forces the split: not found under
+      `BALANCED`, found via the tail tier under `THOROUGH`
+- [ ] 8.5 **`search_complete` does not lie**: when true, no declaration was skipped because
+      this run's budget or capabilities ran out. A declaration the policy never enables does
+      **not** falsify it — see 6.8
 
 ## 9. Golden fixtures and fuzzing
 

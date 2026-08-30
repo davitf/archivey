@@ -90,9 +90,17 @@ pulled off a damaged backup SHALL report `GZ`, not "unknown format".
 
 ### Requirement: A decode counts as evidence only if it decoded something
 
-A bounded probe that succeeds having produced **only stored or uncompressed output** SHALL
-be graded on its header alone and SHALL NOT reach `BOUNDED_PROBE` on the strength of that
-decode. The decoder copied bytes; it learned nothing the header did not already say.
+A **bounded** probe that succeeds having produced only stored or uncompressed output SHALL
+NOT be **promoted** on the strength of that decode: the decoder copied bytes and learned
+nothing the header did not already say, so the candidate keeps the class its header alone
+earns. For the magic-less formats that is `BOUNDED_PROBE`, the floor of the content
+classes — which projects to `GUESS` and stamps `format_unconfirmed` on a decode failure.
+
+**Whole-source completion is exempt, and the reason is not leniency.** Completing a stored
+stream verifies the format's own integrity check — zlib's Adler-32 is validated on a full
+decode, and a single corrupted payload byte fails it. So a completed stored stream carries
+roughly 2⁻³² of independent constraint, not the 2⁻¹⁰ of its header, and legitimately
+reaches `COMPLETE`. The rule bars promotion by *an unverified decode*, not by a verified one.
 
 This is not a resource rule — stored blocks are one-to-one and are a tool for a false
 identity, not for amplification.
@@ -102,13 +110,37 @@ identity, not for amplification.
 | format | stored mode | rule |
 | --- | --- | --- |
 | Brotli | uncompressed / metadata meta-blocks | already handled by the first-block framing gate |
-| zlib / deflate | `BTYPE=00` stored blocks | graded on the 2-to-the-minus-10 header alone; still identified as zlib |
+| zlib / deflate | `BTYPE=00` stored blocks | not promoted by the bounded decode; the 2⁻¹⁰ header is all it has |
 | LZMA Alone | none — LZMA1 is always range-coded | not applicable |
+
+| Case | Expected class | Projection |
+| --- | --- | --- |
+| `zlib.compress(payload, 0)`, stored blocks, bounded decode | `BOUNDED_PROBE` — identified as `ZLIB`, not promoted | `GUESS`; stamps on failure |
+| The same stream small enough to complete, Adler-32 verifying | `COMPLETE` | `CERTAIN` |
+| The same stream with one payload byte corrupted | Completion fails; not claimed | — |
+| zlib stream with at least one entropy-coded block, bounded | `BOUNDED_PROBE` | `GUESS` |
+
+### Requirement: The bounded probe is fed the peeked prefix, not a 256-byte sample
+
+A content probe SHALL be fed the detection prefix the workspace has already peeked
+(`DETECTION_LIMIT`, 4096 bytes by default), not a smaller fixed sample. Feeding less costs
+nothing in I/O — the bytes are already held — and materially weakens the probe: measured on
+a 100 477-file sweep, a 256-byte sample rejects **0 of 19** fabricated claims outright while
+a 4096-byte prefix rejects **7 of 19**, at no extra read and no extra time.
+
+Whole-source completion SHALL additionally run under the default budget when the remaining
+source size is known and does not exceed the completion window (64 KiB). A source larger
+than the window keeps the bounded probe and its `BOUNDED_PROBE` class.
+
+#### Scenario: prefix size and the completion window
 
 | Case | Expected |
 | --- | --- |
-| `zlib.compress(payload, 0)`, 200 000 bytes of stored blocks | `ZLIB` identified, graded on its header — not `PROBABLE` on the decode |
-| zlib stream with at least one entropy-coded block | `BOUNDED_PROBE` |
+| Source larger than the completion window | Bounded decode over the peeked prefix; `BOUNDED_PROBE` |
+| Source within the completion window, decodes to end-of-stream | `COMPLETE` → `CERTAIN` |
+| Source within the window, decode fails or does not finish | Not claimed by that probe |
+| A longer prefix admitting a candidate a shorter one rejected | SHALL NOT occur — a longer prefix can only reject more |
+| Brotli at maximum quality, first entropy-coded block spanning 3 KiB | Produces output within the 4096-byte prefix; a 256-byte sample would have seen none |
 
 ### Requirement: Selection compares evidence and stops only when nothing can change the winner
 
@@ -145,7 +177,8 @@ result can never let the scheduler stop while a reachable far declaration is unr
 | Validated XZ header plus `.xz` | May stop after the fixed-offset evidence the policy requires |
 | Brotli bounded probe plus `.br` | SHALL NOT skip reachable ISO far magic or an enabled ZIP tail tier |
 | gzip short header plus `.gz` | SHALL NOT skip stronger fixed-offset evidence |
-| A tier skipped by explicit budget | Result records the search as incomplete; the result is budget-limited, not certain |
+| A tier this preset never enables (the ZIP tail under `BALANCED`) | Recorded as *not enabled by policy*; the search is **still complete** for this policy |
+| A tier skipped because this run's budget ran out | Recorded as *budget-exhausted*; `search_complete=False` |
 | A tier unavailable by capability | Recorded as unavailable, distinctly from a budget skip |
 | Registry order permuted within a tier | Same winner, or `AmbiguousFormatError` — never a different answer |
 
@@ -154,9 +187,48 @@ result can never let the scheduler stop while a reachable far declaration is unr
 | detection state | `detect_format()` | `open_archive()` / `open_stream()` |
 | --- | --- | --- |
 | Unique winner, search complete for the primary | Return `FormatInfo` | Open it |
-| Unique winner, a budget skipped a detector that could tie or dominate | Report `search_complete=False`, or raise an incomplete-detection error | Refuse automatic open unless policy accepts incomplete detection |
+| Unique winner, a tier the preset does not enable was not run | Return `FormatInfo`; `search_complete` stays true | Open it — this is the ordinary case |
+| Unique winner, this run's budget ran out before a detector that could have dominated | Return `FormatInfo` with `search_complete=False` | Open it; the flag is informational and SHALL NOT block the open |
 | Tied maximal candidates | Raise `AmbiguousFormatError` carrying them | Propagate; never fall back to registry order |
 | No candidate | Raise `FormatDetectionError` | Propagate |
+
+### Requirement: search_complete distinguishes policy from budget
+
+`search_complete` SHALL answer one question: *did this run finish what its own policy asked
+for?* A detector that the selected policy **never intended to run** SHALL be recorded in the
+ledger as *not enabled by policy* and SHALL NOT make the search incomplete. Only a detector
+skipped because **this run's budget was exhausted** SHALL set `search_complete=False`.
+
+Conflating the two empties the flag of meaning. Measured over 2 029 files detected as some
+archive format, the ZIP tail tier — off by default and `SELF_VALIDATING`, so capable of
+dominating almost anything — would mark **1 840 (90.7%)** of results incomplete under the
+default policy, including every gzip and every ZIP. A flag true for nine results in ten
+cannot distinguish a budget-starved run from an ordinary one.
+
+The tier is not a gap in either of its two roles: *discovery* (an appended archive could hide
+behind any prefix) is true of every source always and so carries no information, and *upgrade*
+(raising a ZIP already found by its front signature to a checksummed class) does not change
+which format is reported.
+
+`search_complete` SHALL NOT block or refuse an open. It is informational.
+
+#### Scenario: what marks a search incomplete
+
+| Case | Recorded as | `search_complete` |
+| --- | --- | --- |
+| ZIP tail tier off under `BALANCED`, gzip identified by its header | not enabled by policy | true |
+| ZIP tail tier off under `BALANCED`, ZIP identified by its front signature | not enabled by policy | true |
+| `FAST` budget exhausted before a reachable far declaration ran | budget-exhausted | **false** |
+| A caller's `max_seeks=0` withdrew a capability a tier needed | unavailable by capability | **false** |
+| Exhaustive scan not opted into | not enabled by policy | true |
+| Every enabled declaration ran | — | true |
+
+#### Scenario: the flag never gates behaviour
+
+| Case | Expected |
+| --- | --- |
+| `search_complete=False` | `detect_format` returns normally; `open_archive` opens |
+| A caller wanting to refuse weak results | Branches on the evidence class, not on this flag |
 
 ### Requirement: Cheap structural validators grade a signature match
 
@@ -289,7 +361,7 @@ transfer to the measured real population, where the compressed-first class produ
 fabricated claims against 4 genuine streams.
 
 Before a probe result is selected: every affordable stronger tier SHALL have run; a skipped
-stronger tier SHALL set `search_complete=False`; a structurally valid executable cue SHALL
+stronger tier SHALL set `search_complete=False` **when it was skipped for budget** (a tier the preset does not enable does not); a structurally valid executable cue SHALL
 prevent a raw-stream probe from winning; an inner-TAR hit refines the candidate; and a
 matching extension corroborates without promoting the candidate above a stronger class.
 

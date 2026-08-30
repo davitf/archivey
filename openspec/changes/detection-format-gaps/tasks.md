@@ -58,10 +58,20 @@
 - [ ] 6.3 Close the `dev-docs/open-issues.md` / `dev-docs/IDEAS.md` references to the zstd
       skippable-frame gap and the Alone dictionary guard
 
-## 7. Verify
+## 7. Confidence assertions here are pre-ledger
 
-- [ ] 7.1 `uv run --no-sync pytest tests/test_detection.py tests/test_single_file.py`
-- [ ] 7.2 `./scripts/check.sh --fix`
-- [ ] 7.3 `./scripts/test.sh --all-configs` — the zstd and Brotli probes are extra-gated, so
+- [ ] 7.1 Where a test in this change asserts a `DetectionConfidence`, pin **format** and
+      **`detected_by`** as the durable assertion and treat confidence as provisional:
+      `detection-evidence-ledger` demotes ISO to `DISCRIMINATING_HEADER` → `PROBABLE` and
+      caps any unvalidated signature at `SIGNATURE_ONLY` → `PROBABLE`, so `CERTAIN` pins
+      written here would thrash when it lands
+- [ ] 7.2 Note the same in the fixture comments, so the later change updates them
+      deliberately rather than discovering them as failures
+
+## 8. Verify
+
+- [ ] 8.1 `uv run --no-sync pytest tests/test_detection.py tests/test_single_file.py`
+- [ ] 8.2 `./scripts/check.sh --fix`
+- [ ] 8.3 `./scripts/test.sh --all-configs` — the zstd and Brotli probes are extra-gated, so
       the `[core-only]` leg is where a skipped-probe fall-through regression would show
-- [ ] 7.4 `openspec validate --strict detection-format-gaps`
+- [ ] 8.4 `openspec validate --strict detection-format-gaps`

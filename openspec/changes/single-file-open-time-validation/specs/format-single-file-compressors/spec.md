@@ -35,7 +35,15 @@ obligation applies to seekable sources, and the reader SHALL say so where it is 
 
 #### Scenario: the failure carries honest provenance
 
+Moving the failure to open time changes **where** it is raised, not what it says about
+provenance. This change does not make the error honest by itself; `detection-evidence-ledger`
+does, by keying `format_unconfirmed` on the winning content-evidence class. The two compose:
+the raise moves here, the flag becomes correct there, and the flag follows the decode failure
+whichever call surfaces it.
+
 | Case | Expected |
 | --- | --- |
-| `backup.gz` of zeros, format chosen by extension alone | Raises at open; the error is attributable to a format only the filename claimed, not to the bytes |
+| `backup.gz` of zeros, format chosen by extension alone | Raises at `open_archive`, not on a later read |
+| Same, `format_unconfirmed` on that exception | `False` until `detection-evidence-ledger` lands, `True` after — this change moves the raise, it does not rekey the flag |
 | Listing is never reached for an undecodable source | The empty-listing diagnostic channel is not the reporting path for this class |
+| A source that opens and fails later | Unchanged — still a read-time failure |

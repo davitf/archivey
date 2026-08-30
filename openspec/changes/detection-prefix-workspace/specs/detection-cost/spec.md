@@ -15,6 +15,7 @@ class DetectionBudget:
     max_scan_bytes: int
     max_decode_input: int
     max_decode_output: int
+    completion_window_bytes: int   # whole-source completion runs at or below this
     max_index_bytes: int
     max_probe_links: int
     spool_non_seekable_up_to: int
@@ -46,7 +47,8 @@ signature needs a 32 775-byte window that a 4 096-byte near budget would otherwi
 | Path, near magic hit at offset 0 | `unique_bytes_read` is the single prefix read; `seeks` 0 |
 | Growing 4 KiB → 32 KiB → 2 MiB | `unique_bytes_read` counts each byte once; `prefix_bytes` counts requests |
 | Tail tier runs | `tail_bytes` and one `seek` charged; `prefix_bytes` unchanged |
-| A tier is skipped for budget | Nothing charged for it; the skip is recorded, not silently dropped |
+| A tier is skipped for budget | Nothing charged for it; recorded as *budget-exhausted* |
+| A tier the preset does not enable | Recorded as *not enabled by policy* — a distinct reason, because it does not make the search incomplete |
 
 ### Requirement: Detection capabilities are derived from source and budget together
 
@@ -81,9 +83,9 @@ The system SHALL provide three presets, and `BALANCED` SHALL be the default:
 
 | preset | behaviour |
 | --- | --- |
-| `BALANCED` | near prefix; far fixed-offset evidence; cued bounded scan; bounded probes and inner TAR; **no** ZIP tail tier; no exhaustive scan; no implicit spool |
+| `BALANCED` | near prefix; far fixed-offset evidence; cued bounded scan; bounded probes over the full peeked prefix; whole-source completion for sources within the completion window (64 KiB); inner TAR; **no** ZIP tail tier; no exhaustive scan; no implicit spool |
 | `FAST` | smaller tail/scan/decode budgets; the result reports an incomplete search; a weaker result SHALL NOT silently stand in for skipped stronger evidence |
-| `THOROUGH` | `BALANCED` plus the ZIP tail tier, non-maximal candidate collection, bounded whole-source completion where affordable, and the explicit embedded scan on a reopenable or seekable source |
+| `THOROUGH` | `BALANCED` plus the ZIP tail tier, non-maximal candidate collection, whole-source completion with no size window, and the explicit embedded scan on a reopenable or seekable source |
 
 The ZIP tail tier SHALL remain outside `BALANCED` until its aggregate cost is measured on
 the founding backup workload, in seeks as well as bytes. Format-boundedness proves the
@@ -96,6 +98,8 @@ search is complete, not that it is affordable.
 | ZIP behind a non-cueing prefix (JPEG + appended ZIP) | Not found | Found via the tail tier |
 | `zipapp` (`#!` prefix + ZIP) | Found via the cued scan | Found |
 | Exhaustive whole-source scan | Never | Only on explicit opt-in, not by preset alone |
+| Genuine 8 KB Brotli stream, no extension | Completes within the window → `CERTAIN` | `CERTAIN` |
+| Genuine 800 KB Brotli stream, no extension | Above the window → `GUESS` | Completes → `CERTAIN` |
 
 ### Requirement: Non-seekable sources degrade explicitly, and spooling is opt-in
 

@@ -43,9 +43,17 @@ tie-breakers, and stop only when no unrun detector can change the winner.
 - **An `INCOMPLETE` validation caps a candidate at `SIGNATURE_ONLY`.** The signature matched
   and nothing corroborated it. Fixes the 15-of-15 result above. A truncated `.gz` still
   reports `GZ` — identification and completeness are different questions.
-- **A decode counts as evidence only if it decoded something.** Output that is purely
-  stored or uncompressed is graded on its header alone. Brotli's first-block framing gate
-  is already this rule; zlib's stored blocks are the outstanding gap.
+- **A decode counts as evidence only if it decoded something.** A *bounded* decode producing
+  only stored or uncompressed output does not promote the candidate. Whole-source completion
+  is exempt, because it verifies the format's own checksum.
+- **The bounded probe is fed the prefix already peeked (4096 bytes), not a 256-byte sample.**
+  Free — the bytes are held either way — and measured, it rejects 7 of 19 real fabrications
+  that 256 bytes accepts, including seven Perl source files whose first eight bytes parse as
+  a Brotli header declaring a 13 848-byte compressed meta-block that never materialises.
+- **Whole-source completion runs at the default budget for sources within a 64 KiB window**,
+  so a genuine small magic-less stream reports `CERTAIN` instead of `GUESS`. With both
+  changes, all 4 genuine streams on the measured tree reach `COMPLETE` and **zero** of the 19
+  fabrications rise above `GUESS`.
 - **Confidence becomes a projection, not a second score.** `CERTAIN` = `COMPLETE` or
   `SELF_VALIDATING`; `PROBABLE` = `DISCRIMINATING_HEADER` or `SIGNATURE_ONLY`; `GUESS` =
   `BOUNDED_PROBE`, `NAME` or `ASSERTED`. **BREAKING (behavioural):** all three bounded
@@ -68,6 +76,11 @@ tie-breakers, and stop only when no unrun detector can change the winner.
 - **`AmbiguousFormatError`**, a `FormatDetectionError` subclass carrying the tied maximal
   candidates. `open_archive` and `open_stream` propagate it rather than picking by registry
   order.
+- **`search_complete` reports policy-completion, not tier-completion.** A detector the
+  selected policy never enables is recorded as such and does not make the search incomplete;
+  only a run that exhausted its own budget does. Conflating them would mark 1 840 of 2 029
+  real archives (90.7%) incomplete, including every gzip and ZIP. The flag never blocks an
+  open.
 - **An empty or sub-minimum source says so.** Today it raises "no magic-byte match and no
   usable file extension", which is misleading when there were no bytes to match. Same
   exception type; the incomplete-search record distinguishes a capability shortfall from an

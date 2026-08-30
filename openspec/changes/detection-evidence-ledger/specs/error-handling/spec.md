@@ -62,6 +62,14 @@ When set, the failure SHALL:
 `format_unconfirmed` means *"the bytes did not confirm this identity"*, not *"the identity is
 probably wrong"*. A genuinely truncated `x.br` may therefore carry it.
 
+**"Decode failure" is not "read-time failure".** Once
+`single-file-open-time-validation` lands, an undecodable single-file source raises from
+`open_archive` rather than from a later read, because the open-time probe reads a byte. That
+raise is a decode failure and SHALL carry the flag on the same predicate — otherwise the
+honesty fix never fires for the founding case, which is precisely a filename-only
+identification that fails immediately. Sources that open successfully and fail later keep
+the read-time path unchanged.
+
 This replaces the `corroborated` predicate shipped in #267 and, with it,
 `_brotli_probe_confidence`'s `.br`-to-`PROBABLE` rule — the same rule expressed twice, which
 must move together.
@@ -78,3 +86,12 @@ must move together.
 | `open_archive(..., format=ZIP)` over a `.tar.gz`, read fails | Not stamped — the caller took responsibility |
 | Exact magic hit, read fails | Not stamped |
 | Probe-only result, read succeeds | Success; no error, no downgrade |
+
+#### Scenario: the failure may be raised at open
+
+| Case | Expected |
+| --- | --- |
+| 40 000 zero bytes named `backup.gz`, after the open-time probe read lands | Raises from `open_archive` with `format_unconfirmed=True` — the flag follows the decode failure, not the call that surfaced it |
+| Zero-byte source named for a codec, chosen by extension alone | Same: stamped at open |
+| Valid header, corrupt payload later | Opens; stamped (or not) on the read, per the class — the read-time path is unchanged |
+| `open_archive(..., format=GZ)` over undecodable bytes | Raises at open, **not** stamped — `ASSERTED` |

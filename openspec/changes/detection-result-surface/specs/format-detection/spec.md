@@ -185,7 +185,9 @@ because error-provenance semantics depend on it.
 | --- | --- |
 | Standalone detect with magic/extension conflict | `FormatInfo.diagnostics` has exact conflict count + retained detail under default budget |
 | Auto-detect inside `open_archive` retains conflict, open succeeds | Reader continues same collector/order/budget; no copied aggregate |
-| Magic match | `confidence=CERTAIN`, `detected_by="magic"` — both derived |
+| Validated 7z signature (`StartHeaderCRC` passes) | `confidence=CERTAIN`, `detected_by="magic"` — both derived |
+| Two-byte gzip magic on a source too short to validate | `confidence=PROBABLE` via `SIGNATURE_ONLY` — **not** `CERTAIN` |
+| ISO descriptor tuple | `confidence=PROBABLE` via `DISCRIMINATING_HEADER` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
 | A budget skipped a tier that could have tied or dominated | `search_complete is False` |
