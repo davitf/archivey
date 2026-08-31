@@ -311,6 +311,13 @@
   are still priced in the wrong currency on a range-request source. Needs a measurement on
   a real range-request source.
 
+  **Partial progress (`detection-prefix-workspace` Decision 2):** probe `read_at` seeks on
+  paths / full spools / cheap seekable streams, and falls back to a 1 MiB capped buffer for
+  non-seekable sources and for :class:`~archivey.ArchiveStream` (whose seek often
+  re-decodes). Finer "is this seek cheap?" using `nearest_resume_offset` / AccessCost /
+  round-trip pricing is still open — detection should eventually ask the source rather
+  than keying on `ArchiveStream` identity.
+
 - **Reuse the index-only pass's members instead of rebuilding them** — on backends with
   `_MEMBER_LIST_UPFRONT`, `extract_all` lists twice: `_get_members_index_only()` for the
   extraction prep, then `_materialize_members()`. Both call `_iter_members()` afresh and

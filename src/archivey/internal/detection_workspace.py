@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import BinaryIO, Callable, cast
 
 from archivey.detection_cost import (
     DetectionBudget,
@@ -215,18 +215,70 @@ class PrefixWorkspace:
     def read_at(self, offset: int, length: int) -> bytes | None:
         """Absolute (archive-origin) range read for content-probe chain walks.
 
-        Returns ``None`` when the caller declines (non-seekable past the non-seekable
-        probe cap). Short/empty on EOF.
+        Random-access sources (path, successful spool, cheap seekable streams) seek to
+        ``offset``, read ``length`` bytes, and restore the handle — they do **not** grow
+        the prefix buffer through ``[0, offset)``. Non-seekable sources, and seekable
+        streams whose seek is known to be expensive (:class:`~archivey.ArchiveStream`
+        re-decode), grow the prefix under
+        :data:`PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` and return ``None`` past that cap
+        (recorded as ``BUDGET_EXHAUSTED``).
+
+        Probe seeks are intentionally independent of ``DetectionCapability.SEEK`` /
+        ``max_seeks``: that quota is reserved for the future ZIP tail tier (currently 0
+        on every preset). Short/empty on EOF.
         """
         if offset < 0 or length < 0:
             return None
+        if length == 0:
+            return b""
         end = offset + length
-        nonseekable = self._kind in ("peekable", "forward") and (
-            self._spool is None or self._spool_abandoned
-        )
-        if nonseekable and end > PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE:
+        if end <= len(self._buf):
+            self._receipt.prefix_bytes += length
+            return bytes(self._buf[offset:end])
+
+        handle = self._cheap_random_access_handle()
+        if handle is not None:
+            return self._read_at_via_seek(handle, offset, length)
+
+        if end > PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE:
+            self.record_skip("content_probe_read_at", TierSkipReason.BUDGET_EXHAUSTED)
             return None
         return self.peek_range(offset, length)
+
+    def _cheap_random_access_handle(self) -> BinaryIO | None:
+        """Handle for O(1) probe seeks, or ``None`` to fall back to capped buffering.
+
+        Paths and full spools are always cheap. A bare seekable stream (``BytesIO``,
+        file object) is treated as cheap. :class:`~archivey.ArchiveStream` is not:
+        many codecs service a backward restore by re-decoding, so probes prefer the
+        capped buffer path there. Richer "is this seek cheap?" pricing (round trips /
+        ``nearest_resume_offset``) stays in ``dev-docs/IDEAS.md``.
+        """
+        if self._path_handle is not None:
+            return self._path_handle
+        if self._spool is not None and not self._spool_abandoned:
+            return cast(BinaryIO, self._spool)
+        if self._seekable_stream is not None:
+            if self._seek_is_expensive(self._seekable_stream):
+                return None
+            return self._seekable_stream
+        return None
+
+    @staticmethod
+    def _seek_is_expensive(stream: BinaryIO) -> bool:
+        # Lazy import: archive_stream must not import the detection workspace.
+        from archivey.internal.streams.archive_stream import ArchiveStream
+
+        return isinstance(stream, ArchiveStream)
+
+    def _read_at_via_seek(self, handle: BinaryIO, offset: int, length: int) -> bytes:
+        entry = self._entry_pos or 0
+        restore = entry + len(self._buf)
+        handle.seek(entry + offset)
+        data = read_exact(handle, length)
+        handle.seek(restore)
+        self._receipt.unique_bytes_read += len(data)
+        return data
 
     def charge_far(self, nbytes: int) -> None:
         self._receipt.far_bytes += nbytes

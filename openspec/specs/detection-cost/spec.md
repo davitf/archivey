@@ -66,9 +66,12 @@ signature needs a ~32 KiB window that a 4 096-byte near budget would otherwise f
 Live budget fields today: `max_prefix_bytes` (near peek clamp), `max_far_bytes`,
 `max_scan_bytes` (SFX window), `max_decode_input` / `max_decode_output` (receipt bounds /
 inner-TAR probe limit), `spool_non_seekable_up_to`, and the skip-recording of
-`max_tail_bytes <= 0` as *not enabled by policy*. Reserved fields MAY appear on the type
-and in presets so follow-on changes can wire them without a second public shape break;
-no tier SHALL claim to honour them until those changes land.
+`max_tail_bytes <= 0` as *not enabled by policy*. Content-probe `read_at` seeks on
+cheap random-access sources (path, full spool, non-`ArchiveStream` seekable streams)
+without growing the prefix through `[0, offset)`; non-seekable and expensive-seek
+sources grow under a 1 MiB cap and record `BUDGET_EXHAUSTED` past it. Reserved fields
+MAY appear on the type and in presets so follow-on changes can wire them without a
+second public shape break; no tier SHALL claim to honour them until those changes land.
 
 #### Scenario: receipt reflects the source kind
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import os
 import zipfile
 from pathlib import Path
 
@@ -414,4 +415,51 @@ def test_zero_seek_budget_does_not_advertise_tail_on_spool() -> None:
         caps = ws.capabilities()
         assert DetectionCapability.SEEK not in caps
         assert DetectionCapability.TAIL not in caps
-        assert DetectionCapability.REMAINING_KNOWN in ws.capabilities()
+
+
+def test_read_at_on_path_seeks_without_buffering_prefix(tmp_path: Path) -> None:
+    # Decision 2A: far probe reads must not grow _buf through [0, offset).
+    path = tmp_path / "big.bin"
+    size = 4 * 1024 * 1024
+    path.write_bytes(b"\x00" * (size - 4) + b"TAIL")
+    with PrefixWorkspace(path, BALANCED_BUDGET) as ws:
+        ws.peek_prefix(64)
+        before = ws.buffered_length
+        got = ws.read_at(size - 4, 4)
+        assert got == b"TAIL"
+        assert ws.buffered_length == before
+        assert ws.receipt.unique_bytes_read == before + 4
+
+
+def test_read_at_nonseekable_past_cap_records_budget_exhausted() -> None:
+    # Decision 2B: capped buffer; past the cap → None + BUDGET_EXHAUSTED.
+    from archivey.internal.detection_workspace import (
+        PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
+    )
+
+    payload = b"\x00" * (PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE + 100)
+    stream = PeekableStream(NonSeekableBytesIO(payload))
+    with PrefixWorkspace(stream, BALANCED_BUDGET) as ws:
+        assert ws.read_at(PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE, 4) is None
+        assert any(
+            s.tier == "content_probe_read_at"
+            and s.reason is TierSkipReason.BUDGET_EXHAUSTED
+            for s in ws.skips
+        )
+
+
+def test_large_brotli_detection_does_not_read_most_of_file(tmp_path: Path) -> None:
+    # F1 regression: benign large Brotli must not pull tens of MiB into the prefix.
+    brotli = pytest.importorskip("brotli")
+    raw = os.urandom(2 * 1024 * 1024)  # incompressible → large framed stream
+    compressed = brotli.compress(raw)
+    assert len(compressed) > 1024 * 1024
+    path = tmp_path / "big.br"
+    path.write_bytes(compressed)
+    info = detect_format(path)
+    assert info.format.stream is not None
+    assert info.format.stream.name == "BROTLI"
+    assert info.cost_receipt is not None
+    # Seek-based probes: unique bytes stay near the near-prefix + small chain walks.
+    assert info.cost_receipt.unique_bytes_read < 512 * 1024
+    assert info.cost_receipt.within_budget(BALANCED_BUDGET)

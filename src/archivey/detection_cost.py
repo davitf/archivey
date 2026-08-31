@@ -110,7 +110,12 @@ class DetectionCostReceipt:
     """Measured detection work — charged as reads happen, not reconstructed afterwards."""
 
     prefix_bytes: int = 0
-    """Bytes requested from the workspace (sum of range lengths asked for)."""
+    """Sum of range lengths *requested* via ``peek_range`` (overlapping peeks accumulate).
+
+    Not comparable 1:1 with ``max_prefix_bytes``: seek-based ``read_at`` does not charge
+    here, and growing peeks bill each request in full. Prefer ``unique_bytes_read`` for
+    "how much did we fetch from the source".
+    """
 
     unique_bytes_read: int = 0
     """Bytes actually fetched from the source (each source byte counted once)."""
