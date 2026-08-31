@@ -2,8 +2,12 @@
 
 - [ ] 0.0 **Implement after `prefixed-archive-detection`**, which defines `PrefixKind`.
       This change reuses that enum rather than adding a second, coarser spelling of the
-      same property on `ArchiveInfo`. `MagicHit` — the other dependency — landed with
-      `detection-prefix-workspace` (#273).
+      same property on `ArchiveInfo`, and assumes the member set that change is settling on:
+      `NONE` / `EXECUTABLE` / `SCRIPT` / `UNKNOWN`, with **`OTHER_FORMAT` merged into
+      `UNKNOWN`**. That merge is load-bearing here — it is what makes classification a pure
+      function of the leading bytes, cheap enough to run on the forced path. If
+      `OTHER_FORMAT` survives there, revisit tasks 3.2–3.4 and 4.3. `MagicHit` — the other
+      dependency — landed with `detection-prefix-workspace` (#273).
 
   **If the order inverts**, ship the resolver unification and `payload_offset: int | None`
   alone and add `prefix_kind` with the other change (`design.md` §Sequencing). That is a
@@ -17,10 +21,8 @@
 - [ ] 1.1 Characterisation test recording today's asymmetry: an SFX 7z / RAR / ZIP opened
       auto-detected and with `format=`, asserting what the caller can learn about the
       origin in each case (today: nothing, on either path)
-- [ ] 1.2 Failing test: the two open paths report the same `payload_offset` for the same
-      SFX 7z and SFX RAR. `prefix_kind` is classified on the detected path and `None` on the
-      forced one — assert that too, so the asymmetry is pinned deliberately rather than
-      discovered later
+- [ ] 1.2 Failing test: the two open paths report the same `payload_offset` **and** the same
+      `prefix_kind` for the same SFX 7z and SFX RAR. No door-dependent answer survives
 - [ ] 1.3 Failing test: forced `format=ZIP` on a prefixed ZIP reports the real origin —
       `zipapp` (`concat == 0`, so the naive derivation would say `0`), shebang, `MZ` and
       JPEG prefixes. Plus an empty ZIP behind a prefix reporting `None` / `None`
@@ -50,12 +52,16 @@
       are unaffected). Derive that set from `reject_start_offset` **at implementation
       time**, not from today's census — `prefixed-archive-detection` moves formats into the
       prefix-capable set (see 3.6)
-- [ ] 3.2 7z reader reports its resolved origin on both paths
-- [ ] 3.3 RAR reader reports its resolved origin on both paths
+- [ ] 3.2 7z reader reports its resolved origin **and** prefix kind on both paths
+- [ ] 3.3 RAR reader reports its resolved origin and prefix kind on both paths
 - [ ] 3.4 ZIP reader reports the slice origin when given one, and otherwise
       `min(header_offset)` over the central directory it already parsed — **not** `concat`,
       which is `0` for a `zipapp`. No extra scan or tail probe. `None` only when there are
       no members to measure from
+- [ ] 3.7 One shared prefix classifier, called by every prefix-capable backend once it has a
+      non-zero origin: `MZ`/ELF/Mach-O → `EXECUTABLE`, `#!` → `SCRIPT`, else `UNKNOWN`. It
+      must be the **same** function detection uses, not a second copy that can drift — a
+      door-dependent kind is the defect this change exists to close
 - [ ] 3.5 Formats that cannot carry a prefix report `NONE` / `0` without per-backend code
 - [ ] 3.6 **Cover every format `prefixed-archive-detection` can hand a `start_offset`**, not
       only ZIP / 7z / RAR. That change makes a makeself `.run` (`#!` + tar.gz) detect as
@@ -70,13 +76,13 @@
       int | None`, both defaulted so existing backend construction sites stay valid
 - [ ] 4.2 Assert the state table as a real invariant (an `assert` or `__post_init__`
       check), not a convention: `prefix_kind is NONE` ⟺ `payload_offset == 0`, and
-      `payload_offset is None` ⟹ `prefix_kind is None`. The check MUST accept two values the
-      naive version would reject: `UNKNOWN` with a positive offset (an exhaustive-scan
-      prefix from `prefixed-archive-detection` — rejecting it would fail that change's own
-      fixtures), and `None` kind with a positive offset (a forced-format open)
+      `prefix_kind is None` ⟺ `payload_offset is None`. The check MUST accept `UNKNOWN` with
+      a positive offset — a prefix that matched no cue is a legitimate value, and rejecting
+      it would fail `prefixed-archive-detection`'s own fixtures
 - [ ] 4.3 Guard against the tempting shortcut: nothing may infer `prefix_kind` from
       `payload_offset > 0`. A red–green test that a forced-format open on a JPEG+ZIP reports
-      `None`, not `EXECUTABLE` or `OTHER_FORMAT`
+      `UNKNOWN` (no cue matched), not `EXECUTABLE` — and that a `zipapp` reports `SCRIPT` on
+      both doors
 - [ ] 4.4 Extend the conformance sweep so every corpus archive is checked, rather than
       only the SFX fixtures
 

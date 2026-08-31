@@ -85,54 +85,71 @@ parsed, no extra read. The tempting wrong answer is `concat`, the adjustment its
 `is_sfx: bool` cannot hold that, and `payload_offset: int` would have to encode it as `0` —
 asserting "starts at byte zero" about a file that does not. Hence `int | None`.
 
-**The kind is spelled as absence, not as `UNKNOWN`.** `prefixed-archive-detection` already
-defines `UNKNOWN` as *a prefix that matched no cue, reachable only via the opt-in exhaustive
-scan* — which always has a positive offset. Reusing it for "we never established the origin"
-would give one member two meanings and make `ArchiveInfo.UNKNOWN` disagree with
-`FormatInfo.UNKNOWN`. So the field is `PrefixKind | None`:
+**The kind is spelled as absence, not as `UNKNOWN`.** `prefixed-archive-detection` defines
+`UNKNOWN` as *a prefix that matched no cue*, which always has a positive offset. Reusing it
+for "we never established the origin" would give one member two meanings and make
+`ArchiveInfo.UNKNOWN` disagree with `FormatInfo.UNKNOWN`. So the field is `PrefixKind | None`:
 
 ```python
 prefix_kind is PrefixKind.NONE     <=>  payload_offset == 0
 prefix_kind is None                <=>  payload_offset is None
-PrefixKind.UNKNOWN                      payload_offset > 0   (unclassified prefix)
+PrefixKind.UNKNOWN                      payload_offset > 0   (no cue matched)
 otherwise                               payload_offset > 0
 ```
 
 The invariant is stated in the spec so it can be asserted in the conformance sweep rather
 than left as a convention. Note what it must *not* do: reject `UNKNOWN` with a positive
-offset. That is a legitimate PAD value, and an invariant written as `UNKNOWN <=> None`
-would fail on PAD's own exhaustive-scan fixtures.
+offset. That is a legitimate value, and an invariant written as `UNKNOWN <=> None` would
+fail on PAD's own fixtures.
 
-### The kind is not derivable from the offset
+### The kind is cheap, once `OTHER_FORMAT` is gone
 
-`payload_offset` and `prefix_kind` answer different questions and are established by
-different work. The offset falls out of opening the archive: 7z and RAR resolve it with the
-bounded scan they already run, ZIP reads it off the central directory it already parsed. The
-kind requires *looking at the prefix*, which only detection does.
+`payload_offset` and `prefix_kind` are established by different work. The offset falls out of
+opening the archive: 7z and RAR resolve it with the bounded scan they already run, ZIP reads
+it off the central directory it already parsed. The kind needs a look at the prefix — and how
+expensive that look is depends entirely on what the enum has to distinguish.
 
-So on a forced-`format=` open the offset is known and the kind is not. Three ways to fill
-that gap were considered:
+An earlier draft of this change left `prefix_kind` unset on the forced path, because the
+`OTHER_FORMAT` member then in `PrefixKind` meant "the prefix is itself a recognised format",
+which PAD's task 3.3 implements *by running the magic table against the prefix* — a real
+detection pass, on a path the caller chose to skip work. Sniffing only the cheap cues would
+then have produced a partly-classified kind that disagreed with detection on polyglots.
 
-| option | cost | consequence |
-| --- | --- | --- |
-| sniff the first ~8 bytes for `MZ`/ELF/Mach-O/`#!` | one tiny read | covers SFX installers; a JPEG+ZIP still reports the wrong thing (`UNKNOWN`, where detection says `OTHER_FORMAT`) |
-| run the full classifier, including detecting the prefix's own format | a detection pass over the prefix | doors always agree; the forced path pays for work the caller passed `format=` to skip |
-| **report `prefix_kind is None`** | none | doors agree on the offset, and the kind is honestly absent rather than partly right |
+With `OTHER_FORMAT` merged into `UNKNOWN`, classification collapses to a pure function of the
+leading bytes:
 
-The third is chosen. The cost is that the two absences become independent — `prefix_kind is
-None` no longer implies `payload_offset is None` — which the spec states explicitly rather
-than leaving as a trap. The alternative was a field that is *sometimes* a cheap guess, and a
-partly-classified kind is worse than an absent one: a caller filtering "open installers,
-skip polyglots" would get the polyglot wrong on one door and right on the other, silently.
+```
+MZ / ELF / Mach-O  -> EXECUTABLE
+#!                 -> SCRIPT
+anything else      -> UNKNOWN
+```
+
+That is one short read, and — crucially — it is the *same* function detection applies, so both
+doors produce the same answer for the same file, polyglots included. A JPEG+ZIP is `UNKNOWN`
+either way, because a JPEG matches no cue on either path.
+
+So the forced path classifies, the two absences stay coupled (`prefix_kind is None` ⟺
+`payload_offset is None`), and the invariant stays a simple pairing rather than a
+two-dimensional table. The one rule worth writing down is the negative one: the kind must come
+from that read, never from `payload_offset > 0`. A `zipapp`, an executable JAR and a
+JPEG-with-appended-ZIP all have a non-zero offset, and inferring `EXECUTABLE` from it is the
+`is_sfx` collapse this change exists to avoid.
+
+**Why the merge is right, briefly** (the decision itself belongs to PAD): `OTHER_FORMAT`'s own
+spec example is *"the prefix is itself a recognised format (e.g. an image)"*, but the magic
+table PAD's task classifies against holds 15 entries, all archive formats — ISO, RAR,
+`RAW_STREAM`, 7z, TAR, ZIP. A JPEG matches none of them, so the category could never classify
+the example it was written around. What remains reachable is an archive in front of an
+archive, which no caller has asked to distinguish.
 
 ### Why not a second, simpler enum
 
 A tempting alternative is `ArchiveInfo.is_prefixed: bool | None` and leaving `PrefixKind`
 to detection. It fails the same way the bool does, one level up: `prefixed-archive-detection`
-introduced the enum precisely because "offset > 0" bundles four different things — an
-executable SFX stub, a shebang script wrapper, another file format the archive was appended
-to, and an unclassifiable prefix. A caller sweeping a directory wants to open the installer
-and skip the polyglot JPEG; that decision needs the kind, not the bit. Describing the same
+introduced the enum precisely because "offset > 0" bundles distinct things — an executable
+SFX stub, a shebang script wrapper, and a prefix that matches no cue at all. A caller sweeping
+a directory wants to open the installer and skip the JPEG it is embedded in; that decision
+needs the kind, not the bit. Describing the same
 property with a rich enum on one object and a coarse bool on another is the cross-surface
 inconsistency §2 exists to prevent.
 

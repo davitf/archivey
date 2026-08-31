@@ -58,19 +58,20 @@ the RAR parser having carried the same scan longer.
 - **`payload_offset` is `int | None`**, with `None` meaning *not established* — the honest
   answer for an empty ZIP behind a prefix, which has no local file header to measure from.
   Absence is data, not a zero that would falsely claim "starts at byte 0".
-- **`prefix_kind` reuses `PrefixKind`** from `prefixed-archive-detection` rather than a new
-  `is_sfx: bool`. A bool cannot express *not established*, and — more importantly — cannot
-  separate a self-extracting archive from one merely embedded in something else, which is
-  the distinction that change added the enum for. See Decisions.
+- **`prefix_kind` reuses `PrefixKind`** from `prefixed-archive-detection` (`NONE` /
+  `EXECUTABLE` / `SCRIPT` / `UNKNOWN`) rather than a new `is_sfx: bool`. A bool cannot express
+  *not established*, and — more importantly — cannot separate a self-extracting archive from
+  one merely embedded in something else, which is the distinction that change added the enum
+  for. See Decisions.
 - **One origin resolver.** A shared `resolve_payload_origin()` in `internal/sfx.py`
   replaces `sevenzip_parser.find_signature_offset` and `rar_parser._find_sfx_header`:
   fast-path read at the open position, bounded scan on a miss, `CorruptionError` on a miss
   past the bound. It returns the `MagicHit` that `detection-prefix-workspace` introduced,
   so RAR's version resolution falls out of `hit.needle` instead of a second code path.
 - **Backends report the origin they resolved** back to the reader, which is what lets the
-  forced path report the same `payload_offset` as the detected one. `prefix_kind` is a
-  separate question: classifying a prefix means inspecting it, which only detection does, so
-  a forced-`format=` open reports the offset and leaves the kind unestablished.
+  forced path report the same `payload_offset` and `prefix_kind` as the detected one. A
+  forced open classifies the prefix from one short read of the source's leading bytes — the
+  same pure function detection applies — so the two doors agree on both fields.
 - **`format-rar` gets the SFX/start-offset requirement it never had**, stated as the same
   contract `format-7z` already carries, so the two are specified as one behaviour rather
   than two coincidences.
@@ -96,8 +97,8 @@ detection answer.
   backends report the origin they used, and `format=` no longer means "less information".
 - `format-7z` — the SFX requirement is restated against the shared resolver and gains the
   reporting obligation.
-- `format-zip` — a prefixed ZIP's origin is reported when known, and explicitly
-  not-established when the stdlib located the payload for us.
+- `format-zip` — a prefixed ZIP's origin is reported on both open paths, derived from the
+  central directory the reader already parsed; not-established only for an empty archive.
 - `format-rar` — gains an explicit start-offset / SFX requirement, matching `format-7z`.
   The capability already exists; only the requirement is new.
 
@@ -110,15 +111,13 @@ detection answer.
   "offset > 0" and none of them is self-extracting. Two enums describing the same property
   on two objects would be the parity smell this repo names in §2, so `ArchiveInfo` reuses
   `PrefixKind`.
-- **"Not established" is spelled as absence, and the two fields carry it independently.**
-  `prefix_kind is NONE` ⟺ `payload_offset == 0`; `payload_offset is None` ⟹ `prefix_kind is
-  None`, but **not** the converse — a forced-format open knows the offset and not the kind.
-  The extra state an opened archive can be in
-  that a detection result cannot is *not established*, and it gets its own spelling rather
-  than borrowing `UNKNOWN`. `prefixed-archive-detection` already defines `UNKNOWN` as a
-  prefix that matched no cue — which always has a positive offset — so overloading it would
-  make the same member mean different things on `FormatInfo` and `ArchiveInfo`. That is the
-  §2 inconsistency this change is otherwise arguing against.
+- **"Not established" is spelled as absence.** `prefix_kind is NONE` ⟺ `payload_offset ==
+  0`; `prefix_kind is None` ⟺ `payload_offset is None`. The extra state an opened archive can
+  be in that a detection result cannot is *not established*, and it gets its own spelling
+  rather than borrowing `UNKNOWN`. `prefixed-archive-detection` defines `UNKNOWN` as a prefix
+  that matched no cue — which always has a positive offset — so overloading it would make the
+  same member mean different things on `FormatInfo` and `ArchiveInfo`. That is the §2
+  inconsistency this change is otherwise arguing against.
 - **Forced `format=ZIP` reports the real origin, from data it already has.** No tail probe
   and no extra read: `zipfile` adjusts every entry's `header_offset` while parsing the
   central directory, so the smallest one is the payload start in source coordinates.
@@ -126,19 +125,23 @@ detection answer.
   because the obvious wrong answer is `concat`, `zipfile`'s adjustment value, which is `0`
   for a `zipapp` and would report the headline prefixed case as unprefixed. `None` is left
   for the one archive that truly cannot answer: an empty ZIP has no local file header.
-- **`prefix_kind` is never inferred from `payload_offset > 0`.** The cheap alternative —
-  sniff the first bytes for `MZ`/ELF/`#!` on the forced path — buys partial agreement and
-  gets polyglots wrong (a JPEG+ZIP would report `UNKNOWN` on one door and `OTHER_FORMAT` on
-  the other). A partly-classified kind is worse than an absent one for the caller this field
-  exists for: someone filtering "open installers, skip polyglots" would silently get a
-  different answer depending on which door they used. Absent is honest; `design.md` records
-  the two rejected options and their costs.
+- **`prefix_kind` is classified on both paths, and never inferred from the offset.** With
+  `OTHER_FORMAT` merged into `UNKNOWN` (`prefixed-archive-detection`), classification is a
+  pure function of the leading bytes — `MZ`/ELF/Mach-O → `EXECUTABLE`, `#!` → `SCRIPT`, else
+  `UNKNOWN` — so a forced-format open reaches the same answer detection does from one short
+  read, polyglots included. What stays forbidden is deriving the kind from `payload_offset >
+  0` without that read: a `zipapp`, an executable JAR and a JPEG-with-appended-ZIP all have
+  a non-zero offset and only the first two carry a cue.
 - **The resolver returns `MagicHit`, not `int`.** RAR needs the *version* as well as the
   offset, and the fast-path read already has the bytes that answer both. Returning the hit
   keeps the two formats on one signature instead of forcing RAR to keep a wider one.
-- **Sequenced after `prefixed-archive-detection`.** `PrefixKind` is defined there. Landing
-  this first would mean defining the enum in one change and its semantics in another. See
-  `design.md` §Sequencing for the fallback if the order is inverted.
+- **Sequenced after `prefixed-archive-detection`.** `PrefixKind` is defined there, and this
+  change assumes the member set that change is settling on — `NONE` / `EXECUTABLE` / `SCRIPT`
+  / `UNKNOWN`, with `OTHER_FORMAT` merged away. That merge is what makes classification cheap
+  enough to run on the forced path (`design.md`), so the two changes must agree on it; if
+  `OTHER_FORMAT` survives there, the forced-path classification here has to be revisited.
+  Landing this first would mean defining the enum in one change and its semantics in another.
+  See `design.md` §Sequencing for the fallback if the order is inverted.
 
 ## Impact
 

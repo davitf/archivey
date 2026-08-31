@@ -31,6 +31,11 @@ report the origin as not established (`prefix_kind is None`, `payload_offset is 
 rather than `0`, unless an origin was supplied. It SHALL NOT scan or tail-probe to resolve
 that case: an unestablished origin is reported as unestablished, not searched for.
 
+Where the origin **is** established and non-zero, the reader SHALL classify the prefix from
+the source's leading bytes as `archive-reading` requires, so both open paths agree on
+`prefix_kind`. That bounded read is not a search for the origin and is not covered by the
+prohibition above.
+
 #### Scenario: ZIP payload origin matrix
 
 | Case | Expected |
@@ -41,7 +46,8 @@ that case: an unestablished origin is reported as unestablished, not searched fo
 | `zipapp` `.pyz` (member offsets written from byte 0), forced `format=ZIP` | `payload_offset` is the shebang length, **not** `0` |
 | JPEG + appended ZIP, forced `format=ZIP` | `payload_offset` is the JPEG length |
 | Empty ZIP behind a prefix, forced `format=ZIP` | `prefix_kind is None` and `payload_offset is None` — no member to measure from |
-| Forced `format=ZIP` on a **prefixed** ZIP | `prefix_kind is None`: the offset is known, the prefix was never inspected |
+| Forced `format=ZIP` on a `zipapp` `.pyz` | `prefix_kind is SCRIPT`, classified from the leading `#!` |
+| Forced `format=ZIP` on a JPEG + appended ZIP | `prefix_kind is UNKNOWN` — no cue matched |
 | Forced `format=ZIP` on a plain ZIP | `prefix_kind is NONE` — offset `0` means there is no prefix to classify |
-| Forced `format=ZIP` on any ZIP | No scan or tail probe is performed to fill the field |
+| Forced `format=ZIP` on any ZIP | No scan or tail probe is performed to fill the fields |
 | Stub carrying EOCD-shaped bytes, origin supplied | Slicing pins the answer to the supplied origin |

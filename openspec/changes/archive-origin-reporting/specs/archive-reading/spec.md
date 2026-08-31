@@ -21,12 +21,16 @@ surface it as `ArchiveInfo.payload_offset` (`archive-data-model`). A backend tha
 the origin and discards it is non-conforming: the two open paths SHALL NOT differ in what
 the caller can learn about **where** the archive began.
 
-`ArchiveInfo.prefix_kind` is a separate question and SHALL NOT be inferred from the offset.
-Classifying a prefix requires inspecting it, which only detection does; a forced-`format=`
-open SHALL report `prefix_kind is None` (*not established*) rather than guessing a kind from
-`payload_offset > 0`. Collapsing every non-zero offset to `EXECUTABLE` would reintroduce the
-`is_sfx` conflation this change exists to avoid — a `zipapp`, an executable JAR and a
-JPEG-with-appended-ZIP are all non-zero and none is self-extracting.
+**`ArchiveInfo.prefix_kind` SHALL be reported on both paths too.** Classifying a prefix is a
+pure function of its leading bytes (`format-detection`), so a backend that resolved a non-zero
+origin SHALL establish the kind from one short read of the source's first bytes rather than
+leaving it unset. On the auto-detect path the classification detection already performed SHALL
+be carried through rather than repeated.
+
+The kind SHALL NOT be inferred from `payload_offset > 0` without that read: collapsing every
+non-zero offset to `EXECUTABLE` would reintroduce the `is_sfx` conflation this change exists
+to avoid — a `zipapp`, an executable JAR and a JPEG-with-appended-ZIP are all non-zero, and
+only the first two carry a cue at all.
 
 This SHALL hold for every prefix-capable backend, including on the forced path: 7z and RAR
 resolve the origin with their own bounded scan, and ZIP derives it from the central
@@ -35,9 +39,10 @@ origin — an empty ZIP has no local file header to measure from — it SHALL re
 `payload_offset is None` and `prefix_kind is None` rather than `0`. Backends whose formats
 cannot carry a prefix SHALL report `NONE` / `0` and are unaffected.
 
-A backend SHALL NOT perform additional I/O solely to populate these fields: the origin is
-reported where it is already known or falls out of work the open performs anyway, and
-reported as unestablished otherwise.
+Beyond the bounded read that classifies a recognised prefix, a backend SHALL NOT perform
+additional I/O to populate these fields: the origin is reported where it is already known or
+falls out of work the open performs anyway, and reported as unestablished otherwise. In
+particular no scan or tail probe SHALL be run for the sake of the fields alone.
 
 Because the reader carries the origin, `open_archive` callers SHALL NOT need a second
 `detect_format()` call to learn it, on either open path — including on non-seekable
@@ -56,9 +61,9 @@ sources, where re-detecting is not available at all.
 
 | Case | Expected |
 | --- | --- |
-| SFX 7z opened auto-detected vs `format=SEVEN_Z` | Same `info.payload_offset`; `prefix_kind` classified on the detected path, `None` on the forced one |
-| SFX RAR opened auto-detected vs `format=RAR` | Same `info.payload_offset`; `prefix_kind` as above |
-| Forced-format open, non-zero offset | `prefix_kind is None` — never inferred as `EXECUTABLE` from the offset alone |
+| SFX 7z opened auto-detected vs `format=SEVEN_Z` | Same `info.payload_offset` **and** same `info.prefix_kind` |
+| SFX RAR opened auto-detected vs `format=RAR` | Same `info.payload_offset` and `prefix_kind` |
+| Forced-format open on a JPEG + appended ZIP | `prefix_kind is UNKNOWN` — classified from the leading bytes, never inferred as `EXECUTABLE` from the offset |
 | Forced-format open on a prefixed archive | Origin reported from the backend’s own resolution, not `None` merely because detection was skipped |
 | Forced `format=ZIP` on a prefixed ZIP | `payload_offset == N` from the earliest local header, with no extra read |
 | Backend cannot establish the origin (empty ZIP, no members) | `payload_offset is None` and `prefix_kind is None`; never a fabricated `0` |
