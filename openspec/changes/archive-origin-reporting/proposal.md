@@ -1,0 +1,145 @@
+## Why
+
+An archive that starts after byte zero is opened correctly today, and then archivey
+forgets where it started. Two things follow, both measured on `main` (`056c429`) with a
+4 224-byte `MZ` stub in front of a real 7z / RAR / ZIP payload:
+
+**1. The caller cannot ask.** `ArchiveInfo` carries format, version, solidity, member
+count, comment, encryption, multivolume, cost and `extra` — nothing about the payload
+origin. The reader knows it (`SevenZipReader._origin`, `RarReader._origin`,
+`RarArchive.sfx_offset`) and drops it on the floor. Archivey's own CLI works around this
+by calling `detect_format()` a second time purely to print `sfx_offset`
+(`cli/info_cmd.py:57`).
+
+**2. The two open paths know different amounts, and only one can be asked.** The same
+SFX file opened two ways:
+
+| | `payload_offset` reachable by caller | parser scan runs |
+| --- | --- | --- |
+| auto-detect | yes — via a second `detect_format()` call | **no** (magic already at the offset) |
+| `format=SEVEN_Z` / `format=RAR` | **no** | yes — the parser finds the origin, then discards it |
+| `format=ZIP` | **no** | none — stdlib `zipfile` self-adjusts; archivey never learns the offset |
+
+The forced path is the sharper gap: the parser *does the work of finding the origin* and
+throws the answer away. A caller who passes `format=` — the path that skips detection
+precisely because they already know the format — ends up with strictly less information
+than one who did not.
+
+`archive-reading` states the divergence as a rule rather than a defect: *"An explicit
+`format=` that bypasses detection retains each backend's own start-offset / SFX rules."*
+That was the right call when the offset was only an internal open-time input. Once it is
+reportable metadata, "each backend's own rules" is a parity hole (§2 *no surprises*): the
+same archive gives a different answer depending on which door the caller used.
+
+**Why the resolution logic is also worth touching.** Origin resolution is done three
+different ways for the three formats that can carry a prefix:
+
+| | mechanism | forced-path fallback |
+| --- | --- | --- |
+| ZIP | `SlicingStream(handle, start=start_offset)` — a real view | none; relies on stdlib `zipfile` self-adjusting past the stub |
+| 7z | `_shared.view(start_offset)`, then `start_offset + find_signature_offset(probe)`, rebased through `_view` | bounded forward scan |
+| RAR | `self._origin = start_offset` plain, no view (`unrar` needs the original path) | bounded forward scan **plus** RAR4/RAR5 version resolution |
+
+The *scanning* is already shared (`internal/sfx.scan_for_magic`, one `SFX_MAX`). What is
+triplicated is the wrapper around it — "fast-path read, else scan, else raise" — in two
+shapes with different return types (`int` vs `tuple[version, offset]`) and different error
+messages, plus a third format that does not participate at all. That is also why the
+answer has nowhere to go: there is no one place that produces it.
+
+`format-7z` specifies its SFX/start-offset behaviour; `format-rar` specifies none, despite
+the RAR parser having carried the same scan longer.
+
+## What Changes
+
+- **`ArchiveInfo` gains `prefix_kind` and `payload_offset`**, so the origin is
+  archive-level metadata a caller can read from the reader, on **either** open path. The
+  CLI stops detecting twice to print it.
+- **`payload_offset` is `int | None`**, with `None` meaning *not established* — the honest
+  answer for forced `format=ZIP`, where stdlib `zipfile` locates the central directory past
+  a stub without archivey ever learning where the payload began. Absence is data, not a
+  zero that would falsely claim "starts at byte 0".
+- **`prefix_kind` reuses `PrefixKind`** from `prefixed-archive-detection` rather than a new
+  `is_sfx: bool`. A bool cannot express *not established*, and — more importantly — cannot
+  separate a self-extracting archive from one merely embedded in something else, which is
+  the distinction that change added the enum for. See Decisions.
+- **One origin resolver.** A shared `resolve_payload_origin()` in `internal/sfx.py`
+  replaces `sevenzip_parser.find_signature_offset` and `rar_parser._find_sfx_header`:
+  fast-path read at the open position, bounded scan on a miss, `CorruptionError` on a miss
+  past the bound. It returns the `MagicHit` that `detection-prefix-workspace` introduced,
+  so RAR's version resolution falls out of `hit.needle` instead of a second code path.
+- **Backends report the origin they resolved** back to the reader, which is what lets the
+  forced path populate `ArchiveInfo` identically to the detected path.
+- **`format-rar` gets the SFX/start-offset requirement it never had**, stated as the same
+  contract `format-7z` already carries, so the two are specified as one behaviour rather
+  than two coincidences.
+
+Not in scope: changing *when* a scan runs, widening the cue set, or the ZIP tail probe —
+those are `prefixed-archive-detection`. This change moves no detection tier and changes no
+detection answer.
+
+## Capabilities
+
+### New Capabilities
+
+### Modified Capabilities
+
+- `archive-data-model` — `ArchiveInfo` gains `prefix_kind` and `payload_offset`, with the
+  `NONE`/`UNKNOWN` ↔ `0`/`None` pairing stated as an invariant.
+- `archive-reading` — the payload-offset hand-off requirement gains its return half:
+  backends report the origin they used, and `format=` no longer means "less information".
+- `format-7z` — the SFX requirement is restated against the shared resolver and gains the
+  reporting obligation.
+- `format-zip` — a prefixed ZIP's origin is reported when known and explicitly `UNKNOWN`
+  when the stdlib located the payload for us.
+
+### Added Capabilities
+
+- `format-rar` — an explicit start-offset / SFX requirement, matching `format-7z`.
+
+## Decisions
+
+- **Enum, not `is_sfx: bool`.** Three states exist, not two: the archive starts at byte 0;
+  it starts later; or we opened it correctly without establishing where. A bool forces the
+  third into a lie. And `prefixed-archive-detection` already needs the finer split for
+  `FormatInfo` — a `.pyz`, a Spring Boot JAR and a JPEG with an appended ZIP are all
+  "offset > 0" and none of them is self-extracting. Two enums describing the same property
+  on two objects would be the parity smell this repo names in §2, so `ArchiveInfo` reuses
+  `PrefixKind`.
+- **`payload_offset` is `int | None`, and pairs with `prefix_kind`.** `prefix_kind is
+  NONE` ⟺ `payload_offset == 0`; `prefix_kind is UNKNOWN` ⟺ `payload_offset is None`;
+  otherwise `payload_offset > 0`. That mirrors the invariant `format-detection` already
+  states for `FormatInfo` and extends it by exactly the one state an opened archive can be
+  in that a detection result cannot.
+- **Report `UNKNOWN` for forced ZIP rather than scanning to find out.** Making the answer
+  known would mean running a tail probe at open time purely to populate a field — new I/O
+  for metadata, on a path the caller chose for speed. `prefixed-archive-detection` adds
+  that probe to detection; once it exists, reusing it here is a follow-up, not a reason to
+  add a second scanner now. Recorded because "just scan for it" is the obvious wrong answer.
+- **The resolver returns `MagicHit`, not `int`.** RAR needs the *version* as well as the
+  offset, and the fast-path read already has the bytes that answer both. Returning the hit
+  keeps the two formats on one signature instead of forcing RAR to keep a wider one.
+- **Sequenced after `prefixed-archive-detection`.** `PrefixKind` is defined there. Landing
+  this first would mean defining the enum in one change and its semantics in another. See
+  `design.md` §Sequencing for the fallback if the order is inverted.
+
+## Impact
+
+- Modules: `src/archivey/internal/sfx.py` (the shared resolver),
+  `src/archivey/internal/backends/sevenzip_parser.py` (`find_signature_offset` becomes a
+  thin wrapper or goes), `sevenzip_reader.py`, `rar_parser.py` (`_find_sfx_header` goes),
+  `rar_reader.py`, `zip_reader.py` (report the slice origin),
+  `src/archivey/internal/base_reader.py` (how a backend reports its origin back),
+  `src/archivey/types.py` (`ArchiveInfo`), `src/archivey/cli/info_cmd.py` (drop the second
+  `detect_format`).
+- Public API: `ArchiveInfo` gains two fields. Additive — `ArchiveInfo` is constructed by
+  backends, not by callers, so no positional-argument break for library users; the
+  dataclass gains defaults so backends that do not set them stay valid.
+- Tests: SFX 7z / RAR / ZIP each opened both auto-detected and with `format=`, asserting
+  the *same* `prefix_kind` and `payload_offset`; forced ZIP asserting `UNKNOWN` / `None`
+  rather than a wrong `0`; plain archives asserting `NONE` / `0`; a stub carrying a decoy
+  magic asserting the reported origin is the real payload; the RAR4/RAR5 version still
+  resolved through the shared resolver; `reject_start_offset` backends unchanged.
+- Docs: `docs/formats.md` self-extracting prose, and the CLI `info` output gaining the
+  field from the reader instead of a second detection.
+- Depends on `prefixed-archive-detection` (`PrefixKind`) and on
+  `detection-prefix-workspace` (`MagicHit`, already landed in #273).
