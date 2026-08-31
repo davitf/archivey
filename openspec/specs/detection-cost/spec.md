@@ -7,6 +7,11 @@ Detection declares what it may spend (`DetectionBudget`) and reports what it spe
 A sibling of `access-mode-and-cost`'s archive-open `CostReceipt` — detection's I/O
 happens before a reader exists.
 
+**Stability note.** The types live in `archivey.detection_cost` and are accepted by
+`detect_format(..., budget=)`, but they are **not** re-exported from `archivey.__all__`
+yet. Public freeze of the root surface (top-level vs subpackage vs internal) is deferred
+to `detection-result-surface` (Decision 3A on the prefix-workspace PR).
+
 This spec describes **what ships today** after `detection-prefix-workspace`. Tiers and
 knobs that the budget type *reserves* but that no code schedules yet are named explicitly
 as reserved; they MUST NOT be read as current behaviour. The ZIP tail tier,

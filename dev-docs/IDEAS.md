@@ -298,6 +298,12 @@
 
 ## Performance & robustness
 
+- **Detection budget / receipt public surface** — deferred by `detection-prefix-workspace`
+  Decision 3A. Types live in `archivey.detection_cost` but are omitted from
+  `archivey.__all__`. When `detection-result-surface` lands, decide: root re-exports vs
+  documented subpackage vs internal-only. Prefer not freezing a 12-field budget into the
+  root by inertia.
+
 - **Detection budget scope: aggregate vs per-candidate** — left open by
   `detection-prefix-workspace`. A fuzz assertion pins that *aggregate* detection cost stays
   inside the declared budget either way; the deciding measurement (209 715 decoy gzip

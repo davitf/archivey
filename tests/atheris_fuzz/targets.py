@@ -95,7 +95,7 @@ def sevenzip_open_one(data: bytes) -> None:
 
 
 def detect_format_one(data: bytes) -> None:
-    from archivey import BALANCED_BUDGET
+    from archivey.detection_cost import BALANCED_BUDGET
 
     try:
         info = detect_format(io.BytesIO(data), budget=BALANCED_BUDGET)

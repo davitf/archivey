@@ -482,7 +482,9 @@ def detect_format(
     detection diagnostics into the prospective reader's shared collector. When omitted,
     a finite standalone collector is created from ``config`` (or the library default).
 
-    ``budget`` caps what detection may spend; the default is :data:`~archivey.detection_cost.BALANCED_BUDGET`.
+    ``budget`` caps what detection may spend; the default is
+    :data:`~archivey.detection_cost.BALANCED_BUDGET` (import from
+    ``archivey.detection_cost`` — not yet re-exported at the package root).
     """
     owned_collector = collector is None
     if owned_collector:

@@ -22,14 +22,14 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
+from archivey import detect_format
+from archivey.detection_cost import (
     BALANCED_BUDGET,
     THOROUGH_BUDGET,
     DetectionBudget,
     DetectionCapability,
-    detect_format,
+    TierSkipReason,
 )
-from archivey.detection_cost import TierSkipReason
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.sfx import (
     ScanNeedle,
@@ -315,7 +315,7 @@ def test_remaining_known_from_entry_position() -> None:
 
 def test_fast_sfx_scan_respects_max_scan_bytes(tmp_path: Path) -> None:
     # F2: FAST's max_scan_bytes must bound the SFX window (not only gate it on/off).
-    from archivey import FAST_BUDGET
+    from archivey.detection_cost import FAST_BUDGET
 
     mz = b"MZ" + b"\x00" * 62
     path = tmp_path / "stub.zip"

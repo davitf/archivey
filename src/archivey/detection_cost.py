@@ -4,6 +4,12 @@ Detection's I/O happens before a reader exists, so its measured work is a siblin
 :class:`~archivey.cost.CostReceipt` rather than part of it. The two share vocabulary for
 kinds of work; they are never summed together. See the ``detection-cost`` and
 ``access-mode-and-cost`` capability specs.
+
+**Not yet part of the frozen package-root surface.** Names here are importable as
+``archivey.detection_cost.…`` for tests and for ``detect_format(..., budget=)``, but they
+are deliberately omitted from ``archivey.__all__`` until ``detection-result-surface``
+decides what belongs at the top level, what belongs in a subpackage, and what stays
+internal (PR #273 Decision 3A).
 """
 
 from __future__ import annotations
