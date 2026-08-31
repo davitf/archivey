@@ -50,7 +50,6 @@ from typing import TYPE_CHECKING, BinaryIO, Callable
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
 from archivey.detection_cost import (
-    BALANCED_BUDGET,
     DetectionBudget,
     DetectionBudgetPreset,
     DetectionCapability,
@@ -65,10 +64,7 @@ from archivey.diagnostics import (
     FormatConflictContext,
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
-from archivey.internal.detection_workspace import (
-    PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
-    PrefixWorkspace,
-)
+from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
@@ -112,9 +108,6 @@ _INNER_TAR_PROBE_BYTES = 512
 # worst-case first block with margin; a stream-oriented codec (gzip/xz/zstd/…) reaches the
 # header region from the ordinary prefix and never triggers this larger read.
 _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
-
-# Re-export for tests that previously imported the private name.
-_PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE = PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
 
 
 class DetectionConfidence(Enum):
@@ -432,6 +425,8 @@ def _scan_for_sfx_payload(
     entries: list[MagicSignature],
     peek_more: Callable[[int], bytes],
     workspace: PrefixWorkspace,
+    *,
+    scan_limit: int,
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
 
@@ -441,13 +436,17 @@ def _scan_for_sfx_payload(
     the raw needle position. ``PROBABLE`` rather than ``CERTAIN``: an exact magic found at
     a *searched-for* offset is a weaker claim than one found at the offset the format
     specifies.
+
+    ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
+    the charge lands whether the scan hits or misses so the receipt reflects the work.
     """
     by_needle = {entry.magic: entry for entry in entries}
     needles = tuple(ScanNeedle(entry.magic, entry.offset) for entry in entries)
-    hit = find_magic_in_prefix(peek_more, needles, limit=SFX_MAX)
+    hit = find_magic_in_prefix(peek_more, needles, limit=scan_limit)
+    # Charge the window actually examined — a miss is the expensive case.
+    workspace.charge_scanned(min(workspace.buffered_length, scan_limit))
     if hit is None:
         return None
-    workspace.charge_scanned(min(workspace.buffered_length, SFX_MAX))
     entry = by_needle[hit.needle]
     return FormatInfo(
         entry.format,
@@ -534,11 +533,15 @@ def _detect_format_body(
         # "far" ones (ISO's CD001 at 32 769) need an extended peek taken on demand.
         near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
         far = [e for e in magic_entries if e.offset + len(e.magic) > DETECTION_LIMIT]
+        near_span = max((e.offset + len(e.magic) for e in near), default=0)
+        if near and budget.max_prefix_bytes < near_span:
+            # A "near" magic past the budgeted prefix is unsearchable — record it rather
+            # than silently incomplete-searching (DETECTION_LIMIT and max_prefix_bytes
+            # are independent constants that happen both to be 4 096 today).
+            workspace.record_skip("near_magic", TierSkipReason.BUDGET_EXHAUSTED)
         near_needed = min(
             budget.max_prefix_bytes,
-            max(
-                DETECTION_LIMIT, max((e.offset + len(e.magic) for e in near), default=0)
-            ),
+            max(DETECTION_LIMIT, near_span),
         )
         data = workspace.peek_prefix(near_needed)
         peek_more = workspace.candidate_view(0)
@@ -578,7 +581,10 @@ def _detect_format_body(
                 workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
             else:
                 sfx_info = _scan_for_sfx_payload(
-                    registry.sfx_magic_entries(), peek_more, workspace
+                    registry.sfx_magic_entries(),
+                    peek_more,
+                    workspace,
+                    scan_limit=scan_limit,
                 )
                 if sfx_info is not None:
                     _warn_on_conflict(
@@ -598,9 +604,8 @@ def _detect_format_body(
                 pass  # size-gated: never pay the peek
             else:
                 far_data = workspace.peek_prefix(far_needed)
-                workspace.charge_far(
-                    len(far_data) if len(far_data) >= far_needed else 0
-                )
+                # Charge the bytes actually requested even when the window came up short.
+                workspace.charge_far(len(far_data))
                 far_fmt = _match_magic(far_data, far)
                 if far_fmt is not None:
                     _warn_on_conflict(
@@ -652,15 +657,3 @@ def _detect_format_body(
             "Could not detect archive format: no magic-byte match and no usable file extension.",
             archive_name=name,
         )
-
-
-# Back-compat aliases used by older tests that monkeypatched the private helpers.
-# They are thin wrappers over a throwaway workspace so size-gate spies still work.
-def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
-    """Deprecated private helper — prefer :class:`PrefixWorkspace`.
-
-    Kept as a thin wrapper so existing tests that spy on prefix peeks keep working
-    during the transition; each call opens its own short-lived workspace.
-    """
-    with PrefixWorkspace(source, BALANCED_BUDGET) as ws:
-        return ws.peek_prefix(length)

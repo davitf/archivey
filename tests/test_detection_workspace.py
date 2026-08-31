@@ -29,11 +29,12 @@ from archivey import (
     detect_format,
 )
 from archivey.detection_cost import TierSkipReason
-from archivey.internal.detection_workspace import (
-    PrefixWorkspace,
+from archivey.internal.detection_workspace import PrefixWorkspace
+from archivey.internal.sfx import (
+    ScanNeedle,
     candidate_origin_for_hit,
+    find_magic_in_prefix,
 )
-from archivey.internal.sfx import ScanNeedle, find_magic_in_prefix
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.types import ArchiveFormat
 from tests.streams_util import NonSeekableBytesIO
@@ -307,4 +308,110 @@ def test_remaining_known_from_entry_position() -> None:
         assert ws.remaining_known() == 9000
         # An overestimated total cannot prove a later offset reachable — we only report
         # what is measured from the entry position.
+        assert DetectionCapability.REMAINING_KNOWN in ws.capabilities()
+
+
+def test_fast_sfx_scan_respects_max_scan_bytes(tmp_path: Path) -> None:
+    # F2: FAST's max_scan_bytes must bound the SFX window (not only gate it on/off).
+    from archivey import FAST_BUDGET
+
+    mz = b"MZ" + b"\x00" * 62
+    path = tmp_path / "stub.zip"
+    path.write_bytes(mz + b"\x00" * (3 * 1024 * 1024))
+    balanced = detect_format(path, budget=BALANCED_BUDGET)
+    fast = detect_format(path, budget=FAST_BUDGET)
+    assert balanced.cost_receipt is not None and fast.cost_receipt is not None
+    assert fast.cost_receipt.unique_bytes_read <= FAST_BUDGET.max_scan_bytes
+    assert fast.cost_receipt.unique_bytes_read < balanced.cost_receipt.unique_bytes_read
+    assert fast.cost_receipt.scanned_bytes <= FAST_BUDGET.max_scan_bytes
+
+
+def test_sfx_miss_charges_scanned_bytes(tmp_path: Path) -> None:
+    # F4: a full-window miss must bill scanned_bytes, not leave it at 0.
+    mz = b"MZ" + b"\x00" * 62
+    path = tmp_path / "stub.zip"
+    path.write_bytes(mz + b"\x00" * (2 * 1024 * 1024))
+    info = detect_format(path, budget=BALANCED_BUDGET)
+    assert info.detected_by == "extension"
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.scanned_bytes > 0
+    assert info.cost_receipt.scanned_bytes <= BALANCED_BUDGET.max_scan_bytes
+
+
+def test_abandoned_spool_keeps_lookahead_byte_and_unknown_remaining() -> None:
+    # F6: the one-byte "is there more?" peek must not be discarded, and the truncated
+    # buffer length must not be reported as a proven remaining size.
+    data = b"ABCDEFGHIJ" * 1024  # 10 240 bytes
+    budget = DetectionBudget(
+        max_prefix_bytes=4096,
+        max_far_bytes=0,
+        max_tail_bytes=100,
+        max_seeks=1,
+        max_scan_bytes=0,
+        max_decode_input=0,
+        max_decode_output=0,
+        completion_window_bytes=0,
+        max_index_bytes=0,
+        max_probe_links=0,
+        spool_non_seekable_up_to=100,
+        collect_nonmaximal_candidates=False,
+    )
+    with PrefixWorkspace(NonSeekableBytesIO(data), budget) as ws:
+        assert ws.buffered_length == 101  # 100 spooled + 1 lookahead
+        assert ws.buffer[:10].tobytes() == b"ABCDEFGHIJ"
+        assert ws.buffer[100:101].tobytes() == b"A"  # first byte of the second hundred
+        peeked = ws.peek_prefix(200)
+        assert len(peeked) == 101
+        assert ws.remaining_known() is None  # more bytes exist on the pipe
+
+
+def test_successful_spool_is_closed_and_reports_size_known() -> None:
+    # F7 + F8(SIZE_KNOWN): close() must close the spool; a full spool grants SIZE_KNOWN.
+    data = b"x" * 4096
+    budget = DetectionBudget(
+        max_prefix_bytes=4096,
+        max_far_bytes=0,
+        max_tail_bytes=100,
+        max_seeks=1,
+        max_scan_bytes=0,
+        max_decode_input=0,
+        max_decode_output=0,
+        completion_window_bytes=0,
+        max_index_bytes=0,
+        max_probe_links=0,
+        spool_non_seekable_up_to=len(data) + 64,
+        collect_nonmaximal_candidates=False,
+    )
+    ws = PrefixWorkspace(NonSeekableBytesIO(data), budget)
+    spool = ws._spool
+    assert spool is not None
+    assert DetectionCapability.SIZE_KNOWN in ws.capabilities()
+    assert DetectionCapability.TAIL in ws.capabilities()
+    assert DetectionCapability.SEEK in ws.capabilities()
+    ws.close()
+    assert spool.closed
+
+
+def test_zero_seek_budget_does_not_advertise_tail_on_spool() -> None:
+    # F8: TAIL without SEEK is a lie — read_tail refuses when max_seeks == 0.
+    data = b"x" * 100
+    budget = DetectionBudget(
+        max_prefix_bytes=4096,
+        max_far_bytes=0,
+        max_tail_bytes=65_557,
+        max_seeks=0,
+        max_scan_bytes=0,
+        max_decode_input=0,
+        max_decode_output=0,
+        completion_window_bytes=0,
+        max_index_bytes=0,
+        max_probe_links=0,
+        spool_non_seekable_up_to=len(data) + 64,
+        collect_nonmaximal_candidates=False,
+    )
+    with PrefixWorkspace(NonSeekableBytesIO(data), budget) as ws:
+        caps = ws.capabilities()
+        assert DetectionCapability.SEEK not in caps
+        assert DetectionCapability.TAIL not in caps
+        assert ws.read_tail(100) is None
         assert DetectionCapability.REMAINING_KNOWN in ws.capabilities()

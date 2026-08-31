@@ -32,8 +32,6 @@ import struct
 from enum import Enum
 from typing import BinaryIO, Callable, NamedTuple, Sequence
 
-from archivey.internal.detection_workspace import candidate_origin_for_hit
-
 # How far past the start of a source the archive magic may sit before we stop looking.
 # 2 MiB comfortably covers real stubs (a `rar a -sfx` ELF stub is ~250 KB, and Windows
 # installer stubs are of the same order) while keeping a miss cheap and bounded.
@@ -56,6 +54,17 @@ _PE = b"PE\x00\x00"
 # value it can legally hold — the PE header cannot overlap the DOS header itself.
 _E_LFANEW_OFFSET = 0x3C
 _DOS_HEADER_SIZE = 0x40
+
+
+def candidate_origin_for_hit(hit_offset: int, needle_offset: int) -> int | None:
+    """Convert a needle hit at ``hit_offset`` to a candidate origin.
+
+    Returns ``None`` when the computed origin would be negative (not a candidate).
+    Kept beside :class:`ScanNeedle` / :class:`MagicHit` so backend parsers that import
+    this module do not transitively pull in the detection workspace.
+    """
+    origin = hit_offset - needle_offset
+    return origin if origin >= 0 else None
 
 
 class ExecutableCue(Enum):

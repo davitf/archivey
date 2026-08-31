@@ -102,8 +102,9 @@ class PrefixWorkspace:
         return tuple(self._receipt.skips)
 
     @property
-    def buffer(self) -> bytes:
-        return bytes(self._buf)
+    def buffer(self) -> memoryview:
+        """Live view of the prefix buffer — no copy. Callers that need ownership copy."""
+        return memoryview(self._buf)
 
     @property
     def buffered_length(self) -> int:
@@ -115,10 +116,11 @@ class PrefixWorkspace:
         remaining = self.remaining_known()
         if remaining is not None:
             caps.add(DetectionCapability.REMAINING_KNOWN)
-        if self._total_size is not None and self._kind == "path":
-            caps.add(DetectionCapability.SIZE_KNOWN)
-        elif self._total_size is not None and self._kind == "seekable":
-            caps.add(DetectionCapability.SIZE_KNOWN)
+        # SIZE_KNOWN follows a measured total, not the transport kind — a fully-spooled
+        # pipe has an exact size even though it was not a path or seekable stream.
+        if self._total_size is not None and not self._spool_abandoned:
+            if self._kind in ("path", "seekable", "spool"):
+                caps.add(DetectionCapability.SIZE_KNOWN)
 
         can_seek = self._kind in ("path", "seekable") or (
             self._spool is not None and not self._spool_abandoned
@@ -127,15 +129,11 @@ class PrefixWorkspace:
             caps.add(DetectionCapability.SEEK)
             if self._budget.max_tail_bytes > 0:
                 caps.add(DetectionCapability.TAIL)
-        elif (
-            self._spool is not None
-            and not self._spool_abandoned
-            and self._budget.max_tail_bytes > 0
-        ):
-            caps.add(DetectionCapability.TAIL)
+        # Do not advertise TAIL without SEEK: read_tail refuses when max_seeks is
+        # exhausted / zero even if a spool handle exists.
 
         # Paths and PeekableStream / seekable streams leave bytes available to a backend.
-        if self._kind in ("path", "peekable", "seekable") or (
+        if self._kind in ("path", "peekable", "seekable", "spool") or (
             self._spool is not None and not self._spool_abandoned
         ):
             caps.add(DetectionCapability.REREAD)
@@ -146,8 +144,11 @@ class PrefixWorkspace:
 
         An overestimated total size never proves a later offset reachable — we only report
         a remaining length when it is measured from the entry position (or a short peek
-        that hit EOF).
+        that hit EOF). An abandoned spool truncated the pipe; more bytes may exist, so
+        the buffered length is never reported as a proven remaining size.
         """
+        if self._spool_abandoned:
+            return None
         if self._total_size is not None and self._entry_pos is not None:
             remaining = self._total_size - self._entry_pos
             return remaining if remaining >= 0 else None
@@ -155,20 +156,25 @@ class PrefixWorkspace:
             return len(self._buf)
         return None
 
-    def ensure(self, end: int) -> bytes:
-        """Grow the prefix buffer to at least ``end`` bytes (or EOF); return the buffer."""
+    def ensure(self, end: int) -> None:
+        """Grow the prefix buffer to at least ``end`` bytes (or EOF).
+
+        Does not materialise a ``bytes`` copy of the whole buffer — callers slice
+        ``self._buf`` (or :attr:`buffer`) for the span they need.
+        """
         if end < 0:
             raise ValueError("end must be non-negative")
         if end <= len(self._buf) or self._source_exhausted:
-            return bytes(self._buf)
+            return
         needed = end - len(self._buf)
         chunk = self._fetch_forward(needed)
         if chunk:
             self._buf.extend(chunk)
             self._receipt.unique_bytes_read += len(chunk)
         if len(chunk) < needed:
-            self._source_exhausted = True
-        return bytes(self._buf)
+            # Abandoned spool: more bytes may still sit on the pipe; do not claim EOF.
+            if not self._spool_abandoned:
+                self._source_exhausted = True
 
     def peek_range(self, origin: int, length: int) -> bytes:
         """Return ``length`` bytes starting at archive-relative ``origin``.
@@ -182,10 +188,10 @@ class PrefixWorkspace:
             return b""
         end = origin + length
         self._receipt.prefix_bytes += length
-        buf = self.ensure(end)
-        if origin >= len(buf):
+        self.ensure(end)
+        if origin >= len(self._buf):
             return b""
-        return buf[origin:end]
+        return bytes(self._buf[origin:end])
 
     def peek_prefix(self, length: int) -> bytes:
         """Convenience: :meth:`peek_range` from archive origin 0."""
@@ -302,7 +308,7 @@ class PrefixWorkspace:
             if self._owned_path and self._path_handle is not None:
                 self._path_handle.close()
                 self._path_handle = None
-            if self._spool is not None and self._spool_abandoned:
+            if self._spool is not None:
                 self._spool.close()
                 self._spool = None
 
@@ -367,18 +373,21 @@ class PrefixWorkspace:
             self._receipt.unique_bytes_read += len(chunk)
         if remaining == 0:
             # Source may still have more — abandon spooling; tiers needing TAIL are
-            # unavailable. Leave the already-spooled prefix usable as a forward buffer.
+            # unavailable. Keep the already-spooled prefix (including the one-byte
+            # look-ahead) usable as a forward buffer. Do not claim the truncated length
+            # as a proven remaining size — more bytes exist on the pipe.
             extra = source.read(1)
             if extra:
                 self._spool_abandoned = True
-                # Keep what we have for prefix tiers; do not grant TAIL.
                 spool.seek(0)
                 self._buf = bytearray(spool.read())
+                self._buf.extend(extra)
                 spool.close()
                 self._spool = None
-                self._raw_forward = None  # consumed into buf / abandoned
+                self._raw_forward = (
+                    None  # rest of the pipe is not available to detection
+                )
                 self._source_exhausted = False
-                # Remaining unread bytes on the pipe are lost for detection — recorded.
                 self.record_skip("spool", TierSkipReason.BUDGET_EXHAUSTED)
                 return
         spool.seek(0)
@@ -394,10 +403,5 @@ class PrefixWorkspace:
         self._raw_forward = None
 
 
-def candidate_origin_for_hit(hit_offset: int, needle_offset: int) -> int | None:
-    """Convert a needle hit at ``hit_offset`` to a candidate origin.
-
-    Returns ``None`` when the computed origin would be negative (not a candidate).
-    """
-    origin = hit_offset - needle_offset
-    return origin if origin >= 0 else None
+# candidate_origin_for_hit lives in archivey.internal.sfx (F13) — backends import sfx,
+# not this module.
