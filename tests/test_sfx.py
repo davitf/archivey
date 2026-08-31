@@ -33,6 +33,7 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.sfx import (
     SFX_MAX,
     ExecutableCue,
+    MagicHit,
     executable_cue,
     scan_for_magic,
 )
@@ -85,7 +86,7 @@ def _sfx(tmp_path: Path, name: str, *, header_encryption: bool = False) -> Path:
 
 def test_scan_finds_magic_at_offset() -> None:
     data = b"stub" * 100 + MAGIC_7Z + b"rest"
-    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == (400, MAGIC_7Z)
+    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == MagicHit(400, MAGIC_7Z, 0)
 
 
 def test_scan_returns_none_when_absent() -> None:
@@ -98,21 +99,24 @@ def test_scan_finds_magic_straddling_a_chunk_boundary() -> None:
     for split in range(1, len(MAGIC_7Z)):
         offset = 65536 - split
         data = b"\x00" * offset + MAGIC_7Z + b"\x00" * 128
-        assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == (offset, MAGIC_7Z)
+        assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == MagicHit(
+            offset, MAGIC_7Z, 0
+        )
 
 
 def test_scan_returns_the_earliest_of_several_needles() -> None:
     data = b"\x00" * 50 + b"SECOND" + b"\x00" * 50 + b"FIRST"
     # Earliest position wins, not the order the needles were passed in.
-    assert scan_for_magic(io.BytesIO(data), (b"FIRST", b"SECOND")) == (50, b"SECOND")
+    assert scan_for_magic(io.BytesIO(data), (b"FIRST", b"SECOND")) == MagicHit(
+        50, b"SECOND", 0
+    )
 
 
 def test_scan_requires_the_whole_magic_inside_the_limit() -> None:
     data = b"\x00" * 10 + MAGIC_7Z
-    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,), limit=10 + len(MAGIC_7Z)) == (
-        10,
-        MAGIC_7Z,
-    )
+    assert scan_for_magic(
+        io.BytesIO(data), (MAGIC_7Z,), limit=10 + len(MAGIC_7Z)
+    ) == MagicHit(10, MAGIC_7Z, 0)
     # One byte short: the magic starts inside the window but does not fit in it.
     assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,), limit=15) is None
 

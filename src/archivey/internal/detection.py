@@ -6,13 +6,16 @@ not hand-maintained here: each registered backend declares its ``MAGIC`` / ``EXT
 as data and the detector aggregates them, so a new format becomes detectable by
 registering its backend (see ``format-detection`` and ``backend-registry``).
 
-Detection never consumes bytes from the source: paths are opened and closed; seekable
-streams are read and restored to their **starting position** (the archive is taken to
-begin wherever the stream is positioned when handed in, so a mid-positioned stream —
-e.g. an archive embedded in a larger file — detects against the right bytes); a
-non-seekable stream must be wrapped in a
+Detection never consumes bytes from the source: paths keep one detection handle; seekable
+streams are read forward once and restored to their **starting position** (the archive is
+taken to begin wherever the stream is positioned when handed in); a non-seekable stream
+must be wrapped in a
 :class:`~archivey.internal.streams.peekable.PeekableStream` first (the opener does this),
-which detection inspects via ``peek``.
+which detection inspects via the shared prefix workspace.
+
+Every front-of-source read goes through one detection-owned
+:class:`~archivey.internal.detection_workspace.PrefixWorkspace` that grows monotonically —
+extending the window reads only the delta; bytes already retrieved are never re-read.
 
 Formats without an exact magic are recognized by a **content probe**: Brotli (no signature
 at all) and zlib (a 2-byte header too unspecific to trust, so its probe gates on that
@@ -35,10 +38,7 @@ sometimes say yes:
   before the probes because a bootable or hybrid ISO reserves its first 32 KiB for
   bootloader code — the data class a probe accepts — and the exact magic was available at
   a known offset the whole time. The peek is size-gated: a source known to be smaller than
-  the window never pays it. A larger one does, **including when a probe then succeeds** —
-  that is a bounded read this order adds rather than moves, since a probe hit used to
-  return before far magic ran (measured at ~3% of ``detect_format`` on a 2 MB stream; see
-  ``detection-format-gaps`` design §Risks).
+  the window never pays it.
 """
 
 from __future__ import annotations
@@ -49,12 +49,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
+from archivey.detection_cost import (
+    DetectionBudget,
+    DetectionBudgetPreset,
+    DetectionCapability,
+    DetectionCostReceipt,
+    TierSkip,
+    TierSkipReason,
+    default_detection_budget,
+)
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticSummary,
     FormatConflictContext,
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
+from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
@@ -64,6 +74,7 @@ from archivey.internal.registry import get_registry
 from archivey.internal.sfx import (
     SFX_MAX,
     ExecutableCue,
+    ScanNeedle,
     executable_cue,
     find_magic_in_prefix,
 )
@@ -71,12 +82,9 @@ from archivey.internal.streams.brotli_framing import (
     BrotliBlock,
     parse_metablock,
 )
-from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
+from archivey.internal.streams.peekable import DETECTION_LIMIT
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
-    is_seekable,
-    read_exact,
-    source_byte_size,
     source_name,
 )
 from archivey.types import (
@@ -100,11 +108,6 @@ _INNER_TAR_PROBE_BYTES = 512
 # worst-case first block with margin; a stream-oriented codec (gzip/xz/zstd/…) reaches the
 # header region from the ordinary prefix and never triggers this larger read.
 _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
-
-# Non-seekable ``read_at`` ceiling for content-probe chain walks: reaching offset N means
-# buffering [0, N). 1 MiB covers a second link after a 4- or 5-nibble first block; a
-# 6-nibble first block (up to 16 MiB) is declined (``None`` → cannot disprove).
-_PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE = 1 << 20
 
 
 class DetectionConfidence(Enum):
@@ -137,132 +140,22 @@ class FormatInfo:
     # reads False — and a bool cannot separate those. ``probe-provenance-unconfirmed``
     # task 5.1 tracks the public evidence-set shape that could.
     corroborated: bool = field(default=False, compare=False, repr=False)
-
-
-def _peek_prefix(source: str | Path | BinaryIO, length: int) -> bytes:
-    """Return the source's next ``length`` bytes without consuming them.
-
-    Paths are opened and closed; a :class:`PeekableStream` is peeked; a seekable stream
-    is read from its **current position** and restored to it (the archive starts
-    wherever the caller positioned the stream — see the stream-position contract in
-    ``format-detection``). A raw non-seekable stream would lose the prefix, so the
-    caller (the opener) must wrap it in a ``PeekableStream`` first.
-    """
-    if isinstance(source, (str, Path)):
-        with open(source, "rb") as f:
-            return read_exact(f, length)
-    if isinstance(source, PeekableStream):
-        return source.peek(length)
-    if is_seekable(source):
-        start = source.tell()
-        data = read_exact(source, length)
-        source.seek(start)
-        return data
-    # Raw non-seekable stream used standalone: reading consumes bytes the caller can no
-    # longer reach. Detection still works, but the prefix is gone — the opener avoids this
-    # by wrapping non-seekable sources in a PeekableStream.
-    return read_exact(source, length)
-
-
-def _make_probe_read_at(
-    source: str | Path | BinaryIO,
-    prefix: bytes,
-    *,
-    seekable: bool,
-) -> tuple[Callable[[int, int], bytes | None], Callable[[], None]]:
-    """Build the optional ``read_at`` callback for content-probe chain walks.
-
-    Returns ``(read_at, close)``. ``read_at`` yields ``bytes`` at the given absolute
-    offset (relative to the archive origin — the position detection started from),
-    short/empty on EOF, or ``None`` when the caller declines (non-seekable past
-    ``_PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE``). Bytes already in ``prefix`` are served
-    without I/O. Path sources keep one open handle for the walk; call ``close`` when
-    the probe loop finishes.
-    """
-    path_handle: list[BinaryIO] = []
-
-    def read_at(offset: int, length: int) -> bytes | None:
-        if offset < 0 or length < 0:
-            return None
-        end = offset + length
-        if end <= len(prefix):
-            return prefix[offset:end]
-        if not seekable and end > _PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE:
-            return None
-        if isinstance(source, (str, Path)):
-            if not path_handle:
-                path_handle.append(open(source, "rb"))
-            f = path_handle[0]
-            f.seek(offset)
-            return read_exact(f, length)
-        if isinstance(source, PeekableStream):
-            # Growing peek buffers [0, end); refuse past the non-seekable cap above.
-            buf = source.peek(end)
-            if offset >= len(buf):
-                return b""
-            return buf[offset:end]
-        if is_seekable(source):
-            origin = source.tell()
-            try:
-                source.seek(origin + offset)
-                return read_exact(source, length)
-            finally:
-                source.seek(origin)
-        # Raw non-seekable without PeekableStream: cannot reposition; decline.
-        return None
-
-    def close() -> None:
-        for f in path_handle:
-            f.close()
-        path_handle.clear()
-
-    return read_at, close
-
-
-def _match_magic(
-    data: bytes,
-    magic_entries: list[MagicSignature],
-) -> ArchiveFormat | None:
-    """Return the format of the first exact magic signature matching ``data``."""
-    for entry in magic_entries:
-        if data[entry.offset : entry.offset + len(entry.magic)] == entry.magic:
-            return entry.format
-    return None
-
-
-def _match_magic_behind_prefix(
-    data: bytes,
-    walks: list[tuple[ArchiveFormat, Callable[[bytes], bool]]],
-) -> ArchiveFormat | None:
-    """Return the format whose exact magic sits behind its own structural prefix frames.
-
-    Each walk is arithmetic over ``data`` alone (the already-peeked prefix) and never
-    triggers a larger read: a declared frame size running past those bytes is a decline.
-    """
-    for fmt, walk in walks:
-        if walk(data):
-            return fmt
-    return None
-
-
-def _match_extension(
-    name: str | None, extension_map: dict[str, ArchiveFormat]
-) -> tuple[ArchiveFormat, str] | None:
-    if name is None:
-        return None
-    lowered = name.lower()
-    # Longest extension wins so ".tar.gz" beats ".gz".
-    for ext in sorted(extension_map, key=len, reverse=True):
-        if lowered.endswith(ext.lower()):
-            return extension_map[ext], ext
-    return None
+    # Detection's own cost receipt — not merged into ``CostReceipt`` / ``ArchiveInfo.cost``.
+    # Public exposure on ``FormatInfo`` is ``detection-result-surface``; kept here so tests
+    # and the fuzz harness can assert the access-shape and budget invariants.
+    cost_receipt: DetectionCostReceipt | None = field(
+        default=None, compare=False, repr=False
+    )
+    unavailable_tiers: tuple[TierSkip, ...] = field(
+        default=(), compare=False, repr=False
+    )
 
 
 class _BoundedPeekReader(ReadOnlyIOStream):
     """A bounded, non-consuming reader over a ``peek_more`` callable.
 
-    ``peek_more(n)`` returns the source's first ``n`` bytes without consuming them
-    (idempotent, growing supersets — see :func:`_peek_prefix`). Reads walk an
+    ``peek_more(n)`` returns the candidate's first ``n`` bytes without consuming them
+    (idempotent, growing supersets — a workspace candidate view). Reads walk an
     internal offset over successive peeks (caching the last buffer so growth stays
     linear), letting a codec pull exactly as much compressed input as it needs and
     never more than ``limit`` (one maximum compressor block).
@@ -313,26 +206,59 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         return chunk
 
 
+def _match_magic(
+    data: bytes,
+    magic_entries: list[MagicSignature],
+) -> ArchiveFormat | None:
+    """Return the format of the first exact magic signature matching ``data``."""
+    for entry in magic_entries:
+        if data[entry.offset : entry.offset + len(entry.magic)] == entry.magic:
+            return entry.format
+    return None
+
+
+def _match_magic_behind_prefix(
+    data: bytes,
+    walks: list[tuple[ArchiveFormat, Callable[[bytes], bool]]],
+) -> ArchiveFormat | None:
+    """Return the format whose exact magic sits behind its own structural prefix frames.
+
+    Each walk is arithmetic over ``data`` alone (the already-peeked prefix) and never
+    triggers a larger read: a declared frame size running past those bytes is a decline.
+    """
+    for fmt, walk in walks:
+        if walk(data):
+            return fmt
+    return None
+
+
+def _match_extension(
+    name: str | None, extension_map: dict[str, ArchiveFormat]
+) -> tuple[ArchiveFormat, str] | None:
+    if name is None:
+        return None
+    lowered = name.lower()
+    # Longest extension wins so ".tar.gz" beats ".gz".
+    for ext in sorted(extension_map, key=len, reverse=True):
+        if lowered.endswith(ext.lower()):
+            return extension_map[ext], ext
+    return None
+
+
 def _probe_inner_tar(
     stream_format: StreamFormat,
     peek_more: Callable[[int], bytes],
+    workspace: PrefixWorkspace | None = None,
 ) -> bool:
     """Whether decompressing the source yields a TAR (``ustar`` at offset 257).
 
     The codec layer decodes the compressed source and the inner ``ustar`` magic confirms a
     tarball wrapped in the compressor. The decoder reads from a bounded, non-consuming view of
     the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls exactly as much
-    compressed input as it needs to reach the TAR header region and no more: a stream-oriented
-    codec (gzip/xz/zstd/…) emits output incrementally and stops after a few KiB, while a
-    block-transform codec (bzip2), which emits nothing until a whole block is read, pulls up to
-    one maximum block (``_INNER_TAR_MAX_PROBE_BYTES``).
+    compressed input as it needs to reach the TAR header region and no more.
 
-    The peek reader is seekable within that bound so codecs can reposition inside
-    the peeked prefix during a probe.
     Accelerators are forced ``OFF``: ``seekable=True`` must not flip AUTO rapidgzip /
-    IndexedBzip2File on for a short detection peek (those paths reject incomplete
-    sources and can leak raw C++ exceptions on corrupt prefixes). Prefer that over
-    the older ``seekable=False`` workaround for keeping accelerators off the probe.
+    IndexedBzip2File on for a short detection peek.
 
     Returns ``False`` (deferring the determination to open time) when the codec backend is
     absent, the source is not decodable as this codec, or the decoded output carries no TAR
@@ -369,6 +295,11 @@ def _probe_inner_tar(
     except (ArchiveyError, OSError, ValueError):
         # Not decodable as this codec, or truncated before a full block -> not an inner tar.
         return False
+    if workspace is not None:
+        workspace.charge_decode(
+            input_bytes=source.tell(),
+            output_bytes=len(head),
+        )
     return head[257:262] == b"ustar"
 
 
@@ -392,11 +323,12 @@ def _brotli_probe_confidence(
 
 def _resolve_single_file_or_tar(
     fmt: ArchiveFormat,
-    base_confidence: "DetectionConfidence",
+    base_confidence: DetectionConfidence,
     base_detected_by: str,
     peek_more: Callable[[int], bytes],
     *,
     ext_match: tuple[ArchiveFormat, str] | None = None,
+    workspace: PrefixWorkspace | None = None,
 ) -> FormatInfo:
     """Upgrade a single-file-compressor match to its TAR combo when the payload is a tarball.
 
@@ -412,7 +344,7 @@ def _resolve_single_file_or_tar(
         fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
     ):
-        if _probe_inner_tar(fmt.stream, peek_more):
+        if _probe_inner_tar(fmt.stream, peek_more, workspace):
             tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
             return FormatInfo(
                 tar_fmt,
@@ -445,27 +377,7 @@ def _extension_corroborates(
     ext_match: tuple[ArchiveFormat, str] | None,
     resolved: ArchiveFormat,
 ) -> bool:
-    """Whether the filename agrees with ``resolved`` — the same test as "no conflict".
-
-    Deliberately the negation of what :func:`_warn_on_conflict` warns about, sharing
-    :func:`_is_deferred_inner_tar` with it, so the module gives one answer to "does the
-    name agree?" rather than two. That covers the ``.br`` rule and generalizes it to every
-    magic-less codec (``.lzma``, ``.zz``), plus the deferred inner-TAR case where
-    ``foo.tar.br`` is reported as bare ``BROTLI`` because the inner-TAR probe could not run.
-
-    Comparing only ``stream`` would be wrong: every container shares
-    ``StreamFormat.UNCOMPRESSED``, so a ``.zip`` name would "agree" with a ``TAR`` result.
-    Unreachable while every content probe is a ``RAW_STREAM`` codec, but
-    ``ReadBackend.CONTENT_PROBES`` exists precisely so a container backend can register
-    one, and that seam must not silently arm this.
-
-    Contested: PR #263's analysis §6 keys the stamp on the winning candidate's
-    content-evidence class, under which a matching name is retained as evidence but cannot
-    promote it — so this predicate leaves the stamp path entirely if that lands, together
-    with ``_brotli_probe_confidence``'s ``.br``-to-``PROBABLE`` rule, which is the same
-    rule expressed twice. See ``openspec/specs/error-handling`` for the scope and why the
-    two must move together.
-    """
+    """Whether the filename agrees with ``resolved`` — the same test as "no conflict"."""
     if ext_match is None:
         return False
     ext_fmt = ext_match[0]
@@ -473,30 +385,7 @@ def _extension_corroborates(
 
 
 class _ConflictEvidence(Enum):
-    """Which branch outranked the extension, phrased for the conflict diagnostic.
-
-    Every branch that outranks the extension calls :func:`_warn_on_conflict`, and they do
-    not all hold the same kind of evidence. Exact magic is a certainty; a content probe is
-    the weakest signal archivey has, and reports ``PROBABLE`` or ``GUESS`` precisely
-    because it can be wrong. Saying "magic bytes indicate X" from the probe branch
-    overstates the winning evidence in the one case where a reader most needs to weigh it
-    against the name we just overruled.
-
-    Deliberately not ``FormatInfo.detected_by``: those strings are public and
-    ``detection-result-surface`` renames two of them, so reusing them here would tie one
-    log line's wording to a contract that is about to move.
-
-    **So this text is load-bearing, not a nicety.** A ``detect_format`` caller can read
-    ``detected_by`` off the returned ``FormatInfo``, but nobody on the ``open_archive``
-    path can: that object is dropped once the reader exists, ``_format_provenance``
-    collapses magic, far magic, the SFX scan and the probes to ``chosen_by="content"``
-    (and is private besides), and ``FormatConflictContext`` carries only the two formats.
-    The retained diagnostic outlives every one of them, so on the path where this warning
-    most matters the message *is* the evidence channel. Adding a typed field is
-    ``detection-result-surface``'s to make, when it reworks the values this would have to
-    spell; until then, do not weaken these phrases on the grounds that the data is
-    available elsewhere, because on that path it is not.
-    """
+    """Which branch outranked the extension, phrased for the conflict diagnostic."""
 
     MAGIC = "magic bytes indicate"
     SFX_SCAN = "archive magic behind an executable stub indicates"
@@ -535,25 +424,46 @@ def _warn_on_conflict(
 def _scan_for_sfx_payload(
     entries: list[MagicSignature],
     peek_more: Callable[[int], bytes],
+    workspace: PrefixWorkspace,
+    *,
+    scan_limit: int,
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
 
-    ``entries`` are the backends' ``SFX_MAGIC`` declarations, so which formats can hide
-    behind a stub is backend data like every other detection signal. ``PROBABLE`` rather
-    than ``CERTAIN``: an exact magic found at a *searched-for* offset is a weaker claim
-    than one found at the offset the format specifies.
+    ``entries`` are the backends' ``SFX_MAGIC`` declarations. Each needle carries its
+    candidate-internal offset (today all zero for ZIP/RAR/7z; TAR ``ustar`` → 257 once
+    that needle lands). The returned ``payload_offset`` is the **candidate origin**, not
+    the raw needle position. ``PROBABLE`` rather than ``CERTAIN``: an exact magic found at
+    a *searched-for* offset is a weaker claim than one found at the offset the format
+    specifies.
+
+    ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
+    the charge lands whether the scan hits or misses so the receipt reflects the work.
     """
-    by_needle = {entry.magic: entry.format for entry in entries}
-    hit = find_magic_in_prefix(peek_more, tuple(by_needle), limit=SFX_MAX)
+    by_needle = {entry.magic: entry for entry in entries}
+    needles = tuple(ScanNeedle(entry.magic, entry.offset) for entry in entries)
+    hit = find_magic_in_prefix(peek_more, needles, limit=scan_limit)
+    # Charge the window actually examined — a miss is the expensive case.
+    workspace.charge_scanned(min(workspace.buffered_length, scan_limit))
     if hit is None:
         return None
-    offset, needle = hit
+    entry = by_needle[hit.needle]
     return FormatInfo(
-        by_needle[needle],
+        entry.format,
         DetectionConfidence.PROBABLE,
         "sfx_scan",
-        payload_offset=offset,
+        payload_offset=hit.candidate_origin,
     )
+
+
+def _resolve_budget(
+    budget: DetectionBudget | DetectionBudgetPreset | None,
+) -> DetectionBudget:
+    if budget is None:
+        return default_detection_budget()
+    if isinstance(budget, DetectionBudgetPreset):
+        return DetectionBudget.for_preset(budget)
+    return budget
 
 
 def detect_format(
@@ -561,6 +471,7 @@ def detect_format(
     *,
     config: ArchiveyConfig | None = None,
     collector: DiagnosticCollector | None = None,
+    budget: DetectionBudget | DetectionBudgetPreset | None = None,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
 
@@ -570,6 +481,10 @@ def detect_format(
     ``collector``, when provided (e.g. from :func:`archivey.open_archive`), receives
     detection diagnostics into the prospective reader's shared collector. When omitted,
     a finite standalone collector is created from ``config`` (or the library default).
+
+    ``budget`` caps what detection may spend; the default is
+    :data:`~archivey.detection_cost.BALANCED_BUDGET` (import from
+    ``archivey.detection_cost`` — not yet re-exported at the package root).
     """
     owned_collector = collector is None
     if owned_collector:
@@ -579,7 +494,7 @@ def detect_format(
     else:
         detection_wm = collector.watermark()
 
-    info = _detect_format_body(source, collector)
+    info = _detect_format_body(source, collector, _resolve_budget(budget))
     diagnostics = (
         collector.snapshot()
         if owned_collector
@@ -588,8 +503,18 @@ def detect_format(
     return replace(info, diagnostics=diagnostics)
 
 
+def _attach_receipt(info: FormatInfo, workspace: PrefixWorkspace) -> FormatInfo:
+    return replace(
+        info,
+        cost_receipt=workspace.receipt,
+        unavailable_tiers=workspace.skips,
+    )
+
+
 def _detect_format_body(
-    source: str | Path | BinaryIO, collector: DiagnosticCollector
+    source: str | Path | BinaryIO,
+    collector: DiagnosticCollector,
+    budget: DetectionBudget,
 ) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
@@ -598,126 +523,109 @@ def _detect_format_body(
     ext_match = _match_extension(name, extension_map)
     ext_fmt = ext_match[0] if ext_match is not None else None
 
-    # Magic signals split by where they live: "near" ones fit in the default window; "far"
-    # ones (ISO's CD001 at 32 769) need an extended peek that is only taken on demand, so the
-    # common case never reads 32 KiB just to identify a ZIP/gz/tar in the first few bytes.
-    near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
-    far = [e for e in magic_entries if e.offset + len(e.magic) > DETECTION_LIMIT]
-    near_needed = max(
-        DETECTION_LIMIT, max((e.offset + len(e.magic) for e in near), default=0)
-    )
-    data = _peek_prefix(source, near_needed)
+    with PrefixWorkspace(source, budget) as workspace:
+        # Record ZIP-tail policy up front so BALANCED leaves an explicit trace that the
+        # tier was not enabled (distinct from capability-unavailable on a pipe).
+        if budget.max_tail_bytes <= 0:
+            workspace.record_skip("zip_tail", TierSkipReason.NOT_ENABLED_BY_POLICY)
+        elif DetectionCapability.TAIL not in workspace.capabilities():
+            workspace.record_skip("zip_tail", TierSkipReason.CAPABILITY_UNAVAILABLE)
 
-    # The inner-TAR probe decodes the source through a bounded, non-consuming view built on
-    # this callable: stream-oriented codecs reach the header from the first few KiB, while a
-    # block codec (bzip2) may need a full block. Each peek is bounded and restores position /
-    # buffers in the PeekableStream (like the prefix peek above), so a large-block .tar.bz2 is
-    # not mis-reported as bare .bz2.
-    def peek_more(length: int) -> bytes:
-        return _peek_prefix(source, length)
-
-    # 1. Exact magic in the default window. A single-file compressor is additionally probed
-    #    for an inner TAR (so .tar.gz → TAR_GZ, not bare GZ).
-    #
-    #    A format whose magic may sit behind structural frames of its own — today only
-    #    zstd, whose skippable frames carry no compressed data and may precede the first
-    #    regular frame — declares a walk over the peeked prefix instead of a table entry,
-    #    so the structural prefix alone is never claimed as the format. Still an exact
-    #    magic match, and reported as one.
-    magic_fmt = _match_magic(data, near)
-    if magic_fmt is None:
-        magic_fmt = _match_magic_behind_prefix(data, registry.magic_prefix_walks())
-    if magic_fmt is not None:
-        info = _resolve_single_file_or_tar(
-            magic_fmt,
-            DetectionConfidence.CERTAIN,
-            "magic",
-            peek_more,
-            ext_match=ext_match,
+        # Magic signals split by where they live: "near" ones fit in the default window;
+        # "far" ones (ISO's CD001 at 32 769) need an extended peek taken on demand.
+        near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
+        far = [e for e in magic_entries if e.offset + len(e.magic) > DETECTION_LIMIT]
+        near_span = max((e.offset + len(e.magic) for e in near), default=0)
+        if near and budget.max_prefix_bytes < near_span:
+            # A "near" magic past the budgeted prefix is unsearchable — record it rather
+            # than silently incomplete-searching (DETECTION_LIMIT and max_prefix_bytes
+            # are independent constants that happen both to be 4 096 today).
+            workspace.record_skip("near_magic", TierSkipReason.BUDGET_EXHAUSTED)
+        near_needed = min(
+            budget.max_prefix_bytes,
+            max(DETECTION_LIMIT, near_span),
         )
-        _warn_on_conflict(
-            collector, name, ext_match, info.format, _ConflictEvidence.MAGIC
-        )
-        return info
+        data = workspace.peek_prefix(near_needed)
+        peek_more = workspace.candidate_view(0)
 
-    # 2. Self-extracting archives: an executable stub, then real archive magic somewhere
-    #    in the SFX window. This runs before the content probes rather than after, which
-    #    is the whole fix: a stub is arbitrary bytes, and a probe handed arbitrary bytes
-    #    sometimes says yes — a low-entropy `MZ` stub in front of a real RAR/7z/ZIP used
-    #    to be reported as BROTLI, and open_archive then fabricated a single-file member.
-    cue = executable_cue(data)
-    if cue is not ExecutableCue.NONE:
-        sfx_info = _scan_for_sfx_payload(registry.sfx_magic_entries(), peek_more)
-        if sfx_info is not None:
-            _warn_on_conflict(
-                collector,
-                name,
-                ext_match,
-                sfx_info.format,
-                _ConflictEvidence.SFX_SCAN,
+        # Freeze the probe/far size-gate length from the near peek alone. A later SFX or
+        # far growth that hits EOF would make ``remaining_known()`` report a length; that
+        # is correct for capability accounting but must not flip content-probe framing
+        # gates that deliberately treat a DETECTION_LIMIT-sized non-seekable peek as
+        # unknown-length (A-34 stub residual).
+        length = workspace.remaining_known()
+        if length is None and len(data) < near_needed:
+            length = len(data)
+
+        # 1. Exact magic in the default window.
+        magic_fmt = _match_magic(data, near)
+        if magic_fmt is None:
+            magic_fmt = _match_magic_behind_prefix(data, registry.magic_prefix_walks())
+        if magic_fmt is not None:
+            info = _resolve_single_file_or_tar(
+                magic_fmt,
+                DetectionConfidence.CERTAIN,
+                "magic",
+                peek_more,
+                ext_match=ext_match,
+                workspace=workspace,
             )
-            return sfx_info
+            _warn_on_conflict(
+                collector, name, ext_match, info.format, _ConflictEvidence.MAGIC
+            )
+            return _attach_receipt(info, workspace)
 
-    # Archive-relative reachable length, used by the far-magic size gate below and by the
-    # probes' framing / completeness / chain walk. ``source_byte_size`` is total size from
-    # offset 0 of the underlying object; ``read_at`` and the chain walk are relative to the
-    # archive origin (current stream position). Paths open at origin 0, so the totals match;
-    # for a mid-positioned seekable stream, subtract ``tell()`` so equality checks (declared
-    # end with trailing bytes) use the same yardstick. Unknown → None; a short peek that
-    # returned fewer bytes than requested also reveals the size of a non-seekable source
-    # that ended early (< DETECTION_LIMIT).
-    length = source_byte_size(source)
-    if length is not None and not isinstance(source, (str, Path)):
-        if is_seekable(source):
-            remaining = length - source.tell()
-            length = remaining if remaining >= 0 else None
-    if length is None and len(data) < near_needed:
-        length = len(data)
-
-    # 3. Far magic (ISO's CD001 at offset 32 769): peek the extended 32 774-byte window on
-    #    demand. This runs *before* the content probes: it is exact magic at a known offset
-    #    and they are the weakest signal archivey has. A bootable or hybrid ISO reserves its
-    #    first 32 KiB for bootloader code — exactly the data class the Brotli probe accepts —
-    #    so consulting the probes first claimed a whole filesystem as one fabricated
-    #    `*.uncompressed` member while the magic sat unread at a known offset.
-    #
-    #    Size-gated: a source known to be smaller than the window never pays the peek (no
-    #    ISO is that small). A source of unknown length takes a short peek, matches nothing
-    #    and falls through — it is never rejected solely for being too short.
-    if far:
-        far_needed = max(e.offset + len(e.magic) for e in far)
-        if length is None or length >= far_needed:
-            far_data = _peek_prefix(source, far_needed)
-            far_fmt = _match_magic(far_data, far)
-            if far_fmt is not None:
-                _warn_on_conflict(
-                    collector, name, ext_match, far_fmt, _ConflictEvidence.MAGIC
+        # 2. Self-extracting archives.
+        cue = executable_cue(data)
+        if cue is not ExecutableCue.NONE:
+            scan_limit = min(SFX_MAX, budget.max_scan_bytes)
+            if scan_limit <= 0:
+                workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+            else:
+                sfx_info = _scan_for_sfx_payload(
+                    registry.sfx_magic_entries(),
+                    peek_more,
+                    workspace,
+                    scan_limit=scan_limit,
                 )
-                return FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic")
+                if sfx_info is not None:
+                    _warn_on_conflict(
+                        collector,
+                        name,
+                        ext_match,
+                        sfx_info.format,
+                        _ConflictEvidence.SFX_SCAN,
+                    )
+                    return _attach_receipt(sfx_info, workspace)
 
-    # 4. Formats without an exact magic, recognized by a content probe (Brotli decodes a
-    #    prefix; zlib gates on its 2-byte header then decodes). A probe is skipped when its
-    #    backend is absent, so detection falls through. A matching compressor is likewise
-    #    probed for an inner TAR (so .tar.br → TAR_BROTLI).
-    #
-    #    Skipped entirely on a STRONG executable cue: a DOS header that really points at
-    #    `PE\0\0`, or a valid ELF ident block, is not a compressed stream, and letting a
-    #    probe claim one produces a fabricated `*.uncompressed` member — a silent wrong
-    #    answer. A WEAK cue does not gate the probes: `MZ` alone is two bytes, and a
-    #    genuine Brotli stream that happens to start with them must still be detectable.
-    if cue is not ExecutableCue.STRONG:
-        # Bounded read-at for the Brotli chain walk. Paths and seekable streams seek;
-        # PeekableStream may grow its buffer up to the non-seekable cap.
-        if isinstance(source, (str, Path)):
-            probe_seekable = True
-        elif isinstance(source, PeekableStream):
-            probe_seekable = False
-        else:
-            probe_seekable = is_seekable(source)
-        read_at, close_read_at = _make_probe_read_at(
-            source, data, seekable=probe_seekable
-        )
-        try:
+        # 3. Far magic (ISO's CD001 at offset 32 769).
+        if far and budget.max_far_bytes > 0:
+            far_needed = max(e.offset + len(e.magic) for e in far)
+            far_needed = min(far_needed, budget.max_far_bytes)
+            if length is not None and length < far_needed:
+                pass  # size-gated: never pay the peek
+            else:
+                far_data = workspace.peek_prefix(far_needed)
+                # Charge the bytes actually requested even when the window came up short.
+                workspace.charge_far(len(far_data))
+                far_fmt = _match_magic(far_data, far)
+                if far_fmt is not None:
+                    _warn_on_conflict(
+                        collector, name, ext_match, far_fmt, _ConflictEvidence.MAGIC
+                    )
+                    return _attach_receipt(
+                        FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic"),
+                        workspace,
+                    )
+        elif far and budget.max_far_bytes <= 0:
+            workspace.record_skip("far_magic", TierSkipReason.NOT_ENABLED_BY_POLICY)
+
+        # 4. Content probes.
+        if cue is not ExecutableCue.STRONG:
+
+            def read_at(offset: int, n: int) -> bytes | None:
+                return workspace.read_at(offset, n)
+
             for probe_fmt, probe in registry.content_probes():
                 if probe(data, source_length=length, read_at=read_at):
                     confidence = DetectionConfidence.PROBABLE
@@ -729,6 +637,7 @@ def _detect_format_body(
                         "content_probe",
                         peek_more,
                         ext_match=ext_match,
+                        workspace=workspace,
                     )
                     _warn_on_conflict(
                         collector,
@@ -737,15 +646,16 @@ def _detect_format_body(
                         info.format,
                         _ConflictEvidence.CONTENT_PROBE,
                     )
-                    return info
-        finally:
-            close_read_at()
+                    return _attach_receipt(info, workspace)
 
-    # 5. Extension-only guess.
-    if ext_fmt is not None:
-        return FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension")
+        # 5. Extension-only guess.
+        if ext_fmt is not None:
+            return _attach_receipt(
+                FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension"),
+                workspace,
+            )
 
-    raise FormatDetectionError(
-        "Could not detect archive format: no magic-byte match and no usable file extension.",
-        archive_name=name,
-    )
+        raise FormatDetectionError(
+            "Could not detect archive format: no magic-byte match and no usable file extension.",
+            archive_name=name,
+        )

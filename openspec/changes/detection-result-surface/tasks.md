@@ -13,6 +13,18 @@
   `detected_by` values — so they happen once, while the redesign is already changing what
   callers observe, rather than as a second break later.
 
+  **Inherited from `detection-prefix-workspace` review:** public exposure of
+  `FormatInfo.cost_receipt` / `unavailable_tiers`, and attaching a receipt to
+  `FormatDetectionError` on the miss path (review F14), belong here — not in the
+  plumbing change. Until then those fields stay private (`compare=False`, `repr=False`)
+  for tests and the fuzz harness.
+
+  **Export surface (Decision 3A):** `archivey.detection_cost` is deliberately **not** in
+  `archivey.__all__`. When exposing detection results publicly, decide deliberately:
+  (1) what belongs at the package root, (2) what is niche enough for a documented
+  subpackage (`archivey.detection_cost` or similar), and (3) what stays internal. Do not
+  re-freeze seven budget/receipt names into the root by default.
+
 ## 1. Red tests first
 
 - [ ] 1.1 Failing test: `open_archive(path).detection` (final name per design §Open Questions)

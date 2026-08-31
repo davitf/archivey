@@ -298,6 +298,32 @@
 
 ## Performance & robustness
 
+- **Detection budget / receipt public surface** — deferred by `detection-prefix-workspace`
+  Decision 3A. Types live in `archivey.detection_cost` but are omitted from
+  `archivey.__all__`. When `detection-result-surface` lands, decide: root re-exports vs
+  documented subpackage vs internal-only. Prefer not freezing a 12-field budget into the
+  root by inertia.
+
+- **Detection budget scope: aggregate vs per-candidate** — left open by
+  `detection-prefix-workspace`. A fuzz assertion pins that *aggregate* detection cost stays
+  inside the declared budget either way; the deciding measurement (209 715 decoy gzip
+  headers → 683-fold decode amplification) is a scan-tier property owned by
+  `detection-evidence-ledger`. Carry the question there.
+
+- **Pricing a detection source in round trips rather than bytes** — `StreamCapability` is
+  only `FORWARD_ONLY < SEEKABLE`, so an HTTP range reader and a local file are
+  indistinguishable. The flat access-shape rule (one forward pass, at most one tail seek)
+  sidesteps seek *permission*, but `BALANCED`'s 32 775 far bytes and the ZIP tail's 65 557
+  are still priced in the wrong currency on a range-request source. Needs a measurement on
+  a real range-request source.
+
+  **Partial progress (`detection-prefix-workspace` Decision 2):** probe `read_at` seeks on
+  paths / full spools / cheap seekable streams, and falls back to a 1 MiB capped buffer for
+  non-seekable sources and for :class:`~archivey.ArchiveStream` (whose seek often
+  re-decodes). Finer "is this seek cheap?" using `nearest_resume_offset` / AccessCost /
+  round-trip pricing is still open — detection should eventually ask the source rather
+  than keying on `ArchiveStream` identity.
+
 - **Reuse the index-only pass's members instead of rebuilding them** — on backends with
   `_MEMBER_LIST_UPFRONT`, `extract_all` lists twice: `_get_members_index_only()` for the
   extraction prep, then `_materialize_members()`. Both call `_iter_members()` afresh and

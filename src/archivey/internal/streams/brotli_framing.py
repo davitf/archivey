@@ -20,7 +20,7 @@ from enum import Enum
 # Link cap 8: real-tree census rejected every fabrication by link index ≤ 1;
 # revisit with hard data if a future corpus shows deeper rejecting chains.
 # Forward-only memory for non-seekable ``read_at`` is capped separately at 1 MiB
-# in ``detection._PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE`` (declared in the
+# in ``detection_workspace.PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE`` (declared in the
 # format-detection chain-walk requirement).
 CHAIN_MAX_LINKS = 8
 CHAIN_HEADER_READ = 24

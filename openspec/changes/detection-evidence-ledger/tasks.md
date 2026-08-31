@@ -17,6 +17,13 @@
   the scheduler rather than rewriting the tier code. Its revised delta drops the provisional
   note and the first-match-wins algorithm, both of which this change replaces.
 
+  **Inherited from `detection-prefix-workspace` Decision 1B (spec honesty trim):** the budget
+  fields `completion_window_bytes`, `max_index_bytes`, `max_probe_links`, and
+  `collect_nonmaximal_candidates` are declared on `DetectionBudget` / presets but **not
+  honoured** by any scheduled tier. Wire them here (tasks 5.6, 6.2, and the Brotli walk's
+  link cap — today `CHAIN_MAX_LINKS` in `brotli_framing.py`). Do not re-claim them as live
+  in `detection-cost` until this change archives.
+
 ## 1. Red tests first — the four measured defects
 
 - [ ] 1.1 Failing test: each of the 15 registered magic entries, fed a source that is only

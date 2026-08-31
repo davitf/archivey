@@ -95,10 +95,16 @@ def sevenzip_open_one(data: bytes) -> None:
 
 
 def detect_format_one(data: bytes) -> None:
+    from archivey.detection_cost import BALANCED_BUDGET
+
     try:
-        detect_format(io.BytesIO(data))
+        info = detect_format(io.BytesIO(data), budget=BALANCED_BUDGET)
     except ArchiveyError:
         return
+    # Aggregate cost must stay inside the declared budget — pins the invariant whether
+    # limits are later resolved as per-detection or per-candidate.
+    if info.cost_receipt is not None:
+        assert info.cost_receipt.within_budget(BALANCED_BUDGET), info.cost_receipt
 
 
 def zip_open_one(data: bytes) -> None:

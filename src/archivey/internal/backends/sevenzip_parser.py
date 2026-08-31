@@ -378,7 +378,7 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
             "Not a 7z archive: bad magic bytes (and no 7z signature within the "
             f"{limit}-byte self-extracting scan window)"
         )
-    return hit[0]
+    return hit.candidate_origin
 
 
 def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
