@@ -281,8 +281,9 @@ def test_spool_policy_grants_tail_to_a_pipe() -> None:
 def test_pipe_without_spool_records_tail_unavailable() -> None:
     stream = PeekableStream(NonSeekableBytesIO(_zip_bytes()))
     info = detect_format(stream, budget=THOROUGH_BUDGET)
+    # Every shipping preset leaves ZIP tail off (Decision 1B) — policy, not capability.
     assert any(
-        s.tier == "zip_tail" and s.reason is TierSkipReason.CAPABILITY_UNAVAILABLE
+        s.tier == "zip_tail" and s.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
         for s in info.unavailable_tiers
     )
 
@@ -393,7 +394,7 @@ def test_successful_spool_is_closed_and_reports_size_known() -> None:
 
 
 def test_zero_seek_budget_does_not_advertise_tail_on_spool() -> None:
-    # F8: TAIL without SEEK is a lie — read_tail refuses when max_seeks == 0.
+    # F8: TAIL without SEEK is a lie — capability derivation withdraws both together.
     data = b"x" * 100
     budget = DetectionBudget(
         max_prefix_bytes=4096,
@@ -413,5 +414,4 @@ def test_zero_seek_budget_does_not_advertise_tail_on_spool() -> None:
         caps = ws.capabilities()
         assert DetectionCapability.SEEK not in caps
         assert DetectionCapability.TAIL not in caps
-        assert ws.read_tail(100) is None
         assert DetectionCapability.REMAINING_KNOWN in ws.capabilities()

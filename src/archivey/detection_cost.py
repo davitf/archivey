@@ -73,6 +73,12 @@ class DetectionBudget:
     ``max_far_bytes`` is separate from ``max_prefix_bytes`` because a far fixed-offset
     signature (ISO ``CD001`` at 32 769) needs a ~32 KiB window that a 4 KiB near budget
     would otherwise forbid.
+
+    Fields marked reserved in ``openspec/specs/detection-cost/spec.md``
+    (``completion_window_bytes``, ``max_index_bytes``, ``max_probe_links``,
+    ``collect_nonmaximal_candidates``, and the ZIP-tail pair ``max_tail_bytes`` /
+    ``max_seeks`` on every shipping preset) are carried so follow-on changes can wire
+    them without a second public shape break. No scheduled tier honours them yet.
     """
 
     max_prefix_bytes: int
@@ -166,7 +172,6 @@ class DetectionCostReceipt:
 # ISO CD001 ends at offset 32 773 inclusive → 32 774 bytes from origin.
 _ISO_FAR_BYTES = 32_774
 _SFX_SCAN_BYTES = 2 * 1024 * 1024
-_ZIP_TAIL_BYTES = 65_557  # 22 + 65535
 _COMPLETION_WINDOW = 64 * 1024
 _INNER_TAR_DECODE = 1 << 20
 
@@ -204,12 +209,14 @@ FAST_BUDGET = DetectionBudget(
 THOROUGH_BUDGET = DetectionBudget(
     max_prefix_bytes=4096,
     max_far_bytes=_ISO_FAR_BYTES,
-    max_tail_bytes=_ZIP_TAIL_BYTES,
-    max_seeks=1,
+    # ZIP tail stays off until prefixed-archive-detection schedules it and measures cost.
+    max_tail_bytes=0,
+    max_seeks=0,
     max_scan_bytes=_SFX_SCAN_BYTES,
     max_decode_input=_INNER_TAR_DECODE,
     max_decode_output=_INNER_TAR_DECODE,
-    completion_window_bytes=1 << 62,  # effectively unbounded
+    # Reserved numeric defaults for detection-evidence-ledger — not honoured yet.
+    completion_window_bytes=1 << 62,  # effectively unbounded when wired
     max_index_bytes=1 << 20,
     max_probe_links=32,
     spool_non_seekable_up_to=0,  # still opt-in via replace()

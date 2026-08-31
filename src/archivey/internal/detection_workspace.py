@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import BinaryIO, Callable, cast
+from typing import BinaryIO, Callable
 
 from archivey.detection_cost import (
     DetectionBudget,
@@ -59,7 +59,6 @@ class PrefixWorkspace:
         self._raw_forward: BinaryIO | None = None
         self._spool: tempfile.SpooledTemporaryFile[bytes] | None = None
         self._spool_abandoned = False
-        self._tail_done = False
         self._source_exhausted = False
         # Total size of the underlying object from its own offset 0, when cheap.
         self._total_size = source_byte_size(source)
@@ -129,8 +128,9 @@ class PrefixWorkspace:
             caps.add(DetectionCapability.SEEK)
             if self._budget.max_tail_bytes > 0:
                 caps.add(DetectionCapability.TAIL)
-        # Do not advertise TAIL without SEEK: read_tail refuses when max_seeks is
-        # exhausted / zero even if a spool handle exists.
+        # TAIL requires SEEK: a zero-seek budget withdraws both. The ZIP tail *tier* is
+        # not scheduled yet (max_tail_bytes is 0 on every preset); capability advertising
+        # is for callers that opt in via replace() ahead of prefixed-archive-detection.
 
         # Paths and PeekableStream / seekable streams leave bytes available to a backend.
         if self._kind in ("path", "peekable", "seekable", "spool") or (
@@ -241,61 +241,6 @@ class PrefixWorkspace:
     def record_skip(self, tier: str, reason: TierSkipReason) -> None:
         self._receipt.record_skip(tier, reason)
 
-    def read_tail(self, nbytes: int) -> bytes | None:
-        """Seek once toward the end and read up to ``nbytes``.
-
-        Returns ``None`` when the budget or source cannot support a tail read. Charges one
-        seek and the unique bytes fetched. The prefix buffer is untouched.
-        """
-        if nbytes <= 0 or self._budget.max_tail_bytes <= 0:
-            self.record_skip("zip_tail", TierSkipReason.NOT_ENABLED_BY_POLICY)
-            return None
-        if self._receipt.seeks >= self._budget.max_seeks:
-            self.record_skip("zip_tail", TierSkipReason.BUDGET_EXHAUSTED)
-            return None
-        if DetectionCapability.TAIL not in self.capabilities():
-            self.record_skip("zip_tail", TierSkipReason.CAPABILITY_UNAVAILABLE)
-            return None
-        if self._tail_done:
-            return None
-
-        take = min(nbytes, self._budget.max_tail_bytes)
-        handle = self._random_access_handle()
-        if handle is None:
-            self.record_skip("zip_tail", TierSkipReason.CAPABILITY_UNAVAILABLE)
-            return None
-
-        remaining = self.remaining_known()
-        if remaining is not None:
-            if remaining < take:
-                # Provably too short for a full take — still read what remains near end.
-                if remaining <= 0:
-                    self.record_skip("zip_tail", TierSkipReason.CAPABILITY_UNAVAILABLE)
-                    return None
-                take = remaining
-            start = (self._entry_pos or 0) + remaining - take
-        else:
-            # Size unknown: seek to end then back up (one seek toward end + reposition).
-            # Counted as the single allowed tail seek for shape accounting.
-            handle.seek(0, os.SEEK_END)
-            end_pos = handle.tell()
-            start = max(self._entry_pos or 0, end_pos - take)
-            take = end_pos - start
-
-        handle.seek(start)
-        data = read_exact(handle, take)
-        self._receipt.seeks += 1
-        self._receipt.tail_bytes += len(data)
-        self._receipt.unique_bytes_read += len(data)
-        self._tail_done = True
-        # Restore path/seekable to entry (or end of prefix buffer) so the exit path is
-        # consistent; for seekable streams the close() path restores entry_pos.
-        if self._kind == "path" and self._path_handle is not None:
-            self._path_handle.seek(len(self._buf))
-        elif self._kind == "seekable" and self._seekable_stream is not None:
-            self._seekable_stream.seek((self._entry_pos or 0) + len(self._buf))
-        return data
-
     def close(self) -> None:
         """Release the path handle and restore a seekable caller's entry position."""
         if self._closed:
@@ -317,15 +262,6 @@ class PrefixWorkspace:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
-
-    def _random_access_handle(self) -> BinaryIO | None:
-        if self._path_handle is not None:
-            return self._path_handle
-        if self._seekable_stream is not None:
-            return self._seekable_stream
-        if self._spool is not None and not self._spool_abandoned:
-            return cast(BinaryIO, self._spool)
-        return None
 
     def _fetch_forward(self, nbytes: int) -> bytes:
         if nbytes <= 0:

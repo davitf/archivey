@@ -13,6 +13,12 @@
   `detected_by` values — so they happen once, while the redesign is already changing what
   callers observe, rather than as a second break later.
 
+  **Inherited from `detection-prefix-workspace` review:** public exposure of
+  `FormatInfo.cost_receipt` / `unavailable_tiers`, and attaching a receipt to
+  `FormatDetectionError` on the miss path (review F14), belong here — not in the
+  plumbing change. Until then those fields stay private (`compare=False`, `repr=False`)
+  for tests and the fuzz harness.
+
 ## 1. Red tests first
 
 - [ ] 1.1 Failing test: `open_archive(path).detection` (final name per design §Open Questions)

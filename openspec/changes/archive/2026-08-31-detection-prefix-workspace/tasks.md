@@ -64,7 +64,13 @@
 
 ## 5. Presets and the spool policy
 
-- [x] 5.1 `BALANCED`, `FAST`, `THOROUGH` as specified; ZIP tail tier outside `BALANCED`
+- [x] 5.1 `BALANCED`, `FAST`, `THOROUGH` as **shipping** presets (near/far/SFX scan/probes;
+      spool opt-in). **Post-archive honesty (PR review Decision 1B):** the archived delta
+      over-claimed ZIP tail under `THOROUGH`, whole-source completion, probe-link caps, and
+      non-maximal collection. Main `openspec/specs/detection-cost/spec.md` was trimmed to
+      what runs; reserved budget fields stay on the type for
+      `detection-evidence-ledger` / `prefixed-archive-detection` to wire. `read_tail` was
+      deleted until a caller exists.
 - [x] 5.2 Bounded spool-to-temporary-file policy, off by default, sharing the spooled object
       with the backend; abandons within the bound when the source exceeds it
 - [x] 5.3 A tier that cannot run is recorded as unavailable rather than silently skipped —

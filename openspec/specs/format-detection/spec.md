@@ -518,7 +518,7 @@ resolution is therefore separable from identification and is scoped by
 | --- | --- | --- | --- |
 | gzip at offset 0, seekable stream | 1 pass | 0 | **0** |
 | ISO far magic, seekable stream | 1 pass | 0 | **0** |
-| Tail tier under `THOROUGH` | 1 pass | 1 | **0** |
+| Tail tier when enabled (not scheduled yet) | 1 pass | 1 | **0** |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
 
 ### Requirement: Structural checks receive a candidate-relative view

@@ -10,6 +10,15 @@
   `PrefixWorkspace.peek_range` / `candidate_view` and routes `find_magic_in_prefix` through
   candidate origins; **do not re-implement a second peek primitive here**.
 
+  **Inherited from `detection-prefix-workspace` Decision 1B:** `PrefixWorkspace.read_tail`
+  was deleted because nothing called it and the synced spec falsely claimed a THOROUGH ZIP
+  tail. When task 1.1 adds the ZIP tail probe, reintroduce a single seek-toward-end helper
+  on the workspace (or an equivalent owned by the declaration), charge `tail_bytes` /
+  `seeks`, and only then raise `THOROUGH.max_tail_bytes` / `max_seeks` above zero. The
+  intended EOCD+comment window is 65 557 bytes (22 + 65535). Also: shebang (`#!`) is not
+  an `executable_cue` today — `zipapp` detection is this change's cued-scan work, not a
+  shipping `detection-cost` scenario.
+
   **Two seams worth knowing before you start.** Both are now **closed by
   `detection-format-gaps`**, which shipped the far-magic hoist and the Alone guard
   replacement together. Tasks 3.4b, 3.4c, 3.4d and 4.9b are struck below, and 3.4a keeps
