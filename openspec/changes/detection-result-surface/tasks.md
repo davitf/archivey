@@ -62,7 +62,8 @@
 - [ ] 4.2 `detected_by` becomes a property over the winning record's kind
 - [ ] 4.3 Rename `sfx_scan` → `prefixed_scan`
 - [ ] 4.4 Reserve `zip_tail_probe` and `exhaustive_scan` for the revised
-      `prefixed-archive-detection` to supply
+      `prefixed-archive-detection` to supply. That change's `PrefixKind` is
+      `NONE` / `EXECUTABLE` / `SCRIPT` / `UNKNOWN` — no `OTHER_FORMAT`.
 - [ ] 4.5 Add `declared_by_caller` and `declared_by_container`
 - [ ] 4.6 Render the full ledger in `__str__` / `__repr__` — kind, class, validation state per
       record, so "bounded probe **and** a matching name" is legible to a human

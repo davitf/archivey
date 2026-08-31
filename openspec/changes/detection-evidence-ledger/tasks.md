@@ -17,6 +17,13 @@
   the scheduler rather than rewriting the tier code. Its revised delta drops the provisional
   note and the first-match-wins algorithm, both of which this change replaces.
 
+  **That rebase is not a gate on implementing prefixed-archive.** The maintainer split that
+  change into four PRs on the current detector (cue / zipapp, budget-gated ZIP tail,
+  `prefix_kind`, makeself needles). This change still owns: restating those tiers as
+  scheduler declarations (task 10.6), the TAR checksum validator that makes `ustar` a safe
+  scan needle (task 4.3 — prefixed-archive deferred adding it), and the bzip2 first-block
+  marker that prefixed-archive's shebang compressor needles will reuse (task 4.5).
+
   **Inherited from `detection-prefix-workspace` Decision 1B (spec honesty trim):** the budget
   fields `completion_window_bytes`, `max_index_bytes`, `max_probe_links`, and
   `collect_nonmaximal_candidates` are declared on `DetectionBudget` / presets but **not
@@ -75,11 +82,15 @@
 - [ ] 4.2 XZ stream-flags CRC32; LZ4 header xxHash; 7z `StartHeaderCRC` and next-header
       bounds; RAR main-header CRC
 - [ ] 4.3 TAR: full 512-byte header parse, checksum accepted against **both** the unsigned
-      POSIX and the historical signed sum, replacing bare `ustar`
+      POSIX and the historical signed sum, replacing bare `ustar`. **Also the gate for
+      prefixed-archive's deferred uncompressed-TAR-behind-stub needle** — that change will
+      not claim on five `ustar` bytes without this validator.
 - [ ] 4.4 TAR v7 without `ustar` as an anchored-only candidate requiring plausible numeric,
       type and name fields — and explicitly **not** a scan needle
 - [ ] 4.5 bzip2 first block marker; `.Z` max-code width and reserved bits; lzip coded
-      dictionary size; ISO descriptor tuple with type 255 rejected at sector 16
+      dictionary size; ISO descriptor tuple with type 255 rejected at sector 16.
+      Prefixed-archive's shebang compressor needle for Makeself `--bzip2` is `BZh` + ASCII
+      `1`–`9` confirmed by this marker, not by a decode probe.
 - [ ] 4.6 Each validator declares its failure disposition (reject / identified-but-damaged /
       `INCOMPLETE`) rather than the caller assuming one
 - [ ] 4.7 Verify: a 7z with a failed `StartHeaderCRC` is still `SEVEN_Z`, and the read raises
@@ -187,7 +198,10 @@
 - [ ] 10.5 Close the `FormatInfo.corroborated` entry in `dev-docs/IDEAS.md`, which names this
       change as its replacement
 - [ ] 10.6 Revise `prefixed-archive-detection`: drop its provisional note and its
-      first-match-wins algorithm, and restate its three tiers as declarations on this scheduler
+      first-match-wins algorithm, and restate its three tiers as declarations on this scheduler.
+      By then some of those tiers may already be shipping on the current detector (four-PR
+      split in that change's `design.md` §Implementation decisions); this task is the rebase
+      onto the ledger, not the first landing.
 
 ## 11. Verify
 
