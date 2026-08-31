@@ -22,9 +22,20 @@ in place and SHALL NOT copy the archive to a temporary file solely to strip a st
 backend that hands the source to an external tool MAY pass the original path where that
 tool locates the payload itself.
 
+**The resolved origin SHALL be the sum of the supplied start offset and the offset the
+resolver found within it**, as `format-7z` already computes it. Reporting either component
+alone makes the two doors disagree: on the auto-detect path the supplied offset carries the
+whole value and the resolver returns 0, while on the forced path the supplied offset is 0
+and the resolver returns the whole value. `ArchiveInfo.payload_offset` SHALL be that sum,
+measured from the start of `source` (`archive-data-model`).
+
 A non-zero start offset SHALL NOT be combined with a multi-volume set: the offset describes
 one file and the volumes are separate ones. The reader SHALL raise
 `UnsupportedFeatureError` rather than applying the offset to a volume it does not describe.
+**This check SHALL run after origin resolution**, against the resolved origin rather than
+the supplied start offset — otherwise a forced-format open of a self-extracting first
+volume passes the guard with a start offset of 0 and reaches the case the requirement
+exists to reject.
 
 The reader SHALL report the resolved origin as `ArchiveInfo.prefix_kind` /
 `ArchiveInfo.payload_offset` (`archive-data-model`), on both the detected and the
@@ -41,4 +52,5 @@ forced-format path.
 | Stub contains bare `Rar!\x1a\x07` without a valid version byte, real marker later | Resolves to the real marker, not the decoy |
 | Forced `format=RAR`, no marker within `SFX_MAX` | `CorruptionError`, not an empty archive |
 | Non-zero start offset with a multi-volume set | `UnsupportedFeatureError` |
-| Either path, marker at N | `info.payload_offset == N` and `info.prefix_kind` is not `NONE` |
+| Forced `format=RAR` on a self-extracting first volume of a multi-volume set | `UnsupportedFeatureError` — the guard sees the resolved origin, not the supplied `0` |
+| Either path, marker at N | `info.payload_offset == N`, measured from the start of `source` |

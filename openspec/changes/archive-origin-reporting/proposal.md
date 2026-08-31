@@ -7,16 +7,17 @@ forgets where it started. Two things follow, both measured on `main` (`056c429`)
 **1. The caller cannot ask.** `ArchiveInfo` carries format, version, solidity, member
 count, comment, encryption, multivolume, cost and `extra` — nothing about the payload
 origin. The reader knows it (`SevenZipReader._origin`, `RarReader._origin`,
-`RarArchive.sfx_offset`) and drops it on the floor. Archivey's own CLI works around this
-by calling `detect_format()` a second time purely to print `sfx_offset`
-(`cli/info_cmd.py:57`).
+`RarArchive.sfx_offset`) and drops it on the floor. Archivey's own CLI works around this by
+calling `detect_format()` itself (`cli/info_cmd.py:52`) and printing `detected.payload_offset`
+— so the file is detected twice, once by the CLI and once inside `open_archive`, because the
+reader will not answer.
 
 **2. The two open paths know different amounts, and only one can be asked.** The same
 SFX file opened two ways:
 
 | | `payload_offset` reachable by caller | parser scan runs |
 | --- | --- | --- |
-| auto-detect | yes — via a second `detect_format()` call | **no** (magic already at the offset) |
+| auto-detect | only by detecting the file a second time yourself | **no** (magic already at the offset) |
 | `format=SEVEN_Z` / `format=RAR` | **no** | yes — the parser finds the origin, then discards it |
 | `format=ZIP` | **no** | none — stdlib `zipfile` self-adjusts; archivey never learns the offset |
 
@@ -53,11 +54,10 @@ the RAR parser having carried the same scan longer.
 
 - **`ArchiveInfo` gains `prefix_kind` and `payload_offset`**, so the origin is
   archive-level metadata a caller can read from the reader, on **either** open path. The
-  CLI stops detecting twice to print it.
+  CLI reads the origin from `reader.info` instead of from its own detection result.
 - **`payload_offset` is `int | None`**, with `None` meaning *not established* — the honest
-  answer for forced `format=ZIP`, where stdlib `zipfile` locates the central directory past
-  a stub without archivey ever learning where the payload began. Absence is data, not a
-  zero that would falsely claim "starts at byte 0".
+  answer for an empty ZIP behind a prefix, which has no local file header to measure from.
+  Absence is data, not a zero that would falsely claim "starts at byte 0".
 - **`prefix_kind` reuses `PrefixKind`** from `prefixed-archive-detection` rather than a new
   `is_sfx: bool`. A bool cannot express *not established*, and — more importantly — cannot
   separate a self-extracting archive from one merely embedded in something else, which is
@@ -68,10 +68,16 @@ the RAR parser having carried the same scan longer.
   past the bound. It returns the `MagicHit` that `detection-prefix-workspace` introduced,
   so RAR's version resolution falls out of `hit.needle` instead of a second code path.
 - **Backends report the origin they resolved** back to the reader, which is what lets the
-  forced path populate `ArchiveInfo` identically to the detected path.
+  forced path report the same `payload_offset` as the detected one. `prefix_kind` is a
+  separate question: classifying a prefix means inspecting it, which only detection does, so
+  a forced-`format=` open reports the offset and leaves the kind unestablished.
 - **`format-rar` gets the SFX/start-offset requirement it never had**, stated as the same
   contract `format-7z` already carries, so the two are specified as one behaviour rather
   than two coincidences.
+- **Every format that can receive a `start_offset` reports one**, not just ZIP / 7z / RAR.
+  Sequencing this after `prefixed-archive-detection` means TAR and the single-file codecs
+  become prefix-capable (a makeself `.run` detects as `TAR_GZ` at the gzip offset), so a
+  census frozen at today's three would recreate the same hole for them.
 
 Not in scope: changing *when* a scan runs, widening the cue set, or the ZIP tail probe —
 those are `prefixed-archive-detection`. This change moves no detection tier and changes no
@@ -84,17 +90,16 @@ detection answer.
 ### Modified Capabilities
 
 - `archive-data-model` — `ArchiveInfo` gains `prefix_kind` and `payload_offset`, with the
-  `NONE`/`UNKNOWN` ↔ `0`/`None` pairing stated as an invariant.
+  `NONE` ↔ `0` and `None` ↔ `None` pairings stated as an invariant, and `payload_offset`
+  defined as an offset from the start of `source`.
 - `archive-reading` — the payload-offset hand-off requirement gains its return half:
   backends report the origin they used, and `format=` no longer means "less information".
 - `format-7z` — the SFX requirement is restated against the shared resolver and gains the
   reporting obligation.
-- `format-zip` — a prefixed ZIP's origin is reported when known and explicitly `UNKNOWN`
-  when the stdlib located the payload for us.
-
-### Added Capabilities
-
-- `format-rar` — an explicit start-offset / SFX requirement, matching `format-7z`.
+- `format-zip` — a prefixed ZIP's origin is reported when known, and explicitly
+  not-established when the stdlib located the payload for us.
+- `format-rar` — gains an explicit start-offset / SFX requirement, matching `format-7z`.
+  The capability already exists; only the requirement is new.
 
 ## Decisions
 
@@ -105,16 +110,29 @@ detection answer.
   "offset > 0" and none of them is self-extracting. Two enums describing the same property
   on two objects would be the parity smell this repo names in §2, so `ArchiveInfo` reuses
   `PrefixKind`.
-- **`payload_offset` is `int | None`, and pairs with `prefix_kind`.** `prefix_kind is
-  NONE` ⟺ `payload_offset == 0`; `prefix_kind is UNKNOWN` ⟺ `payload_offset is None`;
-  otherwise `payload_offset > 0`. That mirrors the invariant `format-detection` already
-  states for `FormatInfo` and extends it by exactly the one state an opened archive can be
-  in that a detection result cannot.
-- **Report `UNKNOWN` for forced ZIP rather than scanning to find out.** Making the answer
-  known would mean running a tail probe at open time purely to populate a field — new I/O
-  for metadata, on a path the caller chose for speed. `prefixed-archive-detection` adds
-  that probe to detection; once it exists, reusing it here is a follow-up, not a reason to
-  add a second scanner now. Recorded because "just scan for it" is the obvious wrong answer.
+- **"Not established" is spelled as absence, and the two fields carry it independently.**
+  `prefix_kind is NONE` ⟺ `payload_offset == 0`; `payload_offset is None` ⟹ `prefix_kind is
+  None`, but **not** the converse — a forced-format open knows the offset and not the kind.
+  The extra state an opened archive can be in
+  that a detection result cannot is *not established*, and it gets its own spelling rather
+  than borrowing `UNKNOWN`. `prefixed-archive-detection` already defines `UNKNOWN` as a
+  prefix that matched no cue — which always has a positive offset — so overloading it would
+  make the same member mean different things on `FormatInfo` and `ArchiveInfo`. That is the
+  §2 inconsistency this change is otherwise arguing against.
+- **Forced `format=ZIP` reports the real origin, from data it already has.** No tail probe
+  and no extra read: `zipfile` adjusts every entry's `header_offset` while parsing the
+  central directory, so the smallest one is the payload start in source coordinates.
+  Measured correct for `zipapp`, shebang, `MZ` and JPEG prefixes (`design.md`). Recorded
+  because the obvious wrong answer is `concat`, `zipfile`'s adjustment value, which is `0`
+  for a `zipapp` and would report the headline prefixed case as unprefixed. `None` is left
+  for the one archive that truly cannot answer: an empty ZIP has no local file header.
+- **`prefix_kind` is never inferred from `payload_offset > 0`.** The cheap alternative —
+  sniff the first bytes for `MZ`/ELF/`#!` on the forced path — buys partial agreement and
+  gets polyglots wrong (a JPEG+ZIP would report `UNKNOWN` on one door and `OTHER_FORMAT` on
+  the other). A partly-classified kind is worse than an absent one for the caller this field
+  exists for: someone filtering "open installers, skip polyglots" would silently get a
+  different answer depending on which door they used. Absent is honest; `design.md` records
+  the two rejected options and their costs.
 - **The resolver returns `MagicHit`, not `int`.** RAR needs the *version* as well as the
   offset, and the fast-path read already has the bytes that answer both. Returning the hit
   keeps the two formats on one signature instead of forcing RAR to keep a wider one.

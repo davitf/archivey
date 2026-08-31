@@ -27,7 +27,8 @@ forced-format path.
 | Case | Expected |
 | --- | --- |
 | Magic at open origin (offset 0) | Unchanged success path |
-| Detection supplies `payload_offset == N` | Opens at N; no forward scan performed |
-| Forced `format=SEVEN_Z`, magic at N within `SFX_MAX` | Bounded scan finds N; members listed |
-| Forced `format=SEVEN_Z`, no magic within `SFX_MAX` | `CorruptionError`, not an empty archive |
-| Either path, magic at N | `info.payload_offset == N` and `info.prefix_kind` is not `NONE` |
+| Explicit start offset N with magic at N | Signature parsed at N; members listed; no forward scan performed |
+| Forced `format=SEVEN_Z`, `MZ` stub, magic at N within `SFX_MAX` | Scan finds magic; open succeeds |
+| Forced `format=SEVEN_Z`, no magic within `SFX_MAX` | `CorruptionError` (not a silent empty archive) |
+| Packed streams after an SFX signature | Pack/header seeks use signature origin; members readable |
+| Either path, magic at N | `info.payload_offset == N`, measured from the start of `source` |
