@@ -216,6 +216,7 @@ archivey.detect_format(
     source: str | Path | BinaryIO,
     *,
     config: ArchiveyConfig | None = None,
+    budget: DetectionBudget | DetectionBudgetPreset | None = None,
 ) -> FormatInfo
 ```
 
@@ -242,7 +243,9 @@ class FormatInfo:
     prefix_kind: PrefixKind = PrefixKind.NONE
 ```
 
-`config=None` → library default. `confidence` = magic / structural probe /
+`config=None` → library default. `budget=None` → `BALANCED_BUDGET`. The budget types
+live in `archivey.detection_cost` until `detection-result-surface` freezes the root
+surface; this change does not re-export them. `confidence` = magic / structural probe /
 extension-guess. `encoding_hint` is format-signal only (never a member scan).
 `payload_offset > 0` marks an SFX payload start.
 
@@ -502,6 +505,12 @@ carries about itself:
 - **RAR 5**: the 8-byte marker SHALL be followed by a main archive header whose CRC32
   matches.
 - **RAR 4**: the 7-byte marker block SHALL be followed by a parseable main header.
+- **ZIP**: a local-file-header hit SHALL pass a cheap structural check without a tail
+  seek: `version_needed` within a sane maximum, the reserved GP-flag bits clear,
+  `compression_method` in the known set, and `filename_length` / `extra_field_length`
+  plausible and in-bounds against the remaining source. Four bytes of `PK\x03\x04` in a
+  stub are not a ZIP. EOCD + central-directory confirmation (the `CERTAIN` bar the tail
+  probe already requires) is the Block 2 tail helper's job, not a Block 1 requirement.
 - **Stream codecs** (shebang cue only): the magic SHALL include the compression-method
   byte where the format has one. Identity is the cheap structural validator (gzip header
   checks; bzip2 block-size digit plus first-block / EOS marker; xz flags CRC; and the
@@ -519,8 +528,11 @@ sources than the cost gate allows.
 | Case | Expected |
 | --- | --- |
 | Stub + real 7z, CRC and end-offset agree | `SEVEN_Z` at that offset, `CERTAIN` |
-| `#!` stub + gzipped tar, bounded decode succeeds | `TAR_GZ` at the gzip offset |
-| `#!` stub + gzip magic that fails a bounded decode | Not reported; scan continues |
+| `#!` stub + gzipped tar, header identifies and inner-TAR resolves | `TAR_GZ` at the gzip offset |
+| `#!` stub + gzip magic whose header bytes fail the structural check | Not reported; scan continues |
+| `#!` stub + identifying gzip that is not a tar | `GZIP` at the gzip offset — inner-TAR is resolution, not identity |
+| `#!` stub whose text contains `PK\x03\x04` but no valid local header | Not reported; scan continues |
+| `#!` / ELF stub + local header that passes the cheap check, real ZIP follows | `ZIP` at that offset |
 | The 6 magic bytes appear in unrelated data | CRC fails; not reported; scan continues |
 | 7z whose declared end overruns the source | Not reported |
 | 7z with trailing bytes appended after the archive | Still reported — declared end within the source |

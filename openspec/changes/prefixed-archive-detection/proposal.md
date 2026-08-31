@@ -75,21 +75,26 @@ tier detection accordingly instead of applying one rule to all of them.
 ### Modified Capabilities
 
 - `format-detection` — the SFX requirement is replaced by a tiered "the archive may start
-  after byte zero" rule: an always-on tail probe for self-locating containers, a
-  prefix-cued forward scan for the rest, an opt-in exhaustive scan, and a `prefix_kind`
-  on `FormatInfo`.
+  after byte zero" rule: a **budget-gated** tail probe for self-locating containers (off
+  under `BALANCED`), a prefix-cued forward scan for the rest, an opt-in exhaustive scan
+  via a larger `max_scan_bytes`, and a `prefix_kind` on `FormatInfo`.
 - `format-zip` — a leading prefix is explicitly supported rather than incidental, and the
-  EOCD search bound is stated as a format-derived constant.
-- `archive-reading` — `open_archive` gains the exhaustive-scan opt-in and passes it through.
+  EOCD search bound is stated as a format-derived constant. The tail probe runs only when
+  the budget grants `TAIL`.
+- `archive-reading` — `open_archive` gains `budget=` (the freeze surface for threading
+  the detection spend cap) and the exhaustive-scan requirement. Not an `ArchiveyConfig`
+  field.
 
 ## Decisions
 
 - **Cost tiers the design, not exhaustiveness.** The cue was never about false positives;
   it was about not reading 2 MiB from every file. Once that is the stated reason, the
-  answer follows: a probe the *format* bounds (ZIP's 64 KiB tail) can run always, a scan
-  bounded only by a constant we picked needs a reason to run, and an unbounded sweep is
-  opt-in. Recorded rather than assumed, because the previous cue looked like a
-  false-positive defence and was reasoned about that way in review.
+  answer follows: a probe the *format* bounds (ZIP's 64 KiB tail) is cheap enough to
+  *consider* always, but still a seek, so it stays off under `BALANCED` until a
+  seek-cost measurement exists; a scan bounded only by a constant we picked needs a
+  reason to run; an unbounded sweep is opt-in via `max_scan_bytes`. Recorded rather
+  than assumed, because the previous cue looked like a false-positive defence and was
+  reasoned about that way in review.
 - **Opening an embedded archive is the right default.** A caller who opens a file has a
   reason to think it is an archive; if they are sweeping everything, the `prefix_kind`
   field lets them filter. archivey reports what it found rather than guessing intent.
@@ -100,7 +105,7 @@ tier detection accordingly instead of applying one rule to all of them.
 
 - Modules: `src/archivey/internal/detection.py` (tier order, tail probe, widened cue,
   `prefix_kind`), `src/archivey/internal/sfx.py` (cue + validated scan), the ZIP backend's
-  prefix handling, `src/archivey/config.py` (the opt-in field).
+  prefix handling. Not `src/archivey/config.py` — there is no opt-in field.
 - Public API: `FormatInfo` gains `prefix_kind` (always present, default `NONE`) and a
   `PrefixKind` enum (`NONE` / `EXECUTABLE` / `SCRIPT` / `UNKNOWN`). Tail and exhaustive
   scan are `DetectionBudget` numbers (`max_tail_bytes`, `max_scan_bytes`), not

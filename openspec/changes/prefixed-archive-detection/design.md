@@ -250,6 +250,20 @@ existing headers. zlib / Brotli / LZMA Alone stay probes, never needles. unix-co
 `.Z` stays out (two-byte magic). Makeself's `--bzip2` is a real production shape, so
 bzip2 is in the first needle set, not a later maybe.
 
+The same bar applies to ZIP's `PK\x03\x04` scan needle, which Block 1 makes reachable
+on every `#!` file. A local-header sanity check (version, reserved flags, method,
+name/extra lengths in-bounds) is Block 1; EOCD + central-directory confirmation is
+Block 2's tail helper. Shipping the widened cue without the cheap check would report
+scripts that mention those four bytes as damaged ZIPs.
+
+**`open_archive` grows `budget=`.** Threading the detection spend cap needs a freeze
+surface: *Opening an archive for reading*. `format=` plus `budget=` is a silent no-op
+(detection never ran). The types stay in `archivey.detection_cost`; this change does
+not take that freeze away from `detection-result-surface`. Exhaustive scan is a
+larger `max_scan_bytes`, not a named preset — `THOROUGH.max_scan_bytes` stays at
+`SFX_MAX`. Raising it would make every `THOROUGH` caller scan the whole source, which
+is a different decision from enabling the ZIP tail.
+
 A Makeself-aware locator that reads `SKIP` / `COMPRESS` out of the stub and seeks to the
 payload, instead of scanning 2 MiB of script for magic, is a better installer-specific
 follow-up than widening needles further — parked in `dev-docs/IDEAS.md`.
@@ -351,4 +365,6 @@ through — threading that is part of the tail/exhaustive block, not a new confi
 and asks whether forced `format=ZIP` should run the tail probe to fill
 `payload_offset`. Under the default decided above the answer is no: `UNKNOWN` +
 `payload_offset is None` stays the honest forced-ZIP answer unless the caller opted into
-a budget that grants `TAIL`.
+a budget that grants `TAIL`. The "drop `OTHER_FORMAT`" instruction lives on that PR's
+thread, not in this tree — `#274` is unmerged, so there is no in-repo change to annotate.
+(As of `fe45330` on that branch the merge is already applied.)
