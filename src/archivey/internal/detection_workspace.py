@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import BinaryIO, Callable, cast
 
 from archivey.detection_cost import (
     DetectionBudget,
@@ -318,7 +318,7 @@ class PrefixWorkspace:
         if self._seekable_stream is not None:
             return self._seekable_stream
         if self._spool is not None and not self._spool_abandoned:
-            return self._spool
+            return cast(BinaryIO, self._spool)
         return None
 
     def _fetch_forward(self, nbytes: int) -> bytes:

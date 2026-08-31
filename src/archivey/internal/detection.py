@@ -543,6 +543,15 @@ def _detect_format_body(
         data = workspace.peek_prefix(near_needed)
         peek_more = workspace.candidate_view(0)
 
+        # Freeze the probe/far size-gate length from the near peek alone. A later SFX or
+        # far growth that hits EOF would make ``remaining_known()`` report a length; that
+        # is correct for capability accounting but must not flip content-probe framing
+        # gates that deliberately treat a DETECTION_LIMIT-sized non-seekable peek as
+        # unknown-length (A-34 stub residual).
+        length = workspace.remaining_known()
+        if length is None and len(data) < near_needed:
+            length = len(data)
+
         # 1. Exact magic in the default window.
         magic_fmt = _match_magic(data, near)
         if magic_fmt is None:
@@ -580,11 +589,6 @@ def _detect_format_body(
                         _ConflictEvidence.SFX_SCAN,
                     )
                     return _attach_receipt(sfx_info, workspace)
-
-        # Archive-relative reachable length for size gates and probes.
-        length = workspace.remaining_known()
-        if length is None and len(data) < near_needed:
-            length = len(data)
 
         # 3. Far magic (ISO's CD001 at offset 32 769).
         if far and budget.max_far_bytes > 0:
