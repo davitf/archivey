@@ -343,6 +343,41 @@ def test_sfx_miss_charges_scanned_bytes(tmp_path: Path) -> None:
     assert info.cost_receipt.scanned_bytes <= BALANCED_BUDGET.max_scan_bytes
 
 
+def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
+    # F18: full-scan SFX miss + any later probe seeks must still satisfy within_budget.
+    from archivey.detection_cost import FAST_BUDGET
+
+    mz = b"MZ" + b"\x00" * 62
+    path = tmp_path / "stub.zip"
+    path.write_bytes(mz + b"\x00" * (3 * 1024 * 1024))
+    for budget in (BALANCED_BUDGET, FAST_BUDGET):
+        info = detect_format(path, budget=budget)
+        assert info.detected_by == "extension"
+        assert info.cost_receipt is not None
+        assert info.cost_receipt.within_budget(budget), info.cost_receipt
+
+
+def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
+    # Seek-based read_at charges unique_bytes without a scan-window home; the allowance
+    # is max_probe_links * 24 (CHAIN_HEADER_READ).
+    from archivey.detection_cost import _PROBE_HEADER_READ_BYTES, DetectionCostReceipt
+    from archivey.internal.streams.brotli_framing import CHAIN_HEADER_READ
+
+    assert _PROBE_HEADER_READ_BYTES == CHAIN_HEADER_READ
+    scan = BALANCED_BUDGET.max_scan_bytes
+    allowance = BALANCED_BUDGET.max_probe_links * _PROBE_HEADER_READ_BYTES
+    at_cap = DetectionCostReceipt(
+        unique_bytes_read=scan + allowance,
+        scanned_bytes=scan,
+    )
+    assert at_cap.within_budget(BALANCED_BUDGET)
+    over = DetectionCostReceipt(
+        unique_bytes_read=scan + allowance + 1,
+        scanned_bytes=scan,
+    )
+    assert not over.within_budget(BALANCED_BUDGET)
+
+
 def test_abandoned_spool_keeps_lookahead_byte_and_unknown_remaining() -> None:
     # F6: the one-byte "is there more?" peek must not be discarded, and the truncated
     # buffer length must not be reported as a proven remaining size.

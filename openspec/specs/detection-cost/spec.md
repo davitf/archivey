@@ -45,7 +45,7 @@ class DetectionBudget:
     max_decode_output: int
     completion_window_bytes: int   # reserved: whole-source completion → evidence-ledger
     max_index_bytes: int           # reserved → evidence-ledger
-    max_probe_links: int           # reserved → evidence-ledger (Brotli uses CHAIN_MAX_LINKS today)
+    max_probe_links: int           # live for within_budget probe allowance; walk still uses CHAIN_MAX_LINKS
     spool_non_seekable_up_to: int
     collect_nonmaximal_candidates: bool  # reserved → evidence-ledger
 
@@ -70,13 +70,17 @@ signature needs a ~32 KiB window that a 4 096-byte near budget would otherwise f
 
 Live budget fields today: `max_prefix_bytes` (near peek clamp), `max_far_bytes`,
 `max_scan_bytes` (SFX window), `max_decode_input` / `max_decode_output` (receipt bounds /
-inner-TAR probe limit), `spool_non_seekable_up_to`, and the skip-recording of
-`max_tail_bytes <= 0` as *not enabled by policy*. Content-probe `read_at` seeks on
-cheap random-access sources (path, full spool, non-`ArchiveStream` seekable streams)
-without growing the prefix through `[0, offset)`; non-seekable and expensive-seek
-sources grow under a 1 MiB cap and record `BUDGET_EXHAUSTED` past it. Reserved fields
-MAY appear on the type and in presets so follow-on changes can wire them without a
-second public shape break; no tier SHALL claim to honour them until those changes land.
+inner-TAR probe limit), `spool_non_seekable_up_to`, `max_probe_links` (via
+`within_budget`'s probe-seek allowance of `max_probe_links × 24` bytes, aligned with
+the Brotli chain header read), and the skip-recording of `max_tail_bytes <= 0` as
+*not enabled by policy*. Content-probe `read_at` seeks on cheap random-access sources
+(path, full spool, non-`ArchiveStream` seekable streams) without growing the prefix
+through `[0, offset)`; non-seekable and expensive-seek sources grow under a 1 MiB cap
+and record `BUDGET_EXHAUSTED` past it. Remaining reserved fields
+(`completion_window_bytes`, `max_index_bytes`, `collect_nonmaximal_candidates`, and the
+ZIP-tail pair) MAY appear on the type and in presets so follow-on changes can wire them
+without a second public shape break; no tier SHALL claim to honour them until those
+changes land.
 
 #### Scenario: receipt reflects the source kind
 
@@ -85,7 +89,8 @@ second public shape break; no tier SHALL claim to honour them until those change
 | Path, near magic hit at offset 0 | `unique_bytes_read` is the single prefix read; `seeks` 0 |
 | Growing 4 KiB → 32 KiB → 2 MiB | `unique_bytes_read` counts each byte once; `prefix_bytes` counts requests |
 | A tier the preset does not enable (ZIP tail) | Recorded as *not enabled by policy* — a distinct reason, because it does not make the search incomplete |
-| SFX scan miss under `FAST` | `scanned_bytes` and `unique_bytes_read` stay within `max_scan_bytes` |
+| SFX scan miss under `FAST` | `scanned_bytes` ≤ `max_scan_bytes`; `unique_bytes_read` ≤ scan ceiling + probe allowance |
+| SFX miss then extension guess (`.zip`) | `within_budget` is True under `BALANCED` and `FAST` |
 
 ### Requirement: Detection capabilities are derived from source and budget together
 

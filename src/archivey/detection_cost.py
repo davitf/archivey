@@ -81,10 +81,12 @@ class DetectionBudget:
     would otherwise forbid.
 
     Fields marked reserved in ``openspec/specs/detection-cost/spec.md``
-    (``completion_window_bytes``, ``max_index_bytes``, ``max_probe_links``,
-    ``collect_nonmaximal_candidates``, and the ZIP-tail pair ``max_tail_bytes`` /
-    ``max_seeks`` on every shipping preset) are carried so follow-on changes can wire
-    them without a second public shape break. No scheduled tier honours them yet.
+    (``completion_window_bytes``, ``max_index_bytes``, ``collect_nonmaximal_candidates``,
+    and the ZIP-tail pair ``max_tail_bytes`` / ``max_seeks`` on every shipping preset)
+    are carried so follow-on changes can wire them without a second public shape break.
+    ``max_probe_links`` is live for :meth:`DetectionCostReceipt.within_budget` (seek-based
+    content-probe allowance); the Brotli walk still uses its own ``CHAIN_MAX_LINKS`` until
+    ``detection-evidence-ledger`` threads the budget through.
     """
 
     max_prefix_bytes: int
@@ -164,12 +166,20 @@ class DetectionCostReceipt:
         )
 
     def within_budget(self, budget: DetectionBudget) -> bool:
-        """Whether aggregate measured work stays inside ``budget``'s limits."""
+        """Whether aggregate measured work stays inside ``budget``'s limits.
+
+        Seek-based content-probe ``read_at`` charges ``unique_bytes_read`` without
+        growing the prefix. Those bytes are allowed up to
+        ``max_probe_links * _PROBE_HEADER_READ_BYTES`` (aligned with
+        ``brotli_framing.CHAIN_HEADER_READ``) on top of the prefix/far/scan ceiling.
+        """
+        probe_allowance = budget.max_probe_links * _PROBE_HEADER_READ_BYTES
         return (
             self.unique_bytes_read
             <= max(budget.max_prefix_bytes, budget.max_far_bytes, budget.max_scan_bytes)
             + budget.max_tail_bytes
             + budget.spool_non_seekable_up_to
+            + probe_allowance
             and self.seeks <= budget.max_seeks
             and self.tail_bytes <= budget.max_tail_bytes
             and self.scanned_bytes <= budget.max_scan_bytes
@@ -185,6 +195,8 @@ _ISO_FAR_BYTES = 32_774
 _SFX_SCAN_BYTES = 2 * 1024 * 1024
 _COMPLETION_WINDOW = 64 * 1024
 _INNER_TAR_DECODE = 1 << 20
+# Per content-probe link header read — keep in sync with brotli_framing.CHAIN_HEADER_READ.
+_PROBE_HEADER_READ_BYTES = 24
 
 
 BALANCED_BUDGET = DetectionBudget(
