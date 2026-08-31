@@ -56,7 +56,7 @@ class DetectionCostReceipt:
     far_bytes: int
     tail_bytes: int        # always 0 until a tail tier exists
     scanned_bytes: int
-    seeks: int             # restore-on-exit is not charged here
+    seeks: int             # ZIP-tail seeks only; probe read_at restores and exit restore are not charged
     decode_input: int
     decode_output: int
     index_bytes: int

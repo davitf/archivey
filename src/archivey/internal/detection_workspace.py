@@ -102,7 +102,13 @@ class PrefixWorkspace:
 
     @property
     def buffer(self) -> memoryview:
-        """Live view of the prefix buffer — no copy. Callers that need ownership copy."""
+        """Live view of the prefix buffer — no copy.
+
+        The view is valid only until the next ``ensure`` / ``peek_range`` that grows the
+        buffer: a ``memoryview`` over a ``bytearray`` freezes resize, and holding it
+        across growth raises ``BufferError``. Callers that need ownership (or that will
+        keep the view past the next growth) must slice or ``.tobytes()`` first.
+        """
         return memoryview(self._buf)
 
     @property
@@ -275,8 +281,13 @@ class PrefixWorkspace:
         entry = self._entry_pos or 0
         restore = entry + len(self._buf)
         handle.seek(entry + offset)
-        data = read_exact(handle, length)
-        handle.seek(restore)
+        try:
+            data = read_exact(handle, length)
+        finally:
+            # Spool (and any other shared handle) must leave the cursor at the end of the
+            # prefix buffer — `_fetch_forward` assumes that; an interrupted probe must not
+            # splice the next ensure from the probe offset.
+            handle.seek(restore)
         self._receipt.unique_bytes_read += len(data)
         return data
 
@@ -324,6 +335,10 @@ class PrefixWorkspace:
             peeked = self._peekable.peek(end)
             return peeked[len(self._buf) : end]
         if self._spool is not None and not self._spool_abandoned:
+            # Same invariant as path/seekable: cursor at end of prefix after a probe seek.
+            expected = len(self._buf)
+            if self._spool.tell() != expected:
+                self._spool.seek(expected)
             return read_exact(self._spool, nbytes)
         if self._path_handle is not None:
             # Path handle stays at the end of the buffer (forward-only growth).

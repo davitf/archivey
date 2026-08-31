@@ -8,8 +8,11 @@ Measured on ``main`` before this change (seekable stream through ``detect_format
 | ISO | 2 | 0 | **2** — 4 096 bytes, rewind, then 32 774 re-read from zero |
 | ZIP, TAR | 1 | 0 | 1 |
 
-The workspace makes the shape normative: zero backward seeks, at most one seek towards
-the end, and each source byte fetched at most once.
+The workspace makes the shape normative for the **prefix tiers**: zero backward seeks
+for growing peeks, at most one seek towards the end when a tail tier is enabled, and
+each source byte fetched at most once. Content-probe ``read_at`` on cheap random-access
+sources may seek and restore the handle (bounded by the Brotli chain-walk link cap);
+those restores are not "re-fetch rewinds" and are not charged on the receipt's ``seeks``.
 """
 
 from __future__ import annotations
