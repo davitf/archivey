@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import struct
 from enum import Enum
-from typing import BinaryIO, Callable, Sequence
+from typing import BinaryIO, Callable, NamedTuple, Sequence
+
+from archivey.internal.detection_workspace import candidate_origin_for_hit
 
 # How far past the start of a source the archive magic may sit before we stop looking.
 # 2 MiB comfortably covers real stubs (a `rar a -sfx` ELF stub is ~250 KB, and Windows
@@ -41,11 +43,10 @@ SFX_MAX = 2 * 1024 * 1024
 # reads, small enough that a match near the front stops early.
 _SCAN_CHUNK = 65536
 
-# Peek sizes the non-consuming scan steps through. Each peek re-reads from the source
-# origin, so growing geometrically keeps a small stub cheap (64 KiB) while capping the
-# worst case at a little over 2× the window, instead of the ~32× a fixed chunk would
-# cost. A stub whose magic is at 250 KB — the size `rar a -sfx` produces — is found on
-# the third peek.
+# Peek sizes the non-consuming scan steps through. With a monotone prefix workspace each
+# step reads only the delta, so geometric growth is about stopping early on a hit rather
+# than about re-read cost. A stub whose magic is at 250 KB — the size `rar a -sfx`
+# produces — is found on the third peek.
 _PEEK_STEPS = (1 << 16, 1 << 18, 1 << 20)
 
 _MZ = b"MZ"
@@ -75,6 +76,26 @@ class ExecutableCue(Enum):
     NONE = "none"
     WEAK = "weak"
     STRONG = "strong"
+
+
+class ScanNeedle(NamedTuple):
+    """A magic needle plus the offset at which it sits *within its candidate*.
+
+    TAR's ``ustar`` sits at candidate offset 257, so a hit at absolute ``H`` denotes a
+    candidate origin of ``H - 257``. A gzip or ZIP local-header needle begins at
+    candidate offset zero.
+    """
+
+    magic: bytes
+    offset: int = 0
+
+
+class MagicHit(NamedTuple):
+    """A scan hit expressed as a candidate origin, not a raw needle position."""
+
+    candidate_origin: int
+    needle: bytes
+    needle_offset: int
 
 
 def executable_cue(prefix: bytes) -> ExecutableCue:
@@ -118,13 +139,27 @@ def _is_elf(prefix: bytes) -> bool:
     return prefix[4] in (1, 2) and prefix[5] in (1, 2) and prefix[6] == 1
 
 
+def _normalize_needles(
+    needles: Sequence[bytes | ScanNeedle],
+) -> tuple[ScanNeedle, ...]:
+    out: list[ScanNeedle] = []
+    for n in needles:
+        if isinstance(n, ScanNeedle):
+            out.append(n)
+        else:
+            out.append(ScanNeedle(n, 0))
+    return tuple(out)
+
+
 def _find_earliest(
-    data: bytes | bytearray, needles: Sequence[bytes], start: int = 0
-) -> tuple[int, bytes] | None:
+    data: bytes | bytearray,
+    needles: Sequence[ScanNeedle],
+    start: int = 0,
+) -> tuple[int, ScanNeedle] | None:
     """The earliest needle occurrence at or after ``start``, as ``(index, needle)``."""
-    best: tuple[int, bytes] | None = None
+    best: tuple[int, ScanNeedle] | None = None
     for needle in needles:
-        found = data.find(needle, start)
+        found = data.find(needle.magic, start)
         if found >= 0 and (best is None or found < best[0]):
             best = (found, needle)
     return best
@@ -132,31 +167,34 @@ def _find_earliest(
 
 def scan_for_magic(
     source: BinaryIO,
-    needles: Sequence[bytes],
+    needles: Sequence[bytes | ScanNeedle],
     *,
     limit: int = SFX_MAX,
-) -> tuple[int, bytes] | None:
-    """The earliest ``needles`` match within ``limit`` bytes, as ``(offset, needle)``.
+) -> MagicHit | None:
+    """The earliest ``needles`` match within ``limit`` bytes, as a :class:`MagicHit`.
 
-    The scan starts at ``source``'s **current position** and the returned offset is
-    relative to it. A needle counts as found only when it lies wholly inside the first
-    ``limit`` bytes, so the bound is a promise about the whole magic and not just its
-    first byte.
+    The scan starts at ``source``'s **current position** and the returned candidate
+    origin is relative to it. A needle counts as found only when it lies wholly inside
+    the first ``limit`` bytes, so the bound is a promise about the whole magic and not
+    just its first byte. A hit whose computed candidate origin would be negative is
+    discarded and the scan continues.
 
     ``source`` is left wherever the scan stopped reading — callers reposition it from
-    the returned offset. Overlapping needles are resolved by earliest start, not by
+    the returned origin. Overlapping needles are resolved by earliest start, not by
     needle order, so a caller can pass several magics (RAR4's and RAR5's ids, say) and
     get the one that actually comes first in the file.
     """
-    if not needles:
+    normalized = _normalize_needles(needles)
+    if not normalized:
         return None
     # Bytes carried between chunks so a magic straddling a chunk boundary still matches.
-    overlap = max(len(needle) for needle in needles) - 1
+    overlap = max(len(needle.magic) for needle in normalized) - 1
 
     window = bytearray()
     # Offset (from the scan start) of window[0], so a hit inside the window maps back.
     window_start = 0
     consumed = 0
+    search_from = 0
 
     while consumed < limit:
         chunk = source.read(min(_SCAN_CHUNK, limit - consumed))
@@ -165,11 +203,19 @@ def scan_for_magic(
         consumed += len(chunk)
         window.extend(chunk)
 
-        hit = _find_earliest(window, needles)
-        if hit is not None:
+        while True:
+            hit = _find_earliest(window, normalized, search_from)
+            if hit is None:
+                break
             index, needle = hit
-            return window_start + index, needle
+            abs_pos = window_start + index
+            origin = candidate_origin_for_hit(abs_pos, needle.offset)
+            if origin is not None:
+                return MagicHit(origin, needle.magic, needle.offset)
+            # Negative origin — not a candidate; resume just past this decoy.
+            search_from = index + 1
 
+        search_from = 0
         if len(window) > overlap:
             window_start += len(window) - overlap
             del window[: len(window) - overlap]
@@ -179,30 +225,38 @@ def scan_for_magic(
 
 def find_magic_in_prefix(
     peek_more: Callable[[int], bytes],
-    needles: Sequence[bytes],
+    needles: Sequence[bytes | ScanNeedle],
     *,
     limit: int = SFX_MAX,
-) -> tuple[int, bytes] | None:
+) -> MagicHit | None:
     """:func:`scan_for_magic` for a source that must not be consumed.
 
     ``peek_more(n)`` returns the source's first ``n`` bytes without consuming them
-    (idempotent, growing supersets — see ``detection._peek_prefix``). The window grows
-    geometrically and each round searches only the bytes the previous one could not
-    have covered, so a stub found early costs one small peek and a miss costs a bounded
-    number of large ones.
+    (idempotent, growing supersets — a :class:`~archivey.internal.detection_workspace.PrefixWorkspace`
+    view). The window grows geometrically and each round searches only the bytes the
+    previous one could not have covered. Hits are returned as candidate origins
+    (``hit - declared_needle_offset``); a negative origin is discarded.
     """
-    if not needles:
+    normalized = _normalize_needles(needles)
+    if not normalized:
         return None
-    overlap = max(len(needle) for needle in needles) - 1
+    overlap = max(len(needle.magic) for needle in normalized) - 1
     searched = 0
 
     for step in (*_PEEK_STEPS, limit):
         if step <= searched:
             continue
         data = peek_more(min(step, limit))
-        hit = _find_earliest(data, needles, max(0, searched - overlap))
-        if hit is not None:
-            return hit
+        search_from = max(0, searched - overlap)
+        while True:
+            hit = _find_earliest(data, normalized, search_from)
+            if hit is None:
+                break
+            index, needle = hit
+            origin = candidate_origin_for_hit(index, needle.offset)
+            if origin is not None:
+                return MagicHit(origin, needle.magic, needle.offset)
+            search_from = index + 1
         if len(data) < step:
             return None  # the source ended inside this peek; nothing more to search
         searched = len(data)

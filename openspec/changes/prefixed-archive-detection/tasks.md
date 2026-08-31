@@ -2,6 +2,14 @@
 
 - [ ] 0.0 **Implement this change third, after `probe-completeness-gate` and then `probe-provenance-unconfirmed`.** It is the largest of the three (64 tasks — the count was written as 57 and had already drifted before task 3.3b was added), the only one adding public API (`prefix_kind`, `PrefixKind`, `ArchiveyConfig.exhaustive_prefix_scan`), and it benefits from landing on a probe residual those two have already shrunk — 91 of 128 measured fabrications disappear with completeness alone, which removes a great deal of noise from the cue and tier work here. The two probe changes are independent of this one; nothing here blocks them.
 
+  **Prerequisite for makeself / TAR self-extracting needles (tasks 2.5a–2.8, 4.2):** the
+  candidate-relative range view lands in `detection-prefix-workspace`. Today's
+  `peek_more(length)` always starts at the source origin, so a TAR `ustar` hit at absolute
+  `H` cannot be validated from candidate origin `H - 257`, and a gzip needle behind a
+  `#!` stub cannot hand the inner-TAR probe a view at the hit. That change ships
+  `PrefixWorkspace.peek_range` / `candidate_view` and routes `find_magic_in_prefix` through
+  candidate origins; **do not re-implement a second peek primitive here**.
+
   **Two seams worth knowing before you start.** Both are now **closed by
   `detection-format-gaps`**, which shipped the far-magic hoist and the Alone guard
   replacement together. Tasks 3.4b, 3.4c, 3.4d and 4.9b are struck below, and 3.4a keeps

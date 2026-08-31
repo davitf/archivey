@@ -54,6 +54,15 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.detection_cost import (
+    BALANCED_BUDGET,
+    FAST_BUDGET,
+    THOROUGH_BUDGET,
+    DetectionBudget,
+    DetectionBudgetPreset,
+    DetectionCapability,
+    DetectionCostReceipt,
+)
 from archivey.diagnostics import (
     ARCHIVE_INTEGRITY_CODES,
     # Context payloads: importable for isinstance/match; omitted from __all__.
@@ -191,6 +200,13 @@ __all__ = [
     "ListingCost",
     "AccessCost",
     "StreamCapability",
+    "DetectionBudget",
+    "DetectionBudgetPreset",
+    "DetectionCapability",
+    "DetectionCostReceipt",
+    "BALANCED_BUDGET",
+    "FAST_BUDGET",
+    "THOROUGH_BUDGET",
     "IoStats",
     "enable_measurement",
     "Diagnostic",

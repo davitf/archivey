@@ -298,6 +298,19 @@
 
 ## Performance & robustness
 
+- **Detection budget scope: aggregate vs per-candidate** — left open by
+  `detection-prefix-workspace`. A fuzz assertion pins that *aggregate* detection cost stays
+  inside the declared budget either way; the deciding measurement (209 715 decoy gzip
+  headers → 683-fold decode amplification) is a scan-tier property owned by
+  `detection-evidence-ledger`. Carry the question there.
+
+- **Pricing a detection source in round trips rather than bytes** — `StreamCapability` is
+  only `FORWARD_ONLY < SEEKABLE`, so an HTTP range reader and a local file are
+  indistinguishable. The flat access-shape rule (one forward pass, at most one tail seek)
+  sidesteps seek *permission*, but `BALANCED`'s 32 775 far bytes and the ZIP tail's 65 557
+  are still priced in the wrong currency on a range-request source. Needs a measurement on
+  a real range-request source.
+
 - **Reuse the index-only pass's members instead of rebuilding them** — on backends with
   `_MEMBER_LIST_UPFRONT`, `extract_all` lists twice: `_get_members_index_only()` for the
   extraction prep, then `_materialize_members()`. Both call `_iter_members()` afresh and

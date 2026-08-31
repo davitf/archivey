@@ -373,6 +373,24 @@ Changes: `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate/`,
 **Adjacent and already closed:** the *archive-behind-a-stub* case (Topic 8 A-34) via
 `sfx-format-detection`.
 
+### O11. Detection-time decode work is unbounded — open
+
+O1 scopes to *listing*-time metadata bombs; `ExtractionLimits` scopes to `extract`.
+Nothing covers the work `detect_format` may do while deciding what a source is.
+
+Measured under a 2 MiB scan window packed with back-to-back decoys: **209 715** valid
+gzip headers, and decoding each to a 64 KiB per-candidate cap costs **1.26 s / 1 365 MiB
+of successful decoding — 683-fold amplification**. Memory is not the problem (each
+candidate's output is discarded); time is. A per-candidate decode cap cannot bound the
+aggregate.
+
+`detection-prefix-workspace` ships the `DetectionBudget` / `DetectionCostReceipt` and a
+fuzz assertion that aggregate detection cost stays inside the declared budget. The bound
+itself — and whether limits are per-detection aggregates or per-candidate — belongs to
+`detection-evidence-ledger`, which owns the scan tiers where candidates multiply. Until
+that lands, a hostile prefix can still force unbounded decode work under the default
+budget's scan path once those tiers are enabled.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed

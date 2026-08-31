@@ -788,22 +788,32 @@ def test_zeroed_system_area_iso_still_detected() -> None:
     assert info.confidence == DetectionConfidence.CERTAIN  # pre-ledger
 
 
-def test_small_source_takes_no_extended_peek(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_small_source_takes_no_extended_peek(tmp_path: Path) -> None:
     # The far-magic step is size-gated: a source known to be smaller than the ISO window
-    # never pays the 32 KiB peek.
-    from archivey.internal import detection as detection_module
+    # never pays the 32 KiB peek. The receipt records what was actually fetched.
+    path = tmp_path / "tiny.zip"
+    path.write_bytes(b"tiny non-archive payload")
+    info = detect_format(path)
+    assert info.detected_by == "extension"
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.unique_bytes_read <= 4096
+    assert info.cost_receipt.far_bytes == 0
 
-    requested: list[int] = []
-    real_peek = detection_module._peek_prefix
 
-    def spy(source, length):  # noqa: ANN001, ANN202 - test double
-        requested.append(length)
-        return real_peek(source, length)
+def test_detection_receipt_is_not_merged_into_archive_cost(tmp_path: Path) -> None:
+    # Detection's I/O happens before a reader exists, so ``ar.cost`` must not absorb it.
+    from archivey import open_archive
 
-    monkeypatch.setattr(detection_module, "_peek_prefix", spy)
-    with pytest.raises(FormatDetectionError):
-        detect_format(io.BytesIO(b"tiny non-archive payload"))
-    assert max(requested) <= 4096, requested
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes())
+    info = detect_format(path)
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.unique_bytes_read > 0
+    with open_archive(path) as ar:
+        # Archive-open CostReceipt is about listing/access axes, not detection bytes.
+        assert ar.info.cost.listing_cost is not None
+        assert not hasattr(ar.info.cost, "unique_bytes_read")
+        assert not hasattr(ar.info.cost, "prefix_bytes")
 
 
 def test_unknown_length_short_source_falls_through_to_the_extension(

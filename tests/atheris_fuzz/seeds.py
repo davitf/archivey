@@ -169,6 +169,7 @@ def detect_format_seeds() -> list[bytes]:
                     seeds.append(blob[:4096])
         except (OSError, RuntimeError, ValueError, ImportError):
             continue
+    seeds.extend(decoy_dense_seeds())
     # Dedup while preserving order.
     seen: set[bytes] = set()
     out: list[bytes] = []
@@ -178,6 +179,47 @@ def detect_format_seeds() -> list[bytes]:
         seen.add(s)
         out.append(s)
     return out
+
+
+def decoy_dense_prefix(mutator_tail: bytes = b"", *, window: int = 64 * 1024) -> bytes:
+    """Pack near-miss headers for every scan-tier format into a bounded window.
+
+    Used by the ``detect_format`` fuzz target so aggregate cost-vs-budget is exercised
+    against many candidate-looking hits, not only against sparse mutator luck. The
+    measured amplification that motivates a bound — 209 715 valid gzip headers in 2 MiB
+    yielding 683-fold decode work — is a scan-tier property; this seed family keeps that
+    class of input in the corpus even before the evidence-ledger lands those tiers.
+    """
+    # Near-miss / exact needles packed back-to-back. Exact magics that would short-circuit
+    # detection at offset 0 are shifted so the densest region sits past the near window.
+    needles = (
+        b"\x1f\x8b\x08",  # gzip
+        b"BZh9",  # bzip2
+        b"\xfd7zXZ\x00",  # xz
+        b"\x28\xb5\x2f\xfd",  # zstd
+        b"7z\xbc\xaf'\x1c",  # 7z
+        b"Rar!\x1a\x07\x00",  # RAR4
+        b"Rar!\x1a\x07\x01\x00",  # RAR5
+        b"PK\x03\x04",  # ZIP local
+        b"ustar",  # TAR
+        b"\xff\xd8\xff",  # JPEG (non-cueing prefix for later ZIP-tail work)
+    )
+    pad = b"\x00" * 16
+    block = pad.join(needles) + pad
+    body = (block * ((window // len(block)) + 1))[:window]
+    if mutator_tail:
+        body = body[: max(0, window - len(mutator_tail))] + mutator_tail[: window // 4]
+        body = body[:window]
+    return body
+
+
+def decoy_dense_seeds() -> list[bytes]:
+    return [
+        decoy_dense_prefix(),
+        decoy_dense_prefix(b"\xff" * 64),
+        decoy_dense_prefix(window=4096),
+        decoy_dense_prefix(window=256 * 1024),
+    ]
 
 
 def _safe_compress(fn: Callable[[], bytes]) -> list[bytes]:

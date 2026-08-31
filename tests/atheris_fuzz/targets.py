@@ -95,10 +95,32 @@ def sevenzip_open_one(data: bytes) -> None:
 
 
 def detect_format_one(data: bytes) -> None:
+    from archivey import BALANCED_BUDGET
+
     try:
-        detect_format(io.BytesIO(data))
+        info = detect_format(io.BytesIO(data), budget=BALANCED_BUDGET)
     except ArchiveyError:
         return
+    # Aggregate cost must stay inside the declared budget — pins the invariant whether
+    # limits are later resolved as per-detection or per-candidate.
+    if info.cost_receipt is not None:
+        assert info.cost_receipt.within_budget(BALANCED_BUDGET), info.cost_receipt
+
+
+def detect_format_decoy_dense_one(data: bytes) -> None:
+    """``detect_format`` over a decoy-dense prefix (near-miss headers packed tight)."""
+    from archivey import BALANCED_BUDGET
+    from tests.atheris_fuzz.seeds import decoy_dense_prefix
+
+    # Mutator data is mixed into a packed near-miss prefix so the scan/probe path sees
+    # many candidate-looking headers without relying on the mutator to invent them.
+    blob = decoy_dense_prefix(data)
+    try:
+        info = detect_format(io.BytesIO(blob), budget=BALANCED_BUDGET)
+    except ArchiveyError:
+        return
+    if info.cost_receipt is not None:
+        assert info.cost_receipt.within_budget(BALANCED_BUDGET), info.cost_receipt
 
 
 def zip_open_one(data: bytes) -> None:
@@ -275,6 +297,13 @@ def iter_target_specs() -> list[dict]:
         {
             "name": "detect_format",
             "fn": detect_format_one,
+            "seeds": detect_format_seeds,
+            "fixup": None,
+            "per_input_timeout": None,
+        },
+        {
+            "name": "detect_format_decoy",
+            "fn": detect_format_decoy_dense_one,
             "seeds": detect_format_seeds,
             "fixup": None,
             "per_input_timeout": None,
