@@ -205,6 +205,58 @@ It was tempting to make tier 2 "probe the last 64 KiB for anything". It only wor
 Checked against archives produced here by `7z a`, `rar a`, and `rar a -qo+`; the plain and
 quick-open RARs had byte-identical tails.
 
+## Implementation decisions (2026-08-31)
+
+Settled with the maintainer before the first implementation PR. Spec deltas that still
+contradict these are revised in the same commit as the matching block, not in a
+drive-by rewrite of the whole change.
+
+**Split into four PRs** (see tasks.md §Implementation blocks). Do not land the 64-task
+change as one review.
+
+**Tail probe off by default.** JPEG+appended ZIP stays `FormatDetectionError` under
+`BALANCED`. A `zipapp` is found by the shebang cue plus ZIP's existing local-header
+needle, without the tail. `#273` already ships `DetectionBudget.max_tail_bytes = 0` on
+every preset, including `THOROUGH`, with a comment that this change is what raises it.
+Enabling the probe means raising `THOROUGH.max_tail_bytes` / `max_seeks` and charging
+`tail_bytes` / `seeks` on a workspace tail helper — not a new `ArchiveyConfig` flag, and
+not turning it on for `BALANCED` until a seek-cost measurement on the founding backup
+workload exists.
+
+**No `OTHER_FORMAT`.** Archivey is not a general file-type detector and will not grow a
+JPEG/PNG/PDF magic list to classify prefixes. `PrefixKind` is `NONE` / `EXECUTABLE` /
+`SCRIPT` / `UNKNOWN`. A prefix that is not an executable or a shebang is `UNKNOWN`,
+whether the offset came from the tail probe, the cued scan, or the exhaustive scan —
+those are `detected_by` values, not kinds. `#274` (`archive-origin-reporting`) currently
+lists `OTHER_FORMAT` and also uses `UNKNOWN` for *origin not established*
+(`payload_offset is None`); the second meaning stays on the `int | None` axis, not on a
+fifth enum member. That PR rebases onto this enum.
+
+**Makeself / compressor needles are a later block, and opening them needs backend
+work this change's tasks originally omitted.** TAR and the single-file codecs currently
+`reject_start_offset`. Detection reporting `TAR_GZ` at offset N without the backends
+honouring `start_offset` would be a footgun. That backend work ships in the same PR as
+the needles. Uncompressed TAR-behind-stub (`ustar` as a container needle) waits for
+`detection-evidence-ledger`'s TAR checksum validator rather than claiming on five
+bytes.
+
+**Scan needles are cheap structural validators, not content probes.** Do not invent a
+parallel confidence scale here — `detection-evidence-ledger` already ranks signatures
+into evidence classes. A shebang-cued compressor needle is allowed only when a hit can
+reach `DISCRIMINATING_HEADER` (or stronger) without a decode probe. Gzip (`1f 8b 08` plus
+the ledger's header checks) and bzip2 (`BZh` + ASCII `1`–`9` plus the first-block
+marker / empty-stream EOS, ledger task 4.5) both qualify; xz/zstd/lz4/lzip do on their
+existing headers. zlib / Brotli / LZMA Alone stay probes, never needles. unix-compress
+`.Z` stays out (two-byte magic). Makeself's `--bzip2` is a real production shape, so
+bzip2 is in the first needle set, not a later maybe.
+
+A Makeself-aware locator that reads `SKIP` / `COMPRESS` out of the stub and seeks to the
+payload, instead of scanning 2 MiB of script for magic, is a better installer-specific
+follow-up than widening needles further — parked in `dev-docs/IDEAS.md`.
+
+**`peek_range` is not this change's to invent.** `#273` shipped `PrefixWorkspace.peek_range`
+/ `candidate_view`, `ScanNeedle`, and `MagicHit`. Task 2.5a is inherited plumbing.
+
 ## Open question this change does not settle
 
 **Are there prefixed 7z/RAR files in the wild that are not self-extracting executables?**
@@ -285,3 +337,18 @@ revision**, in the same PR that shipped the hoist:
 
 The bootable-ISO reproduction above stays useful: it is the justification recorded in
 `detection-format-gaps`'s design for making the move.
+
+**`detection-prefix-workspace` (#273) has landed** (`64d2f6c`). Candidate-relative views,
+`DetectionBudget` presets, and `max_tail_bytes = 0` are on `main`. This change no longer
+carries a peek primitive, and it must not add `ArchiveyConfig.exhaustive_prefix_scan` as
+a second cost-control channel next to the budget `detect_format(..., budget=)` already
+takes. Exhaustive scan and the ZIP tail become budget numbers (`max_scan_bytes`,
+`max_tail_bytes` / `max_seeks`). `open_archive` on `main` does not yet pass a budget
+through — threading that is part of the tail/exhaustive block, not a new config field.
+
+**`archive-origin-reporting` (#274) is sequenced after this change** because it reuses
+`PrefixKind` on `ArchiveInfo`. It also unifies the RAR/7z origin resolver onto `MagicHit`
+and asks whether forced `format=ZIP` should run the tail probe to fill
+`payload_offset`. Under the default decided above the answer is no: `UNKNOWN` +
+`payload_offset is None` stays the honest forced-ZIP answer unless the caller opted into
+a budget that grants `TAIL`.
