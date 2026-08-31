@@ -127,6 +127,9 @@ def _iso_bytes() -> bytes:
         ("zip", _zip_bytes(), ArchiveFormat.ZIP),
         ("iso", _iso_bytes(), ArchiveFormat.ISO),
     ],
+    # Short ids only: the ISO fixture is ~32 KiB of NULs; pytest's default id embeds
+    # repr(payload) into PYTEST_CURRENT_TEST, which exceeds Windows' 32767-char env limit.
+    ids=["gzip", "zip", "iso"],
 )
 def test_seekable_detection_has_zero_backward_seeks(
     label: str,
