@@ -622,32 +622,17 @@ def test_a_stub_carrying_a_decoy_zip_header_does_not_move_the_answer(
 
 
 @requires("py7zr")
-def test_a_decoy_needle_in_the_stub_wins_and_fails_loudly(tmp_path: Path) -> None:
-    """A known scanner limit, pinned: earliest match wins, even against a real payload.
+def test_a_decoy_7z_needle_is_skipped_for_the_real_payload(tmp_path: Path) -> None:
+    """Six ``7z`` magic bytes fail signature-header identity; the scan resumes.
 
-    ``detect_format`` takes the first needle in the window, so a stub carrying one
-    decides ``payload_offset`` and the backend opens *there* rather than at a later real
-    archive. What makes it acceptable for now is that the failure is loud — 7z rejects
-    the signature CRC — rather than the fabricated-member silence this change exists to
-    close. Validate-and-continue would turn detection into a trial-open loop; if that
-    ever lands, this test is the one to rewrite.
+    Before the validator this claimed offset 514 (the decoy) and ``open_archive``
+    raised ``CorruptionError``. A decoy is ``NOT_THIS_FORMAT`` (major version is
+    ``0x90``), and the real signature further on is the answer (task 4.4).
     """
-    inner = tmp_path / "real-inner.7z"
-    _write_7z(inner)
     stub = b"MZ" + b"\x90" * 512 + MAGIC_7Z + b"\x90" * 3576
-    path = tmp_path / "decoy-auto.exe"
-    path.write_bytes(stub + inner.read_bytes())
-
-    detected = detect_format(path)
-    assert detected.format == ArchiveFormat.SEVEN_Z
-    assert detected.payload_offset == 514, "the decoy, not the real payload at 4096"
-
-    with pytest.raises(CorruptionError):
-        open_archive(path)
-
-    # The real payload is reachable the moment something supplies the right offset.
-    with _open_with(path, start_offset=len(stub)) as archive:
-        assert {m.name for m in archive.members() if m.is_file} == set(_FILES)
+    path = tmp_path / "decoy-7z.exe"
+    path.write_bytes(stub + _7z_bytes(tmp_path))
+    _assert_sfx_opens(path, ArchiveFormat.SEVEN_Z, len(stub))
 
 
 @pytest.mark.parametrize("filler", [b"\x90", b"\x00"], ids=["nop-fill", "zero-fill"])
@@ -848,21 +833,6 @@ def test_shebang_script_mentioning_rar_magic_is_not_rar() -> None:
     payload = b"#!/usr/bin/env python3\nMARKER = " + RAR_ID + b"\n"
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(payload))
-
-
-@requires("py7zr")
-def test_mz_7z_magic_decoy_skips_to_the_real_payload(tmp_path: Path) -> None:
-    """Six ``7z`` magic bytes in an MZ stub are not a signature header (task 4.4)."""
-    stub = b"MZ" + b"\x90" * 512 + MAGIC_7Z + b"\x90" * 3576
-    path = tmp_path / "decoy-7z.exe"
-    path.write_bytes(stub + _7z_bytes(tmp_path))
-    detected = detect_format(path)
-    assert detected.format == ArchiveFormat.SEVEN_Z
-    assert detected.detected_by == "sfx_scan"
-    assert detected.payload_offset == len(stub)
-    with open_archive(path) as archive:
-        members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
-    assert members == _FILES
 
 
 @requires("py7zr")
