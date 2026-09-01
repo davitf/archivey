@@ -1,5 +1,19 @@
 # Exploration scripts
 
+## Alternative RAR decompressors
+
+`rar_decompressor_matrix.py` compares `unar` / `7z` / `bsdtar` / `unrar-free` against
+RARLAB `unrar p` on the committed RAR fixtures. Evidence for
+`dev-docs/investigations/alternative-rar-decompressors.md`.
+
+Stdlib-only. Missing tools are skipped. Subprocesses use `stdin=DEVNULL` and a timeout.
+`bsdtar` is not run on stored nonsolid RARs (it unbounded-wrote stdout in the spike).
+
+```bash
+python3 scripts/exploration/rar_decompressor_matrix.py
+python3 scripts/exploration/rar_decompressor_matrix.py --json /tmp/matrix.json
+```
+
 ## Brotli content probe — field survey
 
 `brotli_probe_field_survey.py` collects the evidence

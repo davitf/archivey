@@ -42,14 +42,14 @@
   `unrar` binary. Could remove the `unrar` runtime requirement for common cases.
   **Higher-risk / research spike** — RAR decode correctness is hard and libarchive's
   RAR5 coverage is partial; `unrar` remains the reference.
-- **`unar` as a second RAR data backend** — ~~spike after Homebrew dropped the `rar`
-  cask (easy `brew install unar` vs source-built RARLAB `unrar`).~~ **Investigated
-  2026-09-01:** `unar -o -` matches `unrar p` on the happy path, but RAR5 solid + any
-  empty member is broken (SIGSEGV on 1.10.1; silent empty on 1.10.7), wrong-password /
-  missing-member often exit 0, and file-version name addressing diverges. **Do not add**
-  until upstream fixes solid+empty and C1/ADR 0002 are deliberately reopened. Prefer
-  documenting `scripts/install-rarlab-unrar.sh` for macOS users. Evidence:
-  `dev-docs/investigations/unar-as-rar-decompressor.md`.
+- **`unar` / `7z` as a second RAR data backend** — ~~spike after Homebrew dropped the
+  `rar` cask.~~ **Investigated 2026-09-01:** `unar` stdout concat is real but RAR5
+  solid+empty SIGSEGVs on stdout **and** disk extract. Distro `7z` lists RAR5 but
+  needs `7zip-rar` before solid/compressed data works; with the plugin the ALL-pipe
+  matches `unrar p`, still a non-free codec, still CLI gaps (no stdin password,
+  missing-member rc=0). `bsdtar` / `unrar-free` are dead ends. **Do not add** a
+  silent fallback. Prefer documenting `scripts/install-rarlab-unrar.sh`. Evidence:
+  `dev-docs/investigations/alternative-rar-decompressors.md`.
 
 - **Subprocess decompressor streams** — a single reusable `SubprocessDecompressorStream`
   that pipes compressed/uncompressed data through a system binary (`zstd`, `xz`,
