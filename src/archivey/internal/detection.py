@@ -424,23 +424,6 @@ def _warn_on_conflict(
     )
 
 
-def _sfx_entries_for_prefix(
-    entries: list[MagicSignature], prefix: bytes
-) -> list[MagicSignature]:
-    """Needle set for this prefix's cue.
-
-    ZIP has a local-header validator in this PR; 7z and RAR do not yet. A ``#!``
-    script that merely mentions those magics would otherwise detect as
-    ``SEVEN_Z`` / ``RAR`` and raise ``CorruptionError``. ``MZ`` / ELF / Mach-O
-    keep the full needle set. Lift this filter when the 7z/RAR
-    ``SFX_HIT_VALIDATOR``s land (tasks 2.3–2.4 — a slim follow-up, not the rest
-    of Block 3).
-    """
-    if prefix.startswith(b"#!"):
-        return [entry for entry in entries if entry.format == ArchiveFormat.ZIP]
-    return entries
-
-
 def _scan_for_sfx_payload(
     entries: list[MagicSignature],
     peek_more: Callable[[int], bytes],
@@ -448,6 +431,7 @@ def _scan_for_sfx_payload(
     *,
     scan_limit: int,
     validators: dict[ArchiveFormat, Callable[[Callable[[int], bytes]], HitOutcome]],
+    restrict_to_validated: bool,
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
 
@@ -462,7 +446,15 @@ def _scan_for_sfx_payload(
 
     ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
     the charge lands whether the scan hits or misses so the receipt reflects the work.
+
+    ``restrict_to_validated`` is the shebang cue: a script is text, so magics appear
+    as literals. Search only formats that have a hit validator — derived from
+    ``validators``, so 7z/RAR join automatically when they register theirs. Do not
+    key this off :attr:`ExecutableCue.WEAK` alone: an unconfirmed ``MZ`` / ELF stub
+    is the live 7z/RAR SFX path and keeps the full needle set.
     """
+    if restrict_to_validated:
+        entries = [entry for entry in entries if entry.format in validators]
     by_needle = {entry.magic: entry for entry in entries}
     needles = tuple(ScanNeedle(entry.magic, entry.offset) for entry in entries)
     result: FormatInfo | None = None
@@ -480,6 +472,8 @@ def _scan_for_sfx_payload(
             payload_offset=hit.candidate_origin,
         )
         break
+    if workspace.take_clamped_view_read():
+        workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     # Charge the window actually examined — a miss is the expensive case.
     workspace.charge_scanned(min(workspace.buffered_length, scan_limit))
     return result
@@ -612,11 +606,13 @@ def _detect_format_body(
                 workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
             else:
                 sfx_info = _scan_for_sfx_payload(
-                    _sfx_entries_for_prefix(registry.sfx_magic_entries(), data),
+                    registry.sfx_magic_entries(),
                     peek_more,
                     workspace,
                     scan_limit=scan_limit,
                     validators=registry.sfx_hit_validators(),
+                    # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
+                    restrict_to_validated=data.startswith(b"#!"),
                 )
                 if sfx_info is not None:
                     _warn_on_conflict(

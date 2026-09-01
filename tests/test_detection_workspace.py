@@ -227,6 +227,20 @@ def test_candidate_view_limit_does_not_read_past_the_ceiling() -> None:
         assert src.unique_bytes == before
 
 
+def test_candidate_view_limit_notes_a_clamped_read() -> None:
+    payload = b"PREFIX" + b"PK\x03\x04" + b"\x00" * 200
+    src = InstrumentedBytesIO(payload)
+    with PrefixWorkspace(src, BALANCED_BUDGET) as ws:
+        ws.peek_prefix(10)
+        exact = ws.candidate_view(6, limit=10)
+        assert exact(4) == payload[6:10]
+        assert not ws.take_clamped_view_read()
+        truncated = ws.candidate_view(6, limit=10)
+        assert truncated(100) == payload[6:10]
+        assert ws.take_clamped_view_read()
+        assert not ws.take_clamped_view_read()
+
+
 def test_iter_magic_in_prefix_does_not_re_yield_at_peek_boundaries() -> None:
     data = bytearray(65536 * 2)
     data[65532:65536] = b"PK\x03\x04"

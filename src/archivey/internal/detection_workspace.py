@@ -60,6 +60,10 @@ class PrefixWorkspace:
         self._spool: tempfile.SpooledTemporaryFile[bytes] | None = None
         self._spool_abandoned = False
         self._source_exhausted = False
+        # Set when a ``limit``-clamped ``candidate_view`` shortens a peek. Distinct
+        # from source EOF: the scan records ``BUDGET_EXHAUSTED`` from this, because
+        # the validator's ``NOT_THIS_FORMAT`` cannot tell the two apart.
+        self._clamped_view_read = False
         # Total size of the underlying object from its own offset 0, when cheap.
         self._total_size = source_byte_size(source)
         self._kind: str
@@ -214,8 +218,10 @@ class PrefixWorkspace:
 
         ``limit`` is an exclusive archive-origin ceiling (the SFX scan passes
         ``scan_limit``). A validator that asks for more than remains gets a short
-        read — identity fails cheaply — and must not grow the prefix past the cost
-        gate. ``None`` leaves the view unbounded.
+        read and must not grow the prefix past the cost gate. That short read is
+        indistinguishable from source EOF inside the validator; the workspace
+        notes the clamp so the scan can record ``BUDGET_EXHAUSTED``. ``None``
+        leaves the view unbounded.
         """
         if candidate_origin < 0:
             raise ValueError("candidate_origin must be non-negative")
@@ -225,10 +231,18 @@ class PrefixWorkspace:
         def peek_more(length: int) -> bytes:
             if limit is not None:
                 remaining = max(0, limit - candidate_origin)
+                if length > remaining:
+                    self._clamped_view_read = True
                 length = min(length, remaining)
             return self.peek_range(candidate_origin, length)
 
         return peek_more
+
+    def take_clamped_view_read(self) -> bool:
+        """Return and clear whether a limited view truncated a peek since last take."""
+        flagged = self._clamped_view_read
+        self._clamped_view_read = False
+        return flagged
 
     def read_at(self, offset: int, length: int) -> bytes | None:
         """Absolute (archive-origin) range read for content-probe chain walks.

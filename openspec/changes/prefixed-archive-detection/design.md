@@ -256,14 +256,15 @@ name/extra lengths in-bounds) is Block 1; EOCD + central-directory confirmation 
 Block 2's tail helper. Shipping the widened cue without the cheap check would report
 scripts that mention those four bytes as damaged ZIPs.
 
-**Shebang cue does not search 7z/RAR until their validators land.** (#277 F3,
-maintainer chose A.) ZIP has a local-header check in Block 1; 7z `StartHeaderCRC`
-and RAR main-header CRC are tasks 2.3–2.4 and can ship as a slim follow-up after
-Block 1 — they are the same `SFX_HIT_VALIDATOR` functions Block 3 would write,
-not a throwaway. The rest of Block 3 (`prefix_kind`, `detection_budget`,
-exhaustive scan) is independent. Until 2.3–2.4 land, a `#!` scan searches only
-ZIP needles; `MZ` / ELF / Mach-O keep the full set. The follow-up also deletes
-the filter.
+**Shebang cue searches only formats with a hit validator.** (#277 F3 A, F10.)
+A script is text, so magics appear as literals. The scan filters
+`entry.format in validators` rather than hardcoding ZIP — 7z `StartHeaderCRC`
+and RAR main-header CRC (tasks 2.3–2.4) join automatically when they register
+on `SFX_HIT_VALIDATOR`. Do not key this off `ExecutableCue.WEAK` alone: an
+unconfirmed `MZ` / ELF stub is the live 7z/RAR SFX path and keeps the full
+needle set. `PrefixKind.SCRIPT` (Block 3) can replace the `#!` byte check.
+The rest of Block 3 (`prefix_kind`, `detection_budget`, exhaustive scan) is
+independent.
 
 **`ArchiveyConfig.detection_budget` is the spend cap.** Threading it needs a freeze
 surface: *Explicit configuration object*. `None` selects `BALANCED_BUDGET`.

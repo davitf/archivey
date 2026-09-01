@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from archivey import DEFAULT_ARCHIVEY_CONFIG, detect_format, open_archive
-from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
+from archivey.detection_cost import BALANCED_BUDGET, FAST_BUDGET, TierSkipReason
 from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
@@ -752,7 +752,7 @@ def test_shebang_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
 
 
 def test_shebang_script_mentioning_7z_magic_is_not_seven_z() -> None:
-    """7z needles stay off the shebang cue until the CRC validator lands (#277 F3)."""
+    """Shebang scans only formats with a hit validator (#277 F3 / F10)."""
     payload = b"#!/bin/sh\necho 'magic " + MAGIC_7Z + b" here'\n" + b"x" * 100
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(payload))
@@ -860,6 +860,54 @@ def test_hostile_zip_local_header_stays_inside_the_scan_budget(tmp_path: Path) -
     assert info.cost_receipt is not None
     assert info.cost_receipt.within_budget(BALANCED_BUDGET)
     assert info.cost_receipt.unique_bytes_read <= SFX_MAX + 256
+    assert any(
+        skip.tier == "sfx_scan" and skip.reason is TierSkipReason.BUDGET_EXHAUSTED
+        for skip in info.unavailable_tiers
+    )
+
+
+def _zip_bytes_named(name: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr(name, b"payload")
+    return buffer.getvalue()
+
+
+def test_budget_truncated_zip_header_records_sfx_scan_skip(tmp_path: Path) -> None:
+    """A real ZIP whose name/extra straddle ``scan_limit`` is a budget skip, not 'not ZIP'."""
+    payload = _zip_bytes_named("n" * 40)
+    name_len, extra_len = struct.unpack_from("<HH", payload, 26)
+    needed = 30 + name_len + extra_len
+    scan_limit = FAST_BUDGET.max_scan_bytes
+    stub_hdr = b"\x7fELF\x02\x01\x01"
+
+    def blob(header_at: int) -> bytes:
+        stub = stub_hdr + b"\x00" * (header_at - len(stub_hdr))
+        return stub + payload
+
+    miss_at = scan_limit - (needed - 2)
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(blob(miss_at)), budget=FAST_BUDGET)
+    miss_path = tmp_path / "edge-miss.pyz"
+    miss_path.write_bytes(blob(miss_at))
+    missed = detect_format(miss_path, budget=FAST_BUDGET)
+    assert missed.detected_by != "sfx_scan"
+    assert any(
+        skip.tier == "sfx_scan" and skip.reason is TierSkipReason.BUDGET_EXHAUSTED
+        for skip in missed.unavailable_tiers
+    )
+
+    hit_at = scan_limit - needed
+    hit_path = tmp_path / "edge-hit.bin"
+    hit_path.write_bytes(blob(hit_at))
+    found = detect_format(hit_path, budget=FAST_BUDGET)
+    assert found.format == ArchiveFormat.ZIP
+    assert found.detected_by == "sfx_scan"
+    assert found.payload_offset == hit_at
+    assert not any(
+        skip.tier == "sfx_scan" and skip.reason is TierSkipReason.BUDGET_EXHAUSTED
+        for skip in found.unavailable_tiers
+    )
 
 
 def test_sfx_hit_validator_is_not_bound_on_instance() -> None:
