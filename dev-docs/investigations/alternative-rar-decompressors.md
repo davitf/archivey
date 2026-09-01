@@ -36,14 +36,14 @@ The earlier unar-only notes live in
 | **`unrar-free` 0.1.3** | **No.** Extract-to-disk only; no stdout. |
 | **Unofficial brew `unrar` taps** | **Not a second engine** — they install RARLAB UnRAR. Usable for users who accept a third-party tap; **not** for CI. |
 
-**macOS install:** published guidance is `docs/install.md` §Getting RARLAB unrar.
-First-line is compile from rarlab.com (or `scripts/install-rarlab-unrar.sh` in a
-checkout). Homebrew `7zz` / `unar` are documented as non-substitutes. The
-unofficial `gromgit/new-life/unrar` tap is named as a convenience with caveats,
-not as what CI uses. If we reopen C1, the only candidate worth an opt-in spike
-is **`7z` with an extract-a-compressed-member codec probe** (not `7z i` format
-lines). Do not treat `unar` / `bsdtar` / `unrar-free` / Homebrew `7zz` as
-substitutes.
+**macOS install:** published user guidance is `docs/install.md` §Getting RARLAB
+unrar — pip users, no repo checkout. First-line is the unofficial Homebrew
+formula that compiles RARLAB source; alternative is a copy-paste source build.
+Lookalikes (`unar`, Homebrew `7zz`) stay in this investigation, not the user
+guide. CI still compiles the pinned UnRAR source. If we reopen C1, the only
+candidate worth an opt-in spike is **`7z` with an extract-a-compressed-member
+codec probe** (not `7z i` format lines). Do not treat `unar` / `bsdtar` /
+`unrar-free` / Homebrew `7zz` as substitutes.
 
 ---
 
@@ -197,9 +197,10 @@ documenting the UnRAR source build.
    members is not a workaround.
 2. **Do not add `bsdtar` / `unrar-free`.**
 3. **Do not silently fall back** to whatever is on `PATH` (C1).
-4. **macOS install friction:** published `docs/install.md` — compile from
-   rarlab.com / `scripts/install-rarlab-unrar.sh`. Name unofficial taps as
-   convenience, not CI.
+4. **macOS install friction:** published `docs/install.md` is for pip users.
+   Unofficial Homebrew formula first, copy-paste source compile second.
+   Lookalikes and Gatekeeper forensics stay here. CI keeps the pinned source
+   build (`scripts/install-rarlab-unrar.sh`).
 5. **If a second engine is wanted later:** opt-in `7z e -so` gated on a **Rar5
    codec** probe (trial extract, not `7z i` Formats). Treat missing
    `7zip-rar` as “not available”, same as missing `unrar`. Accept that this is
@@ -303,11 +304,70 @@ that RARLAB UnRAR 7.1.10 works, which the existing suite already covers at
 
 ### User-facing guidance
 
-Published on `docs/install.md` (pointers from `docs/formats.md`,
-`docs/gotchas.md`). First-line: distro package / rarlab source / the repo
-script. The gromgit tap is named as an unofficial convenience with a banner
-check, not as the supported install. Do not send every `PackageNotInstalledError`
-at a 2-star tap.
+Published on `docs/install.md` (pointer from `docs/formats.md`). Audience is pip
+installers, not a repo checkout. First-line macOS: unofficial
+`gromgit/new-life/unrar` (compiles RARLAB source). Alternative: copy-paste
+source build onto PATH. The repo script stays a contributor/CI path
+(`setup-dev-env.sh`, `ci.yml`). Lookalikes (`unar`, Homebrew `7zz`) are not
+mentioned in user docs. The 2018 rar_add “UnRAR for Mac OS X 64 bit” link is
+called out as *not* the current official binary.
+
+---
+
+## Official macOS `unrar` binaries (closed)
+
+Two different files on rarlab.com, easy to mix up.
+
+### `rar_add.htm` — “UnRAR for Mac OS X 64 bit”
+
+`https://www.rarlab.com/rar/unrar_MacOSX_10.13.2_64bit.gz`
+
+- Lives under **Addons contributed by our users**. RARLAB’s footer on that page:
+  no support for those non-Windows binaries; official UnRAR for OS X is part of
+  the RAR package.
+- gzip date **2018-01-30**. Mach-O **x86_64 only**, **no** `LC_CODE_SIGNATURE`,
+  min OS 10.13.
+- Not a current official binary. Do not send users there.
+
+### `download.htm` — RAR for macOS ARM / x64 (what the Homebrew cask shipped)
+
+Fetched `rarmacos-arm-720.tar.gz` / `rarmacos-x64-720.tar.gz` (cask version
+7.20; download.htm currently lists 7.23). Each tarball contains `rar/unrar`.
+
+| Binary | Arch | Code signature |
+| --- | --- | --- |
+| ARM `unrar` | arm64, min OS 11.0 | **Ad-hoc + linker-signed** (`CS_ADHOC\|CS_LINKER_SIGNED`). SuperBlob has a CodeDirectory only — **no** CMS / notarization ticket. |
+| Intel `unrar` | x86_64, min OS 10.9 | **Unsigned** (no `LC_CODE_SIGNATURE`). |
+
+That is why Homebrew marked the `rar` cask `disable! … because: :fails_gatekeeper_check` on 2026-09-01. Gatekeeper assesses **quarantined downloads** (browser, Homebrew casks). It is not “Tahoe refuses every unsigned binary”:
+
+- A **local compile** (unix makefile, or a Homebrew *formula* build) gets an
+  ad-hoc signature from the linker and is not quarantined. That is what CI
+  does, and what `gromgit/new-life/unrar` does when there is no bottle.
+- The **vendor tarball** Apple-silicon `unrar` is already ad-hoc signed, so
+  *if it is not quarantined* (e.g. `curl` in Terminal) Tahoe will run it. A
+  Safari download or `brew install --cask` sets quarantine and Gatekeeper
+  blocks until the user allows it in System Settings. Tahoe also made the old
+  CLI quarantine bypasses harder for *apps*; Homebrew will not ship the cask
+  regardless.
+- Apple silicon still requires *some* signature for arm64; ad-hoc counts.
+  Intel Tahoe still runs unsigned x86_64, but that Intel package is still a
+  Gatekeeper problem once quarantined.
+
+**Will RARLAB notarize later?** Possible, not something to promise. RAR 7.20
+(Feb 2026 tarball) is still ad-hoc on ARM and unsigned on Intel — years after
+users hit “developer cannot be verified.” If they Developer ID–sign and
+Apple-notarize a future macOS build, Homebrew *could* re-enable the `rar`
+**cask**. Homebrew **core** still will not ship an `unrar` *formula*: that
+removal was the UnRAR license (2020), independent of Gatekeeper.
+
+**User-docs implication:** pointing at the official macOS *package* is honest
+but a worse first-line than compiling source (Gatekeeper prompt, ARM vs Intel
+URL, trialware `rar` sitting next to `unrar`). Mention it as “exists, may be
+blocked, not the add-ons 2018 link.” Lead pip users at a source compile —
+the unofficial formula or a copy-paste `make`.
+
+---
 
 ---
 

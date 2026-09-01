@@ -52,6 +52,9 @@ uv sync                         # create/refresh the dev environment
 ./scripts/install-git-hooks.sh  # required: auto ruff fix+format on commit
 ```
 
+On macOS, Homebrew no longer ships RARLAB `unrar`; `scripts/setup-dev-env.sh`
+compiles the same pin CI uses (`scripts/install-rarlab-unrar.sh`).
+
 Then two scripts cover the gates, split by how long they take and how often you run them:
 
 ```bash

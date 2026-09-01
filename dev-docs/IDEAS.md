@@ -51,9 +51,9 @@
   `DISABLE_RAR_COMPRESS=1` — same `Unsupported Method` on solid RAR, no plugin
   extra. `bsdtar` / `unrar-free` are dead ends. Unofficial taps
   (`gromgit/new-life/unrar`) install real RARLAB UnRAR from a checksummed
-  rarlab.com tarball; fine as a user convenience, **not** a CI install and **not**
-  a second engine. **Do not add** a silent fallback. User guidance:
-  `docs/install.md`. Evidence:
+  rarlab.com tarball; usable as the one-command Homebrew install for pip users,
+  **not** a CI install and **not** a second engine. **Do not add** a silent
+  fallback. User guidance: `docs/install.md`. Evidence:
   `dev-docs/investigations/alternative-rar-decompressors.md`.
 
 - **Subprocess decompressor streams** — a single reusable `SubprocessDecompressorStream`
