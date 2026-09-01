@@ -175,8 +175,9 @@ class ReadBackend(ABC):
     # for the EOCD or spanned markers would claim any file containing those four bytes.
     SFX_MAGIC: tuple[MagicSignature, ...] = ()
     # Format-owned check the SFX scan calls on a candidate-relative view. ``None``
-    # means "needle match is enough" (today: RAR / 7z). ZIP supplies a cheap
-    # local-header sanity check so four ``PK\\x03\\x04`` bytes in a stub are not a ZIP.
+    # means "needle match is enough". ZIP, 7z, and RAR all supply one so a stub
+    # that merely contains their magic bytes is not claimed: ZIP's local-header
+    # sanity check, 7z ``StartHeaderCRC``, RAR 5 main-header CRC32 / RAR 4 MAIN.
     # Returns :class:`~archivey.internal.sfx.HitOutcome`; the detector treats
     # anything other than ``VALID`` as "skip and continue".
     # Subclasses that supply a function must wrap it in ``staticmethod`` — a bare

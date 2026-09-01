@@ -11,6 +11,8 @@ use `(context)` / `(every block)` rather than a block number.
    hit validator (`entry.format in validators`); 2.3–2.4 self-enable on that
    seam. No `prefix_kind`, no tail probe, no compressor needles.
    Tasks: **2.1, 2.1a, 2.1b, 2.1c, 2.2, 2.2a, 3.4, 4.1, 4.1a, 4.8a, 5.4.**
+   **Slim follow-up after #277:** 7z `StartHeaderCRC` and RAR main-header CRC
+   on `SFX_HIT_VALIDATOR` (tasks **2.3, 2.4, 4.4**). Not the rest of Block 3.
 2. **ZIP tail probe** — budget-gated (`THOROUGH.max_tail_bytes`, not `BALANCED`).
    Workspace tail helper. Both ZIP offset conventions. JPEG+ZIP as an enabled-path
    test. EOCD + central-directory confirmation of a scan hit can fold in here.
@@ -157,16 +159,22 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
       backend (candidate-relative view in, `HitOutcome` out); the scan calls it. A
       decoy of four `PK\x03\x04` bytes is `NOT_THIS_FORMAT`. Do **not** require an
       EOCD seek here — that is Block 2. Red–green alongside 4.1a.
-- [ ] 2.3 **(Block 3, or a slim follow-up after Block 1)** Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader,
+- [x] 2.3 **(Block 3, or a slim follow-up after Block 1)** Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader,
       and `offset + 32 + NextHeaderOffset + NextHeaderSize <= source length`, preferring
       an exact end match when several candidates validate — an intra-format tie-break
       inside this validator, not the cross-format ranking 0.6 defers. Named function on
       the 7z backend returning `HitOutcome`; the scan calls it. Failed CRC with a
       plausible header is `DAMAGED`; this change still skips it (scan continues). Ledger
       task 4.7 is the later policy that reports `SEVEN_Z` from that outcome.
-- [ ] 2.4 **(Block 3, or a slim follow-up after Block 1)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a
+      **Landed as the slim follow-up after #277.** Exact-EOF among several CRC-valid
+      hits is still earliest-VALID (the generic first-match loop); trailing bytes after
+      a CRC-valid header stay `VALID` (task 4.4). A declared end past `SFX_MAX` is a
+      large archive, not an overrun — CRC passing is enough; do not grow the prefix.
+- [x] 2.4 **(Block 3, or a slim follow-up after Block 1)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a
       parseable main header. Named function on the RAR backend, same `HitOutcome` split
       as 2.3.
+      **Landed as the slim follow-up after #277.** RAR 5 encrypted-headers archives
+      start with a plaintext ENCRYPTION block; that CRC is the identity check.
 - [ ] 2.5 **(Block 3)** Continue scanning past a candidate that fails validation rather than giving up
 - [x] 2.5a ~~**Prerequisite for 2.6–2.8: a bounded candidate-relative read.**~~ — shipped by `#273` as `PrefixWorkspace.peek_range` / `candidate_view` and `ScanNeedle` / `MagicHit.candidate_origin`. Nothing to invent here.
 - [ ] 2.5b **(Block 4)** Report `payload_offset` as the **candidate origin**, not the needle hit. A TAR hit reported at `H` rather than `H - 257` is wrong by 257 bytes and hands the backend a misaligned source; add a red–green for exactly that off-by-257. **Waits on 2.6**, which waits on the ledger.
@@ -219,7 +227,7 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
 - [x] 4.1a **(Block 1)** Red–green the ZIP scan validator: a `#!` stub whose text contains `PK\x03\x04` but whose following bytes fail local-header sanity SHALL raise `FormatDetectionError`, not report `ZIP` / `CorruptionError`. Pin the ELF-cued form of the same bytes too — today that path already claims a damaged ZIP, which is the live defect Block 1 must not widen.
 - [ ] 4.2 **(Block 4)** Red–green: a makeself-style `#!/bin/sh` + tar.gz detects as `TAR_GZ` and opens its members. Cover the negatives that define the scoping too: an `MZ` stub containing the same gzip bytes yields no scan claim, a `#!` stub whose own text contains `1f 8b 08` is rejected by the **structural header check**, and a `#!` + non-tar gzip stream reports `GZIP` (inner-TAR is resolution, not identity)
 - [ ] 4.3 **(Block 3)** SFX matrix across stub kinds: PE, ELF (a real `rar a -sfx`), Mach-O, and shebang, for 7z and RAR. Needs Block 1's cue already landed.
-- [ ] 4.4 **(Block 3)** Scan validation: the 6 magic bytes embedded in unrelated data are not claimed; a 7z whose declared end overruns the source is not claimed; a 7z with trailing bytes appended still is
+- [x] 4.4 **(Block 3)** Scan validation: the 6 magic bytes embedded in unrelated data are not claimed; a 7z whose declared end overruns the source is not claimed; a 7z with trailing bytes appended still is. **Landed with the 2.3–2.4 slim follow-up after #277.**
 - [ ] 4.5 **(Block 2)** Non-seekable prefixed ZIP falls through rather than crashing or buffering the stream
 - [ ] 4.6 **(Block 3)** Exhaustive scan: off by default leaves a beyond-window archive undetected and unread past the window; on, it finds it with `prefix_kind == UNKNOWN`
 - [ ] 4.7 **(Block 3)** `prefix_kind` values for each fixture in 4.1–4.3

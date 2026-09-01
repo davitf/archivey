@@ -264,7 +264,8 @@ on `SFX_HIT_VALIDATOR`. Do not key this off `ExecutableCue.WEAK` alone: an
 unconfirmed `MZ` / ELF stub is the live 7z/RAR SFX path and keeps the full
 needle set. `PrefixKind.SCRIPT` (Block 3) can replace the `#!` byte check.
 The rest of Block 3 (`prefix_kind`, `detection_budget`, exhaustive scan) is
-independent.
+independent. **2.3–2.4 landed as a slim follow-up after #277**, not delayed
+for that rest.
 
 **`ArchiveyConfig.detection_budget` is the spend cap.** Threading it needs a freeze
 surface: *Explicit configuration object*. `None` selects `BALANCED_BUDGET`.

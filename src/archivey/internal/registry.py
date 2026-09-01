@@ -205,8 +205,8 @@ class BackendRegistry:
         """Format-owned checks the SFX scan calls on a candidate-relative view.
 
         Collected from ``ReadBackend.SFX_HIT_VALIDATOR`` next to ``SFX_MAGIC``. A
-        missing validator means a needle match is enough (RAR / 7z today). ZIP's
-        local-header sanity check lives here so ``detection.py`` does not parse ZIP.
+        missing validator means a needle match is enough. ZIP, 7z, and RAR each
+        supply one so ``detection.py`` does not parse those formats.
         """
         mapping: dict[
             ArchiveFormat, Callable[[Callable[[int], bytes]], HitOutcome]

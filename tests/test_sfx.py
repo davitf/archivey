@@ -18,6 +18,7 @@ import struct
 import subprocess
 import zipapp
 import zipfile
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -30,11 +31,14 @@ from archivey.exceptions import (
     FormatDetectionError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.rar_parser import RAR_ID
+from archivey.internal.backends.rar_parser import RAR5_ID, RAR_ID
+from archivey.internal.backends.rar_reader import RarReadBackend
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z, find_signature_offset
 from archivey.internal.backends.sevenzip_reader import SevenZipReadBackend
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.rar_detect import validate_rar_main_header
+from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
 from archivey.internal.sfx import (
     SFX_MAX,
     ExecutableCue,
@@ -59,6 +63,8 @@ from tests.test_detection_workspace import InstrumentedBytesIO
 # *synthetic* one — real PE/ELF stubs are the easy case, this one is what the Brotli
 # content probe claims (see dev-docs/investigations/brotli-content-probe-brief.md).
 _STUB = b"MZ" + b"\x90" * 4094
+_RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
+_SEVENZIP_FIXTURES = Path(__file__).parent / "fixtures" / "sevenzip"
 
 _FILES = {
     "alpha.txt": b"alpha\n" * 2000,
@@ -745,6 +751,83 @@ def test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy() 
     )
 
 
+def _sevenzip_signature(
+    *,
+    major: int = 0,
+    next_offset: int = 0,
+    next_size: int = 0,
+    next_crc: int = 0,
+    start_crc: int | None = None,
+) -> bytes:
+    start = struct.pack("<QQI", next_offset, next_size, next_crc)
+    crc = zlib.crc32(start) & 0xFFFFFFFF if start_crc is None else start_crc
+    return MAGIC_7Z + bytes((major, 0)) + crc.to_bytes(4, "little") + start
+
+
+def test_sevenzip_signature_validator_accepts_a_real_header_and_rejects_a_decoy() -> (
+    None
+):
+    payload = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    assert payload[: len(MAGIC_7Z)] == MAGIC_7Z
+    assert validate_sevenzip_signature_header(_peek_view(payload)) is HitOutcome.VALID
+    assert (
+        validate_sevenzip_signature_header(_peek_view(MAGIC_7Z))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+    assert (
+        validate_sevenzip_signature_header(_peek_view(_sevenzip_signature()))
+        is HitOutcome.VALID
+    )
+    # 0x90 filler after the 6-byte magic: major version is not 0.
+    assert (
+        validate_sevenzip_signature_header(_peek_view(MAGIC_7Z + b"\x90" * 40))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+    damaged = bytearray(_sevenzip_signature())
+    damaged[8] ^= 0xFF
+    assert (
+        validate_sevenzip_signature_header(_peek_view(bytes(damaged)))
+        is HitOutcome.DAMAGED
+    )
+    assert (
+        validate_sevenzip_signature_header(_peek_view(_sevenzip_signature(major=1)))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+    # Declared next-header past the view, still inside SFX_MAX: overrun, not a 7z.
+    overrun = _sevenzip_signature(next_offset=100, next_size=10)
+    assert (
+        validate_sevenzip_signature_header(_peek_view(overrun))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+    huge = _sevenzip_signature(next_size=(64 << 20) + 1)
+    assert (
+        validate_sevenzip_signature_header(_peek_view(huge))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+    # Trailing bytes after a CRC-valid header are still this format (task 4.4).
+    trailing = _sevenzip_signature() + b"config after payload\n"
+    assert validate_sevenzip_signature_header(_peek_view(trailing)) is HitOutcome.VALID
+
+
+def test_rar_main_header_validator_accepts_real_archives_and_rejects_a_crc_fail() -> (
+    None
+):
+    rar5 = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
+    rar4 = (_RAR_FIXTURES / "basic_nonsolid__rar4.rar").read_bytes()
+    encrypted = (_RAR_FIXTURES / "encrypted_header__.rar").read_bytes()
+    assert rar5.startswith(RAR5_ID)
+    assert rar4.startswith(RAR_ID)
+    assert validate_rar_main_header(_peek_view(rar5)) is HitOutcome.VALID
+    assert validate_rar_main_header(_peek_view(rar4)) is HitOutcome.VALID
+    # Encrypted-headers RAR5: first block is ENCRYPTION, still CRC-valid.
+    assert validate_rar_main_header(_peek_view(encrypted)) is HitOutcome.VALID
+    assert validate_rar_main_header(_peek_view(RAR_ID)) is HitOutcome.NOT_THIS_FORMAT
+    assert validate_rar_main_header(_peek_view(RAR5_ID)) is HitOutcome.NOT_THIS_FORMAT
+    damaged = bytearray(rar5[:64])
+    damaged[len(RAR5_ID)] ^= 0xFF
+    assert validate_rar_main_header(_peek_view(bytes(damaged))) is HitOutcome.DAMAGED
+
+
 def test_shebang_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
     """A ``#!`` stub whose text contains ``PK\\x03\\x04`` is not reported as ZIP."""
     path = tmp_path / "script.sh"
@@ -754,16 +837,104 @@ def test_shebang_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
 
 
 def test_shebang_script_mentioning_7z_magic_is_not_seven_z() -> None:
-    """Shebang scans only formats with a hit validator (#277 F3 / F10)."""
+    """Six ``7z`` magic bytes in script text are not a signature header (task 4.4)."""
     payload = b"#!/bin/sh\necho 'magic " + MAGIC_7Z + b" here'\n" + b"x" * 100
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(payload))
 
 
 def test_shebang_script_mentioning_rar_magic_is_not_rar() -> None:
+    """Seven ``Rar!`` magic bytes in script text are not a MAIN header (task 4.4)."""
     payload = b"#!/usr/bin/env python3\nMARKER = " + RAR_ID + b"\n"
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(payload))
+
+
+@requires("py7zr")
+def test_mz_7z_magic_decoy_skips_to_the_real_payload(tmp_path: Path) -> None:
+    """Six ``7z`` magic bytes in an MZ stub are not a signature header (task 4.4)."""
+    stub = b"MZ" + b"\x90" * 512 + MAGIC_7Z + b"\x90" * 3576
+    path = tmp_path / "decoy-7z.exe"
+    path.write_bytes(stub + _7z_bytes(tmp_path))
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == len(stub)
+    with open_archive(path) as archive:
+        members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
+    assert members == _FILES
+
+
+@requires("py7zr")
+def test_mz_crc_damaged_7z_header_skips_to_the_real_payload(tmp_path: Path) -> None:
+    damaged = bytearray(_sevenzip_signature())
+    damaged[8] ^= 0xFF
+    stub = b"MZ" + b"\x90" * 64 + bytes(damaged) + b"\x90" * 64
+    path = tmp_path / "crc-decoy-7z.exe"
+    path.write_bytes(stub + _7z_bytes(tmp_path))
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.payload_offset == len(stub)
+
+
+def test_mz_7z_declared_end_overrun_is_not_claimed(tmp_path: Path) -> None:
+    """A CRC-valid signature whose next-header overruns the source is not a 7z."""
+    stub = b"MZ" + b"\x00" * 16
+    path = tmp_path / "overrun-7z.exe"
+    path.write_bytes(stub + _sevenzip_signature(next_offset=100, next_size=10))
+    with pytest.raises(FormatDetectionError):
+        detect_format(path)
+
+
+@requires("py7zr")
+def test_mz_7z_with_trailing_bytes_is_still_claimed(tmp_path: Path) -> None:
+    stub = _STUB
+    path = tmp_path / "trailing-7z.exe"
+    path.write_bytes(stub + _7z_bytes(tmp_path) + b"sfx-config\n")
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == len(stub)
+
+
+@requires("py7zr")
+def test_shebang_plus_real_7z_detects_and_lists_members(tmp_path: Path) -> None:
+    """Tasks 2.3 / F10: a shebang scan self-enables once 7z registers a validator."""
+    shebang = b"#!/bin/sh\n# self-extracting 7z\n"
+    path = tmp_path / "payload.7z.sh"
+    path.write_bytes(shebang + _7z_bytes(tmp_path))
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == len(shebang)
+    with open_archive(path) as archive:
+        members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
+    assert members == _FILES
+
+
+def test_shebang_plus_real_rar_detects(tmp_path: Path) -> None:
+    """Tasks 2.4 / F10: a shebang scan self-enables once RAR registers a validator."""
+    shebang = b"#!/bin/sh\n# self-extracting rar\n"
+    payload = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
+    path = tmp_path / "payload.rar.sh"
+    path.write_bytes(shebang + payload)
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.RAR
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == len(shebang)
+
+
+def test_mz_rar5_crc_fail_skips_to_the_real_payload(tmp_path: Path) -> None:
+    payload = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
+    damaged = bytearray(payload[:64])
+    damaged[len(RAR5_ID)] ^= 0xFF
+    stub = b"MZ" + b"\x90" * 32 + bytes(damaged) + b"\x90" * 32
+    path = tmp_path / "crc-decoy-rar.exe"
+    path.write_bytes(stub + payload)
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.RAR
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == len(stub)
 
 
 def test_elf_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
@@ -913,11 +1084,10 @@ def test_budget_truncated_zip_header_records_sfx_scan_skip(tmp_path: Path) -> No
 
 
 def test_sfx_hit_validator_is_not_bound_on_instance() -> None:
-    inst = object.__new__(ZipReadBackend)
-    assert inst.SFX_HIT_VALIDATOR is ZipReadBackend.SFX_HIT_VALIDATOR
-    assert (
-        inst.SFX_HIT_VALIDATOR(_peek_view(b"PK\x03\x04")) is HitOutcome.NOT_THIS_FORMAT
-    )
+    for cls in (ZipReadBackend, SevenZipReadBackend, RarReadBackend):
+        inst = object.__new__(cls)
+        assert inst.SFX_HIT_VALIDATOR is cls.SFX_HIT_VALIDATOR
+        assert inst.SFX_HIT_VALIDATOR(_peek_view(b"")) is HitOutcome.NOT_THIS_FORMAT
 
 
 def test_class_file_does_not_enter_the_sfx_scan() -> None:
