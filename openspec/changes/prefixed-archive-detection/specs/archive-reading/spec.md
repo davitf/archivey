@@ -31,13 +31,16 @@ this change threads the argument, it does not re-export the types.
 
 > **Refuse** when the argument is an **assertion about this archive**. **Permit, and
 > record a diagnostic**, when it is a **resource offered for use if needed.**
+> **Permit silently** when it is a resource whose consuming stage the caller
+> explicitly skipped — the caller caused the skip, so a diagnostic would be noise
+> they cannot act on.
 
 | Argument | Intent | Behaviour when the backend cannot act on it |
 | --- | --- | --- |
 | `format=` | assertion — "I claim this is a ZIP" | refuse when it cannot hold (see the directory rule below) |
 | `password=` | resource — a keyring | permit in **every** form; `PASSWORD_ARGUMENT_UNUSED` |
 | `encoding=` | resource — a hint for name decoding | permit; `ENCODING_ARGUMENT_UNUSED` |
-| `budget=` | resource — a detection spend cap | unused when `format=` bypasses detection: permit, silent no-op, no diagnostic. Detection never ran, so the bound was never consulted. Not an assertion about the archive. |
+| `budget=` | resource — a detection spend cap | unused when `format=` bypasses detection: permit silently (third case above). Detection never ran, so the bound was never consulted. Not an assertion about the archive. No `BUDGET_ARGUMENT_UNUSED`. |
 
 `password=` on a format with no encryption SHALL NOT raise, in any of its forms — a
 single value, an ordered sequence, and a provider callable SHALL behave identically
@@ -58,8 +61,9 @@ assertion half of the rule above, not a special case.
 detection (if any) appear in this reader's cumulative `diagnostics` for its
 lifetime and are not duplicated. Explicit `format=` skips detection, so open
 adds no detection diagnostics. Unused-argument diagnostics are emitted before the
-reader is returned, so they are readable without listing anything. If open raises,
-no reader is returned.
+reader is returned, so they are readable without listing anything — except a
+resource whose consuming stage the caller skipped (`budget=` when `format=` is
+set; see the third case of the intent rule). If open raises, no reader is returned.
 
 Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 `format-detection` and `diagnostics`.

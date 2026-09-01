@@ -22,9 +22,9 @@
   `prefix_kind`, makeself needles). Those PRs land validators and the ZIP tail locator as
   **format-owned callables** the first-match loop calls — not as `if ZIP` branches in
   `detection.py`, and not as a parallel `DetectionDeclaration` type. Task 3.3 / group 4
-  **wrap** those callables into `evaluate`; they do not re-extract the parse. Failure
-  policy (first-match skip vs grade-as-damaged) stays in the scheduler — prefixed-archive
-  must not bake skip-and-continue into the validator function itself.
+  **wrap** those callables into `evaluate`; they do not re-extract the parse. Prefixed-archive
+  validators return `HitOutcome`; this change's scheduler is what reads `DAMAGED` as
+  identified. The ZIP tail stays ZIP-named (`detected_by="zip_tail_probe"`).
 
   This change still owns: restating those tiers as scheduler declarations (task 10.6), the
   TAR checksum validator that makes `ustar` a safe scan needle (task 4.3 — prefixed-archive
@@ -105,11 +105,12 @@
       wrap its marker function here rather than re-deriving it.
 - [ ] 4.6 Each validator declares its failure disposition (reject / identified-but-damaged /
       `INCOMPLETE`) rather than the caller assuming one. Prefixed-archive's functions
-      return identity (pass/fail); this task is the wrap that adds disposition, not a
-      rewrite of the parse.
+      already return `HitOutcome` (`NOT_THIS_FORMAT` / `VALID` / `DAMAGED`); this task
+      is the wrap that reads `DAMAGED` as identified-but-damaged, not a signature change.
 - [ ] 4.7 Verify: a 7z with a failed `StartHeaderCRC` is still `SEVEN_Z`, and the read raises
       `CorruptionError` — identity is graded, not erased. Prefixed-archive's first-match
-      loop skips a failed CRC (scan continues); this task is the behaviour change.
+      loop treats `DAMAGED` like `NOT_THIS_FORMAT` (scan continues); this task is the
+      policy change that reports the format from that outcome.
 
 ## 5. Grading rules
 

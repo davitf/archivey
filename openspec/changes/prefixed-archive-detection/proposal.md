@@ -101,18 +101,20 @@ tier detection accordingly instead of applying one rule to all of them.
 - **Scan validation is not a licence to scan more.** The 7z/RAR self-checks make a hit
   trustworthy, not cheap. They justify high confidence on a hit, not removing the gate.
 - **Four implementation PRs already move toward the ledger.** Validators and the ZIP
-  tail locator land as format-owned functions the first-match loop calls. That is
-  option 2 from the registration-PR discussion, scoped so it does *not* invent a
-  parallel `DetectionDeclaration`. The ledger wraps those callables (its tasks 3.3 /
-  4.x); it does not extract them from `detection.py`. Q1–Q6 are unchanged.
+  tail locator land as format-owned functions the first-match loop calls. Validators
+  return an internal `HitOutcome` so the ledger can later treat `DAMAGED` as still
+  identified without a signature change. The tail probe stays ZIP-named
+  (`detected_by="zip_tail_probe"`); there is no locator registry. No parallel
+  `DetectionDeclaration`. Q1–Q6 are unchanged.
 
 ## Impact
 
 - Modules: `src/archivey/internal/detection.py` (tier order, cue, `prefix_kind` — the
   generic loop), `src/archivey/internal/sfx.py` (cue), format modules for validators and
-  the ZIP tail locator. The detector calls those functions; it does not special-case
-  ZIP / 7z / RAR / gzip. Not `src/archivey/config.py` — there is no opt-in field. No
-  `DetectionDeclaration` type here (that is `detection-evidence-ledger`).
+  the ZIP tail locator. The detector calls those functions rather than inlining parse.
+  The tail probe stays ZIP-named. Validators return an internal `HitOutcome`. Not
+  `src/archivey/config.py` — there is no opt-in field. No `DetectionDeclaration` type
+  here (that is `detection-evidence-ledger`).
 - Public API: `FormatInfo` gains `prefix_kind` (always present, default `NONE`) and a
   `PrefixKind` enum (`NONE` / `EXECUTABLE` / `SCRIPT` / `UNKNOWN`). Tail and exhaustive
   scan are `DetectionBudget` numbers (`max_tail_bytes`, `max_scan_bytes`), not

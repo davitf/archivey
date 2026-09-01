@@ -258,6 +258,7 @@ scripts that mention those four bytes as damaged ZIPs.
 
 **`open_archive` grows `budget=`.** Threading the detection spend cap needs a freeze
 surface: *Opening an archive for reading*. `format=` plus `budget=` is a silent no-op
+(third case of the intent rule — a resource whose consuming stage the caller skipped).
 (detection never ran). The types stay in `archivey.detection_cost`; this change does
 not take that freeze away from `detection-result-surface`. Exhaustive scan is a
 larger `max_scan_bytes`, not a named preset — `THOROUGH.max_scan_bytes` stays at
@@ -280,26 +281,29 @@ What that means in code:
 
 - **Validators** (ZIP local-header sanity, 7z `StartHeaderCRC`, RAR main-header CRC,
   gzip header identity, bzip2 first-block / EOS) are named functions on the format
-  module, taking a candidate-relative view. `detection.py` calls them. It does not
-  contain `if format is ZIP` validation branches.
-- **The ZIP tail locator** is a function on the ZIP backend. The generic detector's
-  "if the budget grants `TAIL`" step calls registered locators. ZIP is the only
-  format that registers one (7z / RAR / tar have nothing at the tail — see §Why the
-  tail probe does not generalise); that is data, not a ZIP-only tier inlined in the
-  detector.
+  module, taking a candidate-relative view. They return an internal `HitOutcome`
+  (`NOT_THIS_FORMAT` / `VALID` / `DAMAGED`), not a boolean. `detection.py` calls them.
+  It does not inline the parse.
+- **The ZIP tail locator** is a function on the ZIP backend. The detector calls it
+  when the budget grants `TAIL`. The tier stays ZIP-named (`detected_by="zip_tail_probe"`,
+  skip key `"zip_tail"` as #273 shipped). There is no locator registry — 7z / RAR / tar
+  have nothing at the tail (see §Why the tail probe does not generalise), so a
+  format-neutral slot would be speculative generality the ledger does not need. The
+  format-owned function is what task 3.3 wraps.
 - **Cue restriction** for compressor needles is a separate backend-declared
   collection consulted when the cue is `#!`, not a homegrown `cue_mask` bitfield on
   `MagicSignature`. Container needles stay on `SFX_MAGIC` as today.
-- **Failure policy stays in the detector.** A failed validator in this change is not
-  reported (scan continues). The ledger later records the same failure as a
-  lower-evidence / damaged candidate (its tasks 4.6 / 4.7). Baking skip-and-continue
-  into the validator function would force a rewrite; a pass/fail (or small identity
-  outcome) lets the caller change.
+- **Failure policy stays in the detector.** This change treats `NOT_THIS_FORMAT` and
+  `DAMAGED` the same (scan continues). The ledger later treats `DAMAGED` as a
+  still-identified candidate (its tasks 4.6 / 4.7) without changing the validator
+  signature. A boolean would destroy that distinction at the return and force the
+  rewrite 0.6 exists to avoid.
 
 What this change does **not** invent: `DetectionDeclaration`, `EvidenceClass`,
-competing-candidate ranking, `AmbiguousFormatError`, or the branch-and-bound
-`stop_now` scheduler. Those are the ledger (its tasks 3.1, 5.x, 6.x). A parallel
-declaration type here would be the rework the four PRs exist to avoid.
+competing-candidate ranking **across formats**, `AmbiguousFormatError`, or the
+branch-and-bound `stop_now` scheduler. Those are the ledger (its tasks 3.1, 5.x, 6.x).
+A parallel declaration type here would be the rework the four PRs exist to avoid.
+An intra-format tie-break inside one validator is not that ranking.
 
 ## Open question this change does not settle
 

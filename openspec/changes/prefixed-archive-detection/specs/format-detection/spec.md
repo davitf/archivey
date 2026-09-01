@@ -28,20 +28,27 @@ payload — ZIP declares its local-file header and NOT the end-of-central-direct
 spanned markers, which as needles inside a 2 MiB window would claim any executable
 containing those four bytes.
 
-Hit validators and self-locators SHALL live on the same side of that line: a named
+Hit validators and the ZIP tail locator SHALL live on the same side of that line: a named
 function on the format module (or collected next to `SFX_MAGIC`), taking a
 candidate-relative view. The generic detector SHALL call those functions; it SHALL NOT
-contain format-specific branches for ZIP, 7z, RAR, or gzip validation, or for locating a
-ZIP EOCD. A failed validator during this change's first-match scan is not reported (the
-scan continues). The later `detection-evidence-ledger` scheduler MAY record the same
-failure as a lower-evidence candidate without changing the validator function.
+inline ZIP / 7z / RAR / gzip parse, or ZIP EOCD search, inside `detection.py`.
+
+Validators SHALL return a small internal `HitOutcome` (`NOT_THIS_FORMAT` / `VALID` /
+`DAMAGED`), not a boolean. `DAMAGED` means identity holds and structure does not (a 7z
+whose `StartHeaderCRC` fails). This change's first-match scan treats `NOT_THIS_FORMAT`
+and `DAMAGED` the same — not reported; the scan continues. The later
+`detection-evidence-ledger` scheduler MAY treat `DAMAGED` as a lower-evidence candidate
+without changing the validator function or its signature.
 
 This change SHALL NOT introduce `DetectionDeclaration`, `EvidenceClass`, competing-candidate
-ranking, or `AmbiguousFormatError`. Those belong to `detection-evidence-ledger`. Cue
-restriction for compressor needles is a backend-declared collection consulted under a
-`#!` cue, not a bitfield on `MagicSignature`. Tail location is a format-owned locator the
-generic "budget grants `TAIL`" step calls; ZIP is the first (and currently only) format
-that registers one. Inner-TAR after a compressor hit stays the existing probe-at-offset
+ranking **across formats**, or `AmbiguousFormatError`. Those belong to
+`detection-evidence-ledger`. An intra-format tie-break inside one validator (7z preferring
+an exact-EOF match among several validating hits) is not that ranking. Cue restriction for
+compressor needles is a backend-declared collection consulted under a `#!` cue, not a
+bitfield on `MagicSignature`. The ZIP tail probe is ZIP-named: `detected_by="zip_tail_probe"`,
+and the ZIP backend owns the locator function the detector calls when the budget grants
+`TAIL`. It is not a format-neutral locator registry — see `design.md` §Why the tail probe
+does not generalise. Inner-TAR after a compressor hit stays the existing probe-at-offset
 resolution (`TAR_GZ` versus bare `GZIP`), not a gzip-specific branch.
 
 **Compressor needles are searched under a `#!` cue only.** A script stub followed by a bare
