@@ -140,6 +140,47 @@ backend that cannot stream `basic_solid__.rar` cannot satisfy `format-rar`’s s
   unar 1.10.7:  (nothing)  rc=0              ← silent total failure
 ```
 
+#### Follow-up: can we skip empty members (we already know size=0)?
+
+**No — that does not avoid the crash.** The native parser already knows
+`file_size == 0`, and archivey’s solid demux already treats those members as
+zero-length slices (`pipe_offset += 0` in `rar_reader._iter_with_data`). We never
+needed `unrar`/`unar` to *emit* empty files.
+
+The bug is not “unar wrote 0 bytes and we sliced wrong.” An empty RAR5 solid
+member still occupies the **shared compression context**. On
+`basic_solid__.rar`, `unrar vt` reports:
+
+| Member | Unpacked | Packed | Flags |
+| --- | --- | --- | --- |
+| `empty_file.txt` | 0 | **28** | (first in solid block) |
+| `file1.txt` | 13 | 10 | solid |
+
+Those 28 packed bytes are dictionary/setup, not a no-op header. Later members
+continue that stream. `unar` has to decode through that slot even if we never
+ask it to write the empty file. Measured:
+
+| Request | apt 1.10.1 | built 1.10.7 |
+| --- | --- | --- |
+| ALL (includes empty) | SIGSEGV | rc=0, 0 bytes |
+| `file1.txt` only (skip empty) | SIGSEGV | rc=0, 0 bytes |
+| `-i 1,2,3` (skip empty by index) | SIGSEGV | rc=0, 0 bytes |
+| `-i 0` (empty only) | rc=0, 0 bytes | rc=0, 0 bytes |
+
+Empty **position does not matter**: fresh `rar a -s` archives with the empty
+file first, middle, or last all SIGSEGV when extracting a *non-empty* member —
+including `empty_last.rar` / `file1.txt`, where the requested member sits
+*before* the empty slot. Presence of any empty FILE in the solid RAR5 archive
+poisons `unar`’s decoder for the whole archive, not just the 0-byte slice.
+
+Stripping empty FILE headers from a temp copy before handing it to `unar` is
+not a workaround either: the packed 28 bytes are part of the solid bitstream;
+removing the header would desync every later member.
+
+Skipping empties *is* still a valid optimization on the `unrar` path (return
+`b""` from metadata, never spawn a process for a 0-byte payload). It just does
+not make `unar` viable.
+
 ### 2. Error signaling is too weak for archivey’s contract
 
 | Case | `unar` (1.10.1 / 1.10.7) | `unrar` | archivey today |
@@ -269,7 +310,8 @@ under `unar`”) — poor UX next to a tool we already tell people to install.
 3. **If revisiting later**, prefer a spike that only claims nonsolid + solid-without-empty
    with a hard `UnsupportedFeatureError` when the native parser sees `is_solid` and any
    zero-size payload — still a product compromise; measure real corpus frequency before
-   promising it.
+   promising it. Skipping empty members in the extract argv / demux map does **not**
+   recover those archives (`unar` still SIGSEGV / silent-empty on the non-empty members).
 
 4. **Not recommended as a silent PATH fallback** under any design — that is the C1
    failure mode.
