@@ -95,6 +95,7 @@ from archivey.internal.zip_aes import (
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
+from archivey.internal.zip_detect import validate_zip_local_header
 from archivey.internal.zipcrypto import (
     parallel_plaintext_crc32,
     password_matches_check_byte,
@@ -1444,7 +1445,13 @@ class ZipReadBackend(ReadBackend):
     """Backend factory for ZIP archives."""
 
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.ZIP,)
-    EXTENSIONS: Mapping[str, ArchiveFormat] = {".zip": ArchiveFormat.ZIP}
+    EXTENSIONS: Mapping[str, ArchiveFormat] = {
+        ".zip": ArchiveFormat.ZIP,
+        ".jar": ArchiveFormat.ZIP,
+        ".pyz": ArchiveFormat.ZIP,
+        ".whl": ArchiveFormat.ZIP,
+        ".apk": ArchiveFormat.ZIP,
+    }
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(
             0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP
@@ -1460,6 +1467,7 @@ class ZipReadBackend(ReadBackend):
     SFX_MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),
     )
+    SFX_HIT_VALIDATOR = staticmethod(validate_zip_local_header)
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
     # so even a forward-only pass needs a seekable source.
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption

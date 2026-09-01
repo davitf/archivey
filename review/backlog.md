@@ -49,6 +49,7 @@ review directories for these.
 | CLI **Q4** `--raw` / TTY-only quoting remainder | cli-product Q4 | debt-ledger DD8 (additive; recommended style already applied) |
 | `SlicingStream.readinto` (**Q4**) + optional `VerifyingStream` delete | stream-layering | Topic 6 adjacency above |
 | Solid-block decoder hold across `open()` + concurrency (**O2b/O2c**) | simplicity-consistency | `IDEAS.md` §Performance |
+| ZIP local-header layout known in four places (#277 F7) | prefixed-archive-detection Block 1 | Keep until Block 2: `zip_detect.py` is the natural home; fold `zip_reader.py`'s three `read_exact(fp, 30)` sites into a helper when the EOCD confirmation touches that file |
 
 The **docs full review** is in flight as of 2026-07-29 ([`docs/brief.md`](docs/brief.md)) —
 an information-architecture pass separating user / contributor / design-record / history,

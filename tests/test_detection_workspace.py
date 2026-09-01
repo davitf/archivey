@@ -38,6 +38,7 @@ from archivey.internal.sfx import (
     ScanNeedle,
     candidate_origin_for_hit,
     find_magic_in_prefix,
+    iter_magic_in_prefix,
 )
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.types import ArchiveFormat
@@ -212,6 +213,46 @@ def test_candidate_relative_view_is_not_a_second_fetch() -> None:
         relative = view(5)
         assert absolute == relative == b"ustar"
         assert src.unique_bytes == before  # no second fetch
+
+
+def test_candidate_view_limit_does_not_read_past_the_ceiling() -> None:
+    payload = b"PREFIX" + b"PK\x03\x04" + b"\x00" * 200
+    src = InstrumentedBytesIO(payload)
+    with PrefixWorkspace(src, BALANCED_BUDGET) as ws:
+        ws.peek_prefix(10)
+        before = src.unique_bytes
+        view = ws.candidate_view(6, limit=10)
+        got = view(100)
+        assert got == payload[6:10]
+        assert src.unique_bytes == before
+
+
+def test_candidate_view_limit_notes_a_clamped_read() -> None:
+    payload = b"PREFIX" + b"PK\x03\x04" + b"\x00" * 200
+    src = InstrumentedBytesIO(payload)
+    with PrefixWorkspace(src, BALANCED_BUDGET) as ws:
+        ws.peek_prefix(10)
+        exact = ws.candidate_view(6, limit=10)
+        assert exact(4) == payload[6:10]
+        assert not ws.take_clamped_view_read()
+        truncated = ws.candidate_view(6, limit=10)
+        assert truncated(100) == payload[6:10]
+        assert ws.take_clamped_view_read()
+        assert not ws.take_clamped_view_read()
+
+
+def test_iter_magic_in_prefix_does_not_re_yield_at_peek_boundaries() -> None:
+    data = bytearray(65536 * 2)
+    data[65532:65536] = b"PK\x03\x04"
+    hits = list(
+        iter_magic_in_prefix(
+            lambda n: bytes(data[:n]),
+            [ScanNeedle(b"PK\x03\x04"), ScanNeedle(b"Rar!\x1a\x07\x01\x00")],
+            limit=len(data),
+        )
+    )
+    origins = [hit.candidate_origin for hit in hits]
+    assert origins == [65532]
 
 
 def test_negative_candidate_origin_is_discarded() -> None:
