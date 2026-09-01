@@ -47,8 +47,13 @@
   solid+empty SIGSEGVs on stdout **and** disk extract. Distro `7z` lists RAR5 but
   needs `7zip-rar` before solid/compressed data works; with the plugin the ALL-pipe
   matches `unrar p`, still a non-free codec, still CLI gaps (no stdin password,
-  missing-member rc=0). `bsdtar` / `unrar-free` are dead ends. **Do not add** a
-  silent fallback. Prefer documenting `scripts/install-rarlab-unrar.sh`. Evidence:
+  missing-member rc=0). Homebrew `7-zip` (`7zz`) is compiled with
+  `DISABLE_RAR_COMPRESS=1` — same `Unsupported Method` on solid RAR, no plugin
+  extra. `bsdtar` / `unrar-free` are dead ends. Unofficial taps
+  (`gromgit/new-life/unrar`) install real RARLAB UnRAR from a checksummed
+  rarlab.com tarball; fine as a user convenience, **not** a CI install and **not**
+  a second engine. **Do not add** a silent fallback. User guidance:
+  `docs/install.md`. Evidence:
   `dev-docs/investigations/alternative-rar-decompressors.md`.
 
 - **Subprocess decompressor streams** — a single reusable `SubprocessDecompressorStream`

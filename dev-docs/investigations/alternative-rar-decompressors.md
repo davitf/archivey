@@ -31,13 +31,19 @@ The earlier unar-only notes live in
 | --- | --- |
 | **`unar`** | **No.** Stdout concat is real, but RAR5 solid + any empty FILE SIGSEGVs (1.10.1) or returns empty (1.10.7) — **including disk extract**. Skipping empties does not help. |
 | **`7z e -so`** | **Only with the RAR codec actually loaded**, and even then not a silent fallback. Distro `7zip` lists RAR5 and extracts **stored** (`-m0`) members, then says `Unsupported Method` on solid / typical compressed members. `apt install 7zip-rar` adds `Codecs: Rar5` and then the ALL-pipe matches `unrar p` on `basic_solid__.rar`, encryption, hostile names, volumes. Remaining CLI gaps: no stdin password, missing-member **rc=0**, `path;n` unused, link members can set **rc=2** while the payload concat is still correct. The plugin is still a RARLAB-derived non-free codec (multiverse) — same licensing neighbourhood as `unrar`. |
+| **Homebrew `7-zip` / `7zz`** | **No.** Core formula compiles with `DISABLE_RAR_COMPRESS=1`. Same `Unsupported Method` on solid RAR as Debian `7zip` without `7zip-rar`; Homebrew ships no plugin extra. |
 | **`bsdtar`** | **No.** Documents no solid / no password. Solid RAR4: `RAR solid archive support unavailable`. Stored nonsolid: **unbounded stdout** (7 GB in 8 s until timeout) — not safe to spawn. |
 | **`unrar-free` 0.1.3** | **No.** Extract-to-disk only; no stdout. |
+| **Unofficial brew `unrar` taps** | **Not a second engine** — they install RARLAB UnRAR. Usable for users who accept a third-party tap; **not** for CI. |
 
-**Still the cheapest macOS fix:** document `scripts/install-rarlab-unrar.sh` for
-users. If we reopen C1, the only candidate worth an opt-in spike is **`7z` with an
-extract-a-compressed-member codec probe** (not `7z i` format lines). Do not treat
-`unar` / `bsdtar` / `unrar-free` as substitutes.
+**macOS install:** published guidance is `docs/install.md` §Getting RARLAB unrar.
+First-line is compile from rarlab.com (or `scripts/install-rarlab-unrar.sh` in a
+checkout). Homebrew `7zz` / `unar` are documented as non-substitutes. The
+unofficial `gromgit/new-life/unrar` tap is named as a convenience with caveats,
+not as what CI uses. If we reopen C1, the only candidate worth an opt-in spike
+is **`7z` with an extract-a-compressed-member codec probe** (not `7z i` format
+lines). Do not treat `unar` / `bsdtar` / `unrar-free` / Homebrew `7zz` as
+substitutes.
 
 ---
 
@@ -121,7 +127,8 @@ solid) member.
 `7zip-rar` is Ubuntu **multiverse**, same non-free neighbourhood as `unrar`.
 It does not magically make RAR “just a pip extra.” On Windows / official 7-Zip
 builds the codec is usually bundled; on Debian/Ubuntu it is an extra package;
-Homebrew `sevenzip` bottles exist but must be probed the same way.
+Homebrew `sevenzip` / `7-zip` bottles exist and **do not** ship the codec (see
+Homebrew `7zz` below).
 
 ### With the codec loaded — CLI vs `unrar p`
 
@@ -190,18 +197,121 @@ documenting the UnRAR source build.
    members is not a workaround.
 2. **Do not add `bsdtar` / `unrar-free`.**
 3. **Do not silently fall back** to whatever is on `PATH` (C1).
-4. **macOS install friction:** document `scripts/install-rarlab-unrar.sh`.
+4. **macOS install friction:** published `docs/install.md` — compile from
+   rarlab.com / `scripts/install-rarlab-unrar.sh`. Name unofficial taps as
+   convenience, not CI.
 5. **If a second engine is wanted later:** opt-in `7z e -so` gated on a **Rar5
    codec** probe (trial extract, not `7z i` Formats). Treat missing
    `7zip-rar` as “not available”, same as missing `unrar`. Accept that this is
-   still a non-free RAR decompressor, just a different package name.
+   still a non-free RAR decompressor, just a different package name. Homebrew
+   `7zz` is **not** that probe going green.
+
+---
+
+## Homebrew `7zz` (closed)
+
+`brew install 7-zip` (core formula `sevenzip`, also aliased `7zip`) installs
+the binary **`7zz`**. Homebrew compiles `CPP/7zip/Bundles/Alone2` with
+`DISABLE_RAR_COMPRESS=1`
+([`Formula/s/sevenzip.rb`](https://github.com/Homebrew/homebrew-core/blob/master/Formula/s/sevenzip.rb)).
+7-Zip's own `DOC/readme.txt`: with that flag, 7-Zip can still **list** a RAR and
+extract **stored** members, but cannot decompress compressed / solid RAR.
+
+User measurement (macOS, 2026-09-01): `7zz i` shows no RAR codec; extracting a
+solid RAR prints `ERROR: Unsupported Method : <member>` per file. Same lottery
+as Ubuntu `7zip` without `7zip-rar`, except Homebrew has **no** `7zip-rar`
+plugin package — the non-free codec is stripped at compile time for the same
+UnRAR-license reason core dropped `unrar`
+([homebrew-core #66609](https://github.com/Homebrew/homebrew-core/pull/66609),
+[brew#15395](https://github.com/Homebrew/brew/issues/15395)).
+
+**Not an archivey RAR data backend, and not an easy macOS alternative.**
+
+---
+
+## Unofficial Homebrew `unrar` taps
+
+Not a second decompressor: these formulae compile **RARLAB UnRAR** and install
+`unrar`. archivey's finder (`UNRAR` + `Alexander Roshal` / `RARLAB`) will accept
+them. The question is trust and whether CI should depend on them.
+
+### `brew install gromgit/new-life/unrar`
+
+Tap: [gromgit/homebrew-new-life](https://github.com/gromgit/homebrew-new-life)
+("Resurrecting Homebrew formulae/casks that fell by the wayside"). Suggested in
+[Homebrew discussion #3355](https://github.com/orgs/Homebrew/discussions/3355).
+User confirmed it produces a working `unrar` on macOS.
+
+Formula `Formula/unrar.rb` as of 2026-09-01 (last bump
+[`be584aab`](https://github.com/gromgit/homebrew-new-life/commit/be584aabbe182d561f78c457b37c3c79f65c6229),
+2025-07-31):
+
+| Field | Value |
+| --- | --- |
+| homepage | `https://www.rarlab.com/` |
+| url | `https://www.rarlab.com/rar/unrarsrc-7.1.10.tar.gz` |
+| sha256 | `72a9ccca146174f41876e8b21ab27e973f039c6d10b13aabcb320e7055b9bb98` |
+| install | `make` then `bin.install "unrar"` (plus `libunrar` dylib rename on macOS) |
+| livecheck | rarlab.com `rar_add.htm` |
+| bottles | `arm64_sequoia`, `arm64_sonoma`, `ventura`, `x86_64_linux` — **no Tahoe**, **no arm64_linux** |
+| bottle host | `https://ghcr.io/v2/gromgit/new-life` |
+
+Fetched that rarlab URL on 2026-09-01; sha256 **matches** the formula. The
+tarball is UnRAR source (`version.hpp` `RARVER_MAJOR 7` / `RARVER_MINOR 13` —
+banner 7.13). This is the old homebrew-core unrar formula, not `unrar-free`.
+
+Maintainer: Adrian Ho ([gromgit](https://github.com/gromgit)), a long-time
+Homebrew contributor (commented on the 2020 core unrar-removal PR). Tap created
+2020-12, ~2 stars, one primary author. Formula commits are unsigned.
+
+### `carlocab/personal/unrar`
+
+Same shape, older pin (`unrarsrc-7.1.5.tar.gz`), bottles through Sequoia +
+Linux. [PR #276](https://github.com/davitf/archivey/pull/276) already rejected
+it for CI: personal tap, bottles stop before `macos-latest` (Tahoe).
+
+### Trust
+
+- **Source build path:** official RARLAB tarball, checksummed. Functionally the
+  same class as `scripts/install-rarlab-unrar.sh` (different pin: 7.1.10 vs
+  7.2.7 / banner 7.23). A user who lets brew compile on a bottle-less OS is
+  compiling rarlab.com source locally — that is the more trustworthy of the two
+  brew paths.
+- **Bottle path:** prebuilt binary from a third-party GHCR namespace. Homebrew
+  still verifies the sha256 listed in the formula; the remaining bet is that
+  gromgit's GHCR and the formula stay honest.
+- **Ruby:** short, matches the historical core formula. No extra download
+  scripts.
+- **What it is not:** Homebrew-blessed, multi-maintainer, or pinned by us. A
+  tap can change the URL tomorrow; CI would inherit that.
+
+### CI decision: do not switch
+
+Keep compiling the pinned `pmachapman/unrar@d861246` commit via
+`scripts/install-rarlab-unrar.sh` on macOS. Reasons, same neighbourhood as #276:
+
+1. Bottles lag current GitHub `macos-latest` (Tahoe). A tap job would compile
+   from an unpinned-to-us tarball, or fail if the tap/formula disappears.
+2. We already have a content-addressed pin and a GHA cache of the **built
+   binary**.
+3. Linux CI uses distro `unrar`; Windows uses the official SFX. A third-party
+   tap would be a macOS-only extra moving part.
+
+A one-off "does the tap's `unrar` pass our RAR tests" job would only restate
+that RARLAB UnRAR 7.1.10 works, which the existing suite already covers at
+7.00 / 7.23.
+
+### User-facing guidance
+
+Published on `docs/install.md` (pointers from `docs/formats.md`,
+`docs/gotchas.md`). First-line: distro package / rarlab source / the repo
+script. The gromgit tap is named as an unofficial convenience with a banner
+check, not as the supported install. Do not send every `PackageNotInstalledError`
+at a 2-star tap.
 
 ---
 
 ## Open questions (only if we reopen 7z)
 
-- Does Homebrew `sevenzip` bottle the Rar5 codec on Tahoe, or is it Formats-only
-  like Debian `7zip`?
 - Can we ignore 7z rc=2 when every payload member’s CRC verifies (symlink
   archives), or is that too much special-casing?
-- Is `7zip-rar` any easier for macOS users than compiling UnRAR?

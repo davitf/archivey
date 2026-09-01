@@ -24,7 +24,7 @@ _cached_unrar: str | None = None
 _NOT_INSTALLED_MSG = (
     "RARLAB unrar is required to read RAR member data, but it was not found on PATH "
     "(or the unrar on PATH is not RARLAB unrar). Install RARLAB unrar — "
-    "unrar-free / unar / 7z are not supported as substitutes."
+    "unrar-free / unar / 7z / 7zz are not supported as substitutes."
 )
 
 

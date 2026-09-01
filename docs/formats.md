@@ -20,7 +20,9 @@ most often surprise callers. Authoritative detail lives in `openspec/specs/forma
 | `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
 **RAR member data needs the RARLAB `unrar` binary on `PATH`.** No pip extra can supply it —
-listing and metadata work without it, reading bytes does not.
+listing and metadata work without it, reading bytes does not. Homebrew `7-zip`
+(`7zz`) and `unar` are not substitutes; how to get a real `unrar` is on
+[Install and extras](install.md#getting-rarlab-unrar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
@@ -111,8 +113,9 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 ## RAR
 
 - Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
-- Member **data**: RARLAB `unrar` on `PATH` (not `unrar-free` / `unar`). Passwords are
-  passed as bare `-p` with the secret on stdin (not in argv).
+- Member **data**: RARLAB `unrar` on `PATH` (not `unrar-free` / `unar` / Homebrew
+  `7zz`). Passwords are passed as bare `-p` with the secret on stdin (not in argv).
+  Install: [Getting RARLAB unrar](install.md#getting-rarlab-unrar).
 - `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —
   it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
   verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;

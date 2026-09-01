@@ -17,6 +17,11 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   backward seek **re-decompresses from the start** — loudly, via
   `STREAM_REWIND_REDECOMPRESSES`, but it still costs.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
+- **Don't treat Homebrew `7-zip` (`7zz`) or `unar` as the RAR decompressor.**
+  Archivey only uses RARLAB `unrar`. Homebrew builds `7zz` without the RAR codec, so
+  a solid RAR fails with `Unsupported Method`; `unar` is a different tool and is not
+  used.
+  → [Getting RARLAB unrar](install.md#getting-rarlab-unrar)
 - **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
   compressed TAR, a named `open()` can restart the whole block. Prefer one forward
   pass. `concurrent_members=True` makes overlapping streams *correct*; it does not
