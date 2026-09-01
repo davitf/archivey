@@ -518,23 +518,15 @@ def test_streaming_mode_is_uniform_across_formats(key: str, tmp_path: Path) -> N
 
 
 def test_rar_column_is_unmeasured_without_the_rar_writer() -> None:
-    """The coupling: RAR readability does not imply RAR *measurability*.
+    """RAR readability does not imply a live ``rar`` writer.
 
-    ``unrar`` (the decompressor) is enough to *read* RAR, but the corpus builds its RAR
-    fixtures with the RARLAB ``rar`` writer, so a green suite on an unrar-only box says
-    nothing about the RAR column of the conformance sweep.
+    ``unrar`` is enough to *read* RAR. The corpus RAR column is committed
+    (ADR 0016) and runs without the writer. What still skips on an unrar-only box
+    is the handful of tests that shell out to ``rar a`` at runtime — listed in
+    ``tests/fixtures/rar/README.md``.
 
-    The writer is now installed on Linux (`scripts/setup-dev-env.sh`, and the Linux
-    `[all]` CI leg), so this test skips there. It still runs on macOS and Windows, where
-    the writer is deliberately absent — the RAR column is claimed on Linux only, because
-    nothing in the diagnosis was plausibly platform-specific but that is an expectation
-    rather than a measurement.
-
-    The old justification for withholding the writer everywhere — "the RAR fixtures'
-    digest expectations are Linux-fixture-oriented" — did not survive being measured:
-    the corpus makes no platform-dependent assertion about a RAR member, and the sweep
-    was failing on two wrong assertions in the test itself. F16 / Q11 / O6; full
-    evidence in `dev-docs/investigations/rar-corpus-sweep-diagnosis.md`.
+    This test skips where the writer *is* present (Linux ``setup-dev-env.sh``).
+    On CI / macOS it pins that the backend still registers as readable without it.
     """
     rar_is_readable = format_availability(ArchiveFormat.RAR).support is not (
         FormatSupport.NONE

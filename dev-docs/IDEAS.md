@@ -614,3 +614,14 @@
 - **CLI earlier, as dev tool + demo** — ~~`archivey list/test/extract` was
   invaluable…~~ **Done in `cli-v1` (PR #120).** Remaining CLI backlog lives under
   **CLI (post-`cli-v1` follow-ups)** above.
+
+## Testing
+
+- **Commit the leftover live-`rar a` fixtures.** ADR 0016 committed the corpus RAR
+  column and `tests/fixtures/rar/`, so CI installs unrar only. Four tests still
+  shell out to the trialware writer at runtime (SFX stub, real `rar a -sfx`, live
+  multi-volume roundtrip) and skip on every CI leg. Same move as 0016: generate
+  once, commit, drop the live `rar a`. Inventory in
+  `tests/fixtures/rar/README.md`. Linux `setup-dev-env.sh` still apt-installs
+  `rar`, so these are not dark on a provisioned Linux laptop — only on CI /
+  macOS.

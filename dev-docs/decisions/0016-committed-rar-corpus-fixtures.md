@@ -87,3 +87,13 @@ introduces a native RAR reader. 192 KB once is the cheaper side of that trade.
 - **The precedent is bounded.** `COMMITTED_FIXTURE_KEYS` makes "which formats are
   exceptions" a one-line answer rather than a convention, so a future format cannot
   drift into being committed without an explicit edit here.
+
+## Follow-up: live `rar a` tests are still dark on CI
+
+The corpus and `tests/fixtures/rar/` are the committed set. Four tests still
+shell out to the writer at runtime (`rar a`, `rar a -sfx`, `rar a -v`) and skip
+on every CI leg, which never installs `rar`. That is the same skip-quietly shape
+this ADR closed for the sweep, just a smaller residue. Inventory:
+`tests/fixtures/rar/README.md` §"Tests that still need the `rar` writer". Closing
+it is the same move again — generate once, commit, drop the live `rar a`. Parked
+in `dev-docs/IDEAS.md`.
