@@ -30,6 +30,7 @@ from archivey.exceptions import (
     FormatDetectionError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.rar_parser import RAR_ID
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z, find_signature_offset
 from archivey.internal.backends.sevenzip_reader import SevenZipReadBackend
 from archivey.internal.backends.zip_reader import ZipReadBackend
@@ -748,6 +749,19 @@ def test_shebang_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
     path.write_bytes(b"#!/bin/sh\n# decoy PK\x03\x04 is not a zip\necho hi\n")
     with pytest.raises(FormatDetectionError):
         detect_format(path)
+
+
+def test_shebang_script_mentioning_7z_magic_is_not_seven_z() -> None:
+    """7z needles stay off the shebang cue until the CRC validator lands (#277 F3)."""
+    payload = b"#!/bin/sh\necho 'magic " + MAGIC_7Z + b" here'\n" + b"x" * 100
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(payload))
+
+
+def test_shebang_script_mentioning_rar_magic_is_not_rar() -> None:
+    payload = b"#!/usr/bin/env python3\nMARKER = " + RAR_ID + b"\n"
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(payload))
 
 
 def test_elf_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:

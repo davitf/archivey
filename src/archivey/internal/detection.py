@@ -424,6 +424,23 @@ def _warn_on_conflict(
     )
 
 
+def _sfx_entries_for_prefix(
+    entries: list[MagicSignature], prefix: bytes
+) -> list[MagicSignature]:
+    """Needle set for this prefix's cue.
+
+    ZIP has a local-header validator in this PR; 7z and RAR do not yet. A ``#!``
+    script that merely mentions those magics would otherwise detect as
+    ``SEVEN_Z`` / ``RAR`` and raise ``CorruptionError``. ``MZ`` / ELF / Mach-O
+    keep the full needle set. Lift this filter when the 7z/RAR
+    ``SFX_HIT_VALIDATOR``s land (tasks 2.3–2.4 — a slim follow-up, not the rest
+    of Block 3).
+    """
+    if prefix.startswith(b"#!"):
+        return [entry for entry in entries if entry.format == ArchiveFormat.ZIP]
+    return entries
+
+
 def _scan_for_sfx_payload(
     entries: list[MagicSignature],
     peek_more: Callable[[int], bytes],
@@ -595,7 +612,7 @@ def _detect_format_body(
                 workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
             else:
                 sfx_info = _scan_for_sfx_payload(
-                    registry.sfx_magic_entries(),
+                    _sfx_entries_for_prefix(registry.sfx_magic_entries(), data),
                     peek_more,
                     workspace,
                     scan_limit=scan_limit,

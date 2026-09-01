@@ -256,6 +256,15 @@ name/extra lengths in-bounds) is Block 1; EOCD + central-directory confirmation 
 Block 2's tail helper. Shipping the widened cue without the cheap check would report
 scripts that mention those four bytes as damaged ZIPs.
 
+**Shebang cue does not search 7z/RAR until their validators land.** (#277 F3,
+maintainer chose A.) ZIP has a local-header check in Block 1; 7z `StartHeaderCRC`
+and RAR main-header CRC are tasks 2.3–2.4 and can ship as a slim follow-up after
+Block 1 — they are the same `SFX_HIT_VALIDATOR` functions Block 3 would write,
+not a throwaway. The rest of Block 3 (`prefix_kind`, `detection_budget`,
+exhaustive scan) is independent. Until 2.3–2.4 land, a `#!` scan searches only
+ZIP needles; `MZ` / ELF / Mach-O keep the full set. The follow-up also deletes
+the filter.
+
 **`ArchiveyConfig.detection_budget` is the spend cap.** Threading it needs a freeze
 surface: *Explicit configuration object*. `None` selects `BALANCED_BUDGET`.
 `format=` plus a non-default `detection_budget` is a silent unused knob (detection

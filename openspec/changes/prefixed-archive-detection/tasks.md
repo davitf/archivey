@@ -7,8 +7,9 @@ use `(context)` / `(every block)` rather than a block number.
 
 1. **Cue + zipapp** — `#!` / Mach-O cue, ZIP local-header needle **plus cheap
    local-header validator**, `.jar` / `.pyz` / `.whl` / `.apk` extensions, cost
-   bound for shebang non-archives. No `prefix_kind`, no tail probe, no compressor
-   needles.
+   bound for shebang non-archives. 7z/RAR needles stay off the shebang cue until
+   their hit validators land (a slim follow-up of tasks 2.3–2.4, not the rest of
+   Block 3). No `prefix_kind`, no tail probe, no compressor needles.
    Tasks: **2.1, 2.1a, 2.1b, 2.1c, 2.2, 2.2a, 3.4, 4.1, 4.1a, 4.8a, 5.4.**
 2. **ZIP tail probe** — budget-gated (`THOROUGH.max_tail_bytes`, not `BALANCED`).
    Workspace tail helper. Both ZIP offset conventions. JPEG+ZIP as an enabled-path
@@ -136,7 +137,7 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
 
 ## 2. Widen the cue, validate the scan
 
-- [x] 2.1 **(Block 1)** Extend the prefix cue from `MZ`/ELF to also accept a `#!` shebang and a **Mach-O header that parses**; keep the same `SFX_MAX` window and peek schedule. Mach-O is asymmetric on purpose: `MZ` / ELF / `#!` raise a **weak** cue on their leading bytes, but Mach-O magic raises **no cue at all** until its header parses (thin `cputype`/`filetype`, or a fat arch table). `ca fe ba be` is shared with the Java class-file magic, and grading it weak would not spare a `.class` file — a weak cue still triggers the forward scan, so only `ExecutableCue.NONE` does. Nothing is lost: a real Mach-O SFX stub is a real executable and parses by construction
+- [x] 2.1 **(Block 1)** Extend the prefix cue from `MZ`/ELF to also accept a `#!` shebang and a **Mach-O header that parses**; keep the same `SFX_MAX` window and peek schedule. Mach-O is asymmetric on purpose: `MZ` / ELF / `#!` raise a **weak** cue on their leading bytes, but Mach-O magic raises **no cue at all** until its header parses (thin `cputype`/`filetype`, or a fat arch table). `ca fe ba be` is shared with the Java class-file magic, and grading it weak would not spare a `.class` file — a weak cue still triggers the forward scan, so only `ExecutableCue.NONE` does. Nothing is lost: a real Mach-O SFX stub is a real executable and parses by construction. **#277 F3 (maintainer: A):** 7z/RAR needles are searched only under `MZ` / ELF / Mach-O in this block. A `#!` scan searches ZIP only, so a script that mentions the 7z/RAR magics stays `FormatDetectionError` rather than a wrong-format `CorruptionError`. Lift the filter when 2.3–2.4 land — those two tasks are a slim follow-up after Block 1, not delayed for the rest of Block 3 (`prefix_kind`, `detection_budget`, exhaustive scan).
 - [x] 2.1c **(Block 1)** Red–green the collision directly: a minimal `.class` file starting `ca fe ba be` must raise no cue, must not enter the `SFX_MAX` scan, and must keep today's content-probe behaviour; a fat Mach-O stub with a real 7z inside must still be found
 - [x] 2.1a **(Block 1)** Red–green the Mach-O case specifically. **Re-measured on `main` at `bee7735`; the premise has moved twice, so take these numbers rather than the ones in older notes.** A thin 64-bit stub (`cf fa ed fe`) plus an appended 7z now behaves *differently depending on the stub's entropy*, because #261's framing gate rejects the Brotli claim but nothing replaced it:
 
@@ -156,14 +157,14 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
       backend (candidate-relative view in, `HitOutcome` out); the scan calls it. A
       decoy of four `PK\x03\x04` bytes is `NOT_THIS_FORMAT`. Do **not** require an
       EOCD seek here — that is Block 2. Red–green alongside 4.1a.
-- [ ] 2.3 **(Block 3)** Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader,
+- [ ] 2.3 **(Block 3, or a slim follow-up after Block 1)** Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader,
       and `offset + 32 + NextHeaderOffset + NextHeaderSize <= source length`, preferring
       an exact end match when several candidates validate — an intra-format tie-break
       inside this validator, not the cross-format ranking 0.6 defers. Named function on
       the 7z backend returning `HitOutcome`; the scan calls it. Failed CRC with a
       plausible header is `DAMAGED`; this change still skips it (scan continues). Ledger
       task 4.7 is the later policy that reports `SEVEN_Z` from that outcome.
-- [ ] 2.4 **(Block 3)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a
+- [ ] 2.4 **(Block 3, or a slim follow-up after Block 1)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a
       parseable main header. Named function on the RAR backend, same `HitOutcome` split
       as 2.3.
 - [ ] 2.5 **(Block 3)** Continue scanning past a candidate that fails validation rather than giving up
