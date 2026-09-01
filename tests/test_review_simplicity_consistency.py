@@ -29,7 +29,6 @@ were moved here from `review/simplicity-consistency/tests/` (pre-archive path), 
 from __future__ import annotations
 
 import io
-import shutil
 from pathlib import Path
 
 import pytest
@@ -513,21 +512,6 @@ def test_streaming_mode_is_uniform_across_formats(key: str, tmp_path: Path) -> N
         with pytest.raises(UnsupportedOperationError):
             for _ in reader:
                 pass
-
-
-def test_unrar_on_path_is_rarlab() -> None:
-    """If ``unrar`` is on PATH, archivey's finder must accept it as RARLAB.
-
-    Format availability is FULL without any binary (listing is native). Member-data
-    tests skip when ``find_rarlab_unrar`` fails. This pins the compile path: a
-    freshly built macOS ``unrar`` must pass the banner check, not just exist.
-    """
-    if shutil.which("unrar") is None:
-        pytest.skip("unrar not on PATH")
-    from archivey.internal.backends.rar_unrar import find_rarlab_unrar
-
-    path = find_rarlab_unrar()
-    assert Path(path).is_file()
 
 
 # ---------------------------------------------------------------------------

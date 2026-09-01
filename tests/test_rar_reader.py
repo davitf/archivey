@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import shutil
 import struct
 import time
 import zlib
@@ -689,6 +690,20 @@ def test_non_rarlab_unrar_rejected(
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
     with pytest.raises(PackageNotInstalledError, match="RARLAB"):
         rar_unrar.find_rarlab_unrar()
+
+
+def test_unrar_on_path_is_the_rarlab_build() -> None:
+    """Environment guard: an ``unrar`` the finder rejects makes RAR data tests fail confusingly.
+
+    On CI this duplicates the ``Verify RARLAB unrar on PATH`` step. Unique value is
+    developer machines: one named failure instead of a wall of
+    ``PackageNotInstalledError``. Finder unit behaviour is
+    ``test_non_rarlab_unrar_rejected``. This does not cover a binary installed
+    off PATH (that is the macOS ``~/.local/bin`` trap).
+    """
+    if shutil.which("unrar") is None:
+        pytest.skip("no unrar on PATH — RAR data tests skip, the documented state")
+    rar_unrar.find_rarlab_unrar()
 
 
 def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
