@@ -105,6 +105,21 @@
 
 ## API & ergonomics
 
+- **Makeself-aware payload location** — parked from `prefixed-archive-detection`. That
+  change's Block 4 finds script-wrapped tar.gz/bz2/xz by a shebang cue plus compressor
+  needles (gzip `1f 8b 08`, bzip2 `BZh[1-9]` plus first-block marker, etc.) inside a 2 MiB
+  window. Makeself itself already *knows* where the payload is: the stub is a shell script
+  that exports `SKIP` (header line count) and `COMPRESS` (`gzip` / `bzip2` / `pbzip2` /
+  `xz` / `zstd` / `lz4` / `compress` / `none`), and `--dumpconf` prints both. Offset is
+  `head -n $SKIP | wc -c`. A detector that recognised that header could seek once to the
+  payload instead of scanning two megabytes of script for magic — cheaper, no false
+  `1f 8b 08` in the stub text, and it would also name `bzip3` / `lzo` which archivey does
+  not read rather than claiming a needle miss. Not a general prefix-scan improvement;
+  promote only with a corpus of current and old `.run` installers (NVIDIA, Anaconda,
+  Makeself `--bzip2` / `--xz` / `--zstd`) and a spec for "looks like Makeself" that does
+  not become a second scripting-language parser. The generic shebang+needle path stays
+  the fallback for ad-hoc `cat stub.tar.gz` wrappers.
+
 - **Exhaustive ambiguity fallback for `open_archive()` / `open_stream()`** — when
   evidence-based detection yields two or more tied maximal candidates, the near-term
   contract should raise a dedicated ambiguity error rather than choose by registry order.

@@ -8,20 +8,49 @@ look. Detection SHALL try, in order:
 
 1. **Exact magic at offset 0** — unchanged.
 2. **Tail probe for self-locating containers** (see the ZIP requirement in `format-zip`).
-   Runs whenever the source is seekable, with no cue, because the cost is bounded by the
-   format rather than by a constant we chose.
+   Needs no prefix cue — the format bounds the locator — but SHALL run only when the
+   detection budget grants `TAIL` (`max_tail_bytes` / `max_seeks`). The default `BALANCED`
+   budget does not. `#273` ships every preset at `max_tail_bytes = 0`; this change is what
+   may raise `THOROUGH`.
 3. **Prefix-cued forward scan** for containers that cannot locate themselves, within the
    shared `SFX_MAX` window (today 2 MiB; same binding as the RAR and 7z SFX scanners), run
    before content probes. **Container needles**, searched under every cue: RAR
-   (`52 61 72 21 1A 07`), 7z (`37 7A BC AF 27 1C`), TAR's `ustar`, and ZIP's local-file
-   header (`50 4B 03 04`).
-4. **Exhaustive scan**, only when the caller opts in (`archive-reading`).
+   (`52 61 72 21 1A 07`), 7z (`37 7A BC AF 27 1C`), and ZIP's local-file
+   header (`50 4B 03 04`). TAR's `ustar` is **not** a container needle in this change —
+   claiming on five bytes without the ledger's checksum validator is the rework that
+   change exists to avoid.
+4. **Exhaustive scan**, only when the caller's `DetectionBudget` grants a scan past
+   `SFX_MAX`. The budget is `ArchiveyConfig.detection_budget`, not a keyword on
+   `detect_format` / `open_archive` and not a separate `exhaustive_prefix_scan` bool.
 
 Which magic tier 3 hunts for SHALL remain **backend-declared data**, not a table inside the
 detector, and a backend SHALL declare only magic that can legitimately *begin* an appended
 payload — ZIP declares its local-file header and NOT the end-of-central-directory or
 spanned markers, which as needles inside a 2 MiB window would claim any executable
 containing those four bytes.
+
+Hit validators and the ZIP tail locator SHALL live on the same side of that line: a named
+function on the format module (or collected next to `SFX_MAGIC`), taking a
+candidate-relative view. The generic detector SHALL call those functions; it SHALL NOT
+inline ZIP / 7z / RAR / gzip parse, or ZIP EOCD search, inside `detection.py`.
+
+Validators SHALL return a small internal `HitOutcome` (`NOT_THIS_FORMAT` / `VALID` /
+`DAMAGED`), not a boolean. `DAMAGED` means identity holds and structure does not (a 7z
+whose `StartHeaderCRC` fails). This change's first-match scan treats `NOT_THIS_FORMAT`
+and `DAMAGED` the same — not reported; the scan continues. The later
+`detection-evidence-ledger` scheduler MAY treat `DAMAGED` as a lower-evidence candidate
+without changing the validator function or its signature.
+
+This change SHALL NOT introduce `DetectionDeclaration`, `EvidenceClass`, competing-candidate
+ranking **across formats**, or `AmbiguousFormatError`. Those belong to
+`detection-evidence-ledger`. An intra-format tie-break inside one validator (7z preferring
+an exact-EOF match among several validating hits) is not that ranking. Cue restriction for
+compressor needles is a backend-declared collection consulted under a `#!` cue, not a
+bitfield on `MagicSignature`. The ZIP tail probe is ZIP-named: `detected_by="zip_tail_probe"`,
+and the ZIP backend owns the locator function the detector calls when the budget grants
+`TAIL`. It is not a format-neutral locator registry — see `design.md` §Why the tail probe
+does not generalise. Inner-TAR after a compressor hit stays the existing probe-at-offset
+resolution (`TAR_GZ` versus bare `GZIP`), not a gzip-specific branch.
 
 **Compressor needles are searched under a `#!` cue only.** A script stub followed by a bare
 compressed stream — `#!/bin/sh` then a gzipped tar — is the makeself / NVIDIA / Anaconda
@@ -34,8 +63,12 @@ Compressor magic is short, so it collides: measured across 497 ELF binaries (176
 2-byte `1f 8b` occurs **423** times — 0.85 per binary — while the 3-byte `1f 8b 08`, which
 pins the compression method to deflate, occurs **3** times in the same 176 MB. A
 stream-codec needle SHALL therefore include the method or equivalent discriminating byte
-where the format has one, and a codec whose magic cannot reach that selectivity SHALL NOT
-be declared as a needle at all.
+where the format has one, and SHALL be declared only when a hit can be confirmed by a
+**cheap structural validator** — the same bar `detection-evidence-ledger` calls
+`DISCRIMINATING_HEADER` — without running a content probe. Probes (zlib, Brotli, LZMA
+Alone) SHALL NOT become needles. Makeself's `--bzip2` is a real production shape: the
+needle is `BZh` plus ASCII `1`–`9`, confirmed by the first-block marker or empty-stream
+EOS (ledger task 4.5), not by `bz2.decompress`. unix-compress `.Z` stays out.
 
 This narrows, rather than reverses, the standing rule that stream codecs declare no SFX
 magic. That rule's stated reason — that a stub plus a bare compressed stream is not a thing
@@ -220,7 +253,6 @@ class PrefixKind(Enum):
     NONE = "none"
     EXECUTABLE = "executable"
     SCRIPT = "script"
-    OTHER_FORMAT = "other_format"
     UNKNOWN = "unknown"
 
 @dataclass(frozen=True)
@@ -234,9 +266,13 @@ class FormatInfo:
     prefix_kind: PrefixKind = PrefixKind.NONE
 ```
 
-`config=None` → library default. `confidence` = magic / structural probe /
-extension-guess. `encoding_hint` is format-signal only (never a member scan).
-`payload_offset > 0` marks an SFX payload start.
+`config=None` → library default. Detection's spend cap is `config.detection_budget`
+(`None` → `BALANCED_BUDGET`). The budget types live in `archivey.detection_cost` until
+`detection-result-surface` freezes the root surface; this change does not re-export them.
+`detect_format` SHALL NOT grow a `budget=` / `detection_budget=` keyword — `#273`'s
+`budget=` argument is removed when the config field lands. `confidence` = magic /
+structural probe / extension-guess. `encoding_hint` is format-signal only (never a
+member scan). `payload_offset > 0` marks an SFX payload start.
 
 `prefix_kind` SHALL always be present, defaulting to `NONE`, so a caller may read it
 without testing `payload_offset` first. `NONE` SHALL correspond exactly to
@@ -247,13 +283,11 @@ reports what precedes the payload*.
 `"zip_tail_probe"`, `"sfx_scan"`, `"exhaustive_scan"`, `"content_probe"`, and
 `"extension"`.
 
-**The exhaustive-scan opt-in is a config field, not a keyword argument.** `detect_format`
-takes no per-call operational keywords, so a flag that must work on both `detect_format`
-and `open_archive` has exactly one place to live: `ArchiveyConfig.exhaustive_prefix_scan`,
-whose declaration is in the `archive-reading` *Explicit configuration object* requirement —
-**that dataclass is the freeze surface, and this requirement does not restate it.** It
-SHALL NOT be added as a keyword argument to `open_archive`, which would leave
-`detect_format` unable to express it.
+**The exhaustive-scan opt-in is `ArchiveyConfig.detection_budget`, not a keyword
+argument.** `detect_format` and `open_archive` already take `config=`; a second
+spend-cap argument would be two knobs most callers never set. `#273`'s
+`detect_format(..., budget=)` is removed in the same PR that adds the field
+(task 3.1). There is no `exhaustive_prefix_scan` bool.
 
 **Collectors:**
 
@@ -273,7 +307,8 @@ SHALL NOT be added as a keyword argument to `open_archive`, which would leave
 | Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
 | Plain archive at offset 0 | `prefix_kind == NONE`, `payload_offset == 0` |
 | Prefixed archive found by any tier | `prefix_kind` set, `payload_offset > 0`, `detected_by` naming the tier |
-| `exhaustive_prefix_scan` left at its default | No unbounded read; a beyond-window archive stays undetected |
+| Default `BALANCED` budget (`config.detection_budget is None`) | No unbounded read; a beyond-window archive stays undetected |
+| `config=ArchiveyConfig(detection_budget=…)` with `max_scan_bytes` past `SFX_MAX` | Exhaustive scan may fire |
 
 ### Requirement: Magic-first detection with extension fallback and confidence scoring
 
@@ -309,14 +344,15 @@ still reach the forward scan, the content probes, and the extension fallback.
    content probes, because it is exact magic and they are the weakest signal available. It
    SHALL be skipped when the source size is known to be smaller than the extended window,
    and a source too short for it SHALL fall through rather than be rejected.
-4. **Tail probe** for self-locating containers (`format-zip`), when the source is seekable.
-   A validated hit → `CERTAIN` / `detected_by="zip_tail_probe"`. This tier needs no prefix
-   cue — the format bounds the *locator's* cost — so it runs even when nothing about the
-   leading bytes looks executable. Whether it is enabled **by default** is gated on
-   measurement; see the cost note below.
+4. **Tail probe** for self-locating containers (`format-zip`), when the source is seekable
+   **and** the budget grants `TAIL`. A validated hit → `CERTAIN` / `detected_by="zip_tail_probe"`.
+   This tier needs no prefix cue — the format bounds the *locator's* cost — so when it runs
+   it runs even when nothing about the leading bytes looks executable. It is **off** under
+   `BALANCED` (and, until this change raises them, under `THOROUGH` too: `#273` left
+   `max_tail_bytes = 0` on every preset). See the cost note below.
 5. **Bounded forward scan** within `SFX_MAX`, when a prefix cue fires. A validated hit →
    `detected_by="sfx_scan"`.
-6. **Unbounded scan**, only when the caller set `exhaustive_prefix_scan`. A validated hit →
+6. **Unbounded scan**, only when the budget's `max_scan_bytes` exceeds `SFX_MAX`. A validated hit →
    `detected_by="exhaustive_scan"`.
 7. **Content probes** — formats with no exact magic (Brotli, zlib, LZMA Alone). Match →
    `detected_by="content_probe"`, at the confidence the magic-less-formats requirement
@@ -380,10 +416,10 @@ by the source and most files are small. But 0.61 GiB of reads — and, more impo
 backup-corpus workload, and seek latency rather than byte count is likely to dominate on a
 network or spinning-disk source.
 
-Therefore: enabling this tier **by default** SHALL be gated on a measurement of that
-workload, including seek latency and not only bytes. Until that measurement exists the tier
-is specified and available, and the default remains a maintainer decision rather than an
-assumption inherited from the phrase "format-bounded".
+Therefore: this tier is **off** under `BALANCED`. Seek latency on the founding backup
+workload, not byte count, is what would have to change that. The probe is specified and
+available under a budget that grants `TAIL`; it is not an assumption inherited from
+"format-bounded".
 
 **Far magic ahead of the content probes closes a silent wrong answer.** ISO 9660 reserves
 its first 32 KiB as a system area for a bootloader, so every bootable or hybrid image
@@ -496,11 +532,18 @@ carries about itself:
 - **RAR 5**: the 8-byte marker SHALL be followed by a main archive header whose CRC32
   matches.
 - **RAR 4**: the 7-byte marker block SHALL be followed by a parseable main header.
+- **ZIP**: a local-file-header hit SHALL pass a cheap structural check without a tail
+  seek: `version_needed` within a sane maximum, the reserved GP-flag bits clear,
+  `compression_method` in the known set, and `filename_length` / `extra_field_length`
+  plausible and in-bounds against the remaining source. Four bytes of `PK\x03\x04` in a
+  stub are not a ZIP. EOCD + central-directory confirmation (the `CERTAIN` bar the tail
+  probe already requires) is the Block 2 tail helper's job, not a Block 1 requirement.
 - **Stream codecs** (shebang cue only): the magic SHALL include the compression-method
-  byte where the format has one, and the candidate SHALL decode a bounded prefix
-  successfully. A hit that decodes SHALL then be run through the existing inner-TAR probe,
-  so a script-wrapped gzipped tar resolves to `TAR_GZ` rather than `GZIP`. These needles
-  are the shortest in the set, so the decode is doing the work the magic cannot.
+  byte where the format has one. Identity is the cheap structural validator (gzip header
+  checks; bzip2 block-size digit plus first-block / EOS marker; xz flags CRC; and the
+  equivalents the ledger lists). A hit that identifies SHALL then be run through the
+  existing inner-TAR probe, so a script-wrapped gzipped tar resolves to `TAR_GZ` rather
+  than `GZIP`. The inner-TAR decode is a *resolution* step, not the format identity.
 
 A candidate that fails validation SHALL NOT be reported, and the scan SHALL continue.
 Validation exists so that a hit can be reported at high confidence and so a scan cannot
@@ -512,8 +555,11 @@ sources than the cost gate allows.
 | Case | Expected |
 | --- | --- |
 | Stub + real 7z, CRC and end-offset agree | `SEVEN_Z` at that offset, `CERTAIN` |
-| `#!` stub + gzipped tar, bounded decode succeeds | `TAR_GZ` at the gzip offset |
-| `#!` stub + gzip magic that fails a bounded decode | Not reported; scan continues |
+| `#!` stub + gzipped tar, header identifies and inner-TAR resolves | `TAR_GZ` at the gzip offset |
+| `#!` stub + gzip magic whose header bytes fail the structural check | Not reported; scan continues |
+| `#!` stub + identifying gzip that is not a tar | `GZIP` at the gzip offset — inner-TAR is resolution, not identity |
+| `#!` stub whose text contains `PK\x03\x04` but no valid local header | Not reported; scan continues |
+| `#!` / ELF stub + local header that passes the cheap check, real ZIP follows | `ZIP` at that offset |
 | The 6 magic bytes appear in unrelated data | CRC fails; not reported; scan continues |
 | 7z whose declared end overruns the source | Not reported |
 | 7z with trailing bytes appended after the archive | Still reported — declared end within the source |
@@ -539,8 +585,11 @@ change would be indistinguishable from an unprefixed archive.
 | `NONE` | `payload_offset == 0` |
 | `EXECUTABLE` | PE, ELF or Mach-O — a self-extracting archive |
 | `SCRIPT` | a `#!` shebang — a self-extracting shell installer |
-| `OTHER_FORMAT` | the prefix is itself a recognised format (e.g. an image) — an embedded or polyglot file |
-| `UNKNOWN` | a prefix that matched no cue, reachable only via the opt-in exhaustive scan |
+| `UNKNOWN` | a prefix that is neither executable nor shebang. How the offset was found is `detected_by`, not a kind. Archivey does not maintain a non-archive file-type list, so a JPEG prefix is `UNKNOWN` rather than a recognised other format |
+
+`payload_offset is None` (origin not established — a forced `format=ZIP` whose reader
+self-adjusted) is a different axis, owned by `archive-origin-reporting` on `ArchiveInfo`,
+and SHALL NOT grow a fifth `PrefixKind` member.
 
 #### Scenario: prefix kinds
 
@@ -549,5 +598,5 @@ change would be indistinguishable from an unprefixed archive.
 | Plain `.zip` | `prefix_kind == NONE` |
 | `rar a -sfx` output | `EXECUTABLE` |
 | `zipapp` `.pyz`, Spring Boot executable JAR | `SCRIPT` |
-| JPEG with an appended ZIP | `OTHER_FORMAT` |
+| JPEG with an appended ZIP (tail probe enabled) | `UNKNOWN` — not a new file-type |
 | ZIP found by the opt-in scan behind unrecognised bytes | `UNKNOWN` |

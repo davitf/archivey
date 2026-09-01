@@ -68,7 +68,7 @@ source, not a defect in the ZIP reader.
 | `#!/usr/bin/env python3` + ZIP (a `zipapp` `.pyz`, **written in place**, EOCD adjustment 0) | `ZIP`; all members listed and readable; `payload_offset` = length of the shebang line, **not** 0; `prefix_kind == SCRIPT` |
 | `#!/bin/sh` launcher + **concatenated** ZIP (Spring Boot executable JAR shape, adjustment > 0) | `ZIP`; members readable; `payload_offset` = prefix length; `prefix_kind == SCRIPT` |
 | PE stub + ZIP (a self-extracting installer) | `ZIP`, `payload_offset` at the ZIP data; `prefix_kind == EXECUTABLE` |
-| JPEG header + appended ZIP | `ZIP`; the polyglot opens as the archive it also is; `prefix_kind == OTHER_FORMAT` |
+| JPEG header + appended ZIP (tail probe enabled) | `ZIP`; the polyglot opens as the archive it also is; `prefix_kind == UNKNOWN` |
 | Plain ZIP | Unchanged; `payload_offset == 0`; `prefix_kind == NONE` |
 | Prefixed ZIP on a non-seekable stream | Not found by the tail probe; falls through to the other tiers |
 | A file whose last 64 KiB contain `PK\x05\x06` but no valid central directory | No ZIP claim (see the validation requirement below) |
@@ -78,8 +78,9 @@ store different offsets, and they MUST produce the same `payload_offset` semanti
 
 ### Requirement: A tail-probe hit is validated before it is reported
 
-The tail probe runs on **every seekable source**, so a four-byte coincidence in the last
-64 KiB of an unrelated file must not produce a ZIP claim. `PK\x05\x06` alone is not
+The tail probe runs when the detection budget grants a tail read (`max_tail_bytes` and
+`TAIL`), so a four-byte coincidence in the last 64 KiB of an unrelated file must not
+produce a ZIP claim. Under the default `BALANCED` budget it does not run. `PK\x05\x06` alone is not
 evidence; the system SHALL confirm the record before reporting a format.
 
 A candidate End of Central Directory SHALL be rejected unless all of the following hold:

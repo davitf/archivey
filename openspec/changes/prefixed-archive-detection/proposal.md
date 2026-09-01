@@ -10,7 +10,7 @@ That misses formats that are neither rare nor exotic. Measured on `main`:
 | --- | --- | --- | --- |
 | `zipapp` output (`#!/usr/bin/env python3` + ZIP) | `FormatDetectionError` | **opens, all members** | opens |
 | Spring Boot executable JAR (`#!/bin/sh` + ZIP) | `FormatDetectionError` | **opens** | opens |
-| JPEG with an appended ZIP | `FormatDetectionError` | **opens** | opens |
+| JPEG with an appended ZIP | `FormatDetectionError` under `BALANCED`; opens with `format=ZIP` | opens |
 | makeself `.run` (`#!/bin/sh` + tar.gz) | `FormatDetectionError` | fails — needs an offset | n/a |
 
 The ZIP rows are the embarrassing ones: **the backend already reads these files**, and
@@ -25,11 +25,13 @@ tier detection accordingly instead of applying one rule to all of them.
 
 ## What Changes
 
-- **Always probe the tail for self-locating containers, when the source is seekable.**
-  ZIP records its central directory from the end and its offsets are relative to the ZIP's
-  own start, so a prefixed ZIP needs no scan and no offset — only the willingness to look.
-  The search is bounded *by the format*: the EOCD comment length is a `uint16`, so
-  65535 + 22 bytes is a hard ceiling, not a tuning choice.
+- **A ZIP tail probe, off under `BALANCED`.** ZIP records its central directory from the end
+  and its offsets are relative to the ZIP's own start, so a prefixed ZIP needs no scan and
+  no offset — only the willingness to look. The search is bounded *by the format*: the EOCD
+  comment length is a `uint16`, so 65535 + 22 bytes is a hard ceiling, not a tuning choice.
+  **Off under `BALANCED`** — the format bounds the locator, not the extra seek per file on a
+  backup sweep. `zipapp` is found by the shebang cue without it; JPEG+appended ZIP is a
+  `THOROUGH` case.
 - **Keep the forward scan gated, but widen the gate** from "leading bytes look executable"
   to "leading bytes look like a *prefix*": `MZ`, ELF, **Mach-O**, or a `#!` shebang. Same
   window and the same per-file bound, but a **larger population** — counted on a `/usr`
@@ -73,38 +75,59 @@ tier detection accordingly instead of applying one rule to all of them.
 ### Modified Capabilities
 
 - `format-detection` — the SFX requirement is replaced by a tiered "the archive may start
-  after byte zero" rule: an always-on tail probe for self-locating containers, a
-  prefix-cued forward scan for the rest, an opt-in exhaustive scan, and a `prefix_kind`
-  on `FormatInfo`.
+  after byte zero" rule: a **budget-gated** tail probe for self-locating containers (off
+  under `BALANCED`), a prefix-cued forward scan for the rest, an opt-in exhaustive scan
+  via a larger `max_scan_bytes`, and a `prefix_kind` on `FormatInfo`.
 - `format-zip` — a leading prefix is explicitly supported rather than incidental, and the
-  EOCD search bound is stated as a format-derived constant.
-- `archive-reading` — `open_archive` gains the exhaustive-scan opt-in and passes it through.
+  EOCD search bound is stated as a format-derived constant. The tail probe runs only when
+  the budget grants `TAIL`.
+- `archive-reading` — `ArchiveyConfig` gains `detection_budget` (the freeze surface for
+  the detection spend cap) and the exhaustive-scan requirement. Not a keyword on
+  `open_archive` / `detect_format`, and not `exhaustive_prefix_scan`.
+- `detection-cost` — callers pass the budget via that config field; `#273`'s
+  `detect_format(..., budget=)` keyword is removed.
 
 ## Decisions
 
 - **Cost tiers the design, not exhaustiveness.** The cue was never about false positives;
   it was about not reading 2 MiB from every file. Once that is the stated reason, the
-  answer follows: a probe the *format* bounds (ZIP's 64 KiB tail) can run always, a scan
-  bounded only by a constant we picked needs a reason to run, and an unbounded sweep is
-  opt-in. Recorded rather than assumed, because the previous cue looked like a
-  false-positive defence and was reasoned about that way in review.
+  answer follows: a probe the *format* bounds (ZIP's 64 KiB tail) is cheap enough to
+  *consider* always, but still a seek, so it stays off under `BALANCED` until a
+  seek-cost measurement exists; a scan bounded only by a constant we picked needs a
+  reason to run; an unbounded sweep is opt-in via `max_scan_bytes`. Recorded rather
+  than assumed, because the previous cue looked like a false-positive defence and was
+  reasoned about that way in review.
 - **Opening an embedded archive is the right default.** A caller who opens a file has a
   reason to think it is an archive; if they are sweeping everything, the `prefix_kind`
   field lets them filter. archivey reports what it found rather than guessing intent.
 - **Scan validation is not a licence to scan more.** The 7z/RAR self-checks make a hit
   trustworthy, not cheap. They justify high confidence on a hit, not removing the gate.
+- **Four implementation PRs already move toward the ledger.** Validators and the ZIP
+  tail locator land as format-owned functions the first-match loop calls. Validators
+  return an internal `HitOutcome` so the ledger can later treat `DAMAGED` as still
+  identified without a signature change. The tail probe stays ZIP-named
+  (`detected_by="zip_tail_probe"`); there is no locator registry. No parallel
+  `DetectionDeclaration`.
+- **Detection spend lives on `ArchiveyConfig.detection_budget`.** Most callers never
+  set a cap; they already skip `config=`. A bare `budget=` on `open_archive` /
+  `detect_format` is easy to read as a decompression limit. `#273`'s `budget=`
+  keyword is removed when the field lands. The earlier "not an ArchiveyConfig field"
+  note was the `exhaustive_prefix_scan` bool, not this.
 
 ## Impact
 
-- Modules: `src/archivey/internal/detection.py` (tier order, tail probe, widened cue,
-  `prefix_kind`), `src/archivey/internal/sfx.py` (cue + validated scan), the ZIP backend's
-  prefix handling, `src/archivey/config.py` (the opt-in field).
+- Modules: `src/archivey/internal/detection.py` (tier order, cue, `prefix_kind` — the
+  generic loop), `src/archivey/internal/sfx.py` (cue), format modules for validators and
+  the ZIP tail locator, `src/archivey/config.py` (`detection_budget` on `ArchiveyConfig`).
+  The detector calls those functions rather than inlining parse. No `DetectionDeclaration`
+  type here (that is `detection-evidence-ledger`).
 - Public API: `FormatInfo` gains `prefix_kind` (always present, default `NONE`) and a
-  `PrefixKind` enum; `ArchiveyConfig` gains `exhaustive_prefix_scan: bool = False`. The
-  opt-in is a **config field, not a keyword argument** — `detect_format` takes no per-call
-  operational keywords, so a kwarg on `open_archive` could not be expressed there. Files
-  that used to raise `FormatDetectionError` now open — a behaviour change, and the point of
-  the change.
+  `PrefixKind` enum (`NONE` / `EXECUTABLE` / `SCRIPT` / `UNKNOWN`). `ArchiveyConfig`
+  gains `detection_budget` (`None` → BALANCED). Tail and exhaustive scan are
+  `DetectionBudget` numbers on that field, not `exhaustive_prefix_scan` and not a
+  `budget=` keyword. `#273`'s `detect_format(..., budget=)` is removed. Files that
+  used to raise `FormatDetectionError` now open — a behaviour change, and the point
+  of the change.
 - ~~**Detection order changes once, deliberately: far magic moves ahead of the content
   probes.**~~ — **no longer this change's; shipped by `detection-format-gaps`.** Writing the
   tiers down here is what exposed it (exact magic at a fixed offset losing to the weakest
