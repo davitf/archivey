@@ -89,7 +89,6 @@ def test_native_rar_matches_rarfile_metadata_and_bytes(
 
 @requires("rarfile")
 @requires_binary("unrar")
-@requires_binary("rar")
 @pytest.mark.parametrize(
     "entry",
     [
@@ -99,6 +98,7 @@ def test_native_rar_matches_rarfile_metadata_and_bytes(
     ],
 )
 def test_corpus_rar_matches_rarfile(entry: CorpusEntry, tmp_path: Path) -> None:
+    """Native reader vs rarfile on committed corpus RAR fixtures (no ``rar`` writer)."""
     rarfile = _rarfile()
     archive = corpus_archive_path(entry, "rar", tmp_path)
     password = entry.passwords[0] if entry.passwords else None

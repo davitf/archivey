@@ -34,8 +34,31 @@ Encrypted / hash fixtures of note:
 | `encryption_blake2sp.rar` | RAR5 `-m0 -htb -ppassword`; HASHMAC tweaked BLAKE2sp |
 | `blake2sp.rar` | RAR5 `-m0 -htb`; plaintext BLAKE2sp (no encryption) |
 
-Many-member listing fixtures (structural benchmark gate; CI has `unrar` but not
-`rar`, so these are committed rather than built on demand):
+## Tests that still need the `rar` writer at runtime
+
+CI and macOS `setup-dev-env.sh` install **unrar only** — the writer is trialware
+(ADR [0016](../../../dev-docs/decisions/0016-committed-rar-corpus-fixtures.md)).
+The corpus RAR column and the fixtures in this directory already run without it.
+
+These tests still shell out to `rar a` and **skip** when the writer is absent.
+They are the leftover of that decision, not a new gap from dropping the Homebrew
+cask. Linux `setup-dev-env.sh` still `apt-get install`s `rar`, so they run on a
+provisioned Linux laptop; they do not run on CI.
+
+| Test | Why it still writes |
+| --- | --- |
+| `test_sfx.py::test_sfx_rar_behind_a_low_entropy_stub_is_not_brotli` | `rar a` for a payload matching `_FILES` |
+| `test_sfx.py::test_a_real_sfx_archive_auto_opens` | `rar a -sfx` — a real ~250 KB stub, not a hand-rolled `MZ` |
+| `test_sfx.py::test_auto_open_matches_an_explicitly_sliced_stream[rar]` | same payload as the stub test |
+| `test_volumes.py::test_multi_volume_rar_real_roundtrip` | live `rar a -v400b`; listing/read of committed volumes is already covered by `tinyvol*` above |
+
+Committing a small SFX payload (and a real `-sfx` stub) the way this directory
+already does for volumes would close the gap. Tracked in `dev-docs/IDEAS.md`.
+
+## Many-member listing fixtures
+
+Structural benchmark gate; CI has `unrar` but not `rar`, so these are committed
+rather than built on demand:
 
 | Files | Notes |
 | --- | --- |

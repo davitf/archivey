@@ -29,7 +29,6 @@ were moved here from `review/simplicity-consistency/tests/` (pre-archive path), 
 from __future__ import annotations
 
 import io
-import shutil
 from pathlib import Path
 
 import pytest
@@ -38,9 +37,7 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyUsageError,
-    FormatSupport,
     StreamNotSeekableError,
-    format_availability,
     open_archive,
     open_stream,
 )
@@ -515,33 +512,6 @@ def test_streaming_mode_is_uniform_across_formats(key: str, tmp_path: Path) -> N
         with pytest.raises(UnsupportedOperationError):
             for _ in reader:
                 pass
-
-
-def test_rar_column_is_unmeasured_without_the_rar_writer() -> None:
-    """The coupling: RAR readability does not imply RAR *measurability*.
-
-    ``unrar`` (the decompressor) is enough to *read* RAR, but the corpus builds its RAR
-    fixtures with the RARLAB ``rar`` writer, so a green suite on an unrar-only box says
-    nothing about the RAR column of the conformance sweep.
-
-    The writer is now installed on Linux (`scripts/setup-dev-env.sh`, and the Linux
-    `[all]` CI leg), so this test skips there. It still runs on macOS and Windows, where
-    the writer is deliberately absent — the RAR column is claimed on Linux only, because
-    nothing in the diagnosis was plausibly platform-specific but that is an expectation
-    rather than a measurement.
-
-    The old justification for withholding the writer everywhere — "the RAR fixtures'
-    digest expectations are Linux-fixture-oriented" — did not survive being measured:
-    the corpus makes no platform-dependent assertion about a RAR member, and the sweep
-    was failing on two wrong assertions in the test itself. F16 / Q11 / O6; full
-    evidence in `dev-docs/investigations/rar-corpus-sweep-diagnosis.md`.
-    """
-    rar_is_readable = format_availability(ArchiveFormat.RAR).support is not (
-        FormatSupport.NONE
-    )
-    if shutil.which("rar") is not None:
-        pytest.skip("rar writer present — the RAR corpus column is measurable here")
-    assert rar_is_readable, "unrar present: RAR reads fine, yet no RAR fixture is built"
 
 
 # ---------------------------------------------------------------------------

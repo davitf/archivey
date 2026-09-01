@@ -97,6 +97,7 @@ def test_multi_volume_rar_opens_volume_set_or_rejects_stub(tmp_path: Path) -> No
         pass
 
 
+# Live ``rar a`` — skips on CI (unrar only). See tests/fixtures/rar/README.md.
 @requires_binary("rar")
 @requires_binary("unrar")
 def test_multi_volume_rar_real_roundtrip(tmp_path: Path) -> None:

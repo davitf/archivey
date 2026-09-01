@@ -208,16 +208,26 @@ jobs:
       - name: Install unrar (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar
+      # Homebrew disabled the `rar` cask on 2026-09-01 (official binaries fail
+      # Gatekeeper notarization). Compile RARLAB UnRAR from a pinned git commit
+      # of the pmachapman/unrar GitHub mirror (not rarlab, not GitHub's generated
+      # archive tarball). The GHA cache stores the *built binary*; the commit pin
+      # is checked when the script actually builds, not on a cache hit. `unar` is
+      # not a substitute — archivey's finder requires the RARLAB banner.
+      - name: Cache compiled RARLAB unrar (macOS)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rarlab-unrar
+          key: rarlab-unrar-${{ hashFiles('scripts/install-rarlab-unrar.sh') }}-${{ runner.os }}-${{ runner.arch }}
+          save-always: true
       - name: Install unrar (macOS)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
         run: |
-          brew install --cask rar
-          # Cask ships both rar + unrar; drop the writer. Nothing in the suite needs
-          # it — corpus RAR archives are committed (see the Linux step above) — and
-          # removing it keeps the "no trialware on CI" property explicit rather than
-          # incidental.
-          rm -f "$(brew --prefix)/bin/rar"
-          command -v unrar
+          DEST="${RUNNER_TEMP}/rarlab-unrar"
+          ./scripts/install-rarlab-unrar.sh --dest "$DEST"
+          echo "$DEST" >> "$GITHUB_PATH"
+          test -x "$DEST/unrar"
           command -v rar && exit 1 || true
       - name: Install unrar (Windows)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'

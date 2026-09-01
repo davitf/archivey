@@ -382,6 +382,7 @@ def test_sfx_zip_behind_a_low_entropy_stub_is_not_brotli(tmp_path: Path) -> None
     _assert_sfx_opens(path, ArchiveFormat.ZIP, len(_STUB))
 
 
+# Live ``rar a`` — skips on CI (unrar only). See tests/fixtures/rar/README.md.
 @requires_binary("rar")
 def test_sfx_rar_behind_a_low_entropy_stub_is_not_brotli(tmp_path: Path) -> None:
     path = tmp_path / "installer.exe"
@@ -389,6 +390,7 @@ def test_sfx_rar_behind_a_low_entropy_stub_is_not_brotli(tmp_path: Path) -> None
     _assert_sfx_opens(path, ArchiveFormat.RAR, len(_STUB))
 
 
+# Live ``rar a -sfx`` — skips on CI (unrar only). See tests/fixtures/rar/README.md.
 @requires_binary("rar")
 def test_a_real_sfx_archive_auto_opens(tmp_path: Path) -> None:
     """`rar a -sfx` output: a real ~250 KB stub, not a hand-rolled one.
@@ -508,7 +510,7 @@ def test_detection_leaves_a_non_seekable_stream_replayable(tmp_path: Path) -> No
             _rar_bytes,
             ArchiveFormat.RAR,
             id="rar",
-            marks=requires_binary("rar"),
+            marks=requires_binary("rar"),  # live rar a; see fixtures/rar/README.md
         ),
     ],
 )
