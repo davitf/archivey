@@ -203,17 +203,29 @@ class PrefixWorkspace:
         """Convenience: :meth:`peek_range` from archive origin 0."""
         return self.peek_range(0, length)
 
-    def candidate_view(self, candidate_origin: int) -> Callable[[int], bytes]:
+    def candidate_view(
+        self, candidate_origin: int, *, limit: int | None = None
+    ) -> Callable[[int], bytes]:
         """A ``peek_more(n)``-shaped callable relative to ``candidate_origin``.
 
         ``peek_more(n)`` returns the first ``n`` bytes of the *candidate*, which are the
         absolute range ``[candidate_origin, candidate_origin + n)``. Served from the
         shared buffer — never a second fetch of bytes already retrieved.
+
+        ``limit`` is an exclusive archive-origin ceiling (the SFX scan passes
+        ``scan_limit``). A validator that asks for more than remains gets a short
+        read — identity fails cheaply — and must not grow the prefix past the cost
+        gate. ``None`` leaves the view unbounded.
         """
         if candidate_origin < 0:
             raise ValueError("candidate_origin must be non-negative")
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative")
 
         def peek_more(length: int) -> bytes:
+            if limit is not None:
+                remaining = max(0, limit - candidate_origin)
+                length = min(length, remaining)
             return self.peek_range(candidate_origin, length)
 
         return peek_more

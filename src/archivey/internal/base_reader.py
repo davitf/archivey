@@ -13,6 +13,7 @@ from typing import (
     TYPE_CHECKING,
     BinaryIO,
     Callable,
+    ClassVar,
     Collection,
     ContextManager,
     Iterator,
@@ -178,7 +179,13 @@ class ReadBackend(ABC):
     # local-header sanity check so four ``PK\\x03\\x04`` bytes in a stub are not a ZIP.
     # Returns :class:`~archivey.internal.sfx.HitOutcome`; the detector treats
     # anything other than ``VALID`` as "skip and continue".
-    SFX_HIT_VALIDATOR: Callable[[Callable[[int], bytes]], HitOutcome] | None = None
+    # Subclasses that supply a function must wrap it in ``staticmethod`` — a bare
+    # function on the class body is a descriptor, and an instance lookup would bind
+    # ``self`` as the first argument. The other detection tables (MAGIC, SFX_MAGIC)
+    # are inert data and do not have this problem.
+    SFX_HIT_VALIDATOR: ClassVar[
+        Callable[[Callable[[int], bytes]], HitOutcome] | None
+    ] = None
     # Formats this backend reads that have no exact magic and are recognized by a content
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).

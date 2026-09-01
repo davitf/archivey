@@ -301,11 +301,19 @@ def _find_earliest(
     data: bytes | bytearray,
     needles: Sequence[ScanNeedle],
     start: int = 0,
+    *,
+    searched: int = 0,
 ) -> tuple[int, ScanNeedle] | None:
-    """The earliest needle occurrence at or after ``start``, as ``(index, needle)``."""
+    """The earliest needle occurrence at or after ``start``, as ``(index, needle)``.
+
+    ``searched`` is how far a previous growing peek already covered. A shorter
+    needle that fitted entirely in that prefix must not be re-found in the overlap
+    kept for a longer sibling (RAR5's 8 bytes vs ZIP's 4).
+    """
     best: tuple[int, ScanNeedle] | None = None
     for needle in needles:
-        found = data.find(needle.magic, start)
+        needle_start = max(start, max(0, searched - (len(needle.magic) - 1)))
+        found = data.find(needle.magic, needle_start)
         if found >= 0 and (best is None or found < best[0]):
             best = (found, needle)
     return best
@@ -379,6 +387,8 @@ def iter_magic_in_prefix(
 
     Callers skip decoys (a candidate that fails its format-owned validator) and
     keep iterating. A negative candidate origin is discarded rather than yielded.
+    Each match is yielded once: a shorter needle that sat wholly inside the previous
+    peek is not re-emitted when the next step rewinds by the longest needle's overlap.
     ``peek_more(n)`` returns the source's first ``n`` bytes without consuming them
     (idempotent, growing supersets — a
     :class:`~archivey.internal.detection_workspace.PrefixWorkspace` view).
@@ -386,16 +396,15 @@ def iter_magic_in_prefix(
     normalized = _normalize_needles(needles)
     if not normalized:
         return
-    overlap = max(len(needle.magic) for needle in normalized) - 1
     searched = 0
 
     for step in (*_PEEK_STEPS, limit):
         if step <= searched:
             continue
         data = peek_more(min(step, limit))
-        search_from = max(0, searched - overlap)
+        search_from = 0
         while True:
-            hit = _find_earliest(data, normalized, search_from)
+            hit = _find_earliest(data, normalized, search_from, searched=searched)
             if hit is None:
                 break
             index, needle = hit

@@ -1467,7 +1467,7 @@ class ZipReadBackend(ReadBackend):
     SFX_MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),
     )
-    SFX_HIT_VALIDATOR = validate_zip_local_header
+    SFX_HIT_VALIDATOR = staticmethod(validate_zip_local_header)
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: the central directory lives at EOF,
     # so even a forward-only pass needs a seekable source.
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption

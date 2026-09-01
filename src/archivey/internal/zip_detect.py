@@ -15,9 +15,11 @@ from archivey.internal.sfx import HitOutcome
 _LOCAL_HEADER_MAGIC = b"PK\x03\x04"
 _LOCAL_HEADER_SIZE = 30
 
-# APPNOTE 6.3.10 tops out at version 6.3 (63). 99 is a slack ceiling so a slightly
+# APPNOTE 6.3.10 tops out at version 6.3 (63). 1.0 (10) is the floor any writer
+# produces; 0 is the zero-padded-stub decoy. 99 is a slack ceiling so a slightly
 # newer writer is not mistaken for a decoy; random bytes after ``PK\\x03\\x04``
 # (e.g. ``0x90`` filler) land well above it.
+_VERSION_NEEDED_MIN = 10
 _VERSION_NEEDED_MAX = 99
 
 # Unused / PKWARE-reserved general-purpose flag bits: 7–10, 12, 14, 15.
@@ -42,6 +44,7 @@ _KNOWN_METHODS = frozenset(
         16,
         18,
         19,
+        20,  # pre-reassignment zstd; APPNOTE keeps it, 93 is the current id
         93,
         95,
         96,
@@ -75,11 +78,15 @@ def validate_zip_local_header(peek_more: Callable[[int], bytes]) -> HitOutcome:
         name_len,
         extra_len,
     ) = struct.unpack_from("<HHHHHIIIHH", header, 4)
-    if version_needed > _VERSION_NEEDED_MAX:
+    if version_needed < _VERSION_NEEDED_MIN or version_needed > _VERSION_NEEDED_MAX:
         return HitOutcome.NOT_THIS_FORMAT
     if flags & _GP_RESERVED_MASK:
         return HitOutcome.NOT_THIS_FORMAT
     if method not in _KNOWN_METHODS:
+        return HitOutcome.NOT_THIS_FORMAT
+    # A local header always names its member. Combined with the version floor, this
+    # rejects ``PK\\x03\\x04`` plus zero-fill — the usual ELF/PE stub padding.
+    if name_len == 0:
         return HitOutcome.NOT_THIS_FORMAT
     needed = _LOCAL_HEADER_SIZE + name_len + extra_len
     rest = peek_more(needed)

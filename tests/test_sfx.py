@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from archivey import DEFAULT_ARCHIVEY_CONFIG, detect_format, open_archive
-from archivey.detection_cost import TierSkipReason
+from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
 from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
@@ -32,6 +32,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z, find_signature_offset
 from archivey.internal.backends.sevenzip_reader import SevenZipReadBackend
+from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.sfx import (
     SFX_MAX,
@@ -640,14 +641,18 @@ def test_a_decoy_needle_in_the_stub_wins_and_fails_loudly(tmp_path: Path) -> Non
         assert {m.name for m in archive.members() if m.is_file} == set(_FILES)
 
 
-def test_a_decoy_zip_needle_is_skipped_for_the_real_payload(tmp_path: Path) -> None:
+@pytest.mark.parametrize("filler", [b"\x90", b"\x00"], ids=["nop-fill", "zero-fill"])
+def test_a_decoy_zip_needle_is_skipped_for_the_real_payload(
+    tmp_path: Path, filler: bytes
+) -> None:
     """Four ``PK\\x03\\x04`` bytes fail local-header sanity; the scan resumes.
 
     Before the validator this claimed offset 514 (the decoy) and still opened, because
     zipfile locates the EOCD from the tail. The cheap check must not widen that: a
     decoy is ``NOT_THIS_FORMAT``, and the real local header further on is the answer.
+    Zero-fill is the usual ELF/PE stub padding; ``0x90`` is the synthetic A-34 stub.
     """
-    stub = b"MZ" + b"\x90" * 512 + b"PK\x03\x04" + b"\x90" * 3576
+    stub = b"MZ" + filler * 512 + b"PK\x03\x04" + filler * 3576
     path = tmp_path / "decoy-zip.exe"
     payload = _zip_bytes()
     path.write_bytes(stub + payload)
@@ -680,6 +685,10 @@ def test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy() 
         validate_zip_local_header(_peek_view(b"PK\x03\x04" + b"\x90" * 40))
         is HitOutcome.NOT_THIS_FORMAT
     )
+    assert (
+        validate_zip_local_header(_peek_view(b"PK\x03\x04" + b"\x00" * 40))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
 
     def _header(
         *,
@@ -709,6 +718,15 @@ def test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy() 
         )
 
     assert validate_zip_local_header(_peek_view(_header())) is HitOutcome.VALID
+    assert validate_zip_local_header(_peek_view(_header(method=20))) is HitOutcome.VALID
+    assert (
+        validate_zip_local_header(_peek_view(_header(version=0)))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+    assert (
+        validate_zip_local_header(_peek_view(_header(name_len=0, rest=b"")))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
     # Reserved GP-flag bit 15.
     assert (
         validate_zip_local_header(_peek_view(_header(flags=0x8000)))
@@ -739,6 +757,17 @@ def test_elf_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
     path.write_bytes(stub)
     with pytest.raises(FormatDetectionError):
         detect_format(path)
+
+
+def test_elf_zero_filled_zip_decoy_skips_to_the_real_payload(tmp_path: Path) -> None:
+    """``PK\\x03\\x04`` plus zeros is the common stub filler, not a local header."""
+    stub = b"\x7fELF\x02\x01\x01" + b"\x00" * 200 + b"PK\x03\x04" + b"\x00" * 300
+    payload = _zip_bytes()
+    path = tmp_path / "decoy-elf.bin"
+    path.write_bytes(stub + payload)
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.ZIP
+    assert detected.payload_offset == len(stub)
 
 
 def test_zipapp_detects_as_zip_and_lists_members(tmp_path: Path) -> None:
@@ -796,6 +825,35 @@ def test_shebang_non_archive_reads_at_most_min_size_sfx_max() -> None:
     with pytest.raises(FormatDetectionError):
         detect_format(src)
     assert src.unique_bytes <= min(len(script), SFX_MAX)
+
+
+def test_hostile_zip_local_header_stays_inside_the_scan_budget(tmp_path: Path) -> None:
+    """A candidate near the scan edge must not peek ``name_len`` past the cost gate."""
+    hdr = b"PK\x03\x04" + struct.pack(
+        "<HHHHHIIIHH", 20, 0, 8, 0, 0, 0, 0, 0, 0xFFFF, 0xFFFF
+    )
+    data = bytearray(b"#!/bin/sh\n" + b"\x90" * (SFX_MAX + 200_000))
+    data[SFX_MAX - 40 : SFX_MAX - 40 + len(hdr)] = hdr
+    path = tmp_path / "hostile.pyz"
+    path.write_bytes(bytes(data))
+    src = InstrumentedBytesIO(bytes(data))
+    with pytest.raises(FormatDetectionError):
+        detect_format(src)
+    assert src.unique_bytes <= SFX_MAX + 256
+    # A named ``.pyz`` falls through to extension (or a probe) and still carries a receipt.
+    info = detect_format(path)
+    assert info.detected_by != "sfx_scan"
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.within_budget(BALANCED_BUDGET)
+    assert info.cost_receipt.unique_bytes_read <= SFX_MAX + 256
+
+
+def test_sfx_hit_validator_is_not_bound_on_instance() -> None:
+    inst = object.__new__(ZipReadBackend)
+    assert inst.SFX_HIT_VALIDATOR is ZipReadBackend.SFX_HIT_VALIDATOR
+    assert (
+        inst.SFX_HIT_VALIDATOR(_peek_view(b"PK\x03\x04")) is HitOutcome.NOT_THIS_FORMAT
+    )
 
 
 def test_class_file_does_not_enter_the_sfx_scan() -> None:

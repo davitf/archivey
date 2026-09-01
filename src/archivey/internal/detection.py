@@ -453,7 +453,7 @@ def _scan_for_sfx_payload(
         entry = by_needle[hit.needle]
         validator = validators.get(entry.format)
         if validator is not None:
-            view = workspace.candidate_view(hit.candidate_origin)
+            view = workspace.candidate_view(hit.candidate_origin, limit=scan_limit)
             if validator(view) is not HitOutcome.VALID:
                 continue
         result = FormatInfo(
