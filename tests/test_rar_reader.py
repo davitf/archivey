@@ -713,6 +713,13 @@ def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         rar_unrar.find_rarlab_unrar()
 
 
+def test_unrar_not_installed_message_names_lookalikes() -> None:
+    """Copy of the not-installed message — behaviour tests only match ``RARLAB``."""
+    msg = rar_unrar._NOT_INSTALLED_MSG
+    for name in ("unrar-free", "unar", "7z", "7zz"):
+        assert name in msg
+
+
 @requires("cryptography")
 def test_header_crypto_gating(monkeypatch: pytest.MonkeyPatch) -> None:
     from archivey.internal.streams import crypto
