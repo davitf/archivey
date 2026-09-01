@@ -271,6 +271,36 @@ follow-up than widening needles further — parked in `dev-docs/IDEAS.md`.
 **`peek_range` is not this change's to invent.** `#273` shipped `PrefixWorkspace.peek_range`
 / `candidate_view`, `ScanNeedle`, and `MagicHit`. Task 2.5a is inherited plumbing.
 
+**Format-owned hooks, ledger-shaped — not a second declaration type.** Q1 still lands
+the four PRs on the current first-match detector. The shape of those PRs is chosen so
+`detection-evidence-ledger` task 3.3 / group 4 **wraps** what they ship rather than
+extracting parse logic out of `detection.py`.
+
+What that means in code:
+
+- **Validators** (ZIP local-header sanity, 7z `StartHeaderCRC`, RAR main-header CRC,
+  gzip header identity, bzip2 first-block / EOS) are named functions on the format
+  module, taking a candidate-relative view. `detection.py` calls them. It does not
+  contain `if format is ZIP` validation branches.
+- **The ZIP tail locator** is a function on the ZIP backend. The generic detector's
+  "if the budget grants `TAIL`" step calls registered locators. ZIP is the only
+  format that registers one (7z / RAR / tar have nothing at the tail — see §Why the
+  tail probe does not generalise); that is data, not a ZIP-only tier inlined in the
+  detector.
+- **Cue restriction** for compressor needles is a separate backend-declared
+  collection consulted when the cue is `#!`, not a homegrown `cue_mask` bitfield on
+  `MagicSignature`. Container needles stay on `SFX_MAGIC` as today.
+- **Failure policy stays in the detector.** A failed validator in this change is not
+  reported (scan continues). The ledger later records the same failure as a
+  lower-evidence / damaged candidate (its tasks 4.6 / 4.7). Baking skip-and-continue
+  into the validator function would force a rewrite; a pass/fail (or small identity
+  outcome) lets the caller change.
+
+What this change does **not** invent: `DetectionDeclaration`, `EvidenceClass`,
+competing-candidate ranking, `AmbiguousFormatError`, or the branch-and-bound
+`stop_now` scheduler. Those are the ledger (its tasks 3.1, 5.x, 6.x). A parallel
+declaration type here would be the rework the four PRs exist to avoid.
+
 ## Open question this change does not settle
 
 **Are there prefixed 7z/RAR files in the wild that are not self-extracting executables?**

@@ -28,6 +28,22 @@ payload — ZIP declares its local-file header and NOT the end-of-central-direct
 spanned markers, which as needles inside a 2 MiB window would claim any executable
 containing those four bytes.
 
+Hit validators and self-locators SHALL live on the same side of that line: a named
+function on the format module (or collected next to `SFX_MAGIC`), taking a
+candidate-relative view. The generic detector SHALL call those functions; it SHALL NOT
+contain format-specific branches for ZIP, 7z, RAR, or gzip validation, or for locating a
+ZIP EOCD. A failed validator during this change's first-match scan is not reported (the
+scan continues). The later `detection-evidence-ledger` scheduler MAY record the same
+failure as a lower-evidence candidate without changing the validator function.
+
+This change SHALL NOT introduce `DetectionDeclaration`, `EvidenceClass`, competing-candidate
+ranking, or `AmbiguousFormatError`. Those belong to `detection-evidence-ledger`. Cue
+restriction for compressor needles is a backend-declared collection consulted under a
+`#!` cue, not a bitfield on `MagicSignature`. Tail location is a format-owned locator the
+generic "budget grants `TAIL`" step calls; ZIP is the first (and currently only) format
+that registers one. Inner-TAR after a compressor hit stays the existing probe-at-offset
+resolution (`TAR_GZ` versus bare `GZIP`), not a gzip-specific branch.
+
 **Compressor needles are searched under a `#!` cue only.** A script stub followed by a bare
 compressed stream — `#!/bin/sh` then a gzipped tar — is the makeself / NVIDIA / Anaconda
 `.run` installer family, and it is the one place where a stub plus a *stream codec* rather

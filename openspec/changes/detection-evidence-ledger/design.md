@@ -363,4 +363,6 @@ generalises).
 Blocks `detection-result-surface` and the revised `prefixed-archive-detection`. Per the
 investigation, #257's revised delta drops its provisional note and its first-match algorithm,
 and adds its three tiers as declarations onto this scheduler rather than rewriting the tier
-code.
+code. Prefixed-archive may already be shipping on the current detector (four PRs); those PRs
+land validators and the ZIP tail locator as format-owned callables, so the rebase wraps
+them into `evaluate` instead of extracting parse logic from `detection.py`.

@@ -19,10 +19,17 @@
 
   **That rebase is not a gate on implementing prefixed-archive.** The maintainer split that
   change into four PRs on the current detector (cue / zipapp, budget-gated ZIP tail,
-  `prefix_kind`, makeself needles). This change still owns: restating those tiers as
-  scheduler declarations (task 10.6), the TAR checksum validator that makes `ustar` a safe
-  scan needle (task 4.3 — prefixed-archive deferred adding it), and the bzip2 first-block
-  marker that prefixed-archive's shebang compressor needles will reuse (task 4.5).
+  `prefix_kind`, makeself needles). Those PRs land validators and the ZIP tail locator as
+  **format-owned callables** the first-match loop calls — not as `if ZIP` branches in
+  `detection.py`, and not as a parallel `DetectionDeclaration` type. Task 3.3 / group 4
+  **wrap** those callables into `evaluate`; they do not re-extract the parse. Failure
+  policy (first-match skip vs grade-as-damaged) stays in the scheduler — prefixed-archive
+  must not bake skip-and-continue into the validator function itself.
+
+  This change still owns: restating those tiers as scheduler declarations (task 10.6), the
+  TAR checksum validator that makes `ustar` a safe scan needle (task 4.3 — prefixed-archive
+  deferred adding it), and wrapping the bzip2 first-block marker if prefixed-archive's
+  shebang needles already shipped it (task 4.5).
 
   **Inherited from `detection-prefix-workspace` Decision 1B (spec honesty trim):** the budget
   fields `completion_window_bytes`, `max_index_bytes`, `max_probe_links`, and
@@ -68,7 +75,9 @@
 - [ ] 3.1 `DetectionDeclaration` with `max_evidence`, `required_capabilities`,
       `estimated_cost`, `evaluate`
 - [ ] 3.2 Evaluators return an iterable of candidates; absence is empty, never a sentinel
-- [ ] 3.3 Convert each backend's `MAGIC` / `SFX_MAGIC` and each codec's probe to declarations
+- [ ] 3.3 Convert each backend's `MAGIC` / `SFX_MAGIC` and each codec's probe to declarations.
+      If `prefixed-archive-detection` has already landed format-owned validators / the ZIP
+      tail locator, wrap those callables in `evaluate` — do not rewrite the parse.
 - [ ] 3.4 Split the content probes into a bounded-prefix declaration (`BOUNDED_PROBE`) and a
       whole-source completion declaration (`COMPLETE`), the second reusing the first's work
 - [ ] 3.5 Keep gzip as **one** declaration ceilinged `SELF_VALIDATING` — assert this, since
@@ -78,9 +87,11 @@
 ## 4. Structural validators
 
 - [ ] 4.1 gzip: `CM`, reserved `FLG` bits, optional-field bounds, `FHCRC` verified when set
-      and fully available (`INCOMPLETE` when not)
+      and fully available (`INCOMPLETE` when not). Wrap prefixed-archive's gzip identity
+      function if Block 4 already shipped it.
 - [ ] 4.2 XZ stream-flags CRC32; LZ4 header xxHash; 7z `StartHeaderCRC` and next-header
-      bounds; RAR main-header CRC
+      bounds; RAR main-header CRC. Wrap prefixed-archive's 7z / RAR validators if Block 3
+      already shipped them.
 - [ ] 4.3 TAR: full 512-byte header parse, checksum accepted against **both** the unsigned
       POSIX and the historical signed sum, replacing bare `ustar`. **Also the gate for
       prefixed-archive's deferred uncompressed-TAR-behind-stub needle** — that change will
@@ -90,11 +101,15 @@
 - [ ] 4.5 bzip2 first block marker; `.Z` max-code width and reserved bits; lzip coded
       dictionary size; ISO descriptor tuple with type 255 rejected at sector 16.
       Prefixed-archive's shebang compressor needle for Makeself `--bzip2` is `BZh` + ASCII
-      `1`–`9` confirmed by this marker, not by a decode probe.
+      `1`–`9` confirmed by this marker, not by a decode probe. If that needle lands first,
+      wrap its marker function here rather than re-deriving it.
 - [ ] 4.6 Each validator declares its failure disposition (reject / identified-but-damaged /
-      `INCOMPLETE`) rather than the caller assuming one
+      `INCOMPLETE`) rather than the caller assuming one. Prefixed-archive's functions
+      return identity (pass/fail); this task is the wrap that adds disposition, not a
+      rewrite of the parse.
 - [ ] 4.7 Verify: a 7z with a failed `StartHeaderCRC` is still `SEVEN_Z`, and the read raises
-      `CorruptionError` — identity is graded, not erased
+      `CorruptionError` — identity is graded, not erased. Prefixed-archive's first-match
+      loop skips a failed CRC (scan continues); this task is the behaviour change.
 
 ## 5. Grading rules
 
@@ -201,7 +216,9 @@
       first-match-wins algorithm, and restate its three tiers as declarations on this scheduler.
       By then some of those tiers may already be shipping on the current detector (four-PR
       split in that change's `design.md` §Implementation decisions); this task is the rebase
-      onto the ledger, not the first landing.
+      onto the ledger, not the first landing. The validators and ZIP tail locator those PRs
+      shipped as format-owned callables become `evaluate` bodies (task 3.3); do not
+      re-extract them from `detection.py`.
 
 ## 11. Verify
 

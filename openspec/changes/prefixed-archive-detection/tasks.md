@@ -24,7 +24,8 @@ can pick up one block without re-deriving its scope.
    inner-TAR at the hit, and TAR/single-file `start_offset` (task 5.7) in the same PR.
    Tasks: **2.5b, 2.7, 2.8, 4.2, 5.7.**
 
-Every block runs **4.10**. **4.12** archives in the finishing PR. **5.1** is the ADR
+Every block runs **4.10** and obeys **0.6** (format-owned validators / locators; no
+second declaration type). **4.12** archives in the finishing PR. **5.1** is the ADR
 after apply. **5.2** is maintainer corpus work. **5.8** stays in `IDEAS.md`.
 **2.6** and **5.3** are decided-not-to-do (checked below). **4.3** needs Block 1's
 cue already landed; it sits here because the 7z/RAR validators are this block.
@@ -92,6 +93,15 @@ cue already landed; it sits here because the 7z/RAR validators are this block.
 
 - [x] 0.4a ~~`dev-docs/IDEAS.md` overlaps with #262~~ — **resolved by the rebase.** #262 merged the base *Extension-first detection ordering* entry, and rebasing this branch onto it left exactly one copy of that paragraph plus this branch's agreement-short-circuit variant attached beneath it. Verified after the rebase: one occurrence of the base entry, variant intact.
 - [x] 0.5 **Read `dev-docs/investigations/archive-format-detection-algorithm.md` before implementing.** In the tree (PR #263). It endorses the acquisition order here and identifies two things this change deliberately does not fix, both marked provisional in the algorithm requirement: a uniform `CERTAIN` across near magic of wildly differing strength, and first-match-wins as the selection rule. Neither blocks the prefixed-archive work. The evidence-ledger model, `AmbiguousFormatError`, and budget presets belong to that redesign; `#273` already shipped the budget object this change now uses instead of `ArchiveyConfig.exhaustive_prefix_scan`.
+- [ ] 0.6 **(every block)** Land validators and the ZIP tail locator as **format-owned
+      functions** the generic first-match loop *calls*. Do not special-case formats inside
+      `detection.py`. Do not invent `DetectionDeclaration` / `EvidenceClass` /
+      competing-candidate ranking / `AmbiguousFormatError` here — those are
+      `detection-evidence-ledger` tasks 3.1, 5.x, 6.x. Validator failure policy (skip and
+      continue) stays in the detector so the ledger can later grade the same function's
+      failure as damaged without rewriting the parse. Compressor needles are a
+      backend-declared shebang-only collection, not a `cue_mask` on `MagicSignature`.
+      Details: `design.md` §Implementation decisions, last paragraph.
 
 ## 1. Tail probe for self-locating containers
 
@@ -99,7 +109,10 @@ cue already landed; it sits here because the 7z/RAR validators are this block.
   `THOROUGH` (once `max_tail_bytes` is raised) case, not a `BALANCED` one. `zipapp` is
   found by the shebang cue. Revisit `BALANCED` only after a seek-cost measurement on the
   founding backup workload; byte-count arguments do not reopen this.
-- [ ] 1.1 **(Block 2)** Add a ZIP tail probe to `detect_format`, running after magic-at-0 and before the forward scan, only when the source is seekable
+- [ ] 1.1 **(Block 2)** Add a ZIP tail probe, running after magic-at-0 and before the
+      forward scan, only when the source is seekable **and** the budget grants `TAIL`.
+      The locator lives on the ZIP backend; `detect_format` calls registered locators
+      when `TAIL` is granted. Do not inline EOCD search in `detection.py`.
 - [ ] 1.2 **(Block 2)** Bound the EOCD search at 65535 + 22 bytes and derive the constant in code from the `uint16` comment-length field, with a comment saying why it is not tunable
 - [ ] 1.3 **(Block 2)** Report `payload_offset` as **the absolute position of the earliest local file header** — `min(header_offset) + adjustment` over the central directory — when a prefix is present. Not the EOCD adjustment: ZIP has two write conventions and they store different numbers. Measured, a stdlib `zipapp` writes its offsets from byte 0 of the file (adjustment **0**, first local header at 23) while a concatenated ZIP writes them from the payload (adjustment **33**, first local header at 33). The earliest-local-header rule gives the prefix length under both; the adjustment rule would report the `zipapp` — this change's headline case — as unprefixed, and would make `prefix_kind` unreachable for it
 - [ ] 1.3a **(Block 2)** Red–green **both** conventions, not just one: a `zipapp` fixture and a `cat`-style concatenation of the same entries must produce the same `(payload_offset, prefix_kind)` shape. Note that stdlib `zipfile` opens both whether handed the whole file or a view at the prefix — a five-member `zipapp` sliced at its first local header yields a *negative* adjustment and still reads every member — so a test that only asserts "it opens" will pass under either definition and pin nothing. Assert the reported offset
@@ -123,14 +136,33 @@ cue already landed; it sits here because the 7z/RAR validators are this block.
   So **both** need covering, and the second is still the silent-wrong-answer shape — the claimant moved from Brotli to LZMA Alone, which reports `PROBABLE` unconditionally and therefore gets no unconfirmed signal at all (that half is `probe-provenance-unconfirmed`'s subject, not this change's). Assert the real members, not merely that no error is raised. Watch the two traps: `0xcafebabe` is also the Java class-file magic (a weak match on it would gate probes on every `.class` file — `sfx-format-detection`'s `design.md` flags this too), and a *fat* stub fails loudly while a *thin* one can fail silently, so cover both
 - [ ] 2.1b **(Block 1)** Revisit the `e_lfanew` bound in `_is_pe` (`src/archivey/internal/sfx.py`) while the cue is already being rewritten — **scoped to SFX stubs**, per the maintainer ruling in results doc §7.3. 12 887 Windows PEs give a maximum of 11 648, from `tcblaunch.exe`, which is not and never will be a self-extracting archive; the general-PE counterexamples (the EFI kernel image at `e_lfanew` 130, unaligned; `.winmd` metadata assemblies) are bounds on the whole PE population, not on the stub population. If a bound is wanted for read-size reasons, exceeding it SHALL mean "cannot confirm cheaply" — i.e. fall back to a weak cue — never "not an executable". Do not require 4-byte alignment: the EFI image is valid and unaligned. Inherited from `brotli-probe-framing-gate` task 5.4
 - [ ] 2.2 **(Block 1)** Comment the cue as a **cost gate, not a correctness gate**, so the next reader does not re-derive it as a false-positive defence (a reviewer already did)
-- [ ] 2.2a **(Block 1)** Validate a ZIP scan hit with a cheap local-header sanity check before reporting it: `version_needed` within a sane maximum, reserved GP-flag bits clear, `compression_method` in the known set, `filename_length` / `extra_field_length` in-bounds against the remaining source. Four bytes of `PK\x03\x04` in a stub are not a ZIP. Do **not** require an EOCD seek here — that is Block 2. Red–green alongside 4.1a.
-- [ ] 2.3 **(Block 3)** Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader, and `offset + 32 + NextHeaderOffset + NextHeaderSize <= source length`, preferring an exact end match when several candidates validate
-- [ ] 2.4 **(Block 3)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a parseable main header
+- [ ] 2.2a **(Block 1)** Validate a ZIP scan hit with a cheap local-header sanity check
+      before reporting it: `version_needed` within a sane maximum, reserved GP-flag bits
+      clear, `compression_method` in the known set, `filename_length` /
+      `extra_field_length` in-bounds against the remaining source. Four bytes of
+      `PK\x03\x04` in a stub are not a ZIP. The check is a named function on the ZIP
+      backend (candidate-relative view in, pass/fail out); the scan calls it. Do **not**
+      require an EOCD seek here — that is Block 2. Red–green alongside 4.1a.
+- [ ] 2.3 **(Block 3)** Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader,
+      and `offset + 32 + NextHeaderOffset + NextHeaderSize <= source length`, preferring
+      an exact end match when several candidates validate. Named function on the 7z
+      backend; the scan calls it. A failed CRC is not reported here (scan continues);
+      do not grade it as damaged-but-identified — that is ledger task 4.7.
+- [ ] 2.4 **(Block 3)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a
+      parseable main header. Named function on the RAR backend, same split as 2.3.
 - [ ] 2.5 **(Block 3)** Continue scanning past a candidate that fails validation rather than giving up
 - [x] 2.5a ~~**Prerequisite for 2.6–2.8: a bounded candidate-relative read.**~~ — shipped by `#273` as `PrefixWorkspace.peek_range` / `candidate_view` and `ScanNeedle` / `MagicHit.candidate_origin`. Nothing to invent here.
 - [ ] 2.5b **(Block 4)** Report `payload_offset` as the **candidate origin**, not the needle hit. A TAR hit reported at `H` rather than `H - 257` is wrong by 257 bytes and hands the backend a misaligned source; add a red–green for exactly that off-by-257. **Waits on 2.6**, which waits on the ledger.
 - [x] 2.6 ~~**Deferred to `detection-evidence-ledger`.** Do not add TAR's `ustar` as a container needle here — five bytes with no checksum is a false-positive risk inside a PE/ELF stub, and that change already specifies the checksum validator that would make the needle safe.~~
-- [ ] 2.7 **(Block 4)** Add **compressor needles under a `#!` cue only**, so the makeself / NVIDIA / Anaconda `.run` family resolves. Needle set: codecs whose hit can be confirmed by a cheap structural validator without a content probe (gzip `1f 8b 08` + header checks; bzip2 `BZh` + `1`–`9` + first-block / EOS marker; xz / zstd / lz4 / lzip on their existing headers). Not zlib / Brotli / LZMA Alone (probes). Not `.Z`. Makeself `--bzip2` is in the first set, not a maybe. Same PR as task 5.7.
+- [ ] 2.7 **(Block 4)** Add **compressor needles under a `#!` cue only**, so the makeself /
+      NVIDIA / Anaconda `.run` family resolves. Needle set: codecs whose hit can be
+      confirmed by a cheap structural validator without a content probe (gzip `1f 8b 08`
+      + header checks; bzip2 `BZh` + `1`–`9` + first-block / EOS marker; xz / zstd / lz4
+      / lzip on their existing headers). Not zlib / Brotli / LZMA Alone (probes). Not
+      `.Z`. Makeself `--bzip2` is in the first set, not a maybe. Needles and validators
+      are backend-declared (a shebang-only collection the scan consults when the cue is
+      `#!`); do not hard-code gzip in `detection.py`. Same PR as task 5.7. The gzip /
+      bzip2 parse is what ledger tasks 4.1 / 4.5 wrap if this block lands first.
 - [ ] 2.8 **(Block 4)** Resolve a compressor hit through the **existing inner-TAR probe** at the hit offset so a script-wrapped gzipped tar reports `TAR_GZ`, not `GZIP`. Identity is the structural validator; the decode is the TAR-vs-bare-stream resolution.
 - [ ] 2.9 **(Block 1)** Update the policy comment in `registry.sfx_magic_entries()` (`src/archivey/internal/registry.py`), which currently reads "the stream codecs never do, since a stub plus a bare compressed stream is not a thing anyone produces". That premise is false for shebang stubs and true for executable ones; the comment should say so and name the cue restriction, rather than being quietly contradicted by the code below it. Becomes wrong the moment Block 1 lands the shebang cue, even before compressor needles.
 
