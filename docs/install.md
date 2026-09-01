@@ -25,8 +25,9 @@ it). How to get that binary is below; format quirks live on
 
 The per-format detail lives on [Formats and extras](formats.md); the short version
 is that every format except RAR is a pip install away, and RAR **member data** needs
-the RARLAB `unrar` binary on `PATH` — not `unrar-free`. Listing and metadata work
-without it.
+the RARLAB `unrar` binary on `PATH` — not `unrar-free`, `unar`, or `7z`. `rarfile`
+accepts those last two as data backends; archivey does not: they either cannot read
+solid RAR or fail silently on it. Listing and metadata work without it.
 
 ## Getting RARLAB `unrar`
 
@@ -54,29 +55,36 @@ Homebrew core does not ship `unrar` (the UnRAR license is not open source). The
 `rar` cask that used to install RARLAB's macOS binaries is disabled: those builds
 are not Apple-notarized.
 
-**If you use Homebrew**, an unofficial formula compiles UnRAR from RARLAB's
-published source and puts `unrar` on `PATH`:
+**If you use Homebrew**, an unofficial formula installs RARLAB UnRAR:
 
 ```bash
 brew install gromgit/new-life/unrar
 unrar   # confirm the banner names RARLAB / Alexander Roshal
 ```
 
-The tap is not Homebrew core. If you would rather not use it, compile the source
-yourself (needs a C++ compiler — Xcode command-line tools):
+The tap is not Homebrew core. `brew install` trusts whatever formula the tap serves
+at install time and again on every `brew upgrade` — there is no lockfile pin. Where
+a bottle matches your macOS version, Homebrew pours a prebuilt binary from the
+tap's GHCR; otherwise it compiles the formula's RARLAB source tarball. Both paths
+skip Gatekeeper (they are a formula, not a cask).
+
+If you do not want to trust the tap, compile UnRAR from RARLAB's source yourself
+(needs a C++ compiler — Xcode command-line tools):
 
 ```bash
 # Download "UnRAR source" (unrarsrc-*.tar.gz) from https://www.rarlab.com/rar_add.htm
 tar xf unrarsrc-*.tar.gz
 cd unrar
 make
-cp unrar "$(brew --prefix)/bin/"   # or another directory on PATH
+mkdir -p "$HOME/.local/bin"
+cp unrar "$HOME/.local/bin/"
+# add ~/.local/bin to PATH if it is not already there
 ```
 
 RARLAB's current [RAR for macOS](https://www.rarlab.com/download.htm) packages
 (ARM and Intel) also include an `unrar` binary. They are not Apple-notarized, so a
-browser download may be blocked until you allow it in System Settings. The Homebrew
-formula and the source compile above do not hit that prompt. Do not use the
+browser download may be blocked until you allow it in System Settings. Compiling
+from source yourself does not hit that prompt. Do not use the
 "UnRAR for Mac OS X 64 bit" link on the add-ons page — that is a 2018 Intel
 user contribution, not the current official binary.
 

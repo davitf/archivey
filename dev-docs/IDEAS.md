@@ -42,19 +42,23 @@
   `unrar` binary. Could remove the `unrar` runtime requirement for common cases.
   **Higher-risk / research spike** — RAR decode correctness is hard and libarchive's
   RAR5 coverage is partial; `unrar` remains the reference.
-- **`unar` / `7z` as a second RAR data backend** — ~~spike after Homebrew dropped the
-  `rar` cask.~~ **Investigated 2026-09-01:** `unar` stdout concat is real but RAR5
-  solid+empty SIGSEGVs on stdout **and** disk extract. Distro `7z` lists RAR5 but
-  needs `7zip-rar` before solid/compressed data works; with the plugin the ALL-pipe
-  matches `unrar p`, still a non-free codec, still CLI gaps (no stdin password,
-  missing-member rc=0). Homebrew `7-zip` (`7zz`) is compiled with
-  `DISABLE_RAR_COMPRESS=1` — same `Unsupported Method` on solid RAR, no plugin
-  extra. `bsdtar` / `unrar-free` are dead ends. Unofficial taps
-  (`gromgit/new-life/unrar`) install real RARLAB UnRAR from a checksummed
+- **`unar` as a second RAR data backend** — ~~spike after Homebrew dropped the
+  `rar` cask.~~ **Investigated 2026-09-01; `unar` kept open, `7z` closed.**
+  `unar` stdout concat is real, but RAR5 solid+empty SIGSEGVs (1.10.1) or
+  returns rc=0 empty (1.10.7 / Homebrew XADMaster 1.10.8) on stdout **and**
+  disk extract. A listing-only early-fail gate (`solid` + any empty FILE)
+  would refuse the known-bad archives; blocked on that gate, an upstream
+  XADMaster report, and a Homebrew-bottle matrix. Distro `7z` lists RAR5 but
+  needs `7zip-rar` before solid/compressed data works; with the plugin the
+  ALL-pipe matches `unrar p`, still a non-free codec — **closed** as a second
+  engine (no gain). Homebrew `7-zip` (`7zz`) is compiled with
+  `DISABLE_RAR_COMPRESS=1`. `bsdtar` / `unrar-free` are dead ends. Unofficial
+  taps (`gromgit/new-life/unrar`) install real RARLAB UnRAR from a checksummed
   rarlab.com tarball; usable as the one-command Homebrew install for pip users,
   **not** a CI install and **not** a second engine. **Do not add** a silent
   fallback. User guidance: `docs/install.md`. Evidence:
-  `dev-docs/investigations/alternative-rar-decompressors.md`.
+  `dev-docs/investigations/alternative-rar-decompressors.md`;
+  `dev-docs/known-issues.md` (XADMaster RAR5 solid+empty).
 
 - **Subprocess decompressor streams** — a single reusable `SubprocessDecompressorStream`
   that pipes compressed/uncompressed data through a system binary (`zstd`, `xz`,

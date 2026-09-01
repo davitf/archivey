@@ -688,7 +688,7 @@ def test_non_rarlab_unrar_rejected(
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
-    with pytest.raises(PackageNotInstalledError, match=r"RARLAB.*7zz"):
+    with pytest.raises(PackageNotInstalledError, match="RARLAB"):
         rar_unrar.find_rarlab_unrar()
 
 
@@ -709,8 +709,15 @@ def test_unrar_on_path_is_the_rarlab_build() -> None:
 def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
-    with pytest.raises(PackageNotInstalledError, match=r"RARLAB.*7zz"):
+    with pytest.raises(PackageNotInstalledError, match="RARLAB"):
         rar_unrar.find_rarlab_unrar()
+
+
+def test_unrar_not_installed_message_names_lookalikes() -> None:
+    """Copy of the not-installed message — behaviour tests only match ``RARLAB``."""
+    msg = rar_unrar._NOT_INSTALLED_MSG
+    for name in ("unrar-free", "unar", "7z", "7zz"):
+        assert name in msg
 
 
 @requires("cryptography")

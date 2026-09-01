@@ -20,8 +20,9 @@ most often surprise callers. Authoritative detail lives in `openspec/specs/forma
 | `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
 **RAR member data needs the RARLAB `unrar` binary on `PATH`.** No pip extra can supply it —
-listing and metadata work without it, reading bytes does not. How to get that binary:
-[Install and extras](install.md#getting-rarlab-unrar).
+listing and metadata work without it, reading bytes does not. `rarfile` will use
+`unar` or `7z` if that is what is on `PATH`; archivey will not. How to get RARLAB
+`unrar`: [Install and extras](install.md#getting-rarlab-unrar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
@@ -112,7 +113,8 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 ## RAR
 
 - Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
-- Member **data**: RARLAB `unrar` on `PATH` (not `unrar-free`). Passwords are
+- Member **data**: RARLAB `unrar` on `PATH` (not `unrar-free`, `unar`, or `7z` —
+  `rarfile` accepts those last two; archivey does not). Passwords are
   passed as bare `-p` with the secret on stdin (not in argv).
   Install: [Getting RARLAB unrar](install.md#getting-rarlab-unrar).
 - `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —

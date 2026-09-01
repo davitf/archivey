@@ -4,6 +4,40 @@
 > codec and why — including why `rapidgzip` is the single accelerator library (the issue below)
 > and why an `indexed_zstd` zstd accelerator would face the same constraint.
 
+## MacPaw `unar` / XADMaster: RAR5 solid + empty FILE is silent-wrong (open)
+
+**Status:** open upstream; archivey does not use `unar`. Recorded because a future
+optional `unar` data backend is still on the table after Homebrew dropped the
+`rar` cask. Evidence:
+[`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md).
+
+On a **RAR5 solid** archive that contains **any empty FILE**, `unar` fails while
+reading a *non-empty* member — stdout **and** extract-to-disk. Skipping the empty
+names in the extract argv does not help: the decoder still walks that solid slot.
+
+| `unar` lineage | `unar -o -` / disk extract |
+| --- | --- |
+| Debian `unar 1.10.7+ds1+really1.10.1` | **SIGSEGV**, 0 bytes |
+| Locally built MacPaw XADMaster `v1.10.8` (banner **v1.10.7**) | **rc=0**, empty output (silent wrong data) |
+| homebrew-core formula `unar` (XADMaster **v1.10.8**, bottles include `arm64_tahoe`) | Same 1.10.8 lineage. `brew install unar` **installs**; fixture matrix on a brew bottle **not yet run**. |
+
+The *newer* behaviour is the dangerous one. Without a gate, a `unar` backend
+would hand callers empty files with a successful exit.
+
+**Early-fail gate (listing only, not yet implemented).** Archivey's native RAR
+parser already knows `format`, `info.is_solid`, member type and size before
+touching a decompressor. Refuse:
+
+`format == RAR and info.is_solid and any FILE with size == 0`
+
+Gate RAR4 too (conservative: RAR4 solid+empty reportedly works in `unar`). The
+predicate is generalized from one fixture family (`basic_solid__.rar` with the
+empty member first / mid / last); ANTI members and packed-nonzero /
+unpacked-zero empties are untested.
+
+Do not add the backend until the gate ships with it, the Homebrew bottle is
+measured, and the XADMaster bug is filed.
+
 ## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive
 
 `tarfile.TarFile.next()` re-raises `InvalidHeaderError` only when it occurs at offset 0;

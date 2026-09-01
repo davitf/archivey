@@ -6,8 +6,9 @@
 RARLAB `unrar p` on the committed RAR fixtures. Evidence for
 `dev-docs/investigations/alternative-rar-decompressors.md`.
 
-Stdlib-only. Missing tools are skipped. Subprocesses use `stdin=DEVNULL` and a timeout.
-`bsdtar` is not run on stored nonsolid RARs (it unbounded-wrote stdout in the spike).
+Stdlib-only. Missing tools are skipped. Subprocesses use `stdin=DEVNULL`, a
+timeout, and a stdout byte cap (`bsdtar --to-stdout` on stored nonsolid is a
+normal row: `output cap exceeded`, not a skip).
 
 ```bash
 python3 scripts/exploration/rar_decompressor_matrix.py

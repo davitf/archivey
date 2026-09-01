@@ -1,6 +1,7 @@
 # Alternative RAR decompressors (`unar`, `7z`, `bsdtar`, `unrar-free`)
 
-**Status:** finished evidence (explore, not implemented).  
+**Status:** finished evidence (explore, not implemented). `unar` candidate
+kept open; `7z` closed.  
 **Date:** 2026-09-01  
 **Trigger:** Homebrew disabled the `rar` cask (Gatekeeper / notarization); CI now
 compiles RARLAB UnRAR from a pinned GitHub mirror
@@ -20,30 +21,27 @@ Related policy: ADR
 [`0002-native-rar-metadata-unrar-data`](../decisions/0002-native-rar-metadata-unrar-data.md),
 threat-model **C1**, `src/archivey/internal/backends/rar_unrar.py`.
 
-The earlier unar-only notes live in
-[`unar-as-rar-decompressor.md`](unar-as-rar-decompressor.md) (pointer).
-
 ---
 
 ## Verdict
 
 | Candidate | As a RAR **data** backend |
 | --- | --- |
-| **`unar`** | **No.** Stdout concat is real, but RAR5 solid + any empty FILE SIGSEGVs (1.10.1) or returns empty (1.10.7) — **including disk extract**. Skipping empties does not help. |
-| **`7z e -so`** | **Only with the RAR codec actually loaded**, and even then not a silent fallback. Distro `7zip` lists RAR5 and extracts **stored** (`-m0`) members, then says `Unsupported Method` on solid / typical compressed members. `apt install 7zip-rar` adds `Codecs: Rar5` and then the ALL-pipe matches `unrar p` on `basic_solid__.rar`, encryption, hostile names, volumes. Remaining CLI gaps: no stdin password, missing-member **rc=0**, `path;n` unused, link members can set **rc=2** while the payload concat is still correct. The plugin is still a RARLAB-derived non-free codec (multiverse) — same licensing neighbourhood as `unrar`. |
+| **`unar`** | **Open.** Stdout concat is real. RAR5 solid + any empty FILE SIGSEGVs (apt 1.10.1) or returns **rc=0 empty** (built 1.10.7 / Homebrew's XADMaster 1.10.8) — **including disk extract**. Skipping empties does not help. A listing-only early-fail gate can refuse the affected archives; do not ship a backend until that gate exists and a Homebrew bottle is measured. |
+| **`7z e -so`** | **Closed.** Only with the RAR codec actually loaded, and even then a second non-free decompressor. Distro `7zip` lists RAR5 and extracts **stored** (`-m0`) members, then says `Unsupported Method` on solid / typical compressed members. `apt install 7zip-rar` adds `Codecs: Rar5` and then the ALL-pipe matches `unrar p` on `basic_solid__.rar`, encryption, hostile names, volumes. Remaining CLI gaps: no stdin password, missing-member **rc=0**, `path;n` unused, link members can set **rc=2** while the payload concat is still correct. No gain over RARLAB `unrar`. |
 | **Homebrew `7-zip` / `7zz`** | **No.** Core formula compiles with `DISABLE_RAR_COMPRESS=1`. Same `Unsupported Method` on solid RAR as Debian `7zip` without `7zip-rar`; Homebrew ships no plugin extra. |
-| **`bsdtar`** | **No.** Documents no solid / no password. Solid RAR4: `RAR solid archive support unavailable`. Stored nonsolid: **unbounded stdout** (7 GB in 8 s until timeout) — not safe to spawn. |
+| **`bsdtar`** | **No.** Documents no solid / no password. Solid RAR4: `RAR solid archive support unavailable`. Stored nonsolid: **unbounded stdout** (~7 GB in 8 s) — the matrix now kills at a 2 MiB cap (`rc=125`) rather than skipping the row. |
 | **`unrar-free` 0.1.3** | **No.** Extract-to-disk only; no stdout. |
 | **Unofficial brew `unrar` taps** | **Not a second engine** — they install RARLAB UnRAR. Usable for users who accept a third-party tap; **not** for CI. |
 
 **macOS install:** published user guidance is `docs/install.md` §Getting RARLAB
 unrar — pip users, no repo checkout. First-line is the unofficial Homebrew
-formula that compiles RARLAB source; alternative is a copy-paste source build.
-Lookalikes (`unar`, Homebrew `7zz`) stay in this investigation, not the user
-guide. CI still compiles the pinned UnRAR source. If we reopen C1, the only
-candidate worth an opt-in spike is **`7z` with an extract-a-compressed-member
-codec probe** (not `7z i` format lines). Do not treat `unar` / `bsdtar` /
-`unrar-free` / Homebrew `7zz` as substitutes.
+tap (bottles from the tap's GHCR, or a compile of the formula's RARLAB
+tarball); alternative is a copy-paste source build that does not use the tap.
+User docs name `unar` / `7z` once, because `rarfile` accepts them; they are
+not substitutes. CI still compiles the pinned UnRAR source. **`7z` as a
+second engine is closed** (still non-free). **`unar` stays open** on an
+early-fail gate plus an upstream XADMaster report — not as a silent fallback.
 
 ---
 
@@ -95,6 +93,15 @@ Empty first / mid / last all fail when reading a **non-empty** member.
 
 **Tempdir fallback does not help.** The bug is the RAR5 solid decoder, not the
 stdout writer.
+
+### Homebrew `unar` (installable; bottle not yet measured)
+
+homebrew-core formula
+[`unar`](https://github.com/Homebrew/homebrew-core/blob/master/Formula/u/unar.rb)
+builds MacPaw **XADMaster v1.10.8** (bottles include `arm64_tahoe`). That is
+the silent-empty lineage, not apt's SIGSEGV 1.10.1. Maintainer confirmed
+`brew install unar` installs on a Mac. `unar -v` from that Mac, and the
+fixture matrix against `unrar p` on a **brew bottle**, have not been run.
 
 Other gaps: wrong data password **rc=0** + empty; named `file.txt` concatenates
 all `-ver` revisions; `-inul` parsed as an unar option unless `-i` is used;
@@ -159,8 +166,9 @@ Measured:
 
 - Solid RAR4: `RAR solid archive support unavailable.`
 - Solid RAR5: `Unsupported block header size`.
-- **Stored nonsolid** `basic_nonsolid__.rar`: `--to-stdout` ran until the 8 s
-  timeout after writing **~7 GB**. Do not spawn this as a decompressor.
+- **Stored nonsolid** `basic_nonsolid__.rar`: `--to-stdout` wrote **~7 GB** in
+  8 s in the first spike. The matrix now caps stdout at 2 MiB (`rc=125`,
+  note `output cap exceeded`) instead of skipping the row.
 - Encrypted: fails fast (header error), no password switch.
 - `unrar-free` 0.1.3: `-x` extract only; `--help` has no stdout option.
   (rarfile’s docs mention a newer libarchive-based unrar-free with stdout; that
@@ -176,36 +184,37 @@ Measured:
               ┌─────────────────────┼─────────────────────┐
               ▼                     ▼                     ▼
            unrar              7z + Rar5 codec           unar
-        full, non-free     works when probed          easy brew,
-        (what we use)      still non-free plugin      solid+empty dead
+        full, non-free     closed: still a            open: easy brew,
+        (what we use)      non-free plugin            listing-only gate
+                                                      for solid+empty
               │                     │                     │
               └────── bsdtar / unrar-free ────────────────┘
                      no solid / no stdout / stdout bomb
 ```
 
-A `7z` opt-in would still need: codec probe, argv builder (`-spd`, `--`, full
-member paths), password-on-argv, ignore or reinterpret rc=2 on redirect-only
-errors, version-control policy (`-ver` size map vs `path;n`), tests in all
-three dependency configs, and a C1/ADR 0002 reopen. That is more than
-documenting the UnRAR source build.
+A `7z` opt-in was considered and **closed**: codec probe, argv builder, and
+CLI gaps are real work for another non-free codec. `unar` stays open on the
+listing-only gate plus an upstream XADMaster report — not as a silent
+fallback.
 
 ---
 
 ## Recommendation
 
-1. **Do not add `unar`.** Disk extract is not a workaround. Skipping empty
-   members is not a workaround.
-2. **Do not add `bsdtar` / `unrar-free`.**
-3. **Do not silently fall back** to whatever is on `PATH` (C1).
-4. **macOS install friction:** published `docs/install.md` is for pip users.
-   Unofficial Homebrew formula first, copy-paste source compile second.
-   Lookalikes and Gatekeeper forensics stay here. CI keeps the pinned source
-   build (`scripts/install-rarlab-unrar.sh`).
-5. **If a second engine is wanted later:** opt-in `7z e -so` gated on a **Rar5
-   codec** probe (trial extract, not `7z i` Formats). Treat missing
-   `7zip-rar` as “not available”, same as missing `unrar`. Accept that this is
-   still a non-free RAR decompressor, just a different package name. Homebrew
-   `7zz` is **not** that probe going green.
+1. **Do not add `unar` in this PR.** Keep it open. Disk extract is not a
+   workaround and skipping empty members is not a workaround, but a
+   listing-only early-fail gate (`format == RAR and info.is_solid and any
+   FILE with size == 0`, also on RAR4) would refuse the known-bad archives
+   before spawning `unar`. Blocked on: that gate in a backend, an upstream
+   XADMaster report, and a fixture matrix on a Homebrew `unar` bottle.
+2. **Do not add `7z`.** Closed. The plugin path works, and is still a
+   RARLAB-derived non-free codec under a different package name.
+3. **Do not add `bsdtar` / `unrar-free`.**
+4. **Do not silently fall back** to whatever is on `PATH` (C1).
+5. **macOS install friction:** published `docs/install.md` is for pip users.
+   Unofficial Homebrew tap first (trust the tap; bottles or formula source),
+   copy-paste rarlab `make` second. CI keeps the pinned source build
+   (`scripts/install-rarlab-unrar.sh`).
 
 ---
 
@@ -369,9 +378,20 @@ the unofficial formula or a copy-paste `make`.
 
 ---
 
----
+## Open questions (`unar` kept open; `7z` closed)
 
-## Open questions (only if we reopen 7z)
+- File the XADMaster RAR5 solid+empty bug (1.10.1 SIGSEGV vs 1.10.7+ silent
+  empty on stdout **and** disk extract). Evidence is in this document and
+  `dev-docs/known-issues.md`.
+- Run the fixture matrix on a Homebrew `unar` bottle (formula is XADMaster
+  1.10.8). Record `unar -v` from that Mac.
+- Early-fail gate for a future `unar` backend: native listing only —
+  `format == RAR and info.is_solid and any FILE with size == 0`. Gate RAR4
+  too (conservative: RAR4 solid+empty reportedly works). The predicate is
+  generalized from one fixture family; ANTI members and packed-nonzero /
+  unpacked-zero empties are untested, so it may be under-inclusive.
+- Do not add a `unar` backend in this PR, and do not point CI at
+  `brew install unar` or at `gromgit/new-life/unrar`.
 
-- Can we ignore 7z rc=2 when every payload member’s CRC verifies (symlink
-  archives), or is that too much special-casing?
+`7z` leftover (not pursuing): ignore rc=2 when every payload member's CRC
+verifies (symlink archives)? Too much special-casing for a closed branch.
