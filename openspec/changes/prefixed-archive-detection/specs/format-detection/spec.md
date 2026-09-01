@@ -20,7 +20,8 @@ look. Detection SHALL try, in order:
    claiming on five bytes without the ledger's checksum validator is the rework that
    change exists to avoid.
 4. **Exhaustive scan**, only when the caller's `DetectionBudget` grants a scan past
-   `SFX_MAX`. Not an `ArchiveyConfig` field — `detect_format(..., budget=)` already exists.
+   `SFX_MAX`. The budget is `ArchiveyConfig.detection_budget`, not a keyword on
+   `detect_format` / `open_archive` and not a separate `exhaustive_prefix_scan` bool.
 
 Which magic tier 3 hunts for SHALL remain **backend-declared data**, not a table inside the
 detector, and a backend SHALL declare only magic that can legitimately *begin* an appended
@@ -239,7 +240,6 @@ archivey.detect_format(
     source: str | Path | BinaryIO,
     *,
     config: ArchiveyConfig | None = None,
-    budget: DetectionBudget | DetectionBudgetPreset | None = None,
 ) -> FormatInfo
 ```
 
@@ -266,11 +266,13 @@ class FormatInfo:
     prefix_kind: PrefixKind = PrefixKind.NONE
 ```
 
-`config=None` → library default. `budget=None` → `BALANCED_BUDGET`. The budget types
-live in `archivey.detection_cost` until `detection-result-surface` freezes the root
-surface; this change does not re-export them. `confidence` = magic / structural probe /
-extension-guess. `encoding_hint` is format-signal only (never a member scan).
-`payload_offset > 0` marks an SFX payload start.
+`config=None` → library default. Detection's spend cap is `config.detection_budget`
+(`None` → `BALANCED_BUDGET`). The budget types live in `archivey.detection_cost` until
+`detection-result-surface` freezes the root surface; this change does not re-export them.
+`detect_format` SHALL NOT grow a `budget=` / `detection_budget=` keyword — `#273`'s
+`budget=` argument is removed when the config field lands. `confidence` = magic /
+structural probe / extension-guess. `encoding_hint` is format-signal only (never a
+member scan). `payload_offset > 0` marks an SFX payload start.
 
 `prefix_kind` SHALL always be present, defaulting to `NONE`, so a caller may read it
 without testing `payload_offset` first. `NONE` SHALL correspond exactly to
@@ -281,10 +283,11 @@ reports what precedes the payload*.
 `"zip_tail_probe"`, `"sfx_scan"`, `"exhaustive_scan"`, `"content_probe"`, and
 `"extension"`.
 
-**The exhaustive-scan opt-in is a detection budget, not an `ArchiveyConfig` field.**
-`detect_format(..., budget=)` already exists (`detection-cost`, shipped by `#273`). A
-second flag on `ArchiveyConfig` would be two knobs for one cost decision. `open_archive`
-SHALL pass the caller's budget through rather than growing `exhaustive_prefix_scan`.
+**The exhaustive-scan opt-in is `ArchiveyConfig.detection_budget`, not a keyword
+argument.** `detect_format` and `open_archive` already take `config=`; a second
+spend-cap argument would be two knobs most callers never set. `#273`'s
+`detect_format(..., budget=)` is removed in the same PR that adds the field
+(task 3.1). There is no `exhaustive_prefix_scan` bool.
 
 **Collectors:**
 
@@ -304,7 +307,8 @@ SHALL pass the caller's budget through rather than growing `exhaustive_prefix_sc
 | Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
 | Plain archive at offset 0 | `prefix_kind == NONE`, `payload_offset == 0` |
 | Prefixed archive found by any tier | `prefix_kind` set, `payload_offset > 0`, `detected_by` naming the tier |
-| Default `BALANCED` budget | No unbounded read; a beyond-window archive stays undetected |
+| Default `BALANCED` budget (`config.detection_budget is None`) | No unbounded read; a beyond-window archive stays undetected |
+| `config=ArchiveyConfig(detection_budget=…)` with `max_scan_bytes` past `SFX_MAX` | Exhaustive scan may fire |
 
 ### Requirement: Magic-first detection with extension fallback and confidence scoring
 

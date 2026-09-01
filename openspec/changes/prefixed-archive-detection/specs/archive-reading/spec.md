@@ -1,105 +1,111 @@
 ## MODIFIED Requirements
 
-### Requirement: Opening an archive for reading
+### Requirement: Explicit configuration object
 
-The system SHALL expose:
+The system SHALL define these complete frozen schemas:
 
 ```python
-archivey.open_archive(
-    source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
-    *,
-    format: ArchiveFormat | None = None,
-    streaming: bool = False,
-    seekable_members: bool = False,
-    concurrent_members: bool = False,
-    password: PasswordInput = None,
-    encoding: str | None = None,
-    config: ArchiveyConfig | None = None,
-    budget: DetectionBudget | DetectionBudgetPreset | None = None,
-) -> ArchiveReader
+@dataclass(frozen=True)
+class ExtractionLimits:
+    max_extracted_bytes: int | None = 2 * 2**30
+    max_ratio: float | None = 1000.0
+    ratio_activation_threshold: int = 5 * 2**20
+    max_entries: int | None = 1_048_576
+    UNLIMITED: ClassVar["ExtractionLimits"]
+
+@dataclass(frozen=True)
+class ListingLimits:
+    max_members: int | None = 1_048_576
+    max_metadata_bytes: int | None = 64 * 2**20
+    UNLIMITED: ClassVar["ListingLimits"]
+
+@dataclass(frozen=True)
+class ArchiveyConfig:
+    use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
+    use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    strict_archive_eof: bool = False
+    zip_unflagged_fallback_encoding: str = "cp437"
+    extraction_limits: ExtractionLimits = ExtractionLimits()
+    listing_limits: ListingLimits = ListingLimits()
+    diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
+    max_retained_diagnostic_references: int = 256
+    on_diagnostic: Callable[[Diagnostic], None] | None = None
+    detection_budget: DetectionBudget | DetectionBudgetPreset | None = None
 ```
 
-`source`, multi-volume ordering, `streaming`, password candidates/providers,
-encoding, configuration precedence, and backend selection retain their existing
-contracts. `format=None` auto-detects; an explicit format bypasses detection.
-`budget=None` selects `BALANCED_BUDGET`. The budget types live in
-`archivey.detection_cost` until `detection-result-surface` freezes the root surface;
-this change threads the argument, it does not re-export the types.
+`zip_unflagged_fallback_encoding` is restored here because this requirement is
+replaced whole; the live dataclass omitted it while `src/archivey/config.py` already
+ships it. It is not new behaviour.
 
-**An explicit argument the resolved backend cannot act on is handled by its
-*intent*, and the rule SHALL be applied to every such argument:**
+`detection_budget` is the caller's detection spend cap (tail probe, forward scan,
+exhaustive scan). `None` selects `BALANCED_BUDGET`. The name is `detection_budget`,
+not `budget`: `ArchiveyConfig` already carries other "budget" numbers (diagnostic
+retention, extraction limits), and a decompression budget would be a different
+thing. The types live in `archivey.detection_cost` until `detection-result-surface`
+freezes the root surface; this change does not re-export them.
 
-> **Refuse** when the argument is an **assertion about this archive**. **Permit, and
-> record a diagnostic**, when it is a **resource offered for use if needed.**
-> **Permit silently** when it is a resource whose consuming stage the caller
-> explicitly skipped — the caller caused the skip, so a diagnostic would be noise
-> they cannot act on.
+Callers who never think about detection cost pass nothing — `open_archive(path)`
+and `detect_format(path)` stay one argument. Callers who do already construct an
+`ArchiveyConfig` for diagnostic policy or listing limits; the spend cap sits there
+with those knobs, not as a second keyword on `open_archive` / `detect_format`.
+`#273`'s `detect_format(..., budget=)` is young and is removed when this field
+lands (task 3.1) — two channels for one decision is the debt.
 
-| Argument | Intent | Behaviour when the backend cannot act on it |
-| --- | --- | --- |
-| `format=` | assertion — "I claim this is a ZIP" | refuse when it cannot hold (see the directory rule below) |
-| `password=` | resource — a keyring | permit in **every** form; `PASSWORD_ARGUMENT_UNUSED` |
-| `encoding=` | resource — a hint for name decoding | permit; `ENCODING_ARGUMENT_UNUSED` |
-| `budget=` | resource — a detection spend cap | unused when `format=` bypasses detection: permit silently (third case above). Detection never ran, so the bound was never consulted. Not an assertion about the archive. No `BUDGET_ARGUMENT_UNUSED`. |
+`format=` skips detection, so `detection_budget` is then unused. Unused config
+knobs are silent; there is no `BUDGET_ARGUMENT_UNUSED`. Detection already ran or
+was skipped before extract, so later `extract_all(config=...)` SHALL NOT change
+the reader's effective `detection_budget` (same rule as `listing_limits`).
 
-`password=` on a format with no encryption SHALL NOT raise, in any of its forms — a
-single value, an ordered sequence, and a provider callable SHALL behave identically
-(accepted, never consulted, one diagnostic). A *wrong* password on an *encrypted*
-archive is unaffected and still raises. Each backend SHALL declare whether it consumes
-`encoding` (`ReadBackend.USES_ENCODING`) the same way it declares
-`ReadBackend.SUPPORTS_PASSWORD`, so the check is central rather than per-backend
-silence.
+`max_retained_diagnostic_references` SHALL be non-negative. Policy/default/override
+mappings and the dataclasses SHALL be defensively immutable. `config=None` →
+immutable library default. No mutable global/context-local diagnostic policy or
+callback.
 
-A **directory path** resolves to `ArchiveFormat.DIRECTORY`. An explicit `format=`
-naming anything else SHALL raise `ArchiveyUsageError` rather than being discarded:
-silently overruling it returns a reader over the directory tree to a caller who
-asserted a different format, so every read downstream succeeds on the wrong data.
-`format=ArchiveFormat.DIRECTORY` and `format=None` both remain valid. This is the
-assertion half of the rule above, not a special case.
+A reader carries its open config, including `listing_limits` and `detection_budget`
+for its lifetime. Later `extract_all(config=...)` MAY override policy/callback/strictness/
+accelerators/`extraction_limits` for new work, but SHALL NOT change the
+reader's effective `listing_limits`, `detection_budget`, or
+`max_retained_diagnostic_references` (see `diagnostics`). Per-call `limits`
+still beat `config.extraction_limits`, then reader/library default. Other
+per-call operational args stay outside `ArchiveyConfig`.
 
-**Diagnostics at open (observable):** On success, advisory events from automatic
-detection (if any) appear in this reader's cumulative `diagnostics` for its
-lifetime and are not duplicated. Explicit `format=` skips detection, so open
-adds no detection diagnostics. Unused-argument diagnostics are emitted before the
-reader is returned, so they are readable without listing anything — except a
-resource whose consuming stage the caller skipped (`budget=` when `format=` is
-set; see the third case of the intent rule). If open raises, no reader is returned.
+`strict_archive_eof=False` follows ordinary diagnostic policy for failed EOF check;
+`True` forces `TruncatedError` after ordered diagnostic rules in `error-handling`.
 
-Handoff mechanics (one shared collector/budget, no copy/re-seed): see
-`format-detection` and `diagnostics`.
+`on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
+reads from a callback are allowed. Starting another operation on the same
+emitting reader/stream SHALL raise `UnsupportedOperationError`; other readers OK.
+Callbacks hold no Archivey collector/reader/stream/backend/registry lock
+(`diagnostics` / `reader-concurrency`).
 
-#### Scenario: open matrix
+#### Scenario: config matrix
 
 | Case | Expected |
 | --- | --- |
-| Auto-detect succeeds | Detection events visible on `reader.diagnostics`; not duplicated |
-| `format=ArchiveFormat.ZIP` succeeds | No detection diagnostics from open |
-| Open raises | No reader returned |
-| `password="secret"` | Returned reader uses that password for encrypted members |
-| `password=` any form, format with no encryption | Opens; `PASSWORD_ARGUMENT_UNUSED`; no raise |
-| `encoding=` on a backend that decodes names another way | Opens; `ENCODING_ARGUMENT_UNUSED`; names unchanged |
-| Directory path, no `format=` | Opens as `DIRECTORY` |
-| Directory path, `format=ArchiveFormat.DIRECTORY` | Opens as `DIRECTORY` |
-| Directory path, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError`, naming the path and the requested format |
-| `format=ZIP` plus a non-default `budget=` | Opens; budget is a silent no-op (detection skipped); no unused-argument diagnostic |
-| `format=None` plus a budget with `max_scan_bytes` past `SFX_MAX` | Detection uses that bound; exhaustive scan may fire |
+| `ArchiveyConfig()` | AUTO accelerators; EOF strictness false; documented extraction and listing defaults; COLLECT; diagnostic retention 256; `detection_budget is None` (BALANCED at detect); no callback |
+| Reader diagnostic retention 10, then `extract_all(config=…max_retained_diagnostic_references=1000)` | New policy/callback may apply; diagnostics still under retention 10 |
+| `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
+| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime even if later `extract_all(config=...)` omits listing_limits |
+| `open_archive(path)` / `detect_format(path)` | Default BALANCED detection; caller never names a budget |
+| `config=ArchiveyConfig(detection_budget=DetectionBudgetPreset.THOROUGH)` | Detection uses that preset (ZIP tail once `max_tail_bytes` is raised) |
+| `format=ZIP` plus a non-default `detection_budget` | Opens; detection skipped; the field is unused and silent |
+| `format=None` plus `detection_budget` with `max_scan_bytes` past `SFX_MAX` | Detection uses that bound; exhaustive scan may fire |
 
 ## ADDED Requirements
 
 ### Requirement: An exhaustive prefix scan is available and off by default
-
 
 Detection's forward scan is bounded by `SFX_MAX` and gated on a prefix cue, because reading
 that much from every source a caller opens is not free. A caller who knows better — someone
 holding a firmware image, a disk image, or a file with an unrecognised wrapper — SHALL be
 able to ask for an unbounded scan.
 
-The opt-in SHALL be a `DetectionBudget` whose `max_scan_bytes` exceeds `SFX_MAX`, passed to
-`detect_format(..., budget=)` and threaded through `open_archive` the same way (see
-*Opening an archive for reading* — that signature is the freeze surface; this requirement
-does not restate it). It SHALL NOT be an `ArchiveyConfig` field: `#273` already gave
-detection a cost-control channel, and a second flag would be two knobs for one decision.
-A source already matched at offset 0 never consults the scan bound, which is not an error.
+The opt-in SHALL be a `DetectionBudget` whose `max_scan_bytes` exceeds `SFX_MAX`, passed as
+`ArchiveyConfig.detection_budget` (see *Explicit configuration object* — that field is the
+freeze surface; this requirement does not restate it). It SHALL NOT be a keyword on
+`open_archive` or `detect_format`, and SHALL NOT be a separate `exhaustive_prefix_scan`
+bool: one field carries the whole detection spend cap. A source already matched at
+offset 0 never consults the scan bound, which is not an error.
 
 No shipped preset expresses a larger scan bound: `THOROUGH.max_scan_bytes` stays at
 `SFX_MAX`, same as `BALANCED`. Raising it would make every `THOROUGH` caller scan the
@@ -122,7 +128,7 @@ suggested a format that was not found.
 | Case | Expected |
 | --- | --- |
 | Archive magic beyond `SFX_MAX`, default budget | `FormatDetectionError`; the source is not read past the window |
-| Same source, budget with `max_scan_bytes` past the window | Detected, `payload_offset` at the payload, `prefix_kind == UNKNOWN` |
+| Same source, `detection_budget` with `max_scan_bytes` past the window | Detected, `payload_offset` at the payload, `prefix_kind == UNKNOWN` |
 | Larger bound, magic present but validation fails | No claim; the scan continues and then fails normally |
 | Larger bound, plain archive at offset 0 | Found at tier 1 as usual; no scan performed |
 | `FormatDetectionError` under `BALANCED` | SHALL NOT silently retry with a larger scan bound |

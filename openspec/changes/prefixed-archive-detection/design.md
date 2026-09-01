@@ -256,14 +256,21 @@ name/extra lengths in-bounds) is Block 1; EOCD + central-directory confirmation 
 Block 2's tail helper. Shipping the widened cue without the cheap check would report
 scripts that mention those four bytes as damaged ZIPs.
 
-**`open_archive` grows `budget=`.** Threading the detection spend cap needs a freeze
-surface: *Opening an archive for reading*. `format=` plus `budget=` is a silent no-op
-(third case of the intent rule — a resource whose consuming stage the caller skipped).
-(detection never ran). The types stay in `archivey.detection_cost`; this change does
-not take that freeze away from `detection-result-surface`. Exhaustive scan is a
+**`ArchiveyConfig.detection_budget` is the spend cap.** Threading it needs a freeze
+surface: *Explicit configuration object*. `None` selects `BALANCED_BUDGET`.
+`format=` plus a non-default `detection_budget` is a silent unused knob (detection
+never ran). The types stay in `archivey.detection_cost`; this change does not take
+that freeze away from `detection-result-surface`. Exhaustive scan is a
 larger `max_scan_bytes`, not a named preset — `THOROUGH.max_scan_bytes` stays at
 `SFX_MAX`. Raising it would make every `THOROUGH` caller scan the whole source, which
 is a different decision from enabling the ZIP tail.
+
+`open_archive` and `detect_format` do **not** grow a `budget=` keyword. The name on
+the config field is `detection_budget` because a bare `budget` could be a
+decompression cap, and config already has other budget-shaped numbers. `#273`'s
+`detect_format(..., budget=)` is removed when the field lands — keeping both would
+be two knobs for one decision. Most callers never set a spend cap; they already skip
+the `config=` argument.
 
 A Makeself-aware locator that reads `SKIP` / `COMPRESS` out of the stub and seeks to the
 payload, instead of scanning 2 MiB of script for magic, is a better installer-specific
@@ -388,11 +395,12 @@ The bootable-ISO reproduction above stays useful: it is the justification record
 
 **`detection-prefix-workspace` (#273) has landed** (`64d2f6c`). Candidate-relative views,
 `DetectionBudget` presets, and `max_tail_bytes = 0` are on `main`. This change no longer
-carries a peek primitive, and it must not add `ArchiveyConfig.exhaustive_prefix_scan` as
-a second cost-control channel next to the budget `detect_format(..., budget=)` already
-takes. Exhaustive scan and the ZIP tail become budget numbers (`max_scan_bytes`,
-`max_tail_bytes` / `max_seeks`). `open_archive` on `main` does not yet pass a budget
-through — threading that is part of the tail/exhaustive block, not a new config field.
+carries a peek primitive. `#273` also added `detect_format(..., budget=)` — that keyword
+is young debt: a bare `budget` is ambiguous with decompression, and most callers never
+set one. This change puts the spend cap on `ArchiveyConfig.detection_budget` and removes
+the keyword (task 3.1). There is no `exhaustive_prefix_scan` bool. Exhaustive scan and
+the ZIP tail remain budget numbers (`max_scan_bytes`, `max_tail_bytes` / `max_seeks`).
+`open_archive` already takes `config=`; detection reads the field from there.
 
 **`archive-origin-reporting` (#274) is sequenced after this change** because it reuses
 `PrefixKind` on `ArchiveInfo`. It also unifies the RAR/7z origin resolver onto `MagicHit`

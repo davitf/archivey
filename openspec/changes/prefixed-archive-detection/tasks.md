@@ -16,9 +16,9 @@ use `(context)` / `(every block)` rather than a block number.
    Tasks: **1.1–1.8, 3.5, 4.5, 4.8, 4.9.**
 3. **`prefix_kind` + scan validation + exhaustive-via-budget** — public enum
    (`NONE`/`EXECUTABLE`/`SCRIPT`/`UNKNOWN`), 7z/RAR hit validation, conflict-diagnostic
-   members, `open_archive` / `detect_format` freeze `budget=` (task 3.1 lands in
-   *Opening an archive for reading*). Exhaustive scan is a larger `max_scan_bytes`,
-   not a named preset and not a root re-export.
+   members, `ArchiveyConfig.detection_budget` (task 3.1 lands in *Explicit configuration
+   object*; drop `#273`'s `detect_format(..., budget=)` in the same PR). Exhaustive scan
+   is a larger `max_scan_bytes`, not a named preset and not a root re-export.
    Tasks: **2.3, 2.4, 2.5, 3.1, 3.2, 3.3, 3.3a, 3.3b, 3.4a, 4.3, 4.4, 4.6, 4.7,
    4.9a, 4.11.**
 4. **Makeself** — shebang-only compressor needles (gzip + bzip2 + xz/zstd/lz4/lzip),
@@ -34,7 +34,7 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
 
 ## 0. Prerequisite
 
-- [x] 0.0 ~~**Implement this change third, after `probe-completeness-gate` and then `probe-provenance-unconfirmed`.**~~ Both archived. `#273` (`detection-prefix-workspace`) has also landed. Implement in the four blocks in `design.md` §Implementation decisions, not as one 64-task PR. Public API from this change is `prefix_kind` / `PrefixKind` only — **not** `ArchiveyConfig.exhaustive_prefix_scan`; tail and exhaustive scan are `DetectionBudget` numbers.
+- [x] 0.0 ~~**Implement this change third, after `probe-completeness-gate` and then `probe-provenance-unconfirmed`.**~~ Both archived. `#273` (`detection-prefix-workspace`) has also landed. Implement in the four blocks in `design.md` §Implementation decisions, not as one 64-task PR. Public API from this change is `prefix_kind` / `PrefixKind` and `ArchiveyConfig.detection_budget` — **not** `ArchiveyConfig.exhaustive_prefix_scan`, and **not** a `budget=` keyword on `open_archive` / `detect_format`. Tail and exhaustive scan are `DetectionBudget` numbers on that config field. `#273`'s `detect_format(..., budget=)` is removed when the field lands.
 
   **Prerequisite for makeself / TAR self-extracting needles (tasks 2.5a–2.8, 4.2):** ~~the
   candidate-relative range view lands in `detection-prefix-workspace`.~~ **Done in #273.**
@@ -190,7 +190,7 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
 
 ## 3. Exhaustive scan and prefix reporting
 
-- [ ] 3.1 **(Block 3)** Wire the opt-in exhaustive scan as a **`DetectionBudget` with `max_scan_bytes` past `SFX_MAX`**, defaulting to off (`BALANCED` stays at 2 MiB). Reuse the same validation. Do **not** add `ArchiveyConfig.exhaustive_prefix_scan` — `detect_format(..., budget=)` already exists. Land `budget=` on *Opening an archive for reading* (the freeze surface) and on this change's `detect_format` signature so `openspec archive` does not ship a self-contradictory `archive-reading` spec. `format=` plus `budget=` is a silent no-op (third case of the intent rule: a resource whose consuming stage the caller skipped; no `BUDGET_ARGUMENT_UNUSED`). Do **not** re-export the budget types; do **not** raise `THOROUGH.max_scan_bytes`.
+- [ ] 3.1 **(Block 3)** Wire the opt-in exhaustive scan as a **`DetectionBudget` with `max_scan_bytes` past `SFX_MAX`**, defaulting to off (`BALANCED` stays at 2 MiB). Reuse the same validation. Land `ArchiveyConfig.detection_budget` on *Explicit configuration object* (the freeze surface). `None` → `BALANCED_BUDGET`. **Remove** `#273`'s `detect_format(..., budget=)` in this PR — do not keep both channels. Do **not** add `budget=` / `detection_budget=` keywords on `open_archive` or `detect_format`; do **not** add `ArchiveyConfig.exhaustive_prefix_scan`. `format=` plus a non-default `detection_budget` is a silent unused config knob. Restore `zip_unflagged_fallback_encoding` on the spec dataclass (already in `config.py`; live spec omitted it). Do **not** re-export the budget types; do **not** raise `THOROUGH.max_scan_bytes`. Migrate tests that pass `budget=` to `config=ArchiveyConfig(detection_budget=…)`.
 - [ ] 3.2 **(Block 3)** Never enable it implicitly — no retry-after-failure, no extension-driven escalation
 - [ ] 3.3 **(Block 3)** Add `prefix_kind` to `FormatInfo` with a `PrefixKind` enum (`NONE` / `EXECUTABLE` / `SCRIPT` / `UNKNOWN`), **always present, defaulting to `NONE`**. No `OTHER_FORMAT` — archivey will not maintain a non-archive file-type list; a JPEG prefix is `UNKNOWN`. `NONE` must hold exactly when `payload_offset == 0`. How the offset was found is `detected_by`, not a kind. `#274` reuses this enum and must drop `OTHER_FORMAT` too; origin-not-established stays `payload_offset is None`.
 - [ ] 3.3a **(Block 3)** Set `detected_by` to the tier that matched: `"zip_tail_probe"`, `"sfx_scan"`, `"exhaustive_scan"` alongside the existing `"magic"` / `"content_probe"` / `"extension"`
@@ -228,7 +228,7 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
 - [ ] 4.9a **(Block 3)** Ordering regressions, which the tier work is most likely to break: an `x.br` holding a real Brotli stream is detected by the **content probe** at its proper confidence rather than as an extension `GUESS`; an extensionless Brotli stream is still detected; a source whose tail probe misses still reaches the cued scan; and a **real Brotli stream larger than 32 KiB with no extension** is still detected after the hoisted far-magic peek misses — the reorder must cost one bounded peek, never a detection
 - [x] 4.9b ~~Cost regression for the far-magic hoist~~ — **covered by `detection-format-gaps`** (`test_small_source_takes_no_extended_peek`): a source known to be smaller than the extended ISO window triggers no extended peek, so ordinary small files pay nothing. That change also measured the cost the hoist *does* add on a large content-probe success (~3% of `detect_format`), which its design §Risks records
 - [ ] 4.10 **(every block)** `./scripts/test.sh --all-configs` and `openspec validate --strict prefixed-archive-detection`
-- [ ] 4.11 **(Block 3)** Update `docs/formats.md` detection prose for the tiers, `prefix_kind`, and the budget-gated tail / exhaustive scan — the proposal's Impact claims this file, so it needs a checkbox rather than an implicit promise. Document exhaustive scan as a larger `max_scan_bytes`, not as a public import of `DetectionBudget`; the root-surface freeze belongs to `detection-result-surface`.
+- [ ] 4.11 **(Block 3)** Update `docs/formats.md` detection prose for the tiers, `prefix_kind`, and the budget-gated tail / exhaustive scan — the proposal's Impact claims this file, so it needs a checkbox rather than an implicit promise. Document the spend cap as `ArchiveyConfig.detection_budget` (a larger `max_scan_bytes` for exhaustive scan), not as a `budget=` keyword and not as a public import of `DetectionBudget`; the root-surface freeze belongs to `detection-result-surface`.
 - [ ] 4.12 **(finishing PR)** Archive this change in the finishing PR
 
 ## 5. Follow-ups

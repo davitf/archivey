@@ -81,9 +81,11 @@ tier detection accordingly instead of applying one rule to all of them.
 - `format-zip` — a leading prefix is explicitly supported rather than incidental, and the
   EOCD search bound is stated as a format-derived constant. The tail probe runs only when
   the budget grants `TAIL`.
-- `archive-reading` — `open_archive` gains `budget=` (the freeze surface for threading
-  the detection spend cap) and the exhaustive-scan requirement. Not an `ArchiveyConfig`
-  field.
+- `archive-reading` — `ArchiveyConfig` gains `detection_budget` (the freeze surface for
+  the detection spend cap) and the exhaustive-scan requirement. Not a keyword on
+  `open_archive` / `detect_format`, and not `exhaustive_prefix_scan`.
+- `detection-cost` — callers pass the budget via that config field; `#273`'s
+  `detect_format(..., budget=)` keyword is removed.
 
 ## Decisions
 
@@ -105,21 +107,27 @@ tier detection accordingly instead of applying one rule to all of them.
   return an internal `HitOutcome` so the ledger can later treat `DAMAGED` as still
   identified without a signature change. The tail probe stays ZIP-named
   (`detected_by="zip_tail_probe"`); there is no locator registry. No parallel
-  `DetectionDeclaration`. Q1–Q6 are unchanged.
+  `DetectionDeclaration`.
+- **Detection spend lives on `ArchiveyConfig.detection_budget`.** Most callers never
+  set a cap; they already skip `config=`. A bare `budget=` on `open_archive` /
+  `detect_format` is easy to read as a decompression limit. `#273`'s `budget=`
+  keyword is removed when the field lands. The earlier "not an ArchiveyConfig field"
+  note was the `exhaustive_prefix_scan` bool, not this.
 
 ## Impact
 
 - Modules: `src/archivey/internal/detection.py` (tier order, cue, `prefix_kind` — the
   generic loop), `src/archivey/internal/sfx.py` (cue), format modules for validators and
-  the ZIP tail locator. The detector calls those functions rather than inlining parse.
-  The tail probe stays ZIP-named. Validators return an internal `HitOutcome`. Not
-  `src/archivey/config.py` — there is no opt-in field. No `DetectionDeclaration` type
-  here (that is `detection-evidence-ledger`).
+  the ZIP tail locator, `src/archivey/config.py` (`detection_budget` on `ArchiveyConfig`).
+  The detector calls those functions rather than inlining parse. No `DetectionDeclaration`
+  type here (that is `detection-evidence-ledger`).
 - Public API: `FormatInfo` gains `prefix_kind` (always present, default `NONE`) and a
-  `PrefixKind` enum (`NONE` / `EXECUTABLE` / `SCRIPT` / `UNKNOWN`). Tail and exhaustive
-  scan are `DetectionBudget` numbers (`max_tail_bytes`, `max_scan_bytes`), not
-  `ArchiveyConfig.exhaustive_prefix_scan`. Files that used to raise `FormatDetectionError`
-  now open — a behaviour change, and the point of the change.
+  `PrefixKind` enum (`NONE` / `EXECUTABLE` / `SCRIPT` / `UNKNOWN`). `ArchiveyConfig`
+  gains `detection_budget` (`None` → BALANCED). Tail and exhaustive scan are
+  `DetectionBudget` numbers on that field, not `exhaustive_prefix_scan` and not a
+  `budget=` keyword. `#273`'s `detect_format(..., budget=)` is removed. Files that
+  used to raise `FormatDetectionError` now open — a behaviour change, and the point
+  of the change.
 - ~~**Detection order changes once, deliberately: far magic moves ahead of the content
   probes.**~~ — **no longer this change's; shipped by `detection-format-gaps`.** Writing the
   tiers down here is what exposed it (exact magic at a fixed offset losing to the weakest
