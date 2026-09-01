@@ -76,6 +76,7 @@ from archivey.internal.naming import (
 from archivey.internal.open_site import OpenSite
 from archivey.internal.reader_state import ReaderState
 from archivey.internal.selection import normalize_member_selector
+from archivey.internal.sfx import HitOutcome
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.counting import (
     CountingReader,
@@ -172,6 +173,12 @@ class ReadBackend(ABC):
     # ``MAGIC``: ZIP declares only its local-file header here, because scanning a stub
     # for the EOCD or spanned markers would claim any file containing those four bytes.
     SFX_MAGIC: tuple[MagicSignature, ...] = ()
+    # Format-owned check the SFX scan calls on a candidate-relative view. ``None``
+    # means "needle match is enough" (today: RAR / 7z). ZIP supplies a cheap
+    # local-header sanity check so four ``PK\\x03\\x04`` bytes in a stub are not a ZIP.
+    # Returns :class:`~archivey.internal.sfx.HitOutcome`; the detector treats
+    # anything other than ``VALID`` as "skip and continue".
+    SFX_HIT_VALIDATOR: Callable[[Callable[[int], bytes]], HitOutcome] | None = None
     # Formats this backend reads that have no exact magic and are recognized by a content
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).

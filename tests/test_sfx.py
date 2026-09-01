@@ -16,12 +16,15 @@ from __future__ import annotations
 import io
 import struct
 import subprocess
+import zipapp
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from archivey import DEFAULT_ARCHIVEY_CONFIG, detect_format, open_archive
+from archivey.detection_cost import TierSkipReason
 from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
@@ -33,6 +36,7 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.sfx import (
     SFX_MAX,
     ExecutableCue,
+    HitOutcome,
     MagicHit,
     executable_cue,
     scan_for_magic,
@@ -43,9 +47,11 @@ from archivey.internal.streams.brotli_framing import (
 )
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools.slice import SlicingStream
+from archivey.internal.zip_detect import validate_zip_local_header
 from archivey.types import ArchiveFormat
 from tests.conftest import requires, requires_binary
 from tests.streams_util import brotli_compressed_metablock_header
+from tests.test_detection_workspace import InstrumentedBytesIO
 
 # The stub shape from Topic 8 A-34: `MZ` plus low-entropy filler. Deliberately the
 # *synthetic* one — real PE/ELF stubs are the easy case, this one is what the Brotli
@@ -292,6 +298,29 @@ def test_executable_cue_grades_the_evidence() -> None:
     assert executable_cue(_pe_stub()) is ExecutableCue.STRONG
     assert executable_cue(b"\x7fELF" + b"\x00" * 64) is ExecutableCue.WEAK
     assert executable_cue(b"\x7fELF\x02\x01\x01" + b"\x00" * 64) is ExecutableCue.STRONG
+    # Shebang is always weak: two bytes, never a confirmed executable.
+    assert executable_cue(b"#!/usr/bin/env python3\n") is ExecutableCue.WEAK
+    assert executable_cue(b"#!/bin/sh\n") is ExecutableCue.WEAK
+
+
+def test_pe_cue_does_not_require_alignment_and_does_not_reject_a_large_e_lfanew() -> (
+    None
+):
+    """e_lfanew past the prefix is WEAK (cannot confirm cheaply), never NONE.
+
+    An unaligned pointer that still lands on ``PE\\0\\0`` is STRONG — alignment is
+    not a validity requirement.
+    """
+    unaligned = bytearray(b"\x00" * 0x40 + b"\x00" * 256)
+    unaligned[0:2] = b"MZ"
+    unaligned[0x3C:0x40] = struct.pack("<I", 0x81)
+    unaligned[0x81:0x85] = b"PE\x00\x00"
+    assert executable_cue(bytes(unaligned)) is ExecutableCue.STRONG
+
+    far = bytearray(_STUB)
+    far[0x3C:0x40] = struct.pack("<I", 0x2000)  # past the 4 KiB stub
+    assert far[:2] == b"MZ"
+    assert executable_cue(bytes(far)) is ExecutableCue.WEAK
 
 
 def test_a_real_elf_binary_is_a_strong_cue() -> None:
@@ -299,9 +328,7 @@ def test_a_real_elf_binary_is_a_strong_cue() -> None:
 
     Sampling the platform's own binaries is the point — a synthetic ELF header only
     proves the parser reads what this file wrote. Skipped where those binaries are not
-    ELF: macOS ships Mach-O (`0xcafebabe` / `0xfeedfacf`) and Windows PE, and
-    `executable_cue` knows only the two shapes `format-detection` names, so there is
-    nothing to assert on those platforms.
+    ELF: macOS ships Mach-O and Windows PE.
     """
     for candidate in (Path("/usr/bin/env"), Path("/bin/ls"), Path("/usr/bin/python3")):
         if not candidate.is_file():
@@ -313,17 +340,43 @@ def test_a_real_elf_binary_is_a_strong_cue() -> None:
     pytest.skip("no ELF binary on this platform to sample")
 
 
-def test_a_mach_o_binary_is_not_a_cue_today() -> None:
-    """Records the known gap rather than leaving it to a platform-dependent surprise.
+def _thin_macho64_stub(size: int = 8192, filler: bytes = b"\x90") -> bytes:
+    """A little-endian 64-bit Mach-O header whose ``cputype`` / ``filetype`` parse."""
+    header = b"\xcf\xfa\xed\xfe" + struct.pack(
+        "<iiIIIII",
+        0x01000007,  # CPU_TYPE_X86_64
+        3,  # CPU_SUBTYPE_X86_64_ALL
+        2,  # MH_EXECUTE
+        0,
+        0,
+        0,
+        0,
+    )
+    pad = filler * ((size - len(header) + len(filler) - 1) // len(filler))
+    return (header + pad)[:size]
 
-    A macOS self-extracting stub is Mach-O, which no cue matches, so an archive behind
-    one still falls through to the content probes. `format-detection` names `MZ` and ELF
-    only; widening it is a spec change, not an implementation detail.
-    """
-    fat_universal = b"\xca\xfe\xba\xbe" + b"\x00" * 4092
-    mach_o_64 = b"\xcf\xfa\xed\xfe" + b"\x00" * 4092
-    assert executable_cue(fat_universal) is ExecutableCue.NONE
-    assert executable_cue(mach_o_64) is ExecutableCue.NONE
+
+def _fat_macho_stub(size: int = 8192, filler: bytes = b"\x00") -> bytes:
+    """A big-endian fat header with one x86_64 arch — parses, unlike a ``.class`` file."""
+    header = struct.pack(">II", 0xCAFEBABE, 1)
+    arch = struct.pack(">iiIII", 0x01000007, 3, 0x1000, 0x100, 12)
+    pad = filler * (size - len(header) - len(arch))
+    return (header + arch + pad)[:size]
+
+
+def _minimal_class_file(*, padding: int = 0) -> bytes:
+    """Java class-file magic ``ca fe ba be`` plus a Java 8 version header."""
+    return b"\xca\xfe\xba\xbe" + struct.pack(">HHH", 0, 52, 1) + b"\x00" * padding
+
+
+def test_mach_o_cue_requires_a_parsing_header() -> None:
+    """Mach-O raises no cue until the header parses — ``ca fe ba be`` is also Java."""
+    assert executable_cue(b"\xcf\xfa\xed\xfe" + b"\x00" * 4092) is ExecutableCue.NONE
+    assert executable_cue(_thin_macho64_stub()) is ExecutableCue.STRONG
+    assert executable_cue(_fat_macho_stub()) is ExecutableCue.STRONG
+    assert executable_cue(_minimal_class_file(padding=4092)) is ExecutableCue.NONE
+    # Fat magic whose nfat_arch is implausible (the class-file major-version shape).
+    assert executable_cue(b"\xca\xfe\xba\xbe" + b"\x00" * 4092) is ExecutableCue.NONE
 
 
 # --- detection: the SFX matrix ----------------------------------------------------------
@@ -587,18 +640,209 @@ def test_a_decoy_needle_in_the_stub_wins_and_fails_loudly(tmp_path: Path) -> Non
         assert {m.name for m in archive.members() if m.is_file} == set(_FILES)
 
 
-def test_a_decoy_zip_needle_still_opens_via_the_tail(tmp_path: Path) -> None:
-    """ZIP survives the same decoy, because zipfile locates the EOCD from the tail.
+def test_a_decoy_zip_needle_is_skipped_for_the_real_payload(tmp_path: Path) -> None:
+    """Four ``PK\\x03\\x04`` bytes fail local-header sanity; the scan resumes.
 
-    Recorded next to the 7z case so the asymmetry is visible: the scanner limit bites
-    per-format, and only where the backend trusts the offset as the archive origin.
+    Before the validator this claimed offset 514 (the decoy) and still opened, because
+    zipfile locates the EOCD from the tail. The cheap check must not widen that: a
+    decoy is ``NOT_THIS_FORMAT``, and the real local header further on is the answer.
     """
     stub = b"MZ" + b"\x90" * 512 + b"PK\x03\x04" + b"\x90" * 3576
     path = tmp_path / "decoy-zip.exe"
-    path.write_bytes(stub + _zip_bytes())
+    payload = _zip_bytes()
+    path.write_bytes(stub + payload)
 
-    assert detect_format(path).payload_offset == 514
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.ZIP
+    assert detected.payload_offset == len(stub)
     with open_archive(path) as archive:
         assert {
             m.name: archive.read(m) for m in archive.members() if m.is_file
         } == _FILES
+
+
+def _peek_view(data: bytes) -> Callable[[int], bytes]:
+    def peek_more(n: int) -> bytes:
+        return data[:n]
+
+    return peek_more
+
+
+def test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy() -> None:
+    payload = _zip_bytes()
+    assert payload[:4] == b"PK\x03\x04"
+    assert validate_zip_local_header(_peek_view(payload)) is HitOutcome.VALID
+    assert (
+        validate_zip_local_header(_peek_view(b"PK\x03\x04"))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+    assert (
+        validate_zip_local_header(_peek_view(b"PK\x03\x04" + b"\x90" * 40))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+
+    def _header(
+        *,
+        version: int = 20,
+        flags: int = 0,
+        method: int = 8,
+        name_len: int = 1,
+        extra_len: int = 0,
+        rest: bytes = b"a",
+    ) -> bytes:
+        return (
+            b"PK\x03\x04"
+            + struct.pack(
+                "<HHHHHIIIHH",
+                version,
+                flags,
+                method,
+                0,
+                0,
+                0,
+                0,
+                0,
+                name_len,
+                extra_len,
+            )
+            + rest
+        )
+
+    assert validate_zip_local_header(_peek_view(_header())) is HitOutcome.VALID
+    # Reserved GP-flag bit 15.
+    assert (
+        validate_zip_local_header(_peek_view(_header(flags=0x8000)))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+    assert (
+        validate_zip_local_header(_peek_view(_header(method=11)))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+    assert (
+        validate_zip_local_header(_peek_view(_header(name_len=20, rest=b"short")))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+
+
+def test_shebang_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
+    """A ``#!`` stub whose text contains ``PK\\x03\\x04`` is not reported as ZIP."""
+    path = tmp_path / "script.sh"
+    path.write_bytes(b"#!/bin/sh\n# decoy PK\x03\x04 is not a zip\necho hi\n")
+    with pytest.raises(FormatDetectionError):
+        detect_format(path)
+
+
+def test_elf_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
+    """The ELF-cued form of the same decoy: today this claimed a damaged ZIP."""
+    stub = b"\x7fELF\x02\x01\x01" + b"\x00" * 200 + b"PK\x03\x04" + b"not a header"
+    path = tmp_path / "a.bin"
+    path.write_bytes(stub)
+    with pytest.raises(FormatDetectionError):
+        detect_format(path)
+
+
+def test_zipapp_detects_as_zip_and_lists_members(tmp_path: Path) -> None:
+    src = tmp_path / "app"
+    src.mkdir()
+    (src / "__main__.py").write_text("print('hi')\n", encoding="utf-8")
+    out = tmp_path / "app.pyz"
+    zipapp.create_archive(src, out, interpreter="/usr/bin/env python3")
+
+    detected = detect_format(out)
+    assert detected.format == ArchiveFormat.ZIP
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset > 0
+    assert any(
+        skip.tier == "zip_tail" and skip.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
+        for skip in detected.unavailable_tiers
+    )
+    with open_archive(out) as archive:
+        names = {m.name for m in archive.members() if m.is_file}
+        assert "__main__.py" in names
+        member = next(m for m in archive.members() if m.name == "__main__.py")
+        assert archive.read(member) == b"print('hi')\n"
+
+
+def test_shebang_plus_concatenated_zip_detects_and_lists_members(
+    tmp_path: Path,
+) -> None:
+    """Spring Boot executable-JAR shape: ``#!/bin/sh`` then a ZIP."""
+    shebang = b"#!/bin/sh\n# Spring Boot startup script\n"
+    path = tmp_path / "app.jar"
+    path.write_bytes(shebang + _zip_bytes())
+
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.ZIP
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == len(shebang)
+    with open_archive(path) as archive:
+        members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
+    assert members == _FILES
+
+
+def test_jpeg_plus_appended_zip_stays_undetected_under_balanced(tmp_path: Path) -> None:
+    """No prefix cue and no tail under BALANCED — JPEG+ZIP is a later-block case."""
+    path = tmp_path / "photo.jpg"
+    path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100 + _zip_bytes())
+    with pytest.raises(FormatDetectionError):
+        detect_format(path)
+
+
+def test_shebang_non_archive_reads_at_most_min_size_sfx_max() -> None:
+    script = b"#!/usr/bin/env python3\n" + b"print(1)\n" * 80
+    src = InstrumentedBytesIO(script)
+    with pytest.raises(FormatDetectionError):
+        detect_format(src)
+    assert src.unique_bytes <= min(len(script), SFX_MAX)
+
+
+def test_class_file_does_not_enter_the_sfx_scan() -> None:
+    """``ca fe ba be`` without a fat arch table must not pay ``SFX_MAX``."""
+    payload = _minimal_class_file(padding=100_000)
+    assert executable_cue(payload[:4096]) is ExecutableCue.NONE
+    src = InstrumentedBytesIO(payload)
+    try:
+        info = detect_format(src)
+    except FormatDetectionError:
+        info = None
+    # Far magic may peek ~32 KiB on a large source; the SFX scan would read ~100 KiB.
+    assert src.unique_bytes < 50_000
+    if info is not None:
+        assert info.detected_by != "sfx_scan"
+
+
+@requires("py7zr")
+@pytest.mark.parametrize(
+    "filler",
+    [
+        pytest.param(bytes(range(256)) * 32, id="realistic-entropy"),
+        pytest.param(b"\x00", id="low-entropy"),
+    ],
+)
+def test_thin_macho_stub_plus_7z_opens_real_members(
+    tmp_path: Path, filler: bytes
+) -> None:
+    """A parsing thin Mach-O cue finds the 7z; probes no longer claim the stub."""
+    stub = _thin_macho64_stub(size=8192, filler=filler)
+    path = tmp_path / "macho-sfx.bin"
+    path.write_bytes(stub + _7z_bytes(tmp_path))
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == len(stub)
+    with open_archive(path) as archive:
+        members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
+    assert members == _FILES
+
+
+@requires("py7zr")
+def test_fat_macho_stub_plus_7z_opens_real_members(tmp_path: Path) -> None:
+    stub = _fat_macho_stub(size=8192)
+    path = tmp_path / "fat-macho-sfx.bin"
+    path.write_bytes(stub + _7z_bytes(tmp_path))
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.payload_offset == len(stub)
+    with open_archive(path) as archive:
+        members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
+    assert members == _FILES

@@ -27,12 +27,14 @@ probes → extension. Both signals ahead of the probes are there for the same re
 probe is the weakest evidence archivey has, and one asked to judge arbitrary bytes will
 sometimes say yes:
 
-- A **self-extracting** archive has no archive magic at offset 0 at all: an executable
-  stub comes first. When the leading bytes look executable-shaped the detector searches
-  forward for the backends' ``SFX_MAGIC`` within the shared ``SFX_MAX`` window and reports
-  the payload start as ``payload_offset`` (``PROBABLE`` / ``sfx_scan``) — see
-  ``executable_cue`` and ``format-detection``'s "Executable-looking prefixes must not
-  silently become a wrong stream format".
+- A **self-extracting** archive has no archive magic at offset 0 at all: a prefix
+  (executable stub or ``#!`` launcher) comes first. When the leading bytes look
+  prefix-shaped the detector searches forward for the backends' ``SFX_MAGIC`` within
+  the shared ``SFX_MAX`` window and reports the payload start as ``payload_offset``
+  (``PROBABLE`` / ``sfx_scan``). The cue is a cost gate — avoid reading 2 MiB from
+  every file — not a false-positive defence; a format-owned validator rejects a
+  decoy. See ``executable_cue`` and ``format-detection``'s "Executable-looking
+  prefixes must not silently become a wrong stream format".
 - **Far magic** is exact magic whose end offset lies outside the default window (today
   ISO 9660's ``CD001`` at 32 769), so it needs an extended peek taken on demand. It runs
   before the probes because a bootable or hybrid ISO reserves its first 32 KiB for
@@ -74,9 +76,10 @@ from archivey.internal.registry import get_registry
 from archivey.internal.sfx import (
     SFX_MAX,
     ExecutableCue,
+    HitOutcome,
     ScanNeedle,
     executable_cue,
-    find_magic_in_prefix,
+    iter_magic_in_prefix,
 )
 from archivey.internal.streams.brotli_framing import (
     BrotliBlock,
@@ -427,33 +430,42 @@ def _scan_for_sfx_payload(
     workspace: PrefixWorkspace,
     *,
     scan_limit: int,
+    validators: dict[ArchiveFormat, Callable[[Callable[[int], bytes]], HitOutcome]],
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
 
     ``entries`` are the backends' ``SFX_MAGIC`` declarations. Each needle carries its
     candidate-internal offset (today all zero for ZIP/RAR/7z; TAR ``ustar`` → 257 once
     that needle lands). The returned ``payload_offset`` is the **candidate origin**, not
-    the raw needle position. ``PROBABLE`` rather than ``CERTAIN``: an exact magic found at
-    a *searched-for* offset is a weaker claim than one found at the offset the format
-    specifies.
+    the raw needle position. A hit whose format-owned validator returns anything other
+    than :attr:`HitOutcome.VALID` is skipped and the scan continues — earliest
+    *valid* match, not earliest needle. ``PROBABLE`` rather than ``CERTAIN``: an exact
+    magic found at a *searched-for* offset is a weaker claim than one found at the
+    offset the format specifies.
 
     ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
     the charge lands whether the scan hits or misses so the receipt reflects the work.
     """
     by_needle = {entry.magic: entry for entry in entries}
     needles = tuple(ScanNeedle(entry.magic, entry.offset) for entry in entries)
-    hit = find_magic_in_prefix(peek_more, needles, limit=scan_limit)
+    result: FormatInfo | None = None
+    for hit in iter_magic_in_prefix(peek_more, needles, limit=scan_limit):
+        entry = by_needle[hit.needle]
+        validator = validators.get(entry.format)
+        if validator is not None:
+            view = workspace.candidate_view(hit.candidate_origin)
+            if validator(view) is not HitOutcome.VALID:
+                continue
+        result = FormatInfo(
+            entry.format,
+            DetectionConfidence.PROBABLE,
+            "sfx_scan",
+            payload_offset=hit.candidate_origin,
+        )
+        break
     # Charge the window actually examined — a miss is the expensive case.
     workspace.charge_scanned(min(workspace.buffered_length, scan_limit))
-    if hit is None:
-        return None
-    entry = by_needle[hit.needle]
-    return FormatInfo(
-        entry.format,
-        DetectionConfidence.PROBABLE,
-        "sfx_scan",
-        payload_offset=hit.candidate_origin,
-    )
+    return result
 
 
 def _resolve_budget(
@@ -587,6 +599,7 @@ def _detect_format_body(
                     peek_more,
                     workspace,
                     scan_limit=scan_limit,
+                    validators=registry.sfx_hit_validators(),
                 )
                 if sfx_info is not None:
                     _warn_on_conflict(

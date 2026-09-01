@@ -75,6 +75,16 @@ def test_extension_only_is_guess(tmp_path: Path) -> None:
     assert info.detected_by == "extension"
 
 
+@pytest.mark.parametrize("ext", [".jar", ".pyz", ".whl", ".apk"])
+def test_zip_family_extension_fallback(tmp_path: Path, ext: str) -> None:
+    path = tmp_path / f"mystery{ext}"
+    path.write_bytes(b"not really a zip")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.ZIP
+    assert info.confidence == DetectionConfidence.GUESS
+    assert info.detected_by == "extension"
+
+
 def test_unrecognized_bytes_no_name_raises() -> None:
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(b"this is not any known archive format at all"))
