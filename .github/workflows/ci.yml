@@ -209,11 +209,11 @@ jobs:
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar
       # Homebrew disabled the `rar` cask on 2026-09-01 (official binaries fail
-      # Gatekeeper notarization). Compile RARLAB UnRAR from the published source
-      # instead: that is the same unrar Debian/conda-forge ship, it does not
-      # install the trialware `rar` writer, and a GHA cache of the binary means
-      # jobs after the first do not fetch from rarlab. `unar` is not a substitute
-      # — archivey's finder requires the RARLAB banner.
+      # Gatekeeper notarization). Compile RARLAB UnRAR from a pinned GitHub
+      # mirror of the published source (not rarlab): same unrar Debian/conda-forge
+      # ship, no trialware `rar` writer, and a GHA cache of the binary so later
+      # jobs skip the download. `unar` is not a substitute — archivey's finder
+      # requires the RARLAB banner.
       - name: Cache compiled RARLAB unrar (macOS)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
         uses: actions/cache@v4

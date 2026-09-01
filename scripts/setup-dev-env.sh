@@ -58,9 +58,9 @@ install_linux_packages() {
 
 install_macos_packages() {
   # Homebrew disabled the `rar` cask on 2026-09-01 (Gatekeeper). Build RARLAB
-  # UnRAR from source instead — same binary the macOS CI job installs, and
-  # archivey's finder requires the RARLAB banner (unar / 7z do not satisfy it).
-  # This does not need Homebrew; p7zip below still does.
+  # UnRAR from a pinned GitHub mirror of the source — same binary the macOS CI
+  # job installs. archivey's finder requires the RARLAB banner (unar / 7z do
+  # not satisfy it). This does not need Homebrew; p7zip below still does.
   if ! command -v unrar >/dev/null 2>&1; then
     mkdir -p "${HOME}/.local/bin"
     "${REPO_ROOT}/scripts/install-rarlab-unrar.sh" --dest "${HOME}/.local/bin"

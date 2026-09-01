@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Build RARLAB UnRAR (the freeware decompressor, not the trialware writer) from
-# the published source tarball and install the `unrar` binary.
+# a pinned GitHub mirror of the published source, and install the `unrar` binary.
 #
 # Why this exists: Homebrew disabled the `rar` cask on 2026-09-01 because the
 # official macOS binaries fail Gatekeeper notarization. Compiling from source
-# produces a local binary CI will actually run, and the tarball is cached so
-# jobs after the first do not fetch from rarlab. archivey's finder requires
-# the RARLAB banner — `unar` / `unrar-free` / `7z` are not substitutes.
+# produces a local binary CI will actually run. The tarball is fetched from
+# GitHub (not rarlab) and cached so later jobs do not re-download. archivey's
+# finder requires the RARLAB banner — `unar` / `unrar-free` / `7z` are not
+# substitutes.
+#
+# Source: https://github.com/pmachapman/unrar (mirror of rarlab UnRAR source).
+# Pin both the commit and the archive sha256; bump both together.
 #
 # Usage:
 #   scripts/install-rarlab-unrar.sh --dest DIR [--cache-dir DIR]
@@ -14,15 +18,17 @@
 # Writes DIR/unrar. No-ops if that path is already executable.
 set -euo pipefail
 
+# Mirror commit "Updated to 7.2.7" — same tree as rarlab unrarsrc-7.2.7.
 UNRAR_VERSION="7.2.7"
-UNRAR_SHA256="01d903a7dcf413cb2925696d7796e48e38d471f79bfe7ef3ad2aebf6c12dbefd"
-UNRAR_URL="https://www.rarlab.com/rar/unrarsrc-${UNRAR_VERSION}.tar.gz"
+UNRAR_COMMIT="d8612461815f7feffcf7f1bf9c5942125b25c1b4"
+UNRAR_SHA256="3d385eb009bbd657981ef317fc6625be9b627e699095019349ffec48da7fcf04"
+UNRAR_URL="https://github.com/pmachapman/unrar/archive/${UNRAR_COMMIT}.tar.gz"
 
 DEST=""
 CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/archivey/unrarsrc"
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \?//'
+  sed -n '2,19p' "$0" | sed 's/^# \?//'
 }
 
 while [ $# -gt 0 ]; do
@@ -68,7 +74,7 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 mkdir -p "$CACHE_DIR"
-tarball="${CACHE_DIR}/unrarsrc-${UNRAR_VERSION}.tar.gz"
+tarball="${CACHE_DIR}/unrar-${UNRAR_COMMIT}.tar.gz"
 
 verify_sha256() {
   local file="$1"
@@ -105,14 +111,15 @@ cleanup() { rm -rf "$workdir"; }
 trap cleanup EXIT
 
 tar -xf "$tarball" -C "$workdir"
-src="${workdir}/unrar"
+# GitHub archive/<sha>.tar.gz extracts to unrar-<sha>/ (files at repo root).
+src="${workdir}/unrar-${UNRAR_COMMIT}"
 if [ ! -f "${src}/makefile" ]; then
-  echo "install-rarlab-unrar: tarball did not contain unrar/makefile" >&2
+  echo "install-rarlab-unrar: expected makefile at ${src}/makefile" >&2
   exit 1
 fi
 
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
-echo "install-rarlab-unrar: compiling UnRAR ${UNRAR_VERSION} with ${jobs} jobs"
+echo "install-rarlab-unrar: compiling UnRAR ${UNRAR_VERSION} (${UNRAR_COMMIT:0:12}) with ${jobs} jobs"
 make -C "$src" -j"$jobs"
 
 # macOS install(1) has no GNU -D; copy the binary ourselves.
