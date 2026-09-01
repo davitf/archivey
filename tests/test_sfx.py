@@ -744,7 +744,9 @@ def test_elf_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
 def test_zipapp_detects_as_zip_and_lists_members(tmp_path: Path) -> None:
     src = tmp_path / "app"
     src.mkdir()
-    (src / "__main__.py").write_text("print('hi')\n", encoding="utf-8")
+    # write_bytes: Path.write_text translates ``\n`` to ``\r\n`` on Windows, and
+    # zipapp stores the on-disk bytes as the member payload.
+    (src / "__main__.py").write_bytes(b"print('hi')\n")
     out = tmp_path / "app.pyz"
     zipapp.create_archive(src, out, interpreter="/usr/bin/env python3")
 
