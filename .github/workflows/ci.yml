@@ -209,11 +209,11 @@ jobs:
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar
       # Homebrew disabled the `rar` cask on 2026-09-01 (official binaries fail
-      # Gatekeeper notarization). Compile RARLAB UnRAR from a pinned GitHub
-      # mirror of the published source (not rarlab): same unrar Debian/conda-forge
-      # ship, no trialware `rar` writer, and a GHA cache of the binary so later
-      # jobs skip the download. `unar` is not a substitute — archivey's finder
-      # requires the RARLAB banner.
+      # Gatekeeper notarization). Compile RARLAB UnRAR from a pinned git commit
+      # of the pmachapman/unrar GitHub mirror (not rarlab, not GitHub's generated
+      # archive tarball). The GHA cache stores the *built binary*; the commit pin
+      # is checked when the script actually builds, not on a cache hit. `unar` is
+      # not a substitute — archivey's finder requires the RARLAB banner.
       - name: Cache compiled RARLAB unrar (macOS)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
         uses: actions/cache@v4
@@ -225,7 +225,7 @@ jobs:
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
         run: |
           DEST="${RUNNER_TEMP}/rarlab-unrar"
-          ./scripts/install-rarlab-unrar.sh --dest "$DEST" --cache-dir "$DEST"
+          ./scripts/install-rarlab-unrar.sh --dest "$DEST"
           echo "$DEST" >> "$GITHUB_PATH"
           test -x "$DEST/unrar"
           command -v rar && exit 1 || true

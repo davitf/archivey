@@ -38,9 +38,7 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyUsageError,
-    FormatSupport,
     StreamNotSeekableError,
-    format_availability,
     open_archive,
     open_stream,
 )
@@ -517,23 +515,19 @@ def test_streaming_mode_is_uniform_across_formats(key: str, tmp_path: Path) -> N
                 pass
 
 
-def test_rar_column_is_unmeasured_without_the_rar_writer() -> None:
-    """RAR readability does not imply a live ``rar`` writer.
+def test_unrar_on_path_is_rarlab() -> None:
+    """If ``unrar`` is on PATH, archivey's finder must accept it as RARLAB.
 
-    ``unrar`` is enough to *read* RAR. The corpus RAR column is committed
-    (ADR 0016) and runs without the writer. What still skips on an unrar-only box
-    is the handful of tests that shell out to ``rar a`` at runtime — listed in
-    ``tests/fixtures/rar/README.md``.
-
-    This test skips where the writer *is* present (Linux ``setup-dev-env.sh``).
-    On CI / macOS it pins that the backend still registers as readable without it.
+    Format availability is FULL without any binary (listing is native). Member-data
+    tests skip when ``find_rarlab_unrar`` fails. This pins the compile path: a
+    freshly built macOS ``unrar`` must pass the banner check, not just exist.
     """
-    rar_is_readable = format_availability(ArchiveFormat.RAR).support is not (
-        FormatSupport.NONE
-    )
-    if shutil.which("rar") is not None:
-        pytest.skip("rar writer present — the RAR corpus column is measurable here")
-    assert rar_is_readable, "unrar present: RAR reads fine, yet no RAR fixture is built"
+    if shutil.which("unrar") is None:
+        pytest.skip("unrar not on PATH")
+    from archivey.internal.backends.rar_unrar import find_rarlab_unrar
+
+    path = find_rarlab_unrar()
+    assert Path(path).is_file()
 
 
 # ---------------------------------------------------------------------------
