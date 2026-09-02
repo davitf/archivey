@@ -25,7 +25,12 @@ from pathlib import Path
 import pytest
 
 from archivey import DEFAULT_ARCHIVEY_CONFIG, detect_format, open_archive
-from archivey.detection_cost import BALANCED_BUDGET, FAST_BUDGET, TierSkipReason
+from archivey.detection_cost import (
+    BALANCED_BUDGET,
+    FAST_BUDGET,
+    DetectionBudget,
+    TierSkipReason,
+)
 from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
@@ -65,6 +70,13 @@ from tests.test_detection_workspace import InstrumentedBytesIO
 _STUB = b"MZ" + b"\x90" * 4094
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 _SEVENZIP_FIXTURES = Path(__file__).parent / "fixtures" / "sevenzip"
+_SIGNATURE_HEADER_SIZE = 32
+
+
+def _elf_stub(size: int) -> bytes:
+    ident = b"\x7fELF\x02\x01\x01"
+    return ident + b"\x00" * (size - len(ident))
+
 
 _FILES = {
     "alpha.txt": b"alpha\n" * 2000,
@@ -734,6 +746,14 @@ def test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy() 
         validate_zip_local_header(_peek_view(_header(name_len=20, rest=b"short")))
         is HitOutcome.NOT_THIS_FORMAT
     )
+    # Source remaining, not the peek helper: a view that could supply the name
+    # still fails identity when those bytes sit past EOF (F7).
+    full = _header(name_len=20, rest=b"abcdefghijklmnopqrst")
+    assert validate_zip_local_header(_peek_view(full)) is HitOutcome.VALID
+    assert (
+        validate_zip_local_header(_peek_view(full), remaining=30)
+        is HitOutcome.NOT_THIS_FORMAT
+    )
 
 
 def _sevenzip_signature(
@@ -749,65 +769,120 @@ def _sevenzip_signature(
     return MAGIC_7Z + bytes((major, 0)) + crc.to_bytes(4, "little") + start
 
 
-def test_sevenzip_signature_validator_accepts_a_real_header_and_rejects_a_decoy() -> (
-    None
-):
-    payload = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
-    assert payload[: len(MAGIC_7Z)] == MAGIC_7Z
-    assert validate_sevenzip_signature_header(_peek_view(payload)) is HitOutcome.VALID
-    assert (
-        validate_sevenzip_signature_header(_peek_view(MAGIC_7Z))
-        is HitOutcome.NOT_THIS_FORMAT
-    )
-    assert (
-        validate_sevenzip_signature_header(_peek_view(_sevenzip_signature()))
-        is HitOutcome.VALID
-    )
-    # 0x90 filler after the 6-byte magic: major version is not 0.
-    assert (
-        validate_sevenzip_signature_header(_peek_view(MAGIC_7Z + b"\x90" * 40))
-        is HitOutcome.NOT_THIS_FORMAT
-    )
+def _crc_damaged_sevenzip_signature() -> bytes:
     damaged = bytearray(_sevenzip_signature())
     damaged[8] ^= 0xFF
-    assert (
-        validate_sevenzip_signature_header(_peek_view(bytes(damaged)))
-        is HitOutcome.DAMAGED
-    )
-    assert (
-        validate_sevenzip_signature_header(_peek_view(_sevenzip_signature(major=1)))
-        is HitOutcome.NOT_THIS_FORMAT
-    )
-    # Declared next-header past the view, still inside SFX_MAX: overrun, not a 7z.
-    overrun = _sevenzip_signature(next_offset=100, next_size=10)
-    assert (
-        validate_sevenzip_signature_header(_peek_view(overrun))
-        is HitOutcome.NOT_THIS_FORMAT
-    )
-    huge = _sevenzip_signature(next_size=(64 << 20) + 1)
-    assert (
-        validate_sevenzip_signature_header(_peek_view(huge))
-        is HitOutcome.NOT_THIS_FORMAT
-    )
-    # Trailing bytes after a CRC-valid header are still this format (task 4.4).
-    trailing = _sevenzip_signature() + b"config after payload\n"
-    assert validate_sevenzip_signature_header(_peek_view(trailing)) is HitOutcome.VALID
+    return bytes(damaged)
 
 
-def test_rar_main_header_validator_accepts_real_archives_and_rejects_a_crc_fail() -> (
-    None
-):
+@pytest.mark.parametrize(
+    ("payload", "remaining", "expected"),
+    [
+        pytest.param(
+            (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes(),
+            None,
+            HitOutcome.VALID,
+            id="real-fixture",
+        ),
+        pytest.param(MAGIC_7Z, None, HitOutcome.NOT_THIS_FORMAT, id="truncated-magic"),
+        pytest.param(
+            _sevenzip_signature(), None, HitOutcome.VALID, id="empty-crc-valid"
+        ),
+        pytest.param(
+            MAGIC_7Z + b"\x90" * 40,
+            None,
+            HitOutcome.NOT_THIS_FORMAT,
+            id="wrong-major-filler",
+        ),
+        pytest.param(
+            _crc_damaged_sevenzip_signature(),
+            None,
+            HitOutcome.DAMAGED,
+            id="crc-mismatch",
+        ),
+        pytest.param(
+            _sevenzip_signature(major=1),
+            None,
+            HitOutcome.NOT_THIS_FORMAT,
+            id="major-version-1",
+        ),
+        pytest.param(
+            _sevenzip_signature(next_offset=100, next_size=10),
+            _SIGNATURE_HEADER_SIZE,
+            HitOutcome.DAMAGED,
+            id="declared-end-overruns-known-remaining",
+        ),
+        pytest.param(
+            _sevenzip_signature(next_offset=100, next_size=10),
+            None,
+            HitOutcome.VALID,
+            id="declared-end-unknown-remaining",
+        ),
+        pytest.param(
+            _sevenzip_signature(next_size=(64 << 20) + 1),
+            None,
+            HitOutcome.DAMAGED,
+            id="oversized-next-header",
+        ),
+        pytest.param(
+            _sevenzip_signature() + b"config after payload\n",
+            None,
+            HitOutcome.VALID,
+            id="trailing-bytes",
+        ),
+    ],
+)
+def test_sevenzip_signature_validator(
+    payload: bytes, remaining: int | None, expected: HitOutcome
+) -> None:
+    assert (
+        validate_sevenzip_signature_header(_peek_view(payload), remaining) is expected
+    )
+
+
+def test_sevenzip_validator_peeks_only_the_signature_header() -> None:
+    """Declared-end confirmation is a length compare, not a prefix grow (F2)."""
+    next_offset = 1_900_000
+    sig = _sevenzip_signature(next_offset=next_offset, next_size=64)
+    peeked: list[int] = []
+
+    def peek_more(n: int) -> bytes:
+        peeked.append(n)
+        return (sig + bytes(n))[:n]
+
+    remaining = _SIGNATURE_HEADER_SIZE + next_offset + 64
+    assert validate_sevenzip_signature_header(peek_more, remaining) is HitOutcome.VALID
+    assert peeked == [_SIGNATURE_HEADER_SIZE]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        pytest.param(
+            (_RAR_FIXTURES / "stored_m0.rar").read_bytes(),
+            HitOutcome.VALID,
+            id="rar5",
+        ),
+        pytest.param(
+            (_RAR_FIXTURES / "basic_nonsolid__rar4.rar").read_bytes(),
+            HitOutcome.VALID,
+            id="rar4",
+        ),
+        pytest.param(
+            (_RAR_FIXTURES / "encrypted_header__.rar").read_bytes(),
+            HitOutcome.VALID,
+            id="rar5-encrypted-headers",
+        ),
+        pytest.param(RAR_ID, HitOutcome.NOT_THIS_FORMAT, id="truncated-rar4"),
+        pytest.param(RAR5_ID, HitOutcome.NOT_THIS_FORMAT, id="truncated-rar5"),
+    ],
+)
+def test_rar_main_header_validator(payload: bytes, expected: HitOutcome) -> None:
+    assert validate_rar_main_header(_peek_view(payload)) is expected
+
+
+def test_rar_main_header_validator_crc_fail_is_damaged() -> None:
     rar5 = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
-    rar4 = (_RAR_FIXTURES / "basic_nonsolid__rar4.rar").read_bytes()
-    encrypted = (_RAR_FIXTURES / "encrypted_header__.rar").read_bytes()
-    assert rar5.startswith(RAR5_ID)
-    assert rar4.startswith(RAR_ID)
-    assert validate_rar_main_header(_peek_view(rar5)) is HitOutcome.VALID
-    assert validate_rar_main_header(_peek_view(rar4)) is HitOutcome.VALID
-    # Encrypted-headers RAR5: first block is ENCRYPTION, still CRC-valid.
-    assert validate_rar_main_header(_peek_view(encrypted)) is HitOutcome.VALID
-    assert validate_rar_main_header(_peek_view(RAR_ID)) is HitOutcome.NOT_THIS_FORMAT
-    assert validate_rar_main_header(_peek_view(RAR5_ID)) is HitOutcome.NOT_THIS_FORMAT
     damaged = bytearray(rar5[:64])
     damaged[len(RAR5_ID)] ^= 0xFF
     assert validate_rar_main_header(_peek_view(bytes(damaged))) is HitOutcome.DAMAGED
@@ -854,6 +929,60 @@ def test_mz_7z_declared_end_overrun_is_not_claimed(tmp_path: Path) -> None:
     path.write_bytes(stub + _sevenzip_signature(next_offset=100, next_size=10))
     with pytest.raises(FormatDetectionError):
         detect_format(path)
+
+
+@pytest.mark.parametrize(
+    ("stub_len", "next_offset", "budget"),
+    [
+        pytest.param(256 * 1024, 1_900_000, BALANCED_BUDGET, id="256k-stub-balanced"),
+        pytest.param(4 * 1024, 1_900_000, BALANCED_BUDGET, id="4k-stub-balanced"),
+        pytest.param(4 * 1024, 1_500_000, FAST_BUDGET, id="4k-stub-fast"),
+    ],
+)
+def test_sevenzip_sfx_declared_end_uses_source_remaining_not_the_scan_window(
+    stub_len: int, next_offset: int, budget: DetectionBudget
+) -> None:
+    """A large CRC-valid 7z behind a stub is still SEVEN_Z (F1 / F2).
+
+    Comparing declared end against the peek window rejected every 7z SFX whose
+    payload plus stub exceeded ``max_scan_bytes``. The budget is a cost gate:
+    FAST still answers a hit inside its 256 KiB window. The validator peeks
+    only the 32-byte signature, so unique bytes stay well below the archive.
+    """
+    stub = _elf_stub(stub_len)
+    next_size = 64
+    sig = _sevenzip_signature(next_offset=next_offset, next_size=next_size)
+    declared = _SIGNATURE_HEADER_SIZE + next_offset + next_size
+    blob = stub + sig + b"\x00" * (declared - len(sig))
+    src = InstrumentedBytesIO(blob)
+    detected = detect_format(src, budget=budget)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == stub_len
+    assert src.unique_bytes < len(blob)
+    assert src.unique_bytes <= budget.max_scan_bytes
+
+
+def test_crc_valid_empty_7z_decoy_still_wins_over_a_later_payload(
+    tmp_path: Path,
+) -> None:
+    """Earliest CRC-valid 7z wins, including a 32-byte empty archive in the stub.
+
+    Exact-EOF ranking among several VALID hits is deferred (task 2.3 / F4). A
+    genuine SFX with a trailing config blob has no exact match, so that
+    tie-break is a preference among validated hits, not a filter.
+    """
+    decoy = _sevenzip_signature()
+    stub = b"MZ" + b"\x00" * 510 + decoy
+    real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    path = tmp_path / "empty-decoy-7z.exe"
+    path.write_bytes(stub + b"\x00" * 64 + real)
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == 512
+    with open_archive(path) as archive:
+        assert [m.name for m in archive.members() if m.is_file] == []
 
 
 @requires("py7zr")
@@ -1053,11 +1182,22 @@ def test_budget_truncated_zip_header_records_sfx_scan_skip(tmp_path: Path) -> No
     )
 
 
-def test_sfx_hit_validator_is_not_bound_on_instance() -> None:
-    for cls in (ZipReadBackend, SevenZipReadBackend, RarReadBackend):
-        inst = object.__new__(cls)
-        assert inst.SFX_HIT_VALIDATOR is cls.SFX_HIT_VALIDATOR
-        assert inst.SFX_HIT_VALIDATOR(_peek_view(b"")) is HitOutcome.NOT_THIS_FORMAT
+@pytest.mark.parametrize(
+    ("cls", "decoy"),
+    [
+        (ZipReadBackend, b"PK\x03\x04"),
+        (SevenZipReadBackend, MAGIC_7Z),
+        (RarReadBackend, RAR_ID),
+    ],
+    ids=["zip", "sevenzip", "rar"],
+)
+def test_sfx_hit_validator_is_not_bound_on_instance(cls: type, decoy: bytes) -> None:
+    inst = object.__new__(cls)
+    assert inst.SFX_HIT_VALIDATOR is cls.SFX_HIT_VALIDATOR
+    validator = inst.SFX_HIT_VALIDATOR
+    assert validator is not None
+    # One-arg call still works: ``remaining`` defaults to ``None``.
+    assert validator(_peek_view(decoy)) is HitOutcome.NOT_THIS_FORMAT
 
 
 def test_class_file_does_not_enter_the_sfx_scan() -> None:

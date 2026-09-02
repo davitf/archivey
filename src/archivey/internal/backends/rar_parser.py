@@ -169,6 +169,21 @@ _S_SHORT = struct.Struct("<H")
 _TRY_ENCODINGS = ("utf8", "utf-16le", "windows-1252")
 
 
+def _rar3_main_crc_end(flags: int) -> int:
+    """Exclusive end of MAIN-header CRC coverage, from the start of the block.
+
+    Shared with the SFX hit validator so a flag-walk change cannot silently
+    desync detection from the parser.
+    """
+    pos = _S_BLK_HDR.size
+    if flags & _RAR3_LONG_BLOCK:
+        pos += 4
+    pos += 6
+    if flags & _RAR3_MAIN_ENCRYPTVER:
+        pos += 1
+    return pos
+
+
 # ---------------------------------------------------------------------------
 # Public dataclasses
 # ---------------------------------------------------------------------------
@@ -942,10 +957,7 @@ def _parse_rar3(
             continue
 
         if block_type == _RAR3_MAIN:
-            pos += 6
-            if flags & _RAR3_MAIN_ENCRYPTVER:
-                pos += 1
-            crc_pos = pos
+            crc_pos = _rar3_main_crc_end(flags)
             is_solid = bool(flags & _RAR3_MAIN_SOLID)
             is_volume = bool(flags & _RAR3_MAIN_VOLUME)
             if flags & _RAR3_MAIN_PASSWORD:

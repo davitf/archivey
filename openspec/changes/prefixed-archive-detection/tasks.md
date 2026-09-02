@@ -166,10 +166,15 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
       the 7z backend returning `HitOutcome`; the scan calls it. Failed CRC with a
       plausible header is `DAMAGED`; this change still skips it (scan continues). Ledger
       task 4.7 is the later policy that reports `SEVEN_Z` from that outcome.
-      **Landed as the slim follow-up after #277.** Exact-EOF among several CRC-valid
-      hits is still earliest-VALID (the generic first-match loop); trailing bytes after
-      a CRC-valid header stay `VALID` (task 4.4). A declared end past `SFX_MAX` is a
-      large archive, not an overrun — CRC passing is enough; do not grow the prefix.
+      **Landed as the slim follow-up after #277.** The declared-end check compares
+      against the known source length (`remaining` from the candidate origin), not the
+      peek window / `scan_limit` / `SFX_MAX`. An unreachable end or oversized next-header
+      after a passing CRC is `DAMAGED`. Exact-EOF among several CRC-valid hits is still
+      earliest-VALID (the generic first-match loop) — deferred: a genuine SFX with a
+      trailing config blob has no exact match, so the tie-break is a preference among
+      validated hits, not a filter, and needs this remaining plumbing first. Trailing
+      bytes after a CRC-valid header stay `VALID` (task 4.4). The pin
+      `test_crc_valid_empty_7z_decoy_still_wins_over_a_later_payload` records the hole.
 - [x] 2.4 **(Block 3, or a slim follow-up after Block 1)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a
       parseable main header. Named function on the RAR backend, same `HitOutcome` split
       as 2.3.

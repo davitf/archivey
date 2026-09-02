@@ -77,6 +77,7 @@ from archivey.internal.sfx import (
     SFX_MAX,
     ExecutableCue,
     HitOutcome,
+    HitValidator,
     ScanNeedle,
     executable_cue,
     iter_magic_in_prefix,
@@ -430,7 +431,7 @@ def _scan_for_sfx_payload(
     workspace: PrefixWorkspace,
     *,
     scan_limit: int,
-    validators: dict[ArchiveFormat, Callable[[Callable[[int], bytes]], HitOutcome]],
+    validators: dict[ArchiveFormat, HitValidator],
     restrict_to_validated: bool,
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
@@ -463,7 +464,13 @@ def _scan_for_sfx_payload(
         validator = validators.get(entry.format)
         if validator is not None:
             view = workspace.candidate_view(hit.candidate_origin, limit=scan_limit)
-            if validator(view) is not HitOutcome.VALID:
+            source_len = workspace.remaining_known()
+            remaining = (
+                None
+                if source_len is None
+                else max(0, source_len - hit.candidate_origin)
+            )
+            if validator(view, remaining) is not HitOutcome.VALID:
                 continue
         result = FormatInfo(
             entry.format,

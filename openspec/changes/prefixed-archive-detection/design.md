@@ -177,9 +177,13 @@ StartHeader that follows it, and that StartHeader gives `NextHeaderOffset` /
 landed exactly on EOF in every case. Combined, a false hit needs a 48-bit magic *and* a
 32-bit CRC *and* a size agreement.
 
-Use `<=` for the gate and `==` as the tiebreak. Appending 16 bytes to a 7z leaves it
-perfectly readable while breaking the exact-EOF equality, and some SFX tools append
-configuration after the payload — measured, not assumed.
+Use `<=` against the known source remaining from the candidate origin (not the
+scan window / `SFX_MAX`) for the gate, and `==` as a later tiebreak among several
+CRC-valid hits. The slim follow-up after #277 landed the remaining-length gate;
+exact-EOF ranking is still earliest-VALID — a genuine SFX with a trailing config
+blob has no exact match, so that preference is not a filter. Appending 16 bytes
+to a 7z leaves it perfectly readable while breaking the exact-EOF equality, and
+some SFX tools append configuration after the payload — measured, not assumed.
 
 **RAR 5.** The 8-byte marker is followed by a main archive header with its own CRC32,
 which validated at every stub offset tried.
