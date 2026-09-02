@@ -3,14 +3,18 @@ name: technical-writing
 description: |
   Diátaxis structure, plain developer sentences, and unslop (cut AI tells). Use when
   writing or reviewing docs/, handbook prose, PR descriptions, or commit messages; or
-  when the user invokes /technical-writing or asks to unslop prose.
+  when the user invokes /technical-writing or asks to unslop prose. Unslop alone is also
+  the standing voice for maintainer chat and decision packets (see AGENTS.md).
 ---
 
 # Technical writing (archivey)
 
-Condensed from poteto/pstack `technical-writing` + `unslop` (MIT). Apply to **published**
-`docs/` and to maintainer handbook prose that a human will read. Code comments still follow
-`CONTRIBUTING.md` (why, not what).
+Condensed from poteto/pstack `technical-writing` + `unslop` (MIT). Apply the full skill
+(Diátaxis + craft + unslop) to **published** `docs/` and to maintainer handbook prose
+that a human will read. **Unslop (§3) alone** is the default for maintainer-facing chat,
+decision packets, and PR comments — see
+[`AGENTS.md`](../../../AGENTS.md) §Communicating with the maintainer. Code comments
+still follow `CONTRIBUTING.md` (why, not what).
 
 Pair workflow: [`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md).
 Doc placement: `CONTRIBUTING.md` §“Where does a new doc go?”.
@@ -36,6 +40,9 @@ reference; `docs/philosophy.md` is explanation.
 - No “simply” / “just” / “easy” in procedures.
 
 ## 3. Unslop
+
+**Always on** for maintainer-facing chat, decision packets, and PR comments
+([`AGENTS.md`](../../../AGENTS.md)). For docs/handbook pages, apply together with §§1–2.
 
 Rewrite until nothing reads like default LLM filler:
 
