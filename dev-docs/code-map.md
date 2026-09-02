@@ -120,7 +120,7 @@ Three things about this path are worth knowing before you debug it:
 | Warnings-as-data | `diagnostics.py` (public types) + `internal/diagnostics_collector.py` (emission) |
 | Cost or IO accounting | `cost.py` · `measurement.py` · `internal/measurement.py` · `streams/counting.py` |
 | Concurrency, locking, `MemberStreams` | `internal/reader_state.py` + `streams/streamtools/locked.py`; spec `reader-concurrency` |
-| Format detection or a magic number | `internal/detection.py` |
+| Format detection or a magic number | `internal/detection.py`; prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
 | Adding a backend | `internal/registry.py` + a self-registering module in `backends/` |
 | The CLI | `cli/main.py` dispatches; one module per subcommand |
 | Terminal-safe output of hostile text | `escaping.py`; threat-model O9 |

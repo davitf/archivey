@@ -92,6 +92,27 @@ Three rules the shape depends on:
 Stream formats (brotli, lzma, …) get one page each and may need a different shape; take
 this as the starting point, not a template to satisfy.
 
+### Topic pages
+
+Topic pages are **not** format pages with the nouns swapped, and
+[`topics/prefixed-archives.md`](topics/prefixed-archives.md) — written alongside `zip.md`
+and shaped by it — came out looser: shapes in the wild, the mechanism and its tiers, the
+cost argument, *where the formats differ*, pitfalls, decisions, references. Take the
+conventions rather than the section list: the pitfall tags, no performance numbers, status
+behind the register link.
+
+The split that matters is the same one in both directions. **A format page keeps what the
+format's own structure decides; the topic page keeps the shared machinery.** For prefixed
+archives that put the cue set, the scan bound, the budget tiers and the validation argument
+on the topic page, and left ZIP with its needle, its validator and its two offset
+conventions — because those follow from ZIP locating itself from the end, and no other
+format has them.
+
+A topic page may name format behaviour freely where that is what explains the mechanism;
+what it must not do is restate a format page or a register. The reverse is also true — a
+format page links the topic and keeps the residue, which is why the pipeline subsections in
+§2 are where those links naturally sit.
+
 Optional `formats/README.md` / `topics/README.md` indexes may appear alongside the first
 page; do not add empty stubs ahead of content.
 

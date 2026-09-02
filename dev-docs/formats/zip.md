@@ -27,15 +27,27 @@ Four properties generate most of this page. Everything below is a consequence of
 them.
 
 ```
-[ optional prefix ] [ LFH+data ] [ LFH+data ] … [ CD entry ] [ CD entry ] … [ EOCD ]
-                      ^                              |                         |
-                      └──────────────────────────────┘ header_offset           |
-                      └──────────────────── offset_cd ──────────────────┘      |
-                                                     backwards search ◄────────┘
+[ prefix? ]  [ LFH · data · DD? ] × n   [ CDH ] × n   [ ZIP64 EOCD + locator ]?  [ EOCD ]
+                  ▲                       │  ▲                                      │
+                  └── header_offset ──────┘  └────── offset_cd ─────────────────────┤
+                                                     search backwards ≤ 65 557 B ◄──┘
 ```
 
+| Part | Signature | What it is |
+| --- | --- | --- |
+| **prefix** | — | Arbitrary leading bytes. **Not part of the ZIP structure**: no field records it or its length, and nothing inside the archive has to change for it to be there. See §3 |
+| **LFH** — local file header | `PK\x03\x04` | One per member, immediately before that member's compressed bytes. Carries the name, extra fields, method and flags, and — unless bit 3 is set — the sizes and CRC. Its metadata is a *copy*; the CDH is authoritative |
+| **DD** — data descriptor | `PK\x07\x08`, optional | Present only when general-purpose bit 3 is set: the CRC and both sizes, written *after* the data because a streaming writer did not know them in advance. The same four bytes at offset 0 mean something else — the split-archive spanning marker |
+| **CDH** — central directory header | `PK\x01\x02` | One per member, all of them together near the end; the run of CDHs is *the central directory*. Each points back at its LFH through `header_offset` and adds what the LFH has no room for: external attributes (mode), version made by (create system), the member comment, the starting disk |
+| **ZIP64 EOCD** + locator | `PK\x06\x06`, `PK\x06\x07` | Wider versions of the EOCD fields, present when a count or an offset does not fit in 32 bits |
+| **EOCD** — end of central directory | `PK\x05\x06` | 22 fixed bytes plus an optional comment: total entries, the size of the CDH run, `offset_cd` (where that run starts), the disk numbers, the comment length. The only record found by *position* rather than by a pointer |
+
+archivey takes every member field from the CDH and reads the LFH only to locate the data
+(§2.3). It cross-checks the two copies of the name and refuses on a mismatch, which is
+also stdlib's rule.
+
 **The index is at the end.** The central directory is authoritative and is found by
-scanning backwards from the last bytes for the End of Central Directory record. So:
+scanning backwards from the last bytes for the EOCD. So:
 reading the structure requires positioning at the end, which is why a non-seekable source
 is refused outright (§2.1, §5); a ZIP can be preceded by arbitrary bytes without any of
 its own numbers changing meaning, which is why prefixed ZIPs work (§3); appending is
@@ -48,14 +60,12 @@ The backwards search bound is derived, not chosen: `comment_length` is a `uint16
 record cannot begin more than 65535 + 22 bytes before the end. A larger bound cannot find
 a valid EOCD and a smaller one rejects legal archives, so it is not configurable.
 
-**Members are independent.** Each member has its own local header and its own compressed
-byte range, with no cross-member state. So random access is `DIRECT`, seeking within a
+**Members are independent.** Each member has its own LFH and its own compressed byte range, with no cross-member state. So random access is `DIRECT`, seeking within a
 member and holding two member streams open are both cheap, and there is no solid-block
 cost model. Both capabilities are still off by default — see §6.
 
-**Sizes and the CRC may arrive after the data.** With general-purpose bit 3 set, the local
-header carries zeros and a data descriptor follows the compressed bytes. The central
-directory carries the real values, so a random-access read is unaffected; a forward-only
+**Sizes and the CRC may arrive after the data.** With general-purpose bit 3 set, the LFH
+carries zeros and a DD follows the compressed bytes. The CDH carries the real values, so a random-access read is unaffected; a forward-only
 reader would see them late. This is also why the ZipCrypto verification byte is the high
 byte of the DOS time rather than of the CRC when bit 3 is set.
 
@@ -90,12 +100,13 @@ claim.
 Two things are ZIP-specific rather than general in the shared detector:
 
 - Prefixed ZIPs are found by the cued forward scan and reported as `ZIP` with a
-  `payload_offset`, never as a stream codec. The cue set (`MZ`, ELF, Mach-O, `#!`), the
-  scan window and the budget tiers are general, and belong on a prefixed-archives topic
-  page rather than here; what stays ZIP's is the needle, the validator, and the offset
-  conventions in §3.
+  `payload_offset`, never as a stream codec. The cue set, the scan window, the budget tiers
+  and why a hit is validated are shared with 7z and RAR —
+  [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone: the
+  needle and its validator above, the offset conventions in §3, and the fact that ZIP is
+  the only format that can locate itself from the end.
 - A **tail probe** — locating the EOCD directly instead of scanning forward — is designed
-  and not shipped. Until it lands, a prefixed ZIP behind bytes that fire no cue (a JPEG
+  and not shipped, and ZIP is the only format it can serve. Until it lands, a prefixed ZIP behind bytes that fire no cue (a JPEG
   polyglot, a plain concatenation) is not detected, though `open_archive(..., format=ZIP)`
   reads it. Under `open_archive` the probe would be nearly free, since the backend reads
   the EOCD anyway; under a bare `detect_format()` it is a tail read on every file,
@@ -104,13 +115,13 @@ Two things are ZIP-specific rather than general in the shared detector:
 
 ### 2.2 Open and list
 
-Stdlib `zipfile` parses the central directory and builds the member map. `reader.get()`
+Stdlib `zipfile` parses the central directory (the CDH run) and builds the member map. `reader.get()`
 and name lookup are satisfied from that map with no further archive I/O.
 
 **Split sets are rejected before anything else.** A filename matching `.z01`/`.zNN` raises
 `UnsupportedFeatureError` at open. A ZIP64 locator claiming more than one disk makes stdlib
 raise, and archivey re-types it by matching the exception text. Neither path reads the
-32-bit EOCD disk fields, and the other split-naming convention in the wild is missed
+EOCD's own 32-bit disk fields, and the other split-naming convention in the wild is missed
 entirely (§5).
 
 **Name decoding.** A set bit 11 is honoured as UTF-8. An explicit `encoding=` is passed to
@@ -131,16 +142,16 @@ separator; a Unix-origin entry keeps it as a literal filename character.
 
 | `ArchiveMember` field | Source | Absent when |
 | --- | --- | --- |
-| `name` | Central-directory name bytes, decoded as above | — |
+| `name` | CDH name bytes, decoded as above | — |
 | `raw_name` | The stored bytes, verbatim | — |
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
-| `modified` / `accessed` / `created` | DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
+| `modified` / `accessed` / `created` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
 | `type` | Unix mode where present, else the directory marker and symlink hints | — |
 | `link_target` | The member's **data**, not its metadata | The archive is encrypted and no password is available — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, with no secret in the payload |
 | `compression` | `compress_type` → `CompressionMethod` | — |
 | `is_encrypted` | `flag_bits & 0x1` | — |
-| `hashes["crc32"]` | Central-directory CRC, as four big-endian bytes | WinZip AE-2 members — the format zeroes the field and the HMAC is the integrity signal |
-| `comment`, `create_system` | Central directory | Not recorded |
+| `hashes["crc32"]` | CDH CRC, as four big-endian bytes | WinZip AE-2 members — the format zeroes the field and the HMAC is the integrity signal |
+| `comment`, `create_system` | CDH | Not recorded |
 | `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members | — |
 
 Raw extra-field blobs are not surfaced. Duplicate names are legal and are not merged:
@@ -150,8 +161,8 @@ in the reader spine so ZIP behaves like every other format.
 ### 2.3 Member data
 
 **Stdlib's decoders are not used.** archivey locates the member's raw compressed bytes with
-a bounded local-file-header parse (fixed header plus the local name and extra lengths, with
-absurd-length rejection), slices the source, and dispatches on the ZIP method id to the
+a bounded LFH parse (the fixed 30 bytes plus the local name and extra lengths, with
+absurd-length rejection and a name cross-check against the CDH), slices the source, and dispatches on the ZIP method id to the
 shared codec layer.
 
 The reason is coverage and uniformity, in that order. Stdlib decodes STORED, DEFLATE, BZIP2
@@ -268,7 +279,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A `.z01`…`.zip` split set is refused with "rejoin first" | **format** for now | ZIP addresses entries by (disk, offset), which stdlib cannot resolve and naive concatenation cannot fake. [`open-issues.md`](../open-issues.md) P2 |
 | A `.zip.001`…`.zip.00N` split set — 7-Zip's naming — is not recognised as split at all: the first part reports `CorruptionError`, the rest report `FormatDetectionError` | **archivey** | Valid input, wrong error. The `.z01` rule is a filename pattern that does not cover this convention. Unregistered as of this writing; same shape as `open-issues.md` P17 |
 | An EOCD declaring a non-zero disk number opens and lists normally | **archivey** | Those fields are parsed by stdlib and never checked; only the ZIP64 locator path refuses, and it does so by matching stdlib's exception text. `format-zip` has a scenario claiming otherwise |
-| A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk local headers forward |
+| A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk LFHs forward |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted and surface later as corruption | **format** | One-byte verifier. Confirmation narrows it; nothing eliminates it |
 | A prefixed ZIP behind bytes that fire no cue is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
