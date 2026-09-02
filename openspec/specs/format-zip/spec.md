@@ -4,8 +4,8 @@
 
 ZIP archives are read through the unified `ArchiveReader` API using stdlib
 `zipfile` for the central directory and archivey's shared codec layer for
-member data. ZIP listing is indexed, member access is direct, read sources must
-be seekable, and streaming write uses data descriptors.
+member data. ZIP listing is indexed, member access is direct, and read sources
+must be seekable. Read-only: writing is not shipped for any format.
 
 ## Related specs
 
@@ -16,7 +16,9 @@ be seekable, and streaming write uses data descriptors.
 | `diagnostics` | Timestamp and symlink-target diagnostic values / policy |
 | `backend-registry` | `format_availability(ZIP)` FULL/PARTIAL from optional member codecs |
 | `compressed-streams` | ZIP member-data decode path (method id → `StreamCodec`) |
+
 ## Requirements
+
 ### Requirement: Report ZIP format properties
 
 The ZIP backend SHALL expose these properties for every opened ZIP archive:
@@ -28,7 +30,7 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 | Access cost | `AccessCost.DIRECT` — independent local file offsets |
 | Stream capability | `StreamCapability.SEEKABLE` |
 | Read source | Seekable only; no implicit buffering/spooling |
-| Write support | Yes, including streaming write |
+| Write support | No — writing is not shipped for any format (`PLAN.md` phase 9) |
 
 `reader.get()` and other name lookups SHALL use the central-directory-derived
 member map without extra archive I/O. Unencrypted ZIP member data SHALL decode
@@ -52,7 +54,6 @@ separate decryption path.
 | Deflate64/Zstd/PPMd member, backend present | Decodes via the shared codec layer |
 | Deflate64/Zstd/PPMd member, backend absent | `PackageNotInstalledError` |
 | Optional ZIP codecs all installed | `format_availability(ZIP)` is FULL |
-| Streaming write without pre-known size | Local header uses data-descriptor placeholders; data descriptor stores final CRC and sizes; standard ZIP tools can read the result |
 
 ### Requirement: Decode ZIP member bodies through the shared codec layer
 
@@ -228,20 +229,6 @@ Rejected-candidate streams SHALL be closed before trying the next candidate.
 | Non-BZIP2 `OSError("Invalid data stream")` or any unrelated `OSError` | Propagates unchanged; failed stream is closed |
 | Structural `BadZipFile` | `CorruptionError`; no further password iteration |
 
-### Requirement: Support streaming ZIP write via data descriptors
-
-The ZIP writer SHALL support non-seekable destinations by setting data descriptor
-flag `0x8`, writing placeholder CRC and sizes in the local file header, streaming
-data, and appending the actual CRC-32 and compressed/uncompressed sizes after the
-member data. File size need not be known in advance.
-
-#### Scenario: streaming ZIP write matrix
-
-| Case | Expected |
-| --- | --- |
-| `writer.add_stream(stream, name=...)` without `size` | Header placeholders written; data streamed; descriptor appended with final CRC and sizes |
-| Result read by standard ZIP tool | Archive is valid |
-
 ### Requirement: Decode unflagged ZIP member names by UTF-8-validity sniff
 
 The ZIP backend SHALL decode a member name whose general-purpose bit 11 (UTF-8/EFS flag) is
@@ -272,4 +259,3 @@ bare `UnicodeDecodeError`; the fallback encoding (cp437 by default) decodes ever
 - **WHEN** bit 11 is set, **or** the caller passed an explicit `encoding=`
 - **THEN** the name is decoded as UTF-8 (flag) or with the caller's `encoding` respectively,
   with no sniff and no override diagnostic
-

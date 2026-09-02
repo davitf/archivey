@@ -9,7 +9,7 @@ states the behaviour and links the row.
 | | |
 | --- | --- |
 | Read | Yes |
-| Write | **Not shipped.** `format-zip` specifies streaming write; there is no writer in `src/` (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
 | Source | Seekable only, in both access modes |
 | Listing cost | `INDEXED` |
 | Access cost | `DIRECT` |
@@ -204,7 +204,11 @@ the archive still extracts.
 
 ### 2.5 Write
 
-Not shipped. See the table at the top and §6.
+Not shipped, and not ZIP-specific: no format has a writer. `format-zip` used to specify
+streaming write via data descriptors and no longer does — the requirement went in
+`2026-09-02-drop-unshipped-write-claims`, to be restored with the writing phase rather
+than edited around. The format-level fact it rested on survives in §1: a ZIP records late
+sizes in a DD, which is why bit 3 exists at all.
 
 ## 3. In the wild
 
@@ -283,7 +287,6 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted and surface later as corruption | **format** | One-byte verifier. Confirmation narrows it; nothing eliminates it |
 | A prefixed ZIP behind bytes that fire no cue is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
-| `format-zip` describes streaming write; there is no writer | **archivey** | Documentation, not behaviour. Writing is `PLAN.md` phase 9 |
 
 ## 6. Decisions
 
@@ -296,7 +299,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Reject split sets rather than approximate them | Naive segment concatenation is unreliable and would mis-read data rather than fail | Concatenating segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
-| Create-only writing, when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append |
+| Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
 
 ## 7. Verify
 

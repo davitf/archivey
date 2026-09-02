@@ -23,7 +23,9 @@ checksum trailer.
 | `compressed-streams` | Codec descriptors, decoder availability, metadata hooks |
 | `format-detection` | Bare stream detection and combined TAR-compressor detection |
 | `packaging-and-extras` | Optional codec extras such as Brotli, LZ4, Zstd |
+
 ## Requirements
+
 ### Requirement: Present each compressor as a one-member archive
 
 The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, LZMA Alone, ZLIB, BR,
@@ -62,7 +64,7 @@ The backend SHALL expose these properties for every single-file compressor:
 | --- | --- |
 | Listing cost | `INDEXED`; exactly one member |
 | Access cost | `DIRECT`; no inter-member dependency exists |
-| Supports write | Yes |
+| Supports write | No — writing is not shipped for any format (`PLAN.md` phase 9) |
 | Requires seek | Random access (`streaming=False`) requires seek; forward-only `streaming=True` accepts non-seekable sources for every supported single-file codec including `.Z` |
 
 Random access over a non-seekable source SHALL fail fast at open with
@@ -220,4 +222,3 @@ caller does a plain `open_archive()` and never asks to `seek()`.
 | `.lz` from a pipe | no digest key |
 | `.bz2` / `.xz` / `.zlib` / `.br` / `.Z` | no digest key |
 | Any of the above, full `read()` | verification unchanged; hashes are metadata only |
-
