@@ -434,10 +434,17 @@ def test_split_segment_name_rejected(tmp_path: Path) -> None:
 
 def test_sevenzip_split_segment_name_rejected(tmp_path: Path) -> None:
     # 7-Zip names split parts name.zip.001 … name.zip.00N; refuse like .z01.
-    segment = tmp_path / "archive.zip.001"
-    segment.write_bytes(_stdlib_zip_bytes())
+    # .001 often has LFH magic; middle/last parts do not — both paths must refuse.
+    first = tmp_path / "archive.zip.001"
+    first.write_bytes(_stdlib_zip_bytes())
     with pytest.raises(UnsupportedFeatureError) as excinfo:
-        open_archive(segment)
+        open_archive(first)
+    assert "multi-volume" in str(excinfo.value).lower()
+
+    later = tmp_path / "archive.zip.003"
+    later.write_bytes(b"\x00" * 64)  # no magic at 0
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(later)
     assert "multi-volume" in str(excinfo.value).lower()
 
 

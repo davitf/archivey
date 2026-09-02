@@ -154,11 +154,13 @@ Stdlib `zipfile` parses the central directory (the CDH run) and builds the membe
 and name lookup are satisfied from that map with no further archive I/O.
 
 **Split sets are rejected before anything else.** A filename matching `.z01`/`.zNN`
-or 7-Zip's `.zip.NNN` raises `UnsupportedFeatureError` at open. After stdlib opens the
-archive, non-zero classic EOCD disk fields (with `0xFFFF` treated as the ZIP64 sentinel)
-are refused the same way — that is what catches Info-ZIP's final `.zip` part, which
-lists cleanly because it holds the central directory. A ZIP64 locator claiming more
-than one disk makes stdlib raise, and archivey re-types it by matching the exception
+raises `UnsupportedFeatureError` in the ZIP reader; 7-Zip's `.zip.NNN` is refused
+even earlier in `open_archive` so middle/last parts (no magic at offset 0) do not
+fall through to `FormatDetectionError`. After stdlib opens the archive, non-zero
+classic EOCD disk fields (with `0xFFFF` treated as the ZIP64 sentinel) are refused
+the same way — that is what catches Info-ZIP's final `.zip` part, which lists
+cleanly because it holds the central directory. A ZIP64 locator claiming more than
+one disk makes stdlib raise, and archivey re-types it by matching the exception
 text.
 
 **Name decoding.** A set bit 11 is honoured as UTF-8. An explicit `encoding=` is passed to

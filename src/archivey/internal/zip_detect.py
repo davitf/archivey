@@ -3,14 +3,35 @@
 Four bytes of ``PK\\x03\\x04`` in a stub are not a ZIP. The cued scan calls
 :func:`validate_zip_local_header` with a candidate-relative view; EOCD plus
 central-directory confirmation is the tail probe's job, not this check.
+
+Also: :func:`is_sevenzip_zip_split_name` — 7-Zip's ``name.zip.NNN`` split naming,
+which must be refused before format detection (middle/last parts have no magic
+at offset 0).
 """
 
 from __future__ import annotations
 
+import re
 import struct
 from collections.abc import Callable
+from pathlib import PurePath
 
 from archivey.internal.sfx import HitOutcome
+
+# 7-Zip ``-tzip -v…`` names parts ``archive.zip.001`` … ``archive.zip.00N``.
+# Info-ZIP ``.zNN`` is handled in the ZIP reader (those parts either carry magic
+# or are accepted as undetectable); this pattern must fire *before* detection
+# because only ``.001`` typically starts with a local-file header.
+_SEVENZIP_ZIP_SPLIT_RE = re.compile(r"\.zip\.\d{3,}$", re.IGNORECASE)
+
+
+def is_sevenzip_zip_split_name(archive_name: str | None) -> bool:
+    """True when ``archive_name`` ends with 7-Zip's ``.zip.NNN`` split suffix."""
+    if not archive_name:
+        return False
+    # PurePath so Windows ``\\`` and POSIX ``/`` both yield the final segment.
+    return _SEVENZIP_ZIP_SPLIT_RE.search(PurePath(archive_name).name) is not None
+
 
 _LOCAL_HEADER_MAGIC = b"PK\x03\x04"
 _LOCAL_HEADER_SIZE = 30

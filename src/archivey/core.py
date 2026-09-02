@@ -67,6 +67,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
 )
 from archivey.internal.volumes import ConcatenatedFile, OpenSourceInput, resolve_source
+from archivey.internal.zip_detect import is_sevenzip_zip_split_name
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams, StreamFormat
 
@@ -242,6 +243,16 @@ def open_archive(
     # Mutated below (peekable wrap, RAR volume reopen, mid-stream origin fix).
     reader_source = resolved.open_source
     archive_name = resolved.archive_name
+
+    # 7-Zip ZIP splits are named ``name.zip.001``…; middle/last parts have no ZIP
+    # magic at offset 0, so detection would raise FormatDetectionError. Refuse by
+    # name before that — same rejoin-first message as the ZIP backend.
+    if is_sevenzip_zip_split_name(archive_name):
+        raise UnsupportedFeatureError(
+            "Multi-volume (split/spanned) ZIP archives are not supported.",
+            archive_name=archive_name,
+            source_format=ArchiveFormat.ZIP,
+        )
 
     # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
     # format= is rejected, not ignored); else caller format, else magic detect. ---
