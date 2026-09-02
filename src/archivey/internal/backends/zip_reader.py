@@ -35,7 +35,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator, Mapping, NoReturn, cast
+from typing import IO, Any, BinaryIO, Iterator, Mapping, NoReturn, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -1461,7 +1461,7 @@ class ZipReader(BaseArchiveReader):
             self._owned_fp = None
 
 
-def _classic_eocd_declares_split(fp: BinaryIO) -> bool:
+def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
     """True when the classic EOCD names a real non-zero disk.
 
     Reads only the two uint16 fields at EOCD+4/+6. ``0xFFFF`` is the ZIP64
