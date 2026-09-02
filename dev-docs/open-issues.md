@@ -581,6 +581,44 @@ re-verified failing against the unfixed code). Original write-up below.
 - **Refs:** PR #101 (still open) / `dev-docs/investigations/rar-unrar-piping-investigation.md`
   (when merged); `format-rar`.
 
+### P17. SFX multi-volume sets are unreadable from any of their files — **confirmed bug**
+
+- **What happens.** A self-extracting *and* split archive is readable from none of its
+  parts. Both formats, one root cause. Measured on `main` @ `be1a459`:
+
+  | Built with | Files | `open_archive` on each |
+  | --- | --- | --- |
+  | `7z a -sfx7zCon.sfx -v40k` | `vol.exe`, `vol.exe.001`…`.004` | stub → `FormatDetectionError`; `.001` → `CorruptionError: Truncated 7z next header: expected 34 bytes` |
+  | `rar a -sfx -v40k` | `rv.part1.sfx`, `rv.part2.rar`…`.part5.rar` | `.part1.sfx` → `TruncatedError: Incomplete RAR multi-volume set`; later parts → `UnsupportedFeatureError: Need first volume` |
+
+- **Why.** The sibling-discovery patterns in `src/archivey/internal/volumes.py:28-29`
+  require the *archive* extension immediately before the part number:
+
+  ```python
+  _7Z_VOLUME_RE = re.compile(r"^(?P<base>.+\.7z)\.(?P<part>\d+)$", re.IGNORECASE)
+  _RAR_PART_RE  = re.compile(r"^(?P<base>.+)\.part(?P<part>\d+)\.rar$", re.IGNORECASE)
+  ```
+
+  An SFX set replaces that extension on the first member — `vol.exe.001`,
+  `rv.part1.sfx` — so no siblings are found and the backend is handed a lone first
+  volume. The non-SFX equivalents are fine: `vol.7z.001` opens and lists all members.
+
+- **Why it matters:** valid input, wrong error. The 7z message (`Truncated 7z next
+  header`) actively misdescribes an intact archive set as corrupt; the RAR one at least
+  says the set is incomplete. Detection itself is not at fault — `rv.part1.sfx` is
+  correctly identified as RAR, and per-file 7z detection behaves as designed (a first
+  volume is claimed by near magic at offset 0, so the SFX scan validator never sees it
+  and its `declared > remaining` gate cannot misfire).
+
+- **Fix is two parts, separable:** (1) widen the sibling patterns so an SFX first member
+  joins its set; (2) decide whether a stub-only file (`vol.exe`, no archive magic
+  anywhere in it) should resolve to its `.001` rather than raising
+  `FormatDetectionError` — a detection-side question, unlike (1).
+
+- **Refs:** `volumes.py:28-29`; grill after PR #279 (7z/RAR SFX hit validators). Belongs
+  on a future `dev-docs/topics/` SFX / executable-prefix page and on the 7z and RAR
+  format pages by link, not by restatement.
+
 ---
 
 ## Docs / specs — drift and missing prose
