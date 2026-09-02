@@ -153,15 +153,15 @@ Two things are ZIP-specific rather than general in the shared detector:
 Stdlib `zipfile` parses the central directory (the CDH run) and builds the member map. `reader.get()`
 and name lookup are satisfied from that map with no further archive I/O.
 
-**Split sets are rejected before anything else.** A filename matching `.z01`/`.zNN`
-raises `UnsupportedFeatureError` in the ZIP reader; 7-Zip's `.zip.NNN` is refused
-even earlier in `open_archive` so middle/last parts (no magic at offset 0) do not
-fall through to `FormatDetectionError`. After stdlib opens the archive, non-zero
-classic EOCD disk fields (with `0xFFFF` treated as the ZIP64 sentinel) are refused
-the same way — that is what catches Info-ZIP's final `.zip` part, which lists
-cleanly because it holds the central directory. A ZIP64 locator claiming more than
-one disk makes stdlib raise, and archivey re-types it by matching the exception
-text.
+**Split sets are rejected before anything else.** Info-ZIP `.zNN` and 7-Zip
+`.zip.NNN` are refused by filename in `open_archive` before detection — middle
+parts have no magic at offset 0, so detection alone would raise
+`FormatDetectionError`. After stdlib opens the archive, non-zero classic EOCD
+disk fields (with `0xFFFF` treated as the ZIP64 sentinel) are refused the same
+way — that is what catches Info-ZIP's final `.zip` part, which lists cleanly
+because it holds the central directory. A ZIP64 locator claiming more than one
+disk makes stdlib raise, and archivey re-types it by matching the exception
+text. Nameless streams are out of scope for the filename refuse.
 
 **Name decoding.** A set bit 11 is honoured as UTF-8. An explicit `encoding=` is passed to
 stdlib as `metadata_encoding` and used verbatim, which also disables the sniff below. An

@@ -69,7 +69,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.volumes import ConcatenatedFile, OpenSourceInput, resolve_source
 from archivey.internal.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
-    is_sevenzip_zip_split_name,
+    is_zip_split_segment_name,
 )
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams, StreamFormat
@@ -247,10 +247,11 @@ def open_archive(
     reader_source = resolved.open_source
     archive_name = resolved.archive_name
 
-    # 7-Zip ZIP splits are named ``name.zip.001``…; middle/last parts have no ZIP
-    # magic at offset 0, so detection would raise FormatDetectionError. Refuse by
-    # name before that — same rejoin-first message as the ZIP backend.
-    if is_sevenzip_zip_split_name(archive_name):
+    # ZIP split segments (Info-ZIP ``.zNN``, 7-Zip ``.zip.NNN``): middle/last parts
+    # often have no ZIP magic at offset 0, so detection would raise
+    # FormatDetectionError. Refuse by name before that — same rejoin-first
+    # message as the ZIP backend. Nameless streams are out of scope here.
+    if is_zip_split_segment_name(archive_name):
         raise UnsupportedFeatureError(
             ZIP_MULTI_VOLUME_MSG,
             archive_name=archive_name,

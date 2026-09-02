@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import io
 import lzma
-import re
 import stat
 import struct
 import threading
@@ -96,7 +95,11 @@ from archivey.internal.zip_aes import (
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
-from archivey.internal.zip_detect import ZIP_MULTI_VOLUME_MSG, validate_zip_local_header
+from archivey.internal.zip_detect import (
+    ZIP_MULTI_VOLUME_MSG,
+    is_zip_split_segment_name,
+    validate_zip_local_header,
+)
 from archivey.internal.zipcrypto import (
     parallel_plaintext_crc32,
     password_matches_check_byte,
@@ -126,11 +129,6 @@ _BZIP2_INVALID_DATA = "Invalid data stream"
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
 # then the high byte of the DOS time rather than of the CRC-32.
 _ZIP_MASK_USE_DATA_DESCRIPTOR = 0x8
-
-# Split-segment filenames: Info-ZIP/WinZip ``name.z01``…``name.zNN``; 7-Zip
-# ``name.zip.001``…``name.zip.00N``. The final Info-ZIP ``.zip`` part is caught via
-# EOCD disk fields instead — the extension alone is indistinguishable from a normal ZIP.
-_SPLIT_SEGMENT_RE = re.compile(r"\.(?:z\d{2}|zip\.\d{3,})$", re.IGNORECASE)
 
 # Classic EOCD ``this_disk`` / ``cd_start_disk`` use 0xFFFF to mean "see ZIP64 EOCD",
 # not disk 65535. A naive ``!= 0`` check would refuse legitimate ZIP64 archives.
@@ -448,7 +446,7 @@ class ZipReader(BaseArchiveReader):
             )
 
         # A split-set segment (name.z01, name.zip.001, …) cannot be read by stdlib zipfile.
-        if archive_name and _SPLIT_SEGMENT_RE.search(archive_name):
+        if is_zip_split_segment_name(archive_name):
             raise UnsupportedFeatureError(
                 ZIP_MULTI_VOLUME_MSG,
                 archive_name=archive_name,
