@@ -21,6 +21,6 @@ site: everything under `docs/` is for users, and everything here is not.
 | [History](history/index.md) | Superseded prose (SPEC / ARCHITECTURE / COMPARISON / ASYNC) |
 | [PLAN.md](PLAN.md) · [IDEAS.md](IDEAS.md) | Phase roadmap; speculative backlog |
 
-**Maintainer reading surface:** pair workflow + handbook pages above. Dense
-`openspec/specs/` remain an optional agent/CI contract, not the primary UI. Product
-framing: `VISION.md` at the repository root.
+**Maintainer reading surface:** pair workflow + handbook pages above.
+`openspec/specs/` remain the **authoritative contract** for agents/CI, not the primary
+human UI. Product framing: `VISION.md` at the repository root.

@@ -50,12 +50,13 @@ The list below is the document map; that one is the code map.
   review), `backlog.md` (deferred topics with reasons), and `archive/<date>-<topic>/` for
   finished rounds. Findings in an archived area are **re-reviews**: check the archive
   tables before spending budget re-litigating settled ground.
-- `openspec/specs/<capability>/spec.md` — dense capability specs (OpenSpec
-  requirements + scenarios) for agents/CI. **Not** the primary maintainer reading
-  surface (see pair workflow + handbook). When specs disagree with the handbook, prose
-  docs, or each other, **pause and surface the discrepancy to the maintainer** rather
-  than silently picking a winner — the conflict often signals a decision that hasn't
-  been made yet.
+- `openspec/specs/<capability>/spec.md` — the **authoritative machine-checkable
+  contract** (OpenSpec requirements + scenarios) for agents and CI. **Not** the primary
+  human reading surface — that is the pair workflow + handbook
+  ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md)). When specs disagree with
+  the handbook, prose docs, or each other, **pause and surface the discrepancy to the
+  maintainer** rather than silently picking a winner — the conflict often signals a
+  decision that hasn't been made yet.
 - `openspec/project.md` — cross-cutting context: capability map, the phase →
   capability implementation-order table, and key strategy notes.
 - `openspec/changes/<change>/` — in-flight change proposals (proposal/tasks).

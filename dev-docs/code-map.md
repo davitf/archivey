@@ -135,7 +135,7 @@ often they turn out to be the right place:
 |---|---|
 | How should we work this change? | `dev-docs/pair-workflow.md` |
 | What is true *here* for a format / topic? | `dev-docs/formats/`, `dev-docs/topics/` (living handbook; prefer over ADR spam) |
-| What is the dense agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` |
+| What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |
 | Why was this chosen? (legacy / repo-wide) | `dev-docs/decisions/` (ADR log, `index.md` first); new answers prefer handbook pages |
 | Is this a known defect / upstream bug? | `dev-docs/known-issues.md`, `dev-docs/investigations/` |
 | Is this a known unfixed gap? | `dev-docs/threat-model.md` (`O*` register), `dev-docs/open-issues.md` |

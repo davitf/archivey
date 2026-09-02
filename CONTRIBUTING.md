@@ -318,10 +318,11 @@ Five questions, in order. The first `yes` wins.
    newer document replaced.
 
 If it is a *review*, it belongs to the `review/` lifecycle. If it is a *proposed
-behaviour change* that must update machine-checkable main specs, it belongs to
-`openspec/changes/` (prefer `--schema minimalist` when proposal/design would only be
-agent bus). Prefer recording human conclusions on handbook pages even when an OpenSpec
-change exists.
+behaviour / contract change*, it belongs to `openspec/changes/` so the authoritative
+main specs stay in sync (prefer `--schema minimalist` when proposal/design would only
+be agent bus). Human conclusions still land on handbook pages — specs are the binding
+contract, not the primary reading surface
+([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md)).
 
 **Same PR as code:** when a change falsifies a handbook or published-doc claim, update
 that page in the same PR.

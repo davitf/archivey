@@ -56,7 +56,7 @@ Organised, **no-fluff**, rewritten in place — not an append-only log.
 | [`threat-model.md`](threat-model.md) | Trust boundaries + open `O*` gap register (sole home for those IDs) |
 | [`investigations/`](investigations/) | Append-only evidence notebooks; link from handbook, don’t promote to “current truth” |
 | [`decisions/`](decisions/) | **Rare** repo-wide policy only; prefer light notes on format/topic pages |
-| `openspec/specs/` | Dense machine-checkable contract for agents/CI — **not** the primary human UI |
+| `openspec/specs/` | **Authoritative** machine-checkable contract (agents/CI) — **not** the primary human reading surface |
 
 **Docs with code:** if a PR makes a handbook or published-doc **claim false**, update that
 page in the **same PR**. Do not mint a new ADR or OpenSpec essay just to record the
@@ -109,7 +109,7 @@ PR. The maintainer is not the audience for that list unless they ask.
 
 | Still use | When |
 | --- | --- |
-| `openspec/specs/` main specs | Contract must stay machine-checkable; agents implementing against SHALL/scenarios |
+| `openspec/specs/` main specs | Authoritative contract stays machine-checkable; agents implement against SHALL/scenarios. Not what you read day-to-day |
 | OpenSpec **minimalist** change | Small contract delta; you still don’t want a four-file novel |
 | OpenSpec **library** change | Rare large capability redesign — treat proposal/design as agent bus; put human conclusions on handbook pages |
 | `review/` deep-review program | Commissioned thematic passes — unchanged |
