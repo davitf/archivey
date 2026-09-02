@@ -28,6 +28,9 @@ skip proposal/design.
 - **Specs** keep OpenSpec’s structural headers (`### Requirement:` /
   `#### Scenario:`) so `openspec validate` works, but bodies stay dense:
   signatures + matrices, no user stories, one scenario per behavioral axis.
+  Prefer pinning edge cases in **tests** and principles in the **handbook** over
+  growing scenario farms — see
+  `dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md` (thin as you go).
 - **design.md** is where hard technical work lives (investigations, rejected
   alternatives, module layout). Full design for parsers/codecs/concurrency/
   safety; a short stub is enough for trivial deltas.

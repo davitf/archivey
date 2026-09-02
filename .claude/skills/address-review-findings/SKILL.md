@@ -211,22 +211,17 @@ onto the person you are asking.
 **Do not escalate** routine implementation choices, anything the specs already settle, or
 questions manufactured to look thorough.
 
-### What "full context" means
+### Decision packet (required escalate shape)
 
-Each escalation must be decidable on its own, cold. Include:
-
-1. **The situation in plain language**, expanding every identifier. Not "W4 conflicts with
-   O8a" — say what the diagnostic does, what the scenario requires, and why they collide.
-2. **What the reviewer said**, quoted or fairly summarised.
-3. **What you found** when you checked — with the actual code, the actual behaviour, and a
-   measurement where one exists. If you reproduced something, show the result.
-4. **The options**, each with its concrete consequence — including what breaks and who
-   notices.
-5. **Your recommendation**, labelled as such, with the reason.
-6. **What you have already done** about the rest, so the decision is scoped.
+Each escalation must be decidable on its own, cold. Use the **canonical** six-field packet
+in [`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md) §Decision packet —
+do not invent a parallel wording here. Expand every identifier; measure before asking;
+optionally note what you already dispositioned so the decision stays scoped.
 
 The test: could the maintainer answer without opening the PR? If not, it is not ready.
-Prose beats identifiers; a two-line quote of the actual code beats a `file:line`.
+
+**Do not** paste the reviewer’s full finding list into the escalation. That list belongs on
+the PR for the implementor. The maintainer only receives packets for real human calls.
 
 ---
 

@@ -133,8 +133,10 @@ often they turn out to be the right place:
 
 | Question | Look in |
 |---|---|
-| What is the contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` |
-| Why was this chosen? | `dev-docs/decisions/` (ADR log, `index.md` first) |
+| How should we work this change? | `dev-docs/pair-workflow.md` |
+| What is true *here* for a format / topic? | `dev-docs/formats/<format>.md` / `dev-docs/topics/<topic>.md` when present; else code-map + threat model + ADRs/investigations — create the handbook page in the PR that needs it ([`pair-workflow.md`](pair-workflow.md)) |
+| What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |
+| Why was this chosen? (legacy / repo-wide) | `dev-docs/decisions/` (ADR log, `index.md` first); new answers prefer handbook pages |
 | Is this a known defect / upstream bug? | `dev-docs/known-issues.md`, `dev-docs/investigations/` |
 | Is this a known unfixed gap? | `dev-docs/threat-model.md` (`O*` register), `dev-docs/open-issues.md` |
 | Has this already been reviewed? | `review/STATUS.md`, then the archive tables under `review/archive/` |

@@ -18,10 +18,13 @@ single-file-compressed (gz/bz2/xz/lzip/zstd/lz4/.Z).
 
 ## Where things live
 
-**Start with [`dev-docs/code-map.md`](dev-docs/code-map.md)** when the question is *where
-in the source do I make this change* — it carries the tree shape, the call path through a
-read, a task→files index, and a "which doc answers which kind of question" table. The list
-below is the document map; that one is the code map.
+**Everyday maintainer/agent loop:** [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md)
+(investigate → grill into handbook → thin brief → implement → other-agent review →
+decision packets). **Start with [`dev-docs/code-map.md`](dev-docs/code-map.md)** when the
+question is *where in the source do I make this change*. Format/topic handbook pages are
+created **with the first real change** that needs them (see pair-workflow); until then
+use code-map, threat model, ADRs, and investigations. The list below is the document map;
+that one is the code map.
 
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
   strategy; the tie-breaker when trade-offs conflict. End-user distill:
@@ -35,11 +38,12 @@ below is the document map; that one is the code map.
   `api`, `acknowledgements`. Every file under `docs/` has a nav entry in `mkdocs.yml` and
   `scripts/check_docs_nav.py` fails CI otherwise. Placement rule for a new doc:
   `CONTRIBUTING.md` §"Where does a new doc go?".
-- `dev-docs/` — **unpublished** maintainer material: `code-map.md`, `decisions/` (the ADR
-  log), threat model, codec analysis, known issues, `investigations/` (finished evidence),
-  `discussions/` (design questions written for circulation; each gets a RESOLVED header
-  once settled), `history/` (superseded `SPEC` / `ARCHITECTURE` / `COMPARISON` / `ASYNC`
-  prose, not normative). Index: `dev-docs/index.md`.
+- `dev-docs/` — **unpublished** maintainer material: pair workflow, format/topic handbook,
+  `code-map.md`, `decisions/` (rare repo-wide ADRs; prefer handbook notes for new
+  decisions), threat model, codec analysis, known issues, `investigations/` (finished
+  evidence), `discussions/` (design questions written for circulation; each gets a
+  RESOLVED header once settled), `history/` (superseded `SPEC` / `ARCHITECTURE` /
+  `COMPARISON` / `ASYNC` prose, not normative). Index: `dev-docs/index.md`.
 - `dev-docs/threat-model.md` — trust boundaries + the open security/compat gap
   register (each open item becomes an OpenSpec change when tackled).
 - `review/` — the **deep-review program**: `README.md` (conventions, ranking, deliverable
@@ -47,11 +51,13 @@ below is the document map; that one is the code map.
   review), `backlog.md` (deferred topics with reasons), and `archive/<date>-<topic>/` for
   finished rounds. Findings in an archived area are **re-reviews**: check the archive
   tables before spending budget re-litigating settled ground.
-- `openspec/specs/<capability>/spec.md` — the authoritative capability specs
-  (OpenSpec format: requirements + WHEN/THEN scenarios). The specs are authoritative,
-  but when they disagree with the prose docs (or with each other), **pause and surface
-  the discrepancy to the maintainer** rather than silently picking a winner — the
-  conflict often signals a decision that hasn't been made yet.
+- `openspec/specs/<capability>/spec.md` — the **authoritative machine-checkable
+  contract** (OpenSpec requirements + scenarios) for agents and CI. **Not** the primary
+  human reading surface — that is the pair workflow + handbook
+  ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md)). When specs disagree with
+  the handbook, prose docs, or each other, **pause and surface the discrepancy to the
+  maintainer** rather than silently picking a winner — the conflict often signals a
+  decision that hasn't been made yet.
 - `openspec/project.md` — cross-cutting context: capability map, the phase →
   capability implementation-order table, and key strategy notes.
 - `openspec/changes/<change>/` — in-flight change proposals (proposal/tasks).
@@ -291,15 +297,19 @@ PR review here is a **handoff between two agents**, and each half has a skill:
 1. **A separate agent reviews** the PR with **`/code-review-skill`** — not a bare
    `/code-review`, which is a *builtin* skill in both Claude Code and Cursor and is not
    this one; the Cursor project command `.cursor/commands/code-review.md` is what makes
-   `/code-review` land correctly there. It posts the findings to the PR. Rules are in
-   `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`; **§10 covers
-   posting** — stable finding IDs (`F1`, `F2`, … kept across re-reviews), located findings
-   as inline comments so they can be resolved individually, blocks 1 and 3 in the body,
-   and a status table over the previous IDs when re-reviewing.
+   `/code-review` land correctly there. It posts the **full** findings to the PR (blocks
+   1–2 for the implementor; block 3 packets for the maintainer). When also chatting with
+   the maintainer, send **decision packets only** unless they ask for the full handoff
+   ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet). Rules are
+   in `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`; **§10
+   covers posting** — stable finding IDs (`F1`, `F2`, … kept across re-reviews), located
+   findings as inline comments so they can be resolved individually, blocks 1 and 3 in the
+   body, and a status table over the previous IDs when re-reviewing.
 2. **The implementing agent works through them** with `address-review-findings`
    (Cursor: `/address-review`). Every finding gets an explicit disposition — fixed,
    disproven, escalated, or deferred-with-a-written-home. Nothing is dropped silently, and
-   nothing is "fixed" without being reproduced first.
+   nothing is "fixed" without being reproduced first. Escalations to the maintainer use
+   the **decision packet** shape only (same section of `pair-workflow.md`).
 
 3. **An agent may pick the review up without being asked.** A session subscribed to PR
    activity reacts to a review comment or a CI failure as an *event*, from its own generic
@@ -325,11 +335,10 @@ Two things about this repo make the handoff sharper than it looks:
   one is the human. Make your own PR comments identifiable the same way, and read inline
   threads carefully: the maintainer's own questions arrive that way and carry more weight
   than an automated finding.
-- **Escalate one question at a time.** The maintainer is usually deciding without having
-  read the diff or the docs, and does not know the identifiers. Expand every name, quote
-  the actual code, show what you measured, give options with consequences and a labelled
-  recommendation. A batched list of five numbered decisions pushes the work back onto the
-  person you are asking.
+- **Escalate one decision packet at a time.** Shape and fields:
+  [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet (canonical).
+  Do not dump the full finding list into chat — that stays on the PR. A batched list of
+  five numbered decisions pushes the work back onto the person you are asking.
 
 ## Conventions
 

@@ -1,10 +1,15 @@
 # Decision log
 
-Short records of **why** Archivey made load-bearing choices. Specs say what the library
-does; these notes say why, so future work does not re-litigate settled trade-offs.
+Short records of **rare repo-wide** choices. Specs and handbook pages say what is true
+now; these notes capture irreversible policy that does not fit a format/topic page.
 
-New decisions: add `NNNN-short-slug.md` and a row in the table below. Prefer linking to
-OpenSpec changes / PRs for provenance. Use `Status: placeholder` when the rationale is
+**Prefer living handbook notes** for new format or topic decisions once those pages
+exist (`dev-docs/formats/`, `dev-docs/topics/` — create with the first real change; see
+[`../pair-workflow.md`](../pair-workflow.md)). Add a new ADR only when the choice is
+cross-cutting policy that will not live cleanly on those pages.
+
+When you do add an ADR: `NNNN-short-slug.md` and a row in the table below. Prefer linking
+to OpenSpec changes / PRs for provenance. Use `Status: placeholder` when the rationale is
 not fully recovered yet.
 
 | ID | Decision | Status |

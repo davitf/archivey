@@ -101,21 +101,21 @@ No “as above” / “see briefing” cross-references that break when pasted a
 
 #### 3. Maintainer decisions (your attention)
 
-Audience: you again — only items that need a **human call**, not implementor busywork.
+Audience: the maintainer — **only** items that need a human call. This block is the
+maintainer UI; block 2 is worker mail for whoever addresses the PR.
 
-A concise numbered list. For each item give **enough context to decide without reading
-blocks 1–2 or the diff**:
-
-- The decision in one line (what to choose between, or yes/no).
-- **Why it needs you** — conflict with VISION/spec/docs, product trade-off, pause-and-ask
-  discrepancy, or an under-specified contract (§9 decision gaps).
-- **Options** (when useful) — A / B / … with a one-line consequence each.
-- Your **recommendation** if you have one (optional; label it as such).
+For each item, use the **canonical decision packet** in
+[`dev-docs/pair-workflow.md`](../../../../dev-docs/pair-workflow.md) §Decision packet —
+same six fields, same cold-start test. Do not invent a shorter parallel list.
 
 Skip routine “please add a test for X” fixes — those belong in block 2. If nothing needs
 a decision, write `None.` Do not invent soft filler questions — but **do not drop** a
 real decision gap to keep this section empty; when unsure, include it (see brevity
 fence above).
+
+When posting to a PR for a split implementor/maintainer workflow: put blocks 1–2 on the
+PR; if you also chat with the maintainer, **send only block 3 packets** unless they ask
+for the full handoff.
 
 Same three blocks apply when reviewing an OpenSpec proposal (§9); “what this change is”
 summarizes the proposal’s intent, and block 2 is the handoff for whoever will revise the

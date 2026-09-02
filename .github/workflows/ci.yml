@@ -73,6 +73,10 @@ jobs:
       # stayed URL-reachable and search-indexed while absent from every menu.
       - name: Check docs tree completeness
         run: uv run --python 3.12 --group docs python scripts/check_docs_nav.py
+      - name: Check internal markdown links
+        # Relative links under dev-docs/ and .claude/skills/ (pair-workflow + skills).
+        # Stdlib-only; does not need the docs group.
+        run: uv run --python 3.12 --no-sync python scripts/check_internal_md_links.py
       - name: Build docs (strict)
         # --python overrides repo `.python-version` (3.11) so docs actually run on 3.12.
         run: uv run --python 3.12 --group docs mkdocs build --strict

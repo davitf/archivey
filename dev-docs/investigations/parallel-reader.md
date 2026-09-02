@@ -1,4 +1,4 @@
-> **Grab-bag / exploration.** Much of this was superseded by `MemberStreams` / `reader-concurrency`. Index: [grab-bag/index.md](index.md).
+> **Grab-bag / exploration.** Much of this was superseded by `MemberStreams` / `reader-concurrency`. Index: [history/index.md](../history/index.md).
 
 # Parallel-safe reader — exploration notes
 

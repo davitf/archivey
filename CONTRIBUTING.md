@@ -293,25 +293,52 @@ means a decision hasn't been made yet, and guessing bakes the wrong one into the
 Surface it (an issue, a PR comment, or an `openspec/changes/` proposal) and let it be
 decided explicitly.
 
+**Thin as you go.** Specs stay the authoritative *machine* contract for now (pair-workflow
+DP1 = C), but we are migrating executable detail into **tests** and human truth into
+**handbook** pages — see
+[`dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md`](dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md).
+On every PR that touches `openspec/specs/` or a change delta:
+
+- Prefer a **pytest** (and a handbook / Verify link) over a new WHEN/THEN scenario.
+- When you touch a requirement that is already covered by tests, **collapse or delete**
+  redundant scenarios rather than adding siblings “for completeness”.
+- Leave that capability **no denser than you found it** (preferably thinner).
+- Keep in the spec only what tests cannot say well (signatures, non-goals, MUST refuse,
+  packaging / threat posture).
+
 ## Where does a new doc go?
 
-Four questions, in order. The first `yes` wins.
+Five questions, in order. The first `yes` wins.
 
 1. **Would someone who only *uses* the library need it?** → `docs/`, **and add it to
    `mkdocs.yml`'s nav in the same commit**. Curated "why we chose X" one-liners for
    curious users belong inline on the page that raises the question, not as a new
-   page per decision.
-2. **Is it a load-bearing "why" that is decided and won't change?** → a new ADR in
+   page per decision. Use `/technical-writing` (Diátaxis + unslop) for the prose.
+2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
+   living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`
+   (rewrite in place; light decision bullets, not a new ADR). **Create the file in the
+   same PR that needs it** — do not add empty `formats/` / `topics/` trees. Page skeleton:
+   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Living handbook. Everyday
+   loop: same doc.
+3. **Is it rare repo-wide policy that will not fit a handbook page?** → a new ADR in
    `dev-docs/decisions/`, ADR-shaped (Context / Decision / Consequences, tens of
-   lines). If it needs an `## Open questions` section, it is not an ADR yet.
-3. **Does a contributor need it to work on the code *today*?** → `dev-docs/` (a live
-   register or a runbook).
-4. **Is it finished evidence — an investigation, a superseded design, a lab
+   lines). If it needs an `## Open questions` section, it is not an ADR yet — grill
+   first (`/grill-with-handbook`).
+4. **Does a contributor need a live register or runbook *today*?** → `dev-docs/`
+   (e.g. threat model, known issues, release checklist).
+5. **Is it finished evidence — an investigation, a superseded design, a lab
    notebook?** → `dev-docs/investigations/`, or `dev-docs/history/` for prose that a
    newer document replaced.
 
 If it is a *review*, it belongs to the `review/` lifecycle. If it is a *proposed
-behaviour change*, it belongs to `openspec/changes/`.
+behaviour / contract change*, it belongs to `openspec/changes/` so the authoritative
+main specs stay in sync (prefer `--schema minimalist` when proposal/design would only
+be agent bus). Human conclusions still land on handbook pages — specs are the binding
+contract, not the primary reading surface
+([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md)).
+
+**Same PR as code:** when a change falsifies a handbook or published-doc claim, update
+that page in the same PR.
 
 **The invariant:** everything under `docs/` is published and is for users; nothing
 else lives under `docs/`. That is why maintainer material sits in `dev-docs/` rather
