@@ -24,7 +24,7 @@ _MAJOR_VERSION = 0
 
 def validate_sevenzip_signature_header(
     peek_more: Callable[[int], bytes],
-    remaining: int | None = None,
+    remaining: int | None,
 ) -> HitOutcome:
     """Return whether a candidate origin looks like a 7z signature header.
 

@@ -682,17 +682,17 @@ def _peek_view(data: bytes) -> Callable[[int], bytes]:
 def test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy() -> None:
     payload = _zip_bytes()
     assert payload[:4] == b"PK\x03\x04"
-    assert validate_zip_local_header(_peek_view(payload)) is HitOutcome.VALID
+    assert validate_zip_local_header(_peek_view(payload), None) is HitOutcome.VALID
     assert (
-        validate_zip_local_header(_peek_view(b"PK\x03\x04"))
+        validate_zip_local_header(_peek_view(b"PK\x03\x04"), None)
         is HitOutcome.NOT_THIS_FORMAT
     )
     assert (
-        validate_zip_local_header(_peek_view(b"PK\x03\x04" + b"\x90" * 40))
+        validate_zip_local_header(_peek_view(b"PK\x03\x04" + b"\x90" * 40), None)
         is HitOutcome.NOT_THIS_FORMAT
     )
     assert (
-        validate_zip_local_header(_peek_view(b"PK\x03\x04" + b"\x00" * 40))
+        validate_zip_local_header(_peek_view(b"PK\x03\x04" + b"\x00" * 40), None)
         is HitOutcome.NOT_THIS_FORMAT
     )
 
@@ -723,37 +723,61 @@ def test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy() 
             + rest
         )
 
-    assert validate_zip_local_header(_peek_view(_header())) is HitOutcome.VALID
-    assert validate_zip_local_header(_peek_view(_header(method=20))) is HitOutcome.VALID
+    assert validate_zip_local_header(_peek_view(_header()), None) is HitOutcome.VALID
     assert (
-        validate_zip_local_header(_peek_view(_header(version=0)))
+        validate_zip_local_header(_peek_view(_header(method=20)), None)
+        is HitOutcome.VALID
+    )
+    assert (
+        validate_zip_local_header(_peek_view(_header(version=0)), None)
         is HitOutcome.NOT_THIS_FORMAT
     )
     assert (
-        validate_zip_local_header(_peek_view(_header(name_len=0, rest=b"")))
+        validate_zip_local_header(_peek_view(_header(name_len=0, rest=b"")), None)
         is HitOutcome.NOT_THIS_FORMAT
     )
     # Reserved GP-flag bit 15.
     assert (
-        validate_zip_local_header(_peek_view(_header(flags=0x8000)))
+        validate_zip_local_header(_peek_view(_header(flags=0x8000)), None)
         is HitOutcome.NOT_THIS_FORMAT
     )
     assert (
-        validate_zip_local_header(_peek_view(_header(method=11)))
+        validate_zip_local_header(_peek_view(_header(method=11)), None)
         is HitOutcome.NOT_THIS_FORMAT
     )
     assert (
-        validate_zip_local_header(_peek_view(_header(name_len=20, rest=b"short")))
+        validate_zip_local_header(_peek_view(_header(name_len=20, rest=b"short")), None)
         is HitOutcome.NOT_THIS_FORMAT
     )
     # Source remaining, not the peek helper: a view that could supply the name
     # still fails identity when those bytes sit past EOF (F7).
     full = _header(name_len=20, rest=b"abcdefghijklmnopqrst")
-    assert validate_zip_local_header(_peek_view(full)) is HitOutcome.VALID
+    assert validate_zip_local_header(_peek_view(full), None) is HitOutcome.VALID
     assert (
         validate_zip_local_header(_peek_view(full), remaining=30)
         is HitOutcome.NOT_THIS_FORMAT
     )
+
+
+def test_zip_clamped_name_extra_peek_is_valid_when_remaining_is_known() -> None:
+    """A scan-window clamp is not a reject once remaining proves the bytes exist (F7)."""
+    name = b"abcdefghijklmnop"
+    extra = b"xy"
+    header = (
+        b"PK\x03\x04"
+        + struct.pack("<HHHHHIIIHH", 20, 0, 8, 0, 0, 0, 0, 0, len(name), len(extra))
+        + name
+        + extra
+    )
+    needed = 30 + len(name) + len(extra)
+    assert needed == 48
+
+    def clamped(n: int) -> bytes:
+        return header[: min(n, 40)]
+
+    assert validate_zip_local_header(clamped, len(header)) is HitOutcome.VALID
+    assert validate_zip_local_header(clamped, None) is HitOutcome.NOT_THIS_FORMAT
+    assert validate_zip_local_header(_peek_view(header), None) is HitOutcome.VALID
 
 
 def _sevenzip_signature(
@@ -894,14 +918,35 @@ def test_sevenzip_validator_peeks_only_the_signature_header() -> None:
     ],
 )
 def test_rar_main_header_validator(payload: bytes, expected: HitOutcome) -> None:
-    assert validate_rar_main_header(_peek_view(payload)) is expected
+    assert validate_rar_main_header(_peek_view(payload), None) is expected
 
 
 def test_rar_main_header_validator_crc_fail_is_damaged() -> None:
     rar5 = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
     damaged = bytearray(rar5[:64])
     damaged[len(RAR5_ID)] ^= 0xFF
-    assert validate_rar_main_header(_peek_view(bytes(damaged))) is HitOutcome.DAMAGED
+    assert (
+        validate_rar_main_header(_peek_view(bytes(damaged)), None) is HitOutcome.DAMAGED
+    )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["stored_m0.rar", "basic_nonsolid__rar4.rar"],
+    ids=["rar5", "rar4"],
+)
+def test_rar_clamped_header_peek_is_valid_when_remaining_is_known(
+    filename: str,
+) -> None:
+    """A scan-window clamp is not a reject once remaining proves the header exists (F7)."""
+    payload = (_RAR_FIXTURES / filename).read_bytes()
+
+    def clamped(n: int) -> bytes:
+        return payload[: min(n, 18)]
+
+    assert validate_rar_main_header(clamped, len(payload)) is HitOutcome.VALID
+    assert validate_rar_main_header(clamped, None) is HitOutcome.NOT_THIS_FORMAT
+    assert validate_rar_main_header(_peek_view(payload), None) is HitOutcome.VALID
 
 
 def test_shebang_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
@@ -1153,7 +1198,12 @@ def test_shebang_non_archive_reads_at_most_min_size_sfx_max() -> None:
 
 
 def test_hostile_zip_local_header_stays_inside_the_scan_budget(tmp_path: Path) -> None:
-    """A candidate near the scan edge must not peek ``name_len`` past the cost gate."""
+    """A candidate near the scan edge must not peek ``name_len`` past the cost gate.
+
+    ``remaining`` can prove the declared name/extra exist (F7), so detection may
+    answer from the 30-byte header without reading 128 KiB. The pin is unique
+    bytes, not ``FormatDetectionError``.
+    """
     hdr = b"PK\x03\x04" + struct.pack(
         "<HHHHHIIIHH", 20, 0, 8, 0, 0, 0, 0, 0, 0xFFFF, 0xFFFF
     )
@@ -1162,19 +1212,15 @@ def test_hostile_zip_local_header_stays_inside_the_scan_budget(tmp_path: Path) -
     path = tmp_path / "hostile.pyz"
     path.write_bytes(bytes(data))
     src = InstrumentedBytesIO(bytes(data))
-    with pytest.raises(FormatDetectionError):
+    try:
         detect_format(src)
+    except FormatDetectionError:
+        pass
     assert src.unique_bytes <= SFX_MAX + 256
-    # A named ``.pyz`` falls through to extension (or a probe) and still carries a receipt.
     info = detect_format(path)
-    assert info.detected_by != "sfx_scan"
     assert info.cost_receipt is not None
     assert info.cost_receipt.within_budget(BALANCED_BUDGET)
     assert info.cost_receipt.unique_bytes_read <= SFX_MAX + 256
-    assert any(
-        skip.tier == "sfx_scan" and skip.reason is TierSkipReason.BUDGET_EXHAUSTED
-        for skip in info.unavailable_tiers
-    )
 
 
 def _zip_bytes_named(name: str) -> bytes:
@@ -1184,8 +1230,10 @@ def _zip_bytes_named(name: str) -> bytes:
     return buffer.getvalue()
 
 
-def test_budget_truncated_zip_header_records_sfx_scan_skip(tmp_path: Path) -> None:
-    """A real ZIP whose name/extra straddle ``scan_limit`` is a budget skip, not 'not ZIP'."""
+def test_budget_truncated_zip_header_still_detects_when_remaining_is_known(
+    tmp_path: Path,
+) -> None:
+    """Name/extra past ``scan_limit`` is a clamp, not a reject, when remaining is known (F7)."""
     payload = _zip_bytes_named("n" * 40)
     name_len, extra_len = struct.unpack_from("<HH", payload, 26)
     needed = 30 + name_len + extra_len
@@ -1196,29 +1244,26 @@ def test_budget_truncated_zip_header_records_sfx_scan_skip(tmp_path: Path) -> No
         stub = stub_hdr + b"\x00" * (header_at - len(stub_hdr))
         return stub + payload
 
-    miss_at = scan_limit - (needed - 2)
-    with pytest.raises(FormatDetectionError):
-        detect_format(io.BytesIO(blob(miss_at)), budget=FAST_BUDGET)
-    miss_path = tmp_path / "edge-miss.pyz"
-    miss_path.write_bytes(blob(miss_at))
-    missed = detect_format(miss_path, budget=FAST_BUDGET)
-    assert missed.detected_by != "sfx_scan"
-    assert any(
-        skip.tier == "sfx_scan" and skip.reason is TierSkipReason.BUDGET_EXHAUSTED
-        for skip in missed.unavailable_tiers
-    )
+    straddle_at = scan_limit - (needed - 2)
+    detected = detect_format(io.BytesIO(blob(straddle_at)), budget=FAST_BUDGET)
+    assert detected.format == ArchiveFormat.ZIP
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == straddle_at
+
+    path = tmp_path / "edge-straddle.bin"
+    path.write_bytes(blob(straddle_at))
+    found = detect_format(path, budget=FAST_BUDGET)
+    assert found.format == ArchiveFormat.ZIP
+    assert found.detected_by == "sfx_scan"
+    assert found.payload_offset == straddle_at
 
     hit_at = scan_limit - needed
     hit_path = tmp_path / "edge-hit.bin"
     hit_path.write_bytes(blob(hit_at))
-    found = detect_format(hit_path, budget=FAST_BUDGET)
-    assert found.format == ArchiveFormat.ZIP
-    assert found.detected_by == "sfx_scan"
-    assert found.payload_offset == hit_at
-    assert not any(
-        skip.tier == "sfx_scan" and skip.reason is TierSkipReason.BUDGET_EXHAUSTED
-        for skip in found.unavailable_tiers
-    )
+    inside = detect_format(hit_path, budget=FAST_BUDGET)
+    assert inside.format == ArchiveFormat.ZIP
+    assert inside.detected_by == "sfx_scan"
+    assert inside.payload_offset == hit_at
 
 
 @pytest.mark.parametrize(
@@ -1235,8 +1280,7 @@ def test_sfx_hit_validator_is_not_bound_on_instance(cls: type, decoy: bytes) -> 
     assert inst.SFX_HIT_VALIDATOR is cls.SFX_HIT_VALIDATOR
     validator = inst.SFX_HIT_VALIDATOR
     assert validator is not None
-    # One-arg call still works: ``remaining`` defaults to ``None``.
-    assert validator(_peek_view(decoy)) is HitOutcome.NOT_THIS_FORMAT
+    assert validator(_peek_view(decoy), None) is HitOutcome.NOT_THIS_FORMAT
 
 
 def test_class_file_does_not_enter_the_sfx_scan() -> None:

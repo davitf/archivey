@@ -98,14 +98,14 @@ class HitValidator(Protocol):
     ``remaining`` is provable bytes from the *candidate origin* to source EOF
     (``workspace.remaining_known() - candidate_origin``), or ``None`` when the
     source length is unknown. It is a length, not a peek budget — do not confuse
-    it with ``scan_limit``. Default ``None`` keeps unit tests and one-arg calls
-    working.
+    it with ``scan_limit``. The scan always passes it; ``None`` is a value, not
+    an omitted argument.
     """
 
     def __call__(
         self,
         peek_more: Callable[[int], bytes],
-        remaining: int | None = None,
+        remaining: int | None,
     ) -> HitOutcome: ...
 
 

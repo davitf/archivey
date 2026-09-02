@@ -34,31 +34,48 @@ _RAR5_HEADER_CAP = 64 * 1024
 
 def validate_rar_main_header(
     peek_more: Callable[[int], bytes],
-    remaining: int | None = None,
+    remaining: int | None,
 ) -> HitOutcome:
     """Return whether a candidate origin looks like a RAR 4 or RAR 5 archive.
 
     ``peek_more(n)`` is a view relative to the candidate. ``remaining`` is
-    unused: a RAR identity check never needs the source length. A truncated
-    or non-RAR magic is :attr:`HitOutcome.NOT_THIS_FORMAT`. RAR 5 requires
-    the first block's CRC32 to match; a plausible header whose CRC fails is
-    :attr:`HitOutcome.DAMAGED`. RAR 4 requires a parseable MAIN block (type
-    ``0x73``) with a matching 16-bit header CRC.
+    provable bytes from the candidate to source EOF, or ``None`` if unknown.
+    A truncated or non-RAR magic is :attr:`HitOutcome.NOT_THIS_FORMAT`. RAR 5
+    requires the first block's CRC32 to match; a plausible header whose CRC
+    fails is :attr:`HitOutcome.DAMAGED`. RAR 4 requires a parseable MAIN block
+    (type ``0x73``) with a matching 16-bit header CRC.
 
-    ``peek_more`` stays outside the parse ``try`` so a workspace ``OSError``
-    propagates. A truncated vint before the CRC is ``NOT_THIS_FORMAT``; after
-    the CRC has matched, a later vint failure is ``DAMAGED``.
+    ``remaining`` distinguishes a genuine overrun from a scan-window clamp:
+    once the declared header size fits in ``remaining``, a short ``peek_more``
+    is not ``NOT_THIS_FORMAT``. ``peek_more`` stays outside the parse ``try``
+    so a workspace ``OSError`` propagates. A truncated vint before the CRC is
+    ``NOT_THIS_FORMAT``; after the CRC has matched, a later vint failure is
+    ``DAMAGED``.
     """
-    del remaining
     head = peek_more(len(RAR5_ID))
     if head.startswith(RAR5_ID):
-        return _validate_rar5(peek_more)
+        return _validate_rar5(peek_more, remaining)
     if head.startswith(RAR_ID):
-        return _validate_rar3(peek_more)
+        return _validate_rar3(peek_more, remaining)
     return HitOutcome.NOT_THIS_FORMAT
 
 
-def _validate_rar5(peek_more: Callable[[int], bytes]) -> HitOutcome:
+def _header_in_hand(got: int, needed: int, remaining: int | None) -> HitOutcome | None:
+    """``None`` if ``got`` covers ``needed``; otherwise the outcome for a short peek.
+
+    A known ``remaining`` that already covers ``needed`` means the bytes exist
+    past a scan-window clamp, so a short peek is :attr:`HitOutcome.VALID`.
+    """
+    if got >= needed:
+        return None
+    if remaining is not None and needed <= remaining:
+        return HitOutcome.VALID
+    return HitOutcome.NOT_THIS_FORMAT
+
+
+def _validate_rar5(
+    peek_more: Callable[[int], bytes], remaining: int | None
+) -> HitOutcome:
     # Marker + CRC + a generous vint prefix, then the declared body.
     prefix = peek_more(len(RAR5_ID) + 4 + 16)
     if len(prefix) < len(RAR5_ID) + 5:
@@ -71,9 +88,13 @@ def _validate_rar5(peek_more: Callable[[int], bytes]) -> HitOutcome:
     if hdrlen > _RAR5_HEADER_CAP:
         return HitOutcome.NOT_THIS_FORMAT
     header_size = pos + hdrlen
-    hdata = peek_more(len(RAR5_ID) + header_size)[len(RAR5_ID) :]
-    if len(hdata) < header_size:
+    needed = len(RAR5_ID) + header_size
+    if remaining is not None and needed > remaining:
         return HitOutcome.NOT_THIS_FORMAT
+    hdata = peek_more(needed)[len(RAR5_ID) :]
+    short = _header_in_hand(len(hdata), header_size, remaining)
+    if short is not None:
+        return short
     identity_held = False
     try:
         header_crc = int.from_bytes(hdata[:4], "little")
@@ -88,7 +109,9 @@ def _validate_rar5(peek_more: Callable[[int], bytes]) -> HitOutcome:
         return HitOutcome.DAMAGED if identity_held else HitOutcome.NOT_THIS_FORMAT
 
 
-def _validate_rar3(peek_more: Callable[[int], bytes]) -> HitOutcome:
+def _validate_rar3(
+    peek_more: Callable[[int], bytes], remaining: int | None
+) -> HitOutcome:
     start = peek_more(len(RAR_ID) + _S_BLK_HDR.size)
     if len(start) < len(RAR_ID) + _S_BLK_HDR.size:
         return HitOutcome.NOT_THIS_FORMAT
@@ -98,9 +121,13 @@ def _validate_rar3(peek_more: Callable[[int], bytes]) -> HitOutcome:
         return HitOutcome.NOT_THIS_FORMAT
     if header_size < _RAR3_MAIN_MIN or header_size > _RAR3_HEADER_CAP:
         return HitOutcome.NOT_THIS_FORMAT
-    hdata = peek_more(len(RAR_ID) + header_size)[len(RAR_ID) :]
-    if len(hdata) < header_size:
+    needed = len(RAR_ID) + header_size
+    if remaining is not None and needed > remaining:
         return HitOutcome.NOT_THIS_FORMAT
+    hdata = peek_more(needed)[len(RAR_ID) :]
+    short = _header_in_hand(len(hdata), header_size, remaining)
+    if short is not None:
+        return short
     crc_pos = rar3_main_crc_end(flags)
     if crc_pos > header_size:
         return HitOutcome.NOT_THIS_FORMAT
