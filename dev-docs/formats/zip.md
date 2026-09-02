@@ -290,7 +290,10 @@ setting bit 11, which is the case the sniff exists for; `tests/fixtures/external
 is a real sample.
 
 **Producers disagree about split naming.** Info-ZIP and WinZip write `name.z01 … name.zip`;
-7-Zip writes `name.zip.001 … name.zip.00N`. Both conventions are refused (§5).
+7-Zip writes `name.zip.001 … name.zip.00N`. Both conventions are refused (§5). A possible
+later refinement — detect first, upgrade a failed detection to rejoin-first when the name
+looks volume-shaped — is parked in [`IDEAS.md`](../IDEAS.md) until the detection evidence
+ledger lands; do not invent a ZIP-only half-step here.
 
 **Producers disagree about encryption defaults.** 7-Zip's `-tzip` default is ZipCrypto and
 `-mem=AES256` selects WinZip AES; stdlib `zipfile` writes neither. That is why the

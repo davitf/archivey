@@ -219,6 +219,19 @@
   `prefixed-archive-detection` adds its two further `detected_by` values. Full truth table
   in `probe-provenance-unconfirmed` task 5.1.
 
+- **Volume-shaped names: detect first, then upgrade `FormatDetectionError`** — parked from
+  PR #285 (ZIP split refuse). Today `open_archive` early-refuses Info-ZIP `.zNN` and 7-Zip
+  `.zip.NNN` by filename before detection, so magic-less middle parts get
+  `UnsupportedFeatureError` instead of `FormatDetectionError`. A later shape worth trying
+  once the evidence ledger exists: run detection as usual; if it fails *and* the name looks
+  like a multi-volume segment, raise `UnsupportedFeatureError` (rejoin-first) rather than
+  `FormatDetectionError`. Keeps odd-but-valid archives that happen to end in `.z02` openable
+  via magic; shrinks false positives vs early-refuse; extends naturally to a shared
+  volume-name table across formats (ZIP today; careful messages for RAR/7z sets we *do*
+  join). Do **not** layer this on top of early-refuse — replace that control flow when the
+  ledger/name policy lands. Nameless streams stay out of scope. Refs: #285 D1 discussion;
+  in-flight `openspec/changes/detection-evidence-ledger/`; `formats/zip.md` §3 split naming.
+
 - **Archive *role*: tell the caller whether to care what is inside** — `open_archive()`
   reads a photo backup, a `.docx`, a `.jar`, a LibreOffice icon bundle and a JPEG with an
   appended ZIP identically, and says nothing to distinguish them. For the founding
