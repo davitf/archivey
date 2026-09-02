@@ -107,6 +107,7 @@ Three things about this path are worth knowing before you debug it:
 | If you are changing… | Start here |
 |---|---|
 | A format's parsing or metadata | `internal/backends/<fmt>_{reader,parser}.py`; spec `openspec/specs/format-<fmt>/` |
+| ZIP internals | `zip_reader.py` (stdlib central directory + archivey member data) · `internal/zip_detect.py` (scan-hit validator) · `internal/zipcrypto.py` · `internal/zip_aes.py`; handbook [`formats/zip.md`](formats/zip.md) |
 | 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` |
 | RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) |
 | A codec, or adding one | `streams/codecs.py` + `streams/decompress.py`; `xz.py` / `lzip.py` / `unix_compress.py` for the hand-written ones |

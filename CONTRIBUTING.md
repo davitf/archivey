@@ -318,10 +318,11 @@ Five questions, in order. The first `yes` wins.
 2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
    living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`
    (rewrite in place; light decision bullets, not a new ADR). **Create the file in the
-   same PR that needs it** — do not add empty `formats/` / `topics/` trees. Page
-   structure is **TBD** until the first page (`dev-docs/formats/zip.md`) settles it —
-   see [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Living handbook, and
-   fill that in from the page you write. Everyday loop: same doc.
+   same PR that needs it** — do not add empty `formats/` / `topics/` trees. Format pages
+   follow the eight-section shape in
+   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Format page structure, with
+   [`dev-docs/formats/zip.md`](dev-docs/formats/zip.md) as the worked example. Everyday
+   loop: same doc.
 3. **Is it rare repo-wide policy that will not fit a handbook page?** → a new ADR in
    `dev-docs/decisions/`, ADR-shaped (Context / Decision / Consequences, tens of
    lines). If it needs an `## Open questions` section, it is not an ADR yet — grill
