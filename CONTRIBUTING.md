@@ -302,7 +302,7 @@ On every PR that touches `openspec/specs/` or a change delta:
 - Prefer a **pytest** (and a handbook / Verify link) over a new WHEN/THEN scenario.
 - When you touch a requirement that is already covered by tests, **collapse or delete**
   redundant scenarios rather than adding siblings “for completeness”.
-- Leave that capability **no denser than you found it** (preferablyably thinner).
+- Leave that capability **no denser than you found it** (preferably thinner).
 - Keep in the spec only what tests cannot say well (signatures, non-goals, MUST refuse,
   packaging / threat posture).
 

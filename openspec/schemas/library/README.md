@@ -25,7 +25,7 @@ Or per change: `openspec new change <name> --schema library`
 | Artifact | Role |
 | --- | --- |
 | `proposal.md` | Why / what / which capabilities |
-| `specs/**/*.md` | Normative caller-visible behavior (dense) |
+| `specs/**/*.md` | Normative caller-visible behavior (sparse: signatures / non-goals / MUST-refuse) |
 | `design.md` | HOW: investigations, rejected options, module layout |
 | `tasks.md` | Checkbox implementation plan |
 
