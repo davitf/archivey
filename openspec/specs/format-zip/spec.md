@@ -171,20 +171,20 @@ target bytes. Under `RAISE`, listing halts with `DiagnosticRaisedError`.
 
 The ZIP backend SHALL detect split/spanned ZIP archives and raise
 `UnsupportedFeatureError` with a clear rejoin-first message instead of
-mis-reading data or surfacing stdlib `BadZipFile`. Detection MAY use `.z01` /
-`.zNN` segment names, non-zero disk fields in EOCD/ZIP64 EOCD, or ZIP64 locator
-`disks > 1`. Archivey joins multi-volume 7z/RAR elsewhere; stdlib `zipfile`
-cannot resolve ZIP `(disk-number, offset-within-disk)` addressing, and naive
-segment concatenation is unreliable. Proper support is deferred to a future
-native ZIP reader.
+mis-reading data or surfacing stdlib `BadZipFile`. Detection covers Info-ZIP
+`.zNN` segment names, 7-Zip `.zip.NNN` segment names, non-zero classic EOCD disk
+fields (treating `0xFFFF` as the ZIP64 sentinel, not a disk number), and ZIP64
+locator `disks > 1`. Archivey joins multi-volume 7z/RAR elsewhere; stdlib
+`zipfile` cannot resolve ZIP `(disk-number, offset-within-disk)` addressing, and
+naive segment concatenation is unreliable. Proper support is deferred to a
+future native ZIP reader.
 
 #### Scenario: multi-volume ZIP matrix
 
-| Case | Expected |
-| --- | --- |
-| `open_archive()` receives `.z01`...`.zip` split set or any segment | `UnsupportedFeatureError`; caller is told to rejoin volumes first |
-| EOCD declares non-zero disk number | `UnsupportedFeatureError`, not `BadZipFile` |
-| ZIP64 locator reports `disks > 1` | `UnsupportedFeatureError` |
+`open_archive` on a split/spanned ZIP signal — Info-ZIP `.zNN` / final `.zip`
+with non-zero EOCD disk fields, 7-Zip `.zip.NNN`, or ZIP64 locator `disks > 1` —
+raises `UnsupportedFeatureError` (not `CorruptionError`, `FormatDetectionError`,
+or a raw stdlib `BadZipFile`).
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 

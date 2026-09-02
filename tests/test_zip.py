@@ -405,6 +405,24 @@ def test_non_seekable_zip_fails_fast_via_detection(simple_zip: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _stdlib_zip_bytes(name: str = "big.bin", payload: bytes = b"x" * 64) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as z:
+        z.writestr(name, payload)
+    return buf.getvalue()
+
+
+def _patch_eocd_disk_fields(
+    data: bytes, *, this_disk: int, cd_start_disk: int
+) -> bytes:
+    """Patch classic EOCD uint16 disk fields (offsets +4 / +6 from PK\\x05\\x06)."""
+    raw = bytearray(data)
+    sig = raw.rfind(b"PK\x05\x06")
+    assert sig >= 0, "EOCD signature not found"
+    struct.pack_into("<HH", raw, sig + 4, this_disk, cd_start_disk)
+    return bytes(raw)
+
+
 def test_split_segment_name_rejected(tmp_path: Path) -> None:
     # A .z01 segment of a split set is rejected by name as an unsupported multi-volume ZIP.
     segment = tmp_path / "archive.z01"
@@ -412,6 +430,67 @@ def test_split_segment_name_rejected(tmp_path: Path) -> None:
     with pytest.raises(UnsupportedFeatureError) as excinfo:
         open_archive(segment, format=ArchiveFormat.ZIP)
     assert "multi-volume" in str(excinfo.value).lower()
+
+
+def test_sevenzip_split_segment_name_rejected(tmp_path: Path) -> None:
+    # 7-Zip names split parts name.zip.001 … name.zip.00N; refuse like .z01.
+    segment = tmp_path / "archive.zip.001"
+    segment.write_bytes(_stdlib_zip_bytes())
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(segment)
+    assert "multi-volume" in str(excinfo.value).lower()
+
+
+@pytest.mark.parametrize(
+    ("this_disk", "cd_start_disk"),
+    [
+        (7, 0),
+        (0, 7),
+        (7, 7),
+    ],
+    ids=["this_disk", "cd_start_disk", "both"],
+)
+def test_eocd_nonzero_disk_fields_rejected(
+    tmp_path: Path, this_disk: int, cd_start_disk: int
+) -> None:
+    # Info-ZIP's final .zip part carries the CD + EOCD with this_disk / cd_start_disk
+    # equal to the last data volume index. Byte-equivalent: patch those EOCD fields.
+    path = tmp_path / "set.zip"
+    path.write_bytes(
+        _patch_eocd_disk_fields(
+            _stdlib_zip_bytes(), this_disk=this_disk, cd_start_disk=cd_start_disk
+        )
+    )
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(path)
+    assert "multi-volume" in str(excinfo.value).lower()
+
+
+def test_eocd_zip64_disk_sentinel_still_opens(tmp_path: Path) -> None:
+    # 0xFFFF in a classic EOCD disk field is the ZIP64 sentinel, not disk 65535.
+    path = tmp_path / "zip64_sentinel.zip"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", allowZip64=True) as z:
+        info = zipfile.ZipInfo("big.bin")
+        with z.open(info, "w", force_zip64=True) as f:
+            f.write(b"x" * 1000)
+    path.write_bytes(
+        _patch_eocd_disk_fields(buf.getvalue(), this_disk=0xFFFF, cd_start_disk=0xFFFF)
+    )
+    with open_archive(path) as ar:
+        assert ar.read("big.bin") == b"x" * 1000
+
+
+def test_plain_and_prefixed_zip_still_open(tmp_path: Path) -> None:
+    plain = tmp_path / "plain.zip"
+    plain.write_bytes(_stdlib_zip_bytes("a.txt", b"hi"))
+    with open_archive(plain) as ar:
+        assert ar.read("a.txt") == b"hi"
+
+    prefixed = tmp_path / "prefixed.zip"
+    prefixed.write_bytes(b"#!/bin/sh\necho stub\n" + _stdlib_zip_bytes("a.txt", b"hi"))
+    with open_archive(prefixed) as ar:
+        assert ar.read("a.txt") == b"hi"
 
 
 # ---------------------------------------------------------------------------

@@ -153,11 +153,13 @@ Two things are ZIP-specific rather than general in the shared detector:
 Stdlib `zipfile` parses the central directory (the CDH run) and builds the member map. `reader.get()`
 and name lookup are satisfied from that map with no further archive I/O.
 
-**Split sets are rejected before anything else.** A filename matching `.z01`/`.zNN` raises
-`UnsupportedFeatureError` at open. A ZIP64 locator claiming more than one disk makes stdlib
-raise, and archivey re-types it by matching the exception text. Neither path reads the
-EOCD's own 32-bit disk fields, and the other split-naming convention in the wild is missed
-entirely (§5).
+**Split sets are rejected before anything else.** A filename matching `.z01`/`.zNN`
+or 7-Zip's `.zip.NNN` raises `UnsupportedFeatureError` at open. After stdlib opens the
+archive, non-zero classic EOCD disk fields (with `0xFFFF` treated as the ZIP64 sentinel)
+are refused the same way — that is what catches Info-ZIP's final `.zip` part, which
+lists cleanly because it holds the central directory. A ZIP64 locator claiming more
+than one disk makes stdlib raise, and archivey re-types it by matching the exception
+text.
 
 **Name decoding.** A set bit 11 is honoured as UTF-8. An explicit `encoding=` is passed to
 stdlib as `metadata_encoding` and used verbatim, which also disables the sniff below. An
@@ -286,7 +288,7 @@ setting bit 11, which is the case the sniff exists for; `tests/fixtures/external
 is a real sample.
 
 **Producers disagree about split naming.** Info-ZIP and WinZip write `name.z01 … name.zip`;
-7-Zip writes `name.zip.001 … name.zip.00N`. Only the first is recognised (§5).
+7-Zip writes `name.zip.001 … name.zip.00N`. Both conventions are refused (§5).
 
 **Producers disagree about encryption defaults.** 7-Zip's `-tzip` default is ZipCrypto and
 `-mem=AES256` selects WinZip AES; stdlib `zipfile` writes neither. That is why the
@@ -341,9 +343,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | --- | --- | --- |
 | A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** / **library** | The index is at the end (§1). A native forward-walking reader could stream members in order, but some metadata (the authoritative CDH run, comments, external attributes) lives only in that end directory |
 | One member name whose UTF-8 flag lies makes the **whole archive** unlistable | **library** | Stdlib decodes flagged names strictly while parsing the central directory, so the failure is archive-wide rather than confined to the bad entry. [`open-issues.md`](../open-issues.md) P4 |
-| A `.z01`…`.zip` split set is refused with "rejoin first" | **library** | Entries address `(disk, offset-within-disk)`, which stdlib cannot resolve and naive concatenation cannot fake. A native reader that understood disk numbers could. [`open-issues.md`](../open-issues.md) P2 |
-| A `.zip.001`…`.zip.00N` split set — 7-Zip's naming — is not recognised as split at all: the first part reports `CorruptionError`, the rest report `FormatDetectionError` | **archivey** | Valid input, wrong error. The `.z01` rule is a filename pattern that does not cover this convention. Closed by the #285/#286 stack rather than registered here |
-| An EOCD declaring a non-zero disk number opens and lists normally | **archivey** | Those fields are parsed by stdlib and never checked; only the ZIP64 locator path refuses, and it does so by matching stdlib's exception text. `format-zip` has a scenario claiming otherwise. Closed by #285 |
+| A `.z01`…`.zip` or `.zip.001`…`.zip.00N` split set is refused with "rejoin first" | **library** | The format defines (disk, offset) addressing and a native reader could follow it across the parts; `zipfile` cannot, and a linear join is not a substitute. Filename rules catch `.zNN` and `.zip.NNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`open-issues.md`](../open-issues.md) P2 |
 | A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk LFHs forward |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted and surface later as corruption | **format** | One-byte verifier. Confirmation narrows it; nothing eliminates it |
@@ -389,7 +389,7 @@ behaviour a caller already sees.
 | --- | --- |
 | Cost receipt, central-directory lookup without I/O | `tests/test_zip.py::test_cost_receipt`, `::test_central_directory_lookup_no_io` |
 | Non-seekable refused at open | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection` |
-| Split segment refused | `::test_split_segment_name_rejected` |
+| Split segment refused | `::test_split_segment_name_rejected`, `::test_sevenzip_split_segment_name_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_and_prefixed_zip_still_open` |
 | Timestamp precedence, invalid and out-of-range fallbacks | `::test_extended_timestamp_beats_ntfs`, `::test_ntfs_timestamps_used_when_no_extended_timestamp`, `::test_extended_timestamp_out_of_range_degrades_to_diagnostic` |
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |
