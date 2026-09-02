@@ -302,11 +302,11 @@ Five questions, in order. The first `yes` wins.
    curious users belong inline on the page that raises the question, not as a new
    page per decision. Use `/technical-writing` (Diátaxis + unslop) for the prose.
 2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
-   living handbook page under `dev-docs/formats/` or `dev-docs/topics/` (rewrite in
-   place; light decision bullets, not a new ADR). Skeletons:
-   [`dev-docs/formats/README.md`](dev-docs/formats/README.md),
-   [`dev-docs/topics/README.md`](dev-docs/topics/README.md). Everyday loop:
-   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md).
+   living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`
+   (rewrite in place; light decision bullets, not a new ADR). **Create the file in the
+   same PR that needs it** — do not add empty `formats/` / `topics/` trees. Page skeleton:
+   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Living handbook. Everyday
+   loop: same doc.
 3. **Is it rare repo-wide policy that will not fit a handbook page?** → a new ADR in
    `dev-docs/decisions/`, ADR-shaped (Context / Decision / Consequences, tens of
    lines). If it needs an `## Open questions` section, it is not an ADR yet — grill

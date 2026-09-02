@@ -7,8 +7,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | --- | --- |
 | [Pair workflow](pair-workflow.md) | **Preferred everyday loop**: investigate → grill into handbook → thin brief → implement → other-agent review → decision packets |
 | [Code map](code-map.md) | Where to start for a given change: tree shape, the path through a read, task→files, and which doc answers which kind of question |
-| [Format handbook](formats/README.md) | Living per-format pages (create on first real use): behaviour, consequences, light decisions, verify |
-| [Topic handbook](topics/README.md) | Living cross-cutting pages; link registers (e.g. threat model), do not restate them |
+| Format / topic handbook | **Not in tree yet** — create `formats/<format>.md` or `topics/<topic>.md` with the first change that needs it (skeleton in pair-workflow). Do not add empty directories |
 | [Threat model](threat-model.md) | Trust boundaries, enforced guarantees, open security/compat gaps |
 | [Open issues (gotchas triage)](open-issues.md) | Fixable leftovers vs irreducible user gotchas; docs/spec drift |
 | [Compression-library analysis](library-analysis.md) | Per-codec backend choice and rationale |

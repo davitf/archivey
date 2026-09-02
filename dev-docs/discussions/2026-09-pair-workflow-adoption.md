@@ -11,21 +11,21 @@ Dated 2026-09-02.
 
 ## How to start (checklist)
 
-1. Read [`../pair-workflow.md`](../pair-workflow.md) and the
-   [`../formats/`](../formats/README.md) / [`../topics/`](../topics/README.md) stubs.  
+1. Read [`../pair-workflow.md`](../pair-workflow.md). Handbook trees are **not** stubbed
+   empty — the first format/topic page is created with the change that needs it.  
 2. On the next medium change: `/grill-with-handbook`, then implement against a thin brief.  
 3. Review with the other model via Cursor `/code-review` (project command) or
    **`/code-review-skill`** elsewhere — *post the full handoff on the PR; message the
    maintainer only with decision packets.*  
 4. Address with Cursor `/address-review` or the `address-review-findings` skill — packets,
    not a wall of finding recap.  
-5. Pilot one format page the next time you touch 7z or RAR; migrate light decisions onto
-   that page as you go.  
+5. **Pilot:** next time you touch 7z or RAR, create `dev-docs/formats/7z.md` or
+   `rar.md` (skeleton in pair-workflow) and migrate light decisions onto that page.  
 6. Optional desktop: Cursor marketplace **pstack** plugin for extra lenses — do **not**
    vendor it into the repo. Prefer archivey-adapted skills for Matt-style grilling/writing.
 
 Until a format page exists, point the brief at `code-map`, threat model, and the best
-existing ADR/investigation — then write the missing handbook section as part of the work.
+existing ADR/investigation — then write the missing handbook page as part of the work.
 
 ## What to take from external stacks (docs vs skills)
 

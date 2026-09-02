@@ -12,8 +12,10 @@ disable-model-invocation: true
 # Grill with handbook
 
 Sharpen a plan or design with the maintainer until assumptions are explicit, then
-**write the conclusions into the living handbook** (`dev-docs/formats/`,
-`dev-docs/topics/`). Full loop: [`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md).
+**write the conclusions into the living handbook**. Create
+`dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md` **when this change needs
+it** — do not invent empty handbook trees ahead of content. Full loop:
+[`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md).
 
 Inspired by Matt Pocock’s grill / grill-with-docs / domain-modeling skills; adapted so
 archivey’s source of truth is organised handbook pages, not an append-only ADR log.
@@ -46,21 +48,25 @@ archivey’s source of truth is organised handbook pages, not an append-only ADR
 
 | Kind | Write to |
 | --- | --- |
-| Format behaviour / consequences | `dev-docs/formats/<format>.md` (create from [`formats/README.md`](../../../dev-docs/formats/README.md) skeleton if missing) |
-| Cross-cutting behaviour | `dev-docs/topics/<topic>.md` (see [`topics/README.md`](../../../dev-docs/topics/README.md)) |
-| Glossary / overloaded term | Short **Terms** subsection on the relevant format/topic page (or `dev-docs/architecture.md` if you create that spine later) |
-| Heavy evidence | New or updated file under `dev-docs/investigations/`; link it from the handbook page — don’t paste the lab notebook into the living page |
+| Format behaviour / consequences | `dev-docs/formats/<format>.md` — create with the skeleton in pair-workflow §Living handbook if missing |
+| Cross-cutting behaviour | `dev-docs/topics/<topic>.md` — same; **link** `threat-model.md` `O*` rows, never restate that register |
+| Glossary / overloaded term | Short **Terms** subsection on the relevant format/topic page |
+| Heavy evidence | New or updated file under `dev-docs/investigations/`; link from the handbook page |
 | Irreversible repo-wide policy | ADR under `dev-docs/decisions/` (exception path) |
 
-On the handbook page, record decisions as **light bullets**: *choice → why → rejected
-alternative*. Keep the page no-fluff; rewrite in place when reality changes.
+If neither handbook tree exists yet, creating the first page (and optional index README)
+in this change is correct. Record decisions as **light bullets**: *choice → why →
+rejected alternative*.
+
+Until a page exists for this scope, put interim conclusions in the thin brief and name
+the handbook file you will create when implementing.
 
 ## Done when
 
 - Frontier empty: no silent assumptions left for this scope.
-- Handbook sections touched (or explicitly deferred with a one-line “TODO page” in the
-  thin brief).
-- You can draft a **thin brief** (goal, non-goals, handbook links, verify commands) and the
-  maintainer agrees you share an understanding.
+- Handbook page created/updated, or explicitly deferred with a one-line “TODO page” in the
+  thin brief.
+- You can draft a **thin brief** (goal, non-goals, handbook/ADR links, verify commands)
+  and the maintainer agrees you share an understanding.
 
 Then stop. Implementation is a separate step in the pair workflow.

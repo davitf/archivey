@@ -21,9 +21,10 @@ single-file-compressed (gz/bz2/xz/lzip/zstd/lz4/.Z).
 **Everyday maintainer/agent loop:** [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md)
 (investigate → grill into handbook → thin brief → implement → other-agent review →
 decision packets). **Start with [`dev-docs/code-map.md`](dev-docs/code-map.md)** when the
-question is *where in the source do I make this change*. Living format/topic notes:
-[`dev-docs/formats/`](dev-docs/formats/README.md), [`dev-docs/topics/`](dev-docs/topics/README.md).
-The list below is the document map; that one is the code map.
+question is *where in the source do I make this change*. Format/topic handbook pages are
+created **with the first real change** that needs them (see pair-workflow); until then
+use code-map, threat model, ADRs, and investigations. The list below is the document map;
+that one is the code map.
 
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
   strategy; the tie-breaker when trade-offs conflict. End-user distill:

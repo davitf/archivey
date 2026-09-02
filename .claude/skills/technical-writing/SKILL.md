@@ -50,6 +50,7 @@ Self-audit: “What still looks AI-generated?” Fix that next.
 ## 4. Archivey checks
 
 - User-facing fact → `docs/` + `mkdocs.yml` nav in the same commit.
-- Maintainer current truth → `dev-docs/formats/` or `dev-docs/topics/` (rewrite in place).
+- Maintainer current truth → `dev-docs/formats/<format>.md` or
+  `dev-docs/topics/<topic>.md` (create on first need; rewrite in place).
 - Do not dump lab evidence into living pages — link `dev-docs/investigations/`.
 - Same PR as the code when the change falsifies a doc claim.

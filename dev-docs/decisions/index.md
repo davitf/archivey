@@ -3,8 +3,8 @@
 Short records of **rare repo-wide** choices. Specs and handbook pages say what is true
 now; these notes capture irreversible policy that does not fit a format/topic page.
 
-**Prefer living handbook notes** for new format or topic decisions
-([`../formats/`](../formats/README.md), [`../topics/`](../topics/README.md),
+**Prefer living handbook notes** for new format or topic decisions once those pages
+exist (`dev-docs/formats/`, `dev-docs/topics/` — create with the first real change; see
 [`../pair-workflow.md`](../pair-workflow.md)). Add a new ADR only when the choice is
 cross-cutting policy that will not live cleanly on those pages.
 

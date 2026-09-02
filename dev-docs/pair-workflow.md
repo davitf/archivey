@@ -50,21 +50,35 @@ Organised, **no-fluff**, rewritten in place — not an append-only log.
 
 | Path | Role |
 | --- | --- |
-| [`formats/`](formats/README.md) | Per-format: behaviour here, consequences, light decisions, verify |
-| [`topics/`](topics/README.md) | Cross-cutting notes; **link** registers like [`threat-model.md`](threat-model.md), do not restate them |
+| `formats/<format>.md` | Per-format: behaviour here, consequences, light decisions, verify — **create with the first real change** that needs it (do not land empty trees) |
+| `topics/<topic>.md` | Cross-cutting notes; **link** registers like [`threat-model.md`](threat-model.md), do not restate them — same “create on first use” rule |
 | [`code-map.md`](code-map.md) | Where to start in the tree |
 | [`threat-model.md`](threat-model.md) | Trust boundaries + open `O*` gap register (sole home for those IDs) |
 | [`investigations/`](investigations/) | Append-only evidence notebooks; link from handbook, don’t promote to “current truth” |
-| [`decisions/`](decisions/) | **Rare** repo-wide policy only; prefer light notes on format/topic pages |
+| [`decisions/`](decisions/) | **Rare** repo-wide policy only; prefer light notes on format/topic pages once those exist |
 | `openspec/specs/` | **Authoritative** machine-checkable contract (agents/CI) — **not** the primary human reading surface |
+
+**Until the first format/topic page exists:** point briefs at `code-map`, threat model,
+and the best ADR/investigation. When a change needs a living page, create
+`dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md` **in that same PR**, with:
+
+1. Role here — support / refusals  
+2. How it works in this repo — entrypoints (link code-map), solid/seek, codecs  
+3. Consequences — perf, memory, crypto, bomb edges  
+4. Decisions (light) — choice → why → rejected alternative  
+5. Open pitfalls  
+6. Verify — tests/commands that pin claims  
+
+Optional `formats/README.md` / `topics/README.md` indexes may appear alongside the first
+page; do not add empty stubs ahead of content.
 
 **Docs with code:** if a PR makes a handbook or published-doc **claim false**, update that
 page in the **same PR**. Do not mint a new ADR or OpenSpec essay just to record the
 change of mind.
 
-Grow `formats/` one format at a time when you next touch that format. Fold useful bits
-from old ADRs / investigations into the page; leave the ADR as a historical pointer until
-the page is trusted.
+**Deferred design (not this page):** eventually thin OpenSpec scenarios into tests and
+keep handbook principles + test links as the dual contract — see future discussion after
+the first format pilot.
 
 ---
 
