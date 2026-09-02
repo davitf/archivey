@@ -68,6 +68,7 @@ fi
 # Needs the `docs` group (mkdocs, markdown) rather than the everyday env, so this leg
 # syncs on demand instead of using --no-sync.
 run "docs nav"   uv run --group docs python scripts/check_docs_nav.py
+run "internal md links" uv run --no-sync python scripts/check_internal_md_links.py
 run "docs build" uv run --group docs mkdocs build --strict --quiet
 
 # --- verdict -----------------------------------------------------------------------

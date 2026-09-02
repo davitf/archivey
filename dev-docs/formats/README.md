@@ -5,7 +5,7 @@ place when behaviour changes. This is the preferred home for format decisions �
 not a new ADR per choice.
 
 Published user-facing format matrix: [`docs/formats.md`](../../docs/formats.md).
-Dense agent contracts (optional reading): `openspec/specs/format-*`.
+Dense agent contracts: `openspec/specs/format-*`.
 
 ## Page skeleton
 
@@ -18,20 +18,13 @@ Create `dev-docs/formats/<format>.md` (e.g. `7z.md`, `rar.md`) with:
 5. **Open pitfalls** — including known doc/code lies  
 6. **Verify** — tests or commands that pin the claims  
 
-## Pilot
+## Index
 
-Next change that touches **7z** or **RAR**: create that page and fold useful lines from
-`dev-docs/decisions/0001-*` / `0002-*` and relevant `investigations/` into it. Leave old
-ADRs in place until the page is trusted, then treat them as historical.
-
-## Index (fill as pages appear)
+Fill rows when a real page exists. Until then, route decisions to the seeds in
+[`../pair-workflow.md`](../pair-workflow.md) / ADRs / investigations, then create the
+page as part of that change (see
+[`../discussions/2026-09-pair-workflow-adoption.md`](../discussions/2026-09-pair-workflow-adoption.md)).
 
 | Format | Page | Status |
 | --- | --- | --- |
-| ZIP | — | not started |
-| TAR / compressed TAR | — | not started |
-| 7z | — | pilot candidate |
-| RAR | — | pilot candidate |
-| ISO | — | not started |
-| Directory | — | not started |
-| Single-file compressors | — | not started |
+| *(none yet)* | — | create on first real format change |

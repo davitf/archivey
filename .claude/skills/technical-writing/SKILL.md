@@ -3,8 +3,7 @@ name: technical-writing
 description: |
   Diátaxis structure, plain developer sentences, and unslop (cut AI tells). Use when
   writing or reviewing docs/, handbook prose, PR descriptions, or commit messages; or
-  when the user invokes /technical-writing or /unslop.
-disable-model-invocation: true
+  when the user invokes /technical-writing or asks to unslop prose.
 ---
 
 # Technical writing (archivey)

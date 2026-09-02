@@ -213,18 +213,10 @@ questions manufactured to look thorough.
 
 ### Decision packet (required escalate shape)
 
-Each escalation must be decidable on its own, cold. Use this exact shape (same contract as
-[`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md)):
-
-1. **Question** — one sentence, plain language. Expand every identifier; never “W4 vs O8a”.
-2. **Why it matters** — user / API / security consequence if we pick wrong.
-3. **Options** — two or three, each with concrete cost/risk (what breaks, who notices).
-4. **Evidence** — what you ran or read: command output, a two-line code quote, failing test.
-   If you have not measured yet, do that before asking.
-5. **Recommendation** — labelled as such, with the reason.
-6. **Default if you ignore this** — what you will ship / leave unchanged if they say nothing.
-
-Optionally one line on **what you already dispositioned** so the decision stays scoped.
+Each escalation must be decidable on its own, cold. Use the **canonical** six-field packet
+in [`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md) §Decision packet —
+do not invent a parallel wording here. Expand every identifier; measure before asking;
+optionally note what you already dispositioned so the decision stays scoped.
 
 The test: could the maintainer answer without opening the PR? If not, it is not ready.
 

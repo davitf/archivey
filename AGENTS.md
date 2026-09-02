@@ -295,15 +295,19 @@ PR review here is a **handoff between two agents**, and each half has a skill:
 1. **A separate agent reviews** the PR with **`/code-review-skill`** — not a bare
    `/code-review`, which is a *builtin* skill in both Claude Code and Cursor and is not
    this one; the Cursor project command `.cursor/commands/code-review.md` is what makes
-   `/code-review` land correctly there. It posts the findings to the PR. Rules are in
-   `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`; **§10 covers
-   posting** — stable finding IDs (`F1`, `F2`, … kept across re-reviews), located findings
-   as inline comments so they can be resolved individually, blocks 1 and 3 in the body,
-   and a status table over the previous IDs when re-reviewing.
+   `/code-review` land correctly there. It posts the **full** findings to the PR (blocks
+   1–2 for the implementor; block 3 packets for the maintainer). When also chatting with
+   the maintainer, send **decision packets only** unless they ask for the full handoff
+   ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet). Rules are
+   in `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`; **§10
+   covers posting** — stable finding IDs (`F1`, `F2`, … kept across re-reviews), located
+   findings as inline comments so they can be resolved individually, blocks 1 and 3 in the
+   body, and a status table over the previous IDs when re-reviewing.
 2. **The implementing agent works through them** with `address-review-findings`
    (Cursor: `/address-review`). Every finding gets an explicit disposition — fixed,
    disproven, escalated, or deferred-with-a-written-home. Nothing is dropped silently, and
-   nothing is "fixed" without being reproduced first.
+   nothing is "fixed" without being reproduced first. Escalations to the maintainer use
+   the **decision packet** shape only (same section of `pair-workflow.md`).
 
 3. **An agent may pick the review up without being asked.** A session subscribed to PR
    activity reacts to a review comment or a CI failure as an *event*, from its own generic
@@ -329,11 +333,10 @@ Two things about this repo make the handoff sharper than it looks:
   one is the human. Make your own PR comments identifiable the same way, and read inline
   threads carefully: the maintainer's own questions arrive that way and carry more weight
   than an automated finding.
-- **Escalate one question at a time.** The maintainer is usually deciding without having
-  read the diff or the docs, and does not know the identifiers. Expand every name, quote
-  the actual code, show what you measured, give options with consequences and a labelled
-  recommendation. A batched list of five numbered decisions pushes the work back onto the
-  person you are asking.
+- **Escalate one decision packet at a time.** Shape and fields:
+  [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet (canonical).
+  Do not dump the full finding list into chat — that stays on the PR. A batched list of
+  five numbered decisions pushes the work back onto the person you are asking.
 
 ## Conventions
 

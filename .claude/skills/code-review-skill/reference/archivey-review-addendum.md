@@ -102,18 +102,11 @@ No “as above” / “see briefing” cross-references that break when pasted a
 #### 3. Maintainer decisions (your attention)
 
 Audience: the maintainer — **only** items that need a human call. This block is the
-maintainer UI; block 2 is worker mail for whoever addresses the PR. Prefer decision
-**packets** over a terse list that still forces them to read the diff (see
-[`dev-docs/pair-workflow.md`](../../../../dev-docs/pair-workflow.md)).
+maintainer UI; block 2 is worker mail for whoever addresses the PR.
 
-For each item, use the packet fields:
-
-1. **Question** — one sentence, plain language.
-2. **Why it matters** — user / API / security consequence.
-3. **Options** — A / B / … with a one-line cost/risk each.
-4. **Evidence** — what you traced (short quote or behaviour), not “see block 2”.
-5. **Recommendation** — labelled (optional but preferred).
-6. **Default if ignored** — what happens if nobody answers.
+For each item, use the **canonical decision packet** in
+[`dev-docs/pair-workflow.md`](../../../../dev-docs/pair-workflow.md) §Decision packet —
+same six fields, same cold-start test. Do not invent a shorter parallel list.
 
 Skip routine “please add a test for X” fixes — those belong in block 2. If nothing needs
 a decision, write `None.` Do not invent soft filler questions — but **do not drop** a
