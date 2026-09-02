@@ -787,7 +787,7 @@ def _crc_damaged_sevenzip_signature() -> bytes:
         pytest.param(
             (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes(),
             len((_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()),
-            HitOutcome.VALID_EXACT,
+            HitOutcome.VALID,
             id="real-fixture-exact-eof",
         ),
         pytest.param(MAGIC_7Z, None, HitOutcome.NOT_THIS_FORMAT, id="truncated-magic"),
@@ -830,7 +830,7 @@ def _crc_damaged_sevenzip_signature() -> bytes:
         pytest.param(
             _sevenzip_signature(next_offset=0, next_size=10),
             _SIGNATURE_HEADER_SIZE + 10,
-            HitOutcome.VALID_EXACT,
+            HitOutcome.VALID,
             id="declared-end-equals-remaining",
         ),
         pytest.param(
@@ -867,10 +867,7 @@ def test_sevenzip_validator_peeks_only_the_signature_header() -> None:
         return (sig + bytes(n))[:n]
 
     remaining = _SIGNATURE_HEADER_SIZE + next_offset + 64
-    assert (
-        validate_sevenzip_signature_header(peek_more, remaining)
-        is HitOutcome.VALID_EXACT
-    )
+    assert validate_sevenzip_signature_header(peek_more, remaining) is HitOutcome.VALID
     assert peeked == [_SIGNATURE_HEADER_SIZE]
 
 
@@ -1000,33 +997,31 @@ def test_crc_valid_empty_7z_decoy_is_skipped_for_the_real_payload(
         assert any(m.is_file for m in archive.members())
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Exact-EOF ranking among CRC-valid 7z hits is the unlanded remainder of "
+        "task 2.3; first VALID still wins. See dev-docs/known-issues.md."
+    ),
+)
 def test_inexact_7z_decoy_loses_to_a_later_exact_payload(tmp_path: Path) -> None:
-    """VALID_EXACT on the real payload beats an earlier CRC-valid inexact decoy (D2(a))."""
+    """Red half: a later exact 7z payload should beat an earlier CRC-valid inexact decoy.
+
+    The decoy at 512 is a CRC-valid signature whose declared end is nonzero,
+    self-consistent, and inside ``remaining`` — so the empty-header reject does
+    not apply. Today's first-VALID scan reports that decoy. The contract is the
+    real payload at 3544.
+    """
     decoy = _sevenzip_signature(next_offset=100, next_size=10)
-    stub = b"MZ" + b"\x00" * 510 + decoy
+    prefix = b"MZ" + b"\x00" * 510 + decoy
     real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    real_origin = 3544
     path = tmp_path / "inexact-decoy-7z.exe"
-    path.write_bytes(stub + b"\x00" * 64 + real)
-    real_origin = len(stub) + 64
+    path.write_bytes(prefix + b"\x00" * (real_origin - len(prefix)) + real)
     detected = detect_format(path)
     assert detected.format == ArchiveFormat.SEVEN_Z
     assert detected.detected_by == "sfx_scan"
     assert detected.payload_offset == real_origin
-
-
-def test_inexact_7z_decoy_still_wins_when_the_real_payload_has_trailing_bytes(
-    tmp_path: Path,
-) -> None:
-    """Residual: neither hit is exact, so earliest VALID still wins (D2(b) pin)."""
-    decoy = _sevenzip_signature(next_offset=100, next_size=10)
-    stub = b"MZ" + b"\x00" * 510 + decoy
-    real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
-    path = tmp_path / "inexact-decoy-trailing-7z.exe"
-    path.write_bytes(stub + b"\x00" * 64 + real + b"sfx-config\n")
-    detected = detect_format(path)
-    assert detected.format == ArchiveFormat.SEVEN_Z
-    assert detected.detected_by == "sfx_scan"
-    assert detected.payload_offset == 512
 
 
 @requires("py7zr")

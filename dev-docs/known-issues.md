@@ -4,6 +4,30 @@
 > codec and why — including why `rapidgzip` is the single accelerator library (the issue below)
 > and why an `indexed_zstd` zstd accelerator would face the same constraint.
 
+## 7z SFX scan: a CRC-valid inexact decoy still beats a later real payload (open)
+
+**Status:** open in `prefixed-archive-detection` task 2.3 (`[~]`). CRC identity, the
+remaining-length overrun, and empty-next-header (`NextHeaderSize == 0`) behind a stub
+are in; exact-EOF ranking among several CRC-valid hits is not.
+
+The SFX scan returns the earliest `HitOutcome.VALID` needle. A 32-byte 7z signature
+header whose `StartHeaderCRC` matches and whose declared end is a nonzero size that
+fits in the remaining source is `VALID` even when it is not the real payload — a
+later genuine archive that does end at EOF never gets a chance. Detection then
+reports `SEVEN_Z` at the decoy origin, so `open_archive` never sees the real
+files: a **wrong answer**, not `FormatDetectionError`.
+
+The empty-header reject closes the reproduced F4 fixture (an empty 32-byte decoy
+at offset 512). The residual is a decoy with a **nonzero, self-consistent
+declared size that still fits in `remaining`**.
+
+**Gate (not yet written).** Prefer an exact-EOF 7z (`declared == remaining`) over
+an earlier inexact `VALID` — task 2.3's original intra-format tie-break. Until
+then, `test_inexact_7z_decoy_loses_to_a_later_exact_payload` is
+`@pytest.mark.xfail(strict=True)` on that contract (`xfail_strict` is not set in
+`pyproject.toml`, so `strict=True` is on the marker). `[~]` on task 2.3 stops
+`prefixed-archive-detection` from archiving while this stands.
+
 ## MacPaw `unar` / XADMaster: RAR5 solid + empty FILE is silent-wrong (open)
 
 **Status:** open upstream; archivey does not use `unar`. Recorded because a future

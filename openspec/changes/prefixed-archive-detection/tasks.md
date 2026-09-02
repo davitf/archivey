@@ -159,24 +159,23 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
       backend (candidate-relative view in, `HitOutcome` out); the scan calls it. A
       decoy of four `PK\x03\x04` bytes is `NOT_THIS_FORMAT`. Do **not** require an
       EOCD seek here — that is Block 2. Red–green alongside 4.1a.
-- [x] 2.3 **(Block 3, or a slim follow-up after Block 1)** Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader,
+- [~] 2.3 **(Block 3, or a slim follow-up after Block 1)** Validate a 7z hit: `StartHeaderCRC` over the 20-byte StartHeader,
       and `offset + 32 + NextHeaderOffset + NextHeaderSize <= source length`, preferring
       an exact end match when several candidates validate — an intra-format tie-break
       inside this validator, not the cross-format ranking 0.6 defers. Named function on
       the 7z backend returning `HitOutcome`; the scan calls it. Failed CRC with a
       plausible header is `DAMAGED`; this change still skips it (scan continues). Ledger
       task 4.7 is the later policy that reports `SEVEN_Z` from that outcome.
-      **Landed as the slim follow-up after #277.** The declared-end check compares
-      against the known source length (`remaining` from the candidate origin), not the
-      peek window / `scan_limit` / `SFX_MAX`. An unreachable end or oversized next-header
-      after a passing CRC is `DAMAGED`. Exact-EOF among several CRC-valid hits is
-      `VALID_EXACT` (7z-only: declared end equals known remaining); the scan returns
-      immediately on that outcome and otherwise remembers the earliest `VALID`.
-      `NextHeaderSize == 0` behind a stub is `NOT_THIS_FORMAT`. Trailing bytes after a
-      CRC-valid header stay `VALID` (task 4.4). Pins:
-      `test_inexact_7z_decoy_loses_to_a_later_exact_payload` (the tie-break) and
-      `test_inexact_7z_decoy_still_wins_when_the_real_payload_has_trailing_bytes`
-      (the residual).
+      **Partially landed as the slim follow-up after #277 (F12).** CRC identity, the
+      remaining-length overrun (`DAMAGED`), and `NextHeaderSize == 0` behind a stub
+      (`NOT_THIS_FORMAT`) are in. The declared-end check compares against the known
+      source length (`remaining` from the candidate origin), not the peek window /
+      `scan_limit` / `SFX_MAX`. Exact-EOF ranking among several CRC-valid hits is
+      **not**: first `VALID` still wins. Trailing bytes after a CRC-valid header stay
+      `VALID` (task 4.4). Pin: `test_inexact_7z_decoy_loses_to_a_later_exact_payload`
+      (`xfail(strict=True)` on the real payload winning). Recorded in
+      `dev-docs/known-issues.md`. `[~]` so this change cannot archive until the
+      tie-break lands (`scripts/check_openspec_archived.py`).
 - [x] 2.4 **(Block 3, or a slim follow-up after Block 1)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a
       parseable main header. Named function on the RAR backend, same `HitOutcome` split
       as 2.3.

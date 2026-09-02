@@ -80,12 +80,6 @@ class HitOutcome(Enum):
 
     ``NOT_THIS_FORMAT`` — identity never held (decoy magic, unparseable header).
     ``VALID`` — identity and cheap structure both hold.
-    ``VALID_EXACT`` — ``VALID``, and the format could prove the payload ends at
-    EOF (today: a 7z whose declared end equals known remaining). This is not a
-    "better candidate" score — ZIP and RAR cannot produce it, because neither
-    header declares a total size. The SFX scan returns immediately on
-    ``VALID_EXACT``; otherwise it remembers the earliest ``VALID`` and keeps
-    looking. Ledger tasks 3.3 / 4.6 / 4.7 read this enum.
     ``DAMAGED`` — identity holds, structure does not (a 7z whose ``StartHeaderCRC``
     fails, or whose declared end overruns the source). This change's first-match
     scan treats ``DAMAGED`` like ``NOT_THIS_FORMAT`` (skip, continue). The later
@@ -95,7 +89,6 @@ class HitOutcome(Enum):
 
     NOT_THIS_FORMAT = "not_this_format"
     VALID = "valid"
-    VALID_EXACT = "valid_exact"
     DAMAGED = "damaged"
 
 

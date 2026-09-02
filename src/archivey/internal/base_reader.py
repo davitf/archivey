@@ -181,8 +181,7 @@ class ReadBackend(ABC):
     # claimed: ZIP's local-header sanity check, 7z ``StartHeaderCRC``, RAR 5
     # main-header CRC32 / RAR 4 MAIN.
     # Returns :class:`~archivey.internal.sfx.HitOutcome`; the detector treats
-    # ``VALID_EXACT`` as an immediate accept, ``VALID`` as a fallback while the
-    # scan continues, and anything else as "skip and continue".
+    # anything other than ``VALID`` as "skip and continue".
     # Subclasses that supply a function must wrap it in ``staticmethod`` — a bare
     # function on the class body is a descriptor, and an instance lookup would bind
     # ``self`` as the first argument. The other detection tables (MAGIC, SFX_MAGIC)

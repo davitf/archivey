@@ -39,12 +39,14 @@ def validate_sevenzip_signature_header(
 
     An empty next-header (``NextHeaderSize == 0``) is not an SFX payload —
     nobody ships a self-extractor with no files — so that is
-    :attr:`HitOutcome.NOT_THIS_FORMAT` even when the CRC is valid.
+    :attr:`HitOutcome.NOT_THIS_FORMAT` even when the CRC is valid. This
+    validator is the scan path only: a genuine empty ``.7z`` is claimed by
+    near magic at offset 0 and never reaches here.
 
-    When ``remaining`` is known and equals the declared end, the outcome is
-    :attr:`HitOutcome.VALID_EXACT` ("this 7z ends at EOF"), not a ranking
-    score. Trailing bytes after a CRC-valid header stay ``VALID``; the scan
-    prefers a later ``VALID_EXACT`` over an earlier ``VALID``.
+    Exact-EOF versus trailing bytes is not a reject: some SFX tools append
+    configuration after the payload. Earliest CRC-valid hit still wins;
+    preferring an exact end among several ``VALID`` hits is the unlanded
+    remainder of task 2.3.
     """
     header = peek_more(_SIGNATURE_HEADER_SIZE)
     if len(header) < _SIGNATURE_HEADER_SIZE or header[: len(MAGIC_7Z)] != MAGIC_7Z:
@@ -66,6 +68,4 @@ def validate_sevenzip_signature_header(
     declared = _SIGNATURE_HEADER_SIZE + next_header_offset + next_header_size
     if remaining is not None and declared > remaining:
         return HitOutcome.DAMAGED
-    if remaining is not None and declared == remaining:
-        return HitOutcome.VALID_EXACT
     return HitOutcome.VALID
