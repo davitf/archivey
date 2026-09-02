@@ -48,7 +48,7 @@ archivey’s source of truth is organised handbook pages, not an append-only ADR
 
 | Kind | Write to |
 | --- | --- |
-| Format behaviour / consequences | `dev-docs/formats/<format>.md` — create with the skeleton in pair-workflow §Living handbook if missing |
+| Format behaviour / consequences | `dev-docs/formats/<format>.md` — create if missing; page structure is TBD until `zip.md` settles it (pair-workflow §Living handbook) |
 | Cross-cutting behaviour | `dev-docs/topics/<topic>.md` — same; **link** `threat-model.md` `O*` rows, never restate that register |
 | Glossary / overloaded term | Short **Terms** subsection on the relevant format/topic page |
 | Heavy evidence | New or updated file under `dev-docs/investigations/`; link from the handbook page |
