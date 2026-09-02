@@ -313,7 +313,8 @@ Five questions, in order. The first `yes` wins.
 1. **Would someone who only *uses* the library need it?** → `docs/`, **and add it to
    `mkdocs.yml`'s nav in the same commit**. Curated "why we chose X" one-liners for
    curious users belong inline on the page that raises the question, not as a new
-   page per decision. Use `/technical-writing` (Diátaxis + unslop) for the prose.
+   page per decision. Use `/technical-writing` for structure/craft and `/unslop`
+   for strip-AI-tells on the prose.
 2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
    living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`
    (rewrite in place; light decision bullets, not a new ADR). **Create the file in the

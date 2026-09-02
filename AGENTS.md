@@ -66,15 +66,15 @@ that one is the code map.
 
 ## Communicating with the maintainer (unslop)
 
-**Standing rule for every agent session:** apply the **Unslop** checklist in
-[`.claude/skills/technical-writing/SKILL.md`](.claude/skills/technical-writing/SKILL.md)
-§3 to **all maintainer-facing prose** — chat replies, decision packets, PR comments,
-and thin briefs — not only published `docs/` or handbook pages. Cut puffery,
-throat-clearing, stacked ornaments, and default LLM filler; prefer specific claims.
+**Standing rule for every agent session:** apply
+[`.claude/skills/unslop/SKILL.md`](.claude/skills/unslop/SKILL.md) to **all
+maintainer-facing prose** — chat replies, decision packets, PR comments, and thin
+briefs. Cut puffery, throat-clearing, stacked ornaments, and default LLM filler;
+prefer specific claims.
 
-Invoke `/technical-writing` (or ask for that skill by name) when you need the full
-Diátaxis + sentence-craft pass on a docs or handbook page. Unslop itself does not
-require a separate skill invoke — it is the default voice toward the maintainer.
+That skill is the checklist only. Do **not** load `/technical-writing` for everyday
+chat — use it when you need Diátaxis + sentence craft on a docs or handbook page
+(and still apply `unslop` to the same prose).
 
 ## Session setup (`unrar`, `7z`, `openspec`, deps)
 

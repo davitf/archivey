@@ -116,9 +116,8 @@ review block 3.
 
 If an agent cannot fill these, it is not ready to ask — it should measure first.
 
-**Voice:** unslop the packet (and any chat around it) — same checklist as
-[`AGENTS.md`](../AGENTS.md) §Communicating with the maintainer and
-`.claude/skills/technical-writing/SKILL.md` §3.
+**Voice:** apply [`unslop`](../.claude/skills/unslop/SKILL.md) to the packet and any
+chat around it ([`AGENTS.md`](../AGENTS.md) §Communicating with the maintainer).
 
 Review quality does **not** drop: the implementor still gets the full finding list on the
 PR. The maintainer is not the audience for that list unless they ask.
@@ -146,8 +145,8 @@ means a decision was never recorded on the handbook page.
 | --- | --- |
 | Pair investigation + decisions on handbook | `/grill-with-handbook` |
 | Explore without implementing | `/openspec-explore` stance; don’t open a verbose change by default |
-| Unslop chat / packets / PR comments (default) | No invoke — standing rule in [`AGENTS.md`](../AGENTS.md) §Communicating with the maintainer |
-| User-facing or handbook prose craft | `/technical-writing` (Diátaxis + unslop) |
+| Unslop chat / packets / PR comments (default) | `/unslop` — standing rule in [`AGENTS.md`](../AGENTS.md); thin skill, not technical-writing |
+| User-facing or handbook prose craft | `/technical-writing` (then `/unslop` on the same prose) |
 | Review (other agent) | Cursor: `/code-review` (project command → archivey skill). Elsewhere: **`/code-review-skill`** — never bare `/code-review` (that is a host builtin). Full PR handoff; packets to maintainer |
 | Address review | Cursor: `/address-review`. Elsewhere: **`address-review-findings`** / ask for that skill by name |
 | PR babysitting | `steward` as today |

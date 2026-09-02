@@ -36,8 +36,8 @@ skills** plus the handbook. Use upstream plugins only as optional desktop extras
 | Need | Source | In this repo | Why this shape |
 | --- | --- | --- | --- |
 | Sharpen plan + write decisions | Matt `grill-me` / `grill-with-docs` / `domain-modeling` | **Skill** [`grill-with-handbook`](../../.claude/skills/grill-with-handbook/SKILL.md) | Writes format/topic pages, not ADR spam |
-| Diátaxis + sentence craft | pstack `technical-writing` | **Skill** [`technical-writing`](../../.claude/skills/technical-writing/SKILL.md) | User `docs/` + PR/handbook prose |
-| Strip AI tells | pstack `unslop` | Folded into `technical-writing` | One invoke for published prose |
+| Diátaxis + sentence craft | pstack `technical-writing` | **Skill** [`technical-writing`](../../.claude/skills/technical-writing/SKILL.md) | User `docs/` + handbook prose |
+| Strip AI tells | pstack `unslop` | **Skill** [`unslop`](../../.claude/skills/unslop/SKILL.md) (standalone; AGENTS standing rule) | Chat / packets / PR comments without loading technical-writing |
 | Agent-facing doc craft | Matt `writing-for-agents` | Apply by hand when editing `AGENTS.md` / skills | Triggers in description; progressive body; checkable done criteria |
 | Deep-module vocabulary | Matt `codebase-design` | Optional later **doc** under `topics/` | Borrow terms; don’t import TS tooling |
 | Multi-model adversarial review | pstack `interrogate` | **Not default** | Manual other-model review is enough |
