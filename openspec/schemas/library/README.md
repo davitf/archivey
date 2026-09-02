@@ -46,4 +46,8 @@ first (common for spikes: design before specs crystallize).
 - Prefer API signatures and markdown tables inside scenarios
 - One scenario per behavioral axis; don’t explode edge cases into WHEN/THEN farms
 - Don’t restate what type hints already declare
-- Put “why we chose X over Y” in design.md, not in requirement prose
+- Put “why we chose X over Y” in design.md or a handbook page, not in requirement prose
+- **Thin as you go:** prefer a pytest over a new scenario; when editing a covered
+  requirement, collapse/delete redundant scenarios rather than growing the farm. Direction
+  and checklist:
+  [`dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md`](../../dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md)

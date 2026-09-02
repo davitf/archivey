@@ -293,6 +293,19 @@ means a decision hasn't been made yet, and guessing bakes the wrong one into the
 Surface it (an issue, a PR comment, or an `openspec/changes/` proposal) and let it be
 decided explicitly.
 
+**Thin as you go.** Specs stay the authoritative *machine* contract for now (pair-workflow
+DP1 = C), but we are migrating executable detail into **tests** and human truth into
+**handbook** pages — see
+[`dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md`](dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md).
+On every PR that touches `openspec/specs/` or a change delta:
+
+- Prefer a **pytest** (and a handbook / Verify link) over a new WHEN/THEN scenario.
+- When you touch a requirement that is already covered by tests, **collapse or delete**
+  redundant scenarios rather than adding siblings “for completeness”.
+- Leave that capability **no denser than you found it** (preferablyably thinner).
+- Keep in the spec only what tests cannot say well (signatures, non-goals, MUST refuse,
+  packaging / threat posture).
+
 ## Where does a new doc go?
 
 Five questions, in order. The first `yes` wins.

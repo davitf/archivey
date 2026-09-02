@@ -6,6 +6,11 @@
 > extraction, etc.) live in `openspec/project.md`
 > ("Deferred / out of scope (v1)") and `dev-docs/history/SPEC.md` Appendix A — this file is the
 > looser idea pile. Promote an item by writing a real spec/`openspec` change for it.
+>
+> **Active direction (not speculative):** thinning OpenSpec scenario farms into tests +
+> handbook pages — tracked in
+> [`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md);
+> do it incrementally when touching specs (CONTRIBUTING §Working with the specs).
 
 ## Backends & format coverage
 

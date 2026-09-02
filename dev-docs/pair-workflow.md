@@ -76,9 +76,11 @@ page; do not add empty stubs ahead of content.
 page in the **same PR**. Do not mint a new ADR or OpenSpec essay just to record the
 change of mind.
 
-**Deferred design (not this page):** eventually thin OpenSpec scenarios into tests and
-keep handbook principles + test links as the dual contract — see future discussion after
-the first format pilot.
+**Deferred design:** migrate dense OpenSpec scenarios into tests + handbook principles
+(thin as you go on every spec-touching PR). Direction:
+[`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md).
+Specs remain the authoritative machine contract until that migration has proven out
+(DP1 = C).
 
 ---
 

@@ -7,7 +7,8 @@ RESOLVED and leave the body as historical. Living truth:
 Dated 2026-09-02.
 
 > **Status: open.** Adoption in progress on PR #280. Update this header when the pilot
-> format page exists and the entry-point commands are muscle memory.
+> format page exists and the entry-point commands are muscle memory. Spec thinning
+> direction (related): [`2026-09-specs-to-handbook-and-tests.md`](2026-09-specs-to-handbook-and-tests.md).
 
 ## How to start (checklist)
 
