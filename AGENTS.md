@@ -257,6 +257,14 @@ requirement that actually exists in the parent spec, so a mis-targeted delta can
 validate green and silently do nothing on archive. For a non-trivial delta, verify with
 a dry-run archive (apply on a scratch tree, diff `openspec/specs/`, then reset).
 
+**Retiring a whole capability has no delta form.** Removing every requirement leaves a
+spec with none, which `openspec archive` refuses to write; deleting the directory first
+makes archive read the same delta as a request to *create* the capability. Delete
+`openspec/specs/<capability>/` by hand, keep only the deltas that modify surviving specs,
+and record the retired requirements and their reasons in the change's `README.md` so the
+archived change still explains itself. Worked example:
+`openspec/changes/archive/2026-09-02-retire-archive-writing-specs/`.
+
 Default change schema is **`library`** (proposal → compact specs + design →
 tasks). Specs stay dense (signatures/matrices); `design.md` holds investigations
 and decisions (stub OK for trivial deltas). Use `--schema minimalist` for tiny

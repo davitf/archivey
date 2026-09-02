@@ -55,7 +55,6 @@ See `openspec/schemas/library/README.md` and the `rules:` / `context:` blocks in
 |------------|---------|
 | `archive-reading` | `open_archive()`, the caller-facing `ArchiveReader` surface, iteration, random/sequential access, link following, passwords |
 | `reader-concurrency` | `MemberStreams.CONCURRENT`, pass ownership, materialization coordination, draining close, free-threaded / backend lock invariants |
-| `archive-writing` | `create()`, the `ArchiveWriter` surface, streaming conversion |
 | `archive-data-model` | `Member`, `ArchiveInfo`, `ArchiveFormat`, `MemberType`, compression types |
 | `access-mode-and-cost` | the `streaming: bool` access mode and the `CostReceipt` cost surface |
 | `safe-extraction` | `extract()`, extraction policies, the non-bypassable filter contract, decompression-bomb limits, and extraction progress/result reporting |
@@ -104,7 +103,7 @@ once. Specs themselves remain order-free; this table is the association.
 | 6 | Native 7z reader + native RAR metadata parser (resequenced 2026-07 ahead of writing — see `VISION.md`; fuzzing is an entry gate) | `format-7z`, `format-rar` (native-first: read path imports no third-party lib; `unrar` binary stays for RAR data; `py7zr` for 7z write only); `testing-contract` oracle cross-validation |
 | 7 | CLI (pulled forward: dev tool + safe-extraction demo) | `cli` |
 | 8 | Seekable zstd + blocked gzip (rescoped — the original zst/lz4 *read* goals landed with Phases 2–3; `w:zst` writing moved to the writing phase) | `seekable-decompressor-streams`, `format-single-file-compressors` |
-| 9 | Writing support (not a 1.0 requirement; spec to cover reproducible output + metadata fidelity first) | `archive-writing` (+ `format-zip` / `format-tar` writers) |
+| 9 | Writing support (not a 1.0 requirement; spec to cover reproducible output + metadata fidelity first) | No capability — the deferred design is `dev-docs/investigations/archive-writing-design.md`; re-specify from there |
 | 10 | Polish, packaging & oracle retirement | `cli`, `packaging-and-extras` (finalize), full `testing-contract` (corpus complete, frozen DEV oracle deleted) (+ cross-cutting: README, final CI tuning — the matrix is stood up in Phase 1; coverage is reported, **not** gated) |
 
 `logging` is cross-cutting and not owned by a single phase — the named-logger

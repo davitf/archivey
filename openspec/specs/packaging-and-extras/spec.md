@@ -15,7 +15,6 @@ format specs.
 | `format-7z` | Native 7z reading, optional codecs, AES, unsupported BCJ2 |
 | `format-rar` | Native RAR metadata, `unrar` data path, crypto/checksum extras |
 | `archive-reading` | Reader API exposed by core installs |
-| `archive-writing` | 7z writing and writer codec availability |
 | `access-mode-and-cost` | Seekable gzip/bzip2 capability and access-cost reporting |
 | `reader-concurrency` | Supported `MemberStreams.CONCURRENT` contract |
 | `cli` | `[recommended]` extra supplies `tqdm`; command-line dependency |
