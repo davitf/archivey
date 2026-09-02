@@ -64,6 +64,18 @@ that one is the code map.
 - `CONTRIBUTING.md` — coding/testing standards (type-checking, exception translation,
   behaviour-focused tests, red-green TDD, the pause-and-ask-on-discrepancies rule).
 
+## Communicating with the maintainer (unslop)
+
+**Standing rule for every agent session:** apply
+[`.claude/skills/unslop/SKILL.md`](.claude/skills/unslop/SKILL.md) to **all
+maintainer-facing prose** — chat replies, decision packets, PR comments, and thin
+briefs. Cut puffery, throat-clearing, stacked ornaments, and default LLM filler;
+prefer specific claims.
+
+That skill is the checklist only. Do **not** load `/technical-writing` for everyday
+chat — use it when you need Diátaxis + sentence craft on a docs or handbook page
+(and still apply `unslop` to the same prose).
+
 ## Session setup (`unrar`, `7z`, `openspec`, deps)
 
 `scripts/setup-dev-env.sh` provisions everything: the `unrar` and `7z` system

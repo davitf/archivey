@@ -1,16 +1,21 @@
 ---
 name: technical-writing
 description: |
-  Diátaxis structure, plain developer sentences, and unslop (cut AI tells). Use when
-  writing or reviewing docs/, handbook prose, PR descriptions, or commit messages; or
-  when the user invokes /technical-writing or asks to unslop prose.
+  Diátaxis structure and plain developer sentences for docs/ and handbook prose.
+  Use when writing or reviewing published docs, handbook pages, PR descriptions, or
+  commit messages; or when the user invokes /technical-writing. For strip-AI-tells
+  alone (chat, packets), use the unslop skill instead — do not load this skill for that.
 ---
 
 # Technical writing (archivey)
 
-Condensed from poteto/pstack `technical-writing` + `unslop` (MIT). Apply to **published**
-`docs/` and to maintainer handbook prose that a human will read. Code comments still follow
+Condensed from poteto/pstack `technical-writing` (MIT). Apply to **published** `docs/`
+and to maintainer handbook prose that a human will read. Code comments still follow
 `CONTRIBUTING.md` (why, not what).
+
+**Unslop is a separate skill** — [`../unslop/SKILL.md`](../unslop/SKILL.md). Apply it
+to the same prose (and always to maintainer chat / packets per `AGENTS.md`). Do not
+duplicate that checklist here so everyday sessions need not load this file.
 
 Pair workflow: [`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md).
 Doc placement: `CONTRIBUTING.md` §“Where does a new doc go?”.
@@ -34,20 +39,9 @@ reference; `docs/philosophy.md` is explanation.
 - One thought per sentence; mix sentence length so it doesn’t sound machine-cut.
 - Conditions before instructions. Common case first.
 - No “simply” / “just” / “easy” in procedures.
+- Then apply [`unslop`](../unslop/SKILL.md).
 
-## 3. Unslop
-
-Rewrite until nothing reads like default LLM filler:
-
-- Drop puffery (“robust”, “seamless”, “comprehensive”, “leverages”).
-- Drop throat-clearing (“It is important to note that”, “In order to”).
-- Avoid stacked em-dashes, decorative bold lead-ins, emoji ornaments, synonym cycling.
-- Prefer specific claims (“rename breaks the build”) over vague ones (“can cause issues”).
-- Have a point of view in Explanation mode; stay dry in Reference.
-
-Self-audit: “What still looks AI-generated?” Fix that next.
-
-## 4. Archivey checks
+## 3. Archivey checks
 
 - User-facing fact → `docs/` + `mkdocs.yml` nav in the same commit.
 - Maintainer current truth → `dev-docs/formats/<format>.md` or
