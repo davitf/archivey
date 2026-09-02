@@ -169,12 +169,14 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
       **Landed as the slim follow-up after #277.** The declared-end check compares
       against the known source length (`remaining` from the candidate origin), not the
       peek window / `scan_limit` / `SFX_MAX`. An unreachable end or oversized next-header
-      after a passing CRC is `DAMAGED`. Exact-EOF among several CRC-valid hits is still
-      earliest-VALID (the generic first-match loop) — deferred: a genuine SFX with a
-      trailing config blob has no exact match, so the tie-break is a preference among
-      validated hits, not a filter, and needs this remaining plumbing first. Trailing
-      bytes after a CRC-valid header stay `VALID` (task 4.4). The pin
-      `test_crc_valid_empty_7z_decoy_still_wins_over_a_later_payload` records the hole.
+      after a passing CRC is `DAMAGED`. Exact-EOF among several CRC-valid hits is
+      `VALID_EXACT` (7z-only: declared end equals known remaining); the scan returns
+      immediately on that outcome and otherwise remembers the earliest `VALID`.
+      `NextHeaderSize == 0` behind a stub is `NOT_THIS_FORMAT`. Trailing bytes after a
+      CRC-valid header stay `VALID` (task 4.4). Pins:
+      `test_inexact_7z_decoy_loses_to_a_later_exact_payload` (the tie-break) and
+      `test_inexact_7z_decoy_still_wins_when_the_real_payload_has_trailing_bytes`
+      (the residual).
 - [x] 2.4 **(Block 3, or a slim follow-up after Block 1)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a
       parseable main header. Named function on the RAR backend, same `HitOutcome` split
       as 2.3.

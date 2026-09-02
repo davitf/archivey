@@ -24,7 +24,7 @@ from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
-    _load_vint,
+    load_vint,
     parse_rar_archive,
 )
 from archivey.types import HashAlgorithm, MemberType
@@ -821,17 +821,17 @@ def test_rar5_header_size_vint_is_bounded() -> None:
 
 def test_load_vint_single_and_multi_byte() -> None:
     """RAR5 vint decode: single-byte hot path and multi-byte continuation agree."""
-    assert _load_vint(b"\x00", 0) == (0, 1)
-    assert _load_vint(b"\x7f", 0) == (127, 1)
-    assert _load_vint(bytes([0x80 | 1, 0x02]), 0) == (1 + (2 << 7), 2)
+    assert load_vint(b"\x00", 0) == (0, 1)
+    assert load_vint(b"\x7f", 0) == (127, 1)
+    assert load_vint(bytes([0x80 | 1, 0x02]), 0) == (1 + (2 << 7), 2)
     # Non-zero start offset (rewrite bound is relative to ``pos``, not buffer start).
-    assert _load_vint(b"\xff" + bytes([0x80 | 1, 0x02]), 1) == (1 + (2 << 7), 3)
+    assert load_vint(b"\xff" + bytes([0x80 | 1, 0x02]), 1) == (1 + (2 << 7), 3)
     # Maximum-length valid vint: 10 continuation bytes + terminator.
-    assert _load_vint(b"\x80" * 10 + b"\x01", 0) == (1 << 70, 11)
+    assert load_vint(b"\x80" * 10 + b"\x01", 0) == (1 << 70, 11)
     with pytest.raises(CorruptionError):
-        _load_vint(b"", 0)
+        load_vint(b"", 0)
     with pytest.raises(CorruptionError):
-        _load_vint(b"\x80" * 11, 0)
+        load_vint(b"\x80" * 11, 0)
 
 
 def test_unrar_member_include_switch_rejects_wildcards() -> None:

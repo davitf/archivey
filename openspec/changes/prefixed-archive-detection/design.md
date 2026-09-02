@@ -178,12 +178,20 @@ landed exactly on EOF in every case. Combined, a false hit needs a 48-bit magic 
 32-bit CRC *and* a size agreement.
 
 Use `<=` against the known source remaining from the candidate origin (not the
-scan window / `SFX_MAX`) for the gate, and `==` as a later tiebreak among several
-CRC-valid hits. The slim follow-up after #277 landed the remaining-length gate;
-exact-EOF ranking is still earliest-VALID — a genuine SFX with a trailing config
-blob has no exact match, so that preference is not a filter. Appending 16 bytes
-to a 7z leaves it perfectly readable while breaking the exact-EOF equality, and
-some SFX tools append configuration after the payload — measured, not assumed.
+scan window / `SFX_MAX`) for the gate. When remaining is known and equals the
+declared end, the 7z validator returns `VALID_EXACT` — "this format could prove
+the payload ends at EOF", not a generic better-candidate score. ZIP and RAR
+cannot produce that signal (neither header declares a total size). The SFX scan
+returns immediately on `VALID_EXACT`; otherwise it remembers the earliest
+`VALID` and keeps looking. Ledger tasks 3.3 / 4.6 / 4.7 read this enum.
+
+A real 7z written by the system `7z` ends exactly at its declared end, so an
+ordinary SFX still early-exits. The full-window scan runs when a hit has trailing
+bytes (or `remaining` is unknown): both candidates are plain `VALID` and earliest
+wins. Appending 16 bytes to a 7z leaves it perfectly readable while breaking the
+exact-EOF equality, and some SFX tools append configuration after the payload —
+measured, not assumed. An empty next-header (`NextHeaderSize == 0`) behind a stub
+is rejected outright: nobody ships a self-extractor with no files.
 
 **RAR 5.** The 8-byte marker is followed by a main archive header with its own CRC32,
 which validated at every stub offset tried.

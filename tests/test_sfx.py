@@ -784,9 +784,18 @@ def _crc_damaged_sevenzip_signature() -> bytes:
             HitOutcome.VALID,
             id="real-fixture",
         ),
+        pytest.param(
+            (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes(),
+            len((_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()),
+            HitOutcome.VALID_EXACT,
+            id="real-fixture-exact-eof",
+        ),
         pytest.param(MAGIC_7Z, None, HitOutcome.NOT_THIS_FORMAT, id="truncated-magic"),
         pytest.param(
-            _sevenzip_signature(), None, HitOutcome.VALID, id="empty-crc-valid"
+            _sevenzip_signature(),
+            None,
+            HitOutcome.NOT_THIS_FORMAT,
+            id="empty-crc-valid-is-not-sfx",
         ),
         pytest.param(
             MAGIC_7Z + b"\x90" * 40,
@@ -819,13 +828,20 @@ def _crc_damaged_sevenzip_signature() -> bytes:
             id="declared-end-unknown-remaining",
         ),
         pytest.param(
+            _sevenzip_signature(next_offset=0, next_size=10),
+            _SIGNATURE_HEADER_SIZE + 10,
+            HitOutcome.VALID_EXACT,
+            id="declared-end-equals-remaining",
+        ),
+        pytest.param(
             _sevenzip_signature(next_size=(64 << 20) + 1),
             None,
             HitOutcome.DAMAGED,
             id="oversized-next-header",
         ),
         pytest.param(
-            _sevenzip_signature() + b"config after payload\n",
+            _sevenzip_signature(next_offset=0, next_size=10)
+            + b"config after payload\n",
             None,
             HitOutcome.VALID,
             id="trailing-bytes",
@@ -851,7 +867,10 @@ def test_sevenzip_validator_peeks_only_the_signature_header() -> None:
         return (sig + bytes(n))[:n]
 
     remaining = _SIGNATURE_HEADER_SIZE + next_offset + 64
-    assert validate_sevenzip_signature_header(peek_more, remaining) is HitOutcome.VALID
+    assert (
+        validate_sevenzip_signature_header(peek_more, remaining)
+        is HitOutcome.VALID_EXACT
+    )
     assert peeked == [_SIGNATURE_HEADER_SIZE]
 
 
@@ -963,26 +982,51 @@ def test_sevenzip_sfx_declared_end_uses_source_remaining_not_the_scan_window(
     assert src.unique_bytes <= budget.max_scan_bytes
 
 
-def test_crc_valid_empty_7z_decoy_still_wins_over_a_later_payload(
+def test_crc_valid_empty_7z_decoy_is_skipped_for_the_real_payload(
     tmp_path: Path,
 ) -> None:
-    """Earliest CRC-valid 7z wins, including a 32-byte empty archive in the stub.
-
-    Exact-EOF ranking among several VALID hits is deferred (task 2.3 / F4). A
-    genuine SFX with a trailing config blob has no exact match, so that
-    tie-break is a preference among validated hits, not a filter.
-    """
+    """``NextHeaderSize == 0`` behind a stub is not an SFX payload (D2 cheap complement)."""
     decoy = _sevenzip_signature()
     stub = b"MZ" + b"\x00" * 510 + decoy
     real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
     path = tmp_path / "empty-decoy-7z.exe"
     path.write_bytes(stub + b"\x00" * 64 + real)
+    real_origin = len(stub) + 64
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == real_origin
+    with open_archive(path) as archive:
+        assert any(m.is_file for m in archive.members())
+
+
+def test_inexact_7z_decoy_loses_to_a_later_exact_payload(tmp_path: Path) -> None:
+    """VALID_EXACT on the real payload beats an earlier CRC-valid inexact decoy (D2(a))."""
+    decoy = _sevenzip_signature(next_offset=100, next_size=10)
+    stub = b"MZ" + b"\x00" * 510 + decoy
+    real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    path = tmp_path / "inexact-decoy-7z.exe"
+    path.write_bytes(stub + b"\x00" * 64 + real)
+    real_origin = len(stub) + 64
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.detected_by == "sfx_scan"
+    assert detected.payload_offset == real_origin
+
+
+def test_inexact_7z_decoy_still_wins_when_the_real_payload_has_trailing_bytes(
+    tmp_path: Path,
+) -> None:
+    """Residual: neither hit is exact, so earliest VALID still wins (D2(b) pin)."""
+    decoy = _sevenzip_signature(next_offset=100, next_size=10)
+    stub = b"MZ" + b"\x00" * 510 + decoy
+    real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    path = tmp_path / "inexact-decoy-trailing-7z.exe"
+    path.write_bytes(stub + b"\x00" * 64 + real + b"sfx-config\n")
     detected = detect_format(path)
     assert detected.format == ArchiveFormat.SEVEN_Z
     assert detected.detected_by == "sfx_scan"
     assert detected.payload_offset == 512
-    with open_archive(path) as archive:
-        assert [m.name for m in archive.members() if m.is_file] == []
 
 
 @requires("py7zr")

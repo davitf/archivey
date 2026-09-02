@@ -440,10 +440,12 @@ def _scan_for_sfx_payload(
     candidate-internal offset (today all zero for ZIP/RAR/7z; TAR ``ustar`` → 257 once
     that needle lands). The returned ``payload_offset`` is the **candidate origin**, not
     the raw needle position. A hit whose format-owned validator returns anything other
-    than :attr:`HitOutcome.VALID` is skipped and the scan continues — earliest
-    *valid* match, not earliest needle. ``PROBABLE`` rather than ``CERTAIN``: an exact
-    magic found at a *searched-for* offset is a weaker claim than one found at the
-    offset the format specifies.
+    than :attr:`HitOutcome.VALID` / :attr:`HitOutcome.VALID_EXACT` is skipped and
+    the scan continues. ``VALID_EXACT`` (a 7z whose declared end equals known
+    remaining) returns immediately. ``VALID`` is remembered as the earliest
+    fallback and the scan keeps looking for a later ``VALID_EXACT``.
+    ``PROBABLE`` rather than ``CERTAIN``: an exact magic found at a *searched-for*
+    offset is a weaker claim than one found at the offset the format specifies.
 
     ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
     the charge lands whether the scan hits or misses so the receipt reflects the work.
@@ -462,23 +464,33 @@ def _scan_for_sfx_payload(
     for hit in iter_magic_in_prefix(peek_more, needles, limit=scan_limit):
         entry = by_needle[hit.needle]
         validator = validators.get(entry.format)
-        if validator is not None:
-            view = workspace.candidate_view(hit.candidate_origin, limit=scan_limit)
-            source_len = workspace.remaining_known()
-            remaining = (
-                None
-                if source_len is None
-                else max(0, source_len - hit.candidate_origin)
+        if validator is None:
+            result = FormatInfo(
+                entry.format,
+                DetectionConfidence.PROBABLE,
+                "sfx_scan",
+                payload_offset=hit.candidate_origin,
             )
-            if validator(view, remaining) is not HitOutcome.VALID:
-                continue
-        result = FormatInfo(
+            break
+        view = workspace.candidate_view(hit.candidate_origin, limit=scan_limit)
+        source_len = workspace.remaining_known()
+        remaining = (
+            None if source_len is None else max(0, source_len - hit.candidate_origin)
+        )
+        outcome = validator(view, remaining)
+        if outcome is HitOutcome.NOT_THIS_FORMAT or outcome is HitOutcome.DAMAGED:
+            continue
+        info = FormatInfo(
             entry.format,
             DetectionConfidence.PROBABLE,
             "sfx_scan",
             payload_offset=hit.candidate_origin,
         )
-        break
+        if outcome is HitOutcome.VALID_EXACT:
+            result = info
+            break
+        if result is None:
+            result = info
     if workspace.take_clamped_view_read():
         workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     # Charge the window actually examined — a miss is the expensive case.

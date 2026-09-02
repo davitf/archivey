@@ -37,8 +37,14 @@ def validate_sevenzip_signature_header(
     unknown, CRC passing is enough — do not peek the declared end (that
     would grow the prefix to the whole archive).
 
-    Exact-EOF vs trailing bytes is not a reject: some SFX tools append
-    configuration after the payload. Earliest CRC-valid hit wins.
+    An empty next-header (``NextHeaderSize == 0``) is not an SFX payload —
+    nobody ships a self-extractor with no files — so that is
+    :attr:`HitOutcome.NOT_THIS_FORMAT` even when the CRC is valid.
+
+    When ``remaining`` is known and equals the declared end, the outcome is
+    :attr:`HitOutcome.VALID_EXACT` ("this 7z ends at EOF"), not a ranking
+    score. Trailing bytes after a CRC-valid header stay ``VALID``; the scan
+    prefers a later ``VALID_EXACT`` over an earlier ``VALID``.
     """
     header = peek_more(_SIGNATURE_HEADER_SIZE)
     if len(header) < _SIGNATURE_HEADER_SIZE or header[: len(MAGIC_7Z)] != MAGIC_7Z:
@@ -53,9 +59,13 @@ def validate_sevenzip_signature_header(
     next_header_offset, next_header_size, _next_header_crc = struct.unpack(
         "<QQI", start_header
     )
+    if next_header_size == 0:
+        return HitOutcome.NOT_THIS_FORMAT
     if next_header_size > _MAX_NEXT_HEADER_SIZE:
         return HitOutcome.DAMAGED
     declared = _SIGNATURE_HEADER_SIZE + next_header_offset + next_header_size
     if remaining is not None and declared > remaining:
         return HitOutcome.DAMAGED
+    if remaining is not None and declared == remaining:
+        return HitOutcome.VALID_EXACT
     return HitOutcome.VALID

@@ -15,8 +15,8 @@ from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
     _crc32,
-    _load_vint,
-    _rar3_main_crc_end,
+    load_vint,
+    rar3_main_crc_end,
 )
 from archivey.internal.sfx import HitOutcome
 
@@ -32,14 +32,6 @@ _RAR5_ENCRYPTION = 4
 _RAR5_HEADER_CAP = 64 * 1024
 
 
-def _try_vint(buf: bytes, pos: int) -> tuple[int, int] | None:
-    """Parser vint, or ``None`` if truncated / too long (does not raise)."""
-    try:
-        return _load_vint(buf, pos)
-    except CorruptionError:
-        return None
-
-
 def validate_rar_main_header(
     peek_more: Callable[[int], bytes],
     remaining: int | None = None,
@@ -52,6 +44,10 @@ def validate_rar_main_header(
     the first block's CRC32 to match; a plausible header whose CRC fails is
     :attr:`HitOutcome.DAMAGED`. RAR 4 requires a parseable MAIN block (type
     ``0x73``) with a matching 16-bit header CRC.
+
+    ``peek_more`` stays outside the parse ``try`` so a workspace ``OSError``
+    propagates. A truncated vint before the CRC is ``NOT_THIS_FORMAT``; after
+    the CRC has matched, a later vint failure is ``DAMAGED``.
     """
     del remaining
     head = peek_more(len(RAR5_ID))
@@ -68,26 +64,28 @@ def _validate_rar5(peek_more: Callable[[int], bytes]) -> HitOutcome:
     if len(prefix) < len(RAR5_ID) + 5:
         return HitOutcome.NOT_THIS_FORMAT
     body = prefix[len(RAR5_ID) :]
-    loaded = _try_vint(body, 4)
-    if loaded is None:
+    try:
+        hdrlen, pos = load_vint(body, 4)
+    except CorruptionError:
         return HitOutcome.NOT_THIS_FORMAT
-    hdrlen, pos = loaded
     if hdrlen > _RAR5_HEADER_CAP:
         return HitOutcome.NOT_THIS_FORMAT
     header_size = pos + hdrlen
     hdata = peek_more(len(RAR5_ID) + header_size)[len(RAR5_ID) :]
     if len(hdata) < header_size:
         return HitOutcome.NOT_THIS_FORMAT
-    header_crc = int.from_bytes(hdata[:4], "little")
-    if header_crc != _crc32(memoryview(hdata)[4:]):
-        return HitOutcome.DAMAGED
-    block = _try_vint(hdata, pos)
-    if block is None:
-        return HitOutcome.NOT_THIS_FORMAT
-    block_type, _pos = block
-    if block_type not in (_RAR5_MAIN, _RAR5_ENCRYPTION):
-        return HitOutcome.NOT_THIS_FORMAT
-    return HitOutcome.VALID
+    identity_held = False
+    try:
+        header_crc = int.from_bytes(hdata[:4], "little")
+        if header_crc != _crc32(memoryview(hdata)[4:]):
+            return HitOutcome.DAMAGED
+        identity_held = True
+        block_type, _pos = load_vint(hdata, pos)
+        if block_type not in (_RAR5_MAIN, _RAR5_ENCRYPTION):
+            return HitOutcome.NOT_THIS_FORMAT
+        return HitOutcome.VALID
+    except CorruptionError:
+        return HitOutcome.DAMAGED if identity_held else HitOutcome.NOT_THIS_FORMAT
 
 
 def _validate_rar3(peek_more: Callable[[int], bytes]) -> HitOutcome:
@@ -103,7 +101,7 @@ def _validate_rar3(peek_more: Callable[[int], bytes]) -> HitOutcome:
     hdata = peek_more(len(RAR_ID) + header_size)[len(RAR_ID) :]
     if len(hdata) < header_size:
         return HitOutcome.NOT_THIS_FORMAT
-    crc_pos = _rar3_main_crc_end(flags)
+    crc_pos = rar3_main_crc_end(flags)
     if crc_pos > header_size:
         return HitOutcome.NOT_THIS_FORMAT
     calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
