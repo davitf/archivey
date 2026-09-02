@@ -27,10 +27,17 @@ Combine the priorities above with that skill’s process:
    sense in the resulting tree, local docs for non-obvious choices, bugs/safety/tests.
    Use `.claude/skills/code-review-skill/SKILL.md` techniques and severity labels;
    open deeper guides under `reference/` only as needed.
-3. **Pass 2 — context (required):** PR narrative, OpenSpec change, VISION / threat
-   model / addendum rows that apply — check contract fit; pause-and-ask on
-   discrepancies. Findings that only dissolve after external prose are usually
-   documentation debt in the code (addendum §8).
+3. **Pass 2 — context (required):** PR narrative / thin brief, living handbook pages
+   under `dev-docs/formats/` and `dev-docs/topics/` when present, OpenSpec **main**
+   specs only if this change touches that contract, VISION / threat model / addendum
+   rows — check contract fit; pause-and-ask on discrepancies. Findings that only
+   dissolve after external prose are usually documentation debt in the code
+   (addendum §8). Prefer the handbook + brief as the Spec axis over unread change-folder
+   novels (`dev-docs/pair-workflow.md`).
+
+**Split audience:** post the full three-block review on the PR for the implementor. If
+you are also talking to the maintainer, send **decision packets only** (addendum §0
+block 3) unless they ask for the full handoff.
 
 ## Scope
 

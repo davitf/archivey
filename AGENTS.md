@@ -18,10 +18,12 @@ single-file-compressed (gz/bz2/xz/lzip/zstd/lz4/.Z).
 
 ## Where things live
 
-**Start with [`dev-docs/code-map.md`](dev-docs/code-map.md)** when the question is *where
-in the source do I make this change* — it carries the tree shape, the call path through a
-read, a task→files index, and a "which doc answers which kind of question" table. The list
-below is the document map; that one is the code map.
+**Everyday maintainer/agent loop:** [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md)
+(investigate → grill into handbook → thin brief → implement → other-agent review →
+decision packets). **Start with [`dev-docs/code-map.md`](dev-docs/code-map.md)** when the
+question is *where in the source do I make this change*. Living format/topic notes:
+[`dev-docs/formats/`](dev-docs/formats/README.md), [`dev-docs/topics/`](dev-docs/topics/README.md).
+The list below is the document map; that one is the code map.
 
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
   strategy; the tie-breaker when trade-offs conflict. End-user distill:
@@ -35,11 +37,12 @@ below is the document map; that one is the code map.
   `api`, `acknowledgements`. Every file under `docs/` has a nav entry in `mkdocs.yml` and
   `scripts/check_docs_nav.py` fails CI otherwise. Placement rule for a new doc:
   `CONTRIBUTING.md` §"Where does a new doc go?".
-- `dev-docs/` — **unpublished** maintainer material: `code-map.md`, `decisions/` (the ADR
-  log), threat model, codec analysis, known issues, `investigations/` (finished evidence),
-  `discussions/` (design questions written for circulation; each gets a RESOLVED header
-  once settled), `history/` (superseded `SPEC` / `ARCHITECTURE` / `COMPARISON` / `ASYNC`
-  prose, not normative). Index: `dev-docs/index.md`.
+- `dev-docs/` — **unpublished** maintainer material: pair workflow, format/topic handbook,
+  `code-map.md`, `decisions/` (rare repo-wide ADRs; prefer handbook notes for new
+  decisions), threat model, codec analysis, known issues, `investigations/` (finished
+  evidence), `discussions/` (design questions written for circulation; each gets a
+  RESOLVED header once settled), `history/` (superseded `SPEC` / `ARCHITECTURE` /
+  `COMPARISON` / `ASYNC` prose, not normative). Index: `dev-docs/index.md`.
 - `dev-docs/threat-model.md` — trust boundaries + the open security/compat gap
   register (each open item becomes an OpenSpec change when tackled).
 - `review/` — the **deep-review program**: `README.md` (conventions, ranking, deliverable
@@ -47,11 +50,12 @@ below is the document map; that one is the code map.
   review), `backlog.md` (deferred topics with reasons), and `archive/<date>-<topic>/` for
   finished rounds. Findings in an archived area are **re-reviews**: check the archive
   tables before spending budget re-litigating settled ground.
-- `openspec/specs/<capability>/spec.md` — the authoritative capability specs
-  (OpenSpec format: requirements + WHEN/THEN scenarios). The specs are authoritative,
-  but when they disagree with the prose docs (or with each other), **pause and surface
-  the discrepancy to the maintainer** rather than silently picking a winner — the
-  conflict often signals a decision that hasn't been made yet.
+- `openspec/specs/<capability>/spec.md` — dense capability specs (OpenSpec
+  requirements + scenarios) for agents/CI. **Not** the primary maintainer reading
+  surface (see pair workflow + handbook). When specs disagree with the handbook, prose
+  docs, or each other, **pause and surface the discrepancy to the maintainer** rather
+  than silently picking a winner — the conflict often signals a decision that hasn't
+  been made yet.
 - `openspec/project.md` — cross-cutting context: capability map, the phase →
   capability implementation-order table, and key strategy notes.
 - `openspec/changes/<change>/` — in-flight change proposals (proposal/tasks).

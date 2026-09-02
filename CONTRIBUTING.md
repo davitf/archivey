@@ -295,23 +295,36 @@ decided explicitly.
 
 ## Where does a new doc go?
 
-Four questions, in order. The first `yes` wins.
+Five questions, in order. The first `yes` wins.
 
 1. **Would someone who only *uses* the library need it?** → `docs/`, **and add it to
    `mkdocs.yml`'s nav in the same commit**. Curated "why we chose X" one-liners for
    curious users belong inline on the page that raises the question, not as a new
-   page per decision.
-2. **Is it a load-bearing "why" that is decided and won't change?** → a new ADR in
+   page per decision. Use `/technical-writing` (Diátaxis + unslop) for the prose.
+2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
+   living handbook page under `dev-docs/formats/` or `dev-docs/topics/` (rewrite in
+   place; light decision bullets, not a new ADR). Skeletons:
+   [`dev-docs/formats/README.md`](dev-docs/formats/README.md),
+   [`dev-docs/topics/README.md`](dev-docs/topics/README.md). Everyday loop:
+   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md).
+3. **Is it rare repo-wide policy that will not fit a handbook page?** → a new ADR in
    `dev-docs/decisions/`, ADR-shaped (Context / Decision / Consequences, tens of
-   lines). If it needs an `## Open questions` section, it is not an ADR yet.
-3. **Does a contributor need it to work on the code *today*?** → `dev-docs/` (a live
-   register or a runbook).
-4. **Is it finished evidence — an investigation, a superseded design, a lab
+   lines). If it needs an `## Open questions` section, it is not an ADR yet — grill
+   first (`/grill-with-handbook`).
+4. **Does a contributor need a live register or runbook *today*?** → `dev-docs/`
+   (e.g. threat model, known issues, release checklist).
+5. **Is it finished evidence — an investigation, a superseded design, a lab
    notebook?** → `dev-docs/investigations/`, or `dev-docs/history/` for prose that a
    newer document replaced.
 
 If it is a *review*, it belongs to the `review/` lifecycle. If it is a *proposed
-behaviour change*, it belongs to `openspec/changes/`.
+behaviour change* that must update machine-checkable main specs, it belongs to
+`openspec/changes/` (prefer `--schema minimalist` when proposal/design would only be
+agent bus). Prefer recording human conclusions on handbook pages even when an OpenSpec
+change exists.
+
+**Same PR as code:** when a change falsifies a handbook or published-doc claim, update
+that page in the same PR.
 
 **The invariant:** everything under `docs/` is published and is for users; nothing
 else lives under `docs/`. That is why maintainer material sits in `dev-docs/` rather

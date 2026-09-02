@@ -21,9 +21,10 @@ disposition. The full process lives in the skill:
 5. **Full gate before pushing** — `ruff`, **`pyrefly` and `ty`**, `pytest`, then the three
    dependency configs when extras or versions matter. Check the cross-platform traps
    (AGENTS.md) since CI runs Windows and macOS and you are on Linux.
-6. **Escalate one question at a time** (`AskUserQuestion`), written so the maintainer can
-   decide cold — no unexpanded identifiers, actual code and measurements, options with
-   consequences, a labelled recommendation.
+6. **Escalate one decision packet at a time** (`AskUserQuestion`) — Question, why it
+   matters, options, evidence, recommendation, default-if-ignored. The maintainer must
+   be able to answer cold without reading the PR. Do **not** dump the full finding list
+   into chat; that stays on the PR. Shape: `dev-docs/pair-workflow.md` and skill §6.
 7. **Reply in the thread the finding came from, and resolve what you resolved.** Report
    gates honestly. Attribution footer on every comment.
 

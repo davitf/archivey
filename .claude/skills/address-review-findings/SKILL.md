@@ -211,22 +211,25 @@ onto the person you are asking.
 **Do not escalate** routine implementation choices, anything the specs already settle, or
 questions manufactured to look thorough.
 
-### What "full context" means
+### Decision packet (required escalate shape)
 
-Each escalation must be decidable on its own, cold. Include:
+Each escalation must be decidable on its own, cold. Use this exact shape (same contract as
+[`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md)):
 
-1. **The situation in plain language**, expanding every identifier. Not "W4 conflicts with
-   O8a" — say what the diagnostic does, what the scenario requires, and why they collide.
-2. **What the reviewer said**, quoted or fairly summarised.
-3. **What you found** when you checked — with the actual code, the actual behaviour, and a
-   measurement where one exists. If you reproduced something, show the result.
-4. **The options**, each with its concrete consequence — including what breaks and who
-   notices.
-5. **Your recommendation**, labelled as such, with the reason.
-6. **What you have already done** about the rest, so the decision is scoped.
+1. **Question** — one sentence, plain language. Expand every identifier; never “W4 vs O8a”.
+2. **Why it matters** — user / API / security consequence if we pick wrong.
+3. **Options** — two or three, each with concrete cost/risk (what breaks, who notices).
+4. **Evidence** — what you ran or read: command output, a two-line code quote, failing test.
+   If you have not measured yet, do that before asking.
+5. **Recommendation** — labelled as such, with the reason.
+6. **Default if you ignore this** — what you will ship / leave unchanged if they say nothing.
+
+Optionally one line on **what you already dispositioned** so the decision stays scoped.
 
 The test: could the maintainer answer without opening the PR? If not, it is not ready.
-Prose beats identifiers; a two-line quote of the actual code beats a `file:line`.
+
+**Do not** paste the reviewer’s full finding list into the escalation. That list belongs on
+the PR for the implementor. The maintainer only receives packets for real human calls.
 
 ---
 
