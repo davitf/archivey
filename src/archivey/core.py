@@ -67,7 +67,10 @@ from archivey.internal.streams.streamtools import (
     is_stream,
 )
 from archivey.internal.volumes import ConcatenatedFile, OpenSourceInput, resolve_source
-from archivey.internal.zip_detect import is_sevenzip_zip_split_name
+from archivey.internal.zip_detect import (
+    ZIP_MULTI_VOLUME_MSG,
+    is_sevenzip_zip_split_name,
+)
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams, StreamFormat
 
@@ -249,7 +252,7 @@ def open_archive(
     # name before that — same rejoin-first message as the ZIP backend.
     if is_sevenzip_zip_split_name(archive_name):
         raise UnsupportedFeatureError(
-            "Multi-volume (split/spanned) ZIP archives are not supported.",
+            ZIP_MULTI_VOLUME_MSG,
             archive_name=archive_name,
             source_format=ArchiveFormat.ZIP,
         )

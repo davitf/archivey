@@ -391,7 +391,7 @@ behaviour a caller already sees.
 | --- | --- |
 | Cost receipt, central-directory lookup without I/O | `tests/test_zip.py::test_cost_receipt`, `::test_central_directory_lookup_no_io` |
 | Non-seekable refused at open | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection` |
-| Split segment refused | `::test_split_segment_name_rejected`, `::test_sevenzip_split_segment_name_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_and_prefixed_zip_still_open` |
+| Split segment refused | `::test_split_segment_name_rejected`, `::test_sevenzip_split_segment_name_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_prefixed_and_empty_zip_still_open` |
 | Timestamp precedence, invalid and out-of-range fallbacks | `::test_extended_timestamp_beats_ntfs`, `::test_ntfs_timestamps_used_when_no_extended_timestamp`, `::test_extended_timestamp_out_of_range_degrades_to_diagnostic` |
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |

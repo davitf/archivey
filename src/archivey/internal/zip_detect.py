@@ -18,6 +18,10 @@ from pathlib import PurePath
 
 from archivey.internal.sfx import HitOutcome
 
+# Shared rejoin-first message for every ZIP split/spanned refuse path
+# (``open_archive`` early name check and the ZIP reader).
+ZIP_MULTI_VOLUME_MSG = "Multi-volume (split/spanned) ZIP archives are not supported."
+
 # 7-Zip ``-tzip -v…`` names parts ``archive.zip.001`` … ``archive.zip.00N``.
 # Info-ZIP ``.zNN`` is handled in the ZIP reader (those parts either carry magic
 # or are accepted as undetectable); this pattern must fire *before* detection

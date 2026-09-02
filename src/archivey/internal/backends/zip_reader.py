@@ -96,7 +96,7 @@ from archivey.internal.zip_aes import (
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
-from archivey.internal.zip_detect import validate_zip_local_header
+from archivey.internal.zip_detect import ZIP_MULTI_VOLUME_MSG, validate_zip_local_header
 from archivey.internal.zipcrypto import (
     parallel_plaintext_crc32,
     password_matches_check_byte,
@@ -135,8 +135,6 @@ _SPLIT_SEGMENT_RE = re.compile(r"\.(?:z\d{2}|zip\.\d{3,})$", re.IGNORECASE)
 # Classic EOCD ``this_disk`` / ``cd_start_disk`` use 0xFFFF to mean "see ZIP64 EOCD",
 # not disk 65535. A naive ``!= 0`` check would refuse legitimate ZIP64 archives.
 _ZIP64_DISK_SENTINEL = 0xFFFF
-
-_MULTI_VOLUME_MSG = "Multi-volume (split/spanned) ZIP archives are not supported."
 
 # ZIP compression-method id -> our codec algorithm. Unknown ids map to UNKNOWN rather than
 # raising, matching the open-ended CompressionAlgorithm contract.
@@ -452,7 +450,7 @@ class ZipReader(BaseArchiveReader):
         # A split-set segment (name.z01, name.zip.001, …) cannot be read by stdlib zipfile.
         if archive_name and _SPLIT_SEGMENT_RE.search(archive_name):
             raise UnsupportedFeatureError(
-                _MULTI_VOLUME_MSG,
+                ZIP_MULTI_VOLUME_MSG,
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
@@ -536,7 +534,7 @@ class ZipReader(BaseArchiveReader):
                 self._owned_fp.close()
                 self._owned_fp = None
             raise UnsupportedFeatureError(
-                _MULTI_VOLUME_MSG,
+                ZIP_MULTI_VOLUME_MSG,
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             )

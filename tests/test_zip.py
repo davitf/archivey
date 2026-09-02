@@ -473,22 +473,97 @@ def test_eocd_nonzero_disk_fields_rejected(
     assert "multi-volume" in str(excinfo.value).lower()
 
 
-def test_eocd_zip64_disk_sentinel_still_opens(tmp_path: Path) -> None:
-    # 0xFFFF in a classic EOCD disk field is the ZIP64 sentinel, not disk 65535.
-    path = tmp_path / "zip64_sentinel.zip"
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", allowZip64=True) as z:
-        info = zipfile.ZipInfo("big.bin")
-        with z.open(info, "w", force_zip64=True) as f:
-            f.write(b"x" * 1000)
-    path.write_bytes(
-        _patch_eocd_disk_fields(buf.getvalue(), this_disk=0xFFFF, cd_start_disk=0xFFFF)
+def _genuine_zip64_bytes(
+    *,
+    name: bytes = b"a.txt",
+    payload: bytes = b"hello",
+    classic_this_disk: int = 0xFFFF,
+    classic_cd_start_disk: int = 0xFFFF,
+    zip64_this_disk: int = 0,
+    zip64_cd_start_disk: int = 0,
+) -> bytes:
+    """Craft a ZIP with real ZIP64 EOCD + locator (not just force_zip64 LFH extras)."""
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+    lfh = (
+        struct.pack(
+            "<IHHHHHIIIHH",
+            0x04034B50,
+            45,
+            0,
+            0,
+            0,
+            0,
+            crc,
+            len(payload),
+            len(payload),
+            len(name),
+            0,
+        )
+        + name
+        + payload
     )
+    cdh = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            0x2D00,
+            45,
+            0,
+            0,
+            0,
+            0,
+            crc,
+            len(payload),
+            len(payload),
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name
+    )
+    z64_body = struct.pack(
+        "<HHIIQQQQ",
+        45,
+        45,
+        zip64_this_disk,
+        zip64_cd_start_disk,
+        1,
+        1,
+        len(cdh),
+        len(lfh),
+    )
+    z64 = struct.pack("<IQ", 0x06064B50, len(z64_body)) + z64_body
+    locator = struct.pack("<IIQI", 0x07064B50, 0, len(lfh) + len(cdh), 1)
+    eocd = struct.pack(
+        "<IHHHHIIH",
+        0x06054B50,
+        classic_this_disk,
+        classic_cd_start_disk,
+        0xFFFF,
+        0xFFFF,
+        0xFFFFFFFF,
+        0xFFFFFFFF,
+        0,
+    )
+    return lfh + cdh + z64 + locator + eocd
+
+
+def test_eocd_zip64_disk_sentinel_still_opens(tmp_path: Path) -> None:
+    # 0xFFFF in classic EOCD disk fields is the ZIP64 sentinel. Prove it against an
+    # archive that actually has ZIP64 EOCD + locator (force_zip64 alone does not).
+    raw = _genuine_zip64_bytes()
+    assert b"PK\x06\x06" in raw and b"PK\x06\x07" in raw
+    path = tmp_path / "zip64_sentinel.zip"
+    path.write_bytes(raw)
     with open_archive(path) as ar:
-        assert ar.read("big.bin") == b"x" * 1000
+        assert ar.read("a.txt") == b"hello"
 
 
-def test_plain_and_prefixed_zip_still_open(tmp_path: Path) -> None:
+def test_plain_prefixed_and_empty_zip_still_open(tmp_path: Path) -> None:
     plain = tmp_path / "plain.zip"
     plain.write_bytes(_stdlib_zip_bytes("a.txt", b"hi"))
     with open_archive(plain) as ar:
@@ -498,6 +573,20 @@ def test_plain_and_prefixed_zip_still_open(tmp_path: Path) -> None:
     prefixed.write_bytes(b"#!/bin/sh\necho stub\n" + _stdlib_zip_bytes("a.txt", b"hi"))
     with open_archive(prefixed) as ar:
         assert ar.read("a.txt") == b"hi"
+
+    # Empty ZIP: EOCD present, nothing else — sharp false-positive for disk-field checks.
+    bare_eocd = tmp_path / "bare_eocd.zip"
+    bare_eocd.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    with open_archive(bare_eocd) as ar:
+        assert ar.members() == []
+
+    empty = tmp_path / "empty.zip"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w"):
+        pass
+    empty.write_bytes(buf.getvalue())
+    with open_archive(empty) as ar:
+        assert ar.members() == []
 
 
 # ---------------------------------------------------------------------------
