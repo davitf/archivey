@@ -80,6 +80,7 @@ from archivey.internal.password import (
     _PasswordCandidatesExhausted,
 )
 from archivey.internal.registry import register_reader
+from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.crypto import SevenZipKeyCache
 from archivey.internal.streams.streamtools import (
@@ -796,6 +797,7 @@ class SevenZipReadBackend(ReadBackend):
         MagicSignature(0, b"7z\xbc\xaf'\x1c", ArchiveFormat.SEVEN_Z),
     )
     SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
+    SFX_HIT_VALIDATOR = staticmethod(validate_sevenzip_signature_header)
     SUPPORTS_PASSWORD = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     OPTIONAL_DEPENDENCY = None

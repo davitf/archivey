@@ -33,7 +33,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Iterator
 from enum import Enum
-from typing import BinaryIO, Callable, NamedTuple, Sequence
+from typing import BinaryIO, Callable, NamedTuple, Protocol, Sequence
 
 # How far past the start of a source the archive magic may sit before we stop looking.
 # 2 MiB comfortably covers real stubs (a `rar a -sfx` ELF stub is ~250 KB, and Windows
@@ -81,14 +81,32 @@ class HitOutcome(Enum):
     ``NOT_THIS_FORMAT`` — identity never held (decoy magic, unparseable header).
     ``VALID`` — identity and cheap structure both hold.
     ``DAMAGED`` — identity holds, structure does not (a 7z whose ``StartHeaderCRC``
-    fails). This change's first-match scan treats ``DAMAGED`` like
-    ``NOT_THIS_FORMAT`` (skip, continue). The later evidence-ledger scheduler may
-    treat ``DAMAGED`` as a still-identified candidate without changing this enum.
+    fails, or whose declared end overruns the source). This change's first-match
+    scan treats ``DAMAGED`` like ``NOT_THIS_FORMAT`` (skip, continue). The later
+    evidence-ledger scheduler may treat ``DAMAGED`` as a still-identified candidate
+    without changing this enum.
     """
 
     NOT_THIS_FORMAT = "not_this_format"
     VALID = "valid"
     DAMAGED = "damaged"
+
+
+class HitValidator(Protocol):
+    """Format-owned SFX scan check: candidate-relative view plus known remaining.
+
+    ``remaining`` is provable bytes from the *candidate origin* to source EOF
+    (``workspace.remaining_known() - candidate_origin``), or ``None`` when the
+    source length is unknown. It is a length, not a peek budget — do not confuse
+    it with ``scan_limit``. The scan always passes it; ``None`` is a value, not
+    an omitted argument.
+    """
+
+    def __call__(
+        self,
+        peek_more: Callable[[int], bytes],
+        remaining: int | None,
+    ) -> HitOutcome: ...
 
 
 class ExecutableCue(Enum):

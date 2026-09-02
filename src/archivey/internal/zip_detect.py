@@ -55,13 +55,23 @@ _KNOWN_METHODS = frozenset(
 )
 
 
-def validate_zip_local_header(peek_more: Callable[[int], bytes]) -> HitOutcome:
+def validate_zip_local_header(
+    peek_more: Callable[[int], bytes],
+    remaining: int | None,
+) -> HitOutcome:
     """Return whether a candidate origin looks like a ZIP local file header.
 
-    ``peek_more(n)`` is a view relative to the candidate, not the source. A
-    truncated header, reserved flags, an unknown method, or name/extra lengths
-    that overruns the remaining bytes is :attr:`HitOutcome.NOT_THIS_FORMAT` —
-    identity never held. This check does not return :attr:`HitOutcome.DAMAGED`.
+    ``peek_more(n)`` is a view relative to the candidate, not the source.
+    ``remaining`` is provable bytes from the candidate to source EOF, or
+    ``None`` if unknown. A truncated header, reserved flags, an unknown
+    method, or name/extra lengths that overrun the source is
+    :attr:`HitOutcome.NOT_THIS_FORMAT` — identity never held. This check
+    does not return :attr:`HitOutcome.DAMAGED`.
+
+    When ``remaining`` is known, name/extra existence is a length compare:
+    a short ``peek_more`` can only mean the candidate view was clamped by
+    ``scan_limit``, which is not evidence against ZIP. When ``remaining`` is
+    unknown, a short peek is still ``NOT_THIS_FORMAT``.
     """
     header = peek_more(_LOCAL_HEADER_SIZE)
     if len(header) < _LOCAL_HEADER_SIZE or header[:4] != _LOCAL_HEADER_MAGIC:
@@ -89,6 +99,10 @@ def validate_zip_local_header(peek_more: Callable[[int], bytes]) -> HitOutcome:
     if name_len == 0:
         return HitOutcome.NOT_THIS_FORMAT
     needed = _LOCAL_HEADER_SIZE + name_len + extra_len
+    if remaining is not None:
+        if needed > remaining:
+            return HitOutcome.NOT_THIS_FORMAT
+        return HitOutcome.VALID
     rest = peek_more(needed)
     if len(rest) < needed:
         return HitOutcome.NOT_THIS_FORMAT

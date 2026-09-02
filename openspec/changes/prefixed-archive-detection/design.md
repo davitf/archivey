@@ -177,9 +177,17 @@ StartHeader that follows it, and that StartHeader gives `NextHeaderOffset` /
 landed exactly on EOF in every case. Combined, a false hit needs a 48-bit magic *and* a
 32-bit CRC *and* a size agreement.
 
-Use `<=` for the gate and `==` as the tiebreak. Appending 16 bytes to a 7z leaves it
-perfectly readable while breaking the exact-EOF equality, and some SFX tools append
-configuration after the payload — measured, not assumed.
+Use `<=` against the known source remaining from the candidate origin (not the
+scan window / `SFX_MAX`) for the gate, and `==` as a later tie-break among several
+CRC-valid hits. The slim follow-up after #277 landed the remaining-length gate
+and rejects an empty next-header (`NextHeaderSize == 0`) behind a stub: nobody
+ships a self-extractor with no files, and a genuine empty `.7z` is claimed by
+near magic, never by the scan. Exact-EOF ranking is still earliest-`VALID` —
+task 2.3's remainder, pinned by an `xfail(strict=True)` red half and recorded in
+`dev-docs/known-issues.md`. Appending 16 bytes to a 7z leaves it perfectly
+readable while breaking the exact-EOF equality, and some SFX tools append
+configuration after the payload — measured, not assumed. That is why the
+tie-break is a preference among validated hits, not a filter.
 
 **RAR 5.** The 8-byte marker is followed by a main archive header with its own CRC32,
 which validated at every stub offset tried.
@@ -264,7 +272,9 @@ on `SFX_HIT_VALIDATOR`. Do not key this off `ExecutableCue.WEAK` alone: an
 unconfirmed `MZ` / ELF stub is the live 7z/RAR SFX path and keeps the full
 needle set. `PrefixKind.SCRIPT` (Block 3) can replace the `#!` byte check.
 The rest of Block 3 (`prefix_kind`, `detection_budget`, exhaustive scan) is
-independent.
+independent of the 7z/RAR validators. **2.4 and the CRC / remaining-length half
+of 2.3 landed as a slim follow-up after #277**; exact-EOF ranking stays `[~]`
+on task 2.3.
 
 **`ArchiveyConfig.detection_budget` is the spend cap.** Threading it needs a freeze
 surface: *Explicit configuration object*. `None` selects `BALANCED_BUDGET`.

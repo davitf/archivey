@@ -169,6 +169,21 @@ _S_SHORT = struct.Struct("<H")
 _TRY_ENCODINGS = ("utf8", "utf-16le", "windows-1252")
 
 
+def rar3_main_crc_end(flags: int) -> int:
+    """Exclusive end of MAIN-header CRC coverage, from the start of the block.
+
+    Shared with the SFX hit validator so a flag-walk change cannot silently
+    desync detection from the parser.
+    """
+    pos = _S_BLK_HDR.size
+    if flags & _RAR3_LONG_BLOCK:
+        pos += 4
+    pos += 6
+    if flags & _RAR3_MAIN_ENCRYPTVER:
+        pos += 1
+    return pos
+
+
 # ---------------------------------------------------------------------------
 # Public dataclasses
 # ---------------------------------------------------------------------------
@@ -448,7 +463,7 @@ def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> Non
         ) from exc
 
 
-def _load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
+def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     # Hot path: most RAR5 vints are a single byte (< 0x80). Avoid the multi-byte
     # loop and ``min()`` on every call (listing many-member archives).
     length = len(buf)
@@ -496,7 +511,7 @@ def _load_bytes(
 
 
 def _load_vstr(buf: bytes | bytearray | memoryview, pos: int) -> tuple[bytes, int]:
-    slen, pos = _load_vint(buf, pos)
+    slen, pos = load_vint(buf, pos)
     return _load_bytes(buf, slen, pos)
 
 
@@ -942,10 +957,7 @@ def _parse_rar3(
             continue
 
         if block_type == _RAR3_MAIN:
-            pos += 6
-            if flags & _RAR3_MAIN_ENCRYPTVER:
-                pos += 1
-            crc_pos = pos
+            crc_pos = rar3_main_crc_end(flags)
             is_solid = bool(flags & _RAR3_MAIN_SOLID)
             is_volume = bool(flags & _RAR3_MAIN_VOLUME)
             if flags & _RAR3_MAIN_PASSWORD:
@@ -1332,9 +1344,9 @@ def _parse_rar5(
         ) = parsed
 
         if block_type == _RAR5_MAIN:
-            main_flags, pos = _load_vint(hdata, pos)
+            main_flags, pos = load_vint(hdata, pos)
             if main_flags & _RAR5_MAIN_HAS_VOLNR:
-                volnr, pos = _load_vint(hdata, pos)
+                volnr, pos = load_vint(hdata, pos)
                 # RAR5: first volume omits the field (implicit 0); later volumes
                 # store 1 for the second volume, 2 for the third, …
                 if volume_index == 0 and volnr != 0:
@@ -1357,8 +1369,8 @@ def _parse_rar5(
             continue
 
         if block_type == _RAR5_ENCRYPTION:
-            algo, pos = _load_vint(hdata, pos)
-            enc_flags, pos = _load_vint(hdata, pos)
+            algo, pos = load_vint(hdata, pos)
+            enc_flags, pos = load_vint(hdata, pos)
             kdf_count, pos = _load_byte(hdata, pos)
             salt, pos = _load_bytes(hdata, 16, pos)
             check_value = None
@@ -1388,7 +1400,7 @@ def _parse_rar5(
             continue
 
         if block_type == _RAR5_ENDARC:
-            endarc_flags, _ = _load_vint(hdata, pos)
+            endarc_flags, _ = load_vint(hdata, pos)
             needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
             break
 
@@ -1467,7 +1479,7 @@ def _read_rar5_block(
         raise CorruptionError("Unexpected EOF while reading RAR5 header")
     # The header-size vint starts at byte 4 (after the 4-byte CRC). A vint is at most
     # 10 bytes; cap the continuation so a crafted run of 0x80 bytes cannot drive an
-    # unbounded, O(n^2) byte-at-a-time read of the source before ``_load_vint``'s own
+    # unbounded, O(n^2) byte-at-a-time read of the source before ``load_vint``'s own
     # 11-byte guard (which only runs *after* this loop) would reject it.
     while head[-1] & 0x80:
         if len(head) - 4 >= 10:
@@ -1480,7 +1492,7 @@ def _read_rar5_block(
         head += b
     start_bytes = bytes(head)
     header_crc, pos = _load_le32(start_bytes, 0)
-    hdrlen, pos = _load_vint(start_bytes, pos)
+    hdrlen, pos = load_vint(start_bytes, pos)
     if hdrlen > _RAR5_MAX_HEADER:
         raise CorruptionError(f"RAR5 header too large: {hdrlen}")
     header_size = pos + hdrlen
@@ -1492,14 +1504,14 @@ def _read_rar5_block(
     if header_crc != _crc32(memoryview(hdata)[4:]):
         raise CorruptionError(f"RAR5 header CRC mismatch at offset {header_offset}")
 
-    block_type, pos = _load_vint(hdata, pos)
-    block_flags, pos = _load_vint(hdata, pos)
+    block_type, pos = load_vint(hdata, pos)
+    block_flags, pos = load_vint(hdata, pos)
     extra_size = 0
     add_size = 0
     if block_flags & _RAR5_FLAG_EXTRA:
-        extra_size, pos = _load_vint(hdata, pos)
+        extra_size, pos = load_vint(hdata, pos)
     if block_flags & _RAR5_FLAG_DATA:
-        add_size, pos = _load_vint(hdata, pos)
+        add_size, pos = load_vint(hdata, pos)
     return (
         block_type,
         block_flags,
@@ -1565,9 +1577,9 @@ def _parse_rar5_file_block(
     add_size: int,
     volume_index: int,
 ) -> RarMemberInfo:
-    file_flags, pos = _load_vint(hdata, pos)
-    file_size, pos = _load_vint(hdata, pos)
-    mode, pos = _load_vint(hdata, pos)
+    file_flags, pos = load_vint(hdata, pos)
+    file_size, pos = load_vint(hdata, pos)
+    mode, pos = load_vint(hdata, pos)
 
     mtime: datetime | None = None
     crc32: int | None = None
@@ -1576,8 +1588,8 @@ def _parse_rar5_file_block(
     if file_flags & _RAR5_FILE_HAS_CRC32:
         crc32, pos = _load_le32(hdata, pos)
 
-    compress_info, pos = _load_vint(hdata, pos)
-    host_os_raw, pos = _load_vint(hdata, pos)
+    compress_info, pos = load_vint(hdata, pos)
+    host_os_raw, pos = load_vint(hdata, pos)
     orig_filename, pos = _load_vstr(hdata, pos)
     filename = orig_filename.decode("utf8", "replace").rstrip("/")
 
@@ -1598,25 +1610,25 @@ def _parse_rar5_file_block(
         # Walk extras until near end (allow 1 byte of padding like rarfile).
         while pos < len(hdata) - 1:
             try:
-                xsize, pos = _load_vint(hdata, pos)
+                xsize, pos = load_vint(hdata, pos)
             except CorruptionError:
                 break
             if xsize < 0 or pos + xsize > len(hdata):
                 break
             xdata, pos = _load_bytes(hdata, xsize, pos)
-            xtype, xpos = _load_vint(xdata, 0)
+            xtype, xpos = load_vint(xdata, 0)
             if xtype == _RAR5_XFILE_TIME:
                 mtime = _parse_rar5_xtime(xdata, xpos, mtime)
             elif xtype == _RAR5_XFILE_ENCRYPTION:
                 file_encryption = _parse_rar5_file_encryption(xdata, xpos)
                 flags |= _RAR3_FILE_PASSWORD
             elif xtype == _RAR5_XFILE_HASH:
-                hash_type, xpos = _load_vint(xdata, xpos)
+                hash_type, xpos = load_vint(xdata, xpos)
                 if hash_type == _RAR5_XHASH_BLAKE2SP:
                     blake2sp_hash, xpos = _load_bytes(xdata, 32, xpos)
             elif xtype == _RAR5_XFILE_REDIR:
-                redir_type, xpos = _load_vint(xdata, xpos)
-                redir_flags, xpos = _load_vint(xdata, xpos)
+                redir_type, xpos = load_vint(xdata, xpos)
+                redir_flags, xpos = load_vint(xdata, xpos)
                 redir_name, xpos = _load_vstr(xdata, xpos)
                 file_redir = (
                     redir_type,
@@ -1624,8 +1636,8 @@ def _parse_rar5_file_block(
                     redir_name.decode("utf8", "replace"),
                 )
             elif xtype == _RAR5_XFILE_VERSION:
-                _vflags, xpos = _load_vint(xdata, xpos)
-                file_version, xpos = _load_vint(xdata, xpos)
+                _vflags, xpos = load_vint(xdata, xpos)
+                file_version, xpos = load_vint(xdata, xpos)
             # OWNER / SERVICE / unknown: ignore
 
     is_symlink = False
@@ -1677,7 +1689,7 @@ def _parse_rar5_file_block(
 def _parse_rar5_xtime(
     xdata: bytes, pos: int, current: datetime | None
 ) -> datetime | None:
-    tflags, pos = _load_vint(xdata, pos)
+    tflags, pos = load_vint(xdata, pos)
     ldr = _load_windowstime
     if tflags & _RAR5_XTIME_UNIXTIME:
         ldr = _load_unixtime
@@ -1703,8 +1715,8 @@ def _parse_rar5_xtime(
 
 
 def _parse_rar5_file_encryption(xdata: bytes, pos: int) -> RarEncryptionInfo:
-    algo, pos = _load_vint(xdata, pos)
-    flags, pos = _load_vint(xdata, pos)
+    algo, pos = load_vint(xdata, pos)
+    flags, pos = load_vint(xdata, pos)
     kdf_count, pos = _load_byte(xdata, pos)
     salt, pos = _load_bytes(xdata, 16, pos)
     iv, pos = _load_bytes(xdata, 16, pos)

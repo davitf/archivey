@@ -26,7 +26,7 @@ from archivey.exceptions import (
     UnsupportedOperationError,
 )
 from archivey.internal.format_args import check_archive_format
-from archivey.internal.sfx import HitOutcome
+from archivey.internal.sfx import HitValidator
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     STREAM_CODECS,
@@ -201,16 +201,14 @@ class BackendRegistry:
 
     def sfx_hit_validators(
         self,
-    ) -> dict[ArchiveFormat, Callable[[Callable[[int], bytes]], HitOutcome]]:
+    ) -> dict[ArchiveFormat, HitValidator]:
         """Format-owned checks the SFX scan calls on a candidate-relative view.
 
         Collected from ``ReadBackend.SFX_HIT_VALIDATOR`` next to ``SFX_MAGIC``. A
-        missing validator means a needle match is enough (RAR / 7z today). ZIP's
-        local-header sanity check lives here so ``detection.py`` does not parse ZIP.
+        missing validator means a needle match is enough. ZIP, 7z, and RAR each
+        supply one so ``detection.py`` does not parse those formats.
         """
-        mapping: dict[
-            ArchiveFormat, Callable[[Callable[[int], bytes]], HitOutcome]
-        ] = {}
+        mapping: dict[ArchiveFormat, HitValidator] = {}
         for cls in self._reader_classes:
             validator = cls.SFX_HIT_VALIDATOR
             if validator is None:

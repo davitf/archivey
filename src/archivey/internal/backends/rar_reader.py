@@ -67,6 +67,7 @@ from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
 )
+from archivey.internal.rar_detect import validate_rar_main_header
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
@@ -1012,6 +1013,7 @@ class RarReadBackend(ReadBackend):
     # Both ids, so the scan resolves RAR4 vs RAR5 by which one comes first rather than
     # matching their shared `Rar!\x1a\x07` prefix and re-reading to disambiguate.
     SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
+    SFX_HIT_VALIDATOR = staticmethod(validate_rar_main_header)
     SUPPORTS_PASSWORD = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     OPTIONAL_DEPENDENCY = None
