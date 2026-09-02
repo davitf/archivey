@@ -60,14 +60,16 @@ Organised, **no-fluff**, rewritten in place — not an append-only log.
 
 **Until the first format/topic page exists:** point briefs at `code-map`, threat model,
 and the best ADR/investigation. When a change needs a living page, create
-`dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md` **in that same PR**, with:
+`dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md` **in that same PR**.
 
-1. Role here — support / refusals  
-2. How it works in this repo — entrypoints (link code-map), solid/seek, codecs  
-3. Consequences — perf, memory, crypto, bomb edges  
-4. Decisions (light) — choice → why → rejected alternative  
-5. Open pitfalls  
-6. Verify — tests/commands that pin claims  
+**Page structure: TBD.** An earlier six-section skeleton was written here before any page
+existed. It has been removed on purpose: `dev-docs/formats/zip.md` is being written first
+precisely to find out what shape a real page wants, and a skeleton sitting in this file
+anchors every agent that reads it — including the ones we ask to propose a structure
+independently. "Read this doc but skip §Living handbook" is not an instruction an agent
+follows reliably, so the skeleton is gone rather than fenced off. Fill this in from what
+ZIP actually needs, **in the same PR as that page**, so this file and the tree never
+disagree about the shape.
 
 Optional `formats/README.md` / `topics/README.md` indexes may appear alongside the first
 page; do not add empty stubs ahead of content.
