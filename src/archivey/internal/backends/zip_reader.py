@@ -482,7 +482,7 @@ class ZipReader(BaseArchiveReader):
         except zipfile.BadZipFile as exc:
             if _looks_like_multivolume(exc):
                 raise UnsupportedFeatureError(
-                    "This ZIP spans multiple disks/volumes, which is not supported.",
+                    ZIP_MULTI_VOLUME_MSG,
                     archive_name=archive_name,
                     source_format=ArchiveFormat.ZIP,
                 ) from exc

@@ -1,9 +1,10 @@
 """Public entry points: open archives and query format support.
 
 ``open_archive`` pipeline (in order): register backends → refuse a wrong-typed
-``format=`` → validate streaming/concurrency → resolve source → detect or accept
-format → multi-volume checks → backend capability gates (password / seekability) →
-normalize stream origin → ``backend.open_read(...)``.
+``format=`` → validate streaming/concurrency → resolve source → ZIP split-name
+refuse (``.zNN`` / ``.zip.NNN``, skipped when ``format=`` is an explicit non-ZIP)
+→ detect or accept format → other multi-volume checks → backend capability gates
+(password / seekability) → normalize stream origin → ``backend.open_read(...)``.
 """
 
 from __future__ import annotations
