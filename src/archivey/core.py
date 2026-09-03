@@ -250,8 +250,13 @@ def open_archive(
     # ZIP split segments (Info-ZIP ``.zNN``, 7-Zip ``.zip.NNN``): middle/last parts
     # often have no ZIP magic at offset 0, so detection would raise
     # FormatDetectionError. Refuse by name before that — same rejoin-first
-    # message as the ZIP backend. Nameless streams are out of scope here.
-    if is_zip_split_segment_name(archive_name):
+    # message as the ZIP backend. Only when the caller did not assert a different
+    # format: an explicit ``format=TAR_GZ`` (etc.) must be honoured or refused as a
+    # *format conflict*, never as a ZIP multi-volume error (P8 / directory conflict
+    # below). Nameless streams are out of scope here.
+    if is_zip_split_segment_name(archive_name) and (
+        format is None or format == ArchiveFormat.ZIP
+    ):
         raise UnsupportedFeatureError(
             ZIP_MULTI_VOLUME_MSG,
             archive_name=archive_name,

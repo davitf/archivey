@@ -462,6 +462,28 @@ def test_sevenzip_split_segment_name_rejected(tmp_path: Path) -> None:
     assert "multi-volume" in str(excinfo.value).lower()
 
 
+def test_volume_shaped_name_honours_explicit_non_zip_format(tmp_path: Path) -> None:
+    # A volume-shaped suffix must not override an explicit non-ZIP format= (P8).
+    # Real tar.gz bytes under a .z01 / .zip.001 name still open when the caller asserts TAR_GZ.
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="hello.txt")
+        payload = b"hello"
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    raw = buf.getvalue()
+
+    for name in ("payload.z01", "payload.zip.001"):
+        path = tmp_path / name
+        path.write_bytes(raw)
+        with open_archive(path, format=ArchiveFormat.TAR_GZ) as ar:
+            assert [m.name for m in ar.members()] == ["hello.txt"]
+            assert ar.read("hello.txt") == b"hello"
+
+
 @pytest.mark.parametrize(
     ("this_disk", "cd_start_disk"),
     [

@@ -179,7 +179,7 @@ locator `disks > 1`. Archivey joins multi-volume 7z/RAR elsewhere; stdlib
 naive segment concatenation is unreliable. Proper support is deferred to a
 future native ZIP reader.
 
-#### Scenario: multi-volume ZIP matrix
+#### Scenario: multi-volume ZIP refusal
 
 `open_archive` on a split/spanned ZIP signal — Info-ZIP `.zNN` / final `.zip`
 with non-zero EOCD disk fields, 7-Zip `.zip.NNN`, or ZIP64 locator `disks > 1` —
