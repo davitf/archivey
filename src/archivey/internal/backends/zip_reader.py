@@ -1464,6 +1464,11 @@ def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
     sentinel ("value lives in the ZIP64 EOCD"), not disk 65535 — skip it so a
     legitimate ZIP64 archive is not refused. ZIP64 multi-disk sets are already
     caught via the locator path (``_looks_like_multivolume``).
+
+    Uses the same last-occurrence ``rfind`` for ``PK\\x05\\x06`` that stdlib
+    ``zipfile._EndRecData`` does, so this inspects the EOCD stdlib actually
+    parsed — a decoy signature earlier in the file (or in the comment) cannot
+    make the two disagree about which record is real.
     """
     pos = fp.tell()
     try:

@@ -438,6 +438,13 @@ def test_split_segment_name_rejected(tmp_path: Path) -> None:
         open_archive(middle)
     assert "multi-volume" in str(excinfo.value).lower()
 
+    # Info-ZIP continues past .z99 as .z100, .z101, … — still a split segment.
+    high = tmp_path / "archive.z100"
+    high.write_bytes(b"\x00" * 64)
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(high)
+    assert "multi-volume" in str(excinfo.value).lower()
+
 
 def test_sevenzip_split_segment_name_rejected(tmp_path: Path) -> None:
     # 7-Zip names split parts name.zip.001 … name.zip.00N; refuse like .z01.

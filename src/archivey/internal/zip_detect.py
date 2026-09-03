@@ -22,9 +22,10 @@ from archivey.internal.sfx import HitOutcome
 # (``open_archive`` early name check and the ZIP reader).
 ZIP_MULTI_VOLUME_MSG = "Multi-volume (split/spanned) ZIP archives are not supported."
 
-# Info-ZIP/WinZip ``name.z01``…``name.zNN``; 7-Zip ``name.zip.001``…``name.zip.00N``.
-# The final Info-ZIP ``.zip`` part is caught via EOCD disk fields instead.
-_ZIP_SPLIT_SEGMENT_RE = re.compile(r"\.(?:z\d{2}|zip\.\d{3,})$", re.IGNORECASE)
+# Info-ZIP/WinZip ``name.z01``…``name.zNN`` (and ``.z100``+ when the set exceeds
+# 99 parts); 7-Zip ``name.zip.001``…``name.zip.00N``. The final Info-ZIP ``.zip``
+# part is caught via EOCD disk fields instead.
+_ZIP_SPLIT_SEGMENT_RE = re.compile(r"\.(?:z\d{2,}|zip\.\d{3,})$", re.IGNORECASE)
 
 
 def is_zip_split_segment_name(archive_name: str | None) -> bool:

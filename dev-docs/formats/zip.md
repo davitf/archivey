@@ -289,11 +289,13 @@ has no local header to point at, so there `payload_offset` is the EOCD-derived b
 setting bit 11, which is the case the sniff exists for; `tests/fixtures/external/encoding_infozip_jules.zip`
 is a real sample.
 
-**Producers disagree about split naming.** Info-ZIP and WinZip write `name.z01 … name.zip`;
-7-Zip writes `name.zip.001 … name.zip.00N`. Both conventions are refused (§5). A possible
-later refinement — detect first, upgrade a failed detection to rejoin-first when the name
-looks volume-shaped — is parked in [`IDEAS.md`](../IDEAS.md) until the detection evidence
-ledger lands; do not invent a ZIP-only half-step here.
+**Producers disagree about split naming.** Info-ZIP and WinZip write `name.z01 … name.zip`
+(and `name.z100+` once the set exceeds 99 parts); 7-Zip writes `name.zip.001 … name.zip.00N`.
+Both conventions are refused today (§5). A possible later refinement — detect first, upgrade
+a failed detection to rejoin-first when the name looks volume-shaped — is parked in
+[`IDEAS.md`](../IDEAS.md) until the detection evidence ledger lands; do not invent a ZIP-only
+half-step here. Whether 7-Zip's raw-byte `.zip.NNN` slices should instead be auto-joined
+like `.7z.NNN` is a separate product call (see PR #285 G2).
 
 **Producers disagree about encryption defaults.** 7-Zip's `-tzip` default is ZipCrypto and
 `-mem=AES256` selects WinZip AES; stdlib `zipfile` writes neither. That is why the
