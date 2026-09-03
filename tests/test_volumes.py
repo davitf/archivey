@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,10 @@ def test_discover_orders_parts_when_base_contains_partN(tmp_path: Path) -> None:
     # A base ending in `.partN` used to capture the ordering key — every part below
     # parsed as 1, leaving the concatenation order to `iterdir`. Wrong order here means
     # silently wrong bytes, so the key is read from the pattern that matched the name.
+    # This case only goes red where `iterdir` returns creation order (ext4, tmpfs); on a
+    # filesystem that happens to return names sorted, the old key produced the right
+    # answer by luck. `test_volume_part_numbers_sort_stable` in tests/test_property_safety.py
+    # asserts the key directly and is the order-independent guard.
     for part in ("003", "001", "002"):
         (tmp_path / f"my.part1.zip.{part}").write_bytes(b"")
     siblings = discover_volume_siblings(tmp_path / "my.part1.zip.001")
@@ -57,6 +62,33 @@ def test_discover_orders_parts_when_base_contains_partN(tmp_path: Path) -> None:
         "my.part1.zip.002",
         "my.part1.zip.003",
     ]
+
+
+@pytest.mark.parametrize("extension", ["zip", "7z"])
+def test_discover_short_numeric_suffixes_are_not_a_volume_set(
+    tmp_path: Path, extension: str
+) -> None:
+    # `name.zip.1` / `name.zip.2` are what wget and naive rotation produce for two
+    # downloads of the same file: independent complete archives, not slices. Joining
+    # them returns the second file's contents for a caller who asked for the first —
+    # wrong bytes, no error. 7-Zip writes three digits from the start (`.001`, widening
+    # past part 999), so requiring three loses nothing it emits.
+    for suffix in ("1", "2", "01", "02"):
+        (tmp_path / f"dup.{extension}.{suffix}").write_bytes(b"")
+    for suffix in ("1", "01"):
+        assert discover_volume_siblings(tmp_path / f"dup.{extension}.{suffix}") is None
+
+
+def test_short_numeric_suffix_archives_read_their_own_contents(tmp_path: Path) -> None:
+    # The observable half of the case above, through the public API.
+    for name, member in (("backup.zip.1", "first.txt"), ("backup.zip.2", "second.txt")):
+        with zipfile.ZipFile(tmp_path / name, "w") as zf:
+            zf.writestr(member, member.encode())
+
+    with open_archive(tmp_path / "backup.zip.1") as reader:
+        assert [m.name for m in reader.members()] == ["first.txt"]
+    with open_archive(tmp_path / "backup.zip.2") as reader:
+        assert [m.name for m in reader.members()] == ["second.txt"]
 
 
 def test_discover_infozip_zNN_is_not_a_numbered_volume_set(tmp_path: Path) -> None:

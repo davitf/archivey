@@ -30,8 +30,17 @@ SourceSequence = Sequence[SourceItem]
 # one pattern serves both. Info-ZIP's ``name.z01 … name.zip`` deliberately does not
 # match: that is a true spanned set addressed by (disk, offset), which concatenation
 # cannot reconstruct, and it is refused in the ZIP backend instead.
+#
+# **Three digits minimum, not ``\d+``.** 7-Zip numbers from ``.001`` and widens past
+# part 999, so nothing it emits needs fewer. Accepting one or two would swallow
+# ``name.zip.1`` / ``name.zip.2`` — what wget and naive rotation produce for two
+# downloads of the *same* file — and concatenate two independent complete archives,
+# handing back the wrong file's contents with no error. The completeness check cannot
+# catch it either: ``[1, 2]`` is exactly ``1..N``. This also keeps the pattern in step
+# with ``is_zip_split_segment_name``, which already required ``zip\.\d{3,}``; the two
+# disagreeing about the same name is what let it through.
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip))\.(?P<part>\d+)$", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip))\.(?P<part>\d{3,})$", re.IGNORECASE
 )
 _RAR_PART_RE = re.compile(r"^(?P<base>.+)\.part(?P<part>\d+)\.rar$", re.IGNORECASE)
 _RAR_RNN_RE = re.compile(r"^(?P<base>.+)\.r(?P<part>\d{2})$", re.IGNORECASE)

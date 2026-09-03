@@ -440,6 +440,15 @@ class ZipReader(BaseArchiveReader):
         # >1 when the source is a joined volume set (ConcatenatedFile). 7-Zip's
         # ``-v`` on a ZIP is a raw byte split, so the join is an ordinary ZIP and the
         # count is reported rather than acted on.
+        #
+        # This reads the attribute off the source object, so it only survives while
+        # ``core.open_archive`` hands the joined stream through unwrapped. That holds
+        # today by three separate accidents — ``ConcatenatedFile`` is seekable so the
+        # ``PeekableStream`` branch is skipped, the RAR reopen is container-gated, and
+        # detection leaves the position at 0 so ``fix_stream_start_position`` returns
+        # the same object. A new wrapper added between the two would read back 1, and
+        # the symptom is not a crash: the split-name refuse below would fire on a set
+        # that had just been joined successfully.
         self._volume_count: int = getattr(source, "volume_count", 1)
 
         if is_stream(source) and not is_seekable(source):

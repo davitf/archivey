@@ -176,9 +176,11 @@ the very set `open_archive` had just rejoined. And they defer to an explicit non
 `format=`, which must be honoured or refused as a *format conflict* rather than as a ZIP
 multi-volume error. Nameless streams are out of scope for them entirely.
 
-`is_multivolume` is `True` for a joined set and `extra["zip.volume_count"]` carries the
-part count, matching what 7z reports for `.7z.NNN`; both describe how the archive
-arrived, not its ZIP structure, which is single-disk.
+`ArchiveInfo.is_multivolume` is `True` for a joined set and
+`ArchiveInfo.extra["zip.volume_count"]` carries the part count, matching what 7z reports
+for `.7z.NNN`. Both live on `ArchiveInfo`, not on `ArchiveMember` — `member.extra` is the
+more reachable of the two and stays empty here. They describe how the archive arrived,
+not its ZIP structure, which is single-disk.
 
 **Name decoding.** A set bit 11 is honoured as UTF-8. An explicit `encoding=` is passed to
 stdlib as `metadata_encoding` and used verbatim, which also disables the sniff below. An
@@ -320,13 +322,23 @@ fixed size with no awareness of what falls where, which is why the parts concate
 to the original and why the rejoined EOCD reads disk `(0, 0)`. That is the same thing it
 does to `.7z`, so ZIP and 7z get the same answer for the same input.
 
-Info-ZIP's do not, and the difference is one of guarantee rather than of outcome on any
-one file. Its entries carry a *starting disk* alongside the offset, so concatenation is
-not the archive's own addressing — it merely coincides with it when every entry happens
-to sit on the disk a linear join would put it on. A three-disk `zip -s 64k` set does
-rejoin into something stdlib lists correctly; nothing about the format promises the next
-one will, and the rejoined EOCD still names disk `(2, 2)`. Refusing on those disk fields
-(§5) is refusing the thing we cannot resolve, not the thing that happened to work.
+Info-ZIP's do not, and a joined spanned set fails in a shape worth knowing: it **lists
+correctly and then reads nothing.** The central directory survives intact on the final
+disk, so enumeration works — but every entry's offset is relative to *its own* disk,
+while the EOCD's `offset_cd` is relative to the last one. Reading a three-disk
+`zip -s 64k` set joined by hand:
+
+```
+disk sizes [65536, 65536, 19117]      EOCD at 150167, size_cd=75, offset_cd=19020
+stdlib's adjustment = eocd - size_cd - offset_cd = 131072   (= the two preceding disks)
+first entry's header_offset after it = 131076 -> bytes there are b'\xaa\xff\x82\x12'
+lists: ['p.bin']          read p.bin: BadZipFile: Bad magic number for file header
+```
+
+That constant is applied to every entry, so nothing lands on a local header. It is not a
+near miss and not a size effect — 3, 5 and 12-disk sets all list every member and read
+none of them. Refusing on the non-zero EOCD disk fields (§5) refuses a set that cannot be
+read, not one that happened to work.
 
 A possible later refinement for the refuse path — detect first, upgrade a failed detection
 to rejoin-first when the name looks volume-shaped — is parked in [`IDEAS.md`](../IDEAS.md)
@@ -385,8 +397,8 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | --- | --- | --- |
 | A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** / **library** | The index is at the end (§1). A native forward-walking reader could stream members in order, but some metadata (the authoritative CDH run, comments, external attributes) lives only in that end directory |
 | One member name whose UTF-8 flag lies makes the **whole archive** unlistable | **library** | Stdlib decodes flagged names strictly while parsing the central directory, so the failure is archive-wide rather than confined to the bad entry. [`open-issues.md`](../open-issues.md) P4 |
-| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **library** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow — `zipfile` cannot, and which concatenation reconstructs only by coincidence; the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`open-issues.md`](../open-issues.md) P2 |
-| A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. A first part often *does* carry a valid local header, so reading it alone would list members and then fail mid-data; "rejoin first" is the honest answer. A numbering gap is `TruncatedError` instead |
+| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **library** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow — `zipfile` cannot, and which concatenation does not reconstruct at all (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`open-issues.md`](../open-issues.md) P2 |
+| A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part — stdlib refuses at open with `File is not a zip file`, and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
 | A self-extracting `.zip.NNN` set (`vol.exe.001`) is not joined | **archivey** | Sibling discovery needs the archive extension immediately before the part number, so ZIP inherits the 7z/RAR blind spot rather than adding a new one. [`open-issues.md`](../open-issues.md) P17 |
 | A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk LFHs forward |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |

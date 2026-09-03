@@ -11,7 +11,8 @@
 `name.zip.001 … name.zip.00N`, exactly as it splits `name.7z.NNN`. With every
 part `1..N` present beside the one named, `open_archive` SHALL concatenate them
 and read the result as the ordinary ZIP it is, from any part, reporting
-`ArchiveInfo.is_multivolume = True` and `extra["zip.volume_count"] = N`.
+`ArchiveInfo.is_multivolume = True` and `ArchiveInfo.extra["zip.volume_count"] = N`
+(not `ArchiveMember.extra`, which stays empty).
 A gap in the numbering SHALL raise `TruncatedError`.
 
 Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
