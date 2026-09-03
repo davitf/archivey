@@ -15,15 +15,15 @@ Who does what:
 - WinZip AES (method 99) — ``internal.zip_aes``, then the codec for the real method
   from extra field ``0x9901``.
 
-Split/spanned multi-volume sets (``.z01``…``.zip``) are rejected — rejoin first
-(see ``format-zip``).
+Split/spanned multi-volume sets are rejected — rejoin first (see ``format-zip``):
+Info-ZIP ``.zNN`` / final ``.zip`` (EOCD disk fields), 7-Zip ``.zip.NNN``, and
+ZIP64 locator ``disks > 1``.
 """
 
 from __future__ import annotations
 
 import io
 import lzma
-import re
 import stat
 import struct
 import threading
@@ -34,7 +34,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator, Mapping, NoReturn, cast
+from typing import IO, Any, BinaryIO, Iterator, Mapping, NoReturn, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -95,7 +95,11 @@ from archivey.internal.zip_aes import (
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
-from archivey.internal.zip_detect import validate_zip_local_header
+from archivey.internal.zip_detect import (
+    ZIP_MULTI_VOLUME_MSG,
+    is_zip_split_segment_name,
+    validate_zip_local_header,
+)
 from archivey.internal.zipcrypto import (
     parallel_plaintext_crc32,
     password_matches_check_byte,
@@ -126,8 +130,9 @@ _BZIP2_INVALID_DATA = "Invalid data stream"
 # then the high byte of the DOS time rather than of the CRC-32.
 _ZIP_MASK_USE_DATA_DESCRIPTOR = 0x8
 
-# A ".z01"/".z42"/… segment name — the obvious signal of a split (multi-volume) ZIP set.
-_SPLIT_SEGMENT_RE = re.compile(r"\.z\d{2}$", re.IGNORECASE)
+# Classic EOCD ``this_disk`` / ``cd_start_disk`` use 0xFFFF to mean "see ZIP64 EOCD",
+# not disk 65535. A naive ``!= 0`` check would refuse legitimate ZIP64 archives.
+_ZIP64_DISK_SENTINEL = 0xFFFF
 
 # ZIP compression-method id -> our codec algorithm. Unknown ids map to UNKNOWN rather than
 # raising, matching the open-ended CompressionAlgorithm contract.
@@ -440,10 +445,10 @@ class ZipReader(BaseArchiveReader):
                 archive_name=archive_name,
             )
 
-        # A split-set segment (name.z01, name.z42, …) cannot be read by stdlib zipfile.
-        if archive_name and _SPLIT_SEGMENT_RE.search(archive_name):
+        # A split-set segment (name.z01, name.zip.001, …) cannot be read by stdlib zipfile.
+        if is_zip_split_segment_name(archive_name):
             raise UnsupportedFeatureError(
-                "Multi-volume (split/spanned) ZIP archives are not supported.",
+                ZIP_MULTI_VOLUME_MSG,
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
@@ -477,7 +482,7 @@ class ZipReader(BaseArchiveReader):
         except zipfile.BadZipFile as exc:
             if _looks_like_multivolume(exc):
                 raise UnsupportedFeatureError(
-                    "This ZIP spans multiple disks/volumes, which is not supported.",
+                    ZIP_MULTI_VOLUME_MSG,
                     archive_name=archive_name,
                     source_format=ArchiveFormat.ZIP,
                 ) from exc
@@ -515,6 +520,22 @@ class ZipReader(BaseArchiveReader):
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             ) from exc
+
+        # Stdlib parses EOCD disk fields and never checks them. Info-ZIP's final
+        # ``.zip`` part of a split set carries this_disk / cd_start_disk = last volume
+        # index while still listing cleanly — refuse here before a convincing listing
+        # turns a later local-header miss into CorruptionError.
+        fp = self._archive.fp
+        if fp is not None and _classic_eocd_declares_split(fp):
+            self._archive.close()
+            if self._owned_fp is not None:
+                self._owned_fp.close()
+                self._owned_fp = None
+            raise UnsupportedFeatureError(
+                ZIP_MULTI_VOLUME_MSG,
+                archive_name=archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, zipfile.BadZipFile):
@@ -1434,6 +1455,41 @@ class ZipReader(BaseArchiveReader):
         if self._owned_fp is not None:
             self._owned_fp.close()
             self._owned_fp = None
+
+
+def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
+    """True when the classic EOCD names a real non-zero disk.
+
+    Reads only the two uint16 fields at EOCD+4/+6. ``0xFFFF`` is the ZIP64
+    sentinel ("value lives in the ZIP64 EOCD"), not disk 65535 — skip it so a
+    legitimate ZIP64 archive is not refused. ZIP64 multi-disk sets are already
+    caught via the locator path (``_looks_like_multivolume``).
+
+    Uses the same last-occurrence ``rfind`` for ``PK\\x05\\x06`` that stdlib
+    ``zipfile._EndRecData`` does, so this inspects the EOCD stdlib actually
+    parsed — a decoy signature earlier in the file (or in the comment) cannot
+    make the two disagree about which record is real.
+    """
+    pos = fp.tell()
+    try:
+        fp.seek(0, io.SEEK_END)
+        size = fp.tell()
+        if size < 22:
+            return False
+        window = min(size, (1 << 16) + 22)
+        fp.seek(size - window)
+        data = fp.read(window)
+        idx = data.rfind(b"PK\x05\x06")
+        if idx < 0 or idx + 8 > len(data):
+            return False
+        this_disk, cd_start_disk = struct.unpack_from("<HH", data, idx + 4)
+        return _disk_field_is_split(this_disk) or _disk_field_is_split(cd_start_disk)
+    finally:
+        fp.seek(pos)
+
+
+def _disk_field_is_split(value: int) -> bool:
+    return value != 0 and value != _ZIP64_DISK_SENTINEL
 
 
 def _looks_like_multivolume(exc: zipfile.BadZipFile) -> bool:

@@ -1,9 +1,10 @@
 """Public entry points: open archives and query format support.
 
 ``open_archive`` pipeline (in order): register backends → refuse a wrong-typed
-``format=`` → validate streaming/concurrency → resolve source → detect or accept
-format → multi-volume checks → backend capability gates (password / seekability) →
-normalize stream origin → ``backend.open_read(...)``.
+``format=`` → validate streaming/concurrency → resolve source → ZIP split-name
+refuse (``.zNN`` / ``.zip.NNN``, skipped when ``format=`` is an explicit non-ZIP)
+→ detect or accept format → other multi-volume checks → backend capability gates
+(password / seekability) → normalize stream origin → ``backend.open_read(...)``.
 """
 
 from __future__ import annotations
@@ -67,6 +68,10 @@ from archivey.internal.streams.streamtools import (
     is_stream,
 )
 from archivey.internal.volumes import ConcatenatedFile, OpenSourceInput, resolve_source
+from archivey.internal.zip_detect import (
+    ZIP_MULTI_VOLUME_MSG,
+    is_zip_split_segment_name,
+)
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams, StreamFormat
 
@@ -242,6 +247,22 @@ def open_archive(
     # Mutated below (peekable wrap, RAR volume reopen, mid-stream origin fix).
     reader_source = resolved.open_source
     archive_name = resolved.archive_name
+
+    # ZIP split segments (Info-ZIP ``.zNN``, 7-Zip ``.zip.NNN``): middle/last parts
+    # often have no ZIP magic at offset 0, so detection would raise
+    # FormatDetectionError. Refuse by name before that — same rejoin-first
+    # message as the ZIP backend. Only when the caller did not assert a different
+    # format: an explicit ``format=TAR_GZ`` (etc.) must be honoured or refused as a
+    # *format conflict*, never as a ZIP multi-volume error (P8 / directory conflict
+    # below). Nameless streams are out of scope here.
+    if is_zip_split_segment_name(archive_name) and (
+        format is None or format == ArchiveFormat.ZIP
+    ):
+        raise UnsupportedFeatureError(
+            ZIP_MULTI_VOLUME_MSG,
+            archive_name=archive_name,
+            source_format=ArchiveFormat.ZIP,
+        )
 
     # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
     # format= is rejected, not ignored); else caller format, else magic detect. ---

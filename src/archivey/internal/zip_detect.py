@@ -3,14 +3,38 @@
 Four bytes of ``PK\\x03\\x04`` in a stub are not a ZIP. The cued scan calls
 :func:`validate_zip_local_header` with a candidate-relative view; EOCD plus
 central-directory confirmation is the tail probe's job, not this check.
+
+Also: :func:`is_zip_split_segment_name` — Info-ZIP ``.zNN`` and 7-Zip
+``name.zip.NNN`` split naming, refused in ``open_archive`` before format
+detection (middle/last parts typically have no magic at offset 0).
 """
 
 from __future__ import annotations
 
+import re
 import struct
 from collections.abc import Callable
+from pathlib import PurePath
 
 from archivey.internal.sfx import HitOutcome
+
+# Shared rejoin-first message for every ZIP split/spanned refuse path
+# (``open_archive`` early name check and the ZIP reader).
+ZIP_MULTI_VOLUME_MSG = "Multi-volume (split/spanned) ZIP archives are not supported."
+
+# Info-ZIP/WinZip ``name.z01``…``name.zNN`` (and ``.z100``+ when the set exceeds
+# 99 parts); 7-Zip ``name.zip.001``…``name.zip.00N``. The final Info-ZIP ``.zip``
+# part is caught via EOCD disk fields instead.
+_ZIP_SPLIT_SEGMENT_RE = re.compile(r"\.(?:z\d{2,}|zip\.\d{3,})$", re.IGNORECASE)
+
+
+def is_zip_split_segment_name(archive_name: str | None) -> bool:
+    """True when ``archive_name`` is an Info-ZIP ``.zNN`` or 7-Zip ``.zip.NNN`` part."""
+    if not archive_name:
+        return False
+    # PurePath so Windows ``\\`` and POSIX ``/`` both yield the final segment.
+    return _ZIP_SPLIT_SEGMENT_RE.search(PurePath(archive_name).name) is not None
+
 
 _LOCAL_HEADER_MAGIC = b"PK\x03\x04"
 _LOCAL_HEADER_SIZE = 30
