@@ -100,10 +100,10 @@ marker — 7-Zip's own `-sfx -v` writes the stub as a standalone executable and 
 as separate `.zip.NNN` files, so a concatenated stub-plus-spanned-ZIP is not the shape that
 tool produces. Measured: `7z a -tzip -sfx -v40k` left a 416 KB stub containing **no ZIP
 signature at all** beside parts that join into an ordinary byte-split ZIP starting with
-`PK\x03\x04` and carrying no spanning marker anywhere. Neither magic carries fields a cheap check can validate the way a local
-header can. A survey of 3 320 ELF and PE files found six `PK\x05\x06` matches, every one a
-string constant parsing to nonsense
-([`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §4).
+`PK\x03\x04` and carrying no spanning marker anywhere. Neither magic carries fields a cheap
+check can validate the way a local header can, and the survey in
+[`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §4 found every `PK\x05\x06`
+match in a binary to be a string constant parsing to nonsense.
 
 A local-header hit is confirmed by `validate_zip_local_header` (`internal/zip_detect.py`)
 before it is reported: version-needed in range, no reserved general-purpose bits, a known
@@ -321,10 +321,12 @@ ZIP-specific only. General extraction and name hazards are §2.4.
   zip-of-zips amplifies one level at a time (O6).
 - **Overlapping entries** are a distinct crafted shape, caught by stdlib's open-time
   overlap guard and translated to `CorruptionError`.
-- **ZipCrypto multi-password confirmation can reveal which candidate was tried, by timing
-  and by how much ciphertext is read**: the STORED path has to scan the whole member to
-  tell candidates apart. That cost is documented and deliberate, not an accidental leak of
-  the password bytes themselves.
+- **Confirming a ZipCrypto password costs time that depends on the archive, and that cost
+  is observable**: the one-byte verifier cannot decide between candidates, so a STORED
+  member is read through and its CRC compared. Timing the call, or watching how much is
+  read, tells an observer that some candidate got past the byte check and that the member
+  is stored — not which candidate, and never a password or a plaintext byte. Documented and
+  deliberate; the alternative is accepting a wrong password one time in 256.
 - The real-world case behind the cross-platform name policies arrived as a ZIP: a macOS
   archive containing a `stuff_etc.` folder, a trailing dot Win32 silently trims. Because
   the offending segment is a directory, rejecting it takes every member beneath it. See
@@ -354,7 +356,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Stdlib `zipfile` for the central directory | Zero-dependency, no packaging burden, well-tested parser | `python-libarchive-c` — faster and broader, at the cost of a native dependency ([ADR 0006](../decisions/0006-stdlib-zipfile.md)) |
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
 | Refuse a non-seekable source rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
-| Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle: on a caller-supplied stream that means serialized seeks (multiplexing), same as every other format; ZIP's advantage is only the absence of cross-member decode dependency. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
+| Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` and leaves reads to stdlib's `_SharedFile` lock, for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable because the other kind is refused at open. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Reject split sets rather than approximate them | Naive segment concatenation is unreliable and would mis-read data rather than fail | Concatenating segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
