@@ -479,6 +479,9 @@ def test_volume_shaped_name_honours_explicit_non_zip_format(tmp_path: Path) -> N
     for name in ("payload.z01", "payload.zip.001"):
         path = tmp_path / name
         path.write_bytes(raw)
+        with pytest.raises(UnsupportedFeatureError) as excinfo:
+            open_archive(path)
+        assert "multi-volume" in str(excinfo.value).lower()
         with open_archive(path, format=ArchiveFormat.TAR_GZ) as ar:
             assert [m.name for m in ar.members()] == ["hello.txt"]
             assert ar.read("hello.txt") == b"hello"
