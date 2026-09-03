@@ -58,9 +58,11 @@ Organised, **no-fluff**, rewritten in place — not an append-only log.
 | [`decisions/`](decisions/) | **Rare** repo-wide policy only; prefer light notes on format/topic pages once those exist |
 | `openspec/specs/` | **Authoritative** machine-checkable contract (agents/CI) — **not** the primary human reading surface |
 
-**Until the first format/topic page exists:** point briefs at `code-map`, threat model,
-and the best ADR/investigation. When a change needs a living page, create
-`dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md` **in that same PR**.
+**Create a page when a change needs one**, not before: `dev-docs/formats/<format>.md` or
+`dev-docs/topics/<topic>.md`, **in that same PR**. For a format or topic that has no page
+yet, point briefs at `code-map`, the threat model, and the best ADR or investigation. The
+shape to start from is below; [`formats/zip.md`](formats/zip.md) and
+[`topics/prefixed-archives.md`](topics/prefixed-archives.md) are the worked examples.
 
 ### Format page structure
 

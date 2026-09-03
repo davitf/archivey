@@ -142,12 +142,20 @@ A missing write backend SHALL raise `UnsupportedOperationError` for read-only
 formats or `UnsupportedFormatError` with an install hint for optional write
 formats.
 
+**No writer is registered for any format today.** `register_writer` is never
+called, so `writer_for_format` raises `UnsupportedOperationError` for every
+format and the second branch above is unreachable — the write half of the
+registry is ABC scaffolding, not a shipped path. There is no `archivey.create`.
+The writer surface is parked in
+[`archive-writing-design.md`](../../../dev-docs/investigations/archive-writing-design.md)
+until `PLAN.md` phase 9.
+
 #### Scenario: backend ABC matrix
 
 | Case | Expected |
 | --- | --- |
 | `SingleFileBackend.MAGIC` has gzip and bzip2 signatures | Detector resolves `GZ` vs `BZ2`; both are served by one backend |
-| `archivey.create()` targets read-only RAR | `UnsupportedOperationError` names the format |
+| `writer_for_format(RAR)` — or any other format | `UnsupportedOperationError` names the format; nothing is registered to write |
 
 ### Requirement: Optional dependencies degrade gracefully
 
