@@ -34,6 +34,41 @@ def test_discover_7z_volume_siblings_natural_order(tmp_path: Path) -> None:
     assert [p.name for p in siblings] == ["set.7z.001", "set.7z.002", "set.7z.010"]
 
 
+def test_discover_zip_volume_siblings_natural_order(tmp_path: Path) -> None:
+    # 7-Zip's -v splits a .zip the same way it splits a .7z, so the same numbered-part
+    # discovery serves both.
+    for name in ("set.zip.010", "set.zip.002", "set.zip.001"):
+        (tmp_path / name).write_bytes(b"")
+    siblings = discover_volume_siblings(tmp_path / "set.zip.002")
+    assert siblings is not None
+    assert [p.name for p in siblings] == ["set.zip.001", "set.zip.002", "set.zip.010"]
+
+
+def test_discover_orders_parts_when_base_contains_partN(tmp_path: Path) -> None:
+    # A base ending in `.partN` used to capture the ordering key — every part below
+    # parsed as 1, leaving the concatenation order to `iterdir`. Wrong order here means
+    # silently wrong bytes, so the key is read from the pattern that matched the name.
+    for part in ("003", "001", "002"):
+        (tmp_path / f"my.part1.zip.{part}").write_bytes(b"")
+    siblings = discover_volume_siblings(tmp_path / "my.part1.zip.001")
+    assert siblings is not None
+    assert [p.name for p in siblings] == [
+        "my.part1.zip.001",
+        "my.part1.zip.002",
+        "my.part1.zip.003",
+    ]
+
+
+def test_discover_infozip_zNN_is_not_a_numbered_volume_set(tmp_path: Path) -> None:
+    # Info-ZIP's `.z01 … .zip` is a true spanned set, not concatenable byte slices;
+    # discovery must not claim it, or open_archive would join and mis-read it.
+    (tmp_path / "set.zip").write_bytes(b"")
+    for name in ("set.z01", "set.z02"):
+        (tmp_path / name).write_bytes(b"")
+    assert discover_volume_siblings(tmp_path / "set.z01") is None
+    assert discover_volume_siblings(tmp_path / "set.zip") is None
+
+
 def test_discover_rar_part_volumes(tmp_path: Path) -> None:
     for name in ("data.part2.rar", "data.part1.rar", "data.part10.rar"):
         (tmp_path / name).write_bytes(b"")
@@ -71,13 +106,14 @@ def test_multi_volume_7z_is_joined_before_parse(tmp_path: Path) -> None:
         open_archive(tmp_path / "vol.7z.002", format=ArchiveFormat.SEVEN_Z)
 
 
-def test_join_7z_volumes_rejects_numbering_gaps(tmp_path: Path) -> None:
+@pytest.mark.parametrize("extension", ["7z", "zip"], ids=["sevenz", "zip"])
+def test_join_volumes_rejects_numbering_gaps(tmp_path: Path, extension: str) -> None:
     paths = []
-    for name in ("vol.7z.001", "vol.7z.003"):
-        path = tmp_path / name
+    for part in ("001", "003"):
+        path = tmp_path / f"vol.{extension}.{part}"
         path.write_bytes(b"")
         paths.append(path)
-    with pytest.raises(TruncatedError, match="Incomplete 7z multi-volume set"):
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set"):
         join_volumes(paths)
 
 

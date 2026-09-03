@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import struct
+import subprocess
 import zipfile
 import zlib
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.types import HashAlgorithm, crc32_digest
+from tests.conftest import requires_binary
 from tests.streams_util import NonSeekableBytesIO
 
 # ---------------------------------------------------------------------------
@@ -401,7 +403,7 @@ def test_non_seekable_zip_fails_fast_via_detection(simple_zip: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Multi-volume rejection
+# Multi-volume: 7-Zip .zip.NNN byte slices join; Info-ZIP .zNN spanned sets refuse
 # ---------------------------------------------------------------------------
 
 
@@ -446,16 +448,19 @@ def test_split_segment_name_rejected(tmp_path: Path) -> None:
     assert "multi-volume" in str(excinfo.value).lower()
 
 
-def test_sevenzip_split_segment_name_rejected(tmp_path: Path) -> None:
-    # 7-Zip names split parts name.zip.001 … name.zip.00N; refuse like .z01.
-    # .001 often has LFH magic; middle/last parts do not — both paths must refuse.
-    first = tmp_path / "archive.zip.001"
+def test_sevenzip_split_segment_without_siblings_rejected(tmp_path: Path) -> None:
+    # A 7-Zip .zip.NNN part whose siblings are not on disk cannot be rejoined, so it
+    # keeps the rejoin-first refusal. Each file gets its own directory precisely so
+    # no set can be discovered around it.
+    first = tmp_path / "alone" / "archive.zip.001"
+    first.parent.mkdir()
     first.write_bytes(_stdlib_zip_bytes())
     with pytest.raises(UnsupportedFeatureError) as excinfo:
         open_archive(first)
     assert "multi-volume" in str(excinfo.value).lower()
 
-    later = tmp_path / "archive.zip.003"
+    later = tmp_path / "orphan" / "archive.zip.003"
+    later.parent.mkdir()
     later.write_bytes(b"\x00" * 64)  # no magic at 0
     with pytest.raises(UnsupportedFeatureError) as excinfo:
         open_archive(later)
@@ -485,6 +490,84 @@ def test_volume_shaped_name_honours_explicit_non_zip_format(tmp_path: Path) -> N
         with open_archive(path, format=ArchiveFormat.TAR_GZ) as ar:
             assert [m.name for m in ar.members()] == ["hello.txt"]
             assert ar.read("hello.txt") == b"hello"
+
+
+def _build_sevenzip_split_zip(tmp_path: Path) -> tuple[Path, bytes]:
+    """Build a real ``7z a -tzip -mx0 -v40k`` set; return part 1 and the big member.
+
+    ``-mx0`` stores, so ``big.bin`` is larger than one volume and its data necessarily
+    crosses part boundaries — the case a rejoin that read each part independently
+    would get wrong.
+    """
+    payload = bytes(range(256)) * 600  # 153_600 B across 40 KiB volumes -> 4 parts
+    (tmp_path / "big.bin").write_bytes(payload)
+    (tmp_path / "small.txt").write_bytes(b"tail\n")
+    subprocess.run(
+        ["7z", "a", "-tzip", "-mx0", "-v40k", "set.zip", "big.bin", "small.txt"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    return tmp_path / "set.zip.001", payload
+
+
+@requires_binary("7z")
+def test_sevenzip_split_zip_set_is_joined_and_read(tmp_path: Path) -> None:
+    # 7-Zip's -v is a raw byte split, not a spanned set: the parts concatenate back
+    # into an ordinary single-volume ZIP, exactly as they do for .7z.NNN.
+    first, payload = _build_sevenzip_split_zip(tmp_path)
+    assert (tmp_path / "set.zip.004").is_file(), "fixture must have several parts"
+
+    with open_archive(first) as archive:
+        assert {m.name for m in archive.members()} == {"big.bin", "small.txt"}
+        assert archive.read("big.bin") == payload
+        assert archive.read("small.txt") == b"tail\n"
+
+        info = archive.info
+        assert info.is_multivolume is True
+        assert info.extra.get("zip.volume_count") == 4
+        assert archive.cost.listing_cost == ListingCost.INDEXED
+        assert archive.cost.access_cost == AccessCost.DIRECT
+        assert archive.cost.stream_capability == StreamCapability.SEEKABLE
+
+
+@requires_binary("7z")
+def test_sevenzip_split_zip_set_opens_from_a_middle_part(tmp_path: Path) -> None:
+    # A middle part carries no ZIP magic at offset 0; the set is anchored by name,
+    # not by which part the caller happened to hand us.
+    _, payload = _build_sevenzip_split_zip(tmp_path)
+    with open_archive(tmp_path / "set.zip.002") as archive:
+        assert archive.read("big.bin") == payload
+
+
+@requires_binary("7z")
+def test_sevenzip_split_zip_set_with_missing_part_is_truncated(tmp_path: Path) -> None:
+    first, _ = _build_sevenzip_split_zip(tmp_path)
+    (tmp_path / "set.zip.002").unlink()
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set"):
+        open_archive(first)
+
+
+def test_infozip_spanned_set_still_refused(tmp_path: Path) -> None:
+    """Info-ZIP ``.z01 … .zip`` keeps refusing, siblings present or not.
+
+    ``zip -s`` writes a true spanned set: entries are addressed by (disk, offset) and
+    the parts do not concatenate into a readable ZIP, so it stays a different thing
+    from 7-Zip's byte slices however alike the two look from outside. Synthesised
+    rather than built with ``zip -s`` because Info-ZIP is not installed on CI, macOS
+    or Windows — a real fixture would skip everywhere and prove nothing.
+    """
+    # .z01 opens with the spanning marker; middle parts carry no signature at all;
+    # the final .zip holds the central directory and names a non-zero disk.
+    (tmp_path / "set.z01").write_bytes(b"PK\x07\x08" + b"\x00" * 64)
+    (tmp_path / "set.z02").write_bytes(b"\x00" * 64)
+    (tmp_path / "set.zip").write_bytes(
+        _patch_eocd_disk_fields(_stdlib_zip_bytes(), this_disk=2, cd_start_disk=2)
+    )
+    for name in ("set.z01", "set.z02", "set.zip"):
+        with pytest.raises(UnsupportedFeatureError) as excinfo:
+            open_archive(tmp_path / name)
+        assert "multi-volume" in str(excinfo.value).lower(), name
 
 
 @pytest.mark.parametrize(

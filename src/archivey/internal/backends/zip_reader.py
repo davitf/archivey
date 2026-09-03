@@ -437,6 +437,10 @@ class ZipReader(BaseArchiveReader):
         # When measurement is on we open a Path ourselves to install a seek counter;
         # ZipFile does not close a caller-supplied file object, so we own it.
         self._owned_fp: BinaryIO | None = None
+        # >1 when the source is a joined volume set (ConcatenatedFile). 7-Zip's
+        # ``-v`` on a ZIP is a raw byte split, so the join is an ordinary ZIP and the
+        # count is reported rather than acted on.
+        self._volume_count: int = getattr(source, "volume_count", 1)
 
         if is_stream(source) and not is_seekable(source):
             raise StreamNotSeekableError(
@@ -445,8 +449,11 @@ class ZipReader(BaseArchiveReader):
                 archive_name=archive_name,
             )
 
-        # A split-set segment (name.z01, name.zip.001, …) cannot be read by stdlib zipfile.
-        if is_zip_split_segment_name(archive_name):
+        # A split-set segment stdlib zipfile cannot read. A joined set arrives here
+        # still carrying part one's name, so the name alone does not decide it: what
+        # is refused is a segment that was *not* rejoined — Info-ZIP's spanned `.zNN`,
+        # or a `.zip.NNN` part whose siblings were not on disk.
+        if self._volume_count == 1 and is_zip_split_segment_name(archive_name):
             raise UnsupportedFeatureError(
                 ZIP_MULTI_VOLUME_MSG,
                 archive_name=archive_name,
@@ -1445,8 +1452,12 @@ class ZipReader(BaseArchiveReader):
             member_count=len(self._archive.infolist()),
             comment=_decode_with_fallback(comment) if comment else None,
             is_encrypted=False,  # ZIP has per-member encryption, not header-level
-            is_multivolume=False,
+            # True for a rejoined 7-Zip `.zip.NNN` set: it arrived as several files,
+            # which is what a caller checking this wants to know. It says nothing
+            # about the ZIP structure — the join is a plain single-disk archive.
+            is_multivolume=self._volume_count > 1,
             cost=cost,
+            extra={"zip.volume_count": self._volume_count},
         )
 
     def _close_archive(self) -> None:

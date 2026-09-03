@@ -1,4 +1,4 @@
-"""Multi-volume path discovery and joining (7z concatenation; RAR keeps volume-1 path)."""
+"""Multi-volume path discovery and joining (concatenation; RAR keeps volume-1 path)."""
 
 from __future__ import annotations
 
@@ -25,16 +25,31 @@ from archivey.internal.streams.streamtools import (
 SourceItem = str | Path | BinaryIO
 SourceSequence = Sequence[SourceItem]
 
-_7Z_VOLUME_RE = re.compile(r"^(?P<base>.+\.7z)\.(?P<part>\d+)$", re.IGNORECASE)
+# 7-Zip's ``-v`` writes ``name.7z.001``/``name.zip.001`` — in both cases a *raw byte
+# split* of one finished archive, so the parts concatenate back into the original and
+# one pattern serves both. Info-ZIP's ``name.z01 … name.zip`` deliberately does not
+# match: that is a true spanned set addressed by (disk, offset), which concatenation
+# cannot reconstruct, and it is refused in the ZIP backend instead.
+_NUMBERED_VOLUME_RE = re.compile(
+    r"^(?P<base>.+\.(?:7z|zip))\.(?P<part>\d+)$", re.IGNORECASE
+)
 _RAR_PART_RE = re.compile(r"^(?P<base>.+)\.part(?P<part>\d+)\.rar$", re.IGNORECASE)
 _RAR_RNN_RE = re.compile(r"^(?P<base>.+)\.r(?P<part>\d{2})$", re.IGNORECASE)
 
 
-def _part_number_from_name(name: str, *, part_group: str = "part") -> int:
-    match = re.search(rf"\.{part_group}(\d+)", name, re.IGNORECASE)
-    if match is None:
-        match = re.search(r"\.(\d+)$", name)
-    return int(match.group(1)) if match is not None else 0
+# Each ordering key reads the part number back out of the pattern that classified the
+# name, so a base that happens to contain another pattern's marker cannot capture it.
+# A scan for the first ``.partN`` anywhere in the name used to, and sorted every part of
+# ``my.part1.zip.001 … .003`` under the same key 1 — leaving the concatenation order to
+# ``iterdir``, which is arbitrary.
+def _numbered_part_number(name: str) -> int:
+    match = _NUMBERED_VOLUME_RE.match(name)
+    return int(match.group("part")) if match is not None else 0
+
+
+def _rar_part_number(name: str) -> int:
+    match = _RAR_PART_RE.match(name)
+    return int(match.group("part")) if match is not None else 0
 
 
 def _rnn_part_number(name: str) -> int:
@@ -49,7 +64,7 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
     # not volume-shaped. Saves a ``stat`` per open_archive (perf review L3).
     maybe_volume = (
-        _7Z_VOLUME_RE.match(name) is not None
+        _NUMBERED_VOLUME_RE.match(name) is not None
         or _RAR_PART_RE.match(name) is not None
         or _RAR_RNN_RE.match(name) is not None
         or lower.endswith(".rar")
@@ -60,7 +75,7 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
         return None
     parent = path.parent
 
-    match = _7Z_VOLUME_RE.match(name)
+    match = _NUMBERED_VOLUME_RE.match(name)
     if match is not None:
         base = match.group("base")
         siblings = sorted(
@@ -68,10 +83,10 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
                 candidate
                 for candidate in parent.iterdir()
                 if candidate.is_file()
-                and (vol_match := _7Z_VOLUME_RE.match(candidate.name)) is not None
+                and (vol_match := _NUMBERED_VOLUME_RE.match(candidate.name)) is not None
                 and vol_match.group("base").lower() == base.lower()
             ),
-            key=lambda candidate: _part_number_from_name(candidate.name),
+            key=lambda candidate: _numbered_part_number(candidate.name),
         )
         return siblings if len(siblings) > 1 else None
 
@@ -86,9 +101,7 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
                 and (part_match := _RAR_PART_RE.match(candidate.name)) is not None
                 and part_match.group("base").lower() == base.lower()
             ),
-            key=lambda candidate: _part_number_from_name(
-                candidate.name, part_group="part"
-            ),
+            key=lambda candidate: _rar_part_number(candidate.name),
         )
         return siblings if len(siblings) > 1 else None
 
@@ -257,17 +270,26 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             super().close()
 
 
-def _validate_7z_volume_sequence(paths: Sequence[Path]) -> None:
+def _validate_numbered_volume_sequence(paths: Sequence[Path]) -> None:
+    """Require ``name.EXT.001 … .00N`` parts to be 1..N with no gaps.
+
+    Concatenating a set with a hole produces bytes that are neither the original
+    archive nor recognisably broken at the join, so the missing part is caught here
+    by name rather than left to surface as corruption somewhere in the middle.
+    """
+    base = ""
     numbered: list[int] = []
     for path in paths:
-        match = _7Z_VOLUME_RE.match(path.name)
+        match = _NUMBERED_VOLUME_RE.match(path.name)
         if match is None:
             return
+        base = base or match.group("base")
         numbered.append(int(match.group("part")))
     expected = list(range(1, len(numbered) + 1))
     if numbered != expected:
         raise TruncatedError(
-            f"Incomplete 7z multi-volume set: expected parts {expected}, got {numbered}"
+            f"Incomplete multi-volume set for {base}: "
+            f"expected parts {expected}, got {numbered}"
         )
 
 
@@ -276,7 +298,7 @@ def join_volumes(paths: Sequence[Path]) -> BinaryIO:
 
     if not paths:
         raise ArchiveyUsageError("volume path sequence must not be empty")
-    _validate_7z_volume_sequence(paths)
+    _validate_numbered_volume_sequence(paths)
     return ConcatenatedFile(paths)
 
 
@@ -343,7 +365,10 @@ def _resolve_single(source: Path | BinaryIO) -> ResolvedSource:
             return ResolvedSource(source, str(source), 1)
         siblings = discover_volume_siblings(source)
         if siblings is not None:
-            if _7Z_VOLUME_RE.match(siblings[0].name):
+            # Numbered parts are byte slices, so they are joined into one stream.
+            # RAR falls through with volume 1's path instead: unrar walks the set
+            # itself and needs the sibling files on disk.
+            if _NUMBERED_VOLUME_RE.match(siblings[0].name):
                 return ResolvedSource(
                     join_volumes(siblings), source_name(siblings[0]), len(siblings)
                 )

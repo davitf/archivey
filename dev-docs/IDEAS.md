@@ -22,12 +22,13 @@
   mode is forward-only and sizes/CRC arrive in trailing data descriptors — i.e. the
   **late-bound `ArchiveMember` fields** + `FORWARD_ONLY`/`is_solid=False` cost model we
   already designed for. Lands as a native variant of `formats/zip_reader.py`.
-  This is also the natural home for **multi-volume (split/spanned) ZIP** — the
-  `.z01`…`.zip` sets that `zipfile` cannot read (it rejects multi-disk archives; see
-  `format-zip`). A native parser can read the central directory disk-aware and resolve
-  each *(disk-number, offset)* against a concatenation stream over the ordered segments
-  — the analogue of the 7z volume-join, but with ZIP's per-disk addressing rather than a
-  dumb byte-split. (For v1 we just detect these and raise `UnsupportedFeatureError`.)
+  This is also the natural home for **spanned ZIP** — the `.z01`…`.zip` sets that
+  `zipfile` cannot read (it rejects multi-disk archives; see `format-zip`). A native
+  parser can read the central directory disk-aware and resolve each *(disk-number,
+  offset)* against a concatenation stream over the ordered segments. That per-disk
+  addressing is the whole difference from the dumb byte-split, which is exactly why
+  7-Zip's `.zip.NNN` sets could be joined without any of this and already are. (For v1
+  the spanned family stays an `UnsupportedFeatureError`.)
   Also the home for **graceful UTF-8-flag-lie handling**: stdlib `zipfile` strictly
   decodes a name whose general-purpose bit 11 claims UTF-8, so one hostile/broken name
   makes the *whole archive* unlistable (`UnicodeDecodeError` → `CorruptionError`; the
@@ -220,8 +221,9 @@
   in `probe-provenance-unconfirmed` task 5.1.
 
 - **Volume-shaped names: detect first, then upgrade `FormatDetectionError`** — parked from
-  PR #285 (ZIP split refuse). Today `open_archive` early-refuses Info-ZIP `.zNN` and 7-Zip
-  `.zip.NNN` by filename before detection on the auto-detect path and when `format=ZIP`, so
+  PR #285 (ZIP split refuse). Today `open_archive` early-refuses Info-ZIP `.zNN` — and a
+  7-Zip `.zip.NNN` part whose siblings are absent, a complete set being joined instead —
+  by filename before detection, on the auto-detect path and when `format=ZIP`, so
   magic-less middle parts get `UnsupportedFeatureError` instead of `FormatDetectionError`.
   An explicit non-ZIP `format=` is already honoured (the name refuse does not run) — that
   is separate from this parking (H1 / P8). A later shape worth trying once the evidence

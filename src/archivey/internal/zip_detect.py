@@ -5,8 +5,11 @@ Four bytes of ``PK\\x03\\x04`` in a stub are not a ZIP. The cued scan calls
 central-directory confirmation is the tail probe's job, not this check.
 
 Also: :func:`is_zip_split_segment_name` — Info-ZIP ``.zNN`` and 7-Zip
-``name.zip.NNN`` split naming, refused in ``open_archive`` before format
-detection (middle/last parts typically have no magic at offset 0).
+``name.zip.NNN`` split naming. A name matching it is refused in ``open_archive``
+before format detection (middle/last parts typically have no magic at offset 0),
+*unless* the whole set was found on disk and joined — see
+``internal/volumes.py``, which concatenates 7-Zip's byte slices back into the
+ordinary ZIP they came from. Info-ZIP's spanned sets are never joined.
 """
 
 from __future__ import annotations
@@ -29,7 +32,11 @@ _ZIP_SPLIT_SEGMENT_RE = re.compile(r"\.(?:z\d{2,}|zip\.\d{3,})$", re.IGNORECASE)
 
 
 def is_zip_split_segment_name(archive_name: str | None) -> bool:
-    """True when ``archive_name`` is an Info-ZIP ``.zNN`` or 7-Zip ``.zip.NNN`` part."""
+    """True when ``archive_name`` is an Info-ZIP ``.zNN`` or 7-Zip ``.zip.NNN`` part.
+
+    Callers must pair this with "was the set joined?" before refusing: a joined set
+    keeps part one's name, so the name alone no longer decides the answer.
+    """
     if not archive_name:
         return False
     # PurePath so Windows ``\\`` and POSIX ``/`` both yield the final segment.

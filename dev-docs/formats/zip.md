@@ -16,7 +16,7 @@ states the behaviour and links the row.
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None — ZIP reads on a zero-dependency install |
 | Optional | `[recommended]`: Deflate64 (`inflate64`), PPMd (`pyppmd`), Zstd (`backports.zstd`, stdlib on 3.14+), WinZip AES (`cryptography`) |
-| Refuses | Non-seekable sources · split/spanned sets · unknown compression methods, at read · AES without `cryptography` |
+| Refuses | Non-seekable sources · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · AES without `cryptography` |
 
 The extras are named for what they provide, not for ZIP, because every one of those
 codecs is shared with 7z or TAR. See [`packaging-and-extras`](../../openspec/specs/packaging-and-extras/spec.md).
@@ -153,16 +153,32 @@ Two things are ZIP-specific rather than general in the shared detector:
 Stdlib `zipfile` parses the central directory (the CDH run) and builds the member map. `reader.get()`
 and name lookup are satisfied from that map with no further archive I/O.
 
-**Split sets are refused by two different checks.** Info-ZIP `.zNN` and 7-Zip
-`.zip.NNN` are refused by filename in `open_archive` before detection when the
-caller did not pass an explicit non-ZIP `format=` — middle parts have no magic
-at offset 0, so detection alone would raise `FormatDetectionError`. After
-stdlib opens the archive, non-zero classic EOCD disk fields (with `0xFFFF`
-treated as the ZIP64 sentinel) are refused the same way — that is what catches
-Info-ZIP's final `.zip` part, which lists cleanly because it holds the central
-directory. A ZIP64 locator claiming more than one disk makes stdlib raise, and
-archivey re-types it by matching the exception text. Nameless streams are out
-of scope for the filename refuse.
+**Split sets are settled before anything else, and the two conventions get opposite
+answers.** 7-Zip's `.zip.NNN` parts are byte slices of one finished archive, so a
+complete set is concatenated by `internal/volumes.py` and read as the ordinary
+single-disk ZIP it is — the same code path and the same regex that already joined
+`.7z.NNN`, because it is the same `-v` flag doing the same slicing. Info-ZIP's
+`.z01 … .zip` is a genuinely spanned set whose entries are addressed by
+`(disk, offset-within-disk)`, so it keeps refusing. §3 has the producer detail.
+
+Four refusals remain, each with the rejoin-first message. By filename in
+`open_archive` before detection, because middle parts have no magic at offset 0 and
+detection alone would raise `FormatDetectionError`: Info-ZIP `.zNN`, and a
+`.zip.NNN` part whose siblings are not on disk. After stdlib opens the archive:
+non-zero classic EOCD disk fields (with `0xFFFF` treated as the ZIP64 sentinel),
+which is what catches Info-ZIP's final `.zip` part — it lists cleanly, because it
+holds the central directory — and a ZIP64 locator claiming more than one disk,
+where stdlib raises and archivey re-types by matching the exception text.
+
+Two things narrow the filename refusals. A joined set keeps part one's name, so they key
+off *whether the set was joined*, not off the name alone; otherwise they would fire on
+the very set `open_archive` had just rejoined. And they defer to an explicit non-ZIP
+`format=`, which must be honoured or refused as a *format conflict* rather than as a ZIP
+multi-volume error. Nameless streams are out of scope for them entirely.
+
+`is_multivolume` is `True` for a joined set and `extra["zip.volume_count"]` carries the
+part count, matching what 7z reports for `.7z.NNN`; both describe how the archive
+arrived, not its ZIP structure, which is single-disk.
 
 **Name decoding.** A set bit 11 is honoured as UTF-8. An explicit `encoding=` is passed to
 stdlib as `metadata_encoding` and used verbatim, which also disables the sniff below. An
@@ -290,13 +306,31 @@ has no local header to point at, so there `payload_offset` is the EOCD-derived b
 setting bit 11, which is the case the sniff exists for; `tests/fixtures/external/encoding_infozip_jules.zip`
 is a real sample.
 
-**Producers disagree about split naming.** Info-ZIP and WinZip write `name.z01 … name.zip`
-(and `name.z100+` once the set exceeds 99 parts); 7-Zip writes `name.zip.001 … name.zip.00N`.
-Both conventions are refused today (§5). A possible later refinement — detect first, upgrade
-a failed detection to rejoin-first when the name looks volume-shaped — is parked in
-[`IDEAS.md`](../IDEAS.md) until the detection evidence ledger lands; do not invent a ZIP-only
-half-step here. Whether 7-Zip's raw-byte `.zip.NNN` slices should instead be auto-joined
-like `.7z.NNN` (as `.7z.NNN` already is) remains an open product call, not decided here.
+**Producers disagree about split naming, and the disagreement is not cosmetic.** Info-ZIP
+and WinZip write `name.z01 … name.zip` (and `name.z100+` once the set exceeds 99 parts);
+7-Zip writes `name.zip.001 … name.zip.00N`. The two look alike and are different things:
+
+| Family | Made by | Structure | Answer |
+| --- | --- | --- | --- |
+| `name.z01 … name.zip` | `zip -s` | true spanned set; entries addressed by (disk, offset), a `PK\x07\x08` spanning marker at the head of disk 1 | refuse |
+| `name.zip.001 …` | `7z -v` | raw byte slices of one finished single-disk ZIP | join |
+
+7-Zip's `-v` is a splitter, not an archive feature: it slices the finished output at a
+fixed size with no awareness of what falls where, which is why the parts concatenate back
+to the original and why the rejoined EOCD reads disk `(0, 0)`. That is the same thing it
+does to `.7z`, so ZIP and 7z get the same answer for the same input.
+
+Info-ZIP's do not, and the difference is one of guarantee rather than of outcome on any
+one file. Its entries carry a *starting disk* alongside the offset, so concatenation is
+not the archive's own addressing — it merely coincides with it when every entry happens
+to sit on the disk a linear join would put it on. A three-disk `zip -s 64k` set does
+rejoin into something stdlib lists correctly; nothing about the format promises the next
+one will, and the rejoined EOCD still names disk `(2, 2)`. Refusing on those disk fields
+(§5) is refusing the thing we cannot resolve, not the thing that happened to work.
+
+A possible later refinement for the refuse path — detect first, upgrade a failed detection
+to rejoin-first when the name looks volume-shaped — is parked in [`IDEAS.md`](../IDEAS.md)
+until the detection evidence ledger lands; do not invent a ZIP-only half-step here.
 
 **Producers disagree about encryption defaults.** 7-Zip's `-tzip` default is ZipCrypto and
 `-mem=AES256` selects WinZip AES; stdlib `zipfile` writes neither. That is why the
@@ -351,8 +385,9 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | --- | --- | --- |
 | A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** / **library** | The index is at the end (§1). A native forward-walking reader could stream members in order, but some metadata (the authoritative CDH run, comments, external attributes) lives only in that end directory |
 | One member name whose UTF-8 flag lies makes the **whole archive** unlistable | **library** | Stdlib decodes flagged names strictly while parsing the central directory, so the failure is archive-wide rather than confined to the bad entry. [`open-issues.md`](../open-issues.md) P4 |
-| A `.z01`…`.zip` Info-ZIP spanned set is refused with "rejoin first" | **library** | The format defines `(disk, offset-within-disk)` addressing and a native reader could follow it across the parts; `zipfile` cannot, and a linear join is not a substitute. EOCD disk fields catch the final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number); filename rules catch middle `.zNN` parts. [`open-issues.md`](../open-issues.md) P2 |
-| A `.zip.001`…`.zip.00N` 7-Zip split set is refused with "rejoin first" | **archivey** | Those parts are raw-byte slices: concatenating them yields a valid single-volume ZIP (measured). We still refuse by name today; `.7z.NNN` from the same tool is auto-joined. Whether to join `.zip.NNN` the same way is an open product call (§3) |
+| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **library** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow — `zipfile` cannot, and which concatenation reconstructs only by coincidence; the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`open-issues.md`](../open-issues.md) P2 |
+| A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. A first part often *does* carry a valid local header, so reading it alone would list members and then fail mid-data; "rejoin first" is the honest answer. A numbering gap is `TruncatedError` instead |
+| A self-extracting `.zip.NNN` set (`vol.exe.001`) is not joined | **archivey** | Sibling discovery needs the archive extension immediately before the part number, so ZIP inherits the 7z/RAR blind spot rather than adding a new one. [`open-issues.md`](../open-issues.md) P17 |
 | A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk LFHs forward |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted and surface later as corruption | **format** | One-byte verifier. Confirmation narrows it; nothing eliminates it |
@@ -367,8 +402,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Refuse a non-seekable source rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` and leaves reads to stdlib's `_SharedFile` lock, for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable because the other kind is refused at open. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
-| Reject Info-ZIP spanned sets rather than approximate them | Disk-relative addressing makes naive segment concatenation mis-read data rather than fail | Concatenating `.zNN` segments and hoping |
-| Refuse 7-Zip `.zip.NNN` by name (for now) | Same early path as Info-ZIP `.zNN` so magic-less parts are not `FormatDetectionError`; joining them like `.7z.NNN` is still an open call (§3) | Auto-joining `.zip.NNN` the way we join `.7z.NNN` |
+| Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. The second cannot be reconstructed by concatenation at all | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
 
@@ -392,15 +426,18 @@ behaviour a caller already sees.
 
 ```bash
 ./scripts/test.sh tests/test_zip.py tests/test_zip_aes.py \
-    tests/test_zip_native_codecs.py tests/test_zip_multipassword.py
+    tests/test_zip_native_codecs.py tests/test_zip_multipassword.py \
+    tests/test_volumes.py
 ```
 
 | Claim | Pinned by |
 | --- | --- |
 | Cost receipt, central-directory lookup without I/O | `tests/test_zip.py::test_cost_receipt`, `::test_central_directory_lookup_no_io` |
 | Non-seekable refused at open | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection` |
-| Split segment refused | `::test_split_segment_name_rejected`, `::test_sevenzip_split_segment_name_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_volume_shaped_name_honours_explicit_non_zip_format` |
+| Spanned set and unjoinable segment refused | `::test_split_segment_name_rejected`, `::test_infozip_spanned_set_still_refused`, `::test_sevenzip_split_segment_without_siblings_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_volume_shaped_name_honours_explicit_non_zip_format` |
 | Split checks do not fire on single-volume archives | `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_prefixed_and_empty_zip_still_open` |
+| `7z -v` set joined, read across a part boundary, opened from any part | `::test_sevenzip_split_zip_set_is_joined_and_read`, `::test_sevenzip_split_zip_set_opens_from_a_middle_part`, `::test_sevenzip_split_zip_set_with_missing_part_is_truncated` |
+| Numbered-part discovery, ordering and gap rejection, `.zNN` left alone | `tests/test_volumes.py::test_discover_zip_volume_siblings_natural_order`, `::test_discover_orders_parts_when_base_contains_partN`, `::test_discover_infozip_zNN_is_not_a_numbered_volume_set`, `::test_join_volumes_rejects_numbering_gaps` |
 | Timestamp precedence, invalid and out-of-range fallbacks | `::test_extended_timestamp_beats_ntfs`, `::test_ntfs_timestamps_used_when_no_extended_timestamp`, `::test_extended_timestamp_out_of_range_degrades_to_diagnostic` |
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |
@@ -424,6 +461,11 @@ a corrupted CRC, plus one committed third-party sample
 are committed rather than generated because `zipfile` rewrites `ZipInfo.filename` on Windows;
 the reader uses `orig_filename` for the same reason.
 
+The joined-set fixtures shell out to `7z a -tzip -mx0 -v40k` — a real split from the tool
+whose behaviour is being matched, and cheap because `-mx0` stores. The Info-ZIP shapes are
+**synthesised instead**: `zip` is not installed on CI, macOS or Windows, so a `zip -s`
+fixture would skip on every machine that matters and prove nothing about the refuse path.
+
 ## 9. References
 
 - [APPNOTE.TXT](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT): §4.3.6 overall format · §4.3.9 data descriptor · §4.3.16 EOCD · §4.4.4
@@ -434,7 +476,8 @@ the reader uses `orig_filename` for the same reason.
   [`compressed-streams`](../../openspec/specs/compressed-streams/spec.md) ·
   [`format-detection`](../../openspec/specs/format-detection/spec.md)
 - Code: `internal/backends/zip_reader.py` · `internal/zip_detect.py` ·
-  `internal/zipcrypto.py` · `internal/zip_aes.py`
+  `internal/zipcrypto.py` · `internal/zip_aes.py` · `internal/volumes.py` (numbered-part
+  discovery and joining, shared with 7z)
 - Investigations: [`archive-format-detection-algorithm.md`](../investigations/archive-format-detection-algorithm.md)
   (tail-tier design, corpus counts) ·
   [`rar-corpus-sweep-diagnosis.md`](../investigations/rar-corpus-sweep-diagnosis.md)

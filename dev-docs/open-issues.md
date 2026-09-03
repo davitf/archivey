@@ -32,14 +32,20 @@ same change when relevant.
 
 ## Product — candidates to fix
 
-### P2. Multi-volume / split ZIP (`.z01`…`.zip`)
+### P2. Spanned ZIP (`.z01`…`.zip`)
 
 - **Today:** Detected and rejected with `UnsupportedFeatureError` (“rejoin first”).
-- **Why fixable:** 7z/RAR already join volumes; ZIP needs disk-aware central-directory
-  addressing over an ordered concatenation — natural part of a **native streaming ZIP**
-  reader (`IDEAS.md`), not a stdlib `zipfile` wrap.
+  7-Zip's `.zip.NNN` used to be refused alongside it and no longer is: those are raw
+  byte slices of one finished archive, so a complete set is now joined and read like
+  `.7z.NNN` (same `-v` flag, same slicing, and archivey already rejoined it for 7z).
+  What is left here is the Info-ZIP/WinZip spanned family, which is a different
+  structure rather than a different name.
+- **Why fixable:** ZIP needs disk-aware central-directory addressing over an ordered
+  concatenation — natural part of a **native streaming ZIP** reader (`IDEAS.md`), not
+  a stdlib `zipfile` wrap. Joining byte slices needed none of that, which is why it
+  landed first.
 - **Until then:** user Gotchas / `formats.md` (already noted).
-- **Refs:** `IDEAS.md` native ZIP; `format-zip`; `zip_reader.py`.
+- **Refs:** `IDEAS.md` native ZIP; `format-zip`; `zip_reader.py`; `volumes.py`.
 
 ### P3. Native TAR header walker (replace stdlib silent-EOF leniency)
 
@@ -591,17 +597,22 @@ re-verified failing against the unfixed code). Original write-up below.
   | `7z a -sfx7zCon.sfx -v40k` | `vol.exe`, `vol.exe.001`…`.004` | stub → `FormatDetectionError`; `.001` → `CorruptionError: Truncated 7z next header: expected 34 bytes` |
   | `rar a -sfx -v40k` | `rv.part1.sfx`, `rv.part2.rar`…`.part5.rar` | `.part1.sfx` → `TruncatedError: Incomplete RAR multi-volume set`; later parts → `UnsupportedFeatureError: Need first volume` |
 
-- **Why.** The sibling-discovery patterns in `src/archivey/internal/volumes.py:28-29`
+- **Why.** The sibling-discovery patterns in `src/archivey/internal/volumes.py`
   require the *archive* extension immediately before the part number:
 
   ```python
-  _7Z_VOLUME_RE = re.compile(r"^(?P<base>.+\.7z)\.(?P<part>\d+)$", re.IGNORECASE)
-  _RAR_PART_RE  = re.compile(r"^(?P<base>.+)\.part(?P<part>\d+)\.rar$", re.IGNORECASE)
+  _NUMBERED_VOLUME_RE = re.compile(r"^(?P<base>.+\.(?:7z|zip))\.(?P<part>\d+)$", re.IGNORECASE)
+  _RAR_PART_RE        = re.compile(r"^(?P<base>.+)\.part(?P<part>\d+)\.rar$", re.IGNORECASE)
   ```
 
   An SFX set replaces that extension on the first member — `vol.exe.001`,
   `rv.part1.sfx` — so no siblings are found and the backend is handed a lone first
   volume. The non-SFX equivalents are fine: `vol.7z.001` opens and lists all members.
+
+- **ZIP now shares this, and only this.** Joining 7-Zip `.zip.NNN` sets extended the same
+  regex rather than adding another, so `vol.zip.001` works and `vol.exe.001` misses for
+  exactly the reason above. One more format behind the same blind spot, no new one — and
+  fixing (1) fixes all three at once.
 
 - **Why it matters:** valid input, wrong error. The 7z message (`Truncated 7z next
   header`) actively misdescribes an intact archive set as corrupt; the RAR one at least
@@ -615,7 +626,8 @@ re-verified failing against the unfixed code). Original write-up below.
   anywhere in it) should resolve to its `.001` rather than raising
   `FormatDetectionError` — a detection-side question, unlike (1).
 
-- **Refs:** `volumes.py:28-29`; grill after PR #279 (7z/RAR SFX hit validators). Belongs
+- **Refs:** `volumes.py` (`_NUMBERED_VOLUME_RE`, `_RAR_PART_RE`); grill after PR #279
+  (7z/RAR SFX hit validators). Belongs
   on a future `dev-docs/topics/` SFX / executable-prefix page and on the 7z and RAR
   format pages by link, not by restatement.
 
