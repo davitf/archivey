@@ -174,10 +174,13 @@ The ZIP backend SHALL detect split/spanned ZIP archives and raise
 mis-reading data or surfacing stdlib `BadZipFile`. Detection covers Info-ZIP
 `.zNN` segment names, 7-Zip `.zip.NNN` segment names, non-zero classic EOCD disk
 fields (treating `0xFFFF` as the ZIP64 sentinel, not a disk number), and ZIP64
-locator `disks > 1`. Archivey joins multi-volume 7z/RAR elsewhere; stdlib
-`zipfile` cannot resolve ZIP `(disk-number, offset-within-disk)` addressing, and
-naive segment concatenation is unreliable. Proper support is deferred to a
-future native ZIP reader.
+locator `disks > 1`. Archivey joins multi-volume 7z/RAR elsewhere. For Info-ZIP
+spanned sets, stdlib `zipfile` cannot resolve ZIP `(disk-number, offset-within-disk)`
+addressing, and naive segment concatenation is unreliable — proper support is
+deferred to a future native ZIP reader. 7-Zip `.zip.NNN` parts are raw-byte
+slices (concatenation would yield a valid ZIP); archivey still refuses them by
+name today for a uniform rejoin-first error, while `.7z.NNN` from the same tool
+is joined — whether to join `.zip.NNN` the same way is an open product call.
 
 #### Scenario: multi-volume ZIP refusal
 
