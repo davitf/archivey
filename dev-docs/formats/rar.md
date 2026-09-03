@@ -58,9 +58,27 @@ Everything about that boundary is a consequence:
   link targets and even header decryption come out of the parser (§2.2). A stored,
   unencrypted, non-solid, unsplit member is read by slicing the source, so an archive of
   those reads end to end with no subprocess (§2.3).
-- **`unrar` opens files, not streams**, so a stream source is copied to a temp file the
-  first time a member cannot be read directly — the whole archive, silently
-  ([`open-issues.md`](../open-issues.md) P11).
+- **`unrar` seeks the archive, so it cannot be piped one** — which is why a stream source
+  is copied to a temp file the first time a member cannot be read directly, the whole
+  archive and silently ([`open-issues.md`](../open-issues.md) P11). This is worth stating
+  because the binary's own switch list invites the opposite conclusion: `-si[name]` is
+  documented as "Read data from standard input", and it is a `rar` **compressor** switch —
+  on `unrar` it is a command-line error. Measured
+  (`scripts/exploration/rar_unrar_input_matrix.py`, RARLAB unrar 7.00):
+
+  | Handed the archive as | |
+  | --- | --- |
+  | `unrar p -si` with no path, archive on stdin | **rc 7** — command-line error |
+  | `unrar p -` | **rc 7** — `-` is not stdin to `unrar` |
+  | `unrar p /dev/stdin` with a **pipe** behind fd 0 | **rc 2** — fatal, non-seekable |
+  | `unrar p <a FIFO path>` | **rc 2** — same |
+  | `unrar p /dev/stdin` with a **seekable file** behind fd 0 | rc 0 |
+  | `unrar p /proc/self/fd/N`, N an inherited **memfd** | rc 0 |
+
+  So there is no "stream it through" option, and never was: the only question a stream
+  source poses is *where* the seekable copy lives (disk or RAM) and *how much* of the
+  archive it holds (§7). An anonymous seekable `memfd` is the one door left open, and it
+  does not survive multi-volume (§2.2).
 - **A member name becomes an argv token**, which makes the name a parsing surface for a
   program that was never told the name is untrusted (§2.3, §4).
 - **One integer crosses back.** `unrar` is run with `-inul` and its stderr goes to
@@ -160,7 +178,12 @@ one logical member. `ArchiveInfo.is_multivolume` is `True` and
 `TruncatedError` ("expects another volume"); a lone later volume is
 `UnsupportedFeatureError` ("Need first volume") rather than a partial listing. Stream
 volumes are copied into a temp directory named `…partN.rar` so `unrar` can walk the set
-later (P11 again).
+later (P11 again) — and the **names** are the point, not just the seekability: `unrar`
+discovers later volumes by filename on disk, so neither a `memfd` nor a byte-concatenation
+serves them. Measured on the two-part `tinyvol` fixture, where the whole payload is 1 600
+bytes: part 1 on disk beside its sibling gives rc 0 and all 1 600, part 1 as an anonymous
+`memfd` gives **rc 3 after 839**, and the two volumes concatenated into one file give the
+same **rc 3 after 839** — both stop at the volume-1 boundary.
 
 **Header encryption is native.** A RAR5 or RAR3 header-encrypted archive lists with a
 password and `cryptography` installed, with no `unrar` involved. Without a password it is
@@ -324,10 +347,22 @@ refused rather than merely discouraged. Measured across the candidates
 
 | Candidate | Verdict |
 | --- | --- |
-| **`unar` / MacPaw XADMaster** | **Silently wrong.** On a RAR5 **solid** archive containing any empty FILE, reading a *non-empty* member fails — Debian's 1.10.1 SIGSEGVs with 0 bytes, and the newer 1.10.7/1.10.8 lineage (what Homebrew ships) exits **0 with empty output**, on stdout *and* on extract-to-disk. The newer behaviour is the dangerous one. Skipping the empty members in the argv does not help; the solid decoder still walks that slot. [`known-issues.md`](../known-issues.md) |
+| **`unar` / MacPaw XADMaster** | **Still open as a candidate, and silently wrong today.** On a RAR5 **solid** archive containing any empty FILE, reading a *non-empty* member fails — Debian's 1.10.1 SIGSEGVs with 0 bytes, and the newer 1.10.7/1.10.8 lineage (what Homebrew ships) exits **0 with empty output**, on stdout *and* on extract-to-disk. The newer behaviour is the dangerous one, and skipping the empty members in the argv does not help; the solid decoder still walks that slot. It matches `unrar p` on everything else measured, which is why it is not closed — see below. [`known-issues.md`](../known-issues.md) |
 | **`7z`** | A codec lottery. Ubuntu's `7zip` advertises RAR under *Formats* while the *Codecs* list has no `Rar5` until `7zip-rar` is installed — so it lists and extracts stored members, then says `Unsupported Method` on anything solid or typically compressed. With the plugin it matches `unrar p`, and is still a RARLAB-derived non-free codec under another name. Homebrew's `7zz` compiles it out entirely |
 | **`bsdtar`** | No solid, no password — and on a stored non-solid fixture, `--to-stdout` wrote **~7 GB in 8 seconds** before the test harness capped it |
 | **`unrar-free` 0.1.3** | Extract-to-disk only; no stdout at all |
+
+`7z`, `bsdtar`, `unrar-free` and Homebrew's `7zz` are **closed**. **`unar` is not** — it is
+the one candidate still on the table, because Homebrew dropping the `rar` cask made macOS
+the hard install (below) and `brew install unar` is easy. Three things would have to happen
+before it could ship, and none has: an **early-fail gate** in the backend, refusing
+`format == RAR and info.is_solid and any FILE with size == 0` from the native listing alone
+before `unar` is ever spawned (gating RAR4 too, conservatively); the fixture matrix run
+against a **Homebrew bottle**, since the measurements above are apt and a local build; and
+the XADMaster bug **filed upstream**. The gate's predicate is generalized from one fixture
+family, and ANTI members and packed-nonzero/unpacked-zero empties are untested — so it may
+be under-inclusive. What is not on the table under any of that is a silent fallback: a
+second engine would be an explicit opt-in, never a probe of `PATH` (threat-model C1).
 
 **Writing RAR4 needs an old binary.** RAR 7 dropped `-ma4`, so `scripts/gen_rar_fixtures.py`
 downloads a checksum-pinned RAR 6.24 into the user cache purely to build the RAR4 fixtures.
@@ -390,11 +425,24 @@ RAR-specific only. General extraction and name hazards are §2.4.
   the decoded *value* does not help; the bound has to be on bytes consumed. Fixed; the
   mutation and Atheris harnesses would not have found it, because a multi-kilobyte run of one
   byte is not a shape bit-flip mutation produces.
-- **The solid pipe is demultiplexed from the archive's own numbers.** A crafted size, or a
-  member kind whose emission behaviour archivey models wrongly, shifts every subsequent
-  member. Per-member digest verification is the backstop — a desync surfaces as a checksum
-  failure rather than as silent wrong data — and a shared emission table is the named
-  hardening ([`open-issues.md`](../open-issues.md) P6).
+- **The solid pipe is demultiplexed from the archive's own numbers, against a policy that
+  is in no field.** A crafted size, or a member kind whose emission behaviour archivey
+  models wrongly, shifts every subsequent member. The uncomfortable part is that no stored
+  size predicts what `unrar p` prints, and the two generations fail in opposite directions —
+  measured on the `symlinks_solid__` pair, where every link emits **zero** bytes:
+
+  | | RAR5 link | RAR4 link |
+  | --- | --- | --- |
+  | packed size | **0** | 6–12 |
+  | unpacked size | 6–12 | 6–12 |
+  | bytes `unrar p` emits | 0 | 0 |
+
+  So keying the demux on `packed > 0` is wrong for RAR4 and keying it on `unpacked > 0` is
+  wrong for RAR5; the only correct predictor is `unrar`'s own semantic rule — print
+  regular-file data, skip directories, links and copies — which `is_payload_file()`
+  re-implements. Per-member digest verification is the backstop, so a desync surfaces as a
+  checksum failure rather than as silent wrong data, and pinning the emission rule per
+  generation is the named hardening ([`open-issues.md`](../open-issues.md) P6).
 - **A stream source materializes the archive to disk.** The temp file is `0600` and the temp
   volume directory `0700`, and both are removed on close; the exposure is disk space and
   lifetime, not readability by other users. The unsignalled cost is P11.
@@ -433,6 +481,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Refuse a name containing `*` or `?` on the `unrar` path | `unrar` masks have no escape for them, so the alternatives are a wrong member's bytes or nothing | Passing the name through and relying on the CRC to catch the mismatch |
 | Trust archivey's own digest over `unrar`'s exit code | Two authorities disagreeing about corruption produce false positives on legacy archives; the one that checks the bytes we actually returned wins. Exit codes stay the fallback for members with no hash | Mapping every non-zero exit unconditionally |
 | Password on stdin, not in argv | Command-line arguments are world-readable through the process table for the life of the subprocess | `-p<password>`, which is what the CLI documents |
+| A stream source gets a temp **file**, not a pipe | `unrar` seeks the archive and refuses every non-seekable input, so there is no streaming option to prefer — the only real choices are where the seekable copy lives and how much of the archive it holds (§1) | Piping the archive, or piping a synthesized header plus one member's compressed block — both refused before a byte is read. `rarfile`'s own version of that trick is a small temp *file* for the same reason, and it falls back to a whole-archive temp file exactly where we do |
 | Spawn the solid pipe on first read, not at pass start | A pass nobody reads from — listing through `stream_members()`, an extraction whose selector matches nothing — should cost no process and should never prompt for a password | Opening the pipe when the pass begins |
 | Solidity is one archive-level flag, `solid_block_count = None` | RAR exposes no block boundaries, so any number would be invented. `None` says "unknown", which is true | Reporting 1, which reads as "one small block" |
 | A RAR5 redirect surfaces no digest; RAR3/4's is kept | Keying on the storage shape rather than the member type keeps a genuine digest where one exists and drops a constant that describes nothing. The value dropped is exactly the one a de-duplicating caller would read | Keying on member type, which would have thrown away RAR3/4's real digest; surfacing `crc32(b"")` for symmetry |
@@ -450,6 +499,16 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   decode, with `AccessCost.SOLID` the only signal and no way to distinguish the first from the
   fiftieth. Whether that is one answer or two depends on whether the boundary itself deserves
   a note, which nobody has decided.
+- **Should the stream-source copy go to RAM instead of disk?** An anonymous `memfd` is
+  seekable, never enters the filesystem namespace, and is freed on close, and `unrar` reads
+  one happily (§1) — so it is a real alternative to `mkstemp` for a single-volume archive.
+  What it does *not* do is make the copy smaller: it trades unbounded disk for unbounded RAM,
+  which for a large archive is the worse of the two, and it is Linux-only, and it cannot serve
+  a volume set at all because `unrar` needs sibling names on disk (§2.2). So the question is
+  not "memfd or temp file" but whether there is a size below which RAM is obviously right —
+  and that threshold interacts with the deferred small-member optimization, which would bound
+  the copy to one member and make the disk-vs-RAM question much less interesting. Nobody has
+  measured either.
 - **What should `seekable_members=True` do on a pipe-backed member?** Three defensible
   answers — refuse the flag for RAR the way a non-seekable source is refused, honour it by
   respawning `unrar` on a backward seek (which is a whole-archive decode for a solid member
@@ -474,6 +533,14 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
 `unrar` is required for the data-path rows and they **skip quietly** without it, so a
 container missing the binary runs a fraction of this file and still reports green
 (`AGENTS.md` §Session setup).
+
+Two claims here are about the **external binary** rather than about archivey, so no test can
+hold them — they are probes instead, re-runnable when a new `unrar` lands:
+
+```bash
+python3 scripts/exploration/rar_unrar_input_matrix.py       # §1 input modes, §2.2 volumes, §4 emission
+python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompressor table
+```
 
 | Claim | Pinned by |
 | --- | --- |
@@ -543,6 +610,12 @@ and what would close it are in
   (the decompressor matrix, macOS install) ·
   [`rar-corpus-sweep-diagnosis.md`](../investigations/rar-corpus-sweep-diagnosis.md)
   (why the RAR column ran nowhere; the cross-format symlink digest table)
+- Probes: `scripts/exploration/rar_unrar_input_matrix.py` (input modes, volume discovery,
+  emission policy) · `scripts/exploration/rar_decompressor_matrix.py` (the §3 table). The
+  input-mode and emission questions were first investigated in
+  [PR #101](https://github.com/davitf/archivey/pull/101), which was never merged; its
+  conclusions are stated here and its measurements are what the first script re-runs, so the
+  PR is provenance rather than a live reference
 - Registers: [`open-issues.md`](../open-issues.md) P6, P11, P17 ·
   [`threat-model.md`](../threat-model.md) O1, C1 · [`known-issues.md`](../known-issues.md)
   (MacPaw `unar` silent-wrong)
