@@ -76,7 +76,7 @@ material actually had. Sections are numbered so a brief can cite `zip.md` §2.3.
 | **2. The pipeline here** | Fixed subsections — identify · open and list · member data · extract · write. Each says *who does the work*, *what is format-specific rather than general*, and *what is refused*. "Nothing here is format-specific" is a legitimate and useful answer. Member-metadata mapping lives under *open and list* |
 | **3. In the wild** | Variants, producers and what they get wrong, files that are secretly this format, corpus evidence with its provenance |
 | **4. Threat surface** | Format-specific attack surface only; link [`threat-model.md`](threat-model.md) `O*` rows for status |
-| **5. Pitfalls** | Sharp edges as *symptoms someone observes*, each tagged **format** (inherent) / **library** (upstream or replace the library) / **archivey** (ours), so a reader can stop thinking about what they cannot fix. Details and fix plans stay behind the register link |
+| **5. Sharp edges** | *Symptoms someone observes*, each tagged **format** (inherent) / **library** (upstream or replace the library) / **archivey** (ours), so a reader can stop thinking about what they cannot fix. Details and fix plans stay behind the register link. **One table, not two**: a reader arrives with a symptom and does not yet know whether it is a bug or the format, so the tag sorts each row after they have found it rather than making them pick the right list first |
 | **6. Decisions** | Choice → why → rejected alternative. Light bullets, not ADRs |
 | **7. Open questions** | What we do not know and cannot settle by reading the code — each with what it would change and what would answer it. Omit the section when there is nothing honest to put in it |
 | **8. Verify** | Commands and tests that pin the claims above, plus how to build fixtures for this format |
@@ -104,8 +104,8 @@ this as the starting point, not a template to satisfy.
 Topic pages are **not** format pages with the nouns swapped, and
 [`topics/prefixed-archives.md`](topics/prefixed-archives.md) — written alongside `zip.md`
 and shaped by it — came out looser: shapes in the wild, the mechanism and its tiers, the
-cost argument, *where the formats differ*, pitfalls, decisions, references. Take the
-conventions rather than the section list: the pitfall tags, no performance numbers, status
+cost argument, *where the formats differ*, sharp edges, decisions, references. Take the
+conventions rather than the section list: the where-it-lives tags, no performance numbers, status
 behind the register link.
 
 The split that matters is the same one in both directions. **A format page keeps what the

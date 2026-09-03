@@ -139,7 +139,7 @@ and fails loudly, which is the right outcome and a visibly different one.
 codec header. Those needles are searched under the `#!` cue only, because a stub plus a bare
 compressed stream is a real shape for script launchers and not for executable ones.
 
-## 6. Pitfalls
+## 6. Sharp edges
 
 **format** — inherent · **library** — upstream's · **archivey** — ours.
 

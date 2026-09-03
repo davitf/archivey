@@ -330,7 +330,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
   the offending segment is a directory, rejecting it takes every member beneath it. See
   [ADR 0013](../decisions/0013-cross-platform-name-safety-policies.md) and O3.
 
-## 5. Pitfalls
+## 5. Sharp edges
 
 *Where it lives*: **format** — inherent, no implementation fixes it · **library** — stdlib
 `zipfile`'s behaviour, fixable only upstream or by replacing it · **archivey** — ours.
@@ -363,7 +363,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 ## 7. Open questions
 
 Gaps in what *we* know, not in what the format says — each would change something here if
-answered, and none can be settled by reading more code. Distinct from §5: a pitfall is
+answered, and none can be settled by reading more code. Distinct from §5, which is
 behaviour a caller already sees.
 
 - **Is PKWARE Strong Encryption worth an explicit refusal?** A different mechanism from
