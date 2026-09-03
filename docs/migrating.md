@@ -171,6 +171,7 @@ Worth reading before you migrate a production path:
    ([reading members](reading-members.md#read-a-member)).
 4. **Random access on a pipe fails loudly** instead of silently buffering the whole thing
    into memory — an unbounded allocation you did not ask for is worse than an error.
-   Pass `streaming=True` for a forward-only pass.
+   Pass `streaming=True` for a forward-only pass where the format has one; ZIP, ISO, 7z
+   and RAR need seek in either mode, and the error says so instead of proposing a retry.
 5. **Salvage is not implemented yet.** Reading a badly damaged archive gives you the
    recoverable prefix plus an honest error, not a best-effort resync past the damage.
