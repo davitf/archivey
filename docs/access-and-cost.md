@@ -140,10 +140,13 @@ Same-stream access still needs caller synchronization. Reader-wide passes
 
 `streaming=False` (default) **fails fast** if the format needs seek and the source is a
 pipe. Archivey will not silently buffer the whole archive into memory or a temp file.
-Use `streaming=True` for pipes/sockets.
+Use `streaming=True` for pipes and sockets — it works for TAR (including compressed
+tar) and the single-file compressors.
 
-ZIP (stdlib) and ISO always need seek today — even `streaming=True` cannot open them
-from a pure pipe.
+ZIP, ISO, 7z and RAR keep their index at the end of the archive or address it by
+offset, so they need seek in **either** mode; `streaming=True` cannot open them from a
+pipe. The error says so directly rather than proposing a retry that would be refused,
+and the fix is to buffer the source to a file or a `BytesIO` first.
 
 ## Streaming mode is one pass
 

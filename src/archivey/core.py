@@ -330,20 +330,24 @@ def open_archive(
     # streaming=True still needs a front-to-back format (TAR, raw codecs); trailing
     # indexes (ZIP CD, ISO) cannot.
     if is_stream(reader_source) and not is_seekable(reader_source):
+        # Capability first, mode second: for a format that needs seek in *either* mode
+        # the requested mode is not what went wrong, so both modes get the one message
+        # naming the only fix. Proposing streaming=True here would send the caller into
+        # a second refusal explaining the retry could never have worked.
+        if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
+            raise StreamNotSeekableError(
+                f"Format {resolved_format!r} cannot be read from a non-seekable source "
+                f"in either access mode (its index/metadata is not at the front of "
+                f"the stream). Buffer it to disk or a BytesIO and reopen.",
+                source_format=resolved_format,
+                archive_name=archive_name,
+            )
         if not streaming:
             raise StreamNotSeekableError(
                 f"Random access (streaming=False) requires a seekable source. Open with "
                 f"streaming=True for a single forward pass over this "
                 f"{resolved_format!r} stream, "
                 f"or buffer it to disk or a BytesIO and reopen.",
-                source_format=resolved_format,
-                archive_name=archive_name,
-            )
-        if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
-            raise StreamNotSeekableError(
-                f"Format {resolved_format!r} cannot be read from a non-seekable source "
-                f"even in streaming mode (its index/metadata is not at the front of "
-                f"the stream). Buffer it to disk or a BytesIO and reopen.",
                 source_format=resolved_format,
                 archive_name=archive_name,
             )

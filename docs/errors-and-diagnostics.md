@@ -22,7 +22,7 @@ React to specific cases with the subtypes:
 
 | Exception | Raised when |
 | --- | --- |
-| `OpenError` | the source can't be opened — `FormatDetectionError` (unknown format), `UnsupportedFormatError`, `StreamNotSeekableError` (random-access open on a pipe) |
+| `OpenError` | the source can't be opened — `FormatDetectionError` (unknown format), `UnsupportedFormatError`, `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek) |
 | `EncryptionError` | a password is required, missing, or wrong |
 | `CorruptionError` / `TruncatedError` | the archive is malformed or cut short |
 | `PackageNotInstalledError` | an optional package or tool is absent (e.g. the RARLAB `unrar` binary for RAR data; see [Install](install.md#getting-rarlab-unrar)) |
