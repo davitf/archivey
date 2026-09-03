@@ -167,27 +167,32 @@ target bytes. Under `RAISE`, listing halts with `DiagnosticRaisedError`.
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 | Encrypted symlink target unavailable | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` contains no secret |
 
-### Requirement: Reject multi-volume ZIP cleanly
+### Requirement: Join 7-Zip .zip.NNN sets; reject spanned ZIP cleanly
 
-The ZIP backend SHALL detect split/spanned ZIP archives and raise
-`UnsupportedFeatureError` with a clear rejoin-first message instead of
-mis-reading data or surfacing stdlib `BadZipFile`. Detection covers Info-ZIP
-`.zNN` segment names, 7-Zip `.zip.NNN` segment names, non-zero classic EOCD disk
-fields (treating `0xFFFF` as the ZIP64 sentinel, not a disk number), and ZIP64
-locator `disks > 1`. Archivey joins multi-volume 7z/RAR elsewhere. For Info-ZIP
-spanned sets, stdlib `zipfile` cannot resolve ZIP `(disk-number, offset-within-disk)`
-addressing, and naive segment concatenation is unreliable — proper support is
-deferred to a future native ZIP reader. 7-Zip `.zip.NNN` parts are raw-byte
-slices (concatenation would yield a valid ZIP); archivey still refuses them by
-name today for a uniform rejoin-first error, while `.7z.NNN` from the same tool
-is joined — whether to join `.zip.NNN` the same way is an open product call.
+7-Zip's `-v` byte-splits one finished single-disk ZIP into
+`name.zip.001 … name.zip.00N`, exactly as it splits `name.7z.NNN`. With every
+part `1..N` present beside the one named, `open_archive` SHALL concatenate them
+and read the result as the ordinary ZIP it is, from any part, reporting
+`ArchiveInfo.is_multivolume = True` and `ArchiveInfo.extra["zip.volume_count"] = N`
+(not `ArchiveMember.extra`, which stays empty).
+A gap in the numbering SHALL raise `TruncatedError`.
 
-#### Scenario: multi-volume ZIP refusal
+Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
+rejoin-first message rather than mis-read data or surface stdlib `BadZipFile`:
+Info-ZIP `.zNN` segment names, non-zero classic EOCD disk fields (`0xFFFF` is the
+ZIP64 sentinel, not a disk number), ZIP64 locator `disks > 1`, and a `.zip.NNN`
+part whose siblings are not on disk. Info-ZIP `zip -s` writes a genuinely spanned
+set addressed by `(disk, offset-within-disk)`, which stdlib `zipfile` cannot
+resolve; a linear join lists correctly and then reads only whichever members
+happen to sit on the last disk. It stays deferred to a native ZIP reader.
 
-`open_archive` on a split/spanned ZIP signal — Info-ZIP `.zNN` / final `.zip`
-with non-zero EOCD disk fields, 7-Zip `.zip.NNN`, or ZIP64 locator `disks > 1` —
-raises `UnsupportedFeatureError` (not `CorruptionError`, `FormatDetectionError`,
-or a raw stdlib `BadZipFile`).
+#### Scenario: multi-volume ZIP join and refusal
+
+`open_archive` on a complete 7-Zip `.zip.NNN` set — named at any part — lists and
+reads its members, including data spanning a part boundary. An incomplete such set
+raises `TruncatedError`; every other split/spanned signal raises
+`UnsupportedFeatureError`. Neither surfaces `CorruptionError`,
+`FormatDetectionError`, or a raw stdlib `BadZipFile`.
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 

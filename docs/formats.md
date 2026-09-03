@@ -37,8 +37,13 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   (``inflate64`` / ``pyppmd`` — the same packages the 7z reader uses, which is why no
   extra is named after a format) and Zstd (``backports.zstd``, or stdlib on 3.14+). A
   missing backend raises ``PackageNotInstalledError``.
-- Multi-volume / split ZIP (``.z01``…``.zip``) is detected and rejected with
-  ``UnsupportedFeatureError`` — rejoin first.
+- Split sets made by 7-Zip's ``-v`` (``name.zip.001``…``name.zip.00N``) open from any
+  part, as long as every part is in the same directory: those files are byte slices of
+  one ordinary ZIP, and Archivey rejoins them for you. A missing part raises
+  ``TruncatedError``.
+- Spanned ZIP written by ``zip -s`` (``.z01``…``.zip``) is a different thing — its
+  entries are addressed by disk number — and is rejected with
+  ``UnsupportedFeatureError``; rejoin it with the tool that made it.
 - Unsupported compression methods: listing succeeds; reading raises
   ``UnsupportedFeatureError``.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.

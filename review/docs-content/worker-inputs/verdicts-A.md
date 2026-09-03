@@ -27,7 +27,7 @@ were executed with `uv run --no-sync`.
 | A-19 | verified | `access-mode-and-cost` StreamCapability ordering matrix; `cost.py` total_ordering. Spot-check: `FORWARD_ONLY < SEEKABLE`; comparison vs `reader.cost.stream_capability` works. |
 | A-20 | verified | Multi-volume support only in `format-7z` / `format-rar`; `format-zip` Reject multi-volume ZIP. Spot-check: two-ZIP sequence → `UnsupportedFeatureError` does not support multi-volume. |
 | A-21 | verified | `format-7z` / `format-rar` volume matrices + `volumes.discover_volume_siblings`. Spot-check: `.7z.00N` discovery from any part; `tinyvol.part1/2.rar` from either part; `tinyvol_rnn.rar` + `.r00` from `.rar` or `.r00` when `.rar` present. |
-| A-22 | verified | `format-7z` missing volume → error not partial; `join_volumes` gap → `TruncatedError` Incomplete 7z multi-volume set (also `tests/test_volumes.py`). |
+| A-22 | verified | `format-7z` missing volume → error not partial; `join_volumes` gap → `TruncatedError` Incomplete 7z multi-volume set (also `tests/test_volumes.py`). *Message generalised since this pass: it now reads `Incomplete multi-volume set for {base}`, one wording for 7z, RAR and ZIP.* |
 | A-23 | verified | Old-scheme discovery: without `<base>.rar`, `discover_volume_siblings(.rNN)` is `None` (`volumes.py` + `test_discover_rnn_without_first_volume_is_not_a_set`). Not joined as a set. (Opening a real continuation `.r00` alone then raises `UnsupportedFeatureError` Need first volume — still “not as part of a set.”) |
 | A-24 | verified | `archive-reading` Multi-volume: explicit ordered `source` sequence, that order, no discovery. |
 | A-25 | verified | `open_archive` docstring + `archive-reading`: length-1 sequence = single source. Spot-check: `[zip_path]` opened as ordinary ZIP. |

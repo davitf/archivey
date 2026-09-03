@@ -251,12 +251,22 @@ def open_archive(
     # ZIP split segments (Info-ZIP ``.zNN``, 7-Zip ``.zip.NNN``): middle/last parts
     # often have no ZIP magic at offset 0, so detection would raise
     # FormatDetectionError. Refuse by name before that — same rejoin-first
-    # message as the ZIP backend. Only when the caller did not assert a different
-    # format: an explicit ``format=TAR_GZ`` (etc.) must be honoured or refused as a
+    # message as the ZIP backend. Nameless streams are out of scope here.
+    #
+    # Two things narrow it. ``volume_count > 1`` means ``resolve_source`` already found
+    # the whole set on disk and concatenated it, and a joined 7-Zip ``.zip.NNN`` set *is*
+    # an ordinary single-volume ZIP (its ``-v`` is a raw byte split); the joined source
+    # keeps part one's name, so this refuse would otherwise fire on the very set it just
+    # rejoined. And an explicit ``format=TAR_GZ`` (etc.) must be honoured or refused as a
     # *format conflict*, never as a ZIP multi-volume error (P8 / directory conflict
-    # below). Nameless streams are out of scope here.
-    if is_zip_split_segment_name(archive_name) and (
-        format is None or format == ArchiveFormat.ZIP
+    # below).
+    #
+    # What is left: Info-ZIP's genuinely spanned ``.zNN``, and a lone part whose siblings
+    # are absent — both cases where "rejoin first" is still the right answer.
+    if (
+        resolved.volume_count == 1
+        and is_zip_split_segment_name(archive_name)
+        and (format is None or format == ArchiveFormat.ZIP)
     ):
         raise UnsupportedFeatureError(
             ZIP_MULTI_VOLUME_MSG,
@@ -288,9 +298,14 @@ def open_archive(
         detected = detect_format(reader_source, collector=collector)
         resolved_format = detected.format
 
+    # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.
+    # Info-ZIP's spanned sets never reach this point as a joined source (they are not
+    # volume-shaped to ``discover_volume_siblings``); an explicitly passed sequence of
+    # their parts is still caught by the reader's EOCD disk-field check.
     if resolved.volume_count > 1 and resolved_format.container not in (
         ContainerFormat.SEVEN_Z,
         ContainerFormat.RAR,
+        ContainerFormat.ZIP,
     ):
         _raise_multi_volume_not_supported(resolved_format, archive_name)
 

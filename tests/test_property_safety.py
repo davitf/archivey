@@ -44,10 +44,11 @@ from archivey.internal.naming import (
 )
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.volumes import (
-    _7Z_VOLUME_RE,
+    _NUMBERED_VOLUME_RE,
     _RAR_PART_RE,
     _RAR_RNN_RE,
-    _part_number_from_name,
+    _numbered_part_number,
+    _rar_part_number,
     _rnn_part_number,
     discover_volume_siblings,
 )
@@ -508,6 +509,8 @@ def test_resolve_link_pinned_examples(
 
 _volume_style_names = st.one_of(
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.7z\.\d{1,4}", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.zip\.\d{1,4}", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.z\d{2,3}", fullmatch=True),
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.part\d{1,3}\.rar", fullmatch=True),
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.r\d{2}", fullmatch=True),
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.rar", fullmatch=True),
@@ -517,27 +520,33 @@ _volume_style_names = st.one_of(
 
 @given(name=_volume_style_names)
 def test_volume_part_helpers_total(name: str) -> None:
-    n1 = _part_number_from_name(name)
-    n2 = _part_number_from_name(name, part_group="part")
-    n3 = _rnn_part_number(name)
-    assert isinstance(n1, int) and n1 >= 0
-    assert isinstance(n2, int) and n2 >= 0
-    assert isinstance(n3, int) and n3 >= 0
+    for number in (
+        _numbered_part_number(name),
+        _rar_part_number(name),
+        _rnn_part_number(name),
+    ):
+        assert isinstance(number, int) and number >= 0
     # Regex matchers themselves must not raise.
-    _7Z_VOLUME_RE.match(name)
+    _NUMBERED_VOLUME_RE.match(name)
     _RAR_PART_RE.match(name)
     _RAR_RNN_RE.match(name)
 
 
 @given(
-    base=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,8}", fullmatch=True),
+    # A base ending in `.partN` is the shape that used to capture the numbered-volume
+    # key: every part of `my.part1.zip.001 … .003` parsed as 1, so concatenation order
+    # fell back to whatever `iterdir` returned.
+    base=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,8}(\.part[1-9])?", fullmatch=True),
+    extension=st.sampled_from(["7z", "zip"]),
     parts=st.lists(
         st.integers(min_value=1, max_value=99), min_size=2, max_size=5, unique=True
     ),
 )
-def test_volume_part_numbers_sort_stable(base: str, parts: list[int]) -> None:
-    names = [f"{base}.7z.{p:03d}" for p in parts]
-    parsed = [_part_number_from_name(n) for n in names]
+def test_volume_part_numbers_sort_stable(
+    base: str, extension: str, parts: list[int]
+) -> None:
+    names = [f"{base}.{extension}.{p:03d}" for p in parts]
+    parsed = [_numbered_part_number(n) for n in names]
     assert parsed == parts
     assert sorted(parsed) == sorted(parts)
     assert len(parsed) == len(set(parsed))
