@@ -1461,12 +1461,11 @@ class ZipReadBackend(ReadBackend):
         ),  # empty archive (EOCD)
         MagicSignature(0, b"\x50\x4b\x07\x08", ArchiveFormat.ZIP),  # spanned marker
     )
-    # Local header only — and not because the other two are rarer inside an executable,
-    # which they are not. A local-header hit can be confirmed (SFX_HIT_VALIDATOR below);
-    # an EOCD or spanned marker found mid-window can be confirmed by nothing, and what it
-    # would identify is an empty archive or a spanning marker. See dev-docs/formats/zip.md
-    # §2.1 and topics/prefixed-archives.md §4, which measured six false PK\x05\x06 hits
-    # across 3 320 ELF/PE files and zero true ones.
+    # Local header only. The other two ZIP magics are not useful search targets inside a
+    # stub window: PK\x05\x06 would precede a local header only for an empty archive, and
+    # PK\x07\x08 is the spanning marker (7-Zip's -sfx -v keeps the stub as a standalone
+    # executable, not concatenated with the volumes). Neither carries fields
+    # SFX_HIT_VALIDATOR can cheaply confirm — see formats/zip.md §2.1.
     SFX_MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(0, b"\x50\x4b\x03\x04", ArchiveFormat.ZIP),
     )

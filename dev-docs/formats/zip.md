@@ -93,43 +93,48 @@ ZIP declares three magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x
 archive) and `PK\x07\x08` (spanned marker) — and five extensions: `.zip`, `.jar`, `.pyz`,
 `.whl`, `.apk`.
 
-Only the local header is offered as a scan needle for prefixed archives. Not because the
-other two are rarer inside an executable — `PK\x03\x04` appears in stubs too, which is what
-the validator below is for — but because a local-header hit can be confirmed and theirs
-cannot: there is no cheap structure to check `PK\x05\x06` or `PK\x07\x08` against, and what
-a hit would buy is an empty archive or a spanning marker. A survey of 3 320 ELF and PE files
-found six `PK\x05\x06` matches, every one a string constant parsing to nonsense
+When searching a prefixed archive for a ZIP, archivey looks only for the local header
+(`PK\x03\x04`). The other two magics are not useful search targets: `PK\x05\x06` would
+appear before a local header only for an empty archive, and `PK\x07\x08` is the spanning
+marker — 7-Zip's own `-sfx -v` writes the stub as a standalone executable and the volumes
+as separate `.zip.NNN` files, so a concatenated stub-plus-spanned-ZIP is not the shape that
+tool produces. Neither magic carries fields a cheap check can validate the way a local
+header can. A survey of 3 320 ELF and PE files found six `PK\x05\x06` matches, every one a
+string constant parsing to nonsense
 ([`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §4).
 
-A needle hit is confirmed by `validate_zip_local_header` (`internal/zip_detect.py`) before it
-is reported: version-needed in range, no reserved general-purpose bits, a known method id, a
-non-empty name, and name+extra within the source. That last pair is what rejects
-`PK\x03\x04` followed by the zero-fill an ELF or PE stub pads with.
-
-The validator's method table is deliberately **wider** than the set archivey can decode: a
-member using a method we refuse to read is still a ZIP, and identity is not a support
-claim.
+A local-header hit is confirmed by `validate_zip_local_header` (`internal/zip_detect.py`)
+before it is reported: version-needed in range, no reserved general-purpose bits, a known
+method id, a non-empty name, and name+extra within the source. That is what rejects a bare
+`PK\x03\x04` followed by zeros — version-needed reads as 0 and the name length as 0, which
+is the shape you get when those four bytes land in a zero-filled region rather than at a
+real header. The validator's method table is deliberately **wider** than the set archivey
+can decode: a member using a method we refuse to read is still a ZIP, and identity is not a
+support claim.
 
 Two things are ZIP-specific rather than general in the shared detector:
 
-- Prefixed ZIPs are found by the cued forward scan — the cue is the prefix itself, an `MZ`,
-  ELF or `#!` header at offset 0 — and reported as `ZIP` with a `payload_offset`. The hit
-  lands ahead of the content probes, the tier that reports headerless stream codecs, so a
-  stub with a ZIP behind it comes back as a ZIP rather than as a guess at the stub's own
-  bytes. The cue set, the scan window, the budget tiers and why a hit is validated are shared
-  with 7z and RAR — [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is
-  ZIP's alone: the needle and its validator above, the offset conventions in §3, and the fact
+- Prefixed ZIPs are found only when the leading bytes look like an executable or script
+  (`MZ`, ELF, or `#!` at offset 0). That gate is what keeps the forward search from reading
+  up to 2 MiB of every file a caller opens. A hit is reported as `ZIP` with a
+  `payload_offset`, ahead of the content probes (the tier that reports headerless stream
+  codecs), so a stub with a ZIP behind it comes back as a ZIP rather than as a guess at the
+  stub's own bytes. `THOROUGH` does not lift the gate today — a cue-free exhaustive scan is
+  designed and not shipped. The cue set, the scan window, the budget tiers and why a hit is
+  validated are shared with 7z and RAR —
+  [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone: the
+  local-header search and its validator above, the offset conventions in §3, and the fact
   that ZIP is the only format that can locate itself from the end.
 - A **tail probe** — locating the EOCD directly instead of scanning forward — is designed and
   not shipped, and ZIP is the only format it can serve. Until it lands, a prefixed ZIP behind
-  bytes that fire no cue (a JPEG polyglot, a plain concatenation) is not detected, though
-  `open_archive(..., format=ZIP)` reads it. The probe cannot be cued: a ZIP a cue would reach
-  is already found. So it means one tail read on every source — free on a hit, since the
-  backend reads the EOCD anyway, and pure waste on a miss, which is most files. Calling
-  `open_archive` rather than `detect_format()` does not change that arithmetic; it runs the
-  same detection and wastes the same read. What gates it is that nobody has measured what
-  that wasted seek costs on a cold cache or a remote source — not false positives, which
-  validation handles.
+  bytes that look like neither an executable nor a script (a JPEG polyglot, a plain
+  concatenation) is not detected, though `open_archive(..., format=ZIP)` reads it. The probe
+  cannot be gated the same way: a ZIP an executable cue would reach is already found. So it
+  means one tail read on every source — free on a hit, since the backend reads the EOCD
+  anyway, and pure waste on a miss, which is most files. Calling `open_archive` rather than
+  `detect_format()` does not change that arithmetic; it runs the same detection and wastes
+  the same read. What gates it is that nobody has measured what that wasted seek costs on a
+  cold cache or a remote source — not false positives, which validation handles.
 
 ### 2.2 Open and list
 
@@ -153,22 +158,25 @@ name does not, because ASCII decodes identically under both and nothing was over
 The sniff is validation rather than guessing: UTF-8 is self-checking, so a clean decode is
 near-conclusive evidence. No equivalent is possible for the legacy tail — see §5.
 
-Backslashes are decoded by origin, not globally. A DOS/FAT-origin entry's `\` is a path
-separator; a Unix-origin entry keeps it as a literal filename character.
+Backslashes are normalised on `name` by origin, not globally: a DOS/FAT-origin entry's `\`
+is treated as a path separator and rewritten to `/`; a Unix-origin entry keeps `\` as a
+literal filename character. `raw_name` always keeps the stored bytes unchanged.
 
-**Metadata mapping.**
+**Metadata mapping.** Stdlib `zipfile` hands us the central-directory fields and the raw
+`extra` blob; it does **not** classify symlinks or parse NTFS / Extended Timestamp extras
+into datetime fields — archivey does both from the values `ZipInfo` exposes.
 
 | `ArchiveMember` field | Source | Absent when |
 | --- | --- | --- |
-| `name` | CDH name bytes, decoded as above | — |
-| `raw_name` | The stored bytes, verbatim | — |
+| `name` | CDH name bytes, decoded as above; `\` → `/` only for DOS/FAT-origin entries | — |
+| `raw_name` | The stored bytes, verbatim (no backslash rewrite) | — |
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
-| `modified` / `accessed` / `created` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
-| `type` | Unix mode where present, else the directory marker and symlink hints | — |
+| `modified` / `accessed` / `created` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra` | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
+| `type` | Directory via `ZipInfo.is_dir()`; symlink via Unix mode bits in `external_attr` (`zipfile` has no `is_symlink`) | — |
 | `link_target` | The member's **data**, not its metadata | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member |
 | `compression` | `compress_type` → `CompressionMethod` | — |
 | `is_encrypted` | `flag_bits & 0x1` | — |
-| `hashes["crc32"]` | CDH CRC, as four big-endian bytes | WinZip AE-2 members — the format zeroes the field and the HMAC is the integrity signal |
+| `hashes["crc32"]` | CDH CRC, as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
 | `comment` | CDH member comment | The entry stores none, which is the common case |
 | `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
 | `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members | — |
@@ -301,8 +309,10 @@ ZIP-specific only. General extraction and name hazards are §2.4.
   zip-of-zips amplifies one level at a time (O6).
 - **Overlapping entries** are a distinct crafted shape, caught by stdlib's open-time
   overlap guard and translated to `CorruptionError`.
-- **ZipCrypto password confirmation is a measurable side channel by design**: the STORED
-  path reads the member to disambiguate candidates. Documented cost, not a leak.
+- **ZipCrypto multi-password confirmation can reveal which candidate was tried, by timing
+  and by how much ciphertext is read**: the STORED path has to scan the whole member to
+  tell candidates apart. That cost is documented and deliberate, not an accidental leak of
+  the password bytes themselves.
 - The real-world case behind the cross-platform name policies arrived as a ZIP: a macOS
   archive containing a `stuff_etc.` folder, a trailing dot Win32 silently trims. Because
   the offending segment is a directory, rejecting it takes every member beneath it. See
@@ -315,15 +325,15 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** | The index is at the end (§1). A native forward-walking reader would change this |
+| A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** / **library** | The index is at the end (§1). A native forward-walking reader could stream members in order, but some metadata (the authoritative CDH run, comments, external attributes) lives only in that end directory |
 | One member name whose UTF-8 flag lies makes the **whole archive** unlistable | **library** | Stdlib decodes flagged names strictly while parsing the central directory, so the failure is archive-wide rather than confined to the bad entry. [`open-issues.md`](../open-issues.md) P4 |
-| A `.z01`…`.zip` split set is refused with "rejoin first" | **format** for now | ZIP addresses entries by (disk, offset), which stdlib cannot resolve and naive concatenation cannot fake. [`open-issues.md`](../open-issues.md) P2 |
-| A `.zip.001`…`.zip.00N` split set — 7-Zip's naming — is not recognised as split at all: the first part reports `CorruptionError`, the rest report `FormatDetectionError` | **archivey** | Valid input, wrong error. The `.z01` rule is a filename pattern that does not cover this convention. Unregistered as of this writing; same shape as `open-issues.md` P17 |
-| An EOCD declaring a non-zero disk number opens and lists normally | **archivey** | Those fields are parsed by stdlib and never checked; only the ZIP64 locator path refuses, and it does so by matching stdlib's exception text. `format-zip` has a scenario claiming otherwise |
+| A `.z01`…`.zip` split set is refused with "rejoin first" | **library** | Entries address `(disk, offset-within-disk)`, which stdlib cannot resolve and naive concatenation cannot fake. A native reader that understood disk numbers could. [`open-issues.md`](../open-issues.md) P2 |
+| A `.zip.001`…`.zip.00N` split set — 7-Zip's naming — is not recognised as split at all: the first part reports `CorruptionError`, the rest report `FormatDetectionError` | **archivey** | Valid input, wrong error. The `.z01` rule is a filename pattern that does not cover this convention. Closed by the #285/#286 stack rather than registered here |
+| An EOCD declaring a non-zero disk number opens and lists normally | **archivey** | Those fields are parsed by stdlib and never checked; only the ZIP64 locator path refuses, and it does so by matching stdlib's exception text. `format-zip` has a scenario claiming otherwise. Closed by #285 |
 | A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk LFHs forward |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted and surface later as corruption | **format** | One-byte verifier. Confirmation narrows it; nothing eliminates it |
-| A prefixed ZIP behind bytes that fire no cue is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
+| A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 
 ## 6. Decisions
 
@@ -332,7 +342,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Stdlib `zipfile` for the central directory | Zero-dependency, no packaging burden, well-tested parser | `python-libarchive-c` — faster and broader, at the cost of a native dependency ([ADR 0006](../decisions/0006-stdlib-zipfile.md)) |
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
 | Refuse a non-seekable source rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
-| Seeking and concurrent member streams off by default, on ZIP too | Concurrent opens genuinely are free here, and a rewind re-decodes one member rather than a whole solid block — which is the trap, not the reassurance: leaving them on lets someone test on ZIP and ship a footgun on TAR or 7z. The strict default is reversible before 1.0; the permissive one is not | Enabling them where they are cheap ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
+| Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle: on a caller-supplied stream that means serialized seeks (multiplexing), same as every other format; ZIP's advantage is only the absence of cross-member decode dependency. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Reject split sets rather than approximate them | Naive segment concatenation is unreliable and would mis-read data rather than fail | Concatenating segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
