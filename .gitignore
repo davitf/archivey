@@ -13,3 +13,6 @@ site/
 
 # Local Atheris crash / corpus output (CI uploads these as job artifacts)
 artifacts/
+
+# Claude Code agent worktrees (transient; .claude/ is otherwise tracked)
+.claude/worktrees/
