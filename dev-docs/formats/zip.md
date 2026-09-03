@@ -37,7 +37,7 @@ them.
 | --- | --- | --- |
 | **prefix** | — | Arbitrary leading bytes. **Not part of the ZIP structure**: no field records it or its length, and nothing inside the archive has to change for it to be there. See §3 |
 | **LFH** — local file header | `PK\x03\x04` | One per member, immediately before that member's compressed bytes. Carries the name, extra fields, method and flags, and — unless bit 3 is set — the sizes and CRC. Its metadata is a *copy*; the CDH is authoritative |
-| **DD** — data descriptor | `PK\x07\x08`, optional | Present only when general-purpose bit 3 is set: the CRC and both sizes, written *after* the data because a streaming writer did not know them in advance. The same four bytes at offset 0 mean something else — the split-archive spanning marker |
+| **DD** — data descriptor | `PK\x07\x08`, optional | Present only when general-purpose bit 3 is set: the CRC and both sizes, written *after* the data because a streaming writer did not know them in advance. The same signature at offset 0 means something else — the split-archive spanning marker |
 | **CDH** — central directory header | `PK\x01\x02` | One per member, all of them together near the end; the run of CDHs is *the central directory*. Each points back at its LFH through `header_offset` and adds what the LFH has no room for: external attributes (mode), version made by (create system), the member comment, the starting disk |
 | **ZIP64 EOCD** + locator | `PK\x06\x06`, `PK\x06\x07` | Wider versions of the EOCD fields, present when a count or an offset does not fit in 32 bits |
 | **EOCD** — end of central directory | `PK\x05\x06` | 22 fixed bytes plus an optional comment: total entries, the size of the CDH run, `offset_cd` (where that run starts), the disk numbers, the comment length. The only record found by *position* rather than by a pointer |
@@ -60,9 +60,17 @@ The backwards search bound is derived, not chosen: `comment_length` is a `uint16
 record cannot begin more than 65535 + 22 bytes before the end. A larger bound cannot find
 a valid EOCD and a smaller one rejects legal archives, so it is not configurable.
 
-**Members are independent.** Each member has its own LFH and its own compressed byte range, with no cross-member state. So random access is `DIRECT`, seeking within a
-member and holding two member streams open are both cheap, and there is no solid-block
-cost model. Both capabilities are still off by default — see §6.
+**Members are independent.** Each member has its own LFH and its own compressed byte range,
+with no cross-member state. So reaching any member is a seek rather than a walk (`DIRECT`),
+two members can be open at once because neither decoder depends on the other's state, and
+there is no solid-block cost model. A solid 7z or RAR block gives you none of that.
+
+Seeking *within* a member is a different question and the answer is no: a compressed member
+decodes sequentially, so a backward seek re-decodes from the start of the member, or from the
+nearest seek point when the deflate accelerator is in play. Only STORED members are random
+access in the real sense. Past a megabyte of re-decoding the stream says so, with
+`STREAM_REWIND_REDECOMPRESSES`. **Seekable member streams** and **concurrent member streams**
+are both off by default even here — see §6.
 
 **Sizes and the CRC may arrive after the data.** With general-purpose bit 3 set, the LFH
 carries zeros and a DD follows the compressed bytes. The CDH carries the real values, so a random-access read is unaffected; a forward-only
@@ -85,13 +93,18 @@ ZIP declares three magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x
 archive) and `PK\x07\x08` (spanned marker) — and five extensions: `.zip`, `.jar`, `.pyz`,
 `.whl`, `.apk`.
 
-Only the local header is offered as a scan needle for prefixed archives. The other two are
-legitimate ZIP magic *at offset 0* but as needles inside a 2 MiB stub window they would
-claim any executable containing those four bytes. A needle hit is confirmed by
-`validate_zip_local_header` (`internal/zip_detect.py`) before it is reported: version-needed
-in range, no reserved general-purpose bits, a known method id, a non-empty name, and
-name+extra within the source. That last pair is what rejects `PK\x03\x04` followed by the
-zero-fill an ELF or PE stub pads with.
+Only the local header is offered as a scan needle for prefixed archives. Not because the
+other two are rarer inside an executable — `PK\x03\x04` appears in stubs too, which is what
+the validator below is for — but because a local-header hit can be confirmed and theirs
+cannot: there is no cheap structure to check `PK\x05\x06` or `PK\x07\x08` against, and what
+a hit would buy is an empty archive or a spanning marker. A survey of 3 320 ELF and PE files
+found six `PK\x05\x06` matches, every one a string constant parsing to nonsense
+([`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §4).
+
+A needle hit is confirmed by `validate_zip_local_header` (`internal/zip_detect.py`) before it
+is reported: version-needed in range, no reserved general-purpose bits, a known method id, a
+non-empty name, and name+extra within the source. That last pair is what rejects
+`PK\x03\x04` followed by the zero-fill an ELF or PE stub pads with.
 
 The validator's method table is deliberately **wider** than the set archivey can decode: a
 member using a method we refuse to read is still a ZIP, and identity is not a support
@@ -99,19 +112,24 @@ claim.
 
 Two things are ZIP-specific rather than general in the shared detector:
 
-- Prefixed ZIPs are found by the cued forward scan and reported as `ZIP` with a
-  `payload_offset`, never as a stream codec. The cue set, the scan window, the budget tiers
-  and why a hit is validated are shared with 7z and RAR —
-  [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone: the
-  needle and its validator above, the offset conventions in §3, and the fact that ZIP is
-  the only format that can locate itself from the end.
-- A **tail probe** — locating the EOCD directly instead of scanning forward — is designed
-  and not shipped, and ZIP is the only format it can serve. Until it lands, a prefixed ZIP behind bytes that fire no cue (a JPEG
-  polyglot, a plain concatenation) is not detected, though `open_archive(..., format=ZIP)`
-  reads it. Under `open_archive` the probe would be nearly free, since the backend reads
-  the EOCD anyway; under a bare `detect_format()` it is a tail read on every file,
-  including the overwhelming majority that are not ZIPs. That asymmetry, not false
-  positives, is why it is gated.
+- Prefixed ZIPs are found by the cued forward scan — the cue is the prefix itself, an `MZ`,
+  ELF or `#!` header at offset 0 — and reported as `ZIP` with a `payload_offset`. The hit
+  lands ahead of the content probes, the tier that reports headerless stream codecs, so a
+  stub with a ZIP behind it comes back as a ZIP rather than as a guess at the stub's own
+  bytes. The cue set, the scan window, the budget tiers and why a hit is validated are shared
+  with 7z and RAR — [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is
+  ZIP's alone: the needle and its validator above, the offset conventions in §3, and the fact
+  that ZIP is the only format that can locate itself from the end.
+- A **tail probe** — locating the EOCD directly instead of scanning forward — is designed and
+  not shipped, and ZIP is the only format it can serve. Until it lands, a prefixed ZIP behind
+  bytes that fire no cue (a JPEG polyglot, a plain concatenation) is not detected, though
+  `open_archive(..., format=ZIP)` reads it. The probe cannot be cued: a ZIP a cue would reach
+  is already found. So it means one tail read on every source — free on a hit, since the
+  backend reads the EOCD anyway, and pure waste on a miss, which is most files. Calling
+  `open_archive` rather than `detect_format()` does not change that arithmetic; it runs the
+  same detection and wastes the same read. What gates it is that nobody has measured what
+  that wasted seek costs on a cold cache or a remote source — not false positives, which
+  validation handles.
 
 ### 2.2 Open and list
 
@@ -147,11 +165,12 @@ separator; a Unix-origin entry keeps it as a literal filename character.
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
 | `modified` / `accessed` / `created` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
 | `type` | Unix mode where present, else the directory marker and symlink hints | — |
-| `link_target` | The member's **data**, not its metadata | The archive is encrypted and no password is available — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, with no secret in the payload |
+| `link_target` | The member's **data**, not its metadata | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member |
 | `compression` | `compress_type` → `CompressionMethod` | — |
 | `is_encrypted` | `flag_bits & 0x1` | — |
 | `hashes["crc32"]` | CDH CRC, as four big-endian bytes | WinZip AE-2 members — the format zeroes the field and the HMAC is the integrity signal |
-| `comment`, `create_system` | CDH | Not recorded |
+| `comment` | CDH member comment | The entry stores none, which is the common case |
+| `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
 | `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members | — |
 
 Raw extra-field blobs are not surfaced. Duplicate names are legal and are not merged:
@@ -160,16 +179,20 @@ in the reader spine so ZIP behaves like every other format.
 
 ### 2.3 Member data
 
-**Stdlib's decoders are not used.** archivey locates the member's raw compressed bytes with
+**`zipfile`'s own decoders are not used** — meaning `ZipExtFile`, not the standard library:
+the codec layer still ends at `zlib`, `bz2` and `lzma` for the methods they cover. archivey
+locates the member's raw compressed bytes with
 a bounded LFH parse (the fixed 30 bytes plus the local name and extra lengths, with
 absurd-length rejection and a name cross-check against the CDH), slices the source, and dispatches on the ZIP method id to the
 shared codec layer.
 
-The reason is coverage and uniformity, in that order. Stdlib decodes STORED, DEFLATE, BZIP2
-and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the registry
-already advertised for ZIP. It also puts ZIP member reads on the same `VerifyingStream` and
-the same exception translation as every other backend, so a corrupt body raises
-`CorruptionError` and a cut-short one raises `TruncatedError` through shared code.
+The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
+BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
+registry already advertised for ZIP. It also puts ZIP member reads on the same
+`VerifyingStream` and the same exception translation as every other backend, so a corrupt
+body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
+code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
+since `use_rapidgzip` covers raw deflate.
 
 Encryption is the one place the split is uneven:
 
@@ -309,7 +332,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Stdlib `zipfile` for the central directory | Zero-dependency, no packaging burden, well-tested parser | `python-libarchive-c` — faster and broader, at the cost of a native dependency ([ADR 0006](../decisions/0006-stdlib-zipfile.md)) |
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
 | Refuse a non-seekable source rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
-| Seeking and concurrent member streams off by default, on ZIP too | Both are free here and expensive or wrong elsewhere; leaving them on lets someone test on ZIP and ship a footgun on TAR or 7z. The strict default is reversible before 1.0; the permissive one is not | Enabling them where they are cheap ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
+| Seeking and concurrent member streams off by default, on ZIP too | Concurrent opens genuinely are free here, and a rewind re-decodes one member rather than a whole solid block — which is the trap, not the reassurance: leaving them on lets someone test on ZIP and ship a footgun on TAR or 7z. The strict default is reversible before 1.0; the permissive one is not | Enabling them where they are cheap ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Reject split sets rather than approximate them | Naive segment concatenation is unreliable and would mis-read data rather than fail | Concatenating segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
@@ -368,7 +391,7 @@ the reader uses `orig_filename` for the same reason.
 
 ## 9. References
 
-- APPNOTE: §4.3.6 overall format · §4.3.9 data descriptor · §4.3.16 EOCD · §4.4.4
+- [APPNOTE.TXT](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT): §4.3.6 overall format · §4.3.9 data descriptor · §4.3.16 EOCD · §4.4.4
   general-purpose flags (bits 3 and 11) · §4.4.6 MS-DOS date/time · §4.4.15 external file
   attributes · §4.5.5 extended timestamp · §7 traditional encryption · §8 splitting and
   spanning · Appendix D CP437

@@ -21,15 +21,26 @@ offset conventions, which are ZIP's and nobody else's.
 The first two are meant to be *run*; the last two are not. Nothing in the bytes says which,
 so the machinery below reports what it found and does not classify intent.
 
-## 2. Three ways to find one
+## 2. Ways to find one
 
-Only the second is shipped today.
+Only the cued forward scan is shipped today.
 
 | Tier | How it works | Bound | Status |
 | --- | --- | --- | --- |
 | **Tail probe** | Some formats locate themselves from the end, so no search is needed — only the willingness to look. | Set by the format (ZIP: 65 557 bytes) | **Designed, not shipped.** Held out of the default budget pending a seek-cost measurement |
 | **Cued forward scan** | Leading bytes look like a prefix → search forward for each backend's declared needle. | `min(size, SFX_MAX)`, `SFX_MAX` = 2 MiB | **Shipped** |
 | **Exhaustive scan** | Search the whole source, for a caller who knows they are holding a firmware image. | Caller's `max_scan_bytes` | Designed, not shipped |
+| **Prefix analysis** | Do not search at all: read the stub, which for some families states where the payload begins and what made it. | None — one seek to the stated offset | Parked in [`IDEAS.md`](../IDEAS.md) |
+
+**Prefix analysis is not a tier, which is why it is last.** A makeself `.run` is a shell
+script that exports `SKIP` (the header's line count) and `COMPRESS`, so the payload offset is
+`head -n $SKIP | wc -c` and the compressor is named outright — no window, no needle, and no
+false `1f 8b 08` picked up from the script's own text. It also names compressors archivey
+cannot read (`bzip3`, `lzo`) instead of reporting a needle miss. But it works only for stub
+families somebody taught it, so it can never replace the scan; it can only short-circuit it.
+The cost of promoting it is a corpus of current and old installers and a definition of "looks
+like makeself" that does not turn into a second shell parser — see `IDEAS.md` §API &
+ergonomics.
 
 The scan runs second in the detector's order — near magic → **SFX scan** → far magic →
 content probes → extension — and reports `PROBABLE` with `detected_by="sfx_scan"` and a
@@ -69,9 +80,12 @@ The numbers behind the current gate, measured on a `/usr` tree:
 
 The tail probe is gated for the opposite reason. It cannot be cued — a ZIP with `PK\x03\x04`
 at offset 0 is already found by near magic, so cueing it on a front hit would only find ZIPs
-that were already found. Uncued means one tail read on *every* source, and most sources are
-not ZIPs. Under `open_archive` it is nearly free (the backend reads the EOCD anyway); under a
-bare `detect_format()` it is new work. That asymmetry is the open cost question.
+that were already found. Uncued means one tail read on *every* source. On a hit that read is
+nearly free, because whatever opens the archive reads the EOCD anyway; on a miss it is pure
+waste, and most sources are not ZIPs. Which entry point the caller used does not change that
+arithmetic: `open_archive` runs the same detection as a bare `detect_format()` and wastes the
+same read on the same files. The open cost question is what that wasted seek is worth on a
+cold cache or a remote source, which nobody has measured.
 
 ## 4. Validate the hit, do not trust the magic
 
@@ -84,9 +98,12 @@ declares a validator, and the detector reports a hit only after it passes.
 | 7z | `37 7A BC AF 27 1C` | `StartHeaderCRC` over the 20-byte StartHeader, plus `offset + 32 + NextHeaderOffset + NextHeaderSize` landing at EOF |
 | RAR | RAR3 and RAR5 markers | The CRC-checked main header that follows the marker |
 
-ZIP's other two magics are deliberately **not** needles. `PK\x05\x06` and `PK\x07\x08` are
-legitimate ZIP magic at offset 0, but inside a 2 MiB window they would claim any executable
-that happens to contain those four bytes.
+ZIP's other two magics are deliberately **not** needles — and not because they turn up in
+executables more often than `PK\x03\x04` does. They turn up about as often; the difference is
+that a local-header hit can be *confirmed* and these two cannot. There is no cheap structure
+to check them against, and what a hit would buy is an empty archive or a spanning marker, so
+every match inside the window would be taken on faith. The survey below is what that faith
+would have cost on one machine.
 
 Validators return a `HitOutcome` rather than a boolean, so a later evidence ledger can treat
 a damaged-but-identified payload as identified without changing any signature.
