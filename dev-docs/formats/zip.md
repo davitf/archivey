@@ -247,7 +247,21 @@ is a real sample.
 
 **Producers disagree about encryption defaults.** 7-Zip's `-tzip` default is ZipCrypto and
 `-mem=AES256` selects WinZip AES; stdlib `zipfile` writes neither. That is why the
-encrypted corpus rows shell out to `7z` and skip silently without it.
+encrypted corpus rows shell out to `7z` and skip silently without it. Reading is uneven
+too: Info-ZIP `unzip` 6.00, still the default `unzip` on Debian, cannot read WinZip AES at
+all and exits 81 ("unsupported compression method") on any method-99 member — an archive
+archivey reads may be one the system CLI cannot.
+
+**And about the AES vendor version.** AE-1 stores the plaintext CRC in the headers; AE-2
+zeroes it, because for a very small file the CRC narrows the plaintext independently of the
+cipher. 7-Zip writes AE-2, which is the modern default — but `pyzipper`, the
+`zipfile` fork that adds WinZip AES to Python, wrote **AE-1 for every member regardless of
+size** from 0.3.0 (2019-02) through 0.3.6 (2022-07), and 0.3.6 was the only release
+available until 0.4.0 switched to AE-2 on 2026-05-14. Stdlib writes no encryption at all,
+so a Python program emitting an AES ZIP in those four years was almost certainly emitting
+AE-1. It is not a legacy branch kept for symmetry, and 0.4.0 still emits it under an opt-in
+`conditionally_include_crc` for members of at least 20 bytes. `tests/fixtures/external/aes_ae1_pyzipper036.zip`
+is a real sample; the CRC is verified on AE-1 and absent on AE-2 (§2.3).
 
 ZIP64 is not exotic. A central directory of 70 000 entries lists correctly through stdlib.
 
@@ -307,16 +321,6 @@ Gaps in what *we* know, not in what the format says — each would change someth
 answered, and none can be settled by reading more code. Distinct from §5: a pitfall is
 behaviour a caller already sees.
 
-- **Does anything still produce WinZip AE-1?** The vendor version distinguishes AE-1,
-  which stores the real CRC of the plaintext, from AE-2, which zeroes it, and archivey
-  handles both symmetrically — `zip_aes.py` accepts vendor version 1 or 2, and the reader
-  withholds `HashAlgorithm.CRC32` only for AE-2. But every AE-1 case in
-  `tests/test_zip_aes.py` is assembled by hand (`_build_aes_zip`): the fixtures we can
-  *generate* come back AE-2 every time, because that is what `7z -mem=AES256` writes. So
-  the AE-1 branch is exercised only against bytes we wrote ourselves, and nobody here
-  knows whether it carries real traffic. Settling it needs corpus evidence. Until then it
-  stays: it is a two-branch difference, and reading an AE-1 member wrongly is worse than
-  carrying an unused path.
 - **Is PKWARE Strong Encryption worth an explicit refusal?** A different mechanism from
   WinZip AES — APPNOTE §7, general-purpose bit 6, extra field `0x0017`, optionally
   encrypting the central directory itself (bit 13) — and unmentioned anywhere else in this
@@ -346,12 +350,18 @@ behaviour a caller already sees.
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
 | Overlapping-entry bomb | `::test_overlapping_entries_bomb_translated_to_corruption` |
 | AE-1/AE-2, wrong password, tampered ciphertext | `tests/test_zip_aes.py` |
+| Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |
+| A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass | `tests/test_zip_multipassword.py` |
 | Cross-format member equivalence, per-method decode, AE-2 CRC absence | `tests/test_corpus_sweep.py` (13 ZIP corpus entries) |
 
 **Building fixtures.** Stdlib `zipfile` cannot write encryption, so encrypted fixtures shell
 out to `7z` (`-mem=AES256` for WinZip AES, ZipCrypto by default) and skip when it is absent —
-one of the ~109 tests that vanish quietly on an unprovisioned container. `-mm=Deflate64`,
+one of the ~109 tests that vanish quietly on an unprovisioned container. Nothing on the
+image writes **AE-1**, so those fixtures are hand-built by `tests/zip_aes_fixture.py`; what
+keeps that builder honest is `7z` accepting its output while rejecting the same bytes with
+a corrupted CRC, plus one committed third-party sample
+([`tests/fixtures/external/README.md`](../../tests/fixtures/external/README.md)). `-mm=Deflate64`,
 `-mm=PPMd`, `-mm=BZip2` and `-mm=LZMA` produce the extended methods. The backslash fixtures
 are committed rather than generated because `zipfile` rewrites `ZipInfo.filename` on Windows;
 the reader uses `orig_filename` for the same reason.
