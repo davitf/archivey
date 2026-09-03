@@ -98,19 +98,29 @@ When searching a prefixed archive for a ZIP, archivey looks only for the local h
 appear before a local header only for an empty archive, and `PK\x07\x08` is the spanning
 marker — 7-Zip's own `-sfx -v` writes the stub as a standalone executable and the volumes
 as separate `.zip.NNN` files, so a concatenated stub-plus-spanned-ZIP is not the shape that
-tool produces. Neither magic carries fields a cheap check can validate the way a local
+tool produces. Measured: `7z a -tzip -sfx -v40k` left a 416 KB stub containing **no ZIP
+signature at all** beside parts that join into an ordinary byte-split ZIP starting with
+`PK\x03\x04` and carrying no spanning marker anywhere. Neither magic carries fields a cheap check can validate the way a local
 header can. A survey of 3 320 ELF and PE files found six `PK\x05\x06` matches, every one a
 string constant parsing to nonsense
 ([`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §4).
 
 A local-header hit is confirmed by `validate_zip_local_header` (`internal/zip_detect.py`)
 before it is reported: version-needed in range, no reserved general-purpose bits, a known
-method id, a non-empty name, and name+extra within the source. That is what rejects a bare
-`PK\x03\x04` followed by zeros — version-needed reads as 0 and the name length as 0, which
-is the shape you get when those four bytes land in a zero-filled region rather than at a
-real header. The validator's method table is deliberately **wider** than the set archivey
-can decode: a member using a method we refuse to read is still a ZIP, and identity is not a
-support claim.
+method id, a non-empty name, and name+extra within the source.
+
+**The first of those does nearly all the work.** `PK\x03\x04` occurs 148 times across
+3 332 ELF and PE files under `/usr/bin`, `/usr/lib`, `/usr/local` and `/opt`, and the
+validator rejects every one on version-needed alone, which must fall in 10–99 and instead
+reads as whatever the surrounding bytes happen to be. Twenty-three of the 148 are the magic
+followed by a run of zeros — so that shape is real rather than a story about padding, and
+it fails the same check, since 0 is below the floor. The name and name+extra checks never
+fired on this corpus at all; they are there for shapes it does not contain, such as a
+header truncated by the end of the file.
+
+The validator's method table is deliberately **wider** than the set archivey can decode: a
+member using a method we refuse to read is still a ZIP, and identity is not a support
+claim.
 
 Two things are ZIP-specific rather than general in the shared detector:
 
@@ -119,8 +129,10 @@ Two things are ZIP-specific rather than general in the shared detector:
   up to 2 MiB of every file a caller opens. A hit is reported as `ZIP` with a
   `payload_offset`, ahead of the content probes (the tier that reports headerless stream
   codecs), so a stub with a ZIP behind it comes back as a ZIP rather than as a guess at the
-  stub's own bytes. `THOROUGH` does not lift the gate today — a cue-free exhaustive scan is
-  designed and not shipped. The cue set, the scan window, the budget tiers and why a hit is
+  stub's own bytes. `THOROUGH` does not lift the gate today — `THOROUGH_BUDGET` raises probe
+  links, index bytes and the completion window but keeps the same 2 MiB window, and the gate
+  itself is unconditional (`detection.py:609`); a gate-free exhaustive scan is designed and
+  not shipped. The cue set, the scan window, the budget tiers and why a hit is
   validated are shared with 7z and RAR —
   [`topics/prefixed-archives.md`](../topics/prefixed-archives.md). What is ZIP's alone: the
   local-header search and its validator above, the offset conventions in §3, and the fact
