@@ -88,6 +88,10 @@ Three rules the shape depends on:
   into a fourth disagreeing source. Verify carries the command instead.
 - **Behaviour here, status behind the link.** The page says what a caller sees and how
   fixable it is; `open-issues.md`, `threat-model.md` and `known-issues.md` keep the rest.
+- **Test pointers live on the handbook page only**, in §7 — not duplicated into
+  `openspec/specs/`. That is step 1 of
+  [`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md)
+  read literally, and it keeps one list to maintain rather than two that drift.
 
 Stream formats (brotli, lzma, …) get one page each and may need a different shape; take
 this as the starting point, not a template to satisfy.

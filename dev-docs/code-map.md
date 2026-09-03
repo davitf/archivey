@@ -93,6 +93,11 @@ Three things about this path are worth knowing before you debug it:
   member id, never on object identity** — the id is stable across both passes, the object
   is not. A guardrail test that lists a TAR will not exercise this at all, because TAR has
   no upfront index. Getting this wrong emitted one diagnostic twice per member (#232).
+- **"Backend" means archivey's class, not the third-party code.** `ReadBackend` /
+  `ZipReadBackend` are ours; the library a backend wraps (stdlib `zipfile`, `pycdlib`, the
+  `unrar` binary) is **the library**. Handbook pages tag a limitation **format** (inherent),
+  **library** (upstream's — fixable only there or by replacing it) or **archivey** (ours),
+  and that middle word is why it is not "backend".
 - **Exceptions are translated per backend**, through that backend's translator, into
   `ArchiveyError` subclasses. Unknown exceptions return `None` from the translator and
   propagate; there is no catch-all.

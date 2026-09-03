@@ -138,3 +138,30 @@ lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
   `workflow_dispatch` forces a run (`skip_drift` re-seeds after intentional regressions).
 - Wall timing: unmeasured archivey vs stdlib; absolute VISION bands informational;
   nightly hard-fails on wall-ratio *drift* vs the previous successful artifact.
+
+## Why the published guide no longer quotes numbers
+
+`docs/access-and-cost.md` used to carry a Measured column from the
+`2026-07-23` nightly (`main` @ `89720de`). It was removed: those figures are
+the fastest-rotting claim on a published page, and re-running the same harness
+at the same `--scale realistic` did not reproduce the ZIP rows.
+
+| Workload | published (`89720de`, nightly) | re-run (`532ae21`, container) |
+| --- | ---: | ---: |
+| ZIP read-all | 1.87× | **2.57×** |
+| ZIP open+list | 4.44× | **5.17×** |
+| ZIP extract | 2.38× | **1.41×** |
+| gzip read-all | 1.03× | 1.06× |
+| tar.gz accel-off | 1.27× | 1.27× |
+| tar.bz2 accel-off | 1.04× | 1.04× |
+
+The codec-dominated rows land on the published values, so this is not simply a
+slower host — only the ZIP wrapper rows move, and they move in **both**
+directions. Consistent with the drift already noted above (zip ~1.18× → ~1.55×
+on a quieter runner), the ZIP ratio is dominated by per-member Python overhead
+against a stdlib peer measured in milliseconds, which is exactly the shape that
+does not survive a change of machine.
+
+The guide now states the aspirational bands and the re-run command, and points
+here for figures with a host and a commit attached. Absolute numbers belong
+where their provenance travels with them.
