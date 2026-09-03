@@ -28,8 +28,9 @@ SourceSequence = Sequence[SourceItem]
 # 7-Zip's ``-v`` writes ``name.7z.001``/``name.zip.001`` — in both cases a *raw byte
 # split* of one finished archive, so the parts concatenate back into the original and
 # one pattern serves both. Info-ZIP's ``name.z01 … name.zip`` deliberately does not
-# match: that is a true spanned set addressed by (disk, offset), which concatenation
-# cannot reconstruct, and it is refused in the ZIP backend instead.
+# match: that is a true spanned set addressed by (disk, offset). A linear join of one
+# lists correctly and then reads only whichever members happen to sit on the last disk,
+# so it is refused in the ZIP backend instead.
 #
 # **Three digits minimum, not ``\d+``.** 7-Zip numbers from ``.001`` and widens past
 # part 999, so nothing it emits needs fewer. Accepting one or two would swallow

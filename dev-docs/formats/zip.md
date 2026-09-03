@@ -335,10 +335,22 @@ first entry's header_offset after it = 131076 -> bytes there are b'\xaa\xff\x82\
 lists: ['p.bin']          read p.bin: BadZipFile: Bad magic number for file header
 ```
 
-That constant is applied to every entry, so nothing lands on a local header. It is not a
-near miss and not a size effect — 3, 5 and 12-disk sets all list every member and read
-none of them. Refusing on the non-zero EOCD disk fields (§5) refuses a set that cannot be
-read, not one that happened to work.
+That constant is applied to every entry, and it is correct for exactly one disk — the
+last. So a member whose local header sits on the final disk reads normally, and every
+member before it lands in the middle of somebody else's data and raises `BadZipFile`.
+Adding a small final member to the set above shows both halves at once:
+
+```
+big.bin    header_offset=131076   BadZipFile: Bad magic number for file header
+last.txt   header_offset=150069   read OK, 17 bytes
+```
+
+Which members survive depends on where `zip -s` happened to cut, so a joined set is not
+reliably unreadable — it is *partly* readable, which is worse. In sets without a small
+tail member there is nothing to survive: 3, 5 and 12-disk sets all listed every member and
+read none. The failures are at least loud — a wrong offset misses the `PK\x03\x04` magic
+rather than returning plausible bytes. Refusing on the non-zero EOCD disk fields (§5)
+refuses a set that cannot be read whole, not one that happened to work.
 
 A possible later refinement for the refuse path — detect first, upgrade a failed detection
 to rejoin-first when the name looks volume-shaped — is parked in [`IDEAS.md`](../IDEAS.md)
@@ -397,7 +409,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | --- | --- | --- |
 | A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** / **library** | The index is at the end (§1). A native forward-walking reader could stream members in order, but some metadata (the authoritative CDH run, comments, external attributes) lives only in that end directory |
 | One member name whose UTF-8 flag lies makes the **whole archive** unlistable | **library** | Stdlib decodes flagged names strictly while parsing the central directory, so the failure is archive-wide rather than confined to the bad entry. [`open-issues.md`](../open-issues.md) P4 |
-| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **library** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow — `zipfile` cannot, and which concatenation does not reconstruct at all (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`open-issues.md`](../open-issues.md) P2 |
+| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **library** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow — `zipfile` cannot, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`open-issues.md`](../open-issues.md) P2 |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part — stdlib refuses at open with `File is not a zip file`, and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
 | A self-extracting `.zip.NNN` set (`vol.exe.001`) is not joined | **archivey** | Sibling discovery needs the archive extension immediately before the part number, so ZIP inherits the 7z/RAR blind spot rather than adding a new one. [`open-issues.md`](../open-issues.md) P17 |
 | A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk LFHs forward |
@@ -414,7 +426,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Refuse a non-seekable source rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` and leaves reads to stdlib's `_SharedFile` lock, for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable because the other kind is refused at open. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
-| Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. The second cannot be reconstructed by concatenation at all | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
+| Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. A linear join of the second lists correctly and then reads only the members that happen to sit on the last disk (§3) | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
 

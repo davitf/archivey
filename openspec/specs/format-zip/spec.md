@@ -183,8 +183,8 @@ Info-ZIP `.zNN` segment names, non-zero classic EOCD disk fields (`0xFFFF` is th
 ZIP64 sentinel, not a disk number), ZIP64 locator `disks > 1`, and a `.zip.NNN`
 part whose siblings are not on disk. Info-ZIP `zip -s` writes a genuinely spanned
 set addressed by `(disk, offset-within-disk)`, which stdlib `zipfile` cannot
-resolve and which concatenation reconstructs only by coincidence; it stays
-deferred to a native ZIP reader.
+resolve; a linear join lists correctly and then reads only whichever members
+happen to sit on the last disk. It stays deferred to a native ZIP reader.
 
 #### Scenario: multi-volume ZIP join and refusal
 

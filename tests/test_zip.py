@@ -551,9 +551,10 @@ def test_sevenzip_split_zip_set_with_missing_part_is_truncated(tmp_path: Path) -
 def test_infozip_spanned_set_still_refused(tmp_path: Path) -> None:
     """Info-ZIP ``.z01 … .zip`` keeps refusing, siblings present or not.
 
-    ``zip -s`` writes a true spanned set: entries are addressed by (disk, offset) and
-    the parts do not concatenate into a readable ZIP, so it stays a different thing
-    from 7-Zip's byte slices however alike the two look from outside. Synthesised
+    ``zip -s`` writes a true spanned set: entries are addressed by (disk, offset), so a
+    linear join lists correctly and then reads only whichever members happen to sit on
+    the last disk. That makes it a different thing from 7-Zip's byte slices however alike
+    the two look from outside. Synthesised
     rather than built with ``zip -s`` because Info-ZIP is not installed on CI, macOS
     or Windows — a real fixture would skip everywhere and prove nothing.
     """
