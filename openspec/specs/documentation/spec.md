@@ -12,7 +12,6 @@ types, docstrings, field docs, enum-member docs, and properties from code.
 | `archive-data-model` | Dataclasses, enums, field docs rendered in the API reference |
 | `packaging-and-extras` | Docs dependency group is separate from runtime extras |
 | `archive-reading` | Public reader API included in generated reference |
-| `archive-writing` | Public writer API included once implemented |
 | `access-mode-and-cost` | Public cost enums and receipts documented from source |
 ## Requirements
 ### Requirement: Generate the API reference from source with MkDocs and mkdocstrings

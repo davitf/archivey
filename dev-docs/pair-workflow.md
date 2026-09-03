@@ -58,18 +58,67 @@ Organised, **no-fluff**, rewritten in place — not an append-only log.
 | [`decisions/`](decisions/) | **Rare** repo-wide policy only; prefer light notes on format/topic pages once those exist |
 | `openspec/specs/` | **Authoritative** machine-checkable contract (agents/CI) — **not** the primary human reading surface |
 
-**Until the first format/topic page exists:** point briefs at `code-map`, threat model,
-and the best ADR/investigation. When a change needs a living page, create
-`dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md` **in that same PR**.
+**Create a page when a change needs one**, not before: `dev-docs/formats/<format>.md` or
+`dev-docs/topics/<topic>.md`, **in that same PR**. For a format or topic that has no page
+yet, point briefs at `code-map`, the threat model, and the best ADR or investigation. The
+shape to start from is below; [`formats/zip.md`](formats/zip.md) and
+[`topics/prefixed-archives.md`](topics/prefixed-archives.md) are the worked examples.
 
-**Page structure: TBD.** An earlier six-section skeleton was written here before any page
-existed. It has been removed on purpose: `dev-docs/formats/zip.md` is being written first
-precisely to find out what shape a real page wants, and a skeleton sitting in this file
-anchors every agent that reads it — including the ones we ask to propose a structure
-independently. "Read this doc but skip §Living handbook" is not an instruction an agent
-follows reliably, so the skeleton is gone rather than fenced off. Fill this in from what
-ZIP actually needs, **in the same PR as that page**, so this file and the tree never
-disagree about the shape.
+### Format page structure
+
+Settled by writing [`formats/zip.md`](formats/zip.md) first and taking the shape the
+material actually had. Sections are numbered so a brief can cite `zip.md` §2.3.
+
+| Section | Holds |
+| --- | --- |
+| **At a glance** | Support, costs, dependencies, refusals. Distinguishes *claimed* from *shipped* — a spec requirement for something that does not exist says so here |
+| **1. Shape** | The two to four structural properties that generate everything else, each with its consequences attached in the same breath. Not a spec reproduction; the altitude specs skip |
+| **2. The pipeline here** | Fixed subsections — identify · open and list · member data · extract · write. Each says *who does the work*, *what is format-specific rather than general*, and *what is refused*. "Nothing here is format-specific" is a legitimate and useful answer. Member-metadata mapping lives under *open and list* |
+| **3. In the wild** | Variants, producers and what they get wrong, files that are secretly this format, corpus evidence with its provenance |
+| **4. Threat surface** | Format-specific attack surface only; link [`threat-model.md`](threat-model.md) `O*` rows for status |
+| **5. Sharp edges** | *Symptoms someone observes*, each tagged **format** (inherent) / **library** (upstream or replace the library) / **archivey** (ours), so a reader can stop thinking about what they cannot fix. Details and fix plans stay behind the register link. **One table, not two**: a reader arrives with a symptom and does not yet know whether it is a bug or the format, so the tag sorts each row after they have found it rather than making them pick the right list first |
+| **6. Decisions** | Choice → why → rejected alternative. Light bullets, not ADRs |
+| **7. Open questions** | What we do not know and cannot settle by reading the code — each with what it would change and what would answer it. Omit the section when there is nothing honest to put in it |
+| **8. Verify** | Commands and tests that pin the claims above, plus how to build fixtures for this format |
+| **9. References** | External spec sections *with numbers*, our investigations, upstream issues |
+
+Four rules the shape depends on:
+
+- **Never separate a structural fact from its consequence.** The strongest grouping force
+  in the ZIP material was causal — one property generated eight downstream behaviours. A
+  separate "consequences" section breaks the chain and makes the reader re-derive it.
+- **No performance numbers.** They are the most volatile thing on the page and they rot
+  into a fourth disagreeing source. Verify carries the command instead.
+- **Behaviour here, status behind the link.** The page says what a caller sees and how
+  fixable it is; `open-issues.md`, `threat-model.md` and `known-issues.md` keep the rest.
+- **Test pointers live on the handbook page only**, in §8 — not duplicated into
+  `openspec/specs/`. That is step 1 of
+  [`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md)
+  read literally, and it keeps one list to maintain rather than two that drift.
+
+Stream formats (brotli, lzma, …) get one page each and may need a different shape; take
+this as the starting point, not a template to satisfy.
+
+### Topic pages
+
+Topic pages are **not** format pages with the nouns swapped, and
+[`topics/prefixed-archives.md`](topics/prefixed-archives.md) — written alongside `zip.md`
+and shaped by it — came out looser: shapes in the wild, the mechanism and its tiers, the
+cost argument, *where the formats differ*, sharp edges, decisions, references. Take the
+conventions rather than the section list: the where-it-lives tags, no performance numbers, status
+behind the register link.
+
+The split that matters is the same one in both directions. **A format page keeps what the
+format's own structure decides; the topic page keeps the shared machinery.** For prefixed
+archives that put the cue set, the scan bound, the budget tiers and the validation argument
+on the topic page, and left ZIP with its needle, its validator and its two offset
+conventions — because those follow from ZIP locating itself from the end, and no other
+format has them.
+
+A topic page may name format behaviour freely where that is what explains the mechanism;
+what it must not do is restate a format page or a register. The reverse is also true — a
+format page links the topic and keeps the residue, which is why the pipeline subsections in
+§2 are where those links naturally sit.
 
 Optional `formats/README.md` / `topics/README.md` indexes may appear alongside the first
 page; do not add empty stubs ahead of content.

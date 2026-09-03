@@ -12,14 +12,15 @@ reader stress.
 | Spec | Relationship |
 | --- | --- |
 | `archive-reading` | Public read API, member identity, streaming pass rules |
-| `archive-writing` | Writable-format round trips and conversion |
 | `safe-extraction` | Extraction safety limits and path/link rejection |
 | `access-mode-and-cost` | Streaming legality, seekability, fail-fast source requirements |
 | `reader-concurrency` | Capability gates, lifecycle leases, free-threaded contract |
 | `format-7z` | Native 7z corpus and oracle validation |
 | `format-rar` | Native RAR corpus, `unrar`, encrypted headers, Blake2sp validation |
 | `packaging-and-extras` | Optional dependency and oracle availability rules |
+
 ## Requirements
+
 ### Requirement: Equivalence matrix across formats
 
 The system SHALL produce equivalent `ArchiveMember` objects from ZIP, TAR, 7z, RAR,
@@ -91,20 +92,6 @@ least one **directional mark** case proving it is *not* rejected:
 
 - **WHEN** a member named with U+200F RIGHT-TO-LEFT MARK (a legitimate Arabic/Hebrew filename shape) is extracted
 - **THEN** it extracts normally, proving the reject set is the override/isolate ranges and not the library's broader advisory set
-
-### Requirement: Round-trip test for every writable format
-
-The system SHALL include a `create -> extract -> compare` round-trip test for every
-writable format. The extracted files and metadata MUST match the originals within
-the format's documented timestamp and permission limitations.
-
-#### Scenario: writable-format round trips
-
-| Case | Expected |
-| --- | --- |
-| Canonical file set written to ZIP then extracted | Content and every ZIP-representable metadata field match |
-| Canonical file set written to TAR then extracted | Content and every TAR-representable metadata field match |
-| Future writable format is added | A matching round-trip row/test is added before the format is considered supported |
 
 ### Requirement: Cross-validate native readers against reference oracles
 
@@ -572,4 +559,3 @@ and views that no boundary buffer sits in front of.
 | `open_stream`, each raw-stream format × `seekable=False` and `True` | Decoded bytes match the full-count open |
 | `parse_rar_archive` driven directly from a short-returning source | `header_offset` / `header_size` / `data_offset` / `compress_size` identical — a coalescing layer must report the logical position, not a buffer position |
 | Healthy archive, short-returning source | Never `CorruptionError` / `TruncatedError` |
-

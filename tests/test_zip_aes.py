@@ -126,6 +126,78 @@ def test_7z_aes_zip_roundtrip(tmp_path: Path, strength: str) -> None:
         assert ar.read(member) == payload
 
 
+_EXTERNAL_DIR = Path(__file__).parent / "fixtures" / "external"
+
+
+def _patch_stored_crc(data: bytes, value: int) -> bytes:
+    """Rewrite both copies of the CRC in a single-member `_build_aes_zip` output.
+
+    The LFH is at offset 0 and the central directory starts where the EOCD says, so
+    this only holds for the one-entry archives built above.
+    """
+    buf = bytearray(data)
+    eocd = buf.rindex(b"PK\x05\x06")
+    offset_cd = struct.unpack_from("<I", buf, eocd + 16)[0]
+    struct.pack_into("<I", buf, 14, value)
+    struct.pack_into("<I", buf, offset_cd + 16, value)
+    return bytes(buf)
+
+
+@requires_binary("7z")
+@requires("cryptography")
+def test_handbuilt_ae1_is_accepted_by_7z(tmp_path: Path) -> None:
+    """Cross-check the AE-1 builder against an independent implementation.
+
+    7-Zip writes AE-2, so `test_7z_aes_zip_roundtrip` cannot reach AE-1: without this,
+    every AE-1 fixture in the suite is bytes we assembled and then read back ourselves.
+    7-Zip *reads* AE-1 and checks its CRC, so accepting our fixture validates the key
+    derivation, the CTR keystream, the HMAC and the AE-1 CRC rule in one verdict.
+
+    The two corrupted-CRC cases are the control: they are what makes the pass mean
+    something, and they pin the asymmetry the AE-1/AE-2 split is about — 7-Zip rejects a
+    wrong CRC on AE-1 and ignores one on AE-2.
+    """
+    archive = tmp_path / "ae1.zip"
+
+    def check_7z(payload: bytes) -> int:
+        archive.write_bytes(payload)
+        return subprocess.run(
+            ["7z", "t", f"-p{_PASSWORD.decode()}", str(archive)],
+            capture_output=True,
+            text=True,
+        ).returncode
+
+    ae1 = _build_aes_zip(
+        payload=_PAYLOAD, password=_PASSWORD, vendor_version=1, strength=3, method=8
+    )
+    ae2 = _build_aes_zip(
+        payload=_PAYLOAD, password=_PASSWORD, vendor_version=2, strength=3, method=8
+    )
+    assert check_7z(ae1) == 0
+    assert check_7z(ae2) == 0
+    assert check_7z(_patch_stored_crc(ae1, 0xDEADBEEF)) != 0
+    assert check_7z(_patch_stored_crc(ae2, 0xDEADBEEF)) == 0
+
+
+@requires("cryptography")
+def test_external_ae1_archive_from_pyzipper() -> None:
+    """A third-party AE-1 member, not one of ours.
+
+    `pyzipper` 0.3.0 (2019) through 0.3.6 (2022) wrote AE-1 for every AES member
+    regardless of size, and 0.3.6 was the only release available until 0.4.0 switched to
+    AE-2 in 2026 — so AE-1 is real traffic, not a legacy branch. See
+    `tests/fixtures/external/README.md`.
+    """
+    with open_archive(
+        _EXTERNAL_DIR / "aes_ae1_pyzipper036.zip", password=_PASSWORD
+    ) as ar:
+        (member,) = ar.members()
+        assert member.is_encrypted
+        assert member.extra["zip.aes_vendor_version"] == 1
+        assert HashAlgorithm.CRC32 in member.hashes  # AE-1 keeps the plaintext CRC
+        assert ar.read(member) == b"AE-1 keeps the plaintext CRC in the header.\n"
+
+
 @requires("cryptography")
 def test_aes_wrong_password_fails_fast() -> None:
     data = _build_aes_zip(

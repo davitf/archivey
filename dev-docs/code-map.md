@@ -93,6 +93,11 @@ Three things about this path are worth knowing before you debug it:
   member id, never on object identity** — the id is stable across both passes, the object
   is not. A guardrail test that lists a TAR will not exercise this at all, because TAR has
   no upfront index. Getting this wrong emitted one diagnostic twice per member (#232).
+- **"Backend" means archivey's class, not the third-party code.** `ReadBackend` /
+  `ZipReadBackend` are ours; the library a backend wraps (stdlib `zipfile`, `pycdlib`, the
+  `unrar` binary) is **the library**. Handbook pages tag a limitation **format** (inherent),
+  **library** (upstream's — fixable only there or by replacing it) or **archivey** (ours),
+  and that middle word is why it is not "backend".
 - **Exceptions are translated per backend**, through that backend's translator, into
   `ArchiveyError` subclasses. Unknown exceptions return `None` from the translator and
   propagate; there is no catch-all.
@@ -107,6 +112,7 @@ Three things about this path are worth knowing before you debug it:
 | If you are changing… | Start here |
 |---|---|
 | A format's parsing or metadata | `internal/backends/<fmt>_{reader,parser}.py`; spec `openspec/specs/format-<fmt>/` |
+| ZIP internals | `zip_reader.py` (stdlib central directory + archivey member data) · `internal/zip_detect.py` (scan-hit validator) · `internal/zipcrypto.py` · `internal/zip_aes.py`; handbook [`formats/zip.md`](formats/zip.md) |
 | 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` |
 | RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) |
 | A codec, or adding one | `streams/codecs.py` + `streams/decompress.py`; `xz.py` / `lzip.py` / `unix_compress.py` for the hand-written ones |
@@ -119,7 +125,7 @@ Three things about this path are worth knowing before you debug it:
 | Warnings-as-data | `diagnostics.py` (public types) + `internal/diagnostics_collector.py` (emission) |
 | Cost or IO accounting | `cost.py` · `measurement.py` · `internal/measurement.py` · `streams/counting.py` |
 | Concurrency, locking, `MemberStreams` | `internal/reader_state.py` + `streams/streamtools/locked.py`; spec `reader-concurrency` |
-| Format detection or a magic number | `internal/detection.py` |
+| Format detection or a magic number | `internal/detection.py`; prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
 | Adding a backend | `internal/registry.py` + a self-registering module in `backends/` |
 | The CLI | `cli/main.py` dispatches; one module per subcommand |
 | Terminal-safe output of hostile text | `escaping.py`; threat-model O9 |

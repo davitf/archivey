@@ -16,7 +16,9 @@ solid streams, and extraction preserves TAR-specific hardlink and EOF semantics.
 | `safe-extraction` | Pull-based extraction coordinator, `OnError`, hardlink outcomes |
 | `diagnostics` | Timestamp and archive-EOF diagnostic values / policy |
 | `reader-concurrency` | `MemberStreams.CONCURRENT`, operation ownership, lock boundaries |
+
 ## Requirements
+
 ### Requirement: Report TAR format properties
 
 The TAR backend SHALL expose these properties for every opened TAR archive:
@@ -30,7 +32,7 @@ The TAR backend SHALL expose these properties for every opened TAR archive:
 | `.tar.zst` | zstd-backed equivalent | `REQUIRES_DECOMPRESSION` | `SOLID` |
 | Auto-detected TAR | `r:*` where needed | Based on detected compression | Based on detected compression |
 
-The backend SHALL support writing TAR archives, including streaming writes.
+TAR is read-only here: writing is not shipped for any format (`PLAN.md` phase 9).
 Compressed variants remain solid even when the source is seekable: random member
 opens may re-decompress earlier bytes, while `stream_members()` is the preferred
 progressive path.
@@ -43,7 +45,6 @@ progressive path.
 | Open `TAR_GZ`, `TAR_BZ2`, `TAR_XZ`, or `TAR_ZST` | `cost.listing_cost=REQUIRES_DECOMPRESSION`; `cost.access_cost=SOLID`; matching decompressor mode |
 | Open `.tar.gz` | `tarfile` invoked with gzip mode |
 | Open plain `.tar` | No decompression wrapper |
-| Stream write TAR | Member data is written in archive order without requiring a seekable destination |
 
 ### Requirement: Map TAR member metadata to ArchiveMember
 
@@ -300,4 +301,3 @@ rather than emitted unconditionally, and it SHALL be documented on the flag.
 | A real ISO opened as TAR | No diagnostic; empty listing | `CorruptionError` — its data past the system area is not zeros |
 | Missing / short trailer | Existing `ARCHIVE_EOF_MARKER_MISSING` behaviour | Existing `TruncatedError`; the trailing-bytes scan does not run |
 | `.tar.gz` with trailing junk | No diagnostic and no decompression of the tail | Tail decompressed; `CorruptionError` |
-
