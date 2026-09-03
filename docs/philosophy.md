@@ -48,7 +48,7 @@ When you need more, you **declare** it. Escape hatches are explicit, not ambient
 
 | Need | How |
 | --- | --- |
-| Pipes / sockets | `open_archive(..., streaming=True)` |
+| Pipes / sockets | `open_archive(..., streaming=True)` — TAR and the single-file compressors; ZIP, ISO, 7z and RAR need a seekable source in either mode |
 | Seek inside a member | `seekable_members=True` |
 | Many open members / workers | `concurrent_members=True` |
 | Trusted / unlimited extract | `ExtractionPolicy.TRUSTED`, `ExtractionLimits.UNLIMITED` |

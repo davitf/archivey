@@ -32,8 +32,22 @@ _NEEDS_SEEK = (
     ArchiveFormat.RAR,
 )
 
-# Read front to back, so a pipe is fine once the caller asks for streaming.
-_READS_FORWARD = (ArchiveFormat.TAR, ArchiveFormat.GZ)
+# Read front to back, so a pipe is fine once the caller asks for streaming. The
+# single-file compressors share one backend and one SUPPORTS_STREAMING_NON_SEEKABLE, so
+# sampling only GZ would miss a per-codec regression; the ones whose package is absent
+# skip through _skip_unless_registered rather than being left out of the list.
+_READS_FORWARD = (
+    ArchiveFormat.TAR,
+    ArchiveFormat.TAR_GZ,
+    ArchiveFormat.GZ,
+    ArchiveFormat.BZ2,
+    ArchiveFormat.XZ,
+    ArchiveFormat.ZST,
+    ArchiveFormat.LZ4,
+    ArchiveFormat.LZIP,
+    ArchiveFormat.ZLIB,
+    ArchiveFormat.BROTLI,
+)
 
 
 def _skip_unless_registered(fmt: ArchiveFormat) -> None:

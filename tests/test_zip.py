@@ -395,9 +395,16 @@ def test_non_seekable_zip_fails_fast(simple_zip: Path) -> None:
 def test_non_seekable_zip_fails_fast_via_detection(simple_zip: Path) -> None:
     # Even without an explicit format, a non-seekable ZIP is rejected at open time (the
     # opener wraps it in a PeekableStream for detection, then enforces the seekable-source rule).
+    # The message is asserted here as well as in tests/test_non_seekable_refusal.py, which
+    # reaches the same branch with an explicit format= and no archive bytes: if a refactor
+    # ever moved the check after detection I/O, the two entry points could diverge and a
+    # type-only assertion would not notice.
     data = simple_zip.read_bytes()
-    with pytest.raises(StreamNotSeekableError):
+    with pytest.raises(StreamNotSeekableError) as excinfo:
         open_archive(NonSeekableBytesIO(data))
+    message = str(excinfo.value)
+    assert "streaming=True" not in message, message
+    assert "BytesIO" in message
 
 
 # ---------------------------------------------------------------------------

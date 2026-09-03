@@ -187,5 +187,5 @@ exception. Details:
 | Solid archive, many named opens | Reorder to archive order, or one streaming pass |
 | Need `seek()` on a member | `seekable_members=True` (+ `[seekable]` for gz/bz2/zlib/deflate) |
 | Thread pool of member readers | `concurrent_members=True` after `members()` |
-| stdin / socket | `streaming=True` |
+| stdin / socket | `streaming=True` for TAR and the single-file compressors; buffer ZIP / ISO / 7z / RAR to a file or `BytesIO` first ([above](#non-seekable-sources)) |
 | “Just unzip it safely” | `archivey.extract(src, dest)` |
