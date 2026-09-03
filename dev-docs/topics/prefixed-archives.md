@@ -54,18 +54,47 @@ the detector does not is a file that opens under `format=RAR` and fails under au
 means the header structurally parses: a DOS header whose `e_lfanew` actually points at
 `PE\0\0`, an ELF identification block whose class, encoding and version are all valid, or a
 Mach-O header whose `cputype`/`filetype` or fat arch table parse. A strong cue with no
-needle hit suppresses the content probes; a weak one does not, because `MZ` is two bytes and
-a genuine Brotli stream starting with them must stay detectable.
+needle hit suppresses the content probes; a weak one does not.
 
-Mach-O raises no weak cue at all — `ca fe ba be` is also the Java class-file magic, and a
-weak cue there would put every `.class` file through the scan.
+**The cue does two jobs, and only one of them is about cost.** Deciding whether to spend
+the scan window is a cost question (§3). Suppressing the content probes, which only a
+`STRONG` cue does, is a correctness one, recorded in
+[`format-detection`](../../openspec/specs/format-detection/spec.md) §"Executable-looking
+prefixes must not silently become a wrong stream format" and settled by measurement in the
+archived `sfx-format-detection` design. The failure that one prevents is not a wrong *error* but
+a wrong *success*: a content probe claims a stream codec on a stub, and `open_archive`
+returns a fabricated single-file member — `installer.uncompressed` — with no complaint. So
+a structurally confirmed executable that contains no archive suppresses the probes
+outright: it is not a compressed stream, and saying so costs nothing.
+
+It has to be graded rather than a flat "skip probing executables", because two or four
+bytes are not proof. Refusing a probe on a bare `MZ` would reject a genuine Brotli stream
+whose first bytes happen to look executable, and the spec forbids fixing that by tightening
+the probe instead: measured, a 16× larger prefix moves the false-positive rate 8.27% →
+8.13%, and demanding decoded output loses real streams roughly one for one.
+
+Worth knowing what the measurements did **not** show. Real PE binaries do not trip the
+Brotli probe at all — 0 of 100 across MSVC, Go's own linker, MinGW-w64 and every `MZ` file
+on the survey machine, because the canonical `MZ\x90\x00` DOS-stub prologue fails Brotli's
+nibble check (97 of 100 carry `90 00`). The one measured collision between a probe and an
+executable is a different probe: a zero-filled Mach-O stub came back `LZMA_ALONE`, since
+`cf fa ed fe` passes the LZMA-Alone properties gate. So strong-cue suppression is an
+invariant held on principle, not a patch for a common collision — the probes' real
+false-positive problem is arbitrary data, tracked as
+[`open-issues.md`](../open-issues.md) P12 and threat-model O10.
+
+Mach-O has no weak tier: its header either parses, giving `STRONG`, or it raises **no cue
+at all** and the file is never scanned. It is never `WEAK`, because `ca fe ba be` is also
+the Java class-file magic and a weak cue there would put every `.class` file through the
+scan.
 
 ## 3. Cost is what tiers this, not false positives
 
-The cue exists so that opening a file does not read 2 MiB from it, not to keep wrong
-answers out. That distinction is easy to lose and was reasoned about backwards in review,
-so it is worth stating plainly: **widening the cue is a cost decision; hit validation is the
-correctness decision** (§4).
+Deciding *whether to scan* is about not reading 2 MiB from every file a caller opens — it
+is not about keeping wrong answers out, which is the validator's job (§4) and, for the
+probes, the `STRONG` tier's (§2). That distinction is easy to lose and was reasoned about
+backwards in review, so it is worth stating plainly: **widening the cue is a cost decision;
+hit validation is the correctness decision**.
 
 The numbers behind the current gate, measured on a `/usr` tree:
 
@@ -74,18 +103,13 @@ The numbers behind the current gate, measured on a `/usr` tree:
   are mostly small scripts — median 2 959 bytes, one file in 734 large enough to reach the
   window at all — so the whole tree cost **10.3 MiB** more, not the 2 MiB per script the
   bound alone suggests.
-- The scan's I/O is now **1× the window** on a miss, because every front-of-source read goes
-  through one monotone prefix workspace that only fetches the delta. Before that workspace,
-  the geometric peek loop re-requested from byte 0 each step and a miss billed 1.66×.
-
-The tail probe is gated for the opposite reason. It cannot be cued — a ZIP with `PK\x03\x04`
-at offset 0 is already found by near magic, so cueing it on a front hit would only find ZIPs
-that were already found. Uncued means one tail read on *every* source. On a hit that read is
-nearly free, because whatever opens the archive reads the EOCD anyway; on a miss it is pure
-waste, and most sources are not ZIPs. Which entry point the caller used does not change that
-arithmetic: `open_archive` runs the same detection as a bare `detect_format()` and wastes the
-same read on the same files. The open cost question is what that wasted seek is worth on a
-cold cache or a remote source, which nobody has measured.
+**The tail probe is gated the other way round.** Nothing can cue it: the front of a
+prefixed ZIP looks like whatever the stub is, and a ZIP whose front *does* say `PK\x03\x04`
+was already found by near magic. So it would cost one tail read on every source — free when
+it finds a ZIP, since the reader goes on to read the EOCD anyway, and wasted otherwise,
+which is most files. What that wasted seek costs on a cold cache or over a network is
+unmeasured, and that is the open question. Which entry point the caller used is not:
+`open_archive` and `detect_format()` run the same detection and waste the same read.
 
 ## 4. Validate the hit, do not trust the magic
 
@@ -98,12 +122,9 @@ declares a validator, and the detector reports a hit only after it passes.
 | 7z | `37 7A BC AF 27 1C` | `StartHeaderCRC` over the 20-byte StartHeader, plus `offset + 32 + NextHeaderOffset + NextHeaderSize` landing at EOF |
 | RAR | RAR3 and RAR5 markers | The CRC-checked main header that follows the marker |
 
-ZIP's other two magics are deliberately **not** needles — and not because they turn up in
-executables more often than `PK\x03\x04` does. They turn up about as often; the difference is
-that a local-header hit can be *confirmed* and these two cannot. There is no cheap structure
-to check them against, and what a hit would buy is an empty archive or a spanning marker, so
-every match inside the window would be taken on faith. The survey below is what that faith
-would have cost on one machine.
+ZIP's other two magics are deliberately **not** needles;
+[`formats/zip.md`](../formats/zip.md) §2.1 has the reasoning, which is ZIP's own. The survey
+below is the evidence behind it.
 
 Validators return a `HitOutcome` rather than a boolean, so a later evidence ledger can treat
 a damaged-but-identified payload as identified without changing any signature.
