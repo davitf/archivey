@@ -301,7 +301,33 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
 
-## 7. Verify
+## 7. Open questions
+
+Gaps in what *we* know, not in what the format says — each would change something here if
+answered, and none can be settled by reading more code. Distinct from §5: a pitfall is
+behaviour a caller already sees.
+
+- **Does anything still produce WinZip AE-1?** The vendor version distinguishes AE-1,
+  which stores the real CRC of the plaintext, from AE-2, which zeroes it, and archivey
+  handles both symmetrically — `zip_aes.py` accepts vendor version 1 or 2, and the reader
+  withholds `HashAlgorithm.CRC32` only for AE-2. But every AE-1 case in
+  `tests/test_zip_aes.py` is assembled by hand (`_build_aes_zip`): the fixtures we can
+  *generate* come back AE-2 every time, because that is what `7z -mem=AES256` writes. So
+  the AE-1 branch is exercised only against bytes we wrote ourselves, and nobody here
+  knows whether it carries real traffic. Settling it needs corpus evidence. Until then it
+  stays: it is a two-branch difference, and reading an AE-1 member wrongly is worse than
+  carrying an unused path.
+- **Is PKWARE Strong Encryption worth an explicit refusal?** A different mechanism from
+  WinZip AES — APPNOTE §7, general-purpose bit 6, extra field `0x0017`, optionally
+  encrypting the central directory itself (bit 13) — and unmentioned anywhere else in this
+  repo. `zip_reader.py` tests only bit 0, so such a member is taken for ZipCrypto and
+  fails as a wrong password or as corruption rather than as something archivey does not
+  support. The question is not whether to implement it (no: patent-encumbered and
+  vanishingly rare outside PKZIP itself) but whether the misleading error justifies a bit-6
+  check raising `UnsupportedFeatureError`. No archive of this shape has turned up in our
+  corpora, so the cost of the wrong message is unmeasured.
+
+## 8. Verify
 
 ```bash
 ./scripts/test.sh tests/test_zip.py tests/test_zip_aes.py \
@@ -330,7 +356,7 @@ one of the ~109 tests that vanish quietly on an unprovisioned container. `-mm=De
 are committed rather than generated because `zipfile` rewrites `ZipInfo.filename` on Windows;
 the reader uses `orig_filename` for the same reason.
 
-## 8. References
+## 9. References
 
 - APPNOTE: §4.3.6 overall format · §4.3.9 data descriptor · §4.3.16 EOCD · §4.4.4
   general-purpose flags (bits 3 and 11) · §4.4.6 MS-DOS date/time · §4.4.15 external file

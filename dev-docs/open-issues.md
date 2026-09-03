@@ -619,6 +619,30 @@ re-verified failing against the unfixed code). Original write-up below.
   on a future `dev-docs/topics/` SFX / executable-prefix page and on the 7z and RAR
   format pages by link, not by restatement.
 
+### P18. `detected_by="sfx_scan"` names a motive the tier cannot know
+
+- **Today:** the prefix-scanning detection tier reports `detected_by="sfx_scan"`
+  (`src/archivey/internal/detection.py:478`, plus two skip sites and a comment). The tier
+  finds an archive behind arbitrary leading bytes; *self-extracting* is one reason those
+  bytes exist. The others it finds are a `zipapp` (meant to be run, not extracted), a
+  polyglot, and junk prepended to a tar — so the name is right for roughly one case in
+  four and asserts an intent nothing in the scan establishes.
+- **Fix:** rename to `prefixed_scan`. Already specced as task 4.3 of
+  [`detection-result-surface`](../openspec/changes/detection-result-surface/tasks.md),
+  rationale in its [`design.md`](../openspec/changes/detection-result-surface/design.md)
+  §4. Registered here as well because that change is large, gated behind
+  `detection-evidence-ledger`, and neither is implemented — while the rename is a
+  mechanical substitution that does not depend on either.
+- **Blast radius (2026-09-03):** 5 in `src/`, 17 in `tests/` (all `test_sfx.py`, all
+  `assert detected_by == "sfx_scan"`), 7 in `dev-docs/`, 15 in in-flight
+  `openspec/changes/`, **0 in `docs/`**.
+- **Why now rather than later:** `detected_by` is a public string. `pyproject.toml` is at
+  `0.2.0.dev0` and the repo carries no git tags, so there is no released version and no
+  user to migrate — the window closes at first publish, not at 1.0. Doing it after that
+  turns a substitution into a deprecation.
+- **Not blocking anything.** Deliberately deferred out of the current stack; take it as a
+  standalone PR.
+
 ---
 
 ## Docs / specs — drift and missing prose

@@ -76,10 +76,11 @@ material actually had. Sections are numbered so a brief can cite `zip.md` §2.3.
 | **4. Threat surface** | Format-specific attack surface only; link [`threat-model.md`](threat-model.md) `O*` rows for status |
 | **5. Pitfalls** | Sharp edges as *symptoms someone observes*, each tagged **format** (inherent) / **library** (upstream or replace the library) / **archivey** (ours), so a reader can stop thinking about what they cannot fix. Details and fix plans stay behind the register link |
 | **6. Decisions** | Choice → why → rejected alternative. Light bullets, not ADRs |
-| **7. Verify** | Commands and tests that pin the claims above, plus how to build fixtures for this format |
-| **8. References** | External spec sections *with numbers*, our investigations, upstream issues |
+| **7. Open questions** | What we do not know and cannot settle by reading the code — each with what it would change and what would answer it. Omit the section when there is nothing honest to put in it |
+| **8. Verify** | Commands and tests that pin the claims above, plus how to build fixtures for this format |
+| **9. References** | External spec sections *with numbers*, our investigations, upstream issues |
 
-Three rules the shape depends on:
+Four rules the shape depends on:
 
 - **Never separate a structural fact from its consequence.** The strongest grouping force
   in the ZIP material was causal — one property generated eight downstream behaviours. A
@@ -88,7 +89,7 @@ Three rules the shape depends on:
   into a fourth disagreeing source. Verify carries the command instead.
 - **Behaviour here, status behind the link.** The page says what a caller sees and how
   fixable it is; `open-issues.md`, `threat-model.md` and `known-issues.md` keep the rest.
-- **Test pointers live on the handbook page only**, in §7 — not duplicated into
+- **Test pointers live on the handbook page only**, in §8 — not duplicated into
   `openspec/specs/`. That is step 1 of
   [`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md)
   read literally, and it keeps one list to maintain rather than two that drift.
