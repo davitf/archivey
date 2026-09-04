@@ -1338,3 +1338,43 @@ def test_rar3_compressed_name_amplification_is_the_documented_shape() -> None:
     assert len(decoded) > 50 * len(encdata), (
         f"expected large amplification, got {len(decoded) / len(encdata):.1f}x"
     )
+
+
+def test_listing_walks_header_to_header_rather_than_reading_an_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """formats/rar.md §1: listing seeks once per member; there is no index region.
+
+    Pinned as a *shape* (seeks scale with member count), not an exact count, because
+    the point is the scaling: ZIP reads one contiguous central directory in a constant
+    number of seeks whatever the member count. If RAR ever learns to read the ``QO``
+    quick-open record (§10 #5) this stops being true and the page must change with it.
+    """
+    from archivey.internal.backends import rar_parser
+
+    skips = 0
+    original = rar_parser._seek_after_packed
+
+    def counting(source: object, data_offset: int, add_size: int) -> object:
+        nonlocal skips
+        skips += 1
+        return original(source, data_offset, add_size)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_parser, "_seek_after_packed", counting)
+
+    small = _fixture("basic_nonsolid__.rar")
+    with small.open("rb") as handle:
+        archive = rar_parser.parse_rar_archive(handle)
+    assert skips >= len(archive.members), (
+        f"{skips} data skips for {len(archive.members)} members — expected at least one "
+        "per member, i.e. a header-to-header walk"
+    )
+
+    # And it scales: a 1000-member archive costs proportionally more, not a constant.
+    small_skips = skips
+    skips = 0
+    large = _fixture("many_list_store__.rar")
+    with large.open("rb") as handle:
+        large_archive = rar_parser.parse_rar_archive(handle)
+    assert len(large_archive.members) > 10 * len(archive.members)
+    assert skips > 10 * small_skips
