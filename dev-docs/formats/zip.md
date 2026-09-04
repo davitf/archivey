@@ -220,6 +220,16 @@ Raw extra-field blobs are not surfaced. Duplicate names are legal and are not me
 members keep a positional `member_id`, name lookup is last-wins, and currency is computed
 in the reader spine so ZIP behaves like every other format.
 
+**A symlink's digest covers the target string.** ZIP stores a link's target as the member's
+data — 9 bytes for `file1.txt` — so `hashes["crc32"]` is a real digest, of a *path*, not of
+whatever the link resolves to. Kept, because the value is genuine and 7z and RAR3/4 record
+exactly the same thing; said out loud, because `hashes` otherwise reads as being about
+content, and a caller de-duplicating by digest or checking content without decompressing
+would take it that way. RAR5 is the instructive contrast: it stores links as header
+redirects with no data stream, so its CRC32 field covers zero bytes and archivey surfaces
+no digest at all rather than the constant `crc32(b"")` —
+[`formats/rar.md`](rar.md) §2.2.
+
 ### 2.3 Member data
 
 **`zipfile`'s own decoders are not used** — meaning `ZipExtFile`, not the standard library:
