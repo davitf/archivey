@@ -24,6 +24,7 @@ from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
+    _decode_rar3_unicode_name,
     load_vint,
     parse_rar_archive,
 )
@@ -776,6 +777,197 @@ def test_rar3_non_bmp_filename_not_truncated() -> None:
         assert not any(
             0xE000 <= ord(c) <= 0xF8FF or 0xD800 <= ord(c) <= 0xDFFF for c in name
         )
+
+
+def _rle_name_encdata(opcode_runs: int) -> bytes:
+    """RAR3 compressed-name bytes that are all maximum-length RLE runs.
+
+    RAR3 stores names compressed. The RLE opcode emits up to 129 UTF-16 code
+    units per encoding byte by copying the 8-bit name field — so an *empty*
+    8-bit field plus a long run of RLE opcodes is the worst case.
+    """
+    return b"\x00" + (b"\xff" + b"\x7f" * 4) * opcode_runs
+
+
+def test_rar3_compressed_name_decode_is_bounded() -> None:
+    """Empty-8-bit + RLE-heavy encdata must fail closed, not spend listing CPU.
+
+    Bound: ``len(decoded) <= len(std_name) + len(encdata)`` — every output unit
+    is either copied from the 8-bit field or paid for by an encoding byte. With
+    an empty 8-bit field that collapses to ``len(encdata)``, which is what this
+    vector checks; a compact RLE copy of a long 8-bit name is allowed to exceed
+    ``len(encdata)`` alone.
+
+    ``name_size`` is a ``uint16``, so the pre-fix buffer was at most ~13.5 MB
+    (bounded, transient, discarded before any member existed). The lever was
+    CPU: ~11 s for one header at that ceiling, not an unbounded vint-style
+    allocation. This vector must return None rather than emit the amplified
+    name.
+    """
+    encdata = _rle_name_encdata(1000)
+    assert _decode_rar3_unicode_name(b"", encdata) is None
+
+    # t=0 with a flags byte and no payload must not emit a leftover unit.
+    assert _decode_rar3_unicode_name(b"", b"\x00\x00") is None
+
+
+def test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present() -> None:
+    """Failing closed on overrun must not change a well-formed RLE copy from the 8-bit name.
+
+    hi=0, flags=0xC0 (first opcode is RLE), n=1 → copy 3 bytes of std_name as ASCII.
+    """
+    assert _decode_rar3_unicode_name(b"abc", b"\x00\xc0\x01") == "abc"
+
+
+def test_rar3_rle_name_may_be_longer_than_encdata() -> None:
+    """A compact RLE copy of a long 8-bit name is well-formed.
+
+    Output can exceed ``len(encdata)`` so long as it stays within
+    ``len(std_name) + len(encdata)``.
+    """
+    std_name = b"a" * 50
+    # hi=0, flags=0xC0 (RLE), n=48 → copy 50 ASCII bytes.
+    decoded = _decode_rar3_unicode_name(std_name, b"\x00\xc0\x30")
+    assert decoded == "a" * 50
+    assert len(decoded) > len(b"\x00\xc0\x30")
+    assert len(decoded) <= len(std_name) + 3
+
+
+def test_rar3_rle_name_zero_correction_keeps_hi_byte() -> None:
+    """``n & 0x80`` with correction byte 0 still uses ``hi``, not high-byte 0.
+
+    The ASCII RLE path (no 0x80) emits high-byte 0; the correction path must
+    not collapse into it just because the correction value is zero.
+    """
+    # hi=0x04, flags=0xC0 (RLE), n=0x80 (k=2, correction follows), correction=0.
+    decoded = _decode_rar3_unicode_name(b"ab", b"\x04\xc0\x80\x00")
+    assert decoded == "\u0461\u0462"
+
+
+def _reference_decode_rar3_unicode_name(std_name: bytes, encdata: bytes) -> str | None:
+    """Per-byte transcription of the pre-rewrite ``_UnicodeFilename.decode``.
+
+    Independent oracle for the property test — keep this as the old class
+    algorithm, not a copy of ``_decode_rar3_unicode_name``.
+    """
+    pos = 0
+    encpos = 0
+    buf = bytearray()
+    failed = False
+
+    def enc_byte() -> int:
+        nonlocal encpos, failed
+        try:
+            c = encdata[encpos]
+            encpos += 1
+            return c
+        except IndexError:
+            failed = True
+            return 0
+
+    def std_byte() -> int:
+        nonlocal failed
+        try:
+            return std_name[pos]
+        except IndexError:
+            failed = True
+            return ord("?")
+
+    def put(lo: int, hi_byte: int) -> None:
+        nonlocal pos
+        buf.append(lo)
+        buf.append(hi_byte)
+        pos += 1
+
+    hi = enc_byte()
+    flagbits = 0
+    flags = 0
+    while not failed and encpos < len(encdata):
+        if flagbits == 0:
+            flags = enc_byte()
+            flagbits = 8
+            if failed:
+                break
+        flagbits -= 2
+        t = (flags >> flagbits) & 3
+        if t == 0:
+            lo = enc_byte()
+            if failed:
+                break
+            put(lo, 0)
+        elif t == 1:
+            lo = enc_byte()
+            if failed:
+                break
+            put(lo, hi)
+        elif t == 2:
+            lo = enc_byte()
+            if failed:
+                break
+            c_hi = enc_byte()
+            if failed:
+                break
+            put(lo, c_hi)
+        else:
+            n = enc_byte()
+            if failed:
+                break
+            if n & 0x80:
+                correction = enc_byte()
+                if failed:
+                    break
+                for _ in range((n & 0x7F) + 2):
+                    lo = (std_byte() + correction) & 0xFF
+                    if failed:
+                        break
+                    put(lo, hi)
+            else:
+                for _ in range(n + 2):
+                    lo = std_byte()
+                    if failed:
+                        break
+                    put(lo, 0)
+    if failed:
+        return None
+    return buf.decode("utf-16le", "replace")
+
+
+def test_rar3_unicode_name_decode_matches_reference_and_stays_bounded() -> None:
+    """Random ``(std_name, encdata)`` pairs match the pre-rewrite decoder and
+    never exceed ``len(std_name) + len(encdata)`` on success.
+    """
+    pytest.importorskip("hypothesis")
+    from hypothesis import example, given
+    from hypothesis import strategies as st
+
+    opcodeish = st.sampled_from([0x00, 0x40, 0x80, 0xC0, 0xFF, 0x7F, 0x01, 0x81])
+    encdata_st = st.one_of(
+        st.binary(max_size=13),
+        st.tuples(
+            st.binary(min_size=1, max_size=1), st.lists(opcodeish, max_size=12)
+        ).map(lambda hi_and_rest: hi_and_rest[0] + bytes(hi_and_rest[1])),
+    )
+
+    @given(
+        std_name=st.one_of(
+            st.binary(max_size=11), st.binary(min_size=129, max_size=200)
+        ),
+        encdata=encdata_st,
+    )
+    @example(b"", _rle_name_encdata(8))
+    @example(b"", b"\x00\x00")
+    @example(b"abc", b"\x00\xc0\x01")
+    @example(b"ab", b"\x04\xc0\x80\x00")
+    @example(b"x" * 129, b"\x00\xc0\x7f")  # plain run k=129
+    @example(b"x" * 129, b"\x04\xc0\xff\x05")  # correction run k=129, c=5
+    @example(b"x" * 129, b"\x04\xc0\xff\x00")  # correction run k=129, c=0
+    def inner(std_name: bytes, encdata: bytes) -> None:
+        got = _decode_rar3_unicode_name(std_name, encdata)
+        assert got == _reference_decode_rar3_unicode_name(std_name, encdata)
+        if got is not None:
+            assert len(got) <= len(std_name) + len(encdata)
+
+    inner()
 
 
 # Fixtures built by review/next/01-rar-reader-findings/make_hostile_fixtures.py:

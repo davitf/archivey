@@ -26,7 +26,11 @@ when members are registered into a materialized / resolved list (`members()`,
 hatch). Format-local parser bounds (e.g. 7z `num_files` vs header size →
 `CorruptionError`; RAR member-count ceiling at parse) stay as defense-in-depth.
 Indexed formats (7z/RAR) may still allocate up to those parser ceilings during
-`open_archive()` before spine listing caps apply.
+`open_archive()` before spine listing caps apply. `max_metadata_bytes` budgets
+*retained* member metadata; it does not see a transient decode buffer discarded
+before any member exists. RAR3 compressed Unicode names used to expand ~100×
+that way (listing-time CPU at the `uint16` `name_size` ceiling, not unbounded
+memory). Decode now fails closed on overrun (PR #292); O1's status is unchanged.
 
 `read()` / `open()` stream sizes remain unbounded (follow-on); prefer chunked
 reads for untrusted member payloads.

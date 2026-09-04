@@ -102,7 +102,9 @@ Two smaller notes (masked inner-close exception on the `rc==11` raise; header-en
   Aggregate name bytes are ~1:1 with on-disk header bytes (no amplification), so the
   count cap plus the materialization-time metadata cap is adequate; the spec
   explicitly sanctions allocating up to the parser ceiling before listing caps apply.
-  Not a finding.
+  Not a finding. **Correction (PR #292):** RAR3 compressed Unicode names amplify
+  (~100× RLE) at decode time into a transient buffer those caps never saw; the
+  decoder now fails closed on overrun.
 - **vint decoding itself is safe.** `_load_vint` caps at 11 bytes and cannot spin or
   overflow (Python bigint). F2 is a *separate* pre-read loop, not `_load_vint`.
 - **`_seek_after_packed` / offset arithmetic is guarded** against negative, past-`_MAX_SEEK`,
