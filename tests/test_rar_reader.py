@@ -948,11 +948,19 @@ def test_rar3_unicode_name_decode_matches_reference_and_stays_bounded() -> None:
         ).map(lambda hi_and_rest: hi_and_rest[0] + bytes(hi_and_rest[1])),
     )
 
-    @given(std_name=st.binary(max_size=11), encdata=encdata_st)
+    @given(
+        std_name=st.one_of(
+            st.binary(max_size=11), st.binary(min_size=129, max_size=200)
+        ),
+        encdata=encdata_st,
+    )
     @example(b"", _rle_name_encdata(8))
     @example(b"", b"\x00\x00")
     @example(b"abc", b"\x00\xc0\x01")
     @example(b"ab", b"\x04\xc0\x80\x00")
+    @example(b"x" * 129, b"\x00\xc0\x7f")  # plain run k=129
+    @example(b"x" * 129, b"\x04\xc0\xff\x05")  # correction run k=129, c=5
+    @example(b"x" * 129, b"\x04\xc0\xff\x00")  # correction run k=129, c=0
     def inner(std_name: bytes, encdata: bytes) -> None:
         got = _decode_rar3_unicode_name(std_name, encdata)
         assert got == _reference_decode_rar3_unicode_name(std_name, encdata)
