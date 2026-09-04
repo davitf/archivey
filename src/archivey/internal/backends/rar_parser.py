@@ -557,8 +557,10 @@ def _load_windowstime(
     lo, pos = _load_le32(buf, pos)
     hi, pos = _load_le32(buf, pos)
     ticks = (hi << 32) | lo
-    # Shared FILETIME helper. Discard TimestampIssue: listing still swallows
-    # out-of-range values rather than emitting a diagnostic (same as Unix time).
+    # Shared FILETIME helper. ticks=0 → None is that helper's ZIP unset
+    # rule, accepted for RAR (do not revive 1601-01-01). Discard
+    # TimestampIssue: listing still swallows out-of-range values rather
+    # than emitting a diagnostic (same as Unix time).
     dt, _issue = filetime_to_datetime(ticks, "", field="mtime")
     return dt, pos
 
