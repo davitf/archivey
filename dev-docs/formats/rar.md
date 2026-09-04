@@ -472,17 +472,15 @@ RAR-specific only. General extraction and name hazards are §2.4.
 - **Listing is attacker-controlled work with no decompression.** A small file can declare an
   enormous member table; the parser ceiling of 1 048 576 bounds the walk before
   `ListingLimits` are evaluated at materialization. [`threat-model.md`](../threat-model.md) O1.
-- **RAR3 names are themselves compressed, and that decode is unbounded.** The *retained*
-  name bytes are roughly 1:1 with header bytes, because a successful decode consumes one
-  8-bit-field byte per emitted character. The **transient** cost is not. `_UnicodeFilename`
-  has an RLE branch that emits up to 129 UTF-16 code units per encoding byte, and when the
-  8-bit name field runs out `_std_byte()` marks the decode failed, **returns `?` and lets the
-  loop continue** — so an empty 8-bit field bounds nothing, and the buffer is built in full
-  before being discarded. Measured at roughly **100 characters per input byte**, linear in
-  the input, and the header walk pays it per FILE header. Same class as the vint loop above —
-  a byte count the attacker chooses, spent before any member exists — and the one bound the
-  parser is still missing. Not registered anywhere yet; §8 pins both halves, and §10 #1 is
-  the fix.
+- **RAR3 names are themselves compressed.** The *retained* name bytes are roughly 1:1 with
+  header bytes on a successful decode. Before #292 the transient cost was the lever: the
+  decoder continued past a failed 8-bit read with `?`, so an empty 8-bit field plus
+  RLE-heavy encoding built ~100 characters per input byte — about **11 s of CPU and
+  13.5 MB** at the `uint16` `name_size` ceiling — then discarded the buffer before any
+  member existed. Closed by `_decode_rar3_unicode_name`: overrun returns `None` and the
+  caller falls back to the 8-bit field; every output unit costs a `std_name` or `encdata`
+  byte, so amplification is impossible by construction (shipped decode of that ceiling
+  vector is microseconds). Pinned in §8.
 - **Variable-length integers are a CPU bomb, not a memory one.** The input chooses how many
   continuation bytes to supply, so a decoder that re-copies its accumulated bytes each
   iteration is quadratic in a length the attacker picks — a few megabytes of `0x80` burned CPU
@@ -650,7 +648,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
 | Listing is a header-to-header walk, seeking once per member, and it scales with the member count (§1) | `::test_listing_walks_header_to_header_rather_than_reading_an_index` — it also fails if `QO` support (§10 #5) ever lands, so the page cannot drift past the code |
 | Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |
-| The RAR3 compressed-name amplification (§4) exists, and the bound that would close it does not | `::test_rar3_compressed_name_amplification_is_the_documented_shape` pins the shape; `::test_rar3_compressed_name_decode_is_bounded` is the red half, `xfail(strict=True)`, so it fails the suite the day §10 #1 lands rather than closing silently |
+| RAR3 compressed-name decode fails closed on overrun; long RLE stays bounded (§4) | `::test_rar3_compressed_name_decode_is_bounded`, `::test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present`, `::test_rar3_rle_name_may_be_longer_than_encdata`, `::test_rar3_rle_name_zero_correction_keeps_hi_byte`, `::test_rar3_unicode_name_decode_matches_reference_and_stays_bounded` |
 | The >4 GiB RAR3 packed skip, and split-continuation identity checks | `::test_rar3_large_packed_member_skips_full_64bit_size`, `::test_rar3_mismatched_split_continuation_is_corruption` and the three tests after it |
 | Member-table ceiling at parse, `ListingLimits` at materialization | `::test_rar_parser_bounds_member_count`, `::test_rar_members_enforces_listing_limits` |
 | The SFX needle validator, its `DAMAGED` verdict, and a decoy skipped for the real payload | `tests/test_sfx.py::test_rar_main_header_validator`, `::test_rar_main_header_validator_crc_fail_is_damaged`, `::test_rar_clamped_header_peek_is_valid_when_remaining_is_known`, `::test_mz_rar5_crc_fail_skips_to_the_real_payload`, `::test_shebang_script_mentioning_rar_magic_is_not_rar`, `::test_shebang_plus_real_rar_detects` |
@@ -729,7 +727,6 @@ Ordered by what I would do first, not by size.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
-| 1 | **Bound the RAR3 name decode.** `_UnicodeFilename.decode()` emits up to 129 UTF-16 units per encoding byte, and `_std_byte()` marks the decode failed, returns `?`, and lets the loop continue — so an empty 8-bit name field bounds nothing. Measured at roughly 100 characters per input byte, linear. Fix: stop the loop when `_std_byte()` fails, or cap `len(buf)` against `len(encdata)` | The one unbounded-CPU path left in the parser, and the same class as the vint bomb that was treated as a finding worth fixing. `test_rar3_compressed_name_decode_is_bounded` is the red half, `xfail(strict=True)` — it fails the suite the day the bound lands, so the marker cannot be left behind | §4, §8 |
 | 2 | **Honour `seekable_members=True` on the `unrar` route** by respawning on a backward seek — the same reopen the other backends use. Today the flag is accepted, honoured on the direct-slice route and silently ignored on the pipe route, so one archive answers differently per member | Consistency between formats is a promise the library makes; a flag that means different things per backend breaks it more than a slow seek would | §5 (tagged bug), §2.3 |
 | 3 | **Read a member whose name contains `*` or `?`** by passing the wildcard through as the mask and skipping the other members it matches — the member list needed to compute that is already parsed. Replaces today's `UnsupportedFeatureError` | A valid archive is unreadable, and the refusal was always the conservative half of a fix | §5, §2.3 |
 | 4 | **Pin the solid emission policy per generation.** No stored size predicts what `unrar p` prints: RAR5 links are packed 0 / unpacked > 0, RAR4 links are packed > 0 / unpacked > 0, and both emit zero bytes. `is_payload_file()` gets this right incidentally, untested against RAR3 link members | Cheapest high-value item here — a test over the `symlinks_solid__` pair in both generations turns incidental correctness into pinned correctness. `open-issues.md` P6 | §1, §4 |

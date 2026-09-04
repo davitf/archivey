@@ -1293,53 +1293,6 @@ def test_open_unrar_p_missing_stdout_pipe_is_typed(
     assert proc.killed is True
 
 
-def _rle_name_encdata(opcode_runs: int) -> bytes:
-    """RAR3 compressed-name bytes that are all maximum-length RLE runs.
-
-    RAR3 stores names compressed. ``_UnicodeFilename`` has an RLE branch emitting up
-    to 129 UTF-16 code units per encoding byte, copying from the 8-bit name field —
-    so an *empty* 8-bit field plus a long run of RLE opcodes is the worst case.
-    """
-    return b"\x00" + (b"\xff" + b"\x7f" * 4) * opcode_runs
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Red half of formats/rar.md §10#1: _UnicodeFilename.decode() has no bound. "
-        "_std_byte() marks the decode failed, returns '?' and lets the loop continue, "
-        "so an empty 8-bit name field bounds nothing and the buffer is built in full "
-        "before being discarded. Remove this marker when the bound lands."
-    ),
-)
-def test_rar3_compressed_name_decode_is_bounded() -> None:
-    """A name must not decode to far more characters than its encoding has bytes.
-
-    Same class as the RAR5 header-size vint bomb (review F2): a byte count the attacker
-    chooses, spent inside the header walk before any member exists.
-    """
-    from archivey.internal.backends.rar_parser import _UnicodeFilename
-
-    encdata = _rle_name_encdata(1000)
-    decoded = _UnicodeFilename(b"", bytearray(encdata)).decode()
-    assert len(decoded) <= len(encdata)
-
-
-def test_rar3_compressed_name_amplification_is_the_documented_shape() -> None:
-    """Pins the *shape* of formats/rar.md §4's claim while the bound is still missing.
-
-    Asserting that the amplification exists keeps §4 honest without pinning an exact
-    ratio, which any partial fix would move. The xfail above is what closes the gap.
-    """
-    from archivey.internal.backends.rar_parser import _UnicodeFilename
-
-    encdata = _rle_name_encdata(1000)
-    decoded = _UnicodeFilename(b"", bytearray(encdata)).decode()
-    assert len(decoded) > 50 * len(encdata), (
-        f"expected large amplification, got {len(decoded) / len(encdata):.1f}x"
-    )
-
-
 def test_listing_walks_header_to_header_rather_than_reading_an_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
