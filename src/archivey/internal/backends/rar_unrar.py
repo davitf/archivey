@@ -19,6 +19,8 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 
+# Successful probes only. A rejected lookalike is not cached, so it is
+# re-probed on every attempted read rather than once per process.
 _cached_unrar: str | None = None
 
 _NOT_INSTALLED_MSG = (

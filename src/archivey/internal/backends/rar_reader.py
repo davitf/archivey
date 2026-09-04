@@ -332,22 +332,32 @@ class _UnrarOwnedStream(DelegatingStream):
     def close(self) -> None:
         if self.closed:
             return
+        close_error: BaseException | None = None
         try:
             self._inner.close()
-        finally:
-            if self._proc.poll() is None:
+        except BaseException as exc:  # noqa: BLE001 - close must reap unrar even on KeyboardInterrupt
+            close_error = exc
+        if self._proc.poll() is None:
+            terminate_unrar(self._proc)
+        else:
+            # Drain wait status if the process already exited on EOF.
+            try:
+                self._proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
                 terminate_unrar(self._proc)
-            else:
-                # Drain wait status if the process already exited on EOF.
-                try:
-                    self._proc.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    terminate_unrar(self._proc)
-            # Mark closed without relying on DelegatingStream (already closed inner).
-            super(DelegatingStream, self).close()
-            # Early-stop close: map now if the completing-read path never did.
-            # (If read already mapped, ``_exit_mapped`` skips a second raise.)
+        # Mark closed without relying on DelegatingStream (already closed inner).
+        super(DelegatingStream, self).close()
+        # Early-stop close: map now if the completing-read path never did.
+        # (If read already mapped, ``_exit_mapped`` skips a second raise.)
+        # Do not let that mapped error replace an exception from inner.close().
+        try:
             self._map_exit_if_reaped(wait_timeout=None)
+        except BaseException as mapped:  # noqa: BLE001 - chain onto inner.close(), do not replace it
+            if close_error is not None:
+                raise close_error from mapped
+            raise
+        if close_error is not None:
+            raise close_error
 
 
 class RarReader(BaseArchiveReader):

@@ -1267,6 +1267,27 @@ def test_unrar_owned_stream_negative_rc_from_terminate_is_not_error() -> None:
     _close_unrar_owned(rc=-15, named_member=True, has_verifiable_hash=False)
 
 
+def test_unrar_owned_stream_close_does_not_mask_inner_close_error() -> None:
+    """inner.close() must not be replaced by the exit-mapped error in close()."""
+
+    class _CloseRaises(io.BytesIO):
+        def close(self) -> None:
+            super().close()
+            raise OSError("stdout close failed")
+
+    from archivey.internal.backends.rar_reader import _UnrarOwnedStream
+
+    stream = _UnrarOwnedStream(
+        _CloseRaises(b""),
+        _FakeUnrarProc(11),  # type: ignore[arg-type]
+        named_member=True,
+        has_verifiable_hash=True,
+    )
+    with pytest.raises(OSError, match="stdout close failed") as caught:
+        stream.close()
+    assert isinstance(caught.value.__cause__, EncryptionError)
+
+
 def test_open_unrar_p_missing_stdout_pipe_is_typed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
