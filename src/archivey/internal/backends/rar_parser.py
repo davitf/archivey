@@ -809,13 +809,26 @@ class _UnicodeFilename:
         self.pos += 1
 
     def decode(self) -> str:
+        # RLE can emit 129 UTF-16 units per encoding byte by copying the 8-bit
+        # name field. On overrun, ``_std_byte`` / ``_enc_byte`` set ``failed``;
+        # they used to substitute ``?`` and continue, so an empty 8-bit field
+        # plus RLE-heavy encdata built a large buffer the caller then discarded.
+        # Stop at the first failure. A well-formed name never takes this path.
+        # ``max_units`` is belt-and-suspenders: each output unit is copied from
+        # the 8-bit field or paid for by an encoding byte.
         hi = self._enc_byte()
         flagbits = 0
         flags = 0
-        while self.encpos < len(self.encdata):
+        max_units = len(self.std_name) + len(self.encdata)
+        while not self.failed and self.encpos < len(self.encdata):
+            if len(self.buf) // 2 >= max_units:
+                self.failed = True
+                break
             if flagbits == 0:
                 flags = self._enc_byte()
                 flagbits = 8
+                if self.failed:
+                    break
             flagbits -= 2
             t = (flags >> flagbits) & 3
             if t == 0:
@@ -826,14 +839,23 @@ class _UnicodeFilename:
                 self._put(self._enc_byte(), self._enc_byte())
             else:
                 n = self._enc_byte()
+                if self.failed:
+                    break
                 if n & 0x80:
                     c = self._enc_byte()
+                    if self.failed:
+                        break
                     for _ in range((n & 0x7F) + 2):
                         lo = (self._std_byte() + c) & 0xFF
+                        if self.failed:
+                            break
                         self._put(lo, hi)
                 else:
                     for _ in range(n + 2):
-                        self._put(self._std_byte(), 0)
+                        lo = self._std_byte()
+                        if self.failed:
+                            break
+                        self._put(lo, 0)
         return self.buf.decode("utf-16le", "replace")
 
 

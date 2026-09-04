@@ -778,6 +778,43 @@ def test_rar3_non_bmp_filename_not_truncated() -> None:
         )
 
 
+def _rle_name_encdata(opcode_runs: int) -> bytes:
+    """RAR3 compressed-name bytes that are all maximum-length RLE runs.
+
+    RAR3 stores names compressed. ``_UnicodeFilename`` has an RLE branch emitting up
+    to 129 UTF-16 code units per encoding byte, copying from the 8-bit name field —
+    so an *empty* 8-bit field plus a long run of RLE opcodes is the worst case.
+    """
+    return b"\x00" + (b"\xff" + b"\x7f" * 4) * opcode_runs
+
+
+def test_rar3_compressed_name_decode_is_bounded() -> None:
+    """A name must not decode to more characters than its encoding has bytes.
+
+    Same class as the RAR5 header-size vint bomb: a byte count the attacker
+    chooses, spent inside the header walk before any member exists. Bound:
+    ``len(decoded) <= len(encdata)``. An empty 8-bit field cannot amplify,
+    because every output unit is either copied from that field or paid for by
+    an encoding byte.
+    """
+    from archivey.internal.backends.rar_parser import _UnicodeFilename
+
+    encdata = _rle_name_encdata(1000)
+    decoded = _UnicodeFilename(b"", bytearray(encdata)).decode()
+    assert len(decoded) <= len(encdata)
+
+
+def test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present() -> None:
+    """Stopping on ``failed`` must not change a well-formed RLE copy from the 8-bit name.
+
+    hi=0, flags=0xC0 (first opcode is RLE), n=1 → copy 3 bytes of std_name as ASCII.
+    """
+    from archivey.internal.backends.rar_parser import _UnicodeFilename
+
+    decoded = _UnicodeFilename(b"abc", bytearray(b"\x00\xc0\x01")).decode()
+    assert decoded == "abc"
+
+
 # Fixtures built by review/next/01-rar-reader-findings/make_hostile_fixtures.py:
 # nonsolid, compressed members whose stored names are a bare unrar switch and an
 # ``@listfile`` argument, alongside a normal control member.
