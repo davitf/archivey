@@ -115,6 +115,8 @@ data stream per reader; streams are forward-only. "Live" spans `open()` →
 stream `close()`/context exit (not EOF, not GC). A second overlapping `open()`
 SHALL raise `ConcurrentAccessError` at the later call and leave the first stream
 untouched/readable — the gate never resolves contention by closing a held stream.
+The refusal SHALL happen before the member is opened: a refused `open()` SHALL NOT
+construct a member data stream, spawn a helper process, or read member data.
 (This is a rule about *contention*, not lifetime: `reader.close()` does close
 member streams — see "Context-manager and close lifecycle".) Every member
 stream (random `open()` and `stream_members()` yields) SHALL report
@@ -143,6 +145,7 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 | Case | Expected |
 | --- | --- |
 | Overlapping second `open()` without `concurrent_members` (ZIP/TAR/ISO/single-file/dir) | `ConcurrentAccessError` at later `open()` with open_archive `file:line`; first stream remains readable |
+| Refused second `open()` without `concurrent_members` | Raises before the member is opened — no member stream constructed, no helper process spawned, no member data read |
 | Non-overlapping open/read/close loop, no capabilities declared | All opens succeed |
 | Stream without `seekable_members` (incl. real directory file) | `seekable()` false; `seek()` → `io.UnsupportedOperation`; `tell()` + forward reads OK |
 | Same member with `seekable_members=True` | Seekable where backend provides it; loud-slow-rewind rule for non-accelerated path |

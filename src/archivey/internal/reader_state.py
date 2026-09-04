@@ -29,6 +29,16 @@ class LifecycleState(enum.Enum):
 
 
 @dataclass(eq=False)
+class LiveStreamReservation:
+    """Opaque live-stream slot reservation.
+
+    Disjoint from ``id()`` values in ``_live_streams``. A reservation must never
+    be stored in that set: ``release_live_stream_id`` reasons about id reuse, and
+    a synthetic int dropped in there would be mistakable for a stream.
+    """
+
+
+@dataclass(eq=False)
 class OperationToken:
     """Unforgeable root, child, or short-lived worker operation-owner token."""
 
@@ -72,6 +82,7 @@ class ReaderState:
         self._children: set[OperationToken] = set()
         self._workers: set[OperationToken] = set()
         self._live_streams: set[int] = set()
+        self._reservations: set[LiveStreamReservation] = set()
         self._lease_count = 1  # reader itself holds one lease until close
         self._teardown_claimed = False
         self._stream_shutdown_claimed = False
@@ -269,25 +280,63 @@ class ReaderState:
                 self._materializing_thread = None
                 self._materialization_cv.notify_all()
 
-    def acquire_live_stream(self, stream: ArchiveStream) -> None:
-        """Register a public member stream; enforce the single-live-stream gate."""
+    def reserve_live_stream(self) -> LiveStreamReservation:
+        """Take a live-stream lease before the stream object exists.
+
+        Raises :class:`~archivey.exceptions.ConcurrentAccessError` under the same
+        rules as :meth:`acquire_live_stream` (including the concurrent / internal-open
+        bypass). The lease is held until :meth:`bind_live_stream` or
+        :meth:`release_reservation`.
+        """
         with self._lock:
             self._require_lifecycle_open_locked("open()")
-            if self.concurrent or self._internal_opens_active_locked():
-                self._live_streams.add(id(stream))
-                self._lease_count += 1
-                return
-            if self._live_streams:
-                site = self.open_site
-                loc = site.location if site is not None else "<unknown>"
-                raise ConcurrentAccessError(
-                    "A member stream is already open on this reader. Close it before "
-                    "opening another, or reopen the archive with "
-                    "concurrent_members=True "
-                    f"(this archive was opened without concurrent_members at {loc})."
-                )
-            self._live_streams.add(id(stream))
+            if not (self.concurrent or self._internal_opens_active_locked()):
+                if self._live_streams or self._reservations:
+                    site = self.open_site
+                    loc = site.location if site is not None else "<unknown>"
+                    raise ConcurrentAccessError(
+                        "A member stream is already open on this reader. Close it "
+                        "before opening another, or reopen the archive with "
+                        "concurrent_members=True "
+                        f"(this archive was opened without concurrent_members at {loc})."
+                    )
+            token = LiveStreamReservation()
+            self._reservations.add(token)
             self._lease_count += 1
+            return token
+
+    def bind_live_stream(
+        self, token: LiveStreamReservation, stream: ArchiveStream
+    ) -> None:
+        """Consume ``token``, recording ``id(stream)`` as the live stream.
+
+        Infallible: no lifecycle re-check. ``open()`` still holds a worker across
+        reserve → open → bind, so ``close()`` cannot complete in between. Does not
+        increment the lease — the reservation already holds it.
+        """
+        with self._lock:
+            self._reservations.discard(token)
+            self._live_streams.add(id(stream))
+
+    def release_reservation(self, token: LiveStreamReservation) -> bool:
+        """Drop an unbound reservation. True → the caller should run teardown.
+
+        Idempotent: a token already bound or released is a no-op.
+        """
+        with self._lock:
+            if token not in self._reservations:
+                return False
+            self._reservations.discard(token)
+            return self._release_lease_locked()
+
+    def acquire_live_stream(self, stream: ArchiveStream) -> None:
+        """Register a public member stream; enforce the single-live-stream gate.
+
+        Implemented as reserve-then-bind so the eager ``open()`` path and the lazy
+        ``stream_members`` path share one gate check.
+        """
+        token = self.reserve_live_stream()
+        self.bind_live_stream(token, stream)
 
     def release_live_stream(self, stream: ArchiveStream) -> bool:
         """Release a stream lease. Returns True if the caller should run teardown."""

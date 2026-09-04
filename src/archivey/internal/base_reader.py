@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import uuid
 import weakref
@@ -75,7 +76,7 @@ from archivey.internal.naming import (
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
-from archivey.internal.reader_state import ReaderState
+from archivey.internal.reader_state import LiveStreamReservation, ReaderState
 from archivey.internal.selection import normalize_member_selector
 from archivey.internal.sfx import HitValidator
 from archivey.internal.streams.archive_stream import ArchiveStream
@@ -475,9 +476,21 @@ class BaseArchiveReader(ArchiveReader):
     def _seek_declared(self) -> bool:
         return self._state.seekable
 
-    def _register_public_stream(self, stream: ArchiveStream) -> ArchiveStream:
-        """Admit ``stream`` under the live-stream gate and attach lease release on close."""
-        self._state.acquire_live_stream(stream)
+    def _register_public_stream(
+        self,
+        stream: ArchiveStream,
+        token: LiveStreamReservation | None = None,
+    ) -> ArchiveStream:
+        """Admit ``stream`` under the live-stream gate and attach lease release on close.
+
+        ``token`` is a reservation already taken (eager ``open()``); bind is
+        infallible. Without ``token`` this acquires a new slot (lazy
+        ``stream_members`` wrappers, which have not spawned yet).
+        """
+        if token is None:
+            self._state.acquire_live_stream(stream)
+        else:
+            self._state.bind_live_stream(token, stream)
         self._public_stream_seq += 1
         self._public_streams[self._public_stream_seq] = stream
 
@@ -1758,8 +1771,38 @@ class BaseArchiveReader(ArchiveReader):
                         f"member yielded by this reader, or look it up by name with "
                         f"reader.get(name)."
                     )
-            stream = self._open_with_link_follow(member, visited=set())
-            return self._register_public_stream(stream)
+            # Gate before spawn: ``_lazy_member_stream`` already registers first.
+            # Reserve under the lock so two threads cannot both pass, then open,
+            # then bind. A refused second open must not build a decompressor /
+            # unrar process that is never registered.
+            reservation = self._state.reserve_live_stream()
+            bound = False
+            stream: ArchiveStream | None = None
+            try:
+                stream = self._open_with_link_follow(member, visited=set())
+                registered = self._register_public_stream(stream, token=reservation)
+                bound = True
+                return registered
+            finally:
+                if not bound:
+                    pending = sys.exception()
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception as close_exc:  # noqa: BLE001 - attach, don't replace
+                            # Don't replace the in-flight open/register error.
+                            if pending is not None:
+                                pending.add_note(
+                                    "closing the unbound member stream also failed: "
+                                    f"{close_exc}"
+                                )
+                            else:
+                                raise
+                    if self._state.release_reservation(reservation):
+                        # True → last lease dropped. Today this is False: open()
+                        # still holds a worker, so the reader lease remains. Honour
+                        # the return so a future invariant break actually teardowns.
+                        self._maybe_teardown()
         finally:
             self._state.release_worker(token)
 

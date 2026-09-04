@@ -15,6 +15,7 @@ import pytest
 from archivey import ExtractionStatus, open_archive
 from archivey.exceptions import (
     ArchiveyError,
+    ConcurrentAccessError,
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
@@ -113,6 +114,39 @@ def test_solid_pass_spawns_unrar_only_on_the_first_read(
                 assert stream is not None
                 assert stream.read() == _BASIC_CONTENTS["file1.txt"]
     assert len(spawns) == 1
+
+
+@requires_binary("unrar")
+def test_refused_second_open_does_not_spawn_unrar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ConcurrentAccessError`` must mean the second ``unrar`` was never spawned.
+
+    ``basic_solid__.rar`` is ``-m3`` (not stored): ``open()`` takes the named-unrar
+    path. A spawn-then-cleanup fix still raises and leaves no live process, so this
+    counts ``open_unrar_p`` calls rather than leftover children.
+    """
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(path: Path, **kwargs: object):
+        spawns.append(kwargs.get("member"))
+        return original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
+    with open_archive(_fixture("basic_solid__.rar")) as archive:
+        files = [m for m in archive.members() if m.is_file]
+        assert len(files) >= 2
+        s1 = archive.open(files[0])
+        assert len(spawns) == 1
+        with pytest.raises(ConcurrentAccessError):
+            archive.open(files[1])
+        assert len(spawns) == 1
+        s1.close()
+        s2 = archive.open(files[1])
+        assert len(spawns) == 2
+        s2.close()
 
 
 @requires_binary("unrar")

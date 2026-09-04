@@ -389,7 +389,6 @@ class RarReader(BaseArchiveReader):
         self._owned_concat: ConcatenatedFile | None = None
         self._archive_path: Path | None = None
         self._volume_paths: list[Path] = []
-        self._live_unrar: subprocess.Popen[bytes] | None = None
 
         if is_stream(source) and not is_seekable(source):
             raise StreamNotSeekableError(
@@ -724,15 +723,26 @@ class RarReader(BaseArchiveReader):
                     password=self._unrar_password,
                     version_control=version_control,
                 )
-                self._live_unrar = proc
-                # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
-                # and declared length via fused ArchiveStream verify), so the pipe-level
-                # unrar exit code is redundant for corruption and is suppressed here to
-                # avoid legacy-format false positives; wrong-password (11) still maps.
-                owned: BinaryIO = self._track_decompressed(
-                    _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
-                )
-                solid = SolidBlockReader(owned)
+                # Between Popen and the wrapper taking ownership, a raise would
+                # leave the process unowned. Terminate before the wrapper exists;
+                # after that, owned.close() reaps the process and the stdout pipe.
+                try:
+                    owned: BinaryIO = _UnrarOwnedStream(
+                        stdout, proc, has_verifiable_hash=True
+                    )
+                except BaseException:
+                    terminate_unrar(proc)
+                    raise
+                try:
+                    # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
+                    # and declared length via fused ArchiveStream verify), so the pipe-level
+                    # unrar exit code is redundant for corruption and is suppressed here to
+                    # avoid legacy-format false positives; wrong-password (11) still maps.
+                    owned = self._track_decompressed(owned)
+                    solid = SolidBlockReader(owned)
+                except BaseException:
+                    owned.close()
+                    raise
             return solid
 
         pipe_offset = 0
@@ -769,7 +779,6 @@ class RarReader(BaseArchiveReader):
         def _cleanup() -> None:
             if solid is not None:
                 solid.close()
-            self._live_unrar = None
 
         yield from self._drive_pass_streams(
             iter(self._members),
@@ -926,29 +935,30 @@ class RarReader(BaseArchiveReader):
             member=_presented_filename(raw),
             version_control=raw.is_file_version_history(),
         )
-        self._live_unrar = proc
         # Prefer our fused digest check (including tweaked ConvertHashToMAC) over
         # unrar's exit code for corruption; wrong-password (11) still maps.
         has_hash = bool(member.hashes) or (
             isinstance(raw, RarMemberInfo)
             and self._tweaked_verify_spec(raw) is not None
         )
-        owned = self._track_decompressed(
-            _UnrarOwnedStream(
+        try:
+            owned = _UnrarOwnedStream(
                 stdout,
                 proc,
                 named_member=True,
                 has_verifiable_hash=has_hash,
                 encrypted=raw.is_encrypted,
             )
-        )
+        except BaseException:
+            terminate_unrar(proc)
+            raise
         try:
+            owned = self._track_decompressed(owned)
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
             # Fused verify in _wrap_payload_stream bounds/checks declared size + digests.
             return self._wrap_payload_stream(owned, member, track_output=False)
         except BaseException:
             owned.close()
-            self._live_unrar = None
             raise
 
     def _get_archive_info(self) -> ArchiveInfo:
@@ -981,8 +991,6 @@ class RarReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        terminate_unrar(self._live_unrar)
-        self._live_unrar = None
         self._shared.close()
         if self._owned_concat is not None:
             try:

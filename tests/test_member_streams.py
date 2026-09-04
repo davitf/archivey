@@ -43,6 +43,68 @@ def test_second_overlapping_open_raises_concurrent_access_error(tmp_path: Path) 
             assert s2.read() == b"bbb"
 
 
+def test_refused_open_does_not_call_open_member(tmp_path: Path) -> None:
+    """The single-live-stream gate must fire before ``_open_member``, not after.
+
+    A spawn-then-close (or spawn-then-GC) implementation still raises
+    ``ConcurrentAccessError`` but has already built the second stream. Counting
+    ``_open_member`` is the format-agnostic discriminator.
+    """
+    root = _two_file_dir(tmp_path)
+    with open_archive(root) as reader:
+        opens = 0
+        original = reader._open_member
+
+        def counting_open_member(member):  # noqa: ANN001
+            nonlocal opens
+            opens += 1
+            return original(member)
+
+        reader._open_member = counting_open_member  # type: ignore[method-assign]
+        s1 = reader.open("a.txt")
+        assert opens == 1
+        with pytest.raises(ConcurrentAccessError):
+            reader.open("b.txt")
+        assert opens == 1
+        s1.close()
+        with reader.open("b.txt") as s2:
+            assert s2.read() == b"bbb"
+        assert opens == 2
+
+
+def test_failed_open_releases_reservation_and_still_tears_down(tmp_path: Path) -> None:
+    """A failing ``_open_member`` must not permanently consume the single-stream slot.
+
+    The reservation taken before open is released on failure so the next ``open()``
+    succeeds, and ``close()`` still runs archive teardown (a leaked reservation
+    would pin the source lease forever).
+    """
+    root = _two_file_dir(tmp_path)
+    reader = open_archive(root)
+    teardown = False
+    original_close_archive = reader._close_archive
+
+    def tracking_close_archive() -> None:
+        nonlocal teardown
+        teardown = True
+        original_close_archive()
+
+    reader._close_archive = tracking_close_archive  # type: ignore[method-assign]
+    original_open_member = reader._open_member
+
+    def boom(_member: object) -> object:
+        raise RuntimeError("synthetic open failure")
+
+    reader._open_member = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="synthetic open failure"):
+        reader.open("a.txt")
+    reader._open_member = original_open_member  # type: ignore[method-assign]
+    with reader.open("a.txt") as stream:
+        assert stream.read() == b"aaa"
+    reader.close()
+    assert teardown is True
+
+
 def test_usage_error_is_not_archivey_error(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
     with open_archive(root) as reader:
