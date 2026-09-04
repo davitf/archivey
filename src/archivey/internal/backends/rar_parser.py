@@ -778,97 +778,97 @@ def convert_blake2sp_to_mac(digest: bytes, hash_key: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-class _UnicodeFilename:
-    def __init__(self, name: bytes, encdata: bytes) -> None:
-        self.std_name = bytearray(name)
-        self.encdata = bytearray(encdata)
-        self.pos = 0
-        self.encpos = 0
-        self.buf = bytearray()
-        self.failed = False
+def _decode_rar3_unicode_name(std_name: bytes, encdata: bytes) -> str | None:
+    """Decode a RAR3 compressed Unicode name, or None if it is corrupt.
 
-    def _enc_byte(self) -> int:
-        try:
-            c = self.encdata[self.encpos]
-            self.encpos += 1
-            return c
-        except IndexError:
-            self.failed = True
-            return 0
+    RAR 2.9-4 store a file name as two fields separated by a NUL: an 8-bit name
+    in the local/OEM charset, then a compressed UTF-16 name. The compressed form
+    is a *delta against the 8-bit name*, which is why both are needed: they are
+    position-aligned, character i of the Unicode name against byte i of the
+    8-bit one, so ``pos`` indexes the output and ``std_name`` at the same time.
 
-    def _std_byte(self) -> int:
-        try:
-            return self.std_name[self.pos]
-        except IndexError:
-            self.failed = True
-            return ord("?")
+    ``encdata[0]`` is the high UTF-16 byte shared by most of the name. The rest
+    is a stream of 2-bit opcodes, four per flags byte, MSB first:
 
-    def _put(self, lo: int, hi: int) -> None:
-        self.buf.append(lo)
-        self.buf.append(hi)
-        self.pos += 1
+      0  next byte is a low byte, high byte 0        (ASCII / Latin-1)
+      1  next byte is a low byte, high byte ``hi``
+      2  next two bytes are the low and high bytes   (anything else)
+      3  run: the next k characters equal the 8-bit name's, optionally shifted
+         by a correction byte. k is 2..129, so one opcode byte can emit 129
+         code units.
 
-    def decode(self) -> str:
-        # RLE can emit 129 UTF-16 units per encoding byte by copying the 8-bit
-        # name field. On overrun, ``_std_byte`` / ``_enc_byte`` set ``failed``;
-        # they used to substitute ``?`` and continue, so an empty 8-bit field
-        # plus RLE-heavy encdata built a large buffer the caller then discarded.
-        # Stop at the first failure. A well-formed name never takes this path.
-        # ``max_units`` is belt-and-suspenders: each output unit is copied from
-        # the 8-bit field or paid for by an encoding byte.
-        hi = self._enc_byte()
+    Bounded by construction: a t=0/1/2 unit costs an encoding byte and a run
+    unit costs a ``std_name`` byte, so the output cannot exceed
+    ``len(std_name) + len(encdata)``. (``encdata[0]`` is ``hi`` and any output
+    needs a flags byte, so the live length is strictly less; there is no
+    runtime cap because it cannot fire.) Overrunning either field means the
+    name is corrupt: return None and let the caller fall back to the 8-bit
+    field.
+
+    Without that stop, an empty 8-bit field plus RLE-heavy ``encdata`` spent
+    ~11 s of CPU at the ``uint16`` ``name_size`` ceiling (~6.7e6 code units,
+    13.5 MB, discarded before any member existed). The memory was always
+    bounded by ``name_size``; the CPU was not, other than the file size.
+    (unrar encname.cpp, EncodeFileName::Decode; ported via rarfile.)
+    """
+    out = bytearray()
+    pos = 0  # output character index AND index into std_name - aligned
+    try:
+        hi = encdata[0]
+        encpos = 1
         flagbits = 0
         flags = 0
-        max_units = len(self.std_name) + len(self.encdata)
-        while not self.failed and self.encpos < len(self.encdata):
-            if len(self.buf) // 2 >= max_units:
-                self.failed = True
-                break
+        while encpos < len(encdata):
             if flagbits == 0:
-                flags = self._enc_byte()
+                flags = encdata[encpos]
+                encpos += 1
                 flagbits = 8
-                if self.failed:
-                    break
             flagbits -= 2
             t = (flags >> flagbits) & 3
             if t == 0:
-                lo = self._enc_byte()
-                if self.failed:
-                    break
-                self._put(lo, 0)
+                out += bytes((encdata[encpos], 0))
+                encpos += 1
+                pos += 1
             elif t == 1:
-                lo = self._enc_byte()
-                if self.failed:
-                    break
-                self._put(lo, hi)
+                out += bytes((encdata[encpos], hi))
+                encpos += 1
+                pos += 1
             elif t == 2:
-                lo = self._enc_byte()
-                if self.failed:
-                    break
-                c_hi = self._enc_byte()
-                if self.failed:
-                    break
-                self._put(lo, c_hi)
+                lo, c_hi = encdata[encpos], encdata[encpos + 1]
+                encpos += 2
+                out += bytes((lo, c_hi))
+                pos += 1
             else:
-                n = self._enc_byte()
-                if self.failed:
-                    break
+                n = encdata[encpos]
+                encpos += 1
+                # ``n & 0x80`` selects the high-byte=hi / correction path even
+                # when the correction byte is 0. Folding that into
+                # ``if correction:`` would emit high-byte 0 instead of ``hi``.
                 if n & 0x80:
-                    c = self._enc_byte()
-                    if self.failed:
-                        break
-                    for _ in range((n & 0x7F) + 2):
-                        lo = (self._std_byte() + c) & 0xFF
-                        if self.failed:
-                            break
-                        self._put(lo, hi)
+                    correction = encdata[encpos]
+                    encpos += 1
+                    k = (n & 0x7F) + 2
+                    run = std_name[pos : pos + k]
+                    if len(run) != k:
+                        raise IndexError
+                    block = bytearray(2 * k)
+                    if correction:
+                        block[0::2] = bytes((b + correction) & 0xFF for b in run)
+                    else:
+                        block[0::2] = run
+                    block[1::2] = bytes((hi,)) * k
                 else:
-                    for _ in range(n + 2):
-                        lo = self._std_byte()
-                        if self.failed:
-                            break
-                        self._put(lo, 0)
-        return self.buf.decode("utf-16le", "replace")
+                    k = n + 2
+                    run = std_name[pos : pos + k]
+                    if len(run) != k:
+                        raise IndexError
+                    block = bytearray(2 * k)
+                    block[0::2] = run
+                out += block
+                pos += k
+    except IndexError:
+        return None
+    return out.decode("utf-16le", "replace")
 
 
 def _fix_rar3_astral_truncation(unicode_name: str, std_name: bytes) -> str:
@@ -1166,12 +1166,11 @@ def _parse_rar3_file_header(
     if flags & _RAR3_FILE_UNICODE and b"\0" in name:
         nul = name.find(b"\0")
         orig_filename = name[:nul]
-        u = _UnicodeFilename(orig_filename, name[nul + 1 :])
-        filename = u.decode()
-        if u.failed:
+        decoded = _decode_rar3_unicode_name(orig_filename, name[nul + 1 :])
+        if decoded is None:
             filename = _decode_name(orig_filename)
         else:
-            filename = _fix_rar3_astral_truncation(filename, orig_filename)
+            filename = _fix_rar3_astral_truncation(decoded, orig_filename)
     elif flags & _RAR3_FILE_UNICODE:
         orig_filename = name
         filename = name.decode("utf8", "replace")
