@@ -244,6 +244,12 @@ Two digest rules are worth stating because they look like missing data and are n
   ([`rar-corpus-sweep-diagnosis.md`](../investigations/rar-corpus-sweep-diagnosis.md)). The
   rule keys on the *redirect*, never on the member type — **RAR3/4 stores the target as
   member data**, so its CRC32 is a genuine digest and is kept.
+  A link member's digest, where one exists, is a digest of the **target string** — the bytes
+  the format stores for that member — not of whatever the link resolves to. That is true of
+  ZIP and 7z as well, so it is a property of `hashes` rather than of RAR: for a link, the
+  field answers "what path is recorded here", not "what content is there". Kept, because the
+  value is real and dropping it in one format only would trade this for a worse
+  inconsistency; said out loud, because `hashes` otherwise implies content.
 - **Tweaked digests are kept out of `hashes`.** With RAR5's tweaked-encryption flag set, the
   stored CRC32 and BLAKE2sp are key-derived MACs (`ConvertHashToMAC`), not checksums of the
   plaintext — the format transforms them precisely so a stored digest is not an oracle for
@@ -498,8 +504,8 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | An SFX archive that is also split is unreadable from every one of its files | **archivey** | Sibling discovery needs the archive extension immediately before the part number; an SFX first member replaces it. Shared with 7z and ZIP — [`open-issues.md`](../open-issues.md) P17 and [`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §6 |
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | `encoding=` is accepted and has no effect | **archivey** | RAR names are decoded by the parser. The call logs that the value will not be applied rather than failing |
-| A compressed member reports its compression as `UNKNOWN` with a level | **archivey** | The algorithm is proprietary, but "unknown" is the wrong word for it — the header says exactly which RAR compression version and level produced the member, and a caller comparing formats sees `UNKNOWN` where ZIP would say `DEFLATE`. `CompressionAlgorithm` has no RAR value to report instead. §10 |
-| Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine but is a digest of the **target string**, not of anything the link points at — §7 asks whether that is worth surfacing at all |
+| A compressed member reports its compression as `UNKNOWN` with a level | **archivey** — **to fix** | "Unknown" is the wrong word: the header says exactly which RAR compression version and level produced the member, and a caller comparing formats sees `UNKNOWN` where ZIP says `DEFLATE`. `CompressionAlgorithm` gets a `RAR` value, with the version in `properties` — §10 |
+| Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_members=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start. Teardown is clean — all three are reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams |
 | A RAR 1.5 / 2.x archive comment is not returned, though `rarfile` returns it | **archivey** | The parser skips old-style embedded comment sub-blocks by design. Measured on the two legacy fixtures: `rarfile` gives `'RARcomment -----'` and `'RARcomment'`, archivey gives `None` for both. RAR5 and RAR3 comments are read normally |
 | `member.comment` is always `None`, including where a RAR3 solid comment block exists | **archivey** | The block is parsed into `_raw.comment` and never mapped onto the member (§2.2) |
@@ -518,6 +524,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Spawn the solid pipe on first read, not at pass start | A pass nobody reads from — listing through `stream_members()`, an extraction whose selector matches nothing — should cost no process and should never prompt for a password | Opening the pipe when the pass begins |
 | Solidity is one archive-level flag, `solid_block_count = None` | RAR exposes no block boundaries, so any number would be invented. `None` says "unknown", which is true | Reporting 1, which reads as "one small block" |
 | A RAR5 redirect surfaces no digest; RAR3/4's is kept | Keying on the storage shape rather than the member type keeps a genuine digest where one exists and drops a constant that describes nothing. The value dropped is exactly the one a de-duplicating caller would read | Keying on member type, which would have thrown away RAR3/4's real digest; surfacing `crc32(b"")` for symmetry |
+| Surface a link member's digest where the format stores one, and say what it covers | It is a real digest of the bytes the format stores for that member — which for a link is the target *string*, not the content it resolves to. ZIP and 7z store and surface exactly the same thing, so dropping RAR3/4's alone would buy consistency inside RAR at the cost of a worse one across formats. The fix for the misreading is documenting the field, not emptying it (§2.2) | Dropping link digests everywhere, which loses information ZIP and 7z genuinely store; keeping them and saying nothing, which leaves `hashes` implying content |
 | Commit the RAR corpus archives, pinned by a manifest | Otherwise the corpus's RAR column is a licensing decision and runs on Linux only, while the release headlines a native RAR reader | Installing the trialware writer on CI; reworking digest expectations for a platform dependence that measurement showed does not exist (ADR [0016](../decisions/0016-committed-rar-corpus-fixtures.md)) |
 
 ## 7. Open questions
@@ -553,21 +560,6 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   whether the early-fail gate predicate is under-inclusive — it is generalized from one
   fixture family, and ANTI members and packed-nonzero/unpacked-zero empties are untested.
   None of that is answerable by reading code.
-- **Should a link's digest be surfaced at all, in any format?** A RAR3/4 symlink stores its
-  target as member data, so its CRC32 is a real digest — of the target *string*. That is not
-  what `hashes` means anywhere else: a caller de-duplicating by digest, or checking content
-  without decompressing, gets a value describing a path. ZIP and 7z do exactly the same thing
-  (ZIP's symlink digest is `crc32(target)` over 9 stored bytes, 7z's over 45), so dropping
-  RAR3/4's alone would make RAR inconsistent in the opposite direction — which is why this is
-  a question about the data model rather than about RAR. The RAR5 half is already settled and
-  is not in scope: a redirect stores no bytes, and `crc32(b"")` describes nothing (§2.2).
-- **Should RAR compression have a name?** A compressed member reports
-  `CompressionAlgorithm.UNKNOWN` with a level, because the algorithm is proprietary and the
-  enum has no value for it. But the header does identify it — a RAR version and a level — and
-  "unknown" reads as "we could not tell" rather than "this is RAR's own coder, which has no
-  public name". Adding a `RAR` value would make the field honest and comparable across
-  formats; the question is whether an enum value that no decoder in the library implements is
-  clarifying or misleading, and whether the version belongs in `properties`.
 - **Is the wrong-password-versus-corruption bias measurable, or only plausible?** The exit-2/3
   mapping for an encrypted member that emits nothing assumes wrong passwords vastly outnumber
   corrupt encrypted members. That is a reasonable prior and it is untested: no archive has
@@ -702,11 +694,12 @@ Ordered by what I would do first, not by size.
 | 5 | **Signal the stream-source copy** (P11), and consider bounding it to one compressed member via a synthetic single-member archive rather than only relocating it (§7) | The largest hidden cost in the library is in neither `diagnostics` nor `cost.notes`. `open-issues.md` P11 | §5, §7 |
 | 6 | **Enforce an `unrar` version floor**, or stop claiming one. Identification is a banner check with no version parse, though the version is right there in the banner we already read | An ancient RARLAB build is accepted and then fails per member instead of at identification | At a glance |
 | 7 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
-| 8 | **Surface RAR5 `accessed` / `created`.** `_parse_rar5_xtime` reads past both and keeps neither; `RarMemberInfo` has no field for them. RAR3 EXTTIME is the same shape | ZIP surfaces all three with a precedence chain; RAR returning `None` looks like a format limit and is not one | §2.2 |
-| 9 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
-| 10 | **Map `_raw.comment` onto `member.comment`**, and read RAR 1.5 / 2.x old-style embedded comment blocks — `rarfile` returns both where we return `None` | Parsed and then dropped, which is the cheapest kind of gap to close | §2.2, §5 |
-| 11 | **Do not let `close()` mask an inner-close error.** `_UnrarOwnedStream.close()` runs `self._inner.close()` in the `try` and can raise the exit-mapped error from the `finally`, replacing it | Two lines; only bites when the pipe wrapper's close raises, which is rare | — |
-| 12 | **Use `internal/timestamps.py` for FILETIME** instead of `rar_parser`'s own epoch constant. ZIP already uses the shared helper | Two copies, one future correction | — |
-| 13 | **`_live_unrar` reads like a single-owner field and is not** — after a successful non-solid `_open_member` it stays pointed at that process, reset only on the exception path or at close | Harmless today (each process is independently owned); a comment or a rename | — |
-| 14 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
-| 15 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses | Product call, not a defect | — |
+| 8 | **Give RAR compression a name.** Add a `RAR` value to `CompressionAlgorithm` and put the compression version in `properties`, replacing today's `UNKNOWN` + level | Decided. The header identifies the algorithm; `UNKNOWN` says "we could not tell" when we can, and it is what a caller comparing formats sees | §5, §2.2 |
+| 9 | **Surface RAR5 `accessed` / `created`.** `_parse_rar5_xtime` reads past both and keeps neither; `RarMemberInfo` has no field for them. RAR3 EXTTIME is the same shape | ZIP surfaces all three with a precedence chain; RAR returning `None` looks like a format limit and is not one | §2.2 |
+| 10 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
+| 11 | **Map `_raw.comment` onto `member.comment`**, and read RAR 1.5 / 2.x old-style embedded comment blocks — `rarfile` returns both where we return `None` | Parsed and then dropped, which is the cheapest kind of gap to close | §2.2, §5 |
+| 12 | **Do not let `close()` mask an inner-close error.** `_UnrarOwnedStream.close()` runs `self._inner.close()` in the `try` and can raise the exit-mapped error from the `finally`, replacing it | Two lines; only bites when the pipe wrapper's close raises, which is rare | — |
+| 13 | **Use `internal/timestamps.py` for FILETIME** instead of `rar_parser`'s own epoch constant. ZIP already uses the shared helper | Two copies, one future correction | — |
+| 14 | **`_live_unrar` reads like a single-owner field and is not** — after a successful non-solid `_open_member` it stays pointed at that process, reset only on the exception path or at close | Harmless today (each process is independently owned); a comment or a rename | — |
+| 15 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
+| 16 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses | Product call, not a defect | — |

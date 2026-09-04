@@ -71,7 +71,7 @@ material actually had. Sections are numbered so a brief can cite `zip.md` §2.3.
 
 | Section | Holds |
 | --- | --- |
-| **At a glance** | Support, costs, dependencies, refusals. Distinguishes *claimed* from *shipped* — a spec requirement for something that does not exist says so here |
+| **At a glance** | Support, costs, dependencies, refusals. Also **anything a reader would reasonably expect and will not find** — a capability the user docs imply, a guarantee the code does not actually enforce, an optimization the shape of the format suggests and nobody built. State it as behaviour, not as a spec delta: the specs are being phased out as a claim-bearing surface, so "the spec says X and we do Y" dates badly where "we do Y" does not |
 | **1. Shape** | The two to four structural properties that generate everything else, each with its consequences attached in the same breath. Not a spec reproduction; the altitude specs skip |
 | **2. The pipeline here** | Fixed subsections — identify · open and list · member data · extract · write. Each says *who does the work*, *what is format-specific rather than general*, and *what is refused*. "Nothing here is format-specific" is a legitimate and useful answer. Member-metadata mapping lives under *open and list*. A stage that hands work to a **separate process** answers a fourth question — *what crosses the boundary*, in both directions — because none of the first three reach it: [`formats/rar.md`](formats/rar.md) §2.3 is argv construction one way and an exit code plus a byte count the other, and that is the page |
 | **3. In the wild** | Variants, producers and what they get wrong, files that are secretly this format, corpus evidence with its provenance |
