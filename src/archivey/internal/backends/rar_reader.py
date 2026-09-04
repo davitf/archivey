@@ -724,18 +724,24 @@ class RarReader(BaseArchiveReader):
                     version_control=version_control,
                 )
                 # Between Popen and the wrapper taking ownership, a raise would
-                # leave the process unowned. Terminate before propagating.
+                # leave the process unowned. Terminate before the wrapper exists;
+                # after that, owned.close() reaps the process and the stdout pipe.
+                try:
+                    owned: BinaryIO = _UnrarOwnedStream(
+                        stdout, proc, has_verifiable_hash=True
+                    )
+                except BaseException:
+                    terminate_unrar(proc)
+                    raise
                 try:
                     # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
                     # and declared length via fused ArchiveStream verify), so the pipe-level
                     # unrar exit code is redundant for corruption and is suppressed here to
                     # avoid legacy-format false positives; wrong-password (11) still maps.
-                    owned: BinaryIO = self._track_decompressed(
-                        _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
-                    )
+                    owned = self._track_decompressed(owned)
                     solid = SolidBlockReader(owned)
                 except BaseException:
-                    terminate_unrar(proc)
+                    owned.close()
                     raise
             return solid
 
@@ -936,19 +942,18 @@ class RarReader(BaseArchiveReader):
             and self._tweaked_verify_spec(raw) is not None
         )
         try:
-            owned = self._track_decompressed(
-                _UnrarOwnedStream(
-                    stdout,
-                    proc,
-                    named_member=True,
-                    has_verifiable_hash=has_hash,
-                    encrypted=raw.is_encrypted,
-                )
+            owned = _UnrarOwnedStream(
+                stdout,
+                proc,
+                named_member=True,
+                has_verifiable_hash=has_hash,
+                encrypted=raw.is_encrypted,
             )
         except BaseException:
             terminate_unrar(proc)
             raise
         try:
+            owned = self._track_decompressed(owned)
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
             # Fused verify in _wrap_payload_stream bounds/checks declared size + digests.
             return self._wrap_payload_stream(owned, member, track_output=False)

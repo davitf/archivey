@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import uuid
 import weakref
@@ -1784,9 +1785,24 @@ class BaseArchiveReader(ArchiveReader):
                 return registered
             finally:
                 if not bound:
-                    self._state.release_reservation(reservation)
+                    pending = sys.exception()
                     if stream is not None:
-                        stream.close()
+                        try:
+                            stream.close()
+                        except Exception as close_exc:  # noqa: BLE001 - attach, don't replace
+                            # Don't replace the in-flight open/register error.
+                            if pending is not None:
+                                pending.add_note(
+                                    "closing the unbound member stream also failed: "
+                                    f"{close_exc}"
+                                )
+                            else:
+                                raise
+                    if self._state.release_reservation(reservation):
+                        # True → last lease dropped. Today this is False: open()
+                        # still holds a worker, so the reader lease remains. Honour
+                        # the return so a future invariant break actually teardowns.
+                        self._maybe_teardown()
         finally:
             self._state.release_worker(token)
 

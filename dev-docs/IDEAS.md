@@ -128,6 +128,19 @@
 
 ## API & ergonomics
 
+- **Generalize "a refused `open()` leaves nothing behind" into a lifecycle rule** —
+  #293 made the single-live-stream gate fire before the member is opened and specified
+  that one case (`archive-reading` gate matrix, `testing-contract`). The broader rule —
+  *any* refused or failed `open()` leaves no resources behind — was deliberately not
+  written, because it would also make the backend spawn-to-ownership windows contractual,
+  and those are audited for RAR only: `rar_reader._open_member` / `_pipe` guard the
+  `unrar` process, while the equivalent windows in ZIP / 7z / TAR (construct a
+  decompressor, then hand it to the wrapper that owns it) have not been looked at.
+  Promote after a pass over those windows: audit each backend for the gap between
+  constructing a resource and the object that owns it, close what it finds, then write
+  the general requirement. Origin: PR #293 review, F1 option (c), with F2 as the RAR-side
+  example of the same shape.
+
 - **Makeself-aware payload location** — parked from `prefixed-archive-detection`. That
   change's Block 4 finds script-wrapped tar.gz/bz2/xz by a shebang cue plus compressor
   needles (gzip `1f 8b 08`, bzip2 `BZh[1-9]` plus first-block marker, etc.) inside a 2 MiB

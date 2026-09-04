@@ -246,6 +246,7 @@ activation MUST be demand-driven and match `seekable-decompressor-streams`.
 | Case | Expected |
 | --- | --- |
 | Second overlapping `open()` on each implemented format without `CONCURRENT` | `ConcurrentAccessError` names the open site; first stream remains readable |
+| Refused second `open()` on each implemented format | The member is never opened: no member data stream constructed, no helper process spawned |
 | Sequential open/read/close loop without declarations | Succeeds on every implemented format |
 | `ConcurrentAccessError` inside `except ArchiveyError` | Propagates out of that handler |
 | Undeclared accelerator-eligible source | No seek index instantiated |
