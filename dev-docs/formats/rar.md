@@ -285,7 +285,7 @@ its header:
 | Route | When | Cost |
 | --- | --- | --- |
 | **Direct slice** — no subprocess | Stored (`-m0`), unencrypted, non-solid, not split, not spanning volumes | A read of the source range. Measured: reading every member of `basic_nonsolid__.rar` spawns **zero** processes |
-| **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since the direct-slice test includes the member's own solid flag rather than the archive's | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes |
+| **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since the direct-slice test includes the member's own solid flag rather than the archive's | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes. A read the single-live-stream gate refuses costs nothing, the slot being reserved before the spawn (§5) |
 | **One unnamed `unrar p` pipe** | A streaming pass over a solid archive | One process for the whole pass. Measured on `basic_solid__.rar`: one streaming pass = 1 spawn; opening each of its 4 members = 4 |
 
 The pipe is spawned on the **first read into the pass**, not at pass start, so listing a
@@ -534,7 +534,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | `encoding=` is accepted and has no effect | **archivey** | RAR names are decoded by the parser, so the argument is dropped — with an `ENCODING_ARGUMENT_UNUSED` diagnostic rather than silently (§2.2) |
 | A compressed member reports its compression as `UNKNOWN` with a level | **archivey** | The header identifies the algorithm — a RAR version and a level — so a caller comparing formats sees `UNKNOWN` where ZIP says `DEFLATE`, and "unknown" claims we could not tell when we can. §10 #9 |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
-| Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_members=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start. Teardown is clean — all three are reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams |
+| Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_members=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ConcurrentAccessError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
 | A RAR 1.5 / 2.x archive comment is not returned, though `rarfile` returns it | **archivey** | The parser skips old-style embedded comment sub-blocks by design. Measured on the two legacy fixtures: `rarfile` gives `'RARcomment -----'` and `'RARcomment'`, archivey gives `None` for both. RAR5 and RAR3 comments are read normally |
 | `member.comment` is always `None`, including where a RAR3 solid comment block exists | **archivey** | The block is parsed into `_raw.comment` and never mapped onto the member (§2.2) |
 
@@ -723,7 +723,12 @@ writing turned up, parked so it is not re-derived. A row that ships moves into t
 proper (or vanishes); a row that is decided against becomes a §6 decision or a §7 question.
 Rows with a register ID keep their status there.
 
-Ordered by what I would do first, not by size.
+Ordered by what I would do first, not by size. **Numbers are stable** — a row that ships is
+deleted and its number is not reused, so the gaps are the record and the references from the
+rest of the page keep resolving. Closed so far: **#1** the RAR3 name-decode bound
+([#292](https://github.com/davitf/archivey/pull/292)) and **#15** `_live_unrar`, deleted
+outright when [#293](https://github.com/davitf/archivey/pull/293) moved the single-live-stream
+gate ahead of the spawn it was a backstop for.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
@@ -740,7 +745,6 @@ Ordered by what I would do first, not by size.
 | 12 | **Map `_raw.comment` onto `member.comment`**, and read RAR 1.5 / 2.x old-style embedded comment blocks — `rarfile` returns both where we return `None` | Parsed and then dropped, which is the cheapest kind of gap to close | §2.2, §5 |
 | 13 | **Do not let `close()` mask an inner-close error.** `_UnrarOwnedStream.close()` runs `self._inner.close()` in the `try` and can raise the exit-mapped error from the `finally`, replacing it | Two lines; only bites when the pipe wrapper's close raises, which is rare | — |
 | 14 | **Use `internal/timestamps.py` for FILETIME** instead of `rar_parser`'s own epoch constant. ZIP already uses the shared helper | Two copies, one future correction | — |
-| 15 | **`_live_unrar` reads like a single-owner field and is not** — after a successful non-solid `_open_member` it stays pointed at that process, reset only on the exception path or at close | Harmless today (each process is independently owned); a comment or a rename | — |
 | 16 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
 | 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses | Product call, not a defect | — |
 
