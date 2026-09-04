@@ -15,19 +15,26 @@ Registers keep the status — this page states the behaviour and links the row.
 | Listing cost | `INDEXED` |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise; `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — about the *source*. A member stream backed by `unrar` is a pipe and is never seekable (§2.3) |
-| Core dependencies | None **for listing**. Member data needs the RARLAB `unrar` binary on `PATH`, which no pip extra can supply |
-| Optional | `[recommended]` (`cryptography`): RAR5 header decryption. BLAKE2sp needs nothing — it is implemented on stdlib `hashlib` |
+| Core dependencies | None to list an unencrypted archive. Member data needs the RARLAB `unrar` binary on `PATH`, which no pip extra can supply |
+| Optional | `[recommended]` (`cryptography`): header decryption, **RAR3/RAR4 and RAR5 alike** — both derive an AES key through the same stage. BLAKE2sp needs nothing; it is implemented on stdlib `hashlib` |
 | Refuses | Non-seekable sources · a non-RARLAB `unrar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`) · a member whose name contains `*` or `?`, on the `unrar` path only · a later volume opened without its first · writing |
 
-**Claimed but not shipped.** [`format-rar`](../../openspec/specs/format-rar/spec.md)
-permits a `unrar x` extraction into a managed temp directory to serve repeated solid
-random reads, and permits `extract_all()` to use one `unrar x`. Neither is implemented:
-there is no `unrar x` call anywhere in `src/`. Every solid random open is its own
-whole-archive decode (§2.3). The spec's small-member optimization is explicitly deferred
-by the spec itself. And "missing **or incompatible**" in the dependency requirement
-overstates what is checked: `find_rarlab_unrar` reads the binary's banner for `UNRAR` plus
+**A spec requirement with nothing behind it.**
+[`format-rar`](../../openspec/specs/format-rar/spec.md) SHALL-requires
+`PackageNotInstalledError` when `unrar` is "missing **or incompatible**". Only the first
+half exists: `find_rarlab_unrar` reads the banner for `UNRAR` plus
 `Alexander Roshal`/`RARLAB` and applies **no version floor**, so an ancient RARLAB build
-passes identification and fails later, per member.
+passes identification and then fails per member. Either the floor gets written or the
+requirement should stop claiming it.
+
+Two further things the spec *permits* and nobody built — a permission unexercised is not
+a broken claim, but both shape the cost model below. There is no `unrar x` anywhere in
+`src/`, so neither the managed-temp-directory strategy for repeated solid random reads nor
+the one-shot `unrar x` for `extract_all()` exists, and every solid random open is its own
+whole-archive decode (§2.3). The small-member optimization is marked deferred by the spec
+itself. [`docs/formats.md`](../../docs/formats.md#rar) still tells **users** that "random
+solid opens may use explicit temp materialization"; they do not, and a reader will not hear
+"may" as "does not".
 
 ## 1. Shape
 
@@ -47,11 +54,10 @@ Four properties generate most of this page.
                                                     ╚══════════════════════╝
 ```
 
-**The metadata is ours; the bytes are another program's.** RAR compression is proprietary
-and specified only by its reference implementation, whose licence permits decompression and
-forbids reverse-engineering a compressor. So the header layout was reverse-engineered and
-the entropy coder was not, and archivey parses headers natively while `unrar` decodes
-payloads (ADR [0002](../decisions/0002-native-rar-metadata-unrar-data.md), threat-model C1).
+**The metadata is ours; the bytes are another program's.** RAR compression is proprietary,
+and the UnRAR licence forbids using *its source* to re-create a RAR compressor. So the
+header layout was reverse-engineered and the entropy coder was not, and archivey parses
+headers natively while `unrar` decodes payloads (ADR [0002](../decisions/0002-native-rar-metadata-unrar-data.md), threat-model C1).
 Everything about that boundary is a consequence:
 
 - **Listing needs no `unrar` at all** — names, sizes, timestamps, modes, flags, hashes,
@@ -81,14 +87,16 @@ Everything about that boundary is a consequence:
   does not survive multi-volume (§2.2).
 - **A member name becomes an argv token**, which makes the name a parsing surface for a
   program that was never told the name is untrusted (§2.3, §4).
-- **One integer crosses back.** `unrar` is run with `-inul` and its stderr goes to
+- **Two numbers cross back.** `unrar` is run with `-inul` and its stderr goes to
   `DEVNULL`, so its own diagnostic text is discarded: the only signals are the exit code
   and how many bytes arrived. Every RAR data error archivey reports is reconstructed from
   those two.
 - **A member stream is a pipe**, so `seekable_members=True` cannot be honoured on it
   (§2.3, §5) and a rewind is not merely expensive — it is unavailable.
-- **Identity of the binary costs a process.** `find_rarlab_unrar` runs `unrar` once with no
-  arguments and sniffs the banner, then caches the answer for the life of the process.
+- **Identity of the binary costs a process.** `find_rarlab_unrar` runs `unrar` with no
+  arguments and sniffs the banner, then caches a **successful** answer for the life of the
+  process. A rejected binary is not cached, so a lookalike on `PATH` costs one probe per
+  attempted read rather than one per process.
 
 **Blocks chain forward and each header states its own size.** There is no index; the walk
 reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
@@ -101,8 +109,11 @@ violated was a quadratic pre-read loop in front of the capped decoder
 ([`hostile-input.md`](../../review/archive/2026-07-16-rar-reader/hostile-input.md) F2, fixed);
 a member split across a volume boundary is rejoined from continuation *flags*, which needs
 an identity check or a crafted flag folds an unrelated member into the previous one (F6,
-fixed); and a volume set is chained by naming convention rather than by a recorded disk
-number, unlike a spanned ZIP.
+fixed); and a volume set is *discovered* by naming convention rather than by a recorded
+disk number, unlike a spanned ZIP — though discovery is where the resemblance ends. RAR5
+records a volume number in MAIN and the parser checks the set against it, refusing a
+headless set (`Need first volume`) or an out-of-order one; RAR3 records only a flag, so
+there the name really is the whole chain.
 
 **Two on-disk generations hide behind one magic.** `Rar!\x1a\x07\x00` is the RAR3 family —
 which is RAR 1.5, 2.x and 3.x, all one block layout, reported as `format_version == "4"` —
@@ -172,7 +183,8 @@ the part number — [`open-issues.md`](../open-issues.md) P17, shared with 7z an
 
 **Volumes are resolved before parsing.** `name.partN.rar` (RAR5 and newer RAR4) and
 `name.rar` + `name.r00`, `name.r01`, … (older RAR4) are both discovered from any member of
-the set, and headers are read across the volumes in order with split members stitched into
+the set — the old scheme through a two-digit pattern, so a set that runs past `.r99` (WinRAR
+continues `.s00`, `.s01`, …) is not discovered at all — and headers are read across the volumes in order with split members stitched into
 one logical member. `ArchiveInfo.is_multivolume` is `True` and
 `ArchiveInfo.extra["rar.volume_count"]` carries the count. A lone volume 1 is
 `TruncatedError` ("expects another volume"); a lone later volume is
@@ -191,8 +203,9 @@ password and `cryptography` installed, with no `unrar` involved. Without a passw
 password *list* is iterated correctly on both generations.
 
 **`encoding=` is not applied.** RAR names are decoded by the parser, so the argument is
-dropped — but not silently: supplying it logs that the value will not be applied, which is
-the interface-wide answer for an argument a format cannot honour.
+dropped — but not silently: supplying it emits `ENCODING_ARGUMENT_UNUSED`, which is the
+interface-wide answer for an argument a format cannot honour, and a structured diagnostic
+rather than a log line.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.
@@ -203,7 +216,8 @@ between to blame or to defer to.
 | `raw_name` | Stored name bytes, verbatim — including RAR3's `path;n` bytes, which are not rewritten | — |
 | `size` / `compressed_size` | Header sizes; RAR3 `FILE_LARGE` extends both to 64 bits, and the packed skip is extended with them so the walk does not misparse past a >4 GiB member (F5, fixed) | — |
 | `modified` | RAR4 DOS time → naive local; RAR5 Unix/FILETIME → aware UTC. Out-of-range values are swallowed rather than aborting the listing | The header carries none, or every value was out of range |
-| `mode` | Unix host: `S_IMODE` of the stored attributes, masked before the C helper so a hostile vint cannot raise `OverflowError` mid-listing | Non-Unix host — then `None`, with Win32 attributes in `windows_attrs` instead |
+| `accessed` / `created` | **Never set.** RAR5 carries both in its `0x03` time extra and the parser reads past them without keeping them (`rar_parser.py`, `_parse_rar5_xtime`); RAR3 EXTTIME is the same shape. ZIP surfaces all three, so this is a parity gap rather than a format limit | Always |
+| `mode` | Unix host: `S_IMODE` of the stored attributes, masked before the C helper so a hostile vint cannot raise `OverflowError` mid-listing | Non-Unix host. A Win32 host puts its attribute word in `windows_attrs`; a FAT, OS/2, Macintosh or BeOS host gets **neither** field |
 | `type` | Directory flag; RAR5 `file_redir` gives `HARDLINK` for hard links and file copies, `SYMLINK` for Unix/Windows symlinks and junctions (a junction also sets `extra` `is_junction`) | — |
 | `link_target` | RAR5: the redirect's target string, at list time. RAR4: the member's **data**, read directly when it is stored and unencrypted | An encrypted or compressed RAR4 target with no direct bytes — left unset; listing still succeeds |
 | `compression` | Method id → `CompressionMethod`. Stored members report `STORED`; a compressed member reports `UNKNOWN` **with the level**, because the algorithm has no public name to give | — |
@@ -211,7 +225,7 @@ between to blame or to defer to.
 | `is_encrypted` | Per-member encryption flag | — |
 | `is_current` | `False` for a file-version history row, `True` for the live revision | — |
 | `extra` | `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member | — |
-| `comment` | Archive comment on `ArchiveInfo`; a RAR3 solid comment block attaches to the preceding member | The archive stores none, or the comment member is encrypted or split |
+| `comment` | **Never set.** A RAR3 per-member solid comment block *is* parsed, into `_raw.comment`, and then not surfaced. The *archive* comment does reach `ArchiveInfo.comment` | Always |
 
 Two digest rules are worth stating because they look like missing data and are not:
 
@@ -246,7 +260,7 @@ its header:
 | Route | When | Cost |
 | --- | --- | --- |
 | **Direct slice** — no subprocess | Stored (`-m0`), unencrypted, non-solid, not split, not spanning volumes | A read of the source range. Measured: reading every member of `basic_nonsolid__.rar` spawns **zero** processes |
-| **Named `unrar p`** | Any other member of a non-solid archive, and any random open in a solid one | One process per open. In a solid archive that process decodes from the archive start every time |
+| **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since the direct-slice test includes the member's own solid flag rather than the archive's | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes |
 | **One unnamed `unrar p` pipe** | A streaming pass over a solid archive | One process for the whole pass. Measured on `basic_solid__.rar`: one streaming pass = 1 spawn; opening each of its 4 members = 4 |
 
 The pipe is spawned on the **first read into the pass**, not at pass start, so listing a
@@ -297,7 +311,7 @@ two signals:
 | exit 11 | `EncryptionError` | RARLAB's bad-password code |
 | exit 2 or 3, encrypted member, zero bytes out | `EncryptionError` | RAR4 reports a wrong password this way rather than as 11. A genuinely corrupt encrypted member that also emits nothing is mislabelled; the bias is deliberate, since a caller cannot make progress on either without the right password |
 | exit 2 or 3 | `CorruptionError` | **Only when archivey has no hash of its own.** A member with a CRC32 or BLAKE2sp is verified here, and that check is authoritative — `unrar`'s code is suppressed to avoid legacy-format false positives |
-| exit 10, named open | `CorruptionError` | "no files matched" |
+| exit 10, named open | `CorruptionError` | "no files matched" — **also suppressed** when archivey has a hash, and the read then fails from the fused length check as `TruncatedError` instead, which is the observable difference |
 | exit 0 or 1 | pass | |
 | negative | pass | archivey terminated the process on an early close |
 
@@ -348,8 +362,8 @@ refused rather than merely discouraged. Measured across the candidates
 | Candidate | Verdict |
 | --- | --- |
 | **`unar` / MacPaw XADMaster** | **Still open as a candidate, and silently wrong today.** On a RAR5 **solid** archive containing any empty FILE, reading a *non-empty* member fails — Debian's 1.10.1 SIGSEGVs with 0 bytes, and the newer 1.10.7/1.10.8 lineage (what Homebrew ships) exits **0 with empty output**, on stdout *and* on extract-to-disk. The newer behaviour is the dangerous one, and skipping the empty members in the argv does not help; the solid decoder still walks that slot. It matches `unrar p` on everything else measured, which is why it is not closed — see below. [`known-issues.md`](../known-issues.md) |
-| **`7z`** | A codec lottery. Ubuntu's `7zip` advertises RAR under *Formats* while the *Codecs* list has no `Rar5` until `7zip-rar` is installed — so it lists and extracts stored members, then says `Unsupported Method` on anything solid or typically compressed. With the plugin it matches `unrar p`, and is still a RARLAB-derived non-free codec under another name. Homebrew's `7zz` compiles it out entirely |
-| **`bsdtar`** | No solid, no password — and on a stored non-solid fixture, `--to-stdout` wrote **~7 GB in 8 seconds** before the test harness capped it |
+| **`7z`** | A codec lottery, and short of what this backend needs even when it wins. Ubuntu's `7zip` advertises RAR under *Formats* while the *Codecs* list has no `Rar5` until `7zip-rar` is installed — so it lists and extracts stored members, then says `Unsupported Method` on anything solid or typically compressed. With the plugin the ALL-pipe matches `unrar p` on our fixtures, but it takes the password **on argv**, reports a **missing member as rc=0**, and cannot address **`path;n`** — the three things §2.3, §4 and file-version reads depend on. And it is still a RARLAB-derived non-free codec under another name. Homebrew's `7zz` compiles it out entirely |
+| **`bsdtar`** | No solid, no password — and on a stored non-solid fixture, `--to-stdout` wrote **~7 GB** before the probe harness capped it, from an archive of a few KiB |
 | **`unrar-free` 0.1.3** | Extract-to-disk only; no stdout at all |
 
 `7z`, `bsdtar`, `unrar-free` and Homebrew's `7zz` are **closed**. **`unar` is not** — it is
@@ -368,13 +382,13 @@ second engine would be an explicit opt-in, never a probe of `PATH` (threat-model
 downloads a checksum-pinned RAR 6.24 into the user cache purely to build the RAR4 fixtures.
 Any RAR4 archive in the wild today was written by something older than a current WinRAR.
 
-**Which is why the corpus fixtures are committed.** The declarative corpus builds each entry
+**The writer being trialware is also why the corpus fixtures are committed.** The declarative corpus builds each entry
 in every format it declares, and eight entries declare `rar`. All eight ran **nowhere**:
 building them needs the trialware writer, which CI does not install, so `skip_unless_runnable`
 skipped the whole column while the sweep reported green. When the writer was finally installed
-and the column run, four of the eight failed — and the instructive part is that the first
-diagnosis of those failures was wrong. Two looked like stale assertions; one was, and one was
-the assertion finally doing its job and catching a reader bug (the RAR5 redirect digest,
+and the column run, four of the eight failed, in two shapes — and the instructive part is that the
+first diagnosis was wrong. Both shapes looked like stale assertions; one was, and the other
+was the assertion finally doing its job and catching a reader bug (the RAR5 redirect digest,
 §2.2). With both corrected the suite went from 2 284 passed / 65 skipped to **2 326 / 23** —
 42 tests that had previously run nowhere. The archives are now committed under
 `tests/fixtures/corpus/rar/` and pinned by a manifest, against the corpus's own
@@ -415,13 +429,24 @@ RAR-specific only. General extraction and name hazards are §2.4.
   intended to build, and the hostile name axis was the one nobody had enumerated.
 - **Listing is attacker-controlled work with no decompression.** A small file can declare an
   enormous member table; the parser ceiling of 1 048 576 bounds the walk before
-  `ListingLimits` are evaluated at materialization. Aggregate name bytes are roughly 1:1 with
-  header bytes, so there is no amplification to cap separately.
-  [`threat-model.md`](../threat-model.md) O1.
+  `ListingLimits` are evaluated at materialization. [`threat-model.md`](../threat-model.md) O1.
+- **RAR3 names are themselves compressed, and that decode is unbounded.** The *retained*
+  name bytes are roughly 1:1 with header bytes, because a successful decode consumes one
+  8-bit-field byte per emitted character. The **transient** cost is not. `_UnicodeFilename`
+  has an RLE branch that emits up to 129 UTF-16 code units per encoding byte, and when the
+  8-bit name field runs out `_std_byte()` marks the decode failed, **returns `?` and lets the
+  loop continue** — so an empty 8-bit field bounds nothing, and the buffer is built in full
+  before being discarded. Measured: 5 001 bytes of crafted encoding data decode to 516 000
+  characters, ~103 per input byte; end to end, a hand-built RAR3 archive costs about 45
+  seconds of CPU per megabyte of input inside `parse_rar_archive`, linear in the input, with
+  a transient buffer of ~13 MB per 64 KiB header. Same class as the vint loop above — a byte
+  count the attacker chooses, spent before any member exists — and the one bound the parser
+  is still missing. Not registered anywhere yet; the reproducer is in §8.
 - **Variable-length integers are a CPU bomb, not a memory one.** The input chooses how many
   continuation bytes to supply, so a decoder that re-copies its accumulated bytes each
-  iteration is quadratic in a length the attacker picks — a few megabytes of `0x80` burned
-  tens of seconds with nothing allocated and nothing obviously malformed to reject. Bounding
+  iteration is quadratic in a length the attacker picks — a few megabytes of `0x80` burned CPU
+  proportional to the square of a length the attacker picked, with nothing allocated and
+  nothing obviously malformed to reject. Bounding
   the decoded *value* does not help; the bound has to be on bytes consumed. Fixed; the
   mutation and Atheris harnesses would not have found it, because a multi-kilobyte run of one
   byte is not a shape bit-flip mutation produces.
@@ -459,17 +484,20 @@ RAR-specific only. General extraction and name hazards are §2.4.
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| Listing an archive works on a machine where reading it fails | **format** | The compressor is proprietary and its reference tool is not redistributable, so member data needs a binary no pip extra can supply (§1, §3). `PackageNotInstalledError` names it and names the lookalikes that will not be accepted |
+| Listing an archive works on a machine where reading it fails | **format** | The compressor is proprietary and its reference tool is non-free, so no distribution installs it by default and no pip extra can ship it (§1, §3). `PackageNotInstalledError` names it and names the lookalikes that will not be accepted |
 | `seekable_members=True` is accepted, and the member stream is still not seekable | **archivey** | Honoured only on the direct-slice route. An `unrar`-backed member is a pipe: `seekable()` is `False` and `seek()` raises `io.UnsupportedOperation`, while `reader.member_streams` still reports `SEEKABLE` and no diagnostic is emitted. [`docs/access-and-cost.md`](../../docs/access-and-cost.md) describes the flag's "otherwise" case as re-decompressing from the start, which is not what happens here. No register row covers it yet |
 | Reading one member of a solid archive out of order decodes the whole archive, and doing it twice decodes it twice | **format** / **archivey** | No per-block boundaries to resume from (§1); the spec's temp-directory strategy that would amortize it is unimplemented (§2.4). `AccessCost.SOLID` is the signal |
 | Handing over a `BytesIO` writes a full-size copy of the archive to `/tmp`, with nothing in `diagnostics` or `cost.notes` | **archivey** | `unrar` needs a path. The trigger is per-member, so the first stored member is free and the next compressed one is not. [`open-issues.md`](../open-issues.md) P11 |
 | A member whose name contains `*` or `?` cannot be read, though it lists fine | **library** | `unrar` include masks treat both as wildcards and offer no escape, so the member cannot be addressed unambiguously; `UnsupportedFeatureError` is preferred over possibly returning another member's bytes (§2.3). A stored member of the same name reads fine, since it never reaches `unrar` |
-| A corrupt encrypted member can be reported as a wrong password | **library** | `unrar` reports both as exit 2/3 with empty output on RAR4 and exposes no signal to separate them; the bias is toward the actionable message (§2.3) |
+| A corrupt encrypted member can be reported as a wrong password | **library** / **archivey** | `unrar` reports both as exit 2/3 with empty output on RAR4 and exposes no signal to separate them — that half is upstream's. Resolving the ambiguity toward `EncryptionError` is ours and is reversible (§2.3) |
 | An SFX archive that is also split is unreadable from every one of its files | **archivey** | Sibling discovery needs the archive extension immediately before the part number; an SFX first member replaces it. Shared with 7z and ZIP — [`open-issues.md`](../open-issues.md) P17 and [`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §6 |
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | `encoding=` is accepted and has no effect | **archivey** | RAR names are decoded by the parser. The call logs that the value will not be applied rather than failing |
 | A compressed member reports its compression as `UNKNOWN` with a level | **format** | The algorithm is proprietary and has no public name to report. The level is what the header carries |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its genuine one |
+| Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_members=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start. Teardown is clean — all three are reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams |
+| A RAR 1.5 / 2.x archive comment is not returned, though `rarfile` returns it | **archivey** | The parser skips old-style embedded comment sub-blocks by design. Measured on the two legacy fixtures: `rarfile` gives `'RARcomment -----'` and `'RARcomment'`, archivey gives `None` for both. RAR5 and RAR3 comments are read normally |
+| `member.comment` is always `None`, including where a RAR3 solid comment block exists | **archivey** | The block is parsed into `_raw.comment` and never mapped onto the member (§2.2) |
 
 ## 6. Decisions
 
@@ -492,13 +520,13 @@ RAR-specific only. General extraction and name hazards are §2.4.
 Gaps in what *we* know — each would change something here if answered, and none can be
 settled by reading more code. Distinct from §5, which is behaviour a caller already sees.
 
-- **Should the pipe routes report their cost, and in which channel?** Two costs are invisible
-  today and they are not the same shape. The whole-archive temp copy for a stream source is
-  P11's open question — a `CostReceipt.notes` entry, a diagnostic, or both. The other has no
-  home: an out-of-order solid `open()` is a full decode, and a second one is a second full
-  decode, with `AccessCost.SOLID` the only signal and no way to distinguish the first from the
-  fiftieth. Whether that is one answer or two depends on whether the boundary itself deserves
-  a note, which nobody has decided.
+- **Should the stream-source temp copy report its cost?** The whole-archive copy is in
+  neither channel today; [`open-issues.md`](../open-issues.md) P11 owns the question and
+  leans toward a `CostReceipt.notes` entry over a diagnostic. What is genuinely open here is
+  whether the *boundary* deserves its own note rather than the copy — the sibling cost, an
+  out-of-order solid `open()` being a whole decode each time, is **already decided**:
+  [`open-issues.md`](../open-issues.md) P9 says not a diagnostic, because `access_cost`
+  already carries it, and only a once-per-reader `warnings.warn` is still parked.
 - **Should the stream-source copy go to RAM instead of disk?** An anonymous `memfd` is
   seekable, never enters the filesystem namespace, and is freed on close, and `unrar` reads
   one happily (§1) — so it is a real alternative to `mkstemp` for a single-volume archive.
@@ -517,6 +545,13 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   one, so the same archive answers differently per member. No measurement exists for what a
   respawn would cost, and no corpus evidence for how often a caller seeks inside a RAR member
   at all.
+- **Should `unar` become an opt-in second engine?** It is the one candidate the
+  decompressor matrix left open, and Homebrew dropping the `rar` cask is what keeps it open
+  (§3). Blocked on three things nobody has done: the fixture matrix against a Homebrew
+  bottle rather than apt and a local build, an upstream XADMaster report, and a judgement on
+  whether the early-fail gate predicate is under-inclusive — it is generalized from one
+  fixture family, and ANTI members and packed-nonzero/unpacked-zero empties are untested.
+  None of that is answerable by reading code.
 - **Is the wrong-password-versus-corruption bias measurable, or only plausible?** The exit-2/3
   mapping for an encrypted member that emits nothing assumes wrong passwords vastly outnumber
   corrupt encrypted members. That is a reasonable prior and it is untested: no archive has
@@ -530,8 +565,9 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     tests/test_rarfile_corpus.py tests/test_volumes.py tests/test_sfx.py
 ```
 
-`unrar` is required for the data-path rows and they **skip quietly** without it, so a
-container missing the binary runs a fraction of this file and still reports green
+About 24 of the ~140 tests those five files hold are `unrar`-gated, and they **skip
+quietly**. The parser, detection and SFX tests all still run, so a container without the
+binary reports green with the entire data path untested — which is the trap, not the count
 (`AGENTS.md` §Session setup).
 
 Two claims here are about the **external binary** rather than about archivey, so no test can
@@ -544,8 +580,10 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 
 | Claim | Pinned by |
 | --- | --- |
-| Cost receipt, solid vs direct access | `tests/test_cost_receipt.py::test_cost_receipt_per_format[rar]`, `tests/test_rar_reader.py::test_basic_solid_stream_and_random` |
-| Listing without `unrar`; stored read without it; a compressed read naming RARLAB `unrar` | `tests/test_rar_reader.py::test_missing_unrar_raises`, `::test_unrar_not_installed_message_names_lookalikes`, `::test_stored_m0_direct_read` |
+| Cost receipt: `DIRECT` for a nonsolid archive, `SOLID` with `solid_block_count is None` for a solid one | `tests/test_cost_receipt.py::test_cost_receipt_per_format[rar]`, `tests/test_rar_reader.py::test_basic_solid_stream_and_random` |
+| Listing and stored reads with **no binary on `PATH` at all**, and a compressed read there naming RARLAB `unrar` | `tests/test_rar_reader.py::test_listing_and_stored_reads_need_no_unrar` |
+| A stored nonsolid archive is read end to end with zero subprocesses (the §2.3 measurement) | `::test_stored_nonsolid_archive_spawns_no_unrar_process` |
+| The finder rejects a missing or non-RARLAB binary, and the message names the lookalikes | `::test_missing_unrar_raises`, `::test_unrar_not_installed_message_names_lookalikes`, `::test_non_rarlab_unrar_rejected` |
 | A non-RARLAB binary on `PATH` is rejected, and the one we run is RARLAB's | `::test_non_rarlab_unrar_rejected`, `::test_unrar_on_path_is_the_rarlab_build` |
 | A solid pass spawns `unrar` only on the first read | `::test_solid_pass_spawns_unrar_only_on_the_first_read` |
 | Hostile member names (`-inul`, `@atfile`) read **their own** bytes, RAR4 and RAR5 | `::test_hostile_member_name_reads_its_own_bytes` |
@@ -583,10 +621,16 @@ and what would close it are in
 
 ## 9. References
 
-- Format: no published specification. The reference implementation is RARLAB UnRAR, whose
-  licence permits decompression and forbids reverse-engineering a compressor; the header
-  layout here follows the `archivey-dev` `rar-native-metadata-reader` exploration, and the
-  RAR3 SHA-1 string-to-key and Unicode filename decompression are adapted from
+- Format: **no numbered spec is cited here, and that is a gap rather than a fact about the
+  format.** RARLAB ships a `technote.txt` describing the RAR 5.0 archive layout inside the
+  UnRAR source tarball — the tree `scripts/install-rarlab-unrar.sh` already compiles — and
+  this repo cites it once elsewhere (`review/archive/2026-07-19-api-coherence/QUESTIONS.md`).
+  It was not reachable from this container (rarlab.com is 403 through the egress proxy), so
+  nobody has checked what it covers. If it covers the RAR5 block layout, this section should
+  cite its sections the way [`zip.md`](zip.md) cites APPNOTE's. RAR3/4 has no published
+  description regardless. The compressor is documented nowhere; the header layout here
+  follows the `archivey-dev` `rar-native-metadata-reader` exploration, and the RAR3 SHA-1
+  string-to-key and Unicode filename decompression are adapted from
   [`rarfile`](https://github.com/markokr/rarfile) 4.3 under the ISC licence
 - Specs: [`format-rar`](../../openspec/specs/format-rar/spec.md) ·
   [`access-mode-and-cost`](../../openspec/specs/access-mode-and-cost/spec.md) ·

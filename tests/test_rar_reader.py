@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
+from archivey.cost import AccessCost
 from archivey.exceptions import (
     ArchiveyError,
     ConcurrentAccessError,
@@ -71,6 +72,10 @@ def test_basic_nonsolid_list_and_read(name: str) -> None:
 def test_basic_solid_stream_and_random(name: str) -> None:
     with open_archive(_fixture(name)) as archive:
         assert archive.info.is_solid is True
+        # RAR exposes no per-solid-block boundaries, so solidity is one archive-level
+        # flag and the block count is unknown rather than 1.
+        assert archive.cost.access_cost is AccessCost.SOLID
+        assert archive.cost.solid_block_count is None
         streamed = {
             member.name: stream.read()
             for member, stream in archive.stream_members()
@@ -753,6 +758,53 @@ def test_unrar_not_installed_message_names_lookalikes() -> None:
     msg = rar_unrar._NOT_INSTALLED_MSG
     for name in ("unrar-free", "unar", "7z", "7zz"):
         assert name in msg
+
+
+def test_listing_and_stored_reads_need_no_unrar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The native-metadata split, end to end: no binary on PATH at all.
+
+    The whole point of parsing headers ourselves is that listing an archive — and
+    reading a member we can slice directly — never needs the external decompressor.
+    Only a member that must go through ``unrar`` fails, and it fails by naming it.
+    """
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+
+    with open_archive(_fixture("basic_nonsolid__.rar")) as archive:
+        files = {m.name: m for m in archive.members() if m.is_file}
+        assert set(files) == set(_BASIC_CONTENTS)
+        # Stored, unencrypted, nonsolid, unsplit -> sliced from the source directly.
+        for member_name, expected in _BASIC_CONTENTS.items():
+            assert archive.read(files[member_name]) == expected
+
+    with open_archive(_fixture("symlinks_solid__rar4.rar")) as archive:
+        assert [m.name for m in archive.members()]  # listing still works
+        compressed = next(
+            m for m in archive.members() if m.is_file and m.compressed_size > 0
+        )
+        with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+            archive.read(compressed)
+
+
+def test_stored_nonsolid_archive_spawns_no_unrar_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading every member of a stored nonsolid archive costs zero subprocesses."""
+    spawns: list[object] = []
+    real_open = rar_reader.open_unrar_p
+
+    def spy(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        spawns.append(args)
+        return real_open(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+    with open_archive(_fixture("basic_nonsolid__.rar")) as archive:
+        for member in archive.members():
+            if member.is_file:
+                archive.read(member)
+    assert spawns == []
 
 
 @requires("cryptography")
