@@ -727,9 +727,10 @@ keep their status there.
 Ordered by what I would do first, not by size. **Numbers are stable** — a row that ships is
 deleted and its number is not reused, so the gaps are the record and the references from the
 rest of the page keep resolving. Closed so far: **#1** the RAR3 name-decode bound
-([#292](https://github.com/davitf/archivey/pull/292)) and **#15** `_live_unrar`, deleted
-outright when [#293](https://github.com/davitf/archivey/pull/293) moved the single-live-stream
-gate ahead of the spawn it was a backstop for.
+([#292](https://github.com/davitf/archivey/pull/292)); **#13** `close()` chaining and **#14**
+shared FILETIME (this PR); and **#15** `_live_unrar`, deleted outright when
+[#293](https://github.com/davitf/archivey/pull/293) moved the single-live-stream gate ahead of
+the spawn it was a backstop for.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
@@ -744,8 +745,6 @@ gate ahead of the spawn it was a backstop for.
 | 10 | **Surface RAR5 `accessed` / `created`.** `_parse_rar5_xtime` reads past both and keeps neither; `RarMemberInfo` has no field for them. RAR3 EXTTIME is the same shape | ZIP surfaces all three with a precedence chain; RAR returning `None` looks like a format limit and is not one | §2.2 |
 | 11 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
 | 12 | **Map `_raw.comment` onto `member.comment`**, and read RAR 1.5 / 2.x old-style embedded comment blocks — `rarfile` returns both where we return `None` | Parsed and then dropped, which is the cheapest kind of gap to close | §2.2, §5 |
-| 13 | **Do not let `close()` mask an inner-close error.** `_UnrarOwnedStream.close()` runs `self._inner.close()` in the `try` and can raise the exit-mapped error from the `finally`, replacing it | Two lines; only bites when the pipe wrapper's close raises, which is rare | — |
-| 14 | **Use `internal/timestamps.py` for FILETIME** instead of `rar_parser`'s own epoch constant. ZIP already uses the shared helper | Two copies, one future correction | — |
 | 16 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
 | 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses | Product call, not a defect | — |
 
