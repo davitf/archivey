@@ -800,8 +800,17 @@ def test_rar3_compressed_name_decode_is_bounded() -> None:
     from archivey.internal.backends.rar_parser import _UnicodeFilename
 
     encdata = _rle_name_encdata(1000)
-    decoded = _UnicodeFilename(b"", bytearray(encdata)).decode()
+    u = _UnicodeFilename(b"", bytearray(encdata))
+    decoded = u.decode()
+    assert u.failed
+    assert decoded == ""
     assert len(decoded) <= len(encdata)
+
+    # t=0 with a flags byte and no payload must not emit a leftover unit.
+    leftover = _UnicodeFilename(b"", bytearray(b"\x00\x00"))
+    leftover_decoded = leftover.decode()
+    assert leftover.failed
+    assert leftover_decoded == ""
 
 
 def test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present() -> None:

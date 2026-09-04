@@ -832,11 +832,23 @@ class _UnicodeFilename:
             flagbits -= 2
             t = (flags >> flagbits) & 3
             if t == 0:
-                self._put(self._enc_byte(), 0)
+                lo = self._enc_byte()
+                if self.failed:
+                    break
+                self._put(lo, 0)
             elif t == 1:
-                self._put(self._enc_byte(), hi)
+                lo = self._enc_byte()
+                if self.failed:
+                    break
+                self._put(lo, hi)
             elif t == 2:
-                self._put(self._enc_byte(), self._enc_byte())
+                lo = self._enc_byte()
+                if self.failed:
+                    break
+                c_hi = self._enc_byte()
+                if self.failed:
+                    break
+                self._put(lo, c_hi)
             else:
                 n = self._enc_byte()
                 if self.failed:
