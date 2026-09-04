@@ -129,8 +129,10 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - **File-version history (`-ver`):** revision rows appear in `members()` as names like
   `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
   `is_current=True`. Default extract **skips** non-current rows.
-- Solid archives: one `unrar p` pipe for `stream_members()`; random solid opens may use
-  explicit temp materialization.
+- Solid archives: one `unrar p` pipe for the whole of `stream_members()`. A random
+  `open()` out of order is a separate `unrar` run that decodes from the start of the
+  archive each time, so reading *n* members that way costs *n* full decodes — stream them
+  in order when you can. `CostReceipt.access_cost` is `SOLID` to say so.
 - Read-only — no RAR writer.
 
 ## ISO 9660
