@@ -57,11 +57,12 @@ of trying the open and catching the failure; see
 ### RAR listing cost
 
 RAR reports `listing_cost=INDEXED`: the native parser walks all file headers at open
-time and builds the member table in memory before `members()` is called. The optional
-**Quick Open** record (a pre-built central directory in some RAR5 archives) is read but
-is not the primary source — every archive header is still traversed, so the open-time
-cost scales with member count. Once open, `members()` / `get()` return from the
-in-memory table at O(1) cost.
+time and builds the member table in memory before `members()` is called. There is no
+central directory — each header states its own size, so the walk seeks past every
+member's packed data and the open-time cost scales with member count. RAR5 can carry
+an optional **Quick Open** record (a copy of the file headers at the tail), but
+archivey currently skips it; listing always does that header-to-header walk. Once
+open, `members()` / `get()` return from the in-memory table at O(1) cost.
 
 ## Solid archives: prefer one forward pass
 

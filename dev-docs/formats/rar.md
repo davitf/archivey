@@ -28,7 +28,7 @@ anywhere in `src/`, so every out-of-order solid `open()` is its own whole-archiv
 
 ## 1. Shape
 
-Four properties generate most of this page.
+Several properties generate most of this page.
 
 ```
   [ SFX stub? ]  [ magic ]  [ MAIN ]  [ FILE hdr | packed data ] × n  [ ENDARC ]
@@ -620,7 +620,7 @@ Two claims here are about the **external binary** rather than about archivey, so
 hold them — they are probes instead, re-runnable when a new `unrar` lands:
 
 ```bash
-python3 scripts/exploration/rar_unrar_input_matrix.py       # §1 input modes, §2.2 volumes, §4 emission
+python3 scripts/exploration/rar_unrar_input_matrix.py       # §2.3 input modes, §2.2 volumes, §4 emission
 python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompressor table
 ```
 
@@ -732,7 +732,7 @@ gate ahead of the spawn it was a backstop for.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
-| 2 | **Honour `seekable_members=True` on the `unrar` route** by respawning on a backward seek — the same reopen the other backends use. Today the flag is accepted, honoured on the direct-slice route and silently ignored on the pipe route, so one archive answers differently per member | Consistency between formats is a promise the library makes; a flag that means different things per backend breaks it more than a slow seek would | §5 (tagged bug), §2.3 |
+| 2 | **Honour `seekable_members=True` on the `unrar` route** by respawning on a backward seek — the same reopen the other backends use. Today the flag is accepted, honoured on the direct-slice route and silently ignored on the pipe route, so one archive answers differently per member | Consistency between formats is a promise the library makes; a flag that means different things per backend breaks it more than a slow seek would | §5, §2.3 |
 | 3 | **Read a member whose name contains `*` or `?`** by passing the wildcard through as the mask and skipping the other members it matches — the member list needed to compute that is already parsed. Replaces today's `UnsupportedFeatureError` | A valid archive is unreadable, and the refusal was always the conservative half of a fix | §5, §2.3 |
 | 4 | **Pin the solid emission policy per generation.** No stored size predicts what `unrar p` prints: RAR5 links are packed 0 / unpacked > 0, RAR4 links are packed > 0 / unpacked > 0, and both emit zero bytes. `is_payload_file()` gets this right incidentally, untested against RAR3 link members | Cheapest high-value item here — a test over the `symlinks_solid__` pair in both generations turns incidental correctness into pinned correctness. `open-issues.md` P6 | §1, §4 |
 | 5 | **Use the `QO` quick-open record when present**, falling back to the walk when it is absent or fails to validate. It is a tail SERVICE block holding copies of the file headers, and today it is skipped — an archive that has one costs one seek *more* to list, not 40 fewer (§1). Needs a decision on trust first: it is duplicate attacker-controlled metadata, so either it is validated against the real headers (which costs the walk it was meant to save) or listing and extraction can be made to disagree | Turns the `INDEXED` claim from arguable into true, and is the format's own answer to the walk | §1, §7 |
