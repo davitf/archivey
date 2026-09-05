@@ -33,7 +33,10 @@ that way (listing-time CPU at the `uint16` `name_size` ceiling, not unbounded
 memory). Decode now fails closed on overrun (PR #292); O1's status is unchanged.
 
 `read()` / `open()` stream sizes remain unbounded (follow-on); prefer chunked
-reads for untrusted member payloads.
+reads for untrusted member payloads. A RAR glob-named member is a sharper case
+of the same gap: named `unrar -n` decompresses every earlier match before
+returning a byte, while `AccessCost.DIRECT` still applies. Default-deny when
+that skip is nonzero is [`formats/rar.md`](formats/rar.md) §10 #19.
 
 ### O2. Case-insensitivity and Unicode-normalization collisions at extraction — implemented
 

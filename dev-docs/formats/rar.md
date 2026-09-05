@@ -550,7 +550,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A RAR 1.5 / 2.x archive comment is not returned, though `rarfile` returns it | **archivey** | The parser skips old-style embedded comment sub-blocks by design. Measured on the two legacy fixtures: `rarfile` gives `'RARcomment -----'` and `'RARcomment'`, archivey gives `None` for both. RAR5 and RAR3 comments are read normally |
 | `member.comment` is always `None`, including where a RAR3 solid comment block exists | **archivey** | The block is parsed into `_raw.comment` and never mapped onto the member (§2.2) |
 | Opening a compressed member whose stored name has a glob in a directory component, or a backslash, raises `UnsupportedFeatureError` | **archivey** | The include-mask matcher over-matches directory globs against unrar 7.00, and Windows `unrar` treats `\` as a separator so a Linux literal-backslash name emits nothing. Basename globs without `\` still demux. Exact fidelity is §10 #18 |
-| Reading a glob-named member decompresses every earlier match, including on a nonsolid archive | **library** / **archivey** | `unrar -n./a*.txt` concatenates matches. `AccessCost.DIRECT` does not predict that; `_track_decompressed` records the bytes after the fact |
+| Reading a glob-named member decompresses every earlier match, including on a nonsolid archive | **library** / **archivey** | `unrar -n./a*.txt` concatenates matches. `AccessCost.DIRECT` does not predict that; `_track_decompressed` records the bytes after the fact. Default-deny when that skip is nonzero is §10 #19 |
 
 ## 6. Decisions
 
@@ -770,6 +770,7 @@ single-live-stream gate ahead of the spawn it was a backstop for.
 | 16 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
 | 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses | Product call, not a defect | — |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
+| 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
 
 **On the name for item 9 — decided: plain `RAR`.** `ContainerFormat.RAR` and
 `CompressionAlgorithm.RAR` are *homonyms* (container vs codec sharing a vendor name),
