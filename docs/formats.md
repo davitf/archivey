@@ -19,7 +19,7 @@ most often surprise callers. Authoritative detail lives in `openspec/specs/forma
 | `.lz4` / `.tar.lz4` | no | `[recommended]` | — | rewind seek | |
 | `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
-**RAR member data needs the RARLAB `unrar` binary on `PATH`.** No pip extra can supply it —
+**RAR member data needs RARLAB `unrar` 7.0 or later on `PATH`.** No pip extra can supply it —
 listing and metadata work without it, reading bytes does not. `rarfile` will use
 `unar` or `7z` if that is what is on `PATH`; archivey will not. How to get RARLAB
 `unrar`: [Install and extras](install.md#getting-rarlab-unrar).
@@ -118,7 +118,7 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 ## RAR
 
 - Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
-- Member **data**: RARLAB `unrar` on `PATH` (not `unrar-free`, `unar`, or `7z` —
+- Member **data**: RARLAB `unrar` **7.0 or later** on `PATH` (not `unrar-free`, `unar`, or `7z` —
   `rarfile` accepts those last two; archivey does not). Passwords are
   passed as bare `-p` with the secret on stdin (not in argv).
   Install: [Getting RARLAB unrar](install.md#getting-rarlab-unrar).
