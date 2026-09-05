@@ -3,6 +3,7 @@
   "fixtures": {
     "rar/basic": "d222e6d49aa924218ee3a18e",
     "rar/comments": "8980cb359fb2522854afdae0",
+    "rar/compressed": "c62922ce5ebce6d30f82f297",
     "rar/encoding": "0a9539e51b0fe6829909e2bc",
     "rar/encrypted": "1f75562361730174fe14da8f",
     "rar/encrypted-mixed": "5b875dc9c2a3eb62552e2207",
