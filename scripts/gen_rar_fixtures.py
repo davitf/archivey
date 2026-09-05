@@ -107,6 +107,28 @@ _WILDCARD_NAMES: tuple[_File, ...] = (
     _File("only*.dat", b"unique\n" + _WILDCARD_PAD),
 )
 
+# Directory-component glob: ``d*/x.txt`` is refused (matcher over-matches
+# ``aaa/x.txt``). Add-order puts the over-match first so an unfixed skip
+# truncates rather than accidentally succeeding.
+_WILDCARD_DIRGLOB: tuple[_File, ...] = (
+    _File("aaa/x.txt", b"aaa\n" + _WILDCARD_PAD),
+    _File("dX/x.txt", b"dX\n" + _WILDCARD_PAD),
+    _File("d*/x.txt", b"dstar\n" + _WILDCARD_PAD),
+)
+
+# Literal backslash vs separator: ``a\\b*.txt`` is refused. ``a/b1.txt`` is
+# first so an unfixed skip that folds ``\\`` to ``/`` truncates.
+_WILDCARD_BACKSLASH: tuple[_File, ...] = (
+    _File("a/b1.txt", b"slashdir\n" + _WILDCARD_PAD),
+    _File(r"a\b_TGT.txt", b"literal-bs-tgt\n" + _WILDCARD_PAD),
+    _File(r"a\b*.txt", b"literal-bs-glob\n" + _WILDCARD_PAD),
+)
+
+_WILDCARD_VER_V1 = b"data-v1\n" + _WILDCARD_PAD
+_WILDCARD_VER_V2 = b"data-v2!!\n" + _WILDCARD_PAD
+_WILDCARD_VER_TARGET = b"data-tgt\n" + _WILDCARD_PAD
+_WILDCARD_VER_GLOB = b"data-star\n" + _WILDCARD_PAD
+
 # WinRAR ``-ver`` revisions of a single path (oldest → newest / live).
 _FILE_VERSION_REVISIONS: tuple[bytes, ...] = (
     b"version-one",
@@ -354,6 +376,56 @@ def _build_store_listing_rar(
     print(f"wrote {out.relative_to(REPO_ROOT)}")
 
 
+def _build_glob_named(
+    rar_bin: Path,
+    out: Path,
+    files: Sequence[_File],
+    *,
+    extra: Sequence[str] = (),
+) -> None:
+    """Add glob-named members one path at a time so ``rar a`` does not glob argv."""
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        extras = [*extra, "-r"]
+        first = True
+        for item in files:
+            _write_tree(root, (item,))
+            if first:
+                _rar_a(rar_bin, out, ["."], cwd=root, extra=extras)
+                first = False
+            else:
+                _rar_a_update(rar_bin, out, ["."], cwd=root, extra=extras)
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
+def _build_wildcard_ver(rar_bin: Path, out: Path) -> None:
+    """Live glob member plus ``-ver`` history that the mask would also match.
+
+    ``unrar p -n./data*`` without ``-ver`` omits ``data.bin;1``. The skip must
+    too, or the prefix overshoots and the live glob is reported truncated.
+    ``rar a data*`` globs argv, so the glob file is added from a one-file tree
+    with ``-ep``.
+    """
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        extras = ("-m3", "-ver")
+        (root / "data.bin").write_bytes(_WILDCARD_VER_V1)
+        _rar_a(rar_bin, out, ["data.bin"], cwd=root, extra=extras)
+        (root / "data.bin").write_bytes(_WILDCARD_VER_V2)
+        _rar_a_update(rar_bin, out, ["data.bin"], cwd=root, extra=extras)
+        (root / "data_TARGET").write_bytes(_WILDCARD_VER_TARGET)
+        _rar_a_update(rar_bin, out, ["data_TARGET"], cwd=root, extra=extras)
+        star = root / "star_only"
+        star.mkdir()
+        (star / "data*").write_bytes(_WILDCARD_VER_GLOB)
+        _rar_a_update(rar_bin, out, ["."], cwd=star, extra=(*extras, "-r", "-ep"))
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
 def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -438,6 +510,16 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         _WILDCARD_NAMES,
         extra=("-s", "-m3"),
     )
+    _build_glob_named(
+        rar5_bin, out_dir / "wildcard_dirglob__.rar", _WILDCARD_DIRGLOB, extra=("-m3",)
+    )
+    _build_glob_named(
+        rar5_bin,
+        out_dir / "wildcard_backslash__.rar",
+        _WILDCARD_BACKSLASH,
+        extra=("-m3",),
+    )
+    _build_wildcard_ver(rar5_bin, out_dir / "wildcard_ver__.rar")
     build(
         rar5_bin,
         "stored_m0.rar",

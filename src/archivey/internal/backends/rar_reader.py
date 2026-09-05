@@ -56,6 +56,7 @@ from archivey.internal.backends.rar_parser import (
     rar5_hash_key,
 )
 from archivey.internal.backends.rar_unrar import (
+    _unrar_glob_demux_ok,
     _unrar_mask_match,
     open_unrar_p,
     terminate_unrar,
@@ -509,6 +510,11 @@ class _BoundedMemberPipe(DelegatingStream):
     headers. The parsed member list tells us how many unpacked bytes sit before
     the target; after that we must stop, or the fused overrun probe would see the
     next match as extra payload.
+
+    The skip is eager at construction. A seekable wrapper respawns lazily on the
+    next ``read()``, so this constructor — and the skip — runs then, not inside
+    ``seek()``. ``seek(0, SEEK_END); seek(0)`` before any read still costs
+    nothing: ``_pipe_pos`` stays 0 and no new pipe is built.
     """
 
     def __init__(self, inner: BinaryIO, *, prefix: int, size: int) -> None:
@@ -1114,11 +1120,15 @@ class RarReader(BaseArchiveReader):
         # Encrypted / compressed target without usable direct bytes: leave unset.
         return
 
-    def _unrar_glob_prefix(self, target: ArchiveMember, presented: str) -> int:
+    def _unrar_glob_prefix(
+        self, target: ArchiveMember, presented: str, *, version_control: bool
+    ) -> int:
         """Unpacked bytes of earlier payload members that the ``-n`` mask also matches.
 
         ``unrar`` emits those members concatenated, in archive order, with no
-        headers. Zero when the presented name has no glob characters.
+        headers. Zero when the presented name has no glob characters. History
+        rows are omitted unless ``version_control`` is set, matching ``unrar``
+        (``-ver`` is passed only for a history-row target).
         """
         if "*" not in presented and "?" not in presented:
             return 0
@@ -1127,11 +1137,15 @@ class RarReader(BaseArchiveReader):
             raw = member._raw
             if not isinstance(raw, RarMemberInfo) or not raw.is_payload_file():
                 continue
+            if raw.is_file_version_history() and not version_control:
+                continue
             if not _unrar_mask_match(_presented_filename(raw), presented):
                 continue
             if member is target:
                 return prefix
             prefix += _member_stream_size(member)
+        # _open_member is only reached for payload files, so the target is in
+        # this walk; identity (``is``) is what makes the skip land on it.
         raise AssertionError(
             "glob target missing from the payload walk; skip uses member identity"
         )
@@ -1154,6 +1168,7 @@ class RarReader(BaseArchiveReader):
             if member is target:
                 return prefix
             prefix += _member_stream_size(member)
+        # Same payload-only walk as glob skip; _open_member is payload-only.
         raise AssertionError(
             "solid prefix target missing from the payload walk; uses member identity"
         )
@@ -1172,14 +1187,26 @@ class RarReader(BaseArchiveReader):
         # the normalized ``member.name`` (may differ on separators).
         presented = _presented_filename(raw)
         version_control = raw.is_file_version_history()
+        glob_mask = "*" in presented or "?" in presented
+        if glob_mask and not _unrar_glob_demux_ok(presented):
+            raise UnsupportedFeatureError(
+                "RAR member names that contain a backslash or a glob in a "
+                "directory component cannot be read through unrar; the "
+                "include-mask matcher is only faithful for a glob confined "
+                "to the basename.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
         # Prefer our fused digest check (including tweaked ConvertHashToMAC) over
         # unrar's exit code for corruption; wrong-password (11) still maps.
         has_hash = bool(member.hashes) or (
             isinstance(raw, RarMemberInfo)
             and self._tweaked_verify_spec(raw) is not None
         )
-        glob_prefix = self._unrar_glob_prefix(member, presented)
-        glob_mask = "*" in presented or "?" in presented
+        glob_prefix = self._unrar_glob_prefix(
+            member, presented, version_control=version_control
+        )
 
         def _spawn() -> BinaryIO:
             proc, stdout = open_unrar_p(

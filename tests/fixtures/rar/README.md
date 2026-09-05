@@ -74,6 +74,9 @@ so the read takes the named-`unrar` route; stored members never would.
 | `wildcard_names__.rar` | RAR5 `-m3`; padded so members compress; add-order `subdir/aY.txt` then `a*.txt` / `aX.txt` / `b?.txt` / `b1.txt` / `only*.dat` |
 | `wildcard_names_solid__.rar` | RAR5 `-s -m3`; same members and add order |
 | `wildcard_names__rar4.rar` | RAR4 `-ma4 -m3`; same members as the nonsolid RAR5 |
+| `wildcard_dirglob__.rar` | RAR5 `-m3`; `aaa/x.txt`, `dX/x.txt`, `d*/x.txt` — directory-component glob, refused |
+| `wildcard_backslash__.rar` | RAR5 `-m3`; `a/b1.txt`, `a\b_TGT.txt`, `a\b*.txt` — literal backslash glob, refused |
+| `wildcard_ver__.rar` | RAR5 `-m3 -ver`; `data.bin` two revisions, `data_TARGET`, `data*` — live glob must skip history |
 
 Seek-respawn (named `unrar p` with `seekable_members=True`):
 

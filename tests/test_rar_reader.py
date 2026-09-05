@@ -23,6 +23,7 @@ from archivey.exceptions import (
     EncryptionError,
     PackageNotInstalledError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import (
@@ -61,6 +62,22 @@ _WILDCARD_FIXTURES = (
     "wildcard_names_solid__.rar",
     "wildcard_names__rar4.rar",
 )
+_WILDCARD_DIRGLOB_CONTENTS = {
+    "aaa/x.txt": b"aaa\n" + _WILDCARD_PAD,
+    "dX/x.txt": b"dX\n" + _WILDCARD_PAD,
+    "d*/x.txt": b"dstar\n" + _WILDCARD_PAD,
+}
+# ``member.name`` folds a stored backslash to ``/`` (RAR treats it as a separator).
+_WILDCARD_BACKSLASH_READABLE = {
+    "a/b1.txt": b"slashdir\n" + _WILDCARD_PAD,
+    "a/b_TGT.txt": b"literal-bs-tgt\n" + _WILDCARD_PAD,
+}
+_WILDCARD_VER_CONTENTS = {
+    "data.bin;1": b"data-v1\n" + _WILDCARD_PAD,
+    "data.bin": b"data-v2!!\n" + _WILDCARD_PAD,
+    "data_TARGET": b"data-tgt\n" + _WILDCARD_PAD,
+    "data*": b"data-star\n" + _WILDCARD_PAD,
+}
 # 1 MiB repeating pad so a solid later-member rewind crosses the diagnostic
 # threshold without monkeypatching it, and so unrar is still writing when a
 # test seeks mid-stream (the 64 KiB pipe buffer fills).
@@ -1412,6 +1429,24 @@ def test_unrar_mask_match_treats_brackets_as_literal() -> None:
     assert _unrar_mask_match("aY.txt", "./aY.txt")
     assert _unrar_mask_match("aY.txt", "aY.txt")
     assert not _unrar_mask_match("subdir/aY.txt", "aY.txt")
+    # Known over-match vs unrar 7.00 (F1). Directory-glob / backslash names are
+    # refused before this function sizes a skip; these pins keep the divergence
+    # visible rather than silently "fixed" without an oracle.
+    assert _unrar_mask_match("aaa/x.txt", "d*/x.txt")
+    assert _unrar_mask_match("a/b1.txt", r"a\b*.txt")
+
+
+def test_unrar_glob_demux_ok_basename_only() -> None:
+    """Demux is offered only for a glob confined to the basename, no backslash."""
+    from archivey.internal.backends.rar_unrar import _unrar_glob_demux_ok
+
+    assert _unrar_glob_demux_ok("a*.txt")
+    assert _unrar_glob_demux_ok("subdir/a*.txt")
+    assert _unrar_glob_demux_ok("b?.txt")
+    assert not _unrar_glob_demux_ok("d*/x.txt")
+    assert not _unrar_glob_demux_ok("*/x.txt")
+    assert not _unrar_glob_demux_ok(r"a\b*.txt")
+    assert not _unrar_glob_demux_ok(r"subdir\a*.txt")
 
 
 @requires_binary("unrar")
@@ -1482,12 +1517,65 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
     ) as archive:
         with archive.open("a*.txt") as stream:
             assert stream.seekable() is True
+            # Prefix skip is eager at pipe construction, which for a respawn is
+            # the following read — not seek(). A no-byte seek must not spawn.
+            stream.seek(0, io.SEEK_END)
+            stream.seek(0)
+            assert spawns == ["a*.txt"]
             assert stream.read(6) == expected[:6]
             assert spawns == ["a*.txt"]
             stream.seek(0)
             assert spawns == ["a*.txt"]
             assert stream.read() == expected
             assert spawns == ["a*.txt", "a*.txt"]
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    ("fixture", "glob_name", "readable"),
+    [
+        ("wildcard_dirglob__.rar", "d*/x.txt", _WILDCARD_DIRGLOB_CONTENTS),
+        ("wildcard_backslash__.rar", "a/b*.txt", _WILDCARD_BACKSLASH_READABLE),
+    ],
+)
+def test_wildcard_dirglob_and_backslash_names_are_refused(
+    fixture: str,
+    glob_name: str,
+    readable: dict[str, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A glob in a directory component, or a backslash in a glob name, stays a
+    typed refusal — demux would over-match and report a valid archive truncated."""
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(path: Path, **kwargs: object):
+        spawns.append(kwargs.get("member"))
+        return original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
+    with open_archive(_fixture(fixture)) as archive:
+        files = {m.name: m for m in archive.members() if m.is_file}
+        assert glob_name in files
+        for name, expected in readable.items():
+            if name == glob_name:
+                continue
+            assert archive.read(name) == expected
+        before = list(spawns)
+        with pytest.raises(UnsupportedFeatureError):
+            archive.read(glob_name)
+        assert spawns == before
+
+
+@requires_binary("unrar")
+def test_wildcard_ver_live_glob_skips_history_rows() -> None:
+    """``unrar p -n./data*`` without ``-ver`` omits history; the skip must too."""
+    with open_archive(_fixture("wildcard_ver__.rar")) as archive:
+        files = {m.name: m for m in archive.members() if m.is_file}
+        assert set(files) == set(_WILDCARD_VER_CONTENTS)
+        for member_name, expected in _WILDCARD_VER_CONTENTS.items():
+            assert archive.read(member_name) == expected
 
 
 @requires("cryptography")
