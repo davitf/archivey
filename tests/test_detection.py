@@ -75,12 +75,22 @@ def test_extension_only_is_guess(tmp_path: Path) -> None:
     assert info.detected_by == "extension"
 
 
-@pytest.mark.parametrize("ext", [".jar", ".pyz", ".whl", ".apk"])
+@pytest.mark.parametrize("ext", [".jar", ".pyz", ".whl", ".apk", ".cbz"])
 def test_zip_family_extension_fallback(tmp_path: Path, ext: str) -> None:
     path = tmp_path / f"mystery{ext}"
     path.write_bytes(b"not really a zip")
     info = detect_format(path)
     assert info.format == ArchiveFormat.ZIP
+    assert info.confidence == DetectionConfidence.GUESS
+    assert info.detected_by == "extension"
+
+
+@pytest.mark.parametrize("ext", [".rar", ".cbr"])
+def test_rar_family_extension_fallback(tmp_path: Path, ext: str) -> None:
+    path = tmp_path / f"mystery{ext}"
+    path.write_bytes(b"not really a rar")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.RAR
     assert info.confidence == DetectionConfidence.GUESS
     assert info.detected_by == "extension"
 

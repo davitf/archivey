@@ -182,7 +182,7 @@ and, for the stage that delegates, what crosses the boundary.
 
 ### 2.1 Identify
 
-Two magics at offset 0 and one extension, `.rar`. Both magics are also the scan needles for
+Two magics at offset 0 and two extensions, `.rar` and `.cbr`. Both magics are also the scan needles for
 a prefixed archive, deliberately rather than their shared `Rar!\x1a\x07` prefix: matching
 each id separately resolves RAR4 vs RAR5 at the hit instead of re-reading to disambiguate.
 
@@ -780,7 +780,7 @@ single-live-stream gate ahead of the spawn it was a backstop for; **#12** member
 comments mapped from RAR3 CMT SERVICE and RAR 1.5 / 2.x old-style blocks, stored natively
 and compressed through `unrar` when present; and **#16** `unrar` probe caching —
 `which` every call, banner verdict keyed on the resolved path plus stat identity,
-transient execute failures not cached.
+transient execute failures not cached; and **#17** registered `.cbr` / `.cbz`.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
@@ -790,7 +790,6 @@ transient execute failures not cached.
 | 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
 | 9 | **Give RAR compression a name.** Add `CompressionAlgorithm.RAR` and carry the extract version (15/20/29/50) alongside it, replacing today's `UNKNOWN` + level. **Name decided: plain `RAR`** — see the note under this table | The header identifies the algorithm, so `UNKNOWN` claims "we could not tell" when we can, and it is what a caller comparing formats sees | §5, §2.2 |
 | 11 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
-| 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses. **Decided: register it.** Same call for ZIP: register `.cbz` (ZIP today has `.zip` `.jar` `.pyz` `.whl` `.apk`, no comic-book alias) | Product call, recorded | — |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
 | 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
 

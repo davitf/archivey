@@ -90,9 +90,8 @@ Each stage: who does the work, what is ZIP-specific rather than general, what is
 ### 2.1 Identify
 
 ZIP declares three magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x06` (empty
-archive) and `PK\x07\x08` (spanned marker) — and five extensions: `.zip`, `.jar`, `.pyz`,
-`.whl`, `.apk`. `.cbz` is decided (comic-book ZIP, with RAR's `.cbr`) and not registered
-yet.
+archive) and `PK\x07\x08` (spanned marker) — and six extensions: `.zip`, `.jar`, `.pyz`,
+`.whl`, `.apk`, `.cbz`.
 
 When searching a prefixed archive for a ZIP, archivey looks only for the local header
 (`PK\x03\x04`). The other two magics are not useful search targets: `PK\x05\x06` would
