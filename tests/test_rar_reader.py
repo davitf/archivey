@@ -6,6 +6,7 @@ import dataclasses
 import io
 import shutil
 import struct
+import subprocess
 import time
 import zlib
 from datetime import datetime, timezone
@@ -94,12 +95,26 @@ def _fixture(name: str) -> Path:
 
 
 def _named_unrar_p_bytes(path: Path, member: str) -> bytes:
+    """Named ``unrar p`` stdout for ``member``.
+
+    Goes through ``rar_unrar.open_unrar_p`` so this is the oracle, outside the
+    ``rar_reader`` spy — a library spawn would otherwise be counted as ours.
+
+    Requires exit 0: a no-match is rc 10 with empty stdout, which is not
+    "the link emitted nothing".
+    """
     proc, stdout = rar_unrar.open_unrar_p(path, member=member)
     try:
-        return stdout.read()
+        data = stdout.read()
     finally:
         stdout.close()
-        rar_unrar.terminate_unrar(proc)
+        try:
+            rc = proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            rar_unrar.terminate_unrar(proc)
+            raise
+    assert rc == 0, f"unrar p member={member!r} exited {rc} (10 is no-match)"
+    return data
 
 
 def _assert_solid_link_emission(
@@ -115,6 +130,13 @@ def _assert_solid_link_emission(
     else:
         assert member.compressed_size is not None and member.compressed_size > 0
     assert _named_unrar_p_bytes(path, member.name) == b""
+
+
+@requires_binary("unrar")
+def test_named_unrar_p_bytes_rejects_no_match() -> None:
+    """A no-match is empty stdout at rc 10 — not "the link emitted nothing"."""
+    with pytest.raises(AssertionError, match="exited 10"):
+        _named_unrar_p_bytes(_fixture("symlinks_solid__.rar"), "NO_SUCH_MEMBER_xyz.txt")
 
 
 @requires_binary("unrar")
@@ -464,9 +486,9 @@ def test_solid_symlink_demux_and_link_targets(
 
     Measured on this pair: RAR5 links are packed 0 / unpacked 6–12 / emit 0;
     RAR4 (old on-disk family) links are packed 6–12 / unpacked 6–12 / emit 0.
-    ``is_payload_file()`` is the predictor. The RAR4 symlink members declare
-    extract version 20 (stored M0 targets); there is no RAR 1.5/2.x solid-symlink
-    fixture in the tree.
+    ``is_payload_file()`` is the predictor. The ``__rar4`` archive is RAR3-family;
+    its link members are stored M0 (``compress_size == file_size``). There is no
+    RAR 1.5/2.x solid-symlink fixture in the tree.
     """
     path = _fixture(name)
     spawns: list[object] = []
@@ -495,14 +517,16 @@ def test_solid_symlink_demux_and_link_targets(
             "subdir_link",
             "subdir_link_with_slash",
         }
+        # Positive control: the oracle can produce bytes, so empty link stdout
+        # is not a silent no-match.
+        assert _named_unrar_p_bytes(path, "file1.txt") == b"Hello, world!"
         for member in links:
             _assert_solid_link_emission(path, member, rar5=rar5)
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
-            if rar5:
-                assert raw.extract_version == 50
-            else:
-                assert raw.extract_version == 20
+            if not rar5:
+                # Stored M0. Fails if a regeneration starts compressing targets.
+                assert raw.compress_size == raw.file_size
 
         # Follow the link: named ``unrar p`` is the target file, not the symlink.
         assert archive.read("symlink_to_file1.txt") == b"Hello, world!"
@@ -524,10 +548,10 @@ def test_solid_symlink_demux_and_link_targets(
                     MemberType.HARDLINK,
                 )
         # Only payload FILE members advance the unrar p pipe.
+        # None is the unnamed solid ALL-pipe the sequential pass takes.
         assert payload_names == ["file1.txt"]
         assert pipe_bytes == 13
-        assert "symlink_to_file1.txt" not in spawns
-        assert "subdir/link_to_file1.txt" not in spawns
+        assert spawns == ["file1.txt", None]
 
 
 @requires_binary("unrar")
@@ -557,6 +581,7 @@ def test_solid_hardlink_demux_and_targets(monkeypatch: pytest.MonkeyPatch) -> No
             "subdir/hardlink_to_file1.txt",
             "hardlink_to_file2.txt",
         }
+        assert _named_unrar_p_bytes(path, "file1.txt") == b"Hello 1!"
         for member in hardlinks:
             _assert_solid_link_emission(path, member, rar5=True)
 
@@ -570,9 +595,8 @@ def test_solid_hardlink_demux_and_targets(monkeypatch: pytest.MonkeyPatch) -> No
             "subdir/file2.txt": b"Hello 2!",
         }
         assert archive.read("subdir/hardlink_to_file1.txt") == b"Hello 1!"
-        assert "subdir/hardlink_to_file1.txt" not in spawns
-        assert "hardlink_to_file2.txt" not in spawns
-        assert "file1.txt" in spawns
+        # None is the unnamed solid ALL-pipe; file1.txt is the followed target.
+        assert spawns == [None, "file1.txt"]
 
 
 @requires("cryptography")
