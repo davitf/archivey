@@ -328,6 +328,15 @@ class CreateSystem(Enum):
 # deliberately NOT namespaced under a single format like "zip.".
 EXTRA_IS_JUNCTION = "is_junction"
 
+# Key in ArchiveMember.extra: True when this RAR member's ``created`` is Unix
+# ``st_ctime`` (inode-change), False when the writer OS stores a birth time
+# (Win32, and RAR3 FAT/OS2/Mac/BeOS). Derived from ``host_os``; omitted when
+# ``created`` is None or ``host_os`` is unknown. A later OpenSpec change will
+# promote this to a cross-format ``created_meaning`` field — do not infer that
+# meaning from ``create_system`` (7z hardcodes UNIX while reading a FILETIME
+# birth time; ZIP splits by extra source, not OS).
+EXTRA_RAR_CREATED_IS_CTIME = "rar.created_is_ctime"
+
 
 @dataclass(slots=True)
 class ArchiveMember:
@@ -360,7 +369,14 @@ class ArchiveMember:
     """Last-access time, if recorded."""
 
     created: datetime | None = None
-    """Creation time, if recorded (rare; most formats only store modification time)."""
+    """The format's creation-time slot, if recorded (rare; most formats store only mtime).
+
+    Meaning follows the writer, not a cross-format guarantee. A Unix RARLAB
+    archive stores inode-change time (``st_ctime``) here; those members set
+    ``extra["rar.created_is_ctime"]`` to ``True``. A Win32 RAR stores birth
+    time and sets the same key to ``False``. Directory listing uses
+    ``st_birthtime`` only and never ``st_ctime``.
+    """
 
     mode: int | None = None
     """Unix permission bits, or ``None`` if the format/entry carries no mode."""

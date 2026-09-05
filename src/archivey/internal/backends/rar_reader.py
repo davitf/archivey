@@ -85,6 +85,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.types import (
     EXTRA_IS_JUNCTION,
+    EXTRA_RAR_CREATED_IS_CTIME,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -819,6 +820,13 @@ class RarReader(BaseArchiveReader):
             if host_os is not None
             else CreateSystem.UNKNOWN
         )
+        # Unix host_os is 3 (RAR3 Unix, and the parser maps RAR5 Unix→3). That
+        # writer's creation slot is st_ctime, not birth; Win32 (2) and the
+        # other RAR3 hosts store a creation time. Omit the key when there is
+        # no created value or host_os is unknown.
+        if info.ctime is not None and host_os is not None:
+            extra[EXTRA_RAR_CREATED_IS_CTIME] = host_os == 3
+
         mode: int | None = None
         windows_attrs: int | None = None
         if info.mode is not None:

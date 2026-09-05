@@ -232,9 +232,15 @@ native RAR reader MUST NOT implement it.
 The system SHALL treat RAR solidity as a binary archive-level property because
 RAR exposes no per-solid-block boundaries. `ArchiveInfo.is_solid` reflects the
 native solid flag and `CostReceipt.solid_block_count` SHALL be `None`. Timestamp
-mapping SHALL preserve RAR version semantics: RAR4 local wall-clock timestamps
-become naive `datetime` values, and RAR5 UTC/sub-second timestamps become
-timezone-aware UTC `datetime` values. RAR5 Blake2sp-only members SHALL store the
+mapping SHALL preserve RAR version semantics for `modified`, `accessed`, and
+`created`: RAR4 local wall-clock timestamps become naive `datetime` values, and
+RAR5 UTC/sub-second timestamps become timezone-aware UTC `datetime` values.
+`accessed` and `created` come from the RAR5 `0x03` time extra (`HAS_ATIME` /
+`HAS_CTIME`) or RAR3 EXTTIME; they SHALL be `None` when that extra or slot is
+absent. When `created` is present and `host_os` is known, the member SHALL set
+`extra["rar.created_is_ctime"]` to `True` for a Unix host (`host_os == 3`) and
+`False` otherwise — a Unix RARLAB writer stores `st_ctime` (inode-change) in
+the creation slot, not birth time. RAR5 Blake2sp-only members SHALL store the
 digest bytes at `member.hashes["blake2sp"]` and omit `"crc32"`.
 
 A **RAR5 redirect** member — symlink, hard link, or file copy — SHALL surface **no**
@@ -258,6 +264,11 @@ member type.
 | Solid RAR | `ArchiveInfo.is_solid` true; `solid_block_count is None` |
 | RAR4 timestamp | `ArchiveMember.modified` is naive local wall-clock time |
 | RAR5 timestamp | `ArchiveMember.modified` is timezone-aware UTC |
+| RAR5 `-tsmca` archive | `modified` / `accessed` / `created` are timezone-aware UTC |
+| RAR4 `-tsmca` archive | `modified` / `accessed` / `created` are naive local wall-clock |
+| mtime-only archive (no atime/ctime extra) | `accessed` / `created` are `None`; `modified` populated |
+| Unix-written member with `created` set | `extra["rar.created_is_ctime"] is True` |
+| Win32-written member with `created` set | `extra["rar.created_is_ctime"] is False` |
 | RAR5 member with Blake2sp only | `"blake2sp"` present as bytes; `"crc32"` absent |
 | RAR5 symlink / hard link / file copy | `member.hashes` empty — never `crc32 == 0` |
 | RAR4 symlink (target stored as data) | `"crc32"` present, equal to the target string's CRC32 |

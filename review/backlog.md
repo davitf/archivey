@@ -37,11 +37,16 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
-- **#300 F4 / D3** — `accessed_utc()` / `created_utc()`. RAR4 is the first naive
-  `accessed`/`created` in the library; `modified_utc()` exists because `modified`
-  is sometimes naive. Public API on `types.py`; follow-up, not the RAR parser PR.
-- **#300 F6 / D2** — `format-rar` still specifies `modified` only. Wait until D1
-  (`created` meaning for Unix-written RAR) is settled, then add two scenario rows.
+- **#300 F4 / D3 + `created_meaning`** — one follow-up OpenSpec change, not #300:
+  add `accessed_utc()` / `created_utc()` on a shared private `_as_utc` with
+  `modified_utc()` moved onto it (not a string-keyed `timestamp_utc(field)`),
+  and a cross-format `created_meaning` field (`CREATION` / `METADATA_CHANGE` /
+  `UNKNOWN`) populated by every backend. Do **not** infer that field from
+  `create_system`: 7z hardcodes `CreateSystem.UNIX` while reading a FILETIME
+  birth time; ZIP splits by extra source (NTFS `0x000A` is birth, UT `0x04` is
+  Unix `st_ctime`). RAR4 is the first naive `accessed`/`created` in the library;
+  until the helpers exist those two fields are the only timestamps a caller
+  cannot normalize. #300 records the RAR case as `extra["rar.created_is_ctime"]`.
 - **#300 F5 secondary** — `tests/sample_archives.py` has no atime/ctime notion, so
   the format×shape sweep cannot cover xtime today.
 
