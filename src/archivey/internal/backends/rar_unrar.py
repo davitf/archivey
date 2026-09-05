@@ -8,6 +8,7 @@ secret not in argv) and optional ``-n./member`` include masks.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,7 +17,6 @@ from typing import BinaryIO, cast
 from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
-    UnsupportedFeatureError,
 )
 
 # Successful probes only. A rejected lookalike is not cached, so it is
@@ -92,18 +92,28 @@ def _member_include_switch(member: str) -> str:
     rather than matching the basename at any depth.
 
     ``unrar`` masks treat ``*`` and ``?`` as wildcards with no escape (``[]`` are
-    literal, ``\\`` does not escape), so a name containing either cannot be addressed to
-    exactly one member; such reads are refused rather than risk emitting another
-    member's bytes.
+    literal, ``\\`` does not escape). A name containing either is still passed as
+    the mask; ``RarReader._open_member`` skips other matching members using the
+    parsed member list and :func:`_unrar_mask_match`.
     """
-    if "*" in member or "?" in member:
-        raise UnsupportedFeatureError(
-            "Cannot read this RAR member via unrar: its name contains a wildcard "
-            "character ('*' or '?') that unrar interprets as a match pattern with no "
-            "escape, so it cannot be addressed unambiguously.",
-            member_name=member,
-        )
     return "-n./" + member
+
+
+def _unrar_mask_match(name: str, mask: str) -> bool:
+    """Match ``name`` the way ``unrar -n`` does: ``*``/``?`` wildcards, ``[]`` literal.
+
+    Python ``fnmatch`` treats ``[]`` as a character class, which would desync the
+    skip from what ``unrar`` actually concatenates.
+    """
+    parts: list[str] = []
+    for ch in mask:
+        if ch == "*":
+            parts.append(".*")
+        elif ch == "?":
+            parts.append(".")
+        else:
+            parts.append(re.escape(ch))
+    return re.fullmatch("".join(parts), name, flags=re.DOTALL) is not None
 
 
 def open_unrar_p(

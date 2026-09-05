@@ -92,6 +92,17 @@ _HARDLINKS: tuple[_File, ...] = (
     _File("hardlink_to_file2.txt", hardlink_to="subdir/file2.txt"),
 )
 
+# Compressed on purpose: stored members never reach unrar, so a wildcard name on
+# the direct-slice route is not the bug. Windows cannot create these names on disk
+# at test time; the archives are committed.
+_WILDCARD_NAMES: tuple[_File, ...] = (
+    _File("a*.txt", b"target-star\n"),
+    _File("aX.txt", b"other-aX\n"),
+    _File("b?.txt", b"target-q\n"),
+    _File("b1.txt", b"other-b1\n"),
+    _File("only*.dat", b"unique\n"),
+)
+
 # WinRAR ``-ver`` revisions of a single path (oldest → newest / live).
 _FILE_VERSION_REVISIONS: tuple[bytes, ...] = (
     b"version-one",
@@ -388,6 +399,13 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         _HARDLINKS,
         extra=("-s", "-m3"),
     )
+    build(rar5_bin, "wildcard_names__.rar", _WILDCARD_NAMES, extra=("-m3",))
+    build(
+        rar5_bin,
+        "wildcard_names_solid__.rar",
+        _WILDCARD_NAMES,
+        extra=("-s", "-m3"),
+    )
     build(
         rar5_bin,
         "stored_m0.rar",
@@ -493,6 +511,12 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         "symlinks_solid__rar4.rar",
         _SYMLINKS,
         extra=("-ma4", "-s", "-m3"),
+    )
+    build(
+        rar4_bin,
+        "wildcard_names__rar4.rar",
+        _WILDCARD_NAMES,
+        extra=("-ma4", "-m3"),
     )
     _build_file_version(
         rar4_bin,

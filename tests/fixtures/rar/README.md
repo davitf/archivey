@@ -65,6 +65,16 @@ rather than built on demand:
 | `many_list_store__.rar` | RAR5 `-m0 -s -ep1`; 1000 tiny `fNNNNN.txt` members |
 | `many_list_store_nonsolid__.rar` | RAR5 `-m0 -s- -ep1`; 256 tiny members |
 
+Wildcard member names (`*` / `?` in the stored path). Windows cannot create these
+on disk, so they are committed rather than built in the test. Compressed (`-m3`)
+so the read takes the named-`unrar` route; stored members never would.
+
+| Files | Notes |
+| --- | --- |
+| `wildcard_names__.rar` | RAR5 `-m3`; `a*.txt`, `aX.txt`, `b?.txt`, `b1.txt`, `only*.dat` |
+| `wildcard_names_solid__.rar` | RAR5 `-s -m3`; `rar a -s` stored `b1.txt` before `b?.txt` |
+| `wildcard_names__rar4.rar` | RAR4 `-ma4 -m3`; same members as the nonsolid RAR5 |
+
 (`-m0` store archives do not set the solid bit even with `-s`; the flags still
 match the regeneration commands in `scripts/gen_rar_fixtures.py`.)
 

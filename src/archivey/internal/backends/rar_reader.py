@@ -56,6 +56,7 @@ from archivey.internal.backends.rar_parser import (
     rar5_hash_key,
 )
 from archivey.internal.backends.rar_unrar import (
+    _unrar_mask_match,
     open_unrar_p,
     terminate_unrar,
 )
@@ -372,7 +373,8 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     returns empty.
 
     ``spawn`` must return a stream that owns the process (typically
-    ``_UnrarOwnedStream``), so close/respawn reaps it.
+    ``_UnrarOwnedStream``, or ``_BoundedMemberPipe`` wrapping one), so
+    close/respawn reaps it.
     """
 
     def __init__(
@@ -461,6 +463,47 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
         super().close()
         if close_error is not None:
             raise close_error
+
+
+class _BoundedMemberPipe(DelegatingStream):
+    """Own an ``unrar`` pipe, skip a glob-match prefix, then EOF at ``size``.
+
+    ``unrar -n./name-with-wildcards`` concatenates every matching member with no
+    headers. The parsed member list tells us how many unpacked bytes sit before
+    the target; after that we must stop, or the fused overrun probe would see the
+    next match as extra payload.
+    """
+
+    def __init__(self, inner: BinaryIO, *, prefix: int, size: int) -> None:
+        super().__init__(inner, readinto_passthrough=False)
+        try:
+            if prefix:
+                skip_forward(inner, prefix)
+        except EOFError as exc:
+            inner.close()
+            raise TruncatedError(
+                "unrar pipe ended before the requested glob-matched member"
+            ) from exc
+        except BaseException:
+            inner.close()
+            raise
+        self._size = size
+        self._pos = 0
+
+    def tell(self) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        return self._pos
+
+    def read(self, n: int = -1, /) -> bytes:
+        remaining = self._size - self._pos
+        if remaining <= 0:
+            return b""
+        if n < 0 or n > remaining:
+            n = remaining
+        data = super().read(n)
+        self._pos += len(data)
+        return data
 
 
 class RarReader(BaseArchiveReader):
@@ -1030,6 +1073,26 @@ class RarReader(BaseArchiveReader):
         # Encrypted / compressed target without usable direct bytes: leave unset.
         return
 
+    def _unrar_glob_prefix(self, target: ArchiveMember, presented: str) -> int:
+        """Unpacked bytes of earlier payload members that the ``-n`` mask also matches.
+
+        ``unrar`` emits those members concatenated, in archive order, with no
+        headers. Zero when the presented name has no glob characters.
+        """
+        if "*" not in presented and "?" not in presented:
+            return 0
+        prefix = 0
+        for member in self._members:
+            raw = member._raw
+            if not isinstance(raw, RarMemberInfo) or not raw.is_payload_file():
+                continue
+            if not _unrar_mask_match(_presented_filename(raw), presented):
+                continue
+            if member is target:
+                return prefix
+            prefix += _member_stream_size(member)
+        return prefix
+
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
@@ -1050,6 +1113,8 @@ class RarReader(BaseArchiveReader):
             isinstance(raw, RarMemberInfo)
             and self._tweaked_verify_spec(raw) is not None
         )
+        glob_prefix = self._unrar_glob_prefix(member, presented)
+        glob_mask = "*" in presented or "?" in presented
 
         def _spawn() -> BinaryIO:
             proc, stdout = open_unrar_p(
@@ -1070,7 +1135,14 @@ class RarReader(BaseArchiveReader):
                 terminate_unrar(proc)
                 raise
             try:
-                return self._track_decompressed(owned)
+                tracked = self._track_decompressed(owned)
+                if glob_mask:
+                    return _BoundedMemberPipe(
+                        tracked,
+                        prefix=glob_prefix,
+                        size=_member_stream_size(member),
+                    )
+                return tracked
             except BaseException:
                 owned.close()
                 raise

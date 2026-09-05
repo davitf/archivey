@@ -42,6 +42,22 @@ _BASIC_CONTENTS = {
     "implicit_subdir/file3.txt": b"Hello there!",
 }
 
+# Compressed fixtures: stored members never reach unrar, so they would not pin this.
+# ``rar a -s`` reordered ``b1.txt`` ahead of ``b?.txt`` on the solid archive; that is
+# the prefix-skip case. Windows cannot create these names on disk — committed only.
+_WILDCARD_CONTENTS = {
+    "a*.txt": b"target-star\n",
+    "aX.txt": b"other-aX\n",
+    "b?.txt": b"target-q\n",
+    "b1.txt": b"other-b1\n",
+    "only*.dat": b"unique\n",
+}
+_WILDCARD_FIXTURES = (
+    "wildcard_names__.rar",
+    "wildcard_names_solid__.rar",
+    "wildcard_names__rar4.rar",
+)
+
 
 def _fixture(name: str) -> Path:
     path = _FIXTURES / name
@@ -1193,19 +1209,96 @@ def test_load_vint_single_and_multi_byte() -> None:
         load_vint(b"\x80" * 11, 0)
 
 
-def test_unrar_member_include_switch_rejects_wildcards() -> None:
-    """A member name containing an unrar wildcard (``*``/``?``) cannot be addressed to
-    one member (no escape exists), so the unrar path refuses it with a typed error;
-    other names become a ``-n./`` include mask that neutralizes ``-``/``@`` prefixes."""
-    from archivey.exceptions import UnsupportedFeatureError
+def test_unrar_member_include_switch_builds_n_mask() -> None:
+    """Every member name becomes a ``-n./`` include mask, including ``*``/``?``
+    (no escape exists) and names that would be switches or ``@listfile`` if
+    passed positionally."""
     from archivey.internal.backends.rar_unrar import _member_include_switch
 
     assert _member_include_switch("-inul") == "-n./-inul"
     assert _member_include_switch("@atfile") == "-n./@atfile"
     assert _member_include_switch("dir/normal.txt") == "-n./dir/normal.txt"
-    for bad in ("weird*.txt", "a?b.txt"):
-        with pytest.raises(UnsupportedFeatureError):
-            _member_include_switch(bad)
+    assert _member_include_switch("weird*.txt") == "-n./weird*.txt"
+    assert _member_include_switch("a?b.txt") == "-n./a?b.txt"
+
+
+def test_unrar_mask_match_treats_brackets_as_literal() -> None:
+    """``unrar -n`` does not treat ``[]`` as a character class; the skip must not
+    either, or a name with both brackets and a glob would desync from the pipe."""
+    from archivey.internal.backends.rar_unrar import _unrar_mask_match
+
+    assert _unrar_mask_match("a*.txt", "a*.txt")
+    assert _unrar_mask_match("aX.txt", "a*.txt")
+    assert not _unrar_mask_match("b1.txt", "a*.txt")
+    assert _unrar_mask_match("b?.txt", "b?.txt")
+    assert _unrar_mask_match("b1.txt", "b?.txt")
+    assert _unrar_mask_match("foo[a].txt", "foo[a].txt")
+    assert not _unrar_mask_match("fooa.txt", "foo[a].txt")
+    assert _unrar_mask_match("foo[a]X.txt", "foo[a]*.txt")
+    assert not _unrar_mask_match("fooaX.txt", "foo[a]*.txt")
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
+def test_wildcard_member_name_reads_its_own_bytes(name: str) -> None:
+    """``unrar -n./a*.txt`` concatenates every match; we skip to the named member.
+
+    ``a*.txt`` is first among its matches, so the discriminator is the size bound
+    (must not include ``aX.txt``). The solid fixture stores ``b1.txt`` before
+    ``b?.txt``, so that open is the prefix-skip case.
+    """
+    with open_archive(_fixture(name)) as archive:
+        files = [m for m in archive.members() if m.is_file]
+        assert {m.name for m in files} == set(_WILDCARD_CONTENTS)
+        if "solid" in name:
+            names = [m.name for m in files]
+            assert names.index("b1.txt") < names.index("b?.txt")
+        for member_name, expected in _WILDCARD_CONTENTS.items():
+            assert archive.read(member_name) == expected
+
+
+@requires_binary("unrar")
+def test_wildcard_solid_stream_members_reads_all() -> None:
+    """The unnamed ALL-pipe has no ``-n`` mask, so wildcard names already demux by
+    size; this pins that the glob skip on the named route did not leak into it."""
+    with open_archive(_fixture("wildcard_names_solid__.rar")) as archive:
+        got = {
+            member.name: stream.read()
+            for member, stream in archive.stream_members()
+            if member.is_file and stream is not None
+        }
+    assert got == _WILDCARD_CONTENTS
+
+
+@requires_binary("unrar")
+def test_seekable_wildcard_respawn_still_skips_glob_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backward seek on a glob name must respawn *and* re-skip the prefix.
+
+    ``b?.txt`` on the solid fixture is not first among matches (``b1.txt`` is), so
+    a respawn that forgot the skip would return ``other-b1`` after ``seek(0)``.
+    """
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(path: Path, **kwargs: object):
+        spawns.append(kwargs.get("member"))
+        return original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
+    expected = _WILDCARD_CONTENTS["b?.txt"]
+    with open_archive(
+        _fixture("wildcard_names_solid__.rar"), seekable_members=True
+    ) as archive:
+        with archive.open("b?.txt") as stream:
+            assert stream.seekable() is True
+            assert stream.read(6) == expected[:6]
+            assert spawns == ["b?.txt"]
+            stream.seek(0)
+            assert spawns == ["b?.txt", "b?.txt"]
+            assert stream.read() == expected
 
 
 @requires("cryptography")
