@@ -762,7 +762,7 @@ rest of the page keep resolving. Closed so far: **#1** the RAR3 name-decode boun
 respawns named `unrar` on a backward seek; **#3** wildcard member names whose globs are
 confined to the basename (no backslash) read via the `-n` mask plus a skip of other
 matches — directory-component globs and backslash names stay refused, carried by **#18**;
-**#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#5** RAR5 `QO` listing via MAIN locator when the record is stored and unencrypted; **#10** RAR5/RAR3 `accessed`/`created` from the time extra ([#300](https://github.com/davitf/archivey/pull/300)); **#13** `close()` chaining and **#14**
+**#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#5** RAR5 `QO` listing via MAIN locator when the record is stored and unencrypted ([#311](https://github.com/davitf/archivey/pull/311)); **#10** RAR5/RAR3 `accessed`/`created` from the time extra ([#300](https://github.com/davitf/archivey/pull/300)); **#13** `close()` chaining and **#14**
 shared FILETIME ([#291](https://github.com/davitf/archivey/pull/291)); and **#15** `_live_unrar`,
 deleted outright when [#293](https://github.com/davitf/archivey/pull/293) moved the
 single-live-stream gate ahead of the spawn it was a backstop for; **#12** member
