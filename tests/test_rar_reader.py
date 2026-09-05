@@ -68,10 +68,8 @@ _WILDCARD_DIRGLOB_CONTENTS = {
     "d*/x.txt": b"dstar\n" + _WILDCARD_PAD,
 }
 # ``member.name`` folds a stored backslash to ``/`` (RAR treats it as a separator).
-_WILDCARD_BACKSLASH_READABLE = {
-    "a/b1.txt": b"slashdir\n" + _WILDCARD_PAD,
-    "a/b_TGT.txt": b"literal-bs-tgt\n" + _WILDCARD_PAD,
-}
+_WILDCARD_BACKSLASH_SLASH = b"slashdir\n" + _WILDCARD_PAD
+_WILDCARD_BACKSLASH_REFUSED = ("a/b_TGT.txt", "a/b*.txt")
 _WILDCARD_VER_CONTENTS = {
     "data.bin;1": b"data-v1\n" + _WILDCARD_PAD,
     "data.bin": b"data-v2!!\n" + _WILDCARD_PAD,
@@ -1531,21 +1529,12 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
 
 
 @requires_binary("unrar")
-@pytest.mark.parametrize(
-    ("fixture", "glob_name", "readable"),
-    [
-        ("wildcard_dirglob__.rar", "d*/x.txt", _WILDCARD_DIRGLOB_CONTENTS),
-        ("wildcard_backslash__.rar", "a/b*.txt", _WILDCARD_BACKSLASH_READABLE),
-    ],
-)
 def test_wildcard_dirglob_and_backslash_names_are_refused(
-    fixture: str,
-    glob_name: str,
-    readable: dict[str, bytes],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A glob in a directory component, or a backslash in a glob name, stays a
-    typed refusal — demux would over-match and report a valid archive truncated."""
+    """A glob in a directory component, or a backslash in the stored name, stays a
+    typed refusal — otherwise unrar's mask (and our skip) desyncs, including on
+    Windows where ``\\`` is a separator and a non-glob ``a\\b_TGT.txt`` emits nothing."""
     spawns: list[object] = []
     original = rar_reader.open_unrar_p
 
@@ -1555,16 +1544,26 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
 
-    with open_archive(_fixture(fixture)) as archive:
+    with open_archive(_fixture("wildcard_dirglob__.rar")) as archive:
         files = {m.name: m for m in archive.members() if m.is_file}
-        assert glob_name in files
-        for name, expected in readable.items():
-            if name == glob_name:
+        assert "d*/x.txt" in files
+        for name, expected in _WILDCARD_DIRGLOB_CONTENTS.items():
+            if name == "d*/x.txt":
                 continue
             assert archive.read(name) == expected
         before = list(spawns)
         with pytest.raises(UnsupportedFeatureError):
-            archive.read(glob_name)
+            archive.read("d*/x.txt")
+        assert spawns == before
+
+    with open_archive(_fixture("wildcard_backslash__.rar")) as archive:
+        files = {m.name: m for m in archive.members() if m.is_file}
+        assert archive.read("a/b1.txt") == _WILDCARD_BACKSLASH_SLASH
+        before = list(spawns)
+        for name in _WILDCARD_BACKSLASH_REFUSED:
+            assert name in files
+            with pytest.raises(UnsupportedFeatureError):
+                archive.read(name)
         assert spawns == before
 
 

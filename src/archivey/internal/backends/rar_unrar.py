@@ -98,9 +98,9 @@ def _member_include_switch(member: str) -> str:
     basename and that contains no backslash is still passed as the mask;
     ``RarReader._open_member`` skips other matching members using the parsed
     member list and :func:`_unrar_mask_match`. A glob in a directory component,
-    or a backslash anywhere in a glob name, raises ``UnsupportedFeatureError``
-    instead — :func:`_unrar_mask_match` is not faithful there (see
-    :func:`_unrar_glob_demux_ok`).
+    or a backslash in the presented name, raises ``UnsupportedFeatureError``
+    instead — :func:`_unrar_mask_match` is not faithful there, and Windows
+    ``unrar`` treats ``\\`` as a separator (see :func:`_unrar_glob_demux_ok`).
     """
     return "-n./" + member
 

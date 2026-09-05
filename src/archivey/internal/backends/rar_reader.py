@@ -1188,7 +1188,10 @@ class RarReader(BaseArchiveReader):
         presented = _presented_filename(raw)
         version_control = raw.is_file_version_history()
         glob_mask = "*" in presented or "?" in presented
-        if glob_mask and not _unrar_glob_demux_ok(presented):
+        # ``\\`` is a separator to Windows unrar and a literal on Linux; the
+        # same ``-n./`` mask therefore matches a different set. Refuse rather
+        # than report a valid member truncated (Windows CI on ``a\\b_TGT.txt``).
+        if "\\" in presented or (glob_mask and not _unrar_glob_demux_ok(presented)):
             raise UnsupportedFeatureError(
                 "RAR member names that contain a backslash or a glob in a "
                 "directory component cannot be read through unrar; the "

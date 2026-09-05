@@ -17,7 +17,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Member data needs the RARLAB `unrar` binary on `PATH` (§1) |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
-| Refuses | Non-seekable sources · a non-RARLAB `unrar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`) · a later volume opened without its first · a glob in a directory component, or a backslash in a glob-named member · writing |
+| Refuses | Non-seekable sources · a non-RARLAB `unrar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`) · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · writing |
 
 **Two things a reader might expect and will not find.** The binary is identified by its
 banner only — `UNRAR` plus `Alexander Roshal`/`RARLAB` — with **no version floor**, so an
@@ -311,8 +311,9 @@ never starts `unrar` and is never asked for a password.
   `*` or `?` in the **basename only**, `unrar` switches to `MATCH_WILDSUBPATH` and the same
   mask matches that basename at any depth — which is why the skip walks the parsed member
   list with the same rule, not a full-path regex. A glob in a directory component, or a
-  backslash anywhere in a glob name, is still `UnsupportedFeatureError`: the matcher is
-  not faithful there (it over-matches, and a valid archive was reported truncated).
+  backslash in the stored name, is still `UnsupportedFeatureError` on the unrar path:
+  the matcher over-matches those shapes, and Windows `unrar` treats `\` as a separator
+  so `-n./a\b_TGT.txt` emits nothing.
 - **`*` and `?` in a member name are `unrar` wildcards, not archivey's.** Masks have **no
   escape** (`[` and `]` are literal; `\` does not escape), so `-n./a*.txt` concatenates
   every matching member in archive order with no headers — including `subdir/aY.txt`.
@@ -477,8 +478,8 @@ RAR-specific only. General extraction and name hazards are §2.4.
   can hand over an archive, with two outcomes — the wrong member's bytes returned at exit 0,
   and an arbitrary local-file read driven by a `@`-prefixed name. Closed by the `-n./`
   include mask; a basename glob with no backslash is demuxed from the parsed member list
-  (§2.3). A glob in a directory component, or a backslash in a glob name, is refused
-  rather than guessed. Worth remembering how the hole survived a rule written to prevent
+  (§2.3). A glob in a directory component, or a backslash in the stored name, is refused
+  on the unrar path rather than guessed. Worth remembering how the hole survived a rule written to prevent
   it: the backend did control the argv it intended to build, and the hostile-name axis
   was simply not one anybody had enumerated.
 - **Listing is attacker-controlled work with no decompression.** A small file can declare an
@@ -548,7 +549,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_members=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ConcurrentAccessError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
 | A RAR 1.5 / 2.x archive comment is not returned, though `rarfile` returns it | **archivey** | The parser skips old-style embedded comment sub-blocks by design. Measured on the two legacy fixtures: `rarfile` gives `'RARcomment -----'` and `'RARcomment'`, archivey gives `None` for both. RAR5 and RAR3 comments are read normally |
 | `member.comment` is always `None`, including where a RAR3 solid comment block exists | **archivey** | The block is parsed into `_raw.comment` and never mapped onto the member (§2.2) |
-| Opening a compressed member whose stored name has a glob in a directory component, or a backslash next to a glob, raises `UnsupportedFeatureError` | **archivey** | The include-mask matcher over-matches those shapes against unrar 7.00; using it to skip used to report a valid archive as truncated. Basename globs without `\` still demux. Exact fidelity is §10 #18 |
+| Opening a compressed member whose stored name has a glob in a directory component, or a backslash, raises `UnsupportedFeatureError` | **archivey** | The include-mask matcher over-matches directory globs against unrar 7.00, and Windows `unrar` treats `\` as a separator so a Linux literal-backslash name emits nothing. Basename globs without `\` still demux. Exact fidelity is §10 #18 |
 | Reading a glob-named member decompresses every earlier match, including on a nonsolid archive | **library** / **archivey** | `unrar -n./a*.txt` concatenates matches. `AccessCost.DIRECT` does not predict that; `_track_decompressed` records the bytes after the fact |
 
 ## 6. Decisions
@@ -649,7 +650,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | A solid pass spawns `unrar` only on the first read | `::test_solid_pass_spawns_unrar_only_on_the_first_read` |
 | Hostile member names (`-inul`, `@atfile`) read **their own** bytes, RAR4 and RAR5 | `::test_hostile_member_name_reads_its_own_bytes` |
 | A wildcard member name reads its own bytes, including the solid prefix-skip case | `::test_wildcard_member_name_reads_its_own_bytes`, `::test_wildcard_solid_stream_members_reads_all`, `::test_seekable_wildcard_respawn_still_skips_glob_prefix` |
-| A directory-component glob or a backslash in a glob name is a typed refusal; `-ver` history is omitted from the skip unless the target is a history row | `::test_wildcard_dirglob_and_backslash_names_are_refused`, `::test_wildcard_ver_live_glob_skips_history_rows`, `::test_unrar_glob_demux_ok_basename_only` |
+| A directory-component glob or a backslash in the stored name is a typed refusal; `-ver` history is omitted from the skip unless the target is a history row | `::test_wildcard_dirglob_and_backslash_names_are_refused`, `::test_wildcard_ver_live_glob_skips_history_rows`, `::test_unrar_glob_demux_ok_basename_only` |
 | Hostile prefixes and glob names become a `-n./` mask; `[]` stays literal in the skip | `::test_unrar_member_include_switch_builds_n_mask`, `::test_unrar_mask_match_treats_brackets_as_literal` |
 | `seekable_members=True` respawns named `unrar` on a backward seek; stored direct-slice does not; default route stays a pipe | `::test_seekable_members_respawns_unrar_on_backward_seek`, `::test_seekable_members_does_not_respawn_on_stored_direct_slice`, `::test_unrar_route_is_not_seekable_by_default`, `::test_unrar_respawn_overrun_probe_sees_trailing_bytes`, `::test_unrar_respawn_seek_end_does_not_drain_or_respawn`, `::test_unrar_respawn_failed_seek_leaves_position`, `::test_unrar_respawn_boundary_read_is_one_byte` |
 | A solid later-member rewind is loud without lowering the global threshold; a live `unrar` survives close+respawn | `::test_seekable_unrar_emits_stream_rewind`, `::test_rewind_warning_min_redecode_bytes_is_a_cost_floor`, `::test_seekable_unrar_respawns_while_process_still_running` |
