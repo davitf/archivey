@@ -6,6 +6,7 @@ import dataclasses
 import io
 import shutil
 import struct
+import subprocess
 import time
 import zlib
 from pathlib import Path
@@ -29,11 +30,12 @@ from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
+    RarMemberInfo,
     _decode_rar3_unicode_name,
     load_vint,
     parse_rar_archive,
 )
-from archivey.types import HashAlgorithm, MemberType
+from archivey.types import ArchiveMember, HashAlgorithm, MemberType
 from tests.conftest import requires, requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -89,6 +91,51 @@ def _fixture(name: str) -> Path:
     if not path.is_file():
         pytest.skip(f"missing vendored fixture {name}")
     return path
+
+
+def _named_unrar_p_bytes(path: Path, member: str) -> bytes:
+    """Named ``unrar p`` stdout for ``member``.
+
+    Goes through ``rar_unrar.open_unrar_p`` so this is the oracle, outside the
+    ``rar_reader`` spy — a library spawn would otherwise be counted as ours.
+
+    Requires exit 0: a no-match is rc 10 with empty stdout, which is not
+    "the link emitted nothing".
+    """
+    proc, stdout = rar_unrar.open_unrar_p(path, member=member)
+    try:
+        data = stdout.read()
+    finally:
+        stdout.close()
+        try:
+            rc = proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            rar_unrar.terminate_unrar(proc)
+            raise
+    assert rc == 0, f"unrar p member={member!r} exited {rc} (10 is no-match)"
+    return data
+
+
+def _assert_solid_link_emission(
+    path: Path, member: ArchiveMember, *, rar5: bool
+) -> None:
+    """Packed/unpacked sizes do not predict ``unrar p``; ``is_payload_file`` does."""
+    raw = member._raw
+    assert isinstance(raw, RarMemberInfo)
+    assert raw.is_payload_file() is False
+    assert member.size is not None and member.size > 0
+    if rar5:
+        assert member.compressed_size == 0
+    else:
+        assert member.compressed_size is not None and member.compressed_size > 0
+    assert _named_unrar_p_bytes(path, member.name) == b""
+
+
+@requires_binary("unrar")
+def test_named_unrar_p_bytes_rejects_no_match() -> None:
+    """A no-match is empty stdout at rc 10 — not "the link emitted nothing"."""
+    with pytest.raises(AssertionError, match="exited 10"):
+        _named_unrar_p_bytes(_fixture("symlinks_solid__.rar"), "NO_SUCH_MEMBER_xyz.txt")
 
 
 @requires_binary("unrar")
@@ -431,13 +478,58 @@ def test_seekable_members_does_not_respawn_on_stored_direct_slice(
     "name",
     ["symlinks_solid__.rar", "symlinks_solid__rar4.rar"],
 )
-def test_solid_symlink_demux_and_link_targets(name: str) -> None:
-    with open_archive(_fixture(name)) as archive:
+def test_solid_symlink_demux_and_link_targets(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Solid demux skips links; packed vs unpacked sizes differ by generation.
+
+    Measured on this pair: RAR5 links are packed 0 / unpacked 6–12 / emit 0;
+    RAR4 (old on-disk family) links are packed 6–12 / unpacked 6–12 / emit 0.
+    ``is_payload_file()`` is the predictor. The ``__rar4`` archive is RAR3-family;
+    its link members are stored M0 (``compress_size == file_size``). There is no
+    RAR 1.5/2.x solid-symlink fixture in the tree.
+    """
+    path = _fixture(name)
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(archive_path: Path, **kwargs: object):
+        spawns.append(kwargs.get("member"))
+        return original(archive_path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
+    with open_archive(path) as archive:
         assert archive.info.is_solid is True
+        rar5 = archive.info.format_version == "5"
         by_name = {m.name: m for m in archive.members()}
         assert by_name["symlink_to_file1.txt"].type is MemberType.SYMLINK
         assert by_name["symlink_to_file1.txt"].link_target == "file1.txt"
         assert by_name["subdir/link_to_file1.txt"].link_target == "../file1.txt"
+        # Listing and ``_ensure_link_target`` must not take the payload pipe.
+        assert spawns == []
+
+        links = [m for m in archive.members() if m.type is MemberType.SYMLINK]
+        assert {m.name for m in links} == {
+            "symlink_to_file1.txt",
+            "subdir/link_to_file1.txt",
+            "subdir_link",
+            "subdir_link_with_slash",
+        }
+        # Positive control: the oracle can produce bytes, so empty link stdout
+        # is not a silent no-match.
+        assert _named_unrar_p_bytes(path, "file1.txt") == b"Hello, world!"
+        for member in links:
+            _assert_solid_link_emission(path, member, rar5=rar5)
+            raw = member._raw
+            assert isinstance(raw, RarMemberInfo)
+            if not rar5:
+                # Stored M0. Fails if a regeneration starts compressing targets.
+                assert raw.compress_size == raw.file_size
+
+        # Follow the link: named ``unrar p`` is the target file, not the symlink.
+        assert archive.read("symlink_to_file1.txt") == b"Hello, world!"
+        assert spawns == ["file1.txt"]
 
         payload_names: list[str] = []
         pipe_bytes = 0
@@ -455,18 +547,42 @@ def test_solid_symlink_demux_and_link_targets(name: str) -> None:
                     MemberType.HARDLINK,
                 )
         # Only payload FILE members advance the unrar p pipe.
+        # None is the unnamed solid ALL-pipe the sequential pass takes.
         assert payload_names == ["file1.txt"]
         assert pipe_bytes == 13
+        assert spawns == ["file1.txt", None]
 
 
 @requires_binary("unrar")
-def test_solid_hardlink_demux_and_targets() -> None:
-    with open_archive(_fixture("hardlinks_solid__.rar")) as archive:
+def test_solid_hardlink_demux_and_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RAR5 solid hardlinks match RAR5 symlinks: packed 0 / unpacked > 0 / emit 0."""
+    path = _fixture("hardlinks_solid__.rar")
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(archive_path: Path, **kwargs: object):
+        spawns.append(kwargs.get("member"))
+        return original(archive_path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
+    with open_archive(path) as archive:
         assert archive.info.is_solid is True
+        assert archive.info.format_version == "5"
         by_name = {m.name: m for m in archive.members()}
         assert by_name["subdir/hardlink_to_file1.txt"].type is MemberType.HARDLINK
         assert by_name["subdir/hardlink_to_file1.txt"].link_target == "file1.txt"
         assert by_name["hardlink_to_file2.txt"].link_target == "subdir/file2.txt"
+        assert spawns == []
+
+        hardlinks = [m for m in archive.members() if m.type is MemberType.HARDLINK]
+        assert {m.name for m in hardlinks} == {
+            "subdir/hardlink_to_file1.txt",
+            "hardlink_to_file2.txt",
+        }
+        assert _named_unrar_p_bytes(path, "file1.txt") == b"Hello 1!"
+        for member in hardlinks:
+            _assert_solid_link_emission(path, member, rar5=True)
 
         payloads = {
             member.name: stream.read()
@@ -478,6 +594,8 @@ def test_solid_hardlink_demux_and_targets() -> None:
             "subdir/file2.txt": b"Hello 2!",
         }
         assert archive.read("subdir/hardlink_to_file1.txt") == b"Hello 1!"
+        # None is the unnamed solid ALL-pipe; file1.txt is the followed target.
+        assert spawns == [None, "file1.txt"]
 
 
 @requires("cryptography")

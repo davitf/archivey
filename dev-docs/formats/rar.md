@@ -518,8 +518,16 @@ RAR-specific only. General extraction and name hazards are §2.4.
   wrong for RAR5; the only correct predictor is `unrar`'s own semantic rule — print
   regular-file data, skip directories, links and copies — which `is_payload_file()`
   re-implements. Per-member digest verification is the backstop, so a desync surfaces as a
-  checksum failure rather than as silent wrong data, and pinning the emission rule per
-  generation is the named hardening ([`open-issues.md`](../open-issues.md) P6).
+  checksum failure rather than as silent wrong data. Both generations of the
+  `symlinks_solid__` pair, and RAR5 hardlinks, are pinned in §8. The `__rar4`
+  archive is RAR3-family (`-ma4`); only its stored link members declare extract
+  version 20 (RAR 2.0). The RARLAB writer stores those targets M0 — it does not
+  produce a compressed (LZ-data) RAR3 symlink target, which is why that case is
+  not in the fixtures. Residual is unfixtured existing kinds — `FILE_COPY`
+  (RAR5 redirect type 5), Windows symlink, Windows junction — and future kinds
+  whose emission `is_payload_file()` gets wrong
+  ([`open-issues.md`](../open-issues.md) P6). A later reader must not conclude
+  the current kinds are all pinned.
 - **A stream source materializes the archive to disk.** The temp file is `0600` and the temp
   volume directory `0700`, and both are removed on close; the exposure is disk space and
   lifetime, not readability by other users. The unsignalled cost is P11.
@@ -662,6 +670,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Tweaked digests kept out of `hashes`, and BLAKE2sp verified / cross-checked against `unrar` | `::test_blake2sp_only_hash`, `::test_blake2sp_verified_no_unverifiable_diagnostic`, `::test_blake2sp_corrupt_payload_raises`, `::test_blake2sp_unrar_oracle_crosscheck` |
 | RAR5 redirect digests dropped without losing RAR4's genuine ones | `tests/test_review_simplicity_consistency.py::test_rar4_link_digests_survive_the_rar5_fix`, `tests/test_corpus_sweep.py::test_corpus_conformance` (8 RAR entries) |
 | Solid symlink / hardlink demux does not consume pipe bytes | `tests/test_rar_reader.py::test_solid_symlink_demux_and_link_targets`, `::test_solid_hardlink_demux_and_targets` |
+| Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False | `::test_solid_symlink_demux_and_link_targets` (the `symlinks_solid__` pair; `__rar4` links are stored M0), `::test_solid_hardlink_demux_and_targets` (RAR5 hardlinks), `::test_named_unrar_p_bytes_rejects_no_match`. No RAR 1.5/2.x solid-symlink fixture. Unfixtured existing kinds: `FILE_COPY` (RAR5 redirect type 5), Windows symlink, junction |
 | File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned | `::test_file_version_list_and_read`, `::test_file_version_extract_all_skips_history`, `::test_file_version_solid_demux_aligned` |
 | Volume sets (`partN` and `.rNN`), stream volumes, and refusal of an incomplete or later-first set | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_raises`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub` |
 | RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection | `tests/test_rar_reader.py::test_rar15_and_rar2_list_and_read`, `::test_extract_version_20_payload_accepted` |
@@ -751,14 +760,13 @@ rest of the page keep resolving. Closed so far: **#1** the RAR3 name-decode boun
 respawns named `unrar` on a backward seek; **#3** wildcard member names whose globs are
 confined to the basename (no backslash) read via the `-n` mask plus a skip of other
 matches — directory-component globs and backslash names stay refused, carried by **#18**;
-**#13** `close()` chaining and **#14**
+**#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#13** `close()` chaining and **#14**
 shared FILETIME ([#291](https://github.com/davitf/archivey/pull/291)); and **#15** `_live_unrar`,
 deleted outright when [#293](https://github.com/davitf/archivey/pull/293) moved the
 single-live-stream gate ahead of the spawn it was a backstop for.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
-| 4 | **Pin the solid emission policy per generation.** No stored size predicts what `unrar p` prints: RAR5 links are packed 0 / unpacked > 0, RAR4 links are packed > 0 / unpacked > 0, and both emit zero bytes. `is_payload_file()` gets this right incidentally, untested against RAR3 link members | Cheapest high-value item here — a test over the `symlinks_solid__` pair in both generations turns incidental correctness into pinned correctness. `open-issues.md` P6 | §1, §4 |
 | 5 | **Use the `QO` quick-open record when present**, falling back to the walk when it is absent or fails to validate. It is a tail SERVICE block holding copies of the file headers, and today it is skipped — an archive that has one costs one seek *more* to list, not 40 fewer (§1). Needs a decision on trust first: it is duplicate attacker-controlled metadata, so either it is validated against the real headers (which costs the walk it was meant to save) or listing and extraction can be made to disagree | Turns the `INDEXED` claim from arguable into true, and is the format's own answer to the walk | §1, §7 |
 | 6 | **Signal the stream-source copy** (P11), and consider bounding it to one compressed member via a synthetic single-member archive rather than only relocating it (§7) | The largest hidden cost in the library is in neither `diagnostics` nor `cost.notes`. `open-issues.md` P11 | §5, §7 |
 | 7 | **Enforce an `unrar` version floor**, or stop claiming one. Identification is a banner check with no version parse, though the version is right there in the banner we already read | An ancient RARLAB build is accepted and then fails per member instead of at identification | At a glance |
