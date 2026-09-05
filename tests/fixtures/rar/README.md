@@ -51,6 +51,9 @@ provisioned Linux laptop; they do not run on CI.
 | `test_sfx.py::test_a_real_sfx_archive_auto_opens` | `rar a -sfx` — a real ~250 KB stub, not a hand-rolled `MZ` |
 | `test_sfx.py::test_auto_open_matches_an_explicitly_sliced_stream[rar]` | same payload as the stub test |
 | `test_volumes.py::test_multi_volume_rar_real_roundtrip` | live `rar a -v400b`; listing/read of committed volumes is already covered by `tinyvol*` above |
+| `test_rar_reader.py::test_listing_qo_skip_count_does_not_scale_with_member_count` | live `rar a -qo+`; skip count must not grow with member count |
+| `test_rar_reader.py::test_qo_listing_stored_read_and_comment` | live `rar a -qo+ -z`; stored slice plus archive comment from the QO table |
+| `test_rar_reader.py::test_unreadable_qo_falls_back_to_file_walk` | live `rar a -qo+`, then a flipped QO payload byte |
 
 Committing a small SFX payload (and a real `-sfx` stub) the way this directory
 already does for volumes would close the gap. Tracked in `dev-docs/IDEAS.md`.

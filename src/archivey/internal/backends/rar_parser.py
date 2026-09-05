@@ -14,7 +14,10 @@ On-disk layout this module walks::
           each: CRC16 | type | flags | header_size | [body] | [packed add_size]
         RAR5: vint-framed MAIN / FILE / SERVICE / ENCRYPTION / ENDARC
           optional encryption block before encrypted headers
+          optional MAIN locator extra → QO SERVICE (header copies at the tail)
     FILE rows point at packed bytes after the header (``data_offset``).
+    When a stored unencrypted QO is reachable from the locator, listing is
+    filled from those copies (same table extract reads); otherwise header-to-header.
 
 ``RarArchive.version`` uses **4 for the whole RAR3-on-disk family** (1.5/2.x/3.x) and
 **5 for RAR5** — not "RAR 4.x product version". Multi-volume sets are merged by
@@ -31,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import struct
 import zlib
 from collections.abc import Sequence
@@ -140,6 +144,15 @@ _RAR5_XFILE_TIME = 3
 _RAR5_XFILE_VERSION = 4
 _RAR5_XFILE_REDIR = 5
 _RAR5_XFILE_OWNER = 6
+
+_RAR5_MHEXTRA_LOCATOR = 1
+_RAR5_MHEXTRA_LOCATOR_QLIST = 0x01
+_RAR5_QO_NAME = "QO"
+_RAR5_CMT_NAME = "CMT"
+# Stored QO is copies of FILE headers (~50–200 B each). A 16 MiB cap is well
+# above a full table at the parser member ceiling with typical headers; larger
+# is treated as unreadable so a hostile packed-size cannot force a 2 GiB read.
+_RAR5_QO_PAYLOAD_MAX = 16 * 1024 * 1024
 
 _RAR5_XTIME_UNIXTIME = 0x01
 _RAR5_XTIME_HAS_MTIME = 0x02
@@ -1363,6 +1376,273 @@ class _Rar5HdrEnc:
     cached_key: bytes | None = None
 
 
+def _rar5_locator_qopen_abs(
+    hdata: bytes, extra_size: int, header_offset: int
+) -> int | None:
+    """Absolute offset of the QO SERVICE header from MAIN extra 0x01, or None.
+
+    Locator field 0 means the reserved vint had no room for the real offset
+    (technote: ignore). The stored value is the distance from MAIN to QO.
+    """
+    if extra_size <= 0:
+        return None
+    extra_start = len(hdata) - extra_size
+    if extra_start < 0:
+        return None
+    pos = extra_start
+    while pos < len(hdata) - 1:
+        try:
+            xsize, pos = load_vint(hdata, pos)
+        except CorruptionError:
+            break
+        if xsize < 0 or pos + xsize > len(hdata):
+            break
+        xdata, pos = _load_bytes(hdata, xsize, pos)
+        try:
+            xtype, xp = load_vint(xdata, 0)
+        except CorruptionError:
+            continue
+        if xtype != _RAR5_MHEXTRA_LOCATOR:
+            continue
+        try:
+            flags, xp = load_vint(xdata, xp)
+            if not (flags & _RAR5_MHEXTRA_LOCATOR_QLIST):
+                return None
+            offset, xp = load_vint(xdata, xp)
+        except CorruptionError:
+            return None
+        if offset == 0:
+            return None
+        abs_off = header_offset + offset
+        if abs_off < 0 or abs_off > _MAX_SEEK:
+            return None
+        return abs_off
+    return None
+
+
+def _try_consume_rar5_cmt(source: BinaryIO) -> str | None:
+    """If the next block is a stored unencrypted CMT SERVICE, consume it.
+
+    Otherwise rewind so the caller can parse that block as FILE/SERVICE.
+    Header-encrypted archives do not take the QO shortcut, so this helper
+    never sees a decrypted header stream.
+    """
+    saved = source.tell()
+    try:
+        parsed = _read_rar5_block(source)
+        if parsed is None:
+            source.seek(saved)
+            return None
+        (
+            block_type,
+            block_flags,
+            hdata,
+            pos,
+            _header_offset,
+            _header_size,
+            data_offset,
+            add_size,
+            extra_size,
+        ) = parsed
+        if block_type != _RAR5_SERVICE:
+            source.seek(saved)
+            return None
+        member = _parse_rar5_file_block(
+            hdata,
+            pos,
+            block_flags=block_flags,
+            extra_size=extra_size,
+            header_offset=_header_offset,
+            header_size=_header_size,
+            data_offset=data_offset,
+            add_size=add_size,
+            volume_index=0,
+        )
+        if (
+            member.filename != _RAR5_CMT_NAME
+            or member.compress_type != _RAR3_M0
+            or member.split_before
+            or member.split_after
+            or member.compress_size <= 0
+            or member.is_encrypted
+        ):
+            source.seek(saved)
+            return None
+        source.seek(data_offset)
+        raw = _require_exact(source, member.file_size, "RAR5 comment")
+        _seek_after_packed(source, data_offset, add_size)
+        return raw.split(b"\0", 1)[0].decode("utf8", "replace")
+    except PackageNotInstalledError:
+        raise
+    except (CorruptionError, TruncatedError, EncryptionError, OSError):
+        source.seek(saved)
+        return None
+
+
+def _parse_rar5_qo_payload(
+    payload: bytes, qo_header_offset: int, volume_index: int
+) -> list[RarMemberInfo] | None:
+    """Parse QO cache structures into FILE members, or None if unusable."""
+    members: list[RarMemberInfo] = []
+    pos = 0
+    n = len(payload)
+    while pos < n:
+        if not any(payload[pos:]):
+            # Trailing zeros: AES/size overprovisioning. Stop, do not try to
+            # parse a CRC=0 record out of the pad.
+            break
+        if n - pos < 5:
+            return None
+        try:
+            crc, pos = _load_le32(payload, pos)
+            body_size, pos_after_size = load_vint(payload, pos)
+        except CorruptionError:
+            return None
+        size_bytes = payload[pos:pos_after_size]
+        pos = pos_after_size
+        if body_size <= 0 or body_size > _RAR5_MAX_HEADER or pos + body_size > n:
+            return None
+        body = payload[pos : pos + body_size]
+        pos += body_size
+        if _crc32(size_bytes + body) != crc:
+            return None
+        try:
+            bp = 0
+            # UnRAR reads this flags vint and does not act on it.
+            _flags, bp = load_vint(body, bp)
+            offset_from_qo, bp = load_vint(body, bp)
+            data_size, bp = load_vint(body, bp)
+        except CorruptionError:
+            return None
+        if data_size < 0 or bp + data_size > len(body):
+            return None
+        cached = body[bp : bp + data_size]
+        if offset_from_qo > qo_header_offset:
+            return None
+        original_offset = qo_header_offset - offset_from_qo
+        bio = io.BytesIO(cached)
+        try:
+            parsed = _read_rar5_block(bio)
+        except (CorruptionError, TruncatedError):
+            return None
+        if parsed is None:
+            return None
+        (
+            block_type,
+            block_flags,
+            hdata,
+            hpos,
+            header_offset_rel,
+            header_size,
+            data_offset_rel,
+            add_size,
+            extra_size,
+        ) = parsed
+        if block_type != _RAR5_FILE:
+            continue
+        try:
+            member = _parse_rar5_file_block(
+                hdata,
+                hpos,
+                block_flags=block_flags,
+                extra_size=extra_size,
+                header_offset=original_offset + header_offset_rel,
+                header_size=header_size,
+                data_offset=original_offset + data_offset_rel,
+                add_size=add_size,
+                volume_index=volume_index,
+            )
+        except (CorruptionError, TruncatedError):
+            return None
+        _append_member(members, member)
+    if not members:
+        return None
+    return members
+
+
+def _try_list_via_rar5_qo(
+    source: BinaryIO,
+    *,
+    qopen_abs: int,
+    volume_index: int,
+) -> list[RarMemberInfo] | None:
+    """Seek to QO and parse FILE copies. None means the caller should walk."""
+    try:
+        source.seek(qopen_abs)
+    except (OSError, OverflowError):
+        return None
+    try:
+        parsed = _read_rar5_block(source)
+        if parsed is None:
+            return None
+        (
+            block_type,
+            block_flags,
+            hdata,
+            pos,
+            header_offset,
+            header_size,
+            data_offset,
+            add_size,
+            extra_size,
+        ) = parsed
+        if block_type != _RAR5_SERVICE:
+            return None
+        member = _parse_rar5_file_block(
+            hdata,
+            pos,
+            block_flags=block_flags,
+            extra_size=extra_size,
+            header_offset=header_offset,
+            header_size=header_size,
+            data_offset=data_offset,
+            add_size=add_size,
+            volume_index=volume_index,
+        )
+        if (
+            member.filename != _RAR5_QO_NAME
+            or member.compress_type != _RAR3_M0
+            or member.is_encrypted
+            or member.split_before
+            or member.split_after
+            or member.file_size <= 0
+            or member.file_size != member.compress_size
+            or member.file_size > _RAR5_QO_PAYLOAD_MAX
+        ):
+            return None
+        source.seek(data_offset)
+        payload = _require_exact(source, member.file_size, "RAR5 QO")
+        qo_members = _parse_rar5_qo_payload(payload, header_offset, volume_index)
+        if qo_members is None:
+            return None
+        _seek_after_packed(source, data_offset, add_size)
+        return qo_members
+    except (CorruptionError, TruncatedError, OSError, OverflowError):
+        return None
+
+
+def _adopt_rar5_file_members(
+    members: list[RarMemberInfo],
+    incoming: list[RarMemberInfo],
+) -> bool:
+    """Append FILE members with the same split-merge as the header walk.
+
+    Returns whether any member has ``split_after`` (volume continuation).
+    """
+    needs_next = False
+    for member in incoming:
+        if member.split_before:
+            if members:
+                _merge_split_member(members[-1], member)
+            else:
+                _append_member(members, member)
+        else:
+            _append_member(members, member)
+        if member.split_after:
+            needs_next = True
+    return needs_next
+
+
 def _parse_rar5(
     source: BinaryIO,
     *,
@@ -1384,6 +1664,7 @@ def _parse_rar5(
     # reported as EncryptionError rather than CorruptionError (see _check_rar5_password).
     password_verified = False
     needs_next_volume = False
+    listed_via_qo = False
 
     while True:
         header_fd: _Readable = source
@@ -1454,6 +1735,27 @@ def _parse_rar5(
             is_solid = bool(main_flags & _RAR5_MAIN_SOLID)
             is_volume = bool(main_flags & _RAR5_MAIN_ISVOL)
             _seek_after_packed(source, data_offset, add_size)
+            # Header-encrypted QO stores IV+ciphertext header copies and
+            # file-encrypts the QO payload; reconstructed data_offset then
+            # misses AES padding. Treat that QO as unreadable (FILE walk).
+            if hdr_enc is None:
+                qopen_abs = _rar5_locator_qopen_abs(hdata, extra_size, header_offset)
+                if qopen_abs is not None:
+                    cmt = _try_consume_rar5_cmt(source)
+                    if cmt is not None:
+                        comment = cmt
+                    resume_pos = source.tell()
+                    qo_members = _try_list_via_rar5_qo(
+                        source,
+                        qopen_abs=qopen_abs,
+                        volume_index=volume_index,
+                    )
+                    if qo_members is not None:
+                        if _adopt_rar5_file_members(members, qo_members):
+                            needs_next_volume = True
+                        listed_via_qo = True
+                        continue
+                    source.seek(resume_pos)
             continue
 
         if block_type == _RAR5_ENCRYPTION:
@@ -1504,8 +1806,11 @@ def _parse_rar5(
                 add_size=add_size,
                 volume_index=volume_index,
             )
-            if block_type == _RAR5_FILE:
+            if block_type == _RAR5_FILE and not listed_via_qo:
                 # File-version history rows (extra 0x04) are kept as members.
+                # After a trusted QO table, ignore FILE headers (QO is the
+                # catalog; UnRAR places QO before RR/ENDARC, so this is only
+                # a crafted-archive path).
                 if member.split_before:
                     if members:
                         _merge_split_member(members[-1], member)

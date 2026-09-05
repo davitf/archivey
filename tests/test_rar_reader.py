@@ -2470,16 +2470,8 @@ def test_open_unrar_p_missing_stdout_pipe_is_typed(
     assert proc.killed is True
 
 
-def test_listing_walks_header_to_header_rather_than_reading_an_index(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """formats/rar.md §1: listing seeks once per member; there is no index region.
-
-    Pinned as a *shape* (seeks scale with member count), not an exact count, because
-    the point is the scaling: ZIP reads one contiguous central directory in a constant
-    number of seeks whatever the member count. If RAR ever learns to read the ``QO``
-    quick-open record (§10 #5) this stops being true and the page must change with it.
-    """
+def _count_packed_skips(path: Path) -> tuple[int, int]:
+    """Return ``(skip_count, member_count)`` for one ``parse_rar_archive`` call."""
     from archivey.internal.backends import rar_parser
 
     skips = 0
@@ -2490,21 +2482,120 @@ def test_listing_walks_header_to_header_rather_than_reading_an_index(
         skips += 1
         return original(source, data_offset, add_size)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(rar_parser, "_seek_after_packed", counting)
+    rar_parser._seek_after_packed = counting  # type: ignore[assignment]
+    try:
+        with path.open("rb") as handle:
+            archive = rar_parser.parse_rar_archive(handle)
+        return skips, len(archive.members)
+    finally:
+        rar_parser._seek_after_packed = original
 
-    small = _fixture("basic_nonsolid__.rar")
-    with small.open("rb") as handle:
-        archive = rar_parser.parse_rar_archive(handle)
-    assert skips >= len(archive.members), (
-        f"{skips} data skips for {len(archive.members)} members — expected at least one "
+
+def _rar_a(
+    tmp_path: Path, name: str, files: dict[str, bytes], extra: list[str]
+) -> Path:
+    src = tmp_path / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    names: list[str] = []
+    for rel, content in files.items():
+        p = src / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(content)
+        names.append(rel)
+    out = tmp_path / name
+    result = subprocess.run(
+        ["rar", "a", "-idq", "-ep1", *extra, str(out), *names],
+        cwd=src,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0 or not out.is_file():
+        pytest.skip(f"rar cannot build {name}: {result.stderr!r}")
+    return out
+
+
+def test_listing_without_qo_walks_header_to_header() -> None:
+    """formats/rar.md §1: no QO → listing seeks once per member (walk)."""
+    small_skips, small_n = _count_packed_skips(_fixture("basic_nonsolid__.rar"))
+    assert small_skips >= small_n, (
+        f"{small_skips} data skips for {small_n} members — expected at least one "
         "per member, i.e. a header-to-header walk"
     )
+    large_skips, large_n = _count_packed_skips(_fixture("many_list_store__.rar"))
+    assert large_n > 10 * small_n
+    assert large_skips > 10 * small_skips
 
-    # And it scales: a 1000-member archive costs proportionally more, not a constant.
-    small_skips = skips
-    skips = 0
-    large = _fixture("many_list_store__.rar")
-    with large.open("rb") as handle:
-        large_archive = rar_parser.parse_rar_archive(handle)
-    assert len(large_archive.members) > 10 * len(archive.members)
-    assert skips > 10 * small_skips
+
+def test_listing_with_qo_does_not_seek_per_member() -> None:
+    """formats/rar.md §1: QO present → skips do not scale with member count."""
+    corpus = Path(__file__).parent / "fixtures" / "corpus" / "rar" / "large.rar"
+    if not corpus.is_file():
+        pytest.skip("missing corpus large.rar")
+    skips, n = _count_packed_skips(corpus)
+    assert n >= 1
+    # MAIN + QO (+ optional CMT/RR). A FILE walk would also skip each packed
+    # member, so the count would be at least n plus those few service seeks.
+    assert skips < n + 2, (
+        f"{skips} packed skips for {n} members — QO listing should not seek "
+        "once per FILE"
+    )
+    assert skips <= 6
+
+
+@requires_binary("rar")
+def test_listing_qo_skip_count_does_not_scale_with_member_count(tmp_path: Path) -> None:
+    small_files = {f"s{i:02d}.txt": f"s{i}\n".encode() for i in range(8)}
+    large_files = {f"n{i:03d}.txt": f"n{i}\n".encode() for i in range(40)}
+    small = _rar_a(tmp_path / "small", "small.rar", small_files, ["-m0", "-qo+"])
+    large = _rar_a(tmp_path / "large", "large.rar", large_files, ["-m0", "-qo+"])
+    small_skips, small_n = _count_packed_skips(small)
+    large_skips, large_n = _count_packed_skips(large)
+    assert small_n == 8
+    assert large_n == 40
+    assert small_skips < small_n
+    assert large_skips < large_n
+    # Same O(1) shape: 40 members must not cost ~5× the 8-member archive.
+    assert large_skips < small_skips * 2 + 3
+
+
+@requires_binary("rar")
+def test_qo_listing_stored_read_and_comment(tmp_path: Path) -> None:
+    """QO table is what extract reads: stored slice + archive comment still work."""
+    cmt = tmp_path / "cmt.txt"
+    cmt.write_text("hello-comment\n", encoding="utf-8")
+    files = {
+        "a.txt": b"alpha-payload\n",
+        "b.bin": b"\x00\x01\x02" * 10,
+        "c.txt": b"nested\n",
+    }
+    archive_path = _rar_a(
+        tmp_path / "qo",
+        "qo.rar",
+        files,
+        ["-m0", "-qo+", f"-z{cmt}"],
+    )
+    with open_archive(archive_path) as archive:
+        assert archive.info.comment == "hello-comment\n"
+        listed = {m.name: m for m in archive.members() if m.is_file}
+        assert set(listed) == set(files)
+        for name, expected in files.items():
+            assert archive.read(listed[name]) == expected
+
+
+@requires_binary("rar")
+def test_unreadable_qo_falls_back_to_file_walk(tmp_path: Path) -> None:
+    files = {f"f{i}.txt": f"body-{i}\n".encode() for i in range(5)}
+    archive_path = _rar_a(tmp_path / "fb", "fb.rar", files, ["-m0", "-qo+"])
+    data = bytearray(archive_path.read_bytes())
+    # Corrupt the QO payload: the SERVICE name "QO" is unique in a tiny archive.
+    marker = data.find(b"QO")
+    assert marker != -1
+    # Bytes after the QO header are the cache structures; flip a payload byte.
+    data[marker + 20] ^= 0xFF
+    broken = tmp_path / "broken.rar"
+    broken.write_bytes(data)
+    with open_archive(broken) as archive:
+        listed = {m.name for m in archive.members() if m.is_file}
+        assert listed == set(files)
+        assert archive.read("f0.txt") == b"body-0\n"
