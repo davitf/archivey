@@ -14,6 +14,7 @@ import pytest
 
 from archivey import ExtractionStatus, open_archive
 from archivey.cost import AccessCost
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
     ConcurrentAccessError,
@@ -198,6 +199,61 @@ def test_seekable_members_respawns_unrar_on_backward_seek(
             assert stream.read() == expected[5:]
             stream.seek(len(expected) + 100)
             assert stream.read() == b""
+
+
+def test_unrar_respawn_overrun_probe_sees_trailing_bytes() -> None:
+    """Declared-size clamp must not hide extra pipe bytes from fused verify.
+
+    ``read()`` at ``pos == size`` still reaches the inner stream so the one-byte
+    overrun probe can fire. A buffer-and-clamp wrapper would return ``b""``.
+    """
+    payload = b"hello world!!extra"
+    declared = 13
+
+    def spawn() -> io.BytesIO:
+        return io.BytesIO(payload)
+
+    stream = rar_reader._UnrarRespawnStream(spawn, spawn(), size=declared)
+    assert stream.read(declared) == payload[:declared]
+    assert stream.read(1) == payload[declared : declared + 1]
+    stream.seek(0)
+    assert stream.read(declared) == payload[:declared]
+    assert stream.read(1) == payload[declared : declared + 1]
+
+
+def test_unrar_respawn_seek_end_does_not_drain_or_respawn() -> None:
+    """``seek(0, SEEK_END); seek(0)`` before a read must not spawn a second process."""
+    payload = b"hello world!"
+    spawns = 0
+
+    def spawn() -> io.BytesIO:
+        nonlocal spawns
+        spawns += 1
+        return io.BytesIO(payload)
+
+    stream = rar_reader._UnrarRespawnStream(spawn, spawn(), size=len(payload))
+    assert spawns == 1
+    assert stream.seek(0, io.SEEK_END) == len(payload)
+    assert spawns == 1
+    assert stream.seek(0) == 0
+    assert spawns == 1
+    assert stream.read() == payload
+    assert spawns == 1
+
+
+@requires_binary("unrar")
+def test_seekable_unrar_emits_stream_rewind(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backward seek on named unrar is a re-decode; it must be as loud as 7z."""
+    monkeypatch.setattr(
+        "archivey.internal.streams.archive_stream.REWIND_REDECODE_WARN_BYTES", 0
+    )
+    with open_archive(_fixture("basic_solid__.rar"), seekable_members=True) as archive:
+        with archive.open("file1.txt") as stream:
+            stream.read(5)
+            stream.seek(0)
+            assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES in dict(
+                stream.diagnostics.counts
+            )
 
 
 @requires_binary("unrar")

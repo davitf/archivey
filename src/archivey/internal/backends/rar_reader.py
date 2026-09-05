@@ -70,7 +70,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.rar_detect import validate_rar_main_header
 from archivey.internal.registry import register_reader
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
@@ -366,10 +366,16 @@ class _UnrarOwnedStream(DelegatingStream):
 class _UnrarRespawnStream(ReadOnlyIOStream):
     """Seekable view of a named ``unrar p`` pipe.
 
-    The inner handle is a pipe, so a backward seek cannot reposition it. Close it,
-    spawn a fresh process, and skip forward to the target. Forward seeks discard
-    bytes on the live pipe. Past-end seeks do not drain the process; a later read
-    returns empty.
+    The inner handle is a pipe, so a backward seek cannot reposition it. Close it
+    and spawn a fresh process; skip to the logical offset on the next read.
+    Forward seeks do not drain the pipe until a later ``read()`` needs those
+    bytes. Past-end seeks leave the pipe where it is: a read with ``pos > size``
+    is empty, and a read at ``pos == size`` still reaches the pipe so fused
+    verify's one-byte overrun probe can see trailing output.
+
+    ``_pos`` is the logical offset; ``_pipe_pos`` is how far the live process
+    has actually been read. Respawn is keyed on the pipe, so ``seek(0, SEEK_END);
+    seek(0)`` before any read costs nothing.
 
     ``spawn`` must return a stream that owns the process (typically
     ``_UnrarOwnedStream``), so close/respawn reaps it.
@@ -387,6 +393,7 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
         self._inner: BinaryIO | None = inner
         self._size = size
         self._pos = 0
+        self._pipe_pos = 0
 
     def seekable(self) -> bool:
         return True
@@ -407,6 +414,11 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
             self._inner = self._spawn()
         return self._inner
 
+    def _pipe_needed(self, logical: int) -> int:
+        if self._size is None:
+            return logical
+        return min(logical, self._size)
+
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -422,32 +434,48 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
             raise ValueError(f"invalid whence ({whence})")
         if target < 0:
             raise ValueError(f"negative seek position: {target}")
-        pipe_target = target if self._size is None else min(target, self._size)
-        if pipe_target < self._pos:
-            self._close_inner()
+        needed = self._pipe_needed(target)
+        if needed < self._pipe_pos:
+            # Reset the logical/pipe cursor before close: if close maps an
+            # unrar exit to an error, later reads must not label a fresh
+            # process's bytes with the old offset.
             self._pos = 0
-            # Respawn now, not on the next read: seek() is the reopen, matching
-            # other backends' codec-reopen, and the spawn-count tests pin that.
-            if self._size is None or pipe_target < self._size:
+            self._pipe_pos = 0
+            self._close_inner()
+            # Respawn now so a spawn-count after seek() still distinguishes
+            # reopen from "buffer the member". Skip to ``needed`` on read.
+            if self._size is None or needed < self._size:
                 self._ensure()
-        if pipe_target > self._pos:
-            skip_forward(self._ensure(), pipe_target - self._pos)
-            self._pos = pipe_target
         self._pos = target
         return self._pos
+
+    def _sync_pipe(self) -> BinaryIO:
+        inner = self._ensure()
+        want = self._pipe_needed(self._pos)
+        if want > self._pipe_pos:
+            try:
+                skip_forward(inner, want - self._pipe_pos)
+            except EOFError as exc:
+                raise TruncatedError(
+                    f"unrar output ended after {self._pipe_pos} of {self._size} bytes"
+                ) from exc
+            self._pipe_pos = want
+        return inner
 
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        if self._size is not None and self._pos >= self._size:
+        if self._size is not None and self._pos > self._size:
             return b""
-        inner = self._ensure()
-        if self._size is not None:
+        inner = self._sync_pipe()
+        # At declared size, do not clamp: fused verify probes one extra byte.
+        if self._size is not None and self._pos < self._size:
             remaining = self._size - self._pos
             if n < 0 or n > remaining:
                 n = remaining
         data = inner.read(n)
         self._pos += len(data)
+        self._pipe_pos += len(data)
         return data
 
     def close(self) -> None:
@@ -977,6 +1005,7 @@ class RarReader(BaseArchiveReader):
         member: ArchiveMember,
         *,
         track_output: bool = True,
+        rewind_warning: RewindWarning | None = None,
     ) -> ArchiveStream:
         hashes, size, transforms, verify_member = self._payload_verify_args(member)
         return self._wrap_member_stream(
@@ -988,6 +1017,7 @@ class RarReader(BaseArchiveReader):
             expected_size=size,
             digest_transforms=transforms,
             verify_member=verify_member,
+            rewind_warning=rewind_warning,
         )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
@@ -1075,17 +1105,24 @@ class RarReader(BaseArchiveReader):
                 owned.close()
                 raise
 
-        # Spawn now so open() still raises password/corruption errors rather than
-        # deferring them to the first read (the lazy stream_members path is separate).
+        # Spawn now so PackageNotInstalledError / a missing stdout pipe surface at
+        # open(), and so a spawn-count right after open() is 1 (the live-stream
+        # gate's "refused second open does not spawn" pin). Password and
+        # corruption still map on the completing read — unrar's exit is only
+        # known after the process ends.
         inner = _spawn()
         try:
+            rewind: RewindWarning | None = None
             if self._seek_declared():
                 inner = _UnrarRespawnStream(
                     _spawn, inner, size=_member_stream_size(member)
                 )
+                rewind = RewindWarning(codec_name="rar", suggest_install=False)
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
             # Fused verify in _wrap_payload_stream bounds/checks declared size + digests.
-            return self._wrap_payload_stream(inner, member, track_output=False)
+            return self._wrap_payload_stream(
+                inner, member, track_output=False, rewind_warning=rewind
+            )
         except BaseException:
             inner.close()
             raise
