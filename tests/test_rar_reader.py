@@ -1521,11 +1521,19 @@ def test_listing_and_stored_reads_need_no_unrar(
         for member_name, expected in _BASIC_CONTENTS.items():
             assert archive.read(files[member_name]) == expected
 
-    # Compressed legacy comments are optional metadata: no binary leaves
-    # them unset but must not turn a successful listing into an open failure.
+    # The archive comment is compressed, so no binary leaves it unset without
+    # turning a successful listing into an open failure. Its member comments
+    # are stored old-style blocks and remain available natively.
     with open_archive(_fixture("rar15-comment.rar")) as archive:
         assert archive.info.comment is None
-        assert all(member.comment is None for member in archive.members())
+        assert {
+            member.name: member.comment
+            for member in archive.members()
+            if member.is_file
+        } == {
+            "FILE1.TXT": "file1comment -----",
+            "FILE2.TXT": "file2comment -----",
+        }
 
     with open_archive(_fixture("symlinks_solid__rar4.rar")) as archive:
         assert [m.name for m in archive.members()]  # listing still works
