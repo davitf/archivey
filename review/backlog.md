@@ -35,6 +35,16 @@ round (`debt-ledger`, `performance`). They differ in character and timing:
 flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. See
 [`STATUS.md`](STATUS.md).
 
+## Parked from PR reviews
+
+- **#300 F4 / D3** — `accessed_utc()` / `created_utc()`. RAR4 is the first naive
+  `accessed`/`created` in the library; `modified_utc()` exists because `modified`
+  is sometimes naive. Public API on `types.py`; follow-up, not the RAR parser PR.
+- **#300 F6 / D2** — `format-rar` still specifies `modified` only. Wait until D1
+  (`created` meaning for Unix-written RAR) is settled, then add two scenario rows.
+- **#300 F5 secondary** — `tests/sample_archives.py` has no atime/ctime notion, so
+  the format×shape sweep cannot cover xtime today.
+
 ## Parked from archived deep reviews (2026-07 / 2026-08)
 
 Items consciously deferred when archiving deep reviews. Do not re-open those

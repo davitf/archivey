@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,8 @@ _ORACLE_FIXTURES = [
     pytest.param("basic_solid__rar4.rar", None, id="solid-rar4"),
     pytest.param("encryption__.rar", "password", id="enc-rar5"),
     pytest.param("encrypted_header__.rar", "header_password", id="hdr-rar5"),
+    pytest.param("xtime__.rar", None, id="xtime-rar5"),
+    pytest.param("xtime__rar4.rar", None, id="xtime-rar4"),
 ]
 
 
@@ -31,6 +34,28 @@ def _fixture(name: str) -> Path:
     if not path.is_file():
         pytest.skip(f"missing vendored fixture {name}")
     return path
+
+
+def _norm_ts(dt: datetime) -> datetime:
+    """Truncate to microseconds (we drop RAR5 ns); keep naive vs aware."""
+    dt = dt.replace(microsecond=dt.microsecond)
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _assert_timestamps_match(member, info) -> None:
+    for field, native, oracle in (
+        ("modified", member.modified, getattr(info, "mtime", None)),
+        ("created", member.created, getattr(info, "ctime", None)),
+        ("accessed", member.accessed, getattr(info, "atime", None)),
+    ):
+        if native is None and oracle is None:
+            continue
+        assert native is not None, f"{field}: native None, rarfile={oracle}"
+        assert oracle is not None, f"{field}: rarfile None, native={native}"
+        n, o = _norm_ts(native), _norm_ts(oracle)
+        assert n == o, f"{field}: native={n} rarfile={o}"
 
 
 @requires("rarfile")
@@ -85,6 +110,7 @@ def test_native_rar_matches_rarfile_metadata_and_bytes(
             info = oracle_infos[filename]
             assert member.size == info.file_size
             assert native.read(member) == oracle_bytes[filename]
+            _assert_timestamps_match(member, info)
 
 
 @requires("rarfile")

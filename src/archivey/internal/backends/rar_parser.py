@@ -210,8 +210,8 @@ class RarMemberInfo:
     crc32: int | None
     blake2sp_hash: bytes | None
     mtime: datetime | None  # RAR4 naive; RAR5 aware UTC
-    ctime: datetime | None  # same tz convention as mtime; RAR5 0x03 / RAR3 EXTTIME
-    atime: datetime | None
+    ctime: datetime | None  # same tz; Unix RARLAB writer stores st_ctime, not birth
+    atime: datetime | None  # same tz; RAR5 0x03 HAS_ATIME / RAR3 EXTTIME after ctime
     mode: int | None
     host_os: int | None
     flags: int
@@ -1658,7 +1658,9 @@ def _parse_rar5_file_block(
             xdata, pos = _load_bytes(hdata, xsize, pos)
             xtype, xpos = load_vint(xdata, 0)
             if xtype == _RAR5_XFILE_TIME:
-                mtime, ctime, atime = _parse_rar5_xtime(xdata, xpos, mtime)
+                mtime, ctime, atime = _parse_rar5_xtime(
+                    xdata, xpos, mtime, ctime, atime
+                )
             elif xtype == _RAR5_XFILE_ENCRYPTION:
                 file_encryption = _parse_rar5_file_encryption(xdata, xpos)
                 flags |= _RAR3_FILE_PASSWORD
@@ -1738,6 +1740,9 @@ def _apply_rar5_unix_ns(
     """
     if not present:
         return dt, pos
+    if pos + 4 > len(xdata):
+        # Truncated ns word: keep whatever decoded, do not abort the listing.
+        return dt, pos
     nsec, pos = _load_le32(xdata, pos)
     if dt is None:
         return None, pos
@@ -1748,15 +1753,19 @@ def _apply_rar5_unix_ns(
 
 
 def _parse_rar5_xtime(
-    xdata: bytes, pos: int, current: datetime | None
+    xdata: bytes,
+    pos: int,
+    current_mtime: datetime | None,
+    current_ctime: datetime | None = None,
+    current_atime: datetime | None = None,
 ) -> tuple[datetime | None, datetime | None, datetime | None]:
     tflags, pos = load_vint(xdata, pos)
     ldr = _load_windowstime
     if tflags & _RAR5_XTIME_UNIXTIME:
         ldr = _load_unixtime
-    mtime = current
-    ctime: datetime | None = None
-    atime: datetime | None = None
+    mtime = current_mtime
+    ctime = current_ctime
+    atime = current_atime
     if tflags & _RAR5_XTIME_HAS_MTIME:
         mtime, pos = ldr(xdata, pos)
     if tflags & _RAR5_XTIME_HAS_CTIME:

@@ -1135,6 +1135,48 @@ def test_parse_rar5_xtime_mtime_only_leaves_ctime_atime_none() -> None:
     assert atime is None
 
 
+def test_parse_rar5_xtime_second_record_without_flags_keeps_ctime_atime() -> None:
+    """A later 0x03 extra with tflags=0 must not wipe ctime/atime from an earlier one."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR5_XTIME_HAS_ATIME,
+        _RAR5_XTIME_HAS_CTIME,
+        _RAR5_XTIME_HAS_MTIME,
+        _RAR5_XTIME_UNIXTIME,
+        _parse_rar5_xtime,
+    )
+
+    tflags = (
+        _RAR5_XTIME_UNIXTIME
+        | _RAR5_XTIME_HAS_MTIME
+        | _RAR5_XTIME_HAS_CTIME
+        | _RAR5_XTIME_HAS_ATIME
+    )
+    first = bytes([tflags]) + struct.pack(
+        "<III", 1_600_000_000, 1_600_000_200, 1_600_000_100
+    )
+    mtime, ctime, atime = _parse_rar5_xtime(first, 0, None)
+    mtime2, ctime2, atime2 = _parse_rar5_xtime(bytes([0]), 0, mtime, ctime, atime)
+    assert (mtime2, ctime2, atime2) == (mtime, ctime, atime)
+    assert ctime2 is not None
+    assert atime2 is not None
+
+
+def test_parse_rar5_xtime_truncated_ns_does_not_raise() -> None:
+    """HAS_MTIME|UNIXTIME_NS with a FILETIME and no ns word lists, modified=None."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR5_XTIME_HAS_MTIME,
+        _RAR5_XTIME_UNIXTIME_NS,
+        _parse_rar5_xtime,
+    )
+
+    tflags = _RAR5_XTIME_HAS_MTIME | _RAR5_XTIME_UNIXTIME_NS
+    blob = bytes([tflags]) + struct.pack("<II", 0, 0)
+    mtime, ctime, atime = _parse_rar5_xtime(blob, 0, None)
+    assert mtime is None
+    assert ctime is None
+    assert atime is None
+
+
 def test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime() -> None:
     """RAR3 EXTTIME nibbles: >>12 mtime, >>8 ctime, >>4 atime (UnRAR / rarfile)."""
     from archivey.internal.backends.rar_parser import (
