@@ -838,6 +838,113 @@ def test_rar15_and_rar2_list_and_read(name: str, expected: dict[str, bytes]) -> 
             assert archive.read(files[member_name]) == payload
 
 
+@requires("rarfile")
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", ["rar15-comment.rar", "rar202-comment-nopsw.rar"])
+def test_rar15_and_rar2_comments_match_rarfile(name: str) -> None:
+    """Legacy embedded archive and member comments match the reference reader."""
+    rarfile = pytest.importorskip("rarfile")
+    path = _fixture(name)
+    with rarfile.RarFile(path) as oracle:
+        expected_archive_comment = oracle.comment
+        expected_member_comments = {
+            info.filename.replace("\\", "/").rstrip("/"): info.comment
+            for info in oracle.infolist()
+            if not info.is_dir()
+        }
+
+    with open_archive(path) as archive:
+        assert archive.info.comment == expected_archive_comment
+        assert {
+            member.name: member.comment
+            for member in archive.members()
+            if member.is_file
+        } == expected_member_comments
+
+
+def _rar3_old_comment_subblock(text: bytes) -> bytes:
+    """Build an old-style stored COMMENT subblock with its CRC16."""
+    from archivey.internal.backends.rar_parser import _crc32
+
+    comment_body = (
+        struct.pack(
+            "<HBBH",
+            len(text),
+            20,  # RAR 2.0 extract version
+            0x30,  # M0 stored
+            _crc32(text) & 0xFFFF,
+        )
+        + text
+    )
+    header_without_crc = (
+        struct.pack(
+            "<BHH",
+            0x75,  # OLD_COMMENT
+            0,
+            7 + len(comment_body),
+        )
+        + comment_body
+    )
+    return struct.pack("<H", _crc32(header_without_crc) & 0xFFFF) + header_without_crc
+
+
+def test_rar3_stored_old_style_main_comment_needs_no_unrar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stored legacy comment is listed natively with no binary on PATH."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR3_MAIN_COMMENT,
+        _crc32,
+        rar3_main_crc_end,
+    )
+
+    text = b"stored old-style comment"
+    subblock = _rar3_old_comment_subblock(text)
+    flags = _RAR3_MAIN_COMMENT
+    main_body = b"\0" * 6 + subblock
+    main_without_crc = struct.pack("<BHH", 0x73, flags, 7 + len(main_body)) + main_body
+    # Old COMMENT subblocks are inside header_size but outside the MAIN CRC.
+    main_crc = _crc32(main_without_crc[: rar3_main_crc_end(flags) - 2]) & 0xFFFF
+    main_hdr = struct.pack("<H", main_crc) + main_without_crc
+    end_without_crc = struct.pack("<BHH", 0x7B, 0, 7)
+    end_hdr = struct.pack("<H", _crc32(end_without_crc) & 0xFFFF) + end_without_crc
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    with open_archive(io.BytesIO(RAR_ID + main_hdr + end_hdr)) as archive:
+        assert archive.info.comment == text.decode()
+
+
+def test_rar3_service_comment_maps_to_member_comment() -> None:
+    """RAR3's existing solid CMT attachment reaches ArchiveMember.comment."""
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    comment = b"member comment"
+    file_hdr = _rar3_file_block(b"item.txt", flags=0, pack_lo=0, unp_lo=0)
+    service_hdr = _rar3_file_block(
+        b"CMT",
+        flags=_RAR3_FILE_SOLID,
+        pack_lo=len(comment),
+        unp_lo=len(comment),
+        block_type=0x7A,
+    )
+
+    with open_archive(
+        io.BytesIO(RAR_ID + main_hdr + file_hdr + service_hdr + comment + end_hdr)
+    ) as archive:
+        member = archive.get("item.txt")
+        assert member is not None
+        assert member.comment == comment.decode()
+
+
+def test_rar5_comment_service_stays_archive_only() -> None:
+    """RAR5 CMT is an archive comment, never an invented member comment."""
+    with open_archive(_fixture("comment__.rar")) as archive:
+        assert archive.info.comment == "This is a\nmulti-line comment"
+        assert all(member.comment is None for member in archive.members())
+
+
 def test_extract_version_20_payload_accepted() -> None:
     """Craft a RAR3 archive whose payload FILE declares extract version 20."""
     from archivey.internal.backends.rar_parser import _RAR3_LONG_BLOCK, _crc32
@@ -898,6 +1005,7 @@ def _rar3_file_block(
     pack_hi: int = 0,
     unp_hi: int = 0,
     method: int = 0x30,
+    block_type: int = 0x74,
 ) -> bytes:
     """Build one RAR3 FILE block with a valid 16-bit header CRC."""
     from archivey.internal.backends.rar_parser import (
@@ -922,7 +1030,7 @@ def _rar3_file_block(
         file_fields += struct.pack("<LL", pack_hi, unp_hi)
     file_fields += name
     flags |= _RAR3_LONG_BLOCK
-    header_without_crc = struct.pack("<BHH", 0x74, flags, 7 + len(file_fields))
+    header_without_crc = struct.pack("<BHH", block_type, flags, 7 + len(file_fields))
     header_without_crc += file_fields
     file_crc = _crc32(header_without_crc) & 0xFFFF
     return struct.pack("<H", file_crc) + header_without_crc
