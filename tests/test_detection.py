@@ -112,12 +112,37 @@ def test_unrecognized_extension_and_bytes_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_cbr_zip_content_wins_with_extension_conflict(tmp_path: Path) -> None:
+    from archivey.diagnostics import DiagnosticCode
+
+    path = tmp_path / "mystery.cbr"
+    path.write_bytes(_zip_bytes())
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.ZIP
+    assert info.confidence == DetectionConfidence.CERTAIN
+    assert info.detected_by == "magic"
+    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
+
+
+def test_cbz_rar_content_wins_with_extension_conflict(tmp_path: Path) -> None:
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.internal.backends.rar_parser import RAR_ID
+
+    path = tmp_path / "mystery.cbz"
+    path.write_bytes(RAR_ID)
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.RAR
+    assert info.confidence == DetectionConfidence.CERTAIN
+    assert info.detected_by == "magic"
+    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
+
+
 def test_magic_wins_over_conflicting_extension(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A conflict needs two formats registered (only ZIP is, in Stage 1), so drive it
-    # through a registry with two synthetic backends: magic says SEVEN_Z, the ".rar"
-    # extension says RAR. Magic must win, with a WARNING on archivey.detection.
+    # Isolates the conflict machinery from real backends: magic says SEVEN_Z, the
+    # ".rar" extension says RAR. Real ZIP-named-``.cbr`` / RAR-named-``.cbz``
+    # conflicts are in the two tests above.
     from archivey.internal import detection as detection_module
     from archivey.internal.base_reader import ReadBackend
     from archivey.internal.registry import BackendRegistry
