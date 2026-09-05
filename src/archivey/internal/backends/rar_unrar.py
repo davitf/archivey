@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, cast
 
@@ -24,9 +25,30 @@ from archivey.exceptions import (
     ReadError,
 )
 
-# Successful probes only. A rejected lookalike is not cached, so it is
-# re-probed on every attempted read rather than once per process.
-_cached_unrar: str | None = None
+
+@dataclass(frozen=True, slots=True)
+class _UnrarProbe:
+    """Banner verdict for one resolved ``unrar`` path, plus the stat identity
+    that lets a later call skip the subprocess.
+
+    Keyed on the absolute candidate, not on ``PATH``. ``shutil.which`` re-runs
+    every call, so a newly installed binary is visible without editing ``PATH``.
+    One entry only: alternating two resolved paths re-probes (not worth a dict).
+    The lookup does not key cwd or ``PATHEXT`` (Windows ``which`` consults both).
+    """
+
+    unrar_path: str
+    is_rarlab: bool
+    st_dev: int
+    st_ino: int
+    st_mtime_ns: int
+    st_size: int
+
+
+# ``None`` means unprobed. A durable "not RARLAB" answer stores ``is_rarlab=False``
+# so a lookalike costs one process, not one per attempted read. A ``which`` miss
+# and a probe that could not *run* the binary are not stored.
+_cached_unrar: _UnrarProbe | None = None
 
 _NOT_INSTALLED_MSG = (
     "RARLAB unrar is required to read RAR member data, but it was not found on PATH "
@@ -47,16 +69,17 @@ _RAR3_FILE_HEADER = struct.Struct("<LLBLLBBHL")
 
 
 def _is_rarlab_unrar(path: str) -> bool:
-    """Return True when ``path`` prints a RARLAB unrar banner."""
-    try:
-        completed = subprocess.run(
-            [path],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
+    """Return True when ``path`` prints a RARLAB unrar banner.
+
+    ``OSError`` / ``SubprocessError`` (could not run it) propagate so the
+    caller can avoid caching a transient failure as "not RARLAB".
+    """
+    completed = subprocess.run(
+        [path],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
     banner = (completed.stdout or b"") + (completed.stderr or b"")
     text = banner.decode("utf-8", errors="replace")
     if "UNRAR" not in text:
@@ -64,17 +87,59 @@ def _is_rarlab_unrar(path: str) -> bool:
     return "Alexander Roshal" in text or "RARLAB" in text
 
 
+def _stat_identity(path: str) -> tuple[int, int, int, int]:
+    """``(st_dev, st_ino, st_mtime_ns, st_size)``, or ``PackageNotInstalledError``.
+
+    Same syscall ``Path.is_file()`` would make; wrapping keeps the finder's
+    contract (never a raw ``OSError``) and is the identity a swapped binary
+    cannot keep.
+    """
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
 def find_rarlab_unrar() -> str:
     """Return path to RARLAB unrar, or raise PackageNotInstalledError naming RARLAB unrar."""
     global _cached_unrar
-    if _cached_unrar is not None:
-        return _cached_unrar
+    path_env = os.environ.get("PATH", "")
+    # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``
+    # rewrite cannot stamp a new lookup with the old key.
+    candidate = shutil.which("unrar", path=path_env)
+    if candidate is None:
+        raise PackageNotInstalledError(_NOT_INSTALLED_MSG)
+    candidate = os.path.abspath(candidate)
 
-    candidate = shutil.which("unrar")
-    if candidate is None or not _is_rarlab_unrar(candidate):
+    identity = _stat_identity(candidate)
+    cached = _cached_unrar
+    if (
+        cached is not None
+        and cached.unrar_path == candidate
+        and (cached.st_dev, cached.st_ino, cached.st_mtime_ns, cached.st_size)
+        == identity
+    ):
+        if cached.is_rarlab:
+            return candidate
         raise PackageNotInstalledError(_NOT_INSTALLED_MSG)
 
-    _cached_unrar = candidate
+    try:
+        is_rarlab = _is_rarlab_unrar(candidate)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
+
+    st_dev, st_ino, st_mtime_ns, st_size = identity
+    _cached_unrar = _UnrarProbe(
+        unrar_path=candidate,
+        is_rarlab=is_rarlab,
+        st_dev=st_dev,
+        st_ino=st_ino,
+        st_mtime_ns=st_mtime_ns,
+        st_size=st_size,
+    )
+    if not is_rarlab:
+        raise PackageNotInstalledError(_NOT_INSTALLED_MSG)
     return candidate
 
 

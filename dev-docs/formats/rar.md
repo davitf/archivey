@@ -87,9 +87,14 @@ Everything about that boundary is a consequence:
   once the solid prefix plus discarded member progress meets the 1 MiB floor. The unnamed
   ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5).
 - **Identity of the binary costs a process.** `find_rarlab_unrar` runs `unrar` with no
-  arguments and sniffs the banner, then caches a **successful** answer for the life of the
-  process. A rejected binary is not cached, so a lookalike on `PATH` costs one probe per
-  attempted read rather than one per process.
+  arguments and sniffs the banner. `shutil.which` re-runs on every call — a miss is
+  never frozen, so installing `unrar` into a directory already on `PATH` is visible
+  without editing the string. The banner verdict is cached for the resolved
+  (absolute) candidate together with its stat identity (`st_dev` / `st_ino` /
+  `st_mtime_ns` / `st_size`); a hit or a durable "not RARLAB" answer is reused only
+  while that identity is unchanged. A probe that cannot *run* the binary (`OSError`,
+  timeout) is not cached. The cache is one entry, so alternating two `PATH`s
+  re-probes. The lookup does not key cwd or `PATHEXT`.
 
 **Blocks chain forward and each header states its own size.** There is no index; the walk
 reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
@@ -660,6 +665,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | A stored nonsolid archive is read end to end with zero subprocesses (the §2.3 measurement) | `::test_stored_nonsolid_archive_spawns_no_unrar_process` |
 | The finder rejects a missing or non-RARLAB binary, and the message names the lookalikes | `::test_missing_unrar_raises`, `::test_unrar_not_installed_message_names_lookalikes`, `::test_non_rarlab_unrar_rejected` |
 | A non-RARLAB binary on `PATH` is rejected, and the one we run is RARLAB's | `::test_non_rarlab_unrar_rejected`, `::test_unrar_on_path_is_the_rarlab_build` |
+| The finder caches hits and misses for one `PATH`, then re-probes after `PATH` changes or a cached binary vanishes | `::test_non_rarlab_unrar_negative_probe_is_cached`, `::test_missing_unrar_negative_probe_is_cached`, `::test_path_change_invalidates_cached_unrar_miss`, `::test_deleted_cached_unrar_is_not_returned` |
 | A solid pass spawns `unrar` only on the first read | `::test_solid_pass_spawns_unrar_only_on_the_first_read` |
 | Hostile member names (`-inul`, `@atfile`) read **their own** bytes, RAR4 and RAR5 | `::test_hostile_member_name_reads_its_own_bytes` |
 | A wildcard member name reads its own bytes, including the solid prefix-skip case | `::test_wildcard_member_name_reads_its_own_bytes`, `::test_wildcard_solid_stream_members_reads_all`, `::test_seekable_wildcard_respawn_still_skips_glob_prefix` |
@@ -770,9 +776,11 @@ matches — directory-component globs and backslash names stay refused, carried 
 **#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#10** RAR5/RAR3 `accessed`/`created` from the time extra ([#300](https://github.com/davitf/archivey/pull/300)); **#13** `close()` chaining and **#14**
 shared FILETIME ([#291](https://github.com/davitf/archivey/pull/291)); and **#15** `_live_unrar`,
 deleted outright when [#293](https://github.com/davitf/archivey/pull/293) moved the
-single-live-stream gate ahead of the spawn it was a backstop for; and **#12** member
+single-live-stream gate ahead of the spawn it was a backstop for; **#12** member
 comments mapped from RAR3 CMT SERVICE and RAR 1.5 / 2.x old-style blocks, stored natively
-and compressed through `unrar` when present.
+and compressed through `unrar` when present; and **#16** `unrar` probe caching —
+`which` every call, banner verdict keyed on the resolved path plus stat identity,
+transient execute failures not cached.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
@@ -782,7 +790,6 @@ and compressed through `unrar` when present.
 | 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
 | 9 | **Give RAR compression a name.** Add `CompressionAlgorithm.RAR` and carry the extract version (15/20/29/50) alongside it, replacing today's `UNKNOWN` + level. **Name decided: plain `RAR`** — see the note under this table | The header identifies the algorithm, so `UNKNOWN` claims "we could not tell" when we can, and it is what a caller comparing formats sees | §5, §2.2 |
 | 11 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
-| 16 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
 | 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses. **Decided: register it.** Same call for ZIP: register `.cbz` (ZIP today has `.zip` `.jar` `.pyz` `.whl` `.apk`, no comic-book alias) | Product call, recorded | — |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
 | 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
