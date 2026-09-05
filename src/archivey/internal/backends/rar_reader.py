@@ -812,6 +812,8 @@ class RarReader(BaseArchiveReader):
         member_type = self._member_type(info)
         version_history = info.is_file_version_history()
         presented = _presented_filename(info)
+        member_comment = info.comment
+        assert not isinstance(member_comment, _Rar3Comment)
         name = normalize_member_name(
             presented,
             member_type,
@@ -884,7 +886,7 @@ class RarReader(BaseArchiveReader):
             windows_attrs=windows_attrs,
             hashes=_member_hashes(info),
             link_target=link_target,
-            comment=info.comment,
+            comment=member_comment,
             extra=extra,
             _raw=info,
         )
@@ -1324,12 +1326,14 @@ class RarReader(BaseArchiveReader):
             or self._volume_count > 1
             or len(self._volume_paths) > 1
         )
+        archive_comment = self._archive.comment
+        assert not isinstance(archive_comment, _Rar3Comment)
         return ArchiveInfo(
             format=ArchiveFormat.RAR,
             format_version=str(self._archive.version),
             is_solid=is_solid,
             member_count=len(self._members),
-            comment=self._archive.comment,
+            comment=archive_comment,
             is_encrypted=self._archive.has_header_encryption or any_encrypted,
             is_multivolume=is_multivolume,
             cost=cost,

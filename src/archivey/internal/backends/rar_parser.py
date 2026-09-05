@@ -970,7 +970,7 @@ def _parse_rar3(
     is_solid = False
     is_volume = False
     has_header_encryption = False
-    comment: str | None = None
+    comment: str | _Rar3Comment | None = None
     members: list[RarMemberInfo] = []
     enc_state: _Rar3EncState | None = None
     needs_next_volume = False
