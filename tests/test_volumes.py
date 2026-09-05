@@ -14,6 +14,7 @@ from archivey import extract, open_archive
 from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
+    PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -25,6 +26,21 @@ _7Z_MAGIC = bytes.fromhex("377abcaf271c")
 _RAR_MAGIC = b"Rar!\x1a\x07\x00"
 _RAR5_ID = b"Rar!\x1a\x07\x01\x00"
 _RAR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rar"
+
+
+def _have_rarlab_unrar() -> bool:
+    """Whether split-RAR ``archive.read()`` can call RARLAB unrar.
+
+    Listing is native and must stay green on core-only / free-threaded CI, which
+    do not install ``unrar``. ``read()`` of a split set still shells out.
+    """
+    from archivey.internal.backends.rar_unrar import find_rarlab_unrar
+
+    try:
+        find_rarlab_unrar()
+    except PackageNotInstalledError:
+        return False
+    return True
 
 
 def test_discover_skips_stat_for_non_volume_names(tmp_path: Path) -> None:
@@ -192,7 +208,6 @@ def test_discover_rar_sfx_duplicate_part1_prefers_named_file(tmp_path: Path) -> 
 def test_rar_sfx_duplicate_part1_opens_the_named_set(tmp_path: Path) -> None:
     # Two files claiming part 1 used to concatenate both and fail with
     # "Out-of-order RAR volume". Prefer the name the caller opened.
-    expected = b"ABCDEFGH" * 200
     sfx = tmp_path / "tinyvol.part1.sfx"
     sfx.write_bytes(
         b"MZ" + b"\x00" * 4094 + (_RAR_FIXTURES / "tinyvol.part1.rar").read_bytes()
@@ -202,7 +217,9 @@ def test_rar_sfx_duplicate_part1_opens_the_named_set(tmp_path: Path) -> None:
     for anchor in (sfx, tmp_path / "tinyvol.part1.rar"):
         with open_archive(anchor) as archive:
             assert archive.info.is_multivolume is True
-            assert archive.read("payload.bin") == expected
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            if _have_rarlab_unrar():
+                assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
 def test_discover_old_rar_rnn_volumes(tmp_path: Path) -> None:
@@ -314,17 +331,24 @@ def test_sevenzip_sfx_numbered_parts_open_from_any_part(
     )
     if result.returncode != 0:
         pytest.skip(f"7z cannot build SFX split fixture: {result.stderr!r}")
-    first = tmp_path / "vol.exe.001"
-    second = tmp_path / "vol.exe.002"
     stub = tmp_path / "vol.exe"
     found = sorted(p.name for p in tmp_path.iterdir())
-    assert first.is_file() and second.is_file() and stub.is_file(), (
-        f"7z succeeded but did not write an SFX numbered set; found {found}"
+    # Linux 7-Zip names SFX numbered parts ``vol.exe.001``; Windows 7-Zip keeps
+    # the archive extension (``vol.7z.001`` / ``vol.zip.001``) and writes the
+    # stub as ``vol.exe``. Both are numbered sets; only the names differ.
+    first_parts = list(tmp_path.glob("vol.*.001"))
+    assert len(first_parts) == 1 and stub.is_file(), (
+        f"7z succeeded but did not write a numbered set plus stub; found {found}"
+    )
+    first = first_parts[0]
+    siblings = discover_volume_siblings(first)
+    assert siblings is not None and len(siblings) >= 2, (
+        f"7z wrote {first.name} but siblings did not join; found {found}"
     )
     assert first.read_bytes()[: len(first_magic)] == first_magic
 
     expected = payload.read_bytes()
-    for anchor in (first, second):
+    for anchor in (siblings[0], siblings[1]):
         with open_archive(anchor) as archive:
             assert archive.info.is_multivolume is True
             assert archive.read("payload.bin") == expected
@@ -349,15 +373,20 @@ def _tinyvol_sfx_pair(tmp_path: Path, *, decoy: bool) -> tuple[Path, Path]:
 def test_rar_sfx_split_opens_from_stubbed_tinyvol_fixtures(tmp_path: Path) -> None:
     part1, part2 = _tinyvol_sfx_pair(tmp_path, decoy=False)
     expected = b"ABCDEFGH" * 200
+    can_read = _have_rarlab_unrar()
     for anchor in (part1, part2):
         with open_archive(anchor) as archive:
             assert archive.info.is_multivolume is True
-            assert archive.read("payload.bin") == expected
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            if can_read:
+                assert archive.read("payload.bin") == expected
         # Explicit format= skips detection, so volume 1 is parsed from offset 0.
         # A stub with no decoy magic still works; the decoy case is the next test.
         with open_archive(anchor, format=ArchiveFormat.RAR) as archive:
             assert archive.info.is_multivolume is True
-            assert archive.read("payload.bin") == expected
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            if can_read:
+                assert archive.read("payload.bin") == expected
 
 
 def test_rar_sfx_split_ignores_decoy_magic_in_stub(tmp_path: Path) -> None:
