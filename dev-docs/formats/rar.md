@@ -20,11 +20,12 @@ Registers keep the status — this page states the behaviour and links the row.
 | Refuses | Non-seekable sources · a non-RARLAB `unrar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`) · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · writing |
 
 **Two things a reader might expect and will not find.** The binary is identified by its
-banner only — `UNRAR` plus `Alexander Roshal`/`RARLAB` — with **no version floor**, so an
-ancient RARLAB build is accepted and then fails per member rather than at identification.
-And nothing amortizes repeated random reads of a solid archive: there is no `unrar x`
-anywhere in `src/`, so every out-of-order solid `open()` is its own whole-archive decode
-(§2.3).
+banner only — `UNRAR` plus `Alexander Roshal`/`RARLAB` — with **no version floor** yet, so
+an ancient RARLAB build is accepted and then fails per member rather than at
+identification. §10 #7 is decided (enforce, once at identification; candidate floor 7.0)
+and not shipped. And nothing amortizes repeated random reads of a solid archive: there is
+no `unrar x` anywhere in `src/`, so every out-of-order solid `open()` is its own
+whole-archive decode (§2.3).
 
 ## 1. Shape
 
@@ -772,7 +773,7 @@ single-live-stream gate ahead of the spawn it was a backstop for.
 | --- | --- | --- | --- |
 | 5 | **Use the `QO` quick-open record when present**, falling back to the walk when it is absent. **Decided: trust it**, like ZIP's CDH — the table `QO` filled is the table extract reads. Residual: does `QO` carry every field the FILE walk fills? If not, reopen this. A listing-vs-walk diagnostic is optional and probably not worth it | Turns the `INDEXED` claim from arguable into true, and is the format's own answer to the walk | §1, §7 |
 | 6 | **Signal the stream-source copy** (P11), and consider bounding it to one compressed member via a synthetic single-member archive rather than only relocating it (§7) | The largest hidden cost in the library is in neither `diagnostics` nor `cost.notes`. `open-issues.md` P11 | §5, §7 |
-| 7 | **Enforce an `unrar` version floor**, or stop claiming one. Identification is a banner check with no version parse, though the version is right there in the banner we already read | An ancient RARLAB build is accepted and then fails per member instead of at identification | At a glance |
+| 7 | **Enforce an `unrar` version floor**, or stop claiming one. **Decided: enforce.** Parse the version from the banner already read, once at identification (cached with the probe), not per member. Candidate floor is **7.0**; confirm by testing 7.0 and up before coding the cutoff | An ancient RARLAB build is accepted and then fails per member instead of at identification | At a glance |
 | 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
 | 9 | **Give RAR compression a name.** Add `CompressionAlgorithm.RAR` and carry the extract version (15/20/29/50) alongside it, replacing today's `UNKNOWN` + level. **Name decided: plain `RAR`** — see the note under this table | The header identifies the algorithm, so `UNKNOWN` claims "we could not tell" when we can, and it is what a caller comparing formats sees | §5, §2.2 |
 | 10 | **Surface RAR5 `accessed` / `created`.** `_parse_rar5_xtime` reads past both and keeps neither; `RarMemberInfo` has no field for them. RAR3 EXTTIME is the same shape | ZIP surfaces all three with a precedence chain; RAR returning `None` looks like a format limit and is not one | §2.2 |
