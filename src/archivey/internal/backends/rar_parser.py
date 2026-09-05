@@ -51,6 +51,7 @@ from archivey.exceptions import (
 from archivey.internal.sfx import SFX_MAX, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
+from archivey.internal.timestamps import filetime_to_datetime
 
 
 class _Readable(Protocol):
@@ -553,20 +554,15 @@ def _load_unixtime(
 def _load_windowstime(
     buf: bytes | bytearray | memoryview, pos: int
 ) -> tuple[datetime | None, int]:
-    # Windows FILETIME: 100ns since 1601-01-01.
     lo, pos = _load_le32(buf, pos)
     hi, pos = _load_le32(buf, pos)
     ticks = (hi << 32) | lo
-    # unix epoch (1970) in 100ns units from windows epoch (1601)
-    unix_ticks = ticks - 116444736000000000
-    secs, rem = divmod(unix_ticks, 10_000_000)
-    try:
-        dt = datetime.fromtimestamp(secs, timezone.utc)
-        if rem:
-            dt = dt.replace(microsecond=min(rem // 10, 999999))
-        return dt, pos
-    except (ValueError, OverflowError, OSError):
-        return None, pos
+    # Shared FILETIME helper. ticks=0 → None is that helper's ZIP unset
+    # rule, accepted for RAR (do not revive 1601-01-01). Discard
+    # TimestampIssue: listing still swallows out-of-range values rather
+    # than emitting a diagnostic (same as Unix time).
+    dt, _issue = filetime_to_datetime(ticks, "", field="mtime")
+    return dt, pos
 
 
 def _normalize_password_utf8(password: str | bytes) -> bytes:

@@ -674,6 +674,15 @@ def test_rar5_out_of_range_windowstime_is_tolerated() -> None:
     assert pos == 8
 
 
+def test_rar5_zero_windowstime_is_unset() -> None:
+    """FILETIME ticks=0 follows the shared helper's unset rule (None, not 1601)."""
+    from archivey.internal.backends.rar_parser import _load_windowstime
+
+    dt, pos = _load_windowstime(struct.pack("<II", 0, 0), 0)
+    assert dt is None
+    assert pos == 8
+
+
 def test_rar_reader_masks_hostile_unix_mode() -> None:
     """Atheris: huge RAR5 mode vint must not OverflowError in ``stat.S_IMODE``."""
     from archivey.internal.backends.rar_parser import RarMemberInfo
@@ -1165,6 +1174,14 @@ class _FakeUnrarProc:
         return None
 
 
+class _CloseRaises(io.BytesIO):
+    """Stdout stand-in whose close() fails after the BytesIO close succeeds."""
+
+    def close(self) -> None:
+        super().close()
+        raise OSError("stdout close failed")
+
+
 def _close_unrar_owned(
     *,
     rc: int,
@@ -1265,6 +1282,36 @@ def test_unrar_owned_stream_success_and_warning_pass() -> None:
 def test_unrar_owned_stream_negative_rc_from_terminate_is_not_error() -> None:
     """F4: a negative return code means we terminated the process (early close)."""
     _close_unrar_owned(rc=-15, named_member=True, has_verifiable_hash=False)
+
+
+def test_unrar_owned_stream_close_does_not_mask_inner_close_error() -> None:
+    """inner.close() must not be replaced by the exit-mapped error in close()."""
+    from archivey.internal.backends.rar_reader import _UnrarOwnedStream
+
+    stream = _UnrarOwnedStream(
+        _CloseRaises(b""),
+        _FakeUnrarProc(11),  # type: ignore[arg-type]
+        named_member=True,
+        has_verifiable_hash=True,
+    )
+    with pytest.raises(OSError, match="stdout close failed") as caught:
+        stream.close()
+    assert isinstance(caught.value.__cause__, EncryptionError)
+
+
+def test_unrar_owned_stream_close_raises_inner_error_on_quiet_unrar_exit() -> None:
+    """inner.close() still raises when unrar already exited 0 (no mapped error)."""
+    from archivey.internal.backends.rar_reader import _UnrarOwnedStream
+
+    stream = _UnrarOwnedStream(
+        _CloseRaises(b""),
+        _FakeUnrarProc(0),  # type: ignore[arg-type]
+        named_member=True,
+        has_verifiable_hash=True,
+    )
+    with pytest.raises(OSError, match="stdout close failed") as caught:
+        stream.close()
+    assert caught.value.__cause__ is None
 
 
 def test_open_unrar_p_missing_stdout_pipe_is_typed(

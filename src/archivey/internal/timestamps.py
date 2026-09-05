@@ -1,11 +1,12 @@
 """Shared timestamp helpers for format backends.
 
 The NTFS FILETIME conversion (100 ns ticks since 1601-01-01 UTC → ``datetime``) is used by
-every backend that reads Windows-origin timestamps — ZIP's NTFS extra field and the native
-7z reader today, RAR later — so it lives here rather than being copy-pasted per backend. The
-out-of-range guard is the load-bearing part: ``datetime.fromtimestamp`` raises ``ValueError``/
-``OverflowError`` on POSIX but ``OSError`` on Windows for negative/huge inputs, and a hostile
-FILETIME must degrade to ``None`` + a reported issue, never sink the whole listing.
+every backend that reads Windows-origin timestamps — ZIP's NTFS extra field, the native
+7z reader, and RAR5 FILETIME extras — so it lives here rather than being copy-pasted per
+backend. The out-of-range guard is the load-bearing part: ``datetime.fromtimestamp``
+raises ``ValueError``/``OverflowError`` on POSIX but ``OSError`` on Windows for
+negative/huge inputs, and a hostile FILETIME must degrade to ``None`` + a reported
+issue, never sink the whole listing.
 """
 
 from __future__ import annotations

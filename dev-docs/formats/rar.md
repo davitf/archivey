@@ -28,7 +28,7 @@ anywhere in `src/`, so every out-of-order solid `open()` is its own whole-archiv
 
 ## 1. Shape
 
-Four properties generate most of this page.
+Several properties generate most of this page.
 
 ```
   [ SFX stub? ]  [ magic ]  [ MAIN ]  [ FILE hdr | packed data ] × n  [ ENDARC ]
@@ -620,7 +620,7 @@ Two claims here are about the **external binary** rather than about archivey, so
 hold them — they are probes instead, re-runnable when a new `unrar` lands:
 
 ```bash
-python3 scripts/exploration/rar_unrar_input_matrix.py       # §1 input modes, §2.2 volumes, §4 emission
+python3 scripts/exploration/rar_unrar_input_matrix.py       # §2.3 input modes, §2.2 volumes, §4 emission
 python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompressor table
 ```
 
@@ -718,55 +718,41 @@ and what would close it are in
 
 ## 10. To fix — temporary
 
-**Delete this section once it is empty.** Everything here is a code change this page's
-writing turned up, parked so it is not re-derived. A row that ships moves into the page
-proper (or vanishes); a row that is decided against becomes a §6 decision or a §7 question.
-Rows with a register ID keep their status there.
+**Delete this section once it is empty** — stays on this page until then, not moved to
+`open-issues.md`. Everything here is a code change this page's writing turned up, parked
+so it is not re-derived. A row that ships moves into the page proper (or vanishes); a row
+that is decided against becomes a §6 decision or a §7 question. Rows with a register ID
+keep their status there.
 
 Ordered by what I would do first, not by size. **Numbers are stable** — a row that ships is
 deleted and its number is not reused, so the gaps are the record and the references from the
 rest of the page keep resolving. Closed so far: **#1** the RAR3 name-decode bound
-([#292](https://github.com/davitf/archivey/pull/292)) and **#15** `_live_unrar`, deleted
-outright when [#293](https://github.com/davitf/archivey/pull/293) moved the single-live-stream
-gate ahead of the spawn it was a backstop for.
+([#292](https://github.com/davitf/archivey/pull/292)); **#13** `close()` chaining and **#14**
+shared FILETIME (this PR); and **#15** `_live_unrar`, deleted outright when
+[#293](https://github.com/davitf/archivey/pull/293) moved the single-live-stream gate ahead of
+the spawn it was a backstop for.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
-| 2 | **Honour `seekable_members=True` on the `unrar` route** by respawning on a backward seek — the same reopen the other backends use. Today the flag is accepted, honoured on the direct-slice route and silently ignored on the pipe route, so one archive answers differently per member | Consistency between formats is a promise the library makes; a flag that means different things per backend breaks it more than a slow seek would | §5 (tagged bug), §2.3 |
+| 2 | **Honour `seekable_members=True` on the `unrar` route** by respawning on a backward seek — the same reopen the other backends use. Today the flag is accepted, honoured on the direct-slice route and silently ignored on the pipe route, so one archive answers differently per member | Consistency between formats is a promise the library makes; a flag that means different things per backend breaks it more than a slow seek would | §5, §2.3 |
 | 3 | **Read a member whose name contains `*` or `?`** by passing the wildcard through as the mask and skipping the other members it matches — the member list needed to compute that is already parsed. Replaces today's `UnsupportedFeatureError` | A valid archive is unreadable, and the refusal was always the conservative half of a fix | §5, §2.3 |
 | 4 | **Pin the solid emission policy per generation.** No stored size predicts what `unrar p` prints: RAR5 links are packed 0 / unpacked > 0, RAR4 links are packed > 0 / unpacked > 0, and both emit zero bytes. `is_payload_file()` gets this right incidentally, untested against RAR3 link members | Cheapest high-value item here — a test over the `symlinks_solid__` pair in both generations turns incidental correctness into pinned correctness. `open-issues.md` P6 | §1, §4 |
 | 5 | **Use the `QO` quick-open record when present**, falling back to the walk when it is absent or fails to validate. It is a tail SERVICE block holding copies of the file headers, and today it is skipped — an archive that has one costs one seek *more* to list, not 40 fewer (§1). Needs a decision on trust first: it is duplicate attacker-controlled metadata, so either it is validated against the real headers (which costs the walk it was meant to save) or listing and extraction can be made to disagree | Turns the `INDEXED` claim from arguable into true, and is the format's own answer to the walk | §1, §7 |
 | 6 | **Signal the stream-source copy** (P11), and consider bounding it to one compressed member via a synthetic single-member archive rather than only relocating it (§7) | The largest hidden cost in the library is in neither `diagnostics` nor `cost.notes`. `open-issues.md` P11 | §5, §7 |
 | 7 | **Enforce an `unrar` version floor**, or stop claiming one. Identification is a banner check with no version parse, though the version is right there in the banner we already read | An ancient RARLAB build is accepted and then fails per member instead of at identification | At a glance |
 | 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
-| 9 | **Give RAR compression a name.** Add a value to `CompressionAlgorithm` and carry the extract version (15/20/29/50) alongside it, replacing today's `UNKNOWN` + level. **Name still open** — see the note under this table | Decided in principle: the header identifies the algorithm, so `UNKNOWN` claims "we could not tell" when we can, and it is what a caller comparing formats sees | §5, §2.2 |
+| 9 | **Give RAR compression a name.** Add `CompressionAlgorithm.RAR` and carry the extract version (15/20/29/50) alongside it, replacing today's `UNKNOWN` + level. **Name decided: plain `RAR`** — see the note under this table | The header identifies the algorithm, so `UNKNOWN` claims "we could not tell" when we can, and it is what a caller comparing formats sees | §5, §2.2 |
 | 10 | **Surface RAR5 `accessed` / `created`.** `_parse_rar5_xtime` reads past both and keeps neither; `RarMemberInfo` has no field for them. RAR3 EXTTIME is the same shape | ZIP surfaces all three with a precedence chain; RAR returning `None` looks like a format limit and is not one | §2.2 |
 | 11 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
 | 12 | **Map `_raw.comment` onto `member.comment`**, and read RAR 1.5 / 2.x old-style embedded comment blocks — `rarfile` returns both where we return `None` | Parsed and then dropped, which is the cheapest kind of gap to close | §2.2, §5 |
-| 13 | **Do not let `close()` mask an inner-close error.** `_UnrarOwnedStream.close()` runs `self._inner.close()` in the `try` and can raise the exit-mapped error from the `finally`, replacing it | Two lines; only bites when the pipe wrapper's close raises, which is rare | — |
-| 14 | **Use `internal/timestamps.py` for FILETIME** instead of `rar_parser`'s own epoch constant. ZIP already uses the shared helper | Two copies, one future correction | — |
 | 16 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
 | 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses | Product call, not a defect | — |
 
-**On the name for item 9.** The worry is that `RAR` would then mean two things. Measured
-against the current enums: `StreamFormat` and `CompressionAlgorithm` already share four
-names — `BROTLI`, `BZIP2`, `LZ4`, `ZSTD` — while `ContainerFormat` and
-`CompressionAlgorithm` share only `UNKNOWN`, and `ContainerFormat` and `StreamFormat` share
-nothing. So a collision is not new, but **this one is a different kind**: the four existing
-pairs are *synonyms* (`StreamFormat.BZIP2` and `CompressionAlgorithm.BZIP2` are the same
-codec seen at two layers), whereas `ContainerFormat.RAR` and a `CompressionAlgorithm.RAR`
-would be *homonyms* — a container and a codec that merely share a vendor's name.
-
-What rules out the obvious escape: naming the coder instead. The RAR method byte is a
-**level**, not a coder selection — M0 is store and M1–M5 are fastest through best — and
-RAR3 and later switch between LZSS and PPMd internally per block without recording which.
-So `RAR_LZSS` or `RAR_PPMD` would be false for some members of the same archive. The thing
-being named really is "RAR's own compression, generation *n*", and its only public name is
-RAR.
-
-That leaves plain `RAR` against a qualified coinage (`RAR_COMPRESSION`, `RARLAB`). Plain
-`RAR` is consistent with every other value in the enum being unqualified, and the fields are
-separately typed, so the two can only be confused in prose rather than in code. The window
-for choosing either is open now and closes at first publish, not at 1.0 —
-`pyproject.toml` is at `0.2.0.dev0` with no tags, so today this is a name and afterwards it
-is a deprecation.
+**On the name for item 9 — decided: plain `RAR`.** `ContainerFormat.RAR` and
+`CompressionAlgorithm.RAR` are *homonyms* (container vs codec sharing a vendor name),
+unlike the existing `StreamFormat`∩`CompressionAlgorithm` collisions (`BROTLI`, `BZIP2`,
+`LZ4`, `ZSTD`), which are *synonyms* for the same codec at two layers. Naming the coder
+instead is false: the method byte is a **level** (M0 store, M1–M5 fastest→best), and
+RAR3+ switches LZSS/PPMd per block without recording which. Fields are separately typed,
+so the two collide only in prose. A one-line API note at first publish is enough; do not
+invent `RAR_COMPRESSION` / `RARLAB`.
