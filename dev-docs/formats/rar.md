@@ -65,10 +65,12 @@ its source to re-create a compressor. So archivey parses headers natively while 
 decodes payloads (ADR [0002](../decisions/0002-native-rar-metadata-unrar-data.md), threat-model C1).
 Everything about that boundary is a consequence:
 
-- **Listing needs no `unrar` at all** — names, sizes, timestamps, modes, flags, hashes,
-  link targets and even header decryption come out of the parser (§2.2). A stored,
-  unencrypted, non-solid, unsplit member is read by slicing the source, so an archive of
-  those reads end to end with no subprocess (§2.3).
+- **Listing completes without `unrar`** — names, sizes, timestamps, modes, flags, hashes,
+  link targets and header decryption come out of the parser (§2.2). Stored old-style
+  comments do too; compressed RAR 1.5 / 2.x comments are filled when the binary is
+  available and otherwise stay `None`. A stored, unencrypted, non-solid, unsplit member
+  is read by slicing the source, so an archive of those reads end to end with no
+  subprocess (§2.3).
 - **`unrar` seeks the archive, so it cannot be piped one** — which is why a stream source
   is copied to a temp file the first time a member cannot be read directly, the whole
   archive and silently ([`open-issues.md`](../open-issues.md) P11). There is no "stream it
@@ -250,7 +252,7 @@ between to blame or to defer to.
 | `is_encrypted` | Per-member encryption flag | — |
 | `is_current` | `False` for a file-version history row, `True` for the live revision | — |
 | `extra` | `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member; `rar.created_is_ctime` when `created` is present (see that row) | — |
-| `comment` | Not surfaced. A RAR3 per-member solid comment block is parsed into `_raw.comment` and dropped; the *archive* comment does reach `ArchiveInfo.comment` — §10 #12 | Always |
+| `comment` | RAR3 CMT SERVICE (solid attaches to the preceding member) and RAR 1.5 / 2.x embedded COMMENT blocks. Stored old-style comments decode natively; compressed old-style comments decode through RARLAB `unrar` when available | No comment block, or a compressed old-style comment without `unrar` / with an invalid CRC16 |
 
 Two digest rules are worth stating because they look like missing data and are not:
 
@@ -559,8 +561,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A compressed member reports its compression as `UNKNOWN` with a level | **archivey** | The header identifies the algorithm — a RAR version and a level — so a caller comparing formats sees `UNKNOWN` where ZIP says `DEFLATE`, and "unknown" claims we could not tell when we can. §10 #9 |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_members=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ConcurrentAccessError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
-| A RAR 1.5 / 2.x archive comment is not returned, though `rarfile` returns it | **archivey** | The parser skips old-style embedded comment sub-blocks by design. Measured on the two legacy fixtures: `rarfile` gives `'RARcomment -----'` and `'RARcomment'`, archivey gives `None` for both. RAR5 and RAR3 comments are read normally |
-| `member.comment` is always `None`, including where a RAR3 solid comment block exists | **archivey** | The block is parsed into `_raw.comment` and never mapped onto the member (§2.2) |
+| A compressed RAR 1.5 / 2.x old-style comment is `None` without RARLAB `unrar` | **archivey** | Listing and stored old-style comments stay native; the proprietary compressed blob is decoded only when the optional binary is available (§2.2) |
 | Opening a compressed member whose stored name has a glob in a directory component, or a backslash, raises `UnsupportedFeatureError` | **archivey** | The include-mask matcher over-matches directory globs against unrar 7.00, and Windows `unrar` treats `\` as a separator so a Linux literal-backslash name emits nothing. Basename globs without `\` still demux. Exact fidelity is §10 #18 |
 | Reading a glob-named member decompresses every earlier match, including on a nonsolid archive | **library** / **archivey** | `unrar -n./a*.txt` concatenates matches. `AccessCost.DIRECT` does not predict that; `_track_decompressed` records the bytes after the fact. Default-deny when that skip is nonzero is §10 #19 |
 
@@ -678,6 +679,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned | `::test_file_version_list_and_read`, `::test_file_version_extract_all_skips_history`, `::test_file_version_solid_demux_aligned` |
 | Volume sets (`partN` and `.rNN`), stream volumes, and refusal of an incomplete or later-first set | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_raises`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub` |
 | RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection | `tests/test_rar_reader.py::test_rar15_and_rar2_list_and_read`, `::test_extract_version_20_payload_accepted` |
+| RAR 1.5 / 2.x archive and member comments match `rarfile`; stored old-style comments need no binary; RAR3 CMT reaches `member.comment`; RAR5 CMT stays archive-only | `::test_rar15_and_rar2_comments_match_rarfile`, `::test_rar3_stored_old_style_main_comment_needs_no_unrar`, `::test_rar3_service_comment_maps_to_member_comment`, `::test_rar5_comment_service_stays_archive_only` |
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
 | Listing is a header-to-header walk, seeking once per member, and it scales with the member count (§1) | `::test_listing_walks_header_to_header_rather_than_reading_an_index` — it also fails if `QO` support (§10 #5) ever lands, so the page cannot drift past the code |
 | Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |
@@ -768,7 +770,9 @@ matches — directory-component globs and backslash names stay refused, carried 
 **#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#10** RAR5/RAR3 `accessed`/`created` from the time extra ([#300](https://github.com/davitf/archivey/pull/300)); **#13** `close()` chaining and **#14**
 shared FILETIME ([#291](https://github.com/davitf/archivey/pull/291)); and **#15** `_live_unrar`,
 deleted outright when [#293](https://github.com/davitf/archivey/pull/293) moved the
-single-live-stream gate ahead of the spawn it was a backstop for.
+single-live-stream gate ahead of the spawn it was a backstop for; and **#12** member
+comments mapped from RAR3 CMT SERVICE and RAR 1.5 / 2.x old-style blocks, stored natively
+and compressed through `unrar` when present.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
@@ -778,7 +782,6 @@ single-live-stream gate ahead of the spawn it was a backstop for.
 | 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
 | 9 | **Give RAR compression a name.** Add `CompressionAlgorithm.RAR` and carry the extract version (15/20/29/50) alongside it, replacing today's `UNKNOWN` + level. **Name decided: plain `RAR`** — see the note under this table | The header identifies the algorithm, so `UNKNOWN` claims "we could not tell" when we can, and it is what a caller comparing formats sees | §5, §2.2 |
 | 11 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
-| 12 | **Map `_raw.comment` onto `member.comment`**, and read RAR 1.5 / 2.x old-style embedded comment blocks — `rarfile` returns both where we return `None` | Parsed and then dropped, which is the cheapest kind of gap to close | §2.2, §5 |
 | 16 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
 | 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses. **Decided: register it.** Same call for ZIP: register `.cbz` (ZIP today has `.zip` `.jar` `.pyz` `.whl` `.apk`, no comic-book alias) | Product call, recorded | — |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |

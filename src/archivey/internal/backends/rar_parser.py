@@ -164,6 +164,7 @@ _RAR5_OS_UNIX = 1
 
 _S_BLK_HDR = struct.Struct("<HBHH")
 _S_FILE_HDR = struct.Struct("<LLBLLBBHL")
+_S_COMMENT_HDR = struct.Struct("<HBBH")
 _S_LONG = struct.Struct("<L")
 _S_SHORT = struct.Struct("<H")
 
@@ -201,6 +202,18 @@ class RarEncryptionInfo:
 
 
 @dataclass(slots=True)
+class _Rar3Comment:
+    """Compressed old-style comment awaiting ``unrar`` in the reader layer."""
+
+    packed: bytes
+    unpacked_size: int
+    extract_version: int
+    compress_type: int
+    flags: int
+    crc16: int
+
+
+@dataclass(slots=True)
 class RarMemberInfo:
     filename: str
     orig_filename: bytes | None
@@ -229,7 +242,7 @@ class RarMemberInfo:
     volume_index: int
     split_before: bool
     split_after: bool
-    comment: str | None = None
+    comment: str | _Rar3Comment | None = None
     spanned_volumes: bool = False
     # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
@@ -252,7 +265,7 @@ class RarArchive:
     version: int  # 4 = RAR3-on-disk family (1.5/2/3); 5 = RAR5 (not "RAR 4.x")
     is_solid: bool
     has_header_encryption: bool
-    comment: str | None
+    comment: str | _Rar3Comment | None
     members: list[RarMemberInfo]
     sfx_offset: int
     is_volume: bool
@@ -895,6 +908,43 @@ def _fix_rar3_astral_truncation(unicode_name: str, std_name: bytes) -> str:
     return unicode_name
 
 
+def _parse_rar3_old_comment_subblocks(
+    hdata: bytes, pos: int
+) -> str | _Rar3Comment | None:
+    """Read a RAR 1.5/2.x COMMENT subblock appended to a MAIN or FILE header.
+
+    The enclosing header's CRC ends before these subblocks, despite its
+    ``header_size`` including them. Keep malformed trailing subblocks ignorable:
+    older archives were previously listed after skipping this region entirely.
+    """
+    comment: str | _Rar3Comment | None = None
+    while pos + _S_BLK_HDR.size <= len(hdata):
+        _, block_type, flags, block_size = _S_BLK_HDR.unpack_from(hdata, pos)
+        next_pos = pos + block_size
+        pos += _S_BLK_HDR.size
+        if block_size < _S_BLK_HDR.size or next_pos > len(hdata):
+            break
+        if block_type == _RAR3_OLD_COMMENT and pos + _S_COMMENT_HDR.size <= next_pos:
+            unpacked_size, extract_version, compress_type, crc16 = (
+                _S_COMMENT_HDR.unpack_from(hdata, pos)
+            )
+            packed = hdata[pos + _S_COMMENT_HDR.size : next_pos]
+            if compress_type == _RAR3_M0 and not flags & _RAR3_FILE_PASSWORD:
+                if _crc32(packed) & 0xFFFF == crc16:
+                    comment = _decode_name(packed)
+            else:
+                comment = _Rar3Comment(
+                    packed=packed,
+                    unpacked_size=unpacked_size,
+                    extract_version=extract_version,
+                    compress_type=compress_type,
+                    flags=flags,
+                    crc16=crc16,
+                )
+        pos = next_pos
+    return comment
+
+
 # ---------------------------------------------------------------------------
 # RAR3 / RAR4 parser
 # ---------------------------------------------------------------------------
@@ -998,10 +1048,6 @@ def _parse_rar3(
                     raise EncryptionError(
                         "RAR archive has encrypted headers but no password was provided"
                     )
-            # Skip CRC of main for now after optional comment subblocks.
-            if flags & _RAR3_MAIN_COMMENT:
-                # Old-style embedded comment subblocks — skip parsing compressed comments.
-                pass
             calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
             if header_crc != calc:
                 if block_encrypted:
@@ -1011,6 +1057,8 @@ def _parse_rar3(
                 raise CorruptionError(
                     f"RAR3 MAIN header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
                 )
+            if flags & _RAR3_MAIN_COMMENT:
+                comment = _parse_rar3_old_comment_subblocks(hdata, crc_pos)
             _seek_after_packed(source, data_offset, add_size)
             continue
 
@@ -1055,6 +1103,8 @@ def _parse_rar3(
                 # modern RAR3 archives whose stored/small members advertise
                 # unp_ver=20.
                 # File-version history rows (FILE_VERSION) are kept as members.
+                if flags & _RAR3_FILE_COMMENT:
+                    member.comment = _parse_rar3_old_comment_subblocks(hdata, crc_pos)
                 if member.split_before:
                     if members:
                         _merge_split_member(members[-1], member)
