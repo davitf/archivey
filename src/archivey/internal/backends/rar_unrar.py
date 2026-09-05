@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, cast
 
@@ -24,9 +25,18 @@ from archivey.exceptions import (
     ReadError,
 )
 
-# Successful probes only. A rejected lookalike is not cached, so it is
-# re-probed on every attempted read rather than once per process.
-_cached_unrar: str | None = None
+
+@dataclass(frozen=True, slots=True)
+class _UnrarProbe:
+    """One RARLAB ``unrar`` probe result for a particular ``PATH``."""
+
+    unrar_path: str | None
+    path_env: str
+
+
+# ``None`` means unprobed. A probe's ``unrar_path`` is ``None`` for a cached
+# miss, so a lookalike costs one process per PATH rather than per attempted read.
+_cached_unrar: _UnrarProbe | None = None
 
 _NOT_INSTALLED_MSG = (
     "RARLAB unrar is required to read RAR member data, but it was not found on PATH "
@@ -67,14 +77,20 @@ def _is_rarlab_unrar(path: str) -> bool:
 def find_rarlab_unrar() -> str:
     """Return path to RARLAB unrar, or raise PackageNotInstalledError naming RARLAB unrar."""
     global _cached_unrar
-    if _cached_unrar is not None:
-        return _cached_unrar
+    path_env = os.environ.get("PATH", "")
+    cached = _cached_unrar
+    if cached is not None and cached.path_env == path_env:
+        if cached.unrar_path is None:
+            raise PackageNotInstalledError(_NOT_INSTALLED_MSG)
+        if Path(cached.unrar_path).is_file():
+            return cached.unrar_path
 
     candidate = shutil.which("unrar")
     if candidate is None or not _is_rarlab_unrar(candidate):
+        _cached_unrar = _UnrarProbe(None, path_env)
         raise PackageNotInstalledError(_NOT_INSTALLED_MSG)
 
-    _cached_unrar = candidate
+    _cached_unrar = _UnrarProbe(candidate, path_env)
     return candidate
 
 

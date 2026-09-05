@@ -1466,12 +1466,37 @@ def test_non_rarlab_unrar_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     fake = tmp_path / "unrar"
-    fake.write_text("#!/bin/sh\necho 'unrar-free fake'\n")
+    fake.write_text("#!/bin/sh\necho 'unrar-free fake'\n", encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
     with pytest.raises(PackageNotInstalledError, match="RARLAB"):
         rar_unrar.find_rarlab_unrar()
+
+
+def test_non_rarlab_unrar_negative_probe_is_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "unrar"
+    fake.write_text("#!/bin/sh\necho 'unrar-free fake'\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+
+    probes = 0
+    is_rarlab_unrar = rar_unrar._is_rarlab_unrar
+
+    def count_probe(path: str) -> bool:
+        nonlocal probes
+        probes += 1
+        return is_rarlab_unrar(path)
+
+    monkeypatch.setattr(rar_unrar, "_is_rarlab_unrar", count_probe)
+    for _ in range(2):
+        with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+            rar_unrar.find_rarlab_unrar()
+
+    assert probes == 1
 
 
 def test_unrar_on_path_is_the_rarlab_build() -> None:
@@ -1491,6 +1516,70 @@ def test_unrar_on_path_is_the_rarlab_build() -> None:
 def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+        rar_unrar.find_rarlab_unrar()
+
+
+def test_missing_unrar_negative_probe_is_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+
+    which_calls = 0
+    probe_calls = 0
+    which = rar_unrar.shutil.which
+
+    def count_which(command: str) -> str | None:
+        nonlocal which_calls
+        which_calls += 1
+        return which(command)
+
+    def count_probe(path: str) -> bool:
+        nonlocal probe_calls
+        probe_calls += 1
+        return False
+
+    monkeypatch.setattr(rar_unrar.shutil, "which", count_which)
+    monkeypatch.setattr(rar_unrar, "_is_rarlab_unrar", count_probe)
+    for _ in range(2):
+        with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+            rar_unrar.find_rarlab_unrar()
+
+    assert which_calls == 1
+    assert probe_calls == 0
+
+
+def test_path_change_invalidates_cached_unrar_miss(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rarlab_unrar = shutil.which("unrar")
+    if rarlab_unrar is None or not rar_unrar._is_rarlab_unrar(rarlab_unrar):
+        pytest.skip("no RARLAB unrar on PATH — cannot test cache invalidation")
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+        rar_unrar.find_rarlab_unrar()
+
+    monkeypatch.setenv("PATH", str(Path(rarlab_unrar).parent))
+    assert rar_unrar.find_rarlab_unrar() == rarlab_unrar
+
+
+def test_deleted_cached_unrar_is_not_returned(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "unrar"
+    fake.write_text(
+        "#!/bin/sh\necho 'UNRAR 7.00 by Alexander Roshal'\n", encoding="utf-8"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+
+    assert rar_unrar.find_rarlab_unrar() == str(fake)
+    fake.unlink()
+
     with pytest.raises(PackageNotInstalledError, match="RARLAB"):
         rar_unrar.find_rarlab_unrar()
 
