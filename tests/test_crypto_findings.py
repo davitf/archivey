@@ -89,6 +89,8 @@ def _minimal_rar_member(
         crc32=crc32,
         blake2sp_hash=blake2sp_hash,
         mtime=None,
+        ctime=None,
+        atime=None,
         mode=None,
         host_os=3,
         flags=0,

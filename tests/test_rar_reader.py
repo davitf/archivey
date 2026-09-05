@@ -9,6 +9,7 @@ import struct
 import subprocess
 import time
 import zlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,12 @@ from archivey.internal.backends.rar_parser import (
     load_vint,
     parse_rar_archive,
 )
-from archivey.types import ArchiveMember, HashAlgorithm, MemberType
+from archivey.types import (
+    EXTRA_RAR_CREATED_IS_CTIME,
+    ArchiveMember,
+    HashAlgorithm,
+    MemberType,
+)
 from tests.conftest import requires, requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -1073,6 +1079,233 @@ def test_rar5_zero_windowstime_is_unset() -> None:
     assert pos == 8
 
 
+def _pack_dos(year: int, month: int, day: int, hour: int, minute: int, sec: int) -> int:
+    return (
+        ((year - 1980) << 25)
+        | (month << 21)
+        | (day << 16)
+        | (hour << 11)
+        | (minute << 5)
+        | (sec // 2)
+    )
+
+
+def test_parse_rar5_xtime_keeps_ctime_and_atime_with_ns() -> None:
+    """RAR5 extra 0x03: HAS_CTIME / HAS_ATIME are stored, including unix-ns words."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR5_XTIME_HAS_ATIME,
+        _RAR5_XTIME_HAS_CTIME,
+        _RAR5_XTIME_HAS_MTIME,
+        _RAR5_XTIME_UNIXTIME,
+        _RAR5_XTIME_UNIXTIME_NS,
+        _parse_rar5_xtime,
+    )
+
+    tflags = (
+        _RAR5_XTIME_UNIXTIME
+        | _RAR5_XTIME_HAS_MTIME
+        | _RAR5_XTIME_HAS_CTIME
+        | _RAR5_XTIME_HAS_ATIME
+        | _RAR5_XTIME_UNIXTIME_NS
+    )
+    mtime_s, ctime_s, atime_s = 1_600_000_000, 1_600_000_200, 1_600_000_100
+    blob = bytes([tflags]) + struct.pack(
+        "<IIIIII",
+        mtime_s,
+        ctime_s,
+        atime_s,
+        123_456_789,
+        234_567_890,
+        345_678_901,
+    )
+    mtime, ctime, atime = _parse_rar5_xtime(blob, 0, None)
+    assert mtime == datetime(2020, 9, 13, 12, 26, 40, 123456, tzinfo=timezone.utc)
+    assert ctime == datetime(2020, 9, 13, 12, 30, 0, 234567, tzinfo=timezone.utc)
+    assert atime == datetime(2020, 9, 13, 12, 28, 20, 345678, tzinfo=timezone.utc)
+
+
+def test_parse_rar5_xtime_mtime_only_leaves_ctime_atime_none() -> None:
+    from archivey.internal.backends.rar_parser import (
+        _RAR5_XTIME_HAS_MTIME,
+        _RAR5_XTIME_UNIXTIME,
+        _RAR5_XTIME_UNIXTIME_NS,
+        _parse_rar5_xtime,
+    )
+
+    tflags = _RAR5_XTIME_UNIXTIME | _RAR5_XTIME_HAS_MTIME | _RAR5_XTIME_UNIXTIME_NS
+    blob = bytes([tflags]) + struct.pack("<II", 1_600_000_000, 500_000_000)
+    mtime, ctime, atime = _parse_rar5_xtime(blob, 0, None)
+    assert mtime == datetime(2020, 9, 13, 12, 26, 40, 500000, tzinfo=timezone.utc)
+    assert ctime is None
+    assert atime is None
+
+
+def test_parse_rar5_xtime_second_record_without_flags_keeps_ctime_atime() -> None:
+    """A later 0x03 extra with tflags=0 must not wipe ctime/atime from an earlier one."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR5_XTIME_HAS_ATIME,
+        _RAR5_XTIME_HAS_CTIME,
+        _RAR5_XTIME_HAS_MTIME,
+        _RAR5_XTIME_UNIXTIME,
+        _parse_rar5_xtime,
+    )
+
+    tflags = (
+        _RAR5_XTIME_UNIXTIME
+        | _RAR5_XTIME_HAS_MTIME
+        | _RAR5_XTIME_HAS_CTIME
+        | _RAR5_XTIME_HAS_ATIME
+    )
+    first = bytes([tflags]) + struct.pack(
+        "<III", 1_600_000_000, 1_600_000_200, 1_600_000_100
+    )
+    mtime, ctime, atime = _parse_rar5_xtime(first, 0, None)
+    mtime2, ctime2, atime2 = _parse_rar5_xtime(bytes([0]), 0, mtime, ctime, atime)
+    assert (mtime2, ctime2, atime2) == (mtime, ctime, atime)
+    assert ctime2 is not None
+    assert atime2 is not None
+
+
+def test_parse_rar5_xtime_truncated_ns_does_not_raise() -> None:
+    """HAS_MTIME|UNIXTIME_NS with a FILETIME and no ns word lists, modified=None."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR5_XTIME_HAS_MTIME,
+        _RAR5_XTIME_UNIXTIME_NS,
+        _parse_rar5_xtime,
+    )
+
+    tflags = _RAR5_XTIME_HAS_MTIME | _RAR5_XTIME_UNIXTIME_NS
+    blob = bytes([tflags]) + struct.pack("<II", 0, 0)
+    mtime, ctime, atime = _parse_rar5_xtime(blob, 0, None)
+    assert mtime is None
+    assert ctime is None
+    assert atime is None
+
+
+def test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime() -> None:
+    """RAR3 EXTTIME nibbles: >>12 mtime, >>8 ctime, >>4 atime (UnRAR / rarfile)."""
+    from archivey.internal.backends.rar_parser import (
+        _parse_dos_time,
+        _parse_rar3_ext_time,
+    )
+
+    dos_mtime = _pack_dos(2020, 1, 15, 12, 0, 0)
+    dos_ctime = _pack_dos(2019, 6, 1, 8, 0, 0)
+    dos_atime = _pack_dos(2021, 6, 20, 18, 30, 0)
+    # Bit 3 of each nibble = present; no remnant bytes, so ctime/atime are DOS stamps.
+    flags = (0x8 << 12) | (0x8 << 8) | (0x8 << 4)
+    blob = struct.pack("<HII", flags, dos_ctime, dos_atime)
+    mtime, ctime, atime, pos = _parse_rar3_ext_time(blob, 0, _parse_dos_time(dos_mtime))
+    assert pos == len(blob)
+    assert mtime == datetime(2020, 1, 15, 12, 0, 0)
+    assert ctime == datetime(2019, 6, 1, 8, 0, 0)
+    assert atime == datetime(2021, 6, 20, 18, 30, 0)
+    assert mtime.tzinfo is None
+    assert ctime.tzinfo is None
+    assert atime.tzinfo is None
+
+
+def test_rar5_xtime_fixture_surfaces_accessed_and_created() -> None:
+    """Listing, no unrar: RAR5 ``-tsmca`` fills accessed/created as aware UTC."""
+    with open_archive(_fixture("xtime__.rar")) as archive:
+        member = archive.get("file.txt")
+        assert member.modified == datetime(2020, 1, 15, 12, 0, tzinfo=timezone.utc)
+        assert member.accessed == datetime(2021, 6, 20, 18, 30, tzinfo=timezone.utc)
+        assert member.created is not None
+        assert member.created.tzinfo is timezone.utc
+        assert member.created != member.modified
+        assert member.created != member.accessed
+        # Unix-built fixture: creation slot is st_ctime.
+        assert member.extra[EXTRA_RAR_CREATED_IS_CTIME] is True
+
+
+def test_rar4_xtime_fixture_surfaces_accessed_and_created() -> None:
+    """Listing, no unrar: RAR4 EXTTIME fills accessed/created as naive wall-clock."""
+    with open_archive(_fixture("xtime__rar4.rar")) as archive:
+        member = archive.get("file.txt")
+        assert member.modified == datetime(2020, 1, 15, 12, 0, 0)
+        assert member.accessed == datetime(2021, 6, 20, 18, 30, 0)
+        assert member.modified.tzinfo is None
+        assert member.accessed.tzinfo is None
+        assert member.created is not None
+        assert member.created.tzinfo is None
+        assert member.created != member.modified
+        assert member.created != member.accessed
+        assert member.extra[EXTRA_RAR_CREATED_IS_CTIME] is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "stored_m0.rar",  # RAR5 extra has mtime+ns only
+        "basic_nonsolid__rar4.rar",  # EXTTIME mtime nibble only
+        "rar15-comment.rar",  # no EXTTIME
+    ],
+)
+def test_xtime_absent_accessed_created_are_none(name: str) -> None:
+    with open_archive(_fixture(name)) as archive:
+        files = [m for m in archive.members() if m.is_file]
+        assert files
+        for member in files:
+            assert member.accessed is None
+            assert member.created is None
+            assert member.modified is not None
+            assert EXTRA_RAR_CREATED_IS_CTIME not in member.extra
+
+
+@pytest.mark.parametrize(
+    ("host_os", "ctime", "expected"),
+    [
+        (3, datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc), True),
+        (2, datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc), False),
+        (0, datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc), False),
+        (3, None, None),
+        (None, datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc), None),
+    ],
+)
+def test_created_is_ctime_extra_follows_host_os(
+    host_os: int | None, ctime: datetime | None, expected: bool | None
+) -> None:
+    """``extra["rar.created_is_ctime"]`` is Unix-only and omitted without a ctime."""
+    reader = object.__new__(rar_reader.RarReader)
+    reader._diagnostics_collector = None
+    reader._archive_name = "<test>"
+    info = RarMemberInfo(
+        filename="a.txt",
+        orig_filename=b"a.txt",
+        file_size=0,
+        compress_size=0,
+        compress_type=0x30,
+        crc32=None,
+        blake2sp_hash=None,
+        mtime=None,
+        ctime=ctime,
+        atime=None,
+        mode=None,
+        host_os=host_os,
+        flags=0,
+        file_redir=None,
+        file_encryption=None,
+        header_offset=0,
+        header_size=0,
+        data_offset=0,
+        extract_version=50,
+        file_solid=False,
+        is_directory=False,
+        is_symlink=False,
+        is_hardlink_or_copy=False,
+        is_encrypted=False,
+        volume_index=0,
+        split_before=False,
+        split_after=False,
+    )
+    member = rar_reader.RarReader._to_member(reader, info)
+    if expected is None:
+        assert EXTRA_RAR_CREATED_IS_CTIME not in member.extra
+    else:
+        assert member.extra[EXTRA_RAR_CREATED_IS_CTIME] is expected
+
+
 def test_rar_reader_masks_hostile_unix_mode() -> None:
     """Atheris: huge RAR5 mode vint must not OverflowError in ``stat.S_IMODE``."""
     from archivey.internal.backends.rar_parser import RarMemberInfo
@@ -1087,6 +1320,8 @@ def test_rar_reader_masks_hostile_unix_mode() -> None:
         crc32=None,
         blake2sp_hash=None,
         mtime=None,
+        ctime=None,
+        atime=None,
         mode=(1 << 80) | 0o100644,
         host_os=3,
         flags=0,

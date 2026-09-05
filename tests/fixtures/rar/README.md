@@ -87,6 +87,14 @@ Seek-respawn (named `unrar p` with `seekable_members=True`):
 (`-m0` store archives do not set the solid bit even with `-s`; the flags still
 match the regeneration commands in `scripts/gen_rar_fixtures.py`.)
 
+Extended timestamps (`-tsmca`: modification, creation, access). Default `rar a`
+stores mtime only; these two are the ones that carry `accessed` / `created`.
+
+| Files | Notes |
+| --- | --- |
+| `xtime__.rar` | RAR5 `-m0 -tsmca`; one `file.txt`; mtime 2020-01-15 12:00:00 UTC, atime 2021-06-20 18:30:00 UTC. ctime is the build machine's inode-change time and is deliberately not pinned; tests assert presence, not value |
+| `xtime__rar4.rar` | RAR4 `-ma4 -m0 -tsmca`; same member and pinned mtime/atime; ctime likewise unpinned |
+
 ## Legacy (not regenerated)
 
 | File | Provenance |

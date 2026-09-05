@@ -136,6 +136,12 @@ _FILE_VERSION_REVISIONS: tuple[bytes, ...] = (
     b"version-three!!!",
 )
 
+# Pinned wall-clocks for the ``-tsmca`` fixtures. ctime is inode-change on
+# Unix and is whatever the writer saw; tests require it present, not equal.
+_XTIME_PAYLOAD = b"xtime-payload\n"
+_XTIME_MTIME = "2020-01-15 12:00:00"
+_XTIME_ATIME = "2021-06-20 18:30:00"
+
 _FILE_VERSION_SOLID_V1 = b"AAA-v1"
 _FILE_VERSION_SOLID_OTHER = b"BBB-payload"
 _FILE_VERSION_SOLID_V2 = b"AAA-v2-longer"
@@ -147,6 +153,26 @@ _SEEK_RESPAWN: tuple[_File, ...] = (
     _File("prefix.bin", _SEEK_RESPAWN_PAD),
     _File("tail.txt", b"tail-member\n"),
 )
+
+
+def _touch_times(path: Path, *, mtime: str, atime: str) -> None:
+    env = os.environ.copy()
+    env["TZ"] = "UTC"
+    subprocess.run(["touch", "-d", mtime, str(path)], check=True, env=env)
+    subprocess.run(["touch", "-a", "-d", atime, str(path)], check=True, env=env)
+
+
+def _build_xtime(rar_bin: Path, out: Path, *, extra: Sequence[str] = ()) -> None:
+    """One stored ``file.txt`` with mtime+ctime+atime (``-tsmca``)."""
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        path = root / "file.txt"
+        path.write_bytes(_XTIME_PAYLOAD)
+        _touch_times(path, mtime=_XTIME_MTIME, atime=_XTIME_ATIME)
+        _rar_a(rar_bin, out, ["file.txt"], cwd=root, extra=(*extra, "-m0", "-tsmca"))
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
 
 
 def _run(cmd: Sequence[str], *, cwd: Path) -> None:
@@ -520,6 +546,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         extra=("-m3",),
     )
     _build_wildcard_ver(rar5_bin, out_dir / "wildcard_ver__.rar")
+    _build_xtime(rar5_bin, out_dir / "xtime__.rar")
     build(
         rar5_bin,
         "stored_m0.rar",
@@ -606,6 +633,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         print(f"wrote {vol0.relative_to(REPO_ROOT)}")
         print(f"wrote {vol1.relative_to(REPO_ROOT)}")
 
+    _build_xtime(rar4_bin, out_dir / "xtime__rar4.rar", extra=("-ma4",))
     build(rar4_bin, "basic_nonsolid__rar4.rar", _BASIC, extra=("-ma4", "-m0"))
     build(rar4_bin, "basic_solid__rar4.rar", _BASIC, extra=("-ma4", "-s", "-m3"))
     build(

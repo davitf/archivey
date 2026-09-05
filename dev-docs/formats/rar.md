@@ -237,7 +237,7 @@ between to blame or to defer to.
 | `raw_name` | Stored name bytes, verbatim — including RAR3's `path;n` bytes, which are not rewritten | — |
 | `size` / `compressed_size` | Header sizes; RAR3 `FILE_LARGE` extends both to 64 bits, and the packed skip is extended with them so the walk does not misparse past a >4 GiB member (F5, fixed) | — |
 | `modified` | RAR4 DOS time → naive local; RAR5 Unix/FILETIME → aware UTC. Out-of-range values are swallowed rather than aborting the listing | The header carries none, or every value was out of range |
-| `accessed` / `created` | Not surfaced. RAR5 carries both in its `0x03` time extra and the parser reads past them; RAR3 EXTTIME is the same shape. A parity gap, not a format limit — §10 #10 | Always |
+| `accessed` / `created` | RAR5 `0x03` time extra (`HAS_ATIME` / `HAS_CTIME`); RAR3 EXTTIME after mtime (ctime then atime; arctime is unused). Same tz convention as that generation's `modified`. No ZIP-style extra-field precedence. The RARLAB writer emits one time extra; a later extra without `HAS_CTIME` / `HAS_ATIME` does not wipe earlier values. A Unix RARLAB writer fills the creation slot from `st_ctime` (inode-change), not birth time — those members set `extra["rar.created_is_ctime"]` (`EXTRA_RAR_CREATED_IS_CTIME`) to `True`; Win32 (and other non-Unix hosts) set it to `False`. The key is omitted when `created` is `None` or `host_os` is unknown. Do not infer this from `create_system` | The extra or slot is absent |
 | `mode` | Unix host: `S_IMODE` of the stored attributes, masked before the C helper so a hostile vint cannot raise `OverflowError` mid-listing | Non-Unix host. A Win32 host puts its attribute word in `windows_attrs`; a FAT, OS/2, Macintosh or BeOS host gets **neither** field |
 | `type` | Directory flag; RAR5 `file_redir` gives `HARDLINK` for hard links and file copies, `SYMLINK` for Unix/Windows symlinks and junctions (a junction also sets `extra` `is_junction`) | — |
 | `link_target` | RAR5: the redirect's target string, at list time. RAR4: the member's **data**, read directly when it is stored and unencrypted | An encrypted or compressed RAR4 target with no direct bytes — left unset; listing still succeeds |
@@ -245,7 +245,7 @@ between to blame or to defer to.
 | `hashes` | `crc32` and/or `blake2sp` as bytes | A RAR5 **redirect** (see below), or an encrypted member whose digests are tweaked |
 | `is_encrypted` | Per-member encryption flag | — |
 | `is_current` | `False` for a file-version history row, `True` for the live revision | — |
-| `extra` | `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member | — |
+| `extra` | `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member; `rar.created_is_ctime` when `created` is present (see that row) | — |
 | `comment` | Not surfaced. A RAR3 per-member solid comment block is parsed into `_raw.comment` and dropped; the *archive* comment does reach `ArchiveInfo.comment` — §10 #12 | Always |
 
 Two digest rules are worth stating because they look like missing data and are not:
@@ -677,6 +677,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
 | Listing is a header-to-header walk, seeking once per member, and it scales with the member count (§1) | `::test_listing_walks_header_to_header_rather_than_reading_an_index` — it also fails if `QO` support (§10 #5) ever lands, so the page cannot drift past the code |
 | Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |
+| RAR5/RAR3 `accessed`/`created` from the time extra, and `None` when the extra or slot is absent | `::test_rar5_xtime_fixture_surfaces_accessed_and_created`, `::test_rar4_xtime_fixture_surfaces_accessed_and_created`, `::test_xtime_absent_accessed_created_are_none`, `::test_parse_rar5_xtime_keeps_ctime_and_atime_with_ns`, `::test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime` |
 | RAR3 compressed-name decode fails closed on overrun; long RLE stays bounded (§4) | `::test_rar3_compressed_name_decode_is_bounded`, `::test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present`, `::test_rar3_rle_name_may_be_longer_than_encdata`, `::test_rar3_rle_name_zero_correction_keeps_hi_byte`, `::test_rar3_unicode_name_decode_matches_reference_and_stays_bounded` |
 | The >4 GiB RAR3 packed skip, and split-continuation identity checks | `::test_rar3_large_packed_member_skips_full_64bit_size`, `::test_rar3_mismatched_split_continuation_is_corruption` and the three tests after it |
 | Member-table ceiling at parse, `ListingLimits` at materialization | `::test_rar_parser_bounds_member_count`, `::test_rar_members_enforces_listing_limits` |
@@ -760,7 +761,7 @@ rest of the page keep resolving. Closed so far: **#1** the RAR3 name-decode boun
 respawns named `unrar` on a backward seek; **#3** wildcard member names whose globs are
 confined to the basename (no backslash) read via the `-n` mask plus a skip of other
 matches — directory-component globs and backslash names stay refused, carried by **#18**;
-**#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#13** `close()` chaining and **#14**
+**#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#10** RAR5/RAR3 `accessed`/`created` from the time extra ([#300](https://github.com/davitf/archivey/pull/300)); **#13** `close()` chaining and **#14**
 shared FILETIME ([#291](https://github.com/davitf/archivey/pull/291)); and **#15** `_live_unrar`,
 deleted outright when [#293](https://github.com/davitf/archivey/pull/293) moved the
 single-live-stream gate ahead of the spawn it was a backstop for.
@@ -772,7 +773,6 @@ single-live-stream gate ahead of the spawn it was a backstop for.
 | 7 | **Enforce an `unrar` version floor**, or stop claiming one. Identification is a banner check with no version parse, though the version is right there in the banner we already read | An ancient RARLAB build is accepted and then fails per member instead of at identification | At a glance |
 | 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
 | 9 | **Give RAR compression a name.** Add `CompressionAlgorithm.RAR` and carry the extract version (15/20/29/50) alongside it, replacing today's `UNKNOWN` + level. **Name decided: plain `RAR`** — see the note under this table | The header identifies the algorithm, so `UNKNOWN` claims "we could not tell" when we can, and it is what a caller comparing formats sees | §5, §2.2 |
-| 10 | **Surface RAR5 `accessed` / `created`.** `_parse_rar5_xtime` reads past both and keeps neither; `RarMemberInfo` has no field for them. RAR3 EXTTIME is the same shape | ZIP surfaces all three with a precedence chain; RAR returning `None` looks like a format limit and is not one | §2.2 |
 | 11 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
 | 12 | **Map `_raw.comment` onto `member.comment`**, and read RAR 1.5 / 2.x old-style embedded comment blocks — `rarfile` returns both where we return `None` | Parsed and then dropped, which is the cheapest kind of gap to close | §2.2, §5 |
 | 16 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
