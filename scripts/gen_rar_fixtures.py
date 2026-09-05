@@ -103,6 +103,14 @@ _FILE_VERSION_SOLID_V1 = b"AAA-v1"
 _FILE_VERSION_SOLID_OTHER = b"BBB-payload"
 _FILE_VERSION_SOLID_V2 = b"AAA-v2-longer"
 
+# 1 MiB repeating pad: a solid later-member rewind crosses the diagnostic
+# threshold, and unrar is still writing when a test seeks mid-stream.
+_SEEK_RESPAWN_PAD = b"0123456789abcdef" * (1024 * 1024 // 16)
+_SEEK_RESPAWN: tuple[_File, ...] = (
+    _File("prefix.bin", _SEEK_RESPAWN_PAD),
+    _File("tail.txt", b"tail-member\n"),
+)
+
 
 def _run(cmd: Sequence[str], *, cwd: Path) -> None:
     env = os.environ.copy()
@@ -357,6 +365,12 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     # --- RAR5 ---
     build(rar5_bin, "basic_nonsolid__.rar", _BASIC, extra=("-m0",))
     build(rar5_bin, "basic_solid__.rar", _BASIC, extra=("-s", "-m3"))
+    build(
+        rar5_bin,
+        "seek_respawn_solid__.rar",
+        _SEEK_RESPAWN,
+        extra=("-s", "-m3", "-ds"),
+    )
     build(
         rar5_bin,
         "comment__.rar",
