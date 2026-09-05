@@ -167,7 +167,7 @@ compressed stream is a real shape for script launchers and not for executable on
 | What you see | Where | More |
 | --- | --- | --- |
 | A prefixed ZIP behind bytes that fire no cue (a JPEG polyglot, a plain concatenation) is not detected, though `open_archive(..., format=ZIP)` reads it | **archivey** | The tail probe is the tier that would find it (§2) |
-| A self-extracting *and* split set's **stub** (`vol.exe` with no archive magic) raises `FormatDetectionError` rather than resolving to its `.001` | **archivey** | Sibling discovery now joins `vol.exe.001`…`.00N` and `rv.part1.sfx` + later `.rar` parts. The stub-only file is the remaining half of [`open-issues.md`](../open-issues.md) P17, a detection-side question rather than a volume-discovery one |
+| A self-extracting *and* split set's **stub** (`vol.exe` with no archive magic) raises `FormatDetectionError` rather than resolving to its `.001` | **archivey** | Sibling discovery now joins `vol.exe.001`…`.00N` and `rv.part1.sfx` + later `.rar` parts. Remaining P17 items: this stub-only detection question, and an old-scheme SFX first volume (`name.exe` + `.r00`) that is still undiscovered |
 | `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped. Renaming to `prefixed_scan` is cheap while the value is still changeable — [`open-issues.md`](../open-issues.md) P18 |
 | A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the forward scan needs a cue in the first bytes |
 

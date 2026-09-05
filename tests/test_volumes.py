@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 import tarfile
 import zipfile
 from pathlib import Path
@@ -22,6 +23,8 @@ from tests.conftest import requires_binary
 
 _7Z_MAGIC = bytes.fromhex("377abcaf271c")
 _RAR_MAGIC = b"Rar!\x1a\x07\x00"
+_RAR5_ID = b"Rar!\x1a\x07\x01\x00"
+_RAR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rar"
 
 
 def test_discover_skips_stat_for_non_volume_names(tmp_path: Path) -> None:
@@ -167,6 +170,41 @@ def test_discover_rar_sfx_exe_first_volume_joins_later_rar_parts(
     assert [p.name for p in siblings] == expected
 
 
+def test_discover_rar_sfx_duplicate_part1_prefers_named_file(tmp_path: Path) -> None:
+    for name in ("rv.part1.sfx", "rv.part1.rar", "rv.part2.rar", "rv.part3.rar"):
+        (tmp_path / name).write_bytes(b"")
+    from_sfx = discover_volume_siblings(tmp_path / "rv.part1.sfx")
+    from_rar = discover_volume_siblings(tmp_path / "rv.part1.rar")
+    assert from_sfx is not None
+    assert from_rar is not None
+    assert [p.name for p in from_sfx] == [
+        "rv.part1.sfx",
+        "rv.part2.rar",
+        "rv.part3.rar",
+    ]
+    assert [p.name for p in from_rar] == [
+        "rv.part1.rar",
+        "rv.part2.rar",
+        "rv.part3.rar",
+    ]
+
+
+def test_rar_sfx_duplicate_part1_opens_the_named_set(tmp_path: Path) -> None:
+    # Two files claiming part 1 used to concatenate both and fail with
+    # "Out-of-order RAR volume". Prefer the name the caller opened.
+    expected = b"ABCDEFGH" * 200
+    sfx = tmp_path / "tinyvol.part1.sfx"
+    sfx.write_bytes(
+        b"MZ" + b"\x00" * 4094 + (_RAR_FIXTURES / "tinyvol.part1.rar").read_bytes()
+    )
+    shutil.copy(_RAR_FIXTURES / "tinyvol.part1.rar", tmp_path / "tinyvol.part1.rar")
+    shutil.copy(_RAR_FIXTURES / "tinyvol.part2.rar", tmp_path / "tinyvol.part2.rar")
+    for anchor in (sfx, tmp_path / "tinyvol.part1.rar"):
+        with open_archive(anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert archive.read("payload.bin") == expected
+
+
 def test_discover_old_rar_rnn_volumes(tmp_path: Path) -> None:
     (tmp_path / "archive.rar").write_bytes(b"")
     for name in ("archive.r01", "archive.r00"):
@@ -227,10 +265,9 @@ def test_multi_volume_rar_opens_volume_set_or_rejects_stub(tmp_path: Path) -> No
 def test_multi_volume_rar_real_roundtrip(tmp_path: Path) -> None:
     import subprocess
 
-    payload = tmp_path / "payload.bin"
-    payload.write_bytes(b"VOLDATA!" * 100)
+    payload = _write_sfx_split_payload(tmp_path)
     result = subprocess.run(
-        ["rar", "a", "-m0", "-v400b", str(tmp_path / "set.rar"), str(payload.name)],
+        ["rar", "a", "-m0", "-v40k", str(tmp_path / "set.rar"), str(payload.name)],
         cwd=tmp_path,
         capture_output=True,
         check=False,
@@ -280,8 +317,10 @@ def test_sevenzip_sfx_numbered_parts_open_from_any_part(
     first = tmp_path / "vol.exe.001"
     second = tmp_path / "vol.exe.002"
     stub = tmp_path / "vol.exe"
-    if not first.is_file() or not second.is_file() or not stub.is_file():
-        pytest.skip("7z did not produce an SFX numbered volume set")
+    found = sorted(p.name for p in tmp_path.iterdir())
+    assert first.is_file() and second.is_file() and stub.is_file(), (
+        f"7z succeeded but did not write an SFX numbered set; found {found}"
+    )
     assert first.read_bytes()[: len(first_magic)] == first_magic
 
     expected = payload.read_bytes()
@@ -296,14 +335,56 @@ def test_sevenzip_sfx_numbered_parts_open_from_any_part(
         open_archive(stub)
 
 
+def _tinyvol_sfx_pair(tmp_path: Path, *, decoy: bool) -> tuple[Path, Path]:
+    stub = bytearray(b"MZ" + b"\x00" * 4094)
+    if decoy:
+        stub[1024:1032] = _RAR5_ID
+    part1 = tmp_path / "tinyvol.part1.sfx"
+    part1.write_bytes(bytes(stub) + (_RAR_FIXTURES / "tinyvol.part1.rar").read_bytes())
+    part2 = tmp_path / "tinyvol.part2.rar"
+    shutil.copy(_RAR_FIXTURES / "tinyvol.part2.rar", part2)
+    return part1, part2
+
+
+def test_rar_sfx_split_opens_from_stubbed_tinyvol_fixtures(tmp_path: Path) -> None:
+    part1, part2 = _tinyvol_sfx_pair(tmp_path, decoy=False)
+    expected = b"ABCDEFGH" * 200
+    for anchor in (part1, part2):
+        with open_archive(anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert archive.read("payload.bin") == expected
+        # Explicit format= skips detection, so volume 1 is parsed from offset 0.
+        # A stub with no decoy magic still works; the decoy case is the next test.
+        with open_archive(anchor, format=ArchiveFormat.RAR) as archive:
+            assert archive.info.is_multivolume is True
+            assert archive.read("payload.bin") == expected
+
+
+def test_rar_sfx_split_ignores_decoy_magic_in_stub(tmp_path: Path) -> None:
+    # Detection validates the main header; the parser's first-magic scan does not.
+    # Threading that origin into volume 1 is what lets listing succeed. ``unrar``
+    # still takes the decoy (exit 3, empty output), so this pins open/list only.
+    part1, part2 = _tinyvol_sfx_pair(tmp_path, decoy=True)
+    for anchor in (part1, part2):
+        with open_archive(anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+
+
 @requires_binary("rar")
 @requires_binary("unrar")
 def test_rar_sfx_split_opens_from_sfx_and_later_part(tmp_path: Path) -> None:
+    import os
     import subprocess
 
-    payload = _write_sfx_split_payload(tmp_path)
+    # Linux rar's SFX stub is ~250 KiB, so ``-v`` must exceed that or rar
+    # writes a single ``rv.sfx`` and never splits. ``-m3`` plus random bytes
+    # so ``read()`` goes through ``unrar`` rather than a stored ConcatenatedFile
+    # slice. 800 KiB at 300 KiB volumes is at least two parts after compression.
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(os.urandom(800_000))
     result = subprocess.run(
-        ["rar", "a", "-sfx", "-m0", "-v40k", str(tmp_path / "rv.rar"), payload.name],
+        ["rar", "a", "-sfx", "-m3", "-v300k", str(tmp_path / "rv.rar"), payload.name],
         cwd=tmp_path,
         capture_output=True,
         check=False,
@@ -313,7 +394,10 @@ def test_rar_sfx_split_opens_from_sfx_and_later_part(tmp_path: Path) -> None:
     part1 = tmp_path / "rv.part1.sfx"
     part2 = tmp_path / "rv.part2.rar"
     if not part1.is_file() or not part2.is_file():
-        pytest.skip("rar did not produce an SFX multi-volume set")
+        pytest.skip(
+            "rar did not produce an SFX multi-volume set "
+            f"(found {sorted(p.name for p in tmp_path.iterdir())})"
+        )
 
     expected = payload.read_bytes()
     for anchor in (part1, part2):

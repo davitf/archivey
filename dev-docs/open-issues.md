@@ -597,13 +597,14 @@ re-verified failing against the unfixed code). Original write-up below.
 - **Refs:** PR #101 (still open) / `dev-docs/investigations/rar-unrar-piping-investigation.md`
   (when merged); `format-rar`; handbook `formats/rar.md` §4 / §8.
 
-### P17. SFX stub-only files do not resolve to their `.001` — **open** (sibling patterns done)
+### P17. SFX stub-only files do not resolve to their `.001` — **open** (partN / numbered siblings done)
 
-- **Done (1).** Sibling discovery joins SFX first members. `vol.exe.001`…`.00N` share
-  base `vol.exe` (the stub `vol.exe` is not a sibling). `rv.part1.sfx` + later
-  `.partN.rar` share base `rv`, from either the `.sfx` or a later `.rar` part.
-  `_NUMBERED_VOLUME_RE` accepts `.exe` besides `.7z`/`.zip` (still `\d{3,}`);
-  `_RAR_PART_RE` accepts `.sfx`/`.exe` besides `.rar`.
+- **Done (1).** Sibling discovery joins SFX first members of the numbered and
+  `partN` schemes. `vol.exe.001`…`.00N` share base `vol.exe` (the stub `vol.exe`
+  is not a sibling). `rv.part1.sfx` + later `.partN.rar` share base `rv`, from
+  either the `.sfx` or a later `.rar` part. `_NUMBERED_VOLUME_RE` accepts `.exe`
+  besides `.7z`/`.zip` (still `\d{3,}`); `_RAR_PART_RE` accepts `.sfx`/`.exe`
+  besides `.rar`.
 
 - **Still open (2).** A stub-only file (`vol.exe`, no archive magic anywhere in it)
   raises `FormatDetectionError` rather than resolving to its `.001`. Detection-side,
@@ -613,6 +614,12 @@ re-verified failing against the unfixed code). Original write-up below.
   | --- | --- | --- | --- |
   | `7z a -sfx7zCon.sfx -v40k` | `vol.exe`, `vol.exe.001`…`.004` | stub → `FormatDetectionError`; `.001` → `CorruptionError: Truncated 7z next header` | `.001` joins; stub still `FormatDetectionError` |
   | `rar a -sfx -v40k` | `rv.part1.sfx`, `rv.part2.rar`…`.part5.rar` | `.part1.sfx` → `TruncatedError`; later parts → `Need first volume` | full set from either |
+
+- **Still open (3).** An old-scheme SFX first volume (`name.exe` / `name.sfx`
+  beside `name.r00`, `name.r01`, …) is not discovered. The `.rNN` branch
+  requires `<base>.rar` as volume 1, and `name.exe` matches no pattern. RAR
+  7.00 dropped `-vn`, so no current producer emits this; leave it unimplemented
+  unless a legacy corpus shows up. Not the same question as (2).
 
 - **Refs:** `volumes.py` (`_NUMBERED_VOLUME_RE`, `_RAR_PART_RE`); handbook
   `formats/rar.md` §10 #11; `topics/prefixed-archives.md` §6. Grill after PR #279

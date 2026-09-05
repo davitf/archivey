@@ -42,9 +42,10 @@ SourceSequence = Sequence[SourceItem]
 # ``name.zip.1`` / ``name.zip.2`` — what wget and naive rotation produce for two
 # downloads of the *same* file — and concatenate two independent complete archives,
 # handing back the wrong file's contents with no error. The completeness check cannot
-# catch it either: ``[1, 2]`` is exactly ``1..N``. This also keeps the pattern in step
-# with ``is_zip_split_segment_name``, which already required ``zip\.\d{3,}``; the two
-# disagreeing about the same name is what let it through.
+# catch it either: ``[1, 2]`` is exactly ``1..N``. ``.exe`` is format-agnostic (7-Zip
+# writes it for a 7z or ZIP payload), so this pattern is not kept in step with
+# ``is_zip_split_segment_name`` (still ``zip\.\d{3,}`` / ``.zNN``). A lone
+# ``.exe.001`` is therefore not diagnosed as an unjoined ZIP split.
 _NUMBERED_VOLUME_RE = re.compile(
     r"^(?P<base>.+\.(?:7z|zip|exe))\.(?P<part>\d{3,})$", re.IGNORECASE
 )
@@ -71,6 +72,19 @@ def _numbered_part_number(name: str) -> int:
 def _rar_part_number(name: str) -> int:
     match = _RAR_PART_RE.match(name)
     return int(match.group("part")) if match is not None else 0
+
+
+def _pick_rar_part(candidates: list[Path], named_part: int, named_lower: str) -> Path:
+    """One file per part number. Prefer the name the caller opened."""
+    part = _rar_part_number(candidates[0].name)
+    if part == named_part:
+        for candidate in candidates:
+            if candidate.name.lower() == named_lower:
+                return candidate
+    for candidate in candidates:
+        if candidate.suffix.lower() == ".rar":
+            return candidate
+    return candidates[0]
 
 
 def _rnn_part_number(name: str) -> int:
@@ -116,17 +130,22 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     match = _RAR_PART_RE.match(name)
     if match is not None:
         base = match.group("base")
-        siblings = sorted(
-            (
-                candidate
-                for candidate in parent.iterdir()
-                if candidate.is_file()
-                and (part_match := _RAR_PART_RE.match(candidate.name)) is not None
-                and part_match.group("base").lower() == base.lower()
-            ),
-            key=lambda candidate: _rar_part_number(candidate.name),
-        )
-        return siblings if len(siblings) > 1 else None
+        grouped: dict[int, list[Path]] = {}
+        for candidate in parent.iterdir():
+            if not candidate.is_file():
+                continue
+            part_match = _RAR_PART_RE.match(candidate.name)
+            if part_match is None or part_match.group("base").lower() != base.lower():
+                continue
+            grouped.setdefault(int(part_match.group("part")), []).append(candidate)
+        if len(grouped) <= 1:
+            return None
+        named_part = int(match.group("part"))
+        named_lower = name.lower()
+        return [
+            _pick_rar_part(grouped[part], named_part, named_lower)
+            for part in sorted(grouped)
+        ]
 
     if lower.endswith(".rar") and _RAR_PART_RE.match(name) is None:
         base = name[:-4]
