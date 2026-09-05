@@ -17,15 +17,15 @@ containers, so a format name would be the wrong thing to install. On a free-thre
 build use `archivey[free-threaded]`; see
 [Platforms and threading](support-matrix.md#free-threaded-python-313t-and-later).
 
-RAR **member data** also needs the RARLAB `unrar` binary on `PATH` (listing works without
-it). How to get that binary is below; format quirks live on
+RAR **member data** also needs RARLAB `unrar` **7.0 or later** on `PATH` (listing works
+without it). How to get that binary is below; format quirks live on
 [Formats and extras](formats.md).
 
 ## What each format needs
 
 The per-format detail lives on [Formats and extras](formats.md); the short version
 is that every format except RAR is a pip install away, and RAR **member data** needs
-the RARLAB `unrar` binary on `PATH` — not `unrar-free`, `unar`, or `7z`. `rarfile`
+RARLAB `unrar` **7.0 or later** on `PATH` — not `unrar-free`, `unar`, or `7z`. `rarfile`
 accepts those last two as data backends; archivey does not: they either cannot read
 solid RAR or fail silently on it. Listing and metadata work without it.
 
@@ -33,7 +33,9 @@ solid RAR or fail silently on it. Listing and metadata work without it.
 
 Listing a RAR works without it. Reading member bytes does not. Archivey looks for a
 binary named `unrar` whose banner contains `UNRAR` plus `Alexander Roshal` or
-`RARLAB` — run `unrar` with no arguments to check.
+`RARLAB`, and whose version in that banner is **7.0 or later** (`UNRAR 7.00`,
+`UNRAR 7.11`). Run `unrar` with no arguments to check. An older RARLAB build is
+refused at identification, not per member.
 
 ### Linux
 
@@ -59,7 +61,7 @@ are not Apple-notarized.
 
 ```bash
 brew install gromgit/new-life/unrar
-unrar   # confirm the banner names RARLAB / Alexander Roshal
+unrar   # confirm UNRAR 7.0+ and RARLAB / Alexander Roshal
 ```
 
 The tap is not Homebrew core. `brew install` trusts whatever formula the tap serves
