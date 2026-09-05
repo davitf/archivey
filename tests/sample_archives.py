@@ -285,6 +285,27 @@ _LARGE = tuple(
     for i in (1, 2, 3)
 )
 
+# RAR stores incompressible data, so `_LARGE` (urandom) never exercises the unrar
+# pipe. Zeros / repeated text with `-m3` actually compress; the seekability contract
+# asserts that before treating the row as the compressed path.
+_COMPRESSED = (
+    F("zeros.bin", b"\x00" * 8192),
+    F("repeated.txt", b"hello world\n" * 700),
+)
+
+# py7zr's default folder is solid LZMA2. COPY so the seek contract sees a stored 7z
+# member, not only the compressed-solid path `basic` already covers.
+_SEVENZIP_STORED = (F("stored.bin", b"I am a 7z COPY member.\n" * 250),)
+
+# Extra `rar a` flags keyed by entry id. Do not add flags for existing ids: that
+# would change committed RAR fixtures without a regeneration.
+_RAR_ADD_FLAGS: dict[str, tuple[str, ...]] = {
+    # `-s-`: named unrar-pipe path, not a solid ALL-pipe. `-m3`: do not store.
+    "compressed": ("-m3", "-s-"),
+}
+
+_7Z_COPY_ENTRY_IDS = frozenset({"sevenzip-stored"})
+
 # Adversarial names/links: listing stays faithful; safe extraction must reject each
 # member marked unsafe (and only those). The backslash name is rejected because the
 # universal check deliberately treats ``..`` between *either* separator as traversal.
@@ -345,6 +366,8 @@ CORPUS: tuple[CorpusEntry, ...] = (
     CorpusEntry("zip-compression-methods", _ZIP_METHODS, ("zip",)),
     CorpusEntry("duplicates", _DUPLICATES, ("zip", "tar")),
     CorpusEntry("large", _LARGE, ("zip", "tar.gz", "tar.zst", "7z", "rar")),
+    CorpusEntry("compressed", _COMPRESSED, ("rar",)),
+    CorpusEntry("sevenzip-stored", _SEVENZIP_STORED, ("7z",)),
     CorpusEntry("adversarial", _ADVERSARIAL_COMMON, ("zip",)),
     CorpusEntry("adversarial-tar", _ADVERSARIAL_TAR, ("tar", "tar.gz")),
     # Encrypted ZIPs are built with the 7z CLI (stdlib zipfile cannot write encryption).
@@ -609,8 +632,17 @@ def _7z_build(entry: CorpusEntry, path: Path) -> None:
         tmp = Path(td)
         _dir_build(entry, tmp)
         password = entry.passwords[0] if entry.passwords else None
+        filters = None
+        if entry.id in _7Z_COPY_ENTRY_IDS:
+            from py7zr.properties import FILTER_COPY
+
+            filters = [{"id": FILTER_COPY}]
         with py7zr.SevenZipFile(
-            path, "w", password=password, header_encryption=entry.encrypt_header
+            path,
+            "w",
+            password=password,
+            header_encryption=entry.encrypt_header,
+            filters=filters,
         ) as zf:
             for item in sorted(tmp.rglob("*")):
                 zf.write(item, arcname=item.relative_to(tmp).as_posix())
@@ -635,7 +667,15 @@ def _rar_build(entry: CorpusEntry, path: Path) -> None:
         ordered_passwords.extend(p for p in groups if p is not None)
         for password in ordered_passwords:
             names = groups[password]
-            cmd = ["rar", "a", "-ol", "-oh", str(path), *names]
+            cmd = [
+                "rar",
+                "a",
+                "-ol",
+                "-oh",
+                *_RAR_ADD_FLAGS.get(entry.id, ()),
+                str(path),
+                *names,
+            ]
             if password is not None:
                 cmd.insert(2, f"-p{password}")
             subprocess.run(cmd, cwd=tmp, check=True, capture_output=True)
