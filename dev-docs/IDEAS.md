@@ -128,6 +128,13 @@
 
 ## API & ergonomics
 
+- **`stream_members()` seekability leak** — the intended rule is that a sequential pass
+  is never seekable (`seekable_members=True` only changes random `open()`). Enforced
+  today only where seeking is physically impossible (solid RAR ALL-pipe, solid 7z).
+  ZIP, TAR, TAR.GZ, and non-solid RAR `stream_members()` handles report `seekable()`
+  when the source is a file. Raised on #295 (F9); wants a `testing-contract` delta
+  and a behaviour change for callers who may lean on it. Not a RAR-only fix.
+
 - **Generalize "a refused `open()` leaves nothing behind" into a lifecycle rule** —
   #293 made the single-live-stream gate fire before the member is opened and specified
   that one case (`archive-reading` gate matrix, `testing-contract`). The broader rule —

@@ -79,7 +79,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.reader_state import LiveStreamReservation, ReaderState
 from archivey.internal.selection import normalize_member_selector
 from archivey.internal.sfx import HitValidator
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,
@@ -779,6 +779,7 @@ class BaseArchiveReader(ArchiveReader):
         digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]]
         | None = None,
         verify_member: ArchiveMember | None = None,
+        rewind_warning: RewindWarning | None = None,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
@@ -840,6 +841,7 @@ class BaseArchiveReader(ArchiveReader):
                 digest_transforms=digest_transforms,
                 verify_member=verify_member,
                 archive_name=self._archive_name,
+                rewind_warning=rewind_warning,
             )
 
         assert inner is not None
@@ -862,6 +864,7 @@ class BaseArchiveReader(ArchiveReader):
             digest_transforms=digest_transforms,
             verify_member=verify_member,
             archive_name=self._archive_name,
+            rewind_warning=rewind_warning,
         )
 
     @abstractmethod

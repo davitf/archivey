@@ -62,11 +62,17 @@ class RewindWarning:
     warning names it. ``suggest_install`` is True when that package is absent (tell the user to
     install it) and False when it is present but was not engaged for this stream. Codecs with a
     native random-access index (or an active accelerator) carry no ``RewindWarning``.
+
+    ``min_redecode_bytes`` is a cost floor the predicate maxes against. Use it when the
+    carrier re-decodes bytes the member stream's own ``tell()`` does not contain (a
+    subprocess that restarts a solid archive from member zero). Leave it 0 when the
+    discarded member-stream progress is the whole cost.
     """
 
     codec_name: str
     accelerator: str | None = None
     suggest_install: bool = True
+    min_redecode_bytes: int = 0
 
 
 def _noop_stamp(_exc: ArchiveyError) -> None:
@@ -452,7 +458,7 @@ class ArchiveStream(ReadOnlyIOStream):
         # the index-less codecs — stdlib LZMA Alone, brotli, lz4 — reporting, which is
         # the behaviour this change must not lose while replacing the codec-name rule.
         resume = self.nearest_resume_offset(after) or 0
-        distance = before - resume
+        distance = max(before - resume, warning.min_redecode_bytes)
         if distance < REWIND_REDECODE_WARN_BYTES:
             return
         context = StreamRewindContext(

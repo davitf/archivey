@@ -65,6 +65,12 @@ rather than built on demand:
 | `many_list_store__.rar` | RAR5 `-m0 -s -ep1`; 1000 tiny `fNNNNN.txt` members |
 | `many_list_store_nonsolid__.rar` | RAR5 `-m0 -s- -ep1`; 256 tiny members |
 
+Seek-respawn (named `unrar p` with `seekable_members=True`):
+
+| Files | Notes |
+| --- | --- |
+| `seek_respawn_solid__.rar` | RAR5 `-s -m3 -ds`; add-order `prefix.bin` (1 MiB repeating) then `tail.txt`. `-ds` keeps that order so the later-member rewind sees a 1 MiB prefix. The prefix also fills the pipe so a mid-stream seek hits a live process |
+
 (`-m0` store archives do not set the solid bit even with `-s`; the flags still
 match the regeneration commands in `scripts/gen_rar_fixtures.py`.)
 
