@@ -21,6 +21,7 @@ and RAR5 ConvertHashToMAC when checksums are tweaked.
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import stat
@@ -72,10 +73,12 @@ from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
+    ReadOnlyIOStream,
     SharedSource,
     SolidBlockReader,
     is_seekable,
     is_stream,
+    skip_forward,
 )
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.types import (
@@ -356,6 +359,106 @@ class _UnrarOwnedStream(DelegatingStream):
             if close_error is not None:
                 raise close_error from mapped
             raise
+        if close_error is not None:
+            raise close_error
+
+
+class _UnrarRespawnStream(ReadOnlyIOStream):
+    """Seekable view of a named ``unrar p`` pipe.
+
+    The inner handle is a pipe, so a backward seek cannot reposition it. Close it,
+    spawn a fresh process, and skip forward to the target. Forward seeks discard
+    bytes on the live pipe. Past-end seeks do not drain the process; a later read
+    returns empty.
+
+    ``spawn`` must return a stream that owns the process (typically
+    ``_UnrarOwnedStream``), so close/respawn reaps it.
+    """
+
+    def __init__(
+        self,
+        spawn: Callable[[], BinaryIO],
+        inner: BinaryIO,
+        *,
+        size: int | None,
+    ) -> None:
+        super().__init__()
+        self._spawn = spawn
+        self._inner: BinaryIO | None = inner
+        self._size = size
+        self._pos = 0
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        return self._pos
+
+    def _close_inner(self) -> None:
+        inner = self._inner
+        self._inner = None
+        if inner is not None:
+            inner.close()
+
+    def _ensure(self) -> BinaryIO:
+        if self._inner is None:
+            self._inner = self._spawn()
+        return self._inner
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if whence == io.SEEK_SET:
+            target = offset
+        elif whence == io.SEEK_CUR:
+            target = self._pos + offset
+        elif whence == io.SEEK_END:
+            if self._size is None:
+                raise io.UnsupportedOperation("whence=SEEK_END requires a known size")
+            target = self._size + offset
+        else:
+            raise ValueError(f"invalid whence ({whence})")
+        if target < 0:
+            raise ValueError(f"negative seek position: {target}")
+        pipe_target = target if self._size is None else min(target, self._size)
+        if pipe_target < self._pos:
+            self._close_inner()
+            self._pos = 0
+            # Respawn now, not on the next read: seek() is the reopen, matching
+            # other backends' codec-reopen, and the spawn-count tests pin that.
+            if self._size is None or pipe_target < self._size:
+                self._ensure()
+        if pipe_target > self._pos:
+            skip_forward(self._ensure(), pipe_target - self._pos)
+            self._pos = pipe_target
+        self._pos = target
+        return self._pos
+
+    def read(self, n: int = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if self._size is not None and self._pos >= self._size:
+            return b""
+        inner = self._ensure()
+        if self._size is not None:
+            remaining = self._size - self._pos
+            if n < 0 or n > remaining:
+                n = remaining
+        data = inner.read(n)
+        self._pos += len(data)
+        return data
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        close_error: BaseException | None = None
+        try:
+            self._close_inner()
+        except BaseException as exc:  # noqa: BLE001 - mark closed even if inner.close fails
+            close_error = exc
+        super().close()
         if close_error is not None:
             raise close_error
 
@@ -939,36 +1042,52 @@ class RarReader(BaseArchiveReader):
         # unrar addresses the member by its presented name (``path`` or ``path;n``) via a
         # ``-n`` include mask (see open_unrar_p); a history row needs ``-ver``. Do not use
         # the normalized ``member.name`` (may differ on separators).
-        proc, stdout = open_unrar_p(
-            path,
-            password=self._unrar_password,
-            member=_presented_filename(raw),
-            version_control=raw.is_file_version_history(),
-        )
+        presented = _presented_filename(raw)
+        version_control = raw.is_file_version_history()
         # Prefer our fused digest check (including tweaked ConvertHashToMAC) over
         # unrar's exit code for corruption; wrong-password (11) still maps.
         has_hash = bool(member.hashes) or (
             isinstance(raw, RarMemberInfo)
             and self._tweaked_verify_spec(raw) is not None
         )
-        try:
-            owned = _UnrarOwnedStream(
-                stdout,
-                proc,
-                named_member=True,
-                has_verifiable_hash=has_hash,
-                encrypted=raw.is_encrypted,
+
+        def _spawn() -> BinaryIO:
+            proc, stdout = open_unrar_p(
+                path,
+                password=self._unrar_password,
+                member=presented,
+                version_control=version_control,
             )
-        except BaseException:
-            terminate_unrar(proc)
-            raise
+            try:
+                owned: BinaryIO = _UnrarOwnedStream(
+                    stdout,
+                    proc,
+                    named_member=True,
+                    has_verifiable_hash=has_hash,
+                    encrypted=raw.is_encrypted,
+                )
+            except BaseException:
+                terminate_unrar(proc)
+                raise
+            try:
+                return self._track_decompressed(owned)
+            except BaseException:
+                owned.close()
+                raise
+
+        # Spawn now so open() still raises password/corruption errors rather than
+        # deferring them to the first read (the lazy stream_members path is separate).
+        inner = _spawn()
         try:
-            owned = self._track_decompressed(owned)
+            if self._seek_declared():
+                inner = _UnrarRespawnStream(
+                    _spawn, inner, size=_member_stream_size(member)
+                )
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
             # Fused verify in _wrap_payload_stream bounds/checks declared size + digests.
-            return self._wrap_payload_stream(owned, member, track_output=False)
+            return self._wrap_payload_stream(inner, member, track_output=False)
         except BaseException:
-            owned.close()
+            inner.close()
             raise
 
     def _get_archive_info(self) -> ArchiveInfo:

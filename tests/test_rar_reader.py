@@ -155,6 +155,78 @@ def test_refused_second_open_does_not_spawn_unrar(
 
 
 @requires_binary("unrar")
+@pytest.mark.parametrize("name", ["basic_solid__.rar", "basic_solid__rar4.rar"])
+def test_unrar_route_is_not_seekable_by_default(name: str) -> None:
+    """Without ``seekable_members``, a compressed member stays a pipe."""
+    with open_archive(_fixture(name)) as archive:
+        with archive.open("file1.txt") as stream:
+            assert stream.seekable() is False
+            with pytest.raises((io.UnsupportedOperation, ValueError)):
+                stream.seek(0)
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", ["basic_solid__.rar", "basic_solid__rar4.rar"])
+def test_seekable_members_respawns_unrar_on_backward_seek(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``seekable_members=True`` must honour backward seek on the named-unrar route.
+
+    Direct-slice stored members already seek. This pins the pipe route: a backward
+    seek respawns ``unrar`` rather than raising, and the second spawn is the
+    discriminator (a buffer-the-member fix would not call ``open_unrar_p`` again).
+    """
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(path: Path, **kwargs: object):
+        spawns.append(kwargs.get("member"))
+        return original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
+    expected = _BASIC_CONTENTS["file1.txt"]
+    with open_archive(_fixture(name), seekable_members=True) as archive:
+        with archive.open("file1.txt") as stream:
+            assert stream.seekable() is True
+            assert stream.read(5) == expected[:5]
+            assert len(spawns) == 1
+            stream.seek(0)
+            assert len(spawns) == 2
+            assert stream.read() == expected
+            stream.seek(5)
+            assert stream.read() == expected[5:]
+            stream.seek(len(expected) + 100)
+            assert stream.read() == b""
+
+
+@requires_binary("unrar")
+def test_seekable_members_does_not_respawn_on_stored_direct_slice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stored nonsolid members stay a file view; seeking must not spawn ``unrar``."""
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(path: Path, **kwargs: object):
+        spawns.append(kwargs.get("member"))
+        return original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
+    expected = _BASIC_CONTENTS["file1.txt"]
+    with open_archive(
+        _fixture("basic_nonsolid__.rar"), seekable_members=True
+    ) as archive:
+        with archive.open("file1.txt") as stream:
+            assert stream.seekable() is True
+            assert stream.read(5) == expected[:5]
+            stream.seek(0)
+            assert stream.read() == expected
+    assert spawns == []
+
+
+@requires_binary("unrar")
 @pytest.mark.parametrize(
     "name",
     ["symlinks_solid__.rar", "symlinks_solid__rar4.rar"],

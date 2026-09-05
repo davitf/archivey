@@ -285,7 +285,7 @@ its header:
 | Route | When | Cost |
 | --- | --- | --- |
 | **Direct slice** — no subprocess | Stored (`-m0`), unencrypted, non-solid, not split, not spanning volumes | A read of the source range. Measured: reading every member of `basic_nonsolid__.rar` spawns **zero** processes |
-| **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since the direct-slice test includes the member's own solid flag rather than the archive's | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes. A read the single-live-stream gate refuses costs nothing, the slot being reserved before the spawn (§5) |
+| **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since the direct-slice test includes the member's own solid flag rather than the archive's | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes. A read the single-live-stream gate refuses costs nothing, the slot being reserved before the spawn (§5). With `seekable_members=True`, a backward `seek()` respawns that process and skips to the offset |
 | **One unnamed `unrar p` pipe** | A streaming pass over a solid archive | One process for the whole pass. Measured on `basic_solid__.rar`: one streaming pass = 1 spawn; opening each of its 4 members = 4 |
 
 The pipe is spawned on the **first read into the pass**, not at pass start, so listing a
@@ -524,7 +524,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | Listing an archive works on a machine where reading it fails | **format** | The compressor is proprietary and its reference tool is non-free, so no distribution installs it by default and no pip extra can ship it (§1, §3). `PackageNotInstalledError` names it and names the lookalikes that will not be accepted |
-| `seekable_members=True` is accepted, and the member stream is still not seekable | **archivey** | Honoured only on the direct-slice route. An `unrar`-backed member is a pipe: `seekable()` is `False`, `seek()` raises `io.UnsupportedOperation`, and `reader.member_streams` still reports `SEEKABLE` with no diagnostic — so one archive answers differently per member. §10 #2 |
+| `seekable_members=True` on a sequential solid pass is still a pipe | **archivey** | Random `open()` of an `unrar`-backed member respawns the process on a backward seek, the same reopen the other backends use. The unnamed ALL-pipe used by `stream_members()` on a solid archive stays forward-only: one shared decode cannot rewind one member without abandoning the rest |
 | Reading one member of a solid archive out of order decodes the whole archive, and doing it twice decodes it twice | **format** / **archivey** | No per-block boundaries to resume from (§1), and nothing caches the decode (§2.4). `AccessCost.SOLID` is the signal |
 | Handing over **any non-path stream** — a `BytesIO`, a file object, a network-backed reader — writes a full-size copy of the archive to `/tmp`, with nothing in `diagnostics` or `cost.notes` | **archivey** | `unrar` needs a path (§1). The trigger is per-member, so the first stored member is free and the next compressed one is not. Bounding the copy to one member rather than moving it is §7. [`open-issues.md`](../open-issues.md) P11 |
 | A member whose name contains `*` or `?` cannot be read, though it lists fine | **archivey** | `unrar` include masks treat both as wildcards and offer no escape, so the read is refused with `UnsupportedFeatureError` rather than risk returning another member's bytes (§2.3). A stored member of the same name reads fine, since it never reaches `unrar`. §10 #3 |
@@ -545,6 +545,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Native metadata parser; `unrar` for member data only | Listing works with no binary and no `rarfile` dependency, and archivey's cost and streaming model is not bent to another library's | `rarfile`, which couples listing to its own decompressor stack — kept as a test oracle (ADR [0002](../decisions/0002-native-rar-metadata-unrar-data.md)) |
 | RARLAB `unrar` **only**, no silent fallback | The alternatives are measurably worse in ways a caller cannot see: `unar` returns empty files with a success exit on a whole archive class, `7z` depends on a plugin that may or may not be installed, `bsdtar` writes gigabytes on a stored member. A degraded backend chosen behind the caller's back is the failure mode `PackageNotInstalledError` exists to prevent | Probing `PATH` the way `rarfile` does (threat-model C1, [`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)) |
 | Pass the member as `-n./<name>`, never positionally | It is the only construction that neutralizes both hostile prefixes; `--` handles the switch case and leaves `@listfile` expansion intact | `--` alone; shell quoting (there is no shell — argv is a list) |
+| Honour `seekable_members=True` on named `unrar` by respawning the process | A flag that seeks on stored members and raises on compressed ones is a broken contract, and buffering the decoded member would hide the cost VISION forbids | Buffering the member in memory; teaching `ArchiveStream` to reopen every non-seekable inner (the blast radius is every backend for one pipe) |
 | Refuse a name containing `*` or `?` on the `unrar` path | `unrar` masks have no escape for them, so the alternatives are a wrong member's bytes or nothing | Passing the name through and relying on the CRC to catch the mismatch |
 | Trust archivey's own digest over `unrar`'s exit code | Two authorities disagreeing about corruption produce false positives on legacy archives; the one that checks the bytes we actually returned wins. Exit codes stay the fallback for members with no hash | Mapping every non-zero exit unconditionally |
 | Password on stdin, not in argv | Command-line arguments are world-readable through the process table for the life of the subprocess | `-p<password>`, which is what the CLI documents |
@@ -634,6 +635,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | A solid pass spawns `unrar` only on the first read | `::test_solid_pass_spawns_unrar_only_on_the_first_read` |
 | Hostile member names (`-inul`, `@atfile`) read **their own** bytes, RAR4 and RAR5 | `::test_hostile_member_name_reads_its_own_bytes` |
 | A wildcard in a member name is refused rather than mis-addressed | `::test_unrar_member_include_switch_rejects_wildcards` |
+| `seekable_members=True` respawns named `unrar` on a backward seek; stored direct-slice does not | `::test_seekable_members_respawns_unrar_on_backward_seek`, `::test_seekable_members_does_not_respawn_on_stored_direct_slice` |
 | The password reaches `unrar` on stdin, not in argv | `tests/test_crypto_findings.py::test_f4_password_arg_is_bare_or_dash`, `::test_f4_password_passed_via_stdin_not_argv` |
 | Exit-code mapping: 11, 2/3, 10, hash-present suppression, solid-pipe suppression, negative rc | `tests/test_rar_reader.py::test_unrar_owned_stream_maps_exit_11_to_encryption_error` and the nine tests after it |
 | A missing stdout pipe is a typed error, not a `RuntimeError` | `::test_open_unrar_p_missing_stdout_pipe_is_typed` |
@@ -727,14 +729,14 @@ keep their status there.
 Ordered by what I would do first, not by size. **Numbers are stable** — a row that ships is
 deleted and its number is not reused, so the gaps are the record and the references from the
 rest of the page keep resolving. Closed so far: **#1** the RAR3 name-decode bound
-([#292](https://github.com/davitf/archivey/pull/292)); **#13** `close()` chaining and **#14**
-shared FILETIME (this PR); and **#15** `_live_unrar`, deleted outright when
-[#293](https://github.com/davitf/archivey/pull/293) moved the single-live-stream gate ahead of
-the spawn it was a backstop for.
+([#292](https://github.com/davitf/archivey/pull/292)); **#2** `seekable_members=True`
+respawns named `unrar` on a backward seek; **#13** `close()` chaining and **#14**
+shared FILETIME ([#291](https://github.com/davitf/archivey/pull/291)); and **#15** `_live_unrar`,
+deleted outright when [#293](https://github.com/davitf/archivey/pull/293) moved the
+single-live-stream gate ahead of the spawn it was a backstop for.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
-| 2 | **Honour `seekable_members=True` on the `unrar` route** by respawning on a backward seek — the same reopen the other backends use. Today the flag is accepted, honoured on the direct-slice route and silently ignored on the pipe route, so one archive answers differently per member | Consistency between formats is a promise the library makes; a flag that means different things per backend breaks it more than a slow seek would | §5, §2.3 |
 | 3 | **Read a member whose name contains `*` or `?`** by passing the wildcard through as the mask and skipping the other members it matches — the member list needed to compute that is already parsed. Replaces today's `UnsupportedFeatureError` | A valid archive is unreadable, and the refusal was always the conservative half of a fix | §5, §2.3 |
 | 4 | **Pin the solid emission policy per generation.** No stored size predicts what `unrar p` prints: RAR5 links are packed 0 / unpacked > 0, RAR4 links are packed > 0 / unpacked > 0, and both emit zero bytes. `is_payload_file()` gets this right incidentally, untested against RAR3 link members | Cheapest high-value item here — a test over the `symlinks_solid__` pair in both generations turns incidental correctness into pinned correctness. `open-issues.md` P6 | §1, §4 |
 | 5 | **Use the `QO` quick-open record when present**, falling back to the walk when it is absent or fails to validate. It is a tail SERVICE block holding copies of the file headers, and today it is skipped — an archive that has one costs one seek *more* to list, not 40 fewer (§1). Needs a decision on trust first: it is duplicate attacker-controlled metadata, so either it is validated against the real headers (which costs the walk it was meant to save) or listing and extraction can be made to disagree | Turns the `INDEXED` claim from arguable into true, and is the format's own answer to the walk | §1, §7 |
