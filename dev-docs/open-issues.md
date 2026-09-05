@@ -578,14 +578,19 @@ re-verified failing against the unfixed code). Original write-up below.
 
 ### P6. RAR solid demux ↔ `unrar` emission-policy coupling
 
-- **Today:** Solid ALL-pipe demux must match what `unrar` actually emits (RAR5
-  symlink targets in header → 0 stdout bytes; RAR3 symlink targets in LZ data →
-  also 0 after decode). Easy to desync on new member kinds.
+- **Today:** Solid ALL-pipe demux must match what `unrar` actually emits. The known
+  pair is pinned by tests: RAR5 links are packed 0 / unpacked > 0 / emit 0; RAR4
+  (old-family) links are packed > 0 / unpacked > 0 / emit 0 — including the
+  `__rar4` symlink members, which declare extract version 20 (stored M0).
+  `is_payload_file()` is the predictor (`test_solid_symlink_demux_and_link_targets`,
+  RAR5 hardlinks in `test_solid_hardlink_demux_and_targets`). Residual is new
+  member kinds — a kind whose emission `is_payload_file()` gets wrong still shifts
+  every later member. There is no RAR 1.5/2.x solid-symlink fixture.
 - **Why fixable:** Spec’d hardening / shared emission table; called out in the
   unrar-piping investigation as a future change (same class as mixed-password
   ALL-pipe forbid).
 - **Refs:** PR #101 (still open) / `dev-docs/investigations/rar-unrar-piping-investigation.md`
-  (when merged); `format-rar`.
+  (when merged); `format-rar`; handbook `formats/rar.md` §4 / §8.
 
 ### P17. SFX multi-volume sets are unreadable from any of their files — **confirmed bug**
 
