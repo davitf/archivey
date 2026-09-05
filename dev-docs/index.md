@@ -15,7 +15,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | [Release checklist](release-checklist.md) | Every-release loop: CHANGELOG, perf vs prior tag, docs, tag/publish |
 | [Release-repo cutover](release-repo-cutover.md) | One-time rename / PyPI / Pages before the first public tag |
 | [Decision log](decisions/index.md) | Rare repo-wide ADRs; prefer light notes on format/topic handbook pages for new decisions |
-| [Investigations](investigations/) | Finished evidence: PPMd, pyppmd/rapidgzip upstream reports, parallel-reader, [`alternative RAR decompressors`](investigations/alternative-rar-decompressors.md) |
+| [Investigations](investigations/) | Finished evidence: PPMd, pyppmd/rapidgzip upstream reports, parallel-reader, [`alternative RAR decompressors`](investigations/alternative-rar-decompressors.md), [`capability declaration vs behaviour`](investigations/capability-declaration-vs-behaviour.md) |
 | [Discussions](discussions/) | Design questions written for circulation. Includes [pair-workflow adoption](discussions/2026-09-pair-workflow-adoption.md) and [specs → handbook + tests](discussions/2026-09-specs-to-handbook-and-tests.md) (thin-as-you-go) |
 | [History](history/index.md) | Superseded prose (SPEC / ARCHITECTURE / COMPARISON / ASYNC) |
 | [PLAN.md](PLAN.md) · [IDEAS.md](IDEAS.md) | Phase roadmap; speculative backlog |
