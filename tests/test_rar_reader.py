@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
+from archivey.cost import AccessCost
 from archivey.exceptions import (
     ArchiveyError,
     ConcurrentAccessError,
@@ -71,6 +72,10 @@ def test_basic_nonsolid_list_and_read(name: str) -> None:
 def test_basic_solid_stream_and_random(name: str) -> None:
     with open_archive(_fixture(name)) as archive:
         assert archive.info.is_solid is True
+        # RAR exposes no per-solid-block boundaries, so solidity is one archive-level
+        # flag and the block count is unknown rather than 1.
+        assert archive.cost.access_cost is AccessCost.SOLID
+        assert archive.cost.solid_block_count is None
         streamed = {
             member.name: stream.read()
             for member, stream in archive.stream_members()
@@ -755,6 +760,53 @@ def test_unrar_not_installed_message_names_lookalikes() -> None:
         assert name in msg
 
 
+def test_listing_and_stored_reads_need_no_unrar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The native-metadata split, end to end: no binary on PATH at all.
+
+    The whole point of parsing headers ourselves is that listing an archive — and
+    reading a member we can slice directly — never needs the external decompressor.
+    Only a member that must go through ``unrar`` fails, and it fails by naming it.
+    """
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+
+    with open_archive(_fixture("basic_nonsolid__.rar")) as archive:
+        files = {m.name: m for m in archive.members() if m.is_file}
+        assert set(files) == set(_BASIC_CONTENTS)
+        # Stored, unencrypted, nonsolid, unsplit -> sliced from the source directly.
+        for member_name, expected in _BASIC_CONTENTS.items():
+            assert archive.read(files[member_name]) == expected
+
+    with open_archive(_fixture("symlinks_solid__rar4.rar")) as archive:
+        assert [m.name for m in archive.members()]  # listing still works
+        compressed = next(
+            m for m in archive.members() if m.is_file and m.compressed_size > 0
+        )
+        with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+            archive.read(compressed)
+
+
+def test_stored_nonsolid_archive_spawns_no_unrar_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading every member of a stored nonsolid archive costs zero subprocesses."""
+    spawns: list[object] = []
+    real_open = rar_reader.open_unrar_p
+
+    def spy(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        spawns.append(args)
+        return real_open(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+    with open_archive(_fixture("basic_nonsolid__.rar")) as archive:
+        for member in archive.members():
+            if member.is_file:
+                archive.read(member)
+    assert spawns == []
+
+
 @requires("cryptography")
 def test_header_crypto_gating(monkeypatch: pytest.MonkeyPatch) -> None:
     from archivey.internal.streams import crypto
@@ -1239,3 +1291,43 @@ def test_open_unrar_p_missing_stdout_pipe_is_typed(
     with pytest.raises(ArchiveyError):
         rar_unrar.open_unrar_p(tmp_path / "nonexistent.rar")
     assert proc.killed is True
+
+
+def test_listing_walks_header_to_header_rather_than_reading_an_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """formats/rar.md §1: listing seeks once per member; there is no index region.
+
+    Pinned as a *shape* (seeks scale with member count), not an exact count, because
+    the point is the scaling: ZIP reads one contiguous central directory in a constant
+    number of seeks whatever the member count. If RAR ever learns to read the ``QO``
+    quick-open record (§10 #5) this stops being true and the page must change with it.
+    """
+    from archivey.internal.backends import rar_parser
+
+    skips = 0
+    original = rar_parser._seek_after_packed
+
+    def counting(source: object, data_offset: int, add_size: int) -> object:
+        nonlocal skips
+        skips += 1
+        return original(source, data_offset, add_size)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_parser, "_seek_after_packed", counting)
+
+    small = _fixture("basic_nonsolid__.rar")
+    with small.open("rb") as handle:
+        archive = rar_parser.parse_rar_archive(handle)
+    assert skips >= len(archive.members), (
+        f"{skips} data skips for {len(archive.members)} members — expected at least one "
+        "per member, i.e. a header-to-header walk"
+    )
+
+    # And it scales: a 1000-member archive costs proportionally more, not a constant.
+    small_skips = skips
+    skips = 0
+    large = _fixture("many_list_store__.rar")
+    with large.open("rb") as handle:
+        large_archive = rar_parser.parse_rar_archive(handle)
+    assert len(large_archive.members) > 10 * len(archive.members)
+    assert skips > 10 * small_skips
