@@ -133,7 +133,17 @@ _COMPRESSION_BY_METHOD: dict[int, tuple[CompressionMethod, ...]] = {
 
 
 def _member_stream_size(member: ArchiveMember) -> int:
-    return member.size if member.size is not None else 0
+    """Unpacked size for a RAR payload member.
+
+    RAR headers always store ``file_size`` as ``int``. ``ArchiveMember.size`` is
+    optional because other formats have streaming entries; folding ``None`` into
+    ``0`` here would treat "unknown length" as "empty". A RAR member without a
+    declared size is a programming error.
+    """
+    size = member.size
+    if size is None:
+        raise AssertionError("RAR payload members always declare an unpacked size")
+    return size
 
 
 def _presented_filename(info: RarMemberInfo) -> str:
@@ -368,11 +378,12 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     """Seekable view of a named ``unrar p`` pipe.
 
     The inner handle is a pipe, so a backward seek cannot reposition it. Close it
-    and spawn a fresh process; skip to the logical offset on the next read.
-    Forward seeks do not drain the pipe until a later ``read()`` needs those
-    bytes. Past-end seeks leave the pipe where it is: a read with ``pos > size``
-    is empty, and a read at ``pos == size`` still reaches the pipe so fused
-    verify's one-byte overrun probe can see trailing output.
+    and spawn a fresh process on the next ``read()`` that needs bytes; skip to the
+    logical offset then. Forward seeks do not drain the pipe until a later
+    ``read()`` needs those bytes. Past-end seeks leave the pipe where it is: a
+    read with ``pos > size`` is empty, and a read at ``pos == size`` still
+    reaches the pipe so fused verify's one-byte overrun probe can see trailing
+    output — that boundary read is clamped to one byte.
 
     ``_pos`` is the logical offset; ``_pipe_pos`` is how far the live process
     has actually been read. Respawn is keyed on the pipe, so ``seek(0, SEEK_END);
@@ -388,7 +399,7 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
         spawn: Callable[[], BinaryIO],
         inner: BinaryIO,
         *,
-        size: int | None,
+        size: int,
     ) -> None:
         super().__init__()
         self._spawn = spawn
@@ -408,6 +419,9 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     def _close_inner(self) -> None:
         inner = self._inner
         self._inner = None
+        # A replacement process always starts at byte 0. Reset even if close
+        # raises, so a later read cannot label those bytes with the old offset.
+        self._pipe_pos = 0
         if inner is not None:
             inner.close()
 
@@ -417,8 +431,6 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
         return self._inner
 
     def _pipe_needed(self, logical: int) -> int:
-        if self._size is None:
-            return logical
         return min(logical, self._size)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
@@ -429,8 +441,6 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
         elif whence == io.SEEK_CUR:
             target = self._pos + offset
         elif whence == io.SEEK_END:
-            if self._size is None:
-                raise io.UnsupportedOperation("whence=SEEK_END requires a known size")
             target = self._size + offset
         else:
             raise ValueError(f"invalid whence ({whence})")
@@ -438,16 +448,11 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
             raise ValueError(f"negative seek position: {target}")
         needed = self._pipe_needed(target)
         if needed < self._pipe_pos:
-            # Reset the logical/pipe cursor before close: if close maps an
-            # unrar exit to an error, later reads must not label a fresh
-            # process's bytes with the old offset.
-            self._pos = 0
-            self._pipe_pos = 0
+            # Close first; set the logical cursor only if close succeeds, so a
+            # failed seek leaves tell() unchanged (Python IO). Spawn is lazy —
+            # _sync_pipe calls _ensure on the next read. Spawning here would
+            # start a process that close-without-read would kill.
             self._close_inner()
-            # Respawn now so a spawn-count after seek() still distinguishes
-            # reopen from "buffer the member". Skip to ``needed`` on read.
-            if self._size is None or needed < self._size:
-                self._ensure()
         self._pos = target
         return self._pos
 
@@ -467,14 +472,18 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        if self._size is not None and self._pos > self._size:
+        if self._pos > self._size:
             return b""
         inner = self._sync_pipe()
-        # At declared size, do not clamp: fused verify probes one extra byte.
-        if self._size is not None and self._pos < self._size:
+        if self._pos < self._size:
             remaining = self._size - self._pos
             if n < 0 or n > remaining:
                 n = remaining
+        else:
+            # At declared size the overrun probe must reach the pipe, but only
+            # for one byte — read(-1) here would pull the rest of a corrupt
+            # member into memory.
+            n = 1 if n < 0 else min(n, 1)
         data = inner.read(n)
         self._pos += len(data)
         self._pipe_pos += len(data)
@@ -1127,6 +1136,28 @@ class RarReader(BaseArchiveReader):
             "glob target missing from the payload walk; skip uses member identity"
         )
 
+    def _unrar_solid_prefix(self, target: ArchiveMember) -> int:
+        """Unpacked bytes of earlier payload members in a solid archive.
+
+        Named ``unrar p`` of a solid member re-decodes this prefix even though
+        the pipe only emits the requested member. Zero when the archive is not
+        solid — then ``-n`` starts at this member and the member-stream
+        ``tell()`` is the whole re-decode cost.
+        """
+        if not self._archive.is_solid:
+            return 0
+        prefix = 0
+        for member in self._members:
+            raw = member._raw
+            if not isinstance(raw, RarMemberInfo) or not raw.is_payload_file():
+                continue
+            if member is target:
+                return prefix
+            prefix += _member_stream_size(member)
+        raise AssertionError(
+            "solid prefix target missing from the payload walk; uses member identity"
+        )
+
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
@@ -1195,7 +1226,11 @@ class RarReader(BaseArchiveReader):
                 inner = _UnrarRespawnStream(
                     _spawn, inner, size=_member_stream_size(member)
                 )
-                rewind = RewindWarning(codec_name="rar", suggest_install=False)
+                rewind = RewindWarning(
+                    codec_name="rar",
+                    suggest_install=False,
+                    min_redecode_bytes=self._unrar_solid_prefix(member),
+                )
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
             # Fused verify in _wrap_payload_stream bounds/checks declared size + digests.
             return self._wrap_payload_stream(

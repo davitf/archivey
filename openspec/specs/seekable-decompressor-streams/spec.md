@@ -199,6 +199,11 @@ When a backward seek's `redecode_distance` reaches
 `STREAM_REWIND_REDECOMPRESSES` with codec, before/after offsets, the distance, and
 accelerator name or `None`. Forward and no-op seeks SHALL report nothing.
 
+A `RewindWarning` MAY carry `min_redecode_bytes`. The distance used by the predicate
+is `max(redecode_distance, min_redecode_bytes)`, so a carrier that re-decodes bytes
+the member stream's `tell()` does not contain (a named `unrar` respawn of a solid
+member, which restarts from member zero) is still loud.
+
 The threshold SHALL be absolute rather than relative to the jump distance. A relative
 rule goes quietest exactly where the absolute cost is highest: on a 1 GB single-block
 `.xz`, seeking from the end back to 900 MB re-decodes 900 MB while jumping only ~100 MB,
@@ -253,7 +258,7 @@ first. See `diagnostics` for the general rule.
 | Only forward/no-op seeks occur | No occurrence |
 | Full rewind on a **single-block** `.xz` | One occurrence — the format could have carried an index; this file does not |
 | Rewind within one block of a multi-block `.xz` | No occurrence |
-| Rewind of fewer than `REWIND_REDECODE_WARN_BYTES` on any codec | No occurrence |
+| Rewind of fewer than `REWIND_REDECODE_WARN_BYTES` on any codec | No occurrence, unless `min_redecode_bytes` meets the threshold |
 | Rewind across a sparse gap in an engaged `rapidgzip` index | One occurrence naming the accelerator |
 | zstd stream rewinds via stdlib backend | Re-decompresses from start in place; one occurrence when above the threshold |
 | Stdlib-fallback zlib/deflate stream rewinds | One occurrence naming the `[seekable]` accelerator |

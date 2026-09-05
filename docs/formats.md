@@ -132,7 +132,9 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - Solid archives: one `unrar p` pipe for the whole of `stream_members()`. A random
   `open()` out of order is a separate `unrar` run that decodes from the start of the
   archive each time, so reading *n* members that way costs *n* full decodes — stream them
-  in order when you can. `CostReceipt.access_cost` is `SOLID` to say so.
+  in order when you can. With `seekable_members=True`, a backward `seek()` on a compressed
+  member is the same cost: a new `unrar` run from the start. `CostReceipt.access_cost` is
+  `SOLID` to say so.
 - Read-only — no RAR writer.
 
 ## ISO 9660

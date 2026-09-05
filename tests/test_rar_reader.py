@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
+from archivey.config import REWIND_REDECODE_WARN_BYTES
 from archivey.cost import AccessCost
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
@@ -60,6 +61,12 @@ _WILDCARD_FIXTURES = (
     "wildcard_names_solid__.rar",
     "wildcard_names__rar4.rar",
 )
+# 1 MiB repeating pad so a solid later-member rewind crosses the diagnostic
+# threshold without monkeypatching it, and so unrar is still writing when a
+# test seeks mid-stream (the 64 KiB pipe buffer fills).
+_SEEK_RESPAWN_PAD = b"0123456789abcdef" * (1024 * 1024 // 16)
+_SEEK_RESPAWN_TAIL = b"tail-member\n"
+_SEEK_RESPAWN_FIXTURE = "seek_respawn_solid__.rar"
 
 
 def _fixture(name: str) -> Path:
@@ -180,7 +187,7 @@ def test_unrar_route_is_not_seekable_by_default(name: str) -> None:
     with open_archive(_fixture(name)) as archive:
         with archive.open("file1.txt") as stream:
             assert stream.seekable() is False
-            with pytest.raises((io.UnsupportedOperation, ValueError)):
+            with pytest.raises(io.UnsupportedOperation):
                 stream.seek(0)
 
 
@@ -192,8 +199,8 @@ def test_seekable_members_respawns_unrar_on_backward_seek(
     """``seekable_members=True`` must honour backward seek on the named-unrar route.
 
     Direct-slice stored members already seek. This pins the pipe route: a backward
-    seek respawns ``unrar`` rather than raising, and the second spawn is the
-    discriminator (a buffer-the-member fix would not call ``open_unrar_p`` again).
+    seek closes the process; the following read respawns ``unrar``. A buffer-the-
+    member fix would not call ``open_unrar_p`` a second time at all.
     """
     spawns: list[object] = []
     original = rar_reader.open_unrar_p
@@ -211,8 +218,9 @@ def test_seekable_members_respawns_unrar_on_backward_seek(
             assert stream.read(5) == expected[:5]
             assert len(spawns) == 1
             stream.seek(0)
-            assert len(spawns) == 2
+            assert len(spawns) == 1
             assert stream.read() == expected
+            assert len(spawns) == 2
             stream.seek(5)
             assert stream.read() == expected[5:]
             stream.seek(len(expected) + 100)
@@ -239,6 +247,40 @@ def test_unrar_respawn_overrun_probe_sees_trailing_bytes() -> None:
     assert stream.read(1) == payload[declared : declared + 1]
 
 
+def test_unrar_respawn_boundary_read_is_one_byte() -> None:
+    """At declared size, ``read(-1)`` must not drain the rest of the pipe."""
+    payload = b"hello world!!EXTRA"
+    declared = 13
+
+    def spawn() -> io.BytesIO:
+        return io.BytesIO(payload)
+
+    stream = rar_reader._UnrarRespawnStream(spawn, spawn(), size=declared)
+    assert stream.read(declared) == payload[:declared]
+    assert stream.read(-1) == payload[declared : declared + 1]
+
+
+def test_unrar_respawn_failed_seek_leaves_position() -> None:
+    """A raising ``seek()`` must not reset tell() to 0."""
+
+    class _CloseBoom(io.BytesIO):
+        def close(self) -> None:
+            already = self.closed
+            super().close()
+            if not already:
+                raise OSError("close failed")
+
+    def spawn() -> io.BytesIO:
+        return io.BytesIO(b"x" * 20)
+
+    stream = rar_reader._UnrarRespawnStream(spawn, _CloseBoom(b"x" * 20), size=20)
+    assert stream.read(10) == b"x" * 10
+    assert stream.tell() == 10
+    with pytest.raises(OSError, match="close failed"):
+        stream.seek(2)
+    assert stream.tell() == 10
+
+
 def test_unrar_respawn_seek_end_does_not_drain_or_respawn() -> None:
     """``seek(0, SEEK_END); seek(0)`` before a read must not spawn a second process."""
     payload = b"hello world!"
@@ -260,18 +302,87 @@ def test_unrar_respawn_seek_end_does_not_drain_or_respawn() -> None:
 
 
 @requires_binary("unrar")
-def test_seekable_unrar_emits_stream_rewind(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A backward seek on named unrar is a re-decode; it must be as loud as 7z."""
-    monkeypatch.setattr(
-        "archivey.internal.streams.archive_stream.REWIND_REDECODE_WARN_BYTES", 0
-    )
-    with open_archive(_fixture("basic_solid__.rar"), seekable_members=True) as archive:
-        with archive.open("file1.txt") as stream:
-            stream.read(5)
+def test_seekable_unrar_emits_stream_rewind() -> None:
+    """A small rewind of a later solid member is still loud: the prefix counts."""
+    with open_archive(
+        _fixture(_SEEK_RESPAWN_FIXTURE), seekable_members=True
+    ) as archive:
+        with archive.open("tail.txt") as stream:
+            stream.read(8)
             stream.seek(0)
             assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES in dict(
                 stream.diagnostics.counts
             )
+            assert stream.read() == _SEEK_RESPAWN_TAIL
+
+
+def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
+    """A carrier-declared floor must fire even when discarded member progress is tiny."""
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+
+    collector = DiagnosticCollector()
+    payload = b"abcdefghij"
+    warning = RewindWarning(
+        codec_name="rar",
+        suggest_install=False,
+        min_redecode_bytes=REWIND_REDECODE_WARN_BYTES,
+    )
+    stream = ArchiveStream(
+        lambda: io.BytesIO(payload),
+        translate=lambda _exc: None,
+        rewind_warning=warning,
+        collector=collector,
+    )
+    try:
+        stream.read(5)
+        stream.seek(0)
+        assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES in dict(
+            stream.diagnostics.counts
+        )
+    finally:
+        stream.close()
+
+    quiet = ArchiveStream(
+        lambda: io.BytesIO(payload),
+        translate=lambda _exc: None,
+        rewind_warning=RewindWarning(codec_name="rar", suggest_install=False),
+        collector=DiagnosticCollector(),
+    )
+    try:
+        quiet.read(5)
+        quiet.seek(0)
+        assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES not in dict(
+            quiet.diagnostics.counts
+        )
+    finally:
+        quiet.close()
+
+
+@requires_binary("unrar")
+def test_seekable_unrar_respawns_while_process_still_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backward seek must reap a live ``unrar``, not only an already-exited one."""
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(path: Path, **kwargs: object):
+        spawns.append(kwargs.get("member"))
+        return original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
+    with open_archive(
+        _fixture(_SEEK_RESPAWN_FIXTURE), seekable_members=True
+    ) as archive:
+        with archive.open("prefix.bin") as stream:
+            first = stream.read(1024)
+            assert first == _SEEK_RESPAWN_PAD[:1024]
+            assert len(spawns) == 1
+            stream.seek(0)
+            assert stream.read(1024) == first
+            assert len(spawns) == 2
 
 
 @requires_binary("unrar")
@@ -1374,8 +1485,9 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
             assert stream.read(6) == expected[:6]
             assert spawns == ["a*.txt"]
             stream.seek(0)
-            assert spawns == ["a*.txt", "a*.txt"]
+            assert spawns == ["a*.txt"]
             assert stream.read() == expected
+            assert spawns == ["a*.txt", "a*.txt"]
 
 
 @requires("cryptography")
