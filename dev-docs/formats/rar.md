@@ -12,7 +12,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | Read | Yes — metadata natively, member data through RARLAB `unrar` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
 | Source | Seekable only, in both access modes |
-| Listing cost | `INDEXED` — but the walk is header-to-header, which is arguably `REQUIRES_SCANNING` (§1) |
+| Listing cost | `INDEXED` — RAR5 with a usable `QO` reads that index; otherwise a header-to-header walk cached at open (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Member data needs the RARLAB `unrar` binary on `PATH` (§1) |
@@ -50,7 +50,7 @@ Several properties generate most of this page.
 | **marker** | — | The magic itself, and the only thing found by position. `Rar!\x1a\x07\x00` is the RAR3 family (7 bytes), `Rar!\x1a\x07\x01\x00` is RAR5 (8) |
 | **MAIN** | 1 | One per volume, immediately after the marker. Archive-wide flags — solid, volume, recovery — and, in RAR5, the **volume number** the parser checks the set against. It carries no member data, which is why identifying an archive means parsing this one block (§2.1) |
 | **FILE** | 2 | One per member, followed immediately by that member's packed bytes. Name, sizes, mtime, attributes, host OS, CRC32, compression info, and in RAR5 an *extra area* of typed records: the redirect (symlink/hardlink/copy), the hash, the file times, the per-file encryption record, the version number |
-| **SERVICE** | 3 | Same layout as FILE, but the payload is archive metadata rather than a member — comments (`CMT`), recovery records, NTFS streams, and the **quick-open record** (`QO`), a copy of the file headers written at the tail so a reader can list without walking. archivey reads `CMT` and skips the rest, `QO` included (§1) |
+| **SERVICE** | 3 | Same layout as FILE, but the payload is archive metadata rather than a member — comments (`CMT`), recovery records, NTFS streams, and the **quick-open record** (`QO`), a copy of the file headers written at the tail so a reader can list without walking. archivey reads `CMT`, and uses `QO` when MAIN's locator points at a stored unencrypted copy (§1) |
 | **ENCRYPTION** | 4 | Present only in a header-encrypted RAR5, and *first* if so: the KDF count, salt and optional password-check value needed to decrypt every block after it. RAR3 has no equivalent block — it encrypts the header stream directly, which is why it has no check value and why a wrong password there is only visible as a structural failure |
 | **ENDARC** | 5 | Terminates the walk. Its flags say whether another volume follows, which is what a lone volume 1 is refused on (§2.2) |
 
@@ -96,12 +96,12 @@ Everything about that boundary is a consequence:
   timeout) is not cached. The cache is one entry, so alternating two `PATH`s
   re-probes. The lookup does not key cwd or `PATHEXT`.
 
-**Blocks chain forward and each header states its own size.** There is no index; the walk
-reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
+**Blocks chain forward and each header states its own size.** Without a usable RAR5 `QO`
+the walk reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
 reading the structure needs seek, and a non-seekable source is refused in both access modes
-(§2.1); the whole member table is built at open, walking every header and seeking past every
-member's packed data, which is why the parser carries its own ceiling of 1 048 576 members
-before `ListingLimits` ever apply — and why the `INDEXED` listing cost is doubtful, below;
+(§2.1); the whole member table is built at open — walking every header, or reading `QO`,
+and seeking past packed data on the walk path — which is why the parser carries its own
+ceiling of 1 048 576 members before `ListingLimits` ever apply — and
 every length is a variable-length integer whose byte count the input chooses, so bounds
 have to be on **bytes consumed**, not on the decoded value — the one place that was
 violated was a quadratic pre-read loop in front of the capped decoder
@@ -114,38 +114,25 @@ records a volume number in MAIN and the parser checks the set against it, refusi
 headless set (`Need first volume`) or an out-of-order one; RAR3 records only a flag, so
 there the name really is the whole chain.
 
-**Listing is a walk, and `INDEXED` may be the wrong word for it.** There is no index to
-read: the parser starts at MAIN and visits each header in turn, using the declared packed
-size to seek over the data to the next one. Measured on a 40-member archive, that is **41
-seeks** — one per member, scaling with the member count — where stdlib `zipfile` builds the
-same table in **4**, regardless of how many members there are, because it reads one
-contiguous central directory. The bytes read are small either way (headers only, never
-payload), so on a local file the difference is slight; on a high-latency source it is
-O(members) round trips against O(1).
+**Listing is a walk unless RAR5 `QO` is present and usable.** With no `QO` (all RAR3/4;
+small RAR5; `-qo-`; header-encrypted RAR5) the parser starts at MAIN and visits each header
+in turn, using the declared packed size to seek over the data to the next one. That is
+O(members) seeks — the same shape `ListingCost.REQUIRES_SCANNING` names, which is what
+`tar_reader` reports for uncompressed tar. RAR still reports `INDEXED` because the table is
+cached at open.
 
-That is exactly what `ListingCost.REQUIRES_SCANNING` is defined as — "no index, but members
-can be enumerated by seeking/scanning header-to-header without decompressing payload" — and
-it is what `tar_reader` reports for an uncompressed tar, with the comment "walk 512-byte
-headers, no index". RAR does the same thing and reports `INDEXED`, on a carve-out written
-into the enum's own docstring: *the reader walks all file headers at open and caches the
-table, so by `members()` time the list is already in memory.* That reasoning is about **when**
-the cost is paid, not how much it is, and it would relabel TAR just as well. RAR is the only
-backend claiming `INDEXED` while walking; ZIP, 7z and ISO all read a real index region.
-
-**The format does offer an index, and we skip it.** RAR5's quick-open record is a `QO`
-SERVICE block holding copies of the file headers, written at the tail — measured on a
-`rar -qo+` archive, 2 073 bytes from the end, after every FILE block, about 52 bytes per
-member. It exists so a reader can list a large or multi-volume archive without the walk.
-archivey parses SERVICE blocks generically and acts only on `CMT`, so `QO` is seeked past
-like any other unknown payload; the `-qo+` archive costs **42** seeks to list rather than 41,
-one *more*, for the record that was supposed to save 40. It is optional (`rar -qo` is
-"none | force", and WinRAR writes it only for large archives), so it can only ever be a
-fast path with the walk as fallback. The remaining question was whether to trust a
-duplicate attacker-controlled copy. **Decided: yes** — same as ZIP's CDH: if `QO` built
-the member table, listing and extract both use that table. A crafted `QO` can lie, the
-same way a crafted CDH can. Residual before coding: whether `QO` carries every field the
-FILE walk fills — if it doesn't, this call is reopened. A listing-vs-walk diagnostic is
-optional and probably not worth it. §10 #5.
+**RAR5 `QO` is the index, used when it is there.** MAIN extra 0x01 (locator) stores the
+distance from MAIN to a tail SERVICE named `QO`. That payload is stored (method 0), not
+packed — no `unrar` / lzma. Each cache record is a CRC'd copy of a FILE header plus an
+offset back to the original header, so `data_offset` is `QOHeaderPos - Offset + header_size`.
+Measured on `rar a -qo+` (RAR 7.00): locator hits the QO SERVICE; every `RarMemberInfo`
+field `_to_member` and the stored-read path use matches the FILE walk, extras included
+(xtime, hash, redir, encryption, version, owner). `CMT` sits after MAIN and is read before
+the locator jump, so the archive comment is not dropped. Header-encrypted archives
+file-encrypt the QO payload and store IV+ciphertext header copies; reconstructed
+`data_offset` then misses AES padding, so those fall back to the walk. Unreadable QO
+(bad CRC, packed, split, encrypted, locator field 0) also falls back. The table `QO`
+filled is the table extract reads — same trust as ZIP's CDH. §6.
 
 **Two on-disk generations hide behind one magic.** `Rar!\x1a\x07\x00` is the RAR3 family —
 which is RAR 1.5, 2.x and 3.x, all one block layout, reported as `format_version == "4"` —
@@ -210,7 +197,8 @@ the part number — [`open-issues.md`](../open-issues.md) P17, shared with 7z an
 
 ### 2.2 Open and list
 
-`rar_parser.py` walks the block chain and builds the member table; no `unrar`, no `rarfile`.
+`rar_parser.py` builds the member table from RAR5 `QO` when a locator points at a stored
+unencrypted copy, otherwise by walking the block chain; no `unrar`, no `rarfile`.
 `reader.get()` and name lookup are served from that table.
 
 **Volumes are resolved before parsing.** `name.partN.rar` (RAR5 and newer RAR4) and
@@ -588,6 +576,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A RAR5 redirect surfaces no digest; RAR3/4's is kept | Keying on the storage shape rather than the member type keeps a genuine digest where one exists and drops a constant that describes nothing. The value dropped is exactly the one a de-duplicating caller would read | Keying on member type, which would have thrown away RAR3/4's real digest; surfacing `crc32(b"")` for symmetry |
 | Surface a link member's digest where the format stores one, and say what it covers | It is a real digest of the bytes the format stores for that member — which for a link is the target *string*, not the content it resolves to. ZIP and 7z store and surface exactly the same thing, so dropping RAR3/4's alone would buy consistency inside RAR at the cost of a worse one across formats. The fix for the misreading is documenting the field, not emptying it (§2.2) | Dropping link digests everywhere, which loses information ZIP and 7z genuinely store; keeping them and saying nothing, which leaves `hashes` implying content |
 | Commit the RAR corpus archives, pinned by a manifest | Otherwise the corpus's RAR column is a licensing decision and runs on Linux only, while the release headlines a native RAR reader | Installing the trialware writer on CI; reworking digest expectations for a platform dependence that measurement showed does not exist (ADR [0016](../decisions/0016-committed-rar-corpus-fixtures.md)) |
+| Use stored unencrypted RAR5 `QO` as the member table when MAIN's locator points at it; walk otherwise | Same trust as ZIP's CDH: listing and extract share one table. Header-encrypted / packed / CRC-bad QO cannot reconstruct `data_offset` the FILE walk would, so those fall back rather than mix tables | Validating QO against the FILE walk (pays the seeks QO exists to avoid) |
 
 ## 7. Open questions
 
@@ -601,16 +590,15 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   out-of-order solid `open()` being a whole decode each time, is **already decided**:
   [`open-issues.md`](../open-issues.md) P9 says not a diagnostic, because `access_cost`
   already carries it, and only a once-per-reader `warnings.warn` is still parked.
-- **Does `ListingCost.INDEXED` mean "cheap" or "already paid"?** RAR walks header-to-header
-  and reports `INDEXED`; TAR does the same walk and reports `REQUIRES_SCANNING` (§1). Only
-  one of those can be right, and which depends on what the enum is for. If it describes the
-  **format's layout** — is there an index region to read — RAR is `REQUIRES_SCANNING` today
-  and would become `INDEXED` only by using the `QO` record. If it describes **what a caller
-  experiences from `members()`** — is the table already in memory — then RAR is `INDEXED`,
-  and TAR is mislabelled for the same reason. The docstring currently gives the second
-  answer for RAR and the first for TAR. This is not RAR's question to settle: it changes
-  `tar_reader` and the enum's documented meaning, and `access-and-cost` is the published
-  page that would have to say which.
+- **Does `ListingCost.INDEXED` mean "cheap" or "already paid"?** With a usable RAR5 `QO`,
+  listing reads a real index region (§1). Without one, RAR still walks header-to-header
+  and reports `INDEXED`; TAR does that walk and reports `REQUIRES_SCANNING`. Only one of
+  those no-index answers can be right, and which depends on what the enum is for. If it
+  describes the **format's layout**, no-`QO` RAR is `REQUIRES_SCANNING`. If it describes
+  **what a caller experiences from `members()`**, both are `INDEXED`. The docstring gives
+  the second answer for RAR and the first for TAR. This is not RAR's question to settle:
+  it changes `tar_reader` and the enum's documented meaning, and `access-and-cost` is the
+  published page that would have to say which.
 - **Can the stream-source copy be made small, rather than just moved?** Two ideas compose
   here and only the combination is interesting. A `memfd` is seekable, anonymous, freed on
   close, and `unrar` reads one happily (§1) — but on its own it only trades unbounded disk
@@ -687,7 +675,8 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection | `tests/test_rar_reader.py::test_rar15_and_rar2_list_and_read`, `::test_extract_version_20_payload_accepted` |
 | RAR 1.5 / 2.x archive and member comments match `rarfile`; stored old-style comments need no binary; RAR3 CMT reaches `member.comment`; RAR5 CMT stays archive-only | `::test_rar15_and_rar2_comments_match_rarfile`, `::test_rar3_stored_old_style_main_comment_needs_no_unrar`, `::test_rar3_service_comment_maps_to_member_comment`, `::test_rar5_comment_service_stays_archive_only` |
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
-| Listing is a header-to-header walk, seeking once per member, and it scales with the member count (§1) | `::test_listing_walks_header_to_header_rather_than_reading_an_index` — it also fails if `QO` support (§10 #5) ever lands, so the page cannot drift past the code |
+| Listing without QO is a header-to-header walk; with QO it is not one-seek-per-member (§1) | `::test_listing_without_qo_walks_header_to_header`, `::test_listing_with_qo_does_not_seek_per_member`, `::test_listing_qo_skip_count_does_not_scale_with_member_count` |
+| QO listing serves stored reads and keeps the archive comment; unreadable QO falls back to the walk | `::test_qo_listing_stored_read_and_comment`, `::test_unreadable_qo_falls_back_to_file_walk` |
 | Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |
 | RAR5/RAR3 `accessed`/`created` from the time extra, and `None` when the extra or slot is absent | `::test_rar5_xtime_fixture_surfaces_accessed_and_created`, `::test_rar4_xtime_fixture_surfaces_accessed_and_created`, `::test_xtime_absent_accessed_created_are_none`, `::test_parse_rar5_xtime_keeps_ctime_and_atime_with_ns`, `::test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime` |
 | RAR3 compressed-name decode fails closed on overrun; long RLE stays bounded (§4) | `::test_rar3_compressed_name_decode_is_bounded`, `::test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present`, `::test_rar3_rle_name_may_be_longer_than_encdata`, `::test_rar3_rle_name_zero_correction_keeps_hi_byte`, `::test_rar3_unicode_name_decode_matches_reference_and_stays_bounded` |
@@ -704,9 +693,9 @@ archives under `tests/fixtures/corpus/rar/` are committed and manifest-pinned in
 (ADR 0016), so the corpus RAR column runs everywhere `unrar` exists. The two RAR 1.5 / 2.0
 comment archives are borrowed from `rarfile` and cannot be regenerated. The hostile-argv
 fixtures were built by `make_hostile_fixtures.py` in the review folder and pushed by the
-maintainer, since the review container had no writer. Four tests still shell out to `rar a`
-at runtime and skip without it — three SFX tests and a live multi-volume roundtrip; the gap
-and what would close it are in
+maintainer, since the review container had no writer. Live `rar a` tests skip without
+the writer — three SFX tests, a multi-volume roundtrip, and the QO listing pins that
+need `-qo+`; the gap and what would close it are in
 [`tests/fixtures/rar/README.md`](../../tests/fixtures/rar/README.md).
 
 ## 9. References
@@ -773,7 +762,7 @@ rest of the page keep resolving. Closed so far: **#1** the RAR3 name-decode boun
 respawns named `unrar` on a backward seek; **#3** wildcard member names whose globs are
 confined to the basename (no backslash) read via the `-n` mask plus a skip of other
 matches — directory-component globs and backslash names stay refused, carried by **#18**;
-**#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#10** RAR5/RAR3 `accessed`/`created` from the time extra ([#300](https://github.com/davitf/archivey/pull/300)); **#13** `close()` chaining and **#14**
+**#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#5** RAR5 `QO` listing via MAIN locator when the record is stored and unencrypted; **#10** RAR5/RAR3 `accessed`/`created` from the time extra ([#300](https://github.com/davitf/archivey/pull/300)); **#13** `close()` chaining and **#14**
 shared FILETIME ([#291](https://github.com/davitf/archivey/pull/291)); and **#15** `_live_unrar`,
 deleted outright when [#293](https://github.com/davitf/archivey/pull/293) moved the
 single-live-stream gate ahead of the spawn it was a backstop for; **#12** member
@@ -784,7 +773,6 @@ transient execute failures not cached.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
-| 5 | **Use the `QO` quick-open record when present**, falling back to the walk when it is absent. **Decided: trust it**, like ZIP's CDH — the table `QO` filled is the table extract reads. Residual: does `QO` carry every field the FILE walk fills? If not, reopen this. A listing-vs-walk diagnostic is optional and probably not worth it | Turns the `INDEXED` claim from arguable into true, and is the format's own answer to the walk | §1, §7 |
 | 6 | **Signal the stream-source copy** (P11), and consider bounding it to one compressed member via a synthetic single-member archive rather than only relocating it (§7) | The largest hidden cost in the library is in neither `diagnostics` nor `cost.notes`. `open-issues.md` P11 | §5, §7 |
 | 7 | **Enforce an `unrar` version floor**, or stop claiming one. **Decided: enforce.** Parse the version from the banner already read, once at identification (cached with the probe), not per member. Candidate floor is **7.0**; confirm by testing 7.0 and up before coding the cutoff | An ancient RARLAB build is accepted and then fails per member instead of at identification | At a glance |
 | 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
