@@ -65,6 +65,19 @@ rather than built on demand:
 | `many_list_store__.rar` | RAR5 `-m0 -s -ep1`; 1000 tiny `fNNNNN.txt` members |
 | `many_list_store_nonsolid__.rar` | RAR5 `-m0 -s- -ep1`; 256 tiny members |
 
+Wildcard member names (`*` / `?` in the stored path). Windows cannot create these
+on disk, so they are committed rather than built in the test. Compressed (`-m3`)
+so the read takes the named-`unrar` route; stored members never would.
+
+| Files | Notes |
+| --- | --- |
+| `wildcard_names__.rar` | RAR5 `-m3`; padded so members compress; add-order `subdir/aY.txt` then `a*.txt` / `aX.txt` / `b?.txt` / `b1.txt` / `only*.dat` |
+| `wildcard_names_solid__.rar` | RAR5 `-s -m3`; same members and add order |
+| `wildcard_names__rar4.rar` | RAR4 `-ma4 -m3`; same members as the nonsolid RAR5 |
+| `wildcard_dirglob__.rar` | RAR5 `-m3`; `aaa/x.txt`, `dX/x.txt`, `d*/x.txt` — directory-component glob, refused |
+| `wildcard_backslash__.rar` | RAR5 `-m3`; `a/b1.txt` readable; `a\b_TGT.txt` and `a\b*.txt` refused (Windows `unrar` treats `\` as a separator) |
+| `wildcard_ver__.rar` | RAR5 `-m3 -ver`; `data.bin` two revisions, `data_TARGET`, `data*` — live glob must skip history |
+
 Seek-respawn (named `unrar p` with `seekable_members=True`):
 
 | Files | Notes |

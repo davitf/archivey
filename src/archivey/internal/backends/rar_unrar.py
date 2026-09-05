@@ -8,15 +8,16 @@ secret not in argv) and optional ``-n./member`` include masks.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import BinaryIO, cast
 
 from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
-    UnsupportedFeatureError,
 )
 
 # Successful probes only. A rejected lookalike is not cached, so it is
@@ -88,22 +89,85 @@ def _member_include_switch(member: str) -> str:
     read of an attacker-chosen local file). Passing the name as the value of the ``-n``
     include-mask switch, prefixed with ``./``, neutralizes both: the leading ``-`` is
     not a switch (it is inside ``-n``) and the leading ``@`` is not a listfile (the
-    value starts with ``.``). The ``./`` also anchors the mask to the exact archive path
-    rather than matching the basename at any depth.
+    value starts with ``.``). For a name **without** wildcards, ``./`` also anchors
+    the mask to the exact archive path rather than matching the basename at any
+    depth.
 
     ``unrar`` masks treat ``*`` and ``?`` as wildcards with no escape (``[]`` are
-    literal, ``\\`` does not escape), so a name containing either cannot be addressed to
-    exactly one member; such reads are refused rather than risk emitting another
-    member's bytes.
+    literal, ``\\`` does not escape). A name whose globs are confined to the
+    basename and that contains no backslash is still passed as the mask;
+    ``RarReader._open_member`` skips other matching members using the parsed
+    member list and :func:`_unrar_mask_match`. A glob in a directory component,
+    or a backslash in the presented name, raises ``UnsupportedFeatureError``
+    instead — :func:`_unrar_mask_match` is not faithful there, and Windows
+    ``unrar`` treats ``\\`` as a separator (see :func:`_unrar_glob_demux_ok`).
     """
-    if "*" in member or "?" in member:
-        raise UnsupportedFeatureError(
-            "Cannot read this RAR member via unrar: its name contains a wildcard "
-            "character ('*' or '?') that unrar interprets as a match pattern with no "
-            "escape, so it cannot be addressed unambiguously.",
-            member_name=member,
-        )
     return "-n./" + member
+
+
+def _unrar_glob_demux_ok(presented: str) -> bool:
+    """True when archivey will demux this glob name from an ``unrar -n`` pipe.
+
+    Only a glob confined to the basename, with no backslash. A glob in a
+    directory component, or a ``\\`` anywhere, makes :func:`_unrar_mask_match`
+    over-match unrar 7.00, so the skip would land inside the target and a valid
+    archive would be reported truncated. Those names stay
+    ``UnsupportedFeatureError`` until the matcher is a source-faithful port.
+    """
+    if "\\" in presented:
+        return False
+    parent, sep, _base = presented.rpartition("/")
+    if not sep:
+        return True
+    return "*" not in parent and "?" not in parent
+
+
+def _unrar_component_match(name: str, mask: str) -> bool:
+    """Glob-match one path component: ``*``/``?`` wildcards, ``[]`` literal."""
+    parts: list[str] = []
+    for ch in mask:
+        if ch == "*":
+            parts.append(".*")
+        elif ch == "?":
+            parts.append(".")
+        else:
+            parts.append(re.escape(ch))
+    return re.fullmatch("".join(parts), name, flags=re.DOTALL) is not None
+
+
+def _unrar_mask_match(name: str, mask: str) -> bool:
+    """Match ``name`` the way ``unrar -n`` does.
+
+    No wildcards: exact path (``./`` already stripped by the caller of ``-n./``).
+    With ``*``/``?``: ``MATCH_WILDSUBPATH`` — the last mask component matches the
+    basename at any depth, and a non-wildcard directory prefix constrains which
+    subtrees. ``[]`` are literal (unlike Python ``fnmatch``). On Windows, ``unrar``
+    folds case; we do too so the skip stays aligned with the pipe.
+
+    Not a source-faithful port: a glob in a directory component over-matches
+    (``d*/x.txt`` vs ``aaa/x.txt``), and folding ``\\`` to ``/`` collides a
+    Linux literal backslash with a separator. Callers must refuse those names
+    via :func:`_unrar_glob_demux_ok` before using this to size a skip.
+    """
+    if mask.startswith("./"):
+        mask = mask[2:]
+    name = name.replace("\\", "/")
+    mask = mask.replace("\\", "/")
+    if sys.platform == "win32":
+        name = name.casefold()
+        mask = mask.casefold()
+    if "*" not in mask and "?" not in mask:
+        return name == mask
+    mask_dir, mask_base = mask.rsplit("/", 1) if "/" in mask else ("", mask)
+    name_base = name.rsplit("/", 1)[-1]
+    if not _unrar_component_match(name_base, mask_base):
+        return False
+    if not mask_dir:
+        return True
+    if "*" not in mask_dir and "?" not in mask_dir:
+        name_dir = name.rsplit("/", 1)[0] if "/" in name else ""
+        return name_dir == mask_dir or name_dir.startswith(mask_dir + "/")
+    return True
 
 
 def open_unrar_p(
