@@ -40,7 +40,9 @@ from archivey.internal.backends.rar_parser import (
 )
 from archivey.types import (
     EXTRA_RAR_CREATED_IS_CTIME,
+    EXTRA_RAR_EXTRACT_VERSION,
     ArchiveMember,
+    CompressionAlgorithm,
     HashAlgorithm,
     MemberType,
 )
@@ -641,8 +643,22 @@ def test_encrypted_data_requires_password(name: str) -> None:
 def test_stored_m0_direct_read() -> None:
     with open_archive(_fixture("stored_m0.rar")) as archive:
         member = next(m for m in archive.members() if m.is_file)
-        assert member.compression[0].algo.name == "STORED"
+        assert member.compression[0].algo is CompressionAlgorithm.STORED
+        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] in {15, 20, 29, 50}
         assert archive.read(member) == b"stored payload"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["basic_solid__.rar", "basic_solid__rar4.rar"],
+)
+def test_compressed_member_reports_rar_algorithm(name: str) -> None:
+    with open_archive(_fixture(name)) as archive:
+        member = next(m for m in archive.members() if m.name == "file1.txt")
+        method = member.compression[0]
+        assert method.algo is CompressionAlgorithm.RAR
+        assert method.level in {1, 2, 3, 4, 5}
+        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] in {15, 20, 29, 50}
 
 
 _FILE_VERSION_CONTENTS = {

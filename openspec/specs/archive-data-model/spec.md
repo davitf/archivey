@@ -99,6 +99,7 @@ class CompressionAlgorithm(Enum):
     BCJ = "bcj"
     BCJ2 = "bcj2"
     DELTA = "delta"
+    RAR = "rar"
     UNKNOWN = "unknown"
 
 @dataclass(frozen=True)
@@ -109,7 +110,8 @@ class CompressionMethod:
 ```
 
 The enum SHALL be open-ended by appending new members over time. Unrecognized
-codec IDs SHALL map to `UNKNOWN` rather than raising.
+codec IDs SHALL map to `UNKNOWN` rather than raising. Ordinary RAR M1–M5 SHALL
+map to `RAR`, not `UNKNOWN`.
 
 #### Scenario: compression matrix
 
@@ -117,6 +119,7 @@ codec IDs SHALL map to `UNKNOWN` rather than raising.
 | --- | --- |
 | ZIP member stored with DEFLATE | `(CompressionMethod(algo=CompressionAlgorithm.DEFLATE),)` |
 | 7z member uses BCJ2 + LZMA2 | `(CompressionMethod(BCJ2), CompressionMethod(LZMA2))` |
+| Compressed RAR member (M1–M5) | `(CompressionMethod(algo=CompressionAlgorithm.RAR, level=<1-5>),)`; `extra["rar.extract_version"]` in `{15,20,29,50}` |
 | Archive contains an unknown codec ID | `CompressionAlgorithm.UNKNOWN`; no exception |
 
 ### Requirement: ArchiveMember exposes the complete mutable member record

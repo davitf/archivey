@@ -265,7 +265,9 @@ def crc32_digest(value: int) -> bytes:
 class CompressionAlgorithm(Enum):
     """A compression/filter codec. Extensible: codecs Archivey does not recognize
     map to ``UNKNOWN`` rather than raising, so callers should treat the set as
-    open-ended."""
+    open-ended. ``ContainerFormat.RAR`` and ``CompressionAlgorithm.RAR`` are
+    homonyms (container vs codec), not a new name like ``RAR_COMPRESSION``.
+    """
 
     STORED = "stored"
     DEFLATE = "deflate"
@@ -280,6 +282,7 @@ class CompressionAlgorithm(Enum):
     BCJ = "bcj"  # x86 executable filter
     BCJ2 = "bcj2"
     DELTA = "delta"
+    RAR = "rar"
     UNKNOWN = "unknown"  # unrecognized codec ID
 
 
@@ -336,6 +339,10 @@ EXTRA_IS_JUNCTION = "is_junction"
 # meaning from ``create_system`` (7z hardcodes UNIX while reading a FILETIME
 # birth time; ZIP splits by extra source, not OS).
 EXTRA_RAR_CREATED_IS_CTIME = "rar.created_is_ctime"
+
+# RAR FILE-header unpack version (15/20/29/50). Lives here, not on
+# CompressionMethod.level, which is the M1–M5 method-byte offset.
+EXTRA_RAR_EXTRACT_VERSION = "rar.extract_version"
 
 
 @dataclass(slots=True)
