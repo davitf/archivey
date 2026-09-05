@@ -1462,6 +1462,23 @@ def test_rar_reader_masks_hostile_unix_mode() -> None:
     assert member_win.windows_attrs == 0x20
 
 
+def _stub_which_unrar(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Make ``shutil.which('unrar')`` return ``path`` while the file exists.
+
+    Windows ``which`` only returns names in ``PATHEXT`` (``.exe`` / ``.cmd`` / …).
+    An extensionless ``unrar`` on PATH is invisible there, so a lookalike that
+    only sets PATH never reaches the banner probe.
+    """
+    resolved = str(path)
+
+    def which(command: str) -> str | None:
+        if command == "unrar" and path.is_file():
+            return resolved
+        return None
+
+    monkeypatch.setattr(rar_unrar.shutil, "which", which)
+
+
 def test_non_rarlab_unrar_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1482,6 +1499,7 @@ def test_non_rarlab_unrar_negative_probe_is_cached(
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _stub_which_unrar(monkeypatch, fake)
 
     probes = 0
     is_rarlab_unrar = rar_unrar._is_rarlab_unrar
@@ -1570,12 +1588,13 @@ def test_deleted_cached_unrar_is_not_returned(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     fake = tmp_path / "unrar"
-    fake.write_text(
-        "#!/bin/sh\necho 'UNRAR 7.00 by Alexander Roshal'\n", encoding="utf-8"
-    )
-    fake.chmod(0o755)
+    fake.write_bytes(b"")
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _stub_which_unrar(monkeypatch, fake)
+    # A shell script is not a Win32 executable; this test pins cache
+    # invalidation, not banner sniffing.
+    monkeypatch.setattr(rar_unrar, "_is_rarlab_unrar", lambda _path: True)
 
     assert rar_unrar.find_rarlab_unrar() == str(fake)
     fake.unlink()
