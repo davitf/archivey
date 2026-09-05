@@ -1527,6 +1527,7 @@ class ZipReadBackend(ReadBackend):
         ".pyz": ArchiveFormat.ZIP,
         ".whl": ArchiveFormat.ZIP,
         ".apk": ArchiveFormat.ZIP,
+        ".cbz": ArchiveFormat.ZIP,
     }
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(
