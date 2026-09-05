@@ -1610,12 +1610,20 @@ def test_missing_unrar_rechecks_which_and_does_not_probe(
     assert probe_calls == 0
 
 
+def _usable_rarlab_unrar_or_skip(reason: str) -> str:
+    """Skip unless ``PATH`` has a RARLAB unrar that meets the version floor."""
+    try:
+        return rar_unrar.find_rarlab_unrar()
+    except PackageNotInstalledError:
+        pytest.skip(reason)
+
+
 def test_path_change_invalidates_cached_unrar_miss(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    rarlab_unrar = shutil.which("unrar")
-    if rarlab_unrar is None or not rar_unrar._is_rarlab_unrar(rarlab_unrar).is_rarlab:
-        pytest.skip("no RARLAB unrar on PATH — cannot test cache invalidation")
+    rarlab_unrar = _usable_rarlab_unrar_or_skip(
+        "no usable RARLAB unrar 7.0+ on PATH — cannot test cache invalidation"
+    )
 
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
@@ -1630,9 +1638,9 @@ def test_unrar_installed_after_miss_is_found(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """``which`` re-runs on a miss: installing into an unchanged PATH is visible."""
-    rarlab_unrar = shutil.which("unrar")
-    if rarlab_unrar is None or not rar_unrar._is_rarlab_unrar(rarlab_unrar).is_rarlab:
-        pytest.skip("no RARLAB unrar on PATH — cannot test install-after-miss")
+    rarlab_unrar = _usable_rarlab_unrar_or_skip(
+        "no usable RARLAB unrar 7.0+ on PATH — cannot test install-after-miss"
+    )
 
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
@@ -1780,6 +1788,15 @@ def test_parse_unrar_banner_unparseable_rarlab() -> None:
     assert parsed.version is None
 
 
+def test_parse_unrar_banner_overlong_digits_are_unparseable() -> None:
+    """A 5000-digit run must not ``int()``; treat it as an unparseable RARLAB banner."""
+    parsed = rar_unrar._parse_unrar_banner(
+        _RARLAB_BANNER.format(version="9" * 5000 + ".0")
+    )
+    assert parsed.is_rarlab is True
+    assert parsed.version is None
+
+
 def test_parse_unrar_banner_lookalike_is_not_rarlab() -> None:
     parsed = rar_unrar._parse_unrar_banner("unrar-free fake")
     assert parsed.is_rarlab is False
@@ -1802,8 +1819,17 @@ def test_rarlab_unrar_at_or_above_floor_is_accepted(
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
-    _stub_unrar_banner(monkeypatch, fake, _RARLAB_BANNER.format(version=version_text))
-    assert Path(rar_unrar.find_rarlab_unrar()) == Path(os.path.abspath(str(fake)))
+    runs = _stub_unrar_banner(
+        monkeypatch, fake, _RARLAB_BANNER.format(version=version_text)
+    )
+    for _ in range(2):
+        assert Path(rar_unrar.find_rarlab_unrar()) == Path(os.path.abspath(str(fake)))
+    assert runs == [1]
+    cached = rar_unrar._cached_unrar
+    assert cached is not None
+    assert cached.is_rarlab is True
+    major, minor = (int(p) for p in version_text.split("."))
+    assert cached.version == (major, minor)
 
 
 def test_rarlab_unrar_below_floor_is_rejected_and_cached(
@@ -1863,6 +1889,22 @@ def test_unparseable_rarlab_banner_is_rejected_and_cached(
     assert cached is not None
     assert cached.is_rarlab is True
     assert cached.version is None
+
+
+def test_overlong_banner_version_is_package_not_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A banner digit run past CPython's ``int()`` limit stays an ``ArchiveyError``."""
+    fake = tmp_path / "unrar"
+    fake.write_bytes(b"x")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _stub_unrar_banner(
+        monkeypatch, fake, _RARLAB_BANNER.format(version="9" * 5000 + ".0")
+    )
+    with pytest.raises(PackageNotInstalledError, match="could not be parsed"):
+        rar_unrar.find_rarlab_unrar()
 
 
 def test_unrar_not_installed_message_names_lookalikes() -> None:

@@ -149,7 +149,8 @@ tools when RARLAB `unrar` is missing or incompatible.
 
 | Case | Expected |
 | --- | --- |
-| RARLAB `unrar` on `PATH` | Used for compressed/encrypted member data |
+| RARLAB `unrar` 7.0+ on `PATH` | Used for compressed/encrypted member data |
+| RARLAB `unrar` older than 7.0, or a RARLAB banner with no parseable version | `PackageNotInstalledError` naming the floor and the version found; refused at identification |
 | Only `unrar-free` / `unar` / `7z` on `PATH` | `PackageNotInstalledError` naming RARLAB `unrar`; no silent fallback |
 | Listing without data reads | Succeeds without invoking any external decompressor |
 
