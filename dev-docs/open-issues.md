@@ -586,9 +586,11 @@ re-verified failing against the unfixed code). Original write-up below.
   target, so that case is not in the fixtures. `is_payload_file()` is the
   predictor (`test_solid_symlink_demux_and_link_targets`, RAR5 hardlinks in
   `test_solid_hardlink_demux_and_targets`). Residual is unfixtured existing
-  kinds (`FILE_COPY`, Windows symlink, Windows junction) and future kinds — a
-  kind whose emission `is_payload_file()` gets wrong still shifts every later
-  member. There is no RAR 1.5/2.x solid-symlink fixture.
+  kinds — `FILE_COPY` (RAR5 redirect type 5), Windows symlink, Windows
+  junction — and future kinds. A later reader must not conclude the current
+  kinds are all pinned: a kind whose emission `is_payload_file()` gets wrong
+  still shifts every later member. There is no RAR 1.5/2.x solid-symlink
+  fixture.
 - **Why fixable:** Spec’d hardening / shared emission table; called out in the
   unrar-piping investigation as a future change (same class as mixed-password
   ALL-pipe forbid).
