@@ -838,6 +838,8 @@ class RarReader(BaseArchiveReader):
             size=info.file_size,
             compressed_size=info.compress_size,
             modified=info.mtime,
+            accessed=info.atime,
+            created=info.ctime,
             mode=mode,
             compression=_compression_for(info),
             is_encrypted=info.is_encrypted,

@@ -210,6 +210,8 @@ class RarMemberInfo:
     crc32: int | None
     blake2sp_hash: bytes | None
     mtime: datetime | None  # RAR4 naive; RAR5 aware UTC
+    ctime: datetime | None  # same tz convention as mtime; RAR5 0x03 / RAR3 EXTTIME
+    atime: datetime | None
     mode: int | None
     host_os: int | None
     flags: int
@@ -1191,10 +1193,12 @@ def _parse_rar3_file_header(
     if flags & _RAR3_FILE_SALT:
         _salt, pos = _load_bytes(hdata, 8, pos)
 
+    ctime: datetime | None = None
+    atime: datetime | None = None
     if flags & _RAR3_FILE_EXTTIME:
-        mtime_holder: list[datetime | None] = [mtime]
-        pos = _parse_rar3_ext_time(hdata, pos, mtime_holder)
-        mtime = mtime_holder[0]
+        xt_mtime, ctime, atime, pos = _parse_rar3_ext_time(hdata, pos, mtime)
+        if xt_mtime is not None:
+            mtime = xt_mtime
     # else: keep DOS mtime (spec: RAR4 naive wall-clock)
 
     # CRC covers through the file-header fields; old comment subblocks (if any) follow.
@@ -1209,6 +1213,8 @@ def _parse_rar3_file_header(
         crc32=crc32,
         blake2sp_hash=None,
         mtime=None if is_service else mtime,
+        ctime=None if is_service else ctime,
+        atime=None if is_service else atime,
         mode=mode,
         host_os=host_os,
         flags=flags,
@@ -1244,21 +1250,24 @@ def _rar3_split_file_version(filename: str) -> tuple[str, int | None]:
 
 
 def _parse_rar3_ext_time(
-    data: bytes, pos: int, mtime_holder: list[datetime | None]
-) -> int:
-    """Parse RAR3 extended time; may refine ``mtime_holder[0]``."""
+    data: bytes, pos: int, dos_mtime: datetime | None
+) -> tuple[datetime | None, datetime | None, datetime | None, int]:
+    """Parse RAR3 EXTTIME. Returns ``(mtime, ctime, atime, pos)``.
+
+    Nibble order is UnRAR / rarfile, not a guess: flags>>12 mtime (refines the
+    header DOS stamp), >>8 ctime, >>4 atime, low nibble arctime. arctime has no
+    ``ArchiveMember`` field and is walked only so the cursor stays aligned.
+    """
     flags = 0
     if pos + 2 <= len(data):
         flags = _S_SHORT.unpack_from(data, pos)[0]
         pos += 2
 
-    mtime, pos = _parse_rar3_xtime(flags >> 12, data, pos, mtime_holder[0])
-    _, pos = _parse_rar3_xtime(flags >> 8, data, pos, None)
-    _, pos = _parse_rar3_xtime(flags >> 4, data, pos, None)
+    mtime, pos = _parse_rar3_xtime(flags >> 12, data, pos, dos_mtime)
+    ctime, pos = _parse_rar3_xtime(flags >> 8, data, pos, None)
+    atime, pos = _parse_rar3_xtime(flags >> 4, data, pos, None)
     _, pos = _parse_rar3_xtime(flags, data, pos, None)
-    if mtime is not None:
-        mtime_holder[0] = mtime
-    return pos
+    return mtime, ctime, atime, pos
 
 
 def _parse_rar3_xtime(
@@ -1634,6 +1643,8 @@ def _parse_rar5_file_block(
     file_encryption: RarEncryptionInfo | None = None
     file_version: int | None = None
     flags = 0
+    ctime: datetime | None = None
+    atime: datetime | None = None
 
     if extra_size:
         # Walk extras until near end (allow 1 byte of padding like rarfile).
@@ -1647,7 +1658,7 @@ def _parse_rar5_file_block(
             xdata, pos = _load_bytes(hdata, xsize, pos)
             xtype, xpos = load_vint(xdata, 0)
             if xtype == _RAR5_XFILE_TIME:
-                mtime = _parse_rar5_xtime(xdata, xpos, mtime)
+                mtime, ctime, atime = _parse_rar5_xtime(xdata, xpos, mtime)
             elif xtype == _RAR5_XFILE_ENCRYPTION:
                 file_encryption = _parse_rar5_file_encryption(xdata, xpos)
                 flags |= _RAR3_FILE_PASSWORD
@@ -1694,6 +1705,8 @@ def _parse_rar5_file_block(
         crc32=crc32,
         blake2sp_hash=blake2sp_hash,
         mtime=mtime,
+        ctime=ctime,
+        atime=atime,
         mode=mode,
         host_os=host_os,
         flags=flags,
@@ -1715,32 +1728,52 @@ def _parse_rar5_file_block(
     )
 
 
+def _apply_rar5_unix_ns(
+    xdata: bytes, pos: int, dt: datetime | None, *, present: bool
+) -> tuple[datetime | None, int]:
+    """Consume a unix-ns extra when the corresponding HAS_* flag is set.
+
+    The nsec word is present whenever HAS_* is set, even if the timestamp
+    itself failed to decode — skip it and the later fields desync.
+    """
+    if not present:
+        return dt, pos
+    nsec, pos = _load_le32(xdata, pos)
+    if dt is None:
+        return None, pos
+    try:
+        return dt.replace(microsecond=min(nsec // 1000, 999999)), pos
+    except ValueError:
+        return dt, pos
+
+
 def _parse_rar5_xtime(
     xdata: bytes, pos: int, current: datetime | None
-) -> datetime | None:
+) -> tuple[datetime | None, datetime | None, datetime | None]:
     tflags, pos = load_vint(xdata, pos)
     ldr = _load_windowstime
     if tflags & _RAR5_XTIME_UNIXTIME:
         ldr = _load_unixtime
     mtime = current
+    ctime: datetime | None = None
+    atime: datetime | None = None
     if tflags & _RAR5_XTIME_HAS_MTIME:
         mtime, pos = ldr(xdata, pos)
     if tflags & _RAR5_XTIME_HAS_CTIME:
-        _, pos = ldr(xdata, pos)
+        ctime, pos = ldr(xdata, pos)
     if tflags & _RAR5_XTIME_HAS_ATIME:
-        _, pos = ldr(xdata, pos)
+        atime, pos = ldr(xdata, pos)
     if tflags & _RAR5_XTIME_UNIXTIME_NS:
-        if tflags & _RAR5_XTIME_HAS_MTIME and mtime is not None:
-            nsec, pos = _load_le32(xdata, pos)
-            try:
-                mtime = mtime.replace(microsecond=min(nsec // 1000, 999999))
-            except ValueError:
-                pass
-        if tflags & _RAR5_XTIME_HAS_CTIME:
-            _, pos = _load_le32(xdata, pos)
-        if tflags & _RAR5_XTIME_HAS_ATIME:
-            _, pos = _load_le32(xdata, pos)
-    return mtime
+        mtime, pos = _apply_rar5_unix_ns(
+            xdata, pos, mtime, present=bool(tflags & _RAR5_XTIME_HAS_MTIME)
+        )
+        ctime, pos = _apply_rar5_unix_ns(
+            xdata, pos, ctime, present=bool(tflags & _RAR5_XTIME_HAS_CTIME)
+        )
+        atime, pos = _apply_rar5_unix_ns(
+            xdata, pos, atime, present=bool(tflags & _RAR5_XTIME_HAS_ATIME)
+        )
+    return mtime, ctime, atime
 
 
 def _parse_rar5_file_encryption(xdata: bytes, pos: int) -> RarEncryptionInfo:
