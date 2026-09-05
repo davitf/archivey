@@ -170,7 +170,9 @@ target bytes. Under `RAISE`, listing halts with `DiagnosticRaisedError`.
 ### Requirement: Join 7-Zip .zip.NNN sets; reject spanned ZIP cleanly
 
 7-Zip's `-v` byte-splits one finished single-disk ZIP into
-`name.zip.001 … name.zip.00N`, exactly as it splits `name.7z.NNN`. With every
+`name.zip.001 … name.zip.00N`, exactly as it splits `name.7z.NNN`. An SFX split
+names the same slices `name.exe.001 … name.exe.00N` (stub `name.exe` is not a
+sibling). With every
 part `1..N` present beside the one named, `open_archive` SHALL concatenate them
 and read the result as the ordinary ZIP it is, from any part, reporting
 `ArchiveInfo.is_multivolume = True` and `ArchiveInfo.extra["zip.volume_count"] = N`
@@ -188,7 +190,8 @@ happen to sit on the last disk. It stays deferred to a native ZIP reader.
 
 #### Scenario: multi-volume ZIP join and refusal
 
-`open_archive` on a complete 7-Zip `.zip.NNN` set — named at any part — lists and
+`open_archive` on a complete 7-Zip `.zip.NNN` or SFX `.exe.NNN` set — named at any
+part — lists and
 reads its members, including data spanning a part boundary. An incomplete such set
 raises `TruncatedError`; every other split/spanned signal raises
 `UnsupportedFeatureError`. Neither surfaces `CorruptionError`,

@@ -614,12 +614,12 @@ class RarReader(BaseArchiveReader):
         self._origin = start_offset
         self._shared = self._open_shared_source(source)
         if self._origin and len(self._volume_paths) > 1:
-            raise UnsupportedFeatureError(
-                "A start offset cannot be combined with a multi-volume RAR set: the "
-                "offset describes one file, and the volumes are separate ones.",
-                archive_name=archive_name,
-                source_format=ArchiveFormat.RAR,
-            )
+            # Detection's payload_offset is for the one file it looked at — an SFX
+            # first volume (`rv.part1.sfx`) whose later siblings start at magic 0.
+            # The parser SFX-scans each volume itself. Applying the offset to the
+            # concatenated view would skip the stub in volume 1 and then mis-address
+            # every later volume. Drop it; do not refuse the set.
+            self._origin = 0
         self._archive, self._unrar_password = self._parse_archive()
         if self._archive.is_volume or self._volume_count > 1:
             self._volume_count = max(self._volume_count, len(self._volume_paths) or 1)

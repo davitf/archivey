@@ -202,9 +202,11 @@ third-party reader. PPMd, Deflate64, and LZMA1+BCJ are optional-supported via
 
 ### Requirement: Support multi-volume 7z by ordered concatenation
 
-The system SHALL support split 7z sets (`name.7z.001`, `name.7z.002`, ...) by
+The system SHALL support split 7z sets (`name.7z.001`, `name.7z.002`, ..., and
+SFX numbered parts `name.exe.001`, `name.exe.002`, ...) by
 joining volumes in order into one logical byte stream and parsing that stream as
-ordinary 7z. `open_archive()` SHALL accept either a path inside the set, with
+ordinary 7z. The SFX stub `name.exe` (no `.NNN` suffix) is not a volume sibling.
+`open_archive()` SHALL accept either a path inside the set, with
 sibling discovery in numeric order, or an explicit ordered source sequence. If a
 volume is missing or the stream cannot be reconstructed, the system SHALL raise
 `UnsupportedFeatureError` or a truncated/corrupt error, never a partial result.
@@ -214,6 +216,7 @@ volume is missing or the stream cannot be reconstructed, the system SHALL raise
 | Case | Expected |
 | --- | --- |
 | Open `name.7z.001` with complete siblings | Volumes join in numeric order; listing and reads match a single-file archive |
+| Open `name.exe.001` with complete `name.exe.00N` siblings | Same join; the stub `name.exe` is not a sibling |
 | Open an explicit ordered volume list | Sources concatenate and read as one archive |
 | Missing or out-of-order volume | Error instead of partial or garbage output |
 
