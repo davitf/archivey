@@ -1786,6 +1786,13 @@ def test_parse_unrar_banner_lookalike_is_not_rarlab() -> None:
     assert parsed.version is None
 
 
+def test_parse_unrar_banner_version_without_vendor_is_not_rarlab() -> None:
+    """A version token is not enough: too-old applies only to genuine RARLAB."""
+    parsed = rar_unrar._parse_unrar_banner("UNRAR 6.24 freeware")
+    assert parsed.is_rarlab is False
+    assert parsed.version is None
+
+
 @pytest.mark.parametrize("version_text", ["7.00", "7.0", "7.11"])
 def test_rarlab_unrar_at_or_above_floor_is_accepted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version_text: str
