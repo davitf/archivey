@@ -580,12 +580,15 @@ re-verified failing against the unfixed code). Original write-up below.
 
 - **Today:** Solid ALL-pipe demux must match what `unrar` actually emits. The known
   pair is pinned by tests: RAR5 links are packed 0 / unpacked > 0 / emit 0; RAR4
-  (old-family) links are packed > 0 / unpacked > 0 / emit 0 — including the
-  `__rar4` symlink members, which declare extract version 20 (stored M0).
-  `is_payload_file()` is the predictor (`test_solid_symlink_demux_and_link_targets`,
-  RAR5 hardlinks in `test_solid_hardlink_demux_and_targets`). Residual is new
-  member kinds — a kind whose emission `is_payload_file()` gets wrong still shifts
-  every later member. There is no RAR 1.5/2.x solid-symlink fixture.
+  (old-family) links are packed > 0 / unpacked > 0 / emit 0. The `__rar4`
+  archive is RAR3-family; its stored link members declare extract version 20
+  (M0). The RARLAB writer does not emit a compressed (LZ-data) RAR3 symlink
+  target, so that case is not in the fixtures. `is_payload_file()` is the
+  predictor (`test_solid_symlink_demux_and_link_targets`, RAR5 hardlinks in
+  `test_solid_hardlink_demux_and_targets`). Residual is unfixtured existing
+  kinds (`FILE_COPY`, Windows symlink, Windows junction) and future kinds — a
+  kind whose emission `is_payload_file()` gets wrong still shifts every later
+  member. There is no RAR 1.5/2.x solid-symlink fixture.
 - **Why fixable:** Spec’d hardening / shared emission table; called out in the
   unrar-piping investigation as a future change (same class as mixed-password
   ALL-pipe forbid).
