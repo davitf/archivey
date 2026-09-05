@@ -130,11 +130,14 @@ SERVICE block holding copies of the file headers, written at the tail — measur
 member. It exists so a reader can list a large or multi-volume archive without the walk.
 archivey parses SERVICE blocks generically and acts only on `CMT`, so `QO` is seeked past
 like any other unknown payload; the `-qo+` archive costs **42** seeks to list rather than 41,
-one *more*, for the record that was supposed to save 40. Two things stop this being a free
-win: it is optional (`rar -qo` is "none | force", and WinRAR writes it only for large
-archives), so it can only ever be a fast path with the walk as fallback; and it is duplicate
-metadata in an attacker-controlled file, so a crafted `QO` disagreeing with the real headers
-would make listing and extraction describe different archives. §10 #5.
+one *more*, for the record that was supposed to save 40. It is optional (`rar -qo` is
+"none | force", and WinRAR writes it only for large archives), so it can only ever be a
+fast path with the walk as fallback. The remaining question was whether to trust a
+duplicate attacker-controlled copy. **Decided: yes** — same as ZIP's CDH: if `QO` built
+the member table, listing and extract both use that table. A crafted `QO` can lie, the
+same way a crafted CDH can. Residual before coding: whether `QO` carries every field the
+FILE walk fills — if it doesn't, this call is reopened. A listing-vs-walk diagnostic is
+optional and probably not worth it. §10 #5.
 
 **Two on-disk generations hide behind one magic.** `Rar!\x1a\x07\x00` is the RAR3 family —
 which is RAR 1.5, 2.x and 3.x, all one block layout, reported as `format_version == "4"` —
@@ -767,7 +770,7 @@ single-live-stream gate ahead of the spawn it was a backstop for.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
-| 5 | **Use the `QO` quick-open record when present**, falling back to the walk when it is absent or fails to validate. It is a tail SERVICE block holding copies of the file headers, and today it is skipped — an archive that has one costs one seek *more* to list, not 40 fewer (§1). Needs a decision on trust first: it is duplicate attacker-controlled metadata, so either it is validated against the real headers (which costs the walk it was meant to save) or listing and extraction can be made to disagree | Turns the `INDEXED` claim from arguable into true, and is the format's own answer to the walk | §1, §7 |
+| 5 | **Use the `QO` quick-open record when present**, falling back to the walk when it is absent. **Decided: trust it**, like ZIP's CDH — the table `QO` filled is the table extract reads. Residual: does `QO` carry every field the FILE walk fills? If not, reopen this. A listing-vs-walk diagnostic is optional and probably not worth it | Turns the `INDEXED` claim from arguable into true, and is the format's own answer to the walk | §1, §7 |
 | 6 | **Signal the stream-source copy** (P11), and consider bounding it to one compressed member via a synthetic single-member archive rather than only relocating it (§7) | The largest hidden cost in the library is in neither `diagnostics` nor `cost.notes`. `open-issues.md` P11 | §5, §7 |
 | 7 | **Enforce an `unrar` version floor**, or stop claiming one. Identification is a banner check with no version parse, though the version is right there in the banner we already read | An ancient RARLAB build is accepted and then fails per member instead of at identification | At a glance |
 | 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
@@ -776,7 +779,7 @@ single-live-stream gate ahead of the spawn it was a backstop for.
 | 11 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
 | 12 | **Map `_raw.comment` onto `member.comment`**, and read RAR 1.5 / 2.x old-style embedded comment blocks — `rarfile` returns both where we return `None` | Parsed and then dropped, which is the cheapest kind of gap to close | §2.2, §5 |
 | 16 | **`_cached_unrar` never invalidates**, and only a *successful* probe is cached — a lookalike on `PATH` is re-probed once per attempted read | Minor; noted because §1 claims the probe costs one process | §1 |
-| 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses | Product call, not a defect | — |
+| 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses. **Decided: register it.** Same call for ZIP: register `.cbz` (ZIP today has `.zip` `.jar` `.pyz` `.whl` `.apk`, no comic-book alias) | Product call, recorded | — |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
 | 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
 
