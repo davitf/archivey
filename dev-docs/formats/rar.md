@@ -87,9 +87,14 @@ Everything about that boundary is a consequence:
   once the solid prefix plus discarded member progress meets the 1 MiB floor. The unnamed
   ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5).
 - **Identity of the binary costs a process.** `find_rarlab_unrar` runs `unrar` with no
-  arguments and sniffs the banner, then caches either result for that `PATH`. Changing
-  `PATH` invalidates a hit or a miss, and a cached hit is also invalidated when its binary
-  vanishes. A lookalike on an unchanged `PATH` costs one probe per process.
+  arguments and sniffs the banner. `shutil.which` re-runs on every call — a miss is
+  never frozen, so installing `unrar` into a directory already on `PATH` is visible
+  without editing the string. The banner verdict is cached for the resolved
+  (absolute) candidate together with its stat identity (`st_dev` / `st_ino` /
+  `st_mtime_ns` / `st_size`); a hit or a durable "not RARLAB" answer is reused only
+  while that identity is unchanged. A probe that cannot *run* the binary (`OSError`,
+  timeout) is not cached. The cache is one entry, so alternating two `PATH`s
+  re-probes. The lookup does not key cwd or `PATHEXT`.
 
 **Blocks chain forward and each header states its own size.** There is no index; the walk
 reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
@@ -773,9 +778,9 @@ shared FILETIME ([#291](https://github.com/davitf/archivey/pull/291)); and **#15
 deleted outright when [#293](https://github.com/davitf/archivey/pull/293) moved the
 single-live-stream gate ahead of the spawn it was a backstop for; **#12** member
 comments mapped from RAR3 CMT SERVICE and RAR 1.5 / 2.x old-style blocks, stored natively
-and compressed through `unrar` when present; and **#16** `unrar`
-probe caching, including negative results and invalidation when `PATH` changes or the
-cached binary vanishes.
+and compressed through `unrar` when present; and **#16** `unrar` probe caching —
+`which` every call, banner verdict keyed on the resolved path plus stat identity,
+transient execute failures not cached.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
