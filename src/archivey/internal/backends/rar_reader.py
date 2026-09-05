@@ -91,6 +91,7 @@ from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_RAR_CREATED_IS_CTIME,
+    EXTRA_RAR_EXTRACT_VERSION,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -121,7 +122,7 @@ _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 
 # Shared CompressionMethod tuples — many-member listing hits the same method byte
 # (typically store / M1–M5) thousands of times; avoid per-member allocations.
-# RAR M1–M5 are proprietary; expose as UNKNOWN with the method byte as level.
+# M0 is STORED; M1–M5 are CompressionAlgorithm.RAR with level = method - 0x30.
 _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
     CompressionMethod(algo=CompressionAlgorithm.STORED),
 )
@@ -130,7 +131,7 @@ _COMPRESSION_BY_METHOD: dict[int, tuple[CompressionMethod, ...]] = {
     **{
         method: (
             CompressionMethod(
-                algo=CompressionAlgorithm.UNKNOWN,
+                algo=CompressionAlgorithm.RAR,
                 level=method - _RAR_METHOD_STORED,
             ),
         )
@@ -836,6 +837,8 @@ class RarReader(BaseArchiveReader):
         if version_history:
             assert info.file_version is not None
             extra["rar.file_version"] = info.file_version
+        if info.extract_version is not None:
+            extra[EXTRA_RAR_EXTRACT_VERSION] = info.extract_version
         if tweaked:
             # Stored digests are key-tweaked; keep them out of ``hashes`` (see
             # ``_member_hashes``) but expose the raw values for callers / forward-verify.
