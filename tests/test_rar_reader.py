@@ -44,14 +44,16 @@ _BASIC_CONTENTS = {
 }
 
 # Compressed fixtures: stored members never reach unrar, so they would not pin this.
-# ``rar a -s`` reordered ``b1.txt`` ahead of ``b?.txt`` on the solid archive; that is
-# the prefix-skip case. Windows cannot create these names on disk — committed only.
+# ``subdir/aY.txt`` is an earlier basename match for ``a*.txt`` (prefix skip).
+# Windows cannot create these names on disk — committed only.
+_WILDCARD_PAD = b"0123456789abcdef" * 512
 _WILDCARD_CONTENTS = {
-    "a*.txt": b"target-star\n",
-    "aX.txt": b"other-aX\n",
-    "b?.txt": b"target-q\n",
-    "b1.txt": b"other-b1\n",
-    "only*.dat": b"unique\n",
+    "subdir/aY.txt": b"nested-aY\n" + _WILDCARD_PAD,
+    "a*.txt": b"target-star\n" + _WILDCARD_PAD,
+    "aX.txt": b"other-aX\n" + _WILDCARD_PAD,
+    "b?.txt": b"target-q\n" + _WILDCARD_PAD,
+    "b1.txt": b"other-b1\n" + _WILDCARD_PAD,
+    "only*.dat": b"unique\n" + _WILDCARD_PAD,
 }
 _WILDCARD_FIXTURES = (
     "wildcard_names__.rar",
@@ -1285,6 +1287,7 @@ def test_unrar_mask_match_treats_brackets_as_literal() -> None:
 
     assert _unrar_mask_match("a*.txt", "a*.txt")
     assert _unrar_mask_match("aX.txt", "a*.txt")
+    assert _unrar_mask_match("subdir/aY.txt", "a*.txt")
     assert not _unrar_mask_match("b1.txt", "a*.txt")
     assert _unrar_mask_match("b?.txt", "b?.txt")
     assert _unrar_mask_match("b1.txt", "b?.txt")
@@ -1292,23 +1295,41 @@ def test_unrar_mask_match_treats_brackets_as_literal() -> None:
     assert not _unrar_mask_match("fooa.txt", "foo[a].txt")
     assert _unrar_mask_match("foo[a]X.txt", "foo[a]*.txt")
     assert not _unrar_mask_match("fooaX.txt", "foo[a]*.txt")
+    assert _unrar_mask_match("subdir/aY.txt", "subdir/a*.txt")
+    assert not _unrar_mask_match("aX.txt", "subdir/a*.txt")
+    assert not _unrar_mask_match("other/aY.txt", "subdir/a*.txt")
+    assert _unrar_mask_match("aY.txt", "./aY.txt")
+    assert _unrar_mask_match("aY.txt", "aY.txt")
+    assert not _unrar_mask_match("subdir/aY.txt", "aY.txt")
 
 
 @requires_binary("unrar")
 @pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
-def test_wildcard_member_name_reads_its_own_bytes(name: str) -> None:
+def test_wildcard_member_name_reads_its_own_bytes(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``unrar -n./a*.txt`` concatenates every match; we skip to the named member.
 
-    ``a*.txt`` is first among its matches, so the discriminator is the size bound
-    (must not include ``aX.txt``). The solid fixture stores ``b1.txt`` before
-    ``b?.txt``, so that open is the prefix-skip case.
+    ``subdir/aY.txt`` is an earlier basename match, so ``a*.txt`` is the prefix-skip
+    case. The size bound still drops ``aX.txt`` after it. Nonsolid fixtures must
+    actually compress (tiny ``-m3`` members store as M0 and never reach this path).
     """
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(path: Path, **kwargs: object):
+        spawns.append(kwargs.get("member"))
+        return original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+
     with open_archive(_fixture(name)) as archive:
         files = [m for m in archive.members() if m.is_file]
         assert {m.name for m in files} == set(_WILDCARD_CONTENTS)
-        if "solid" in name:
-            names = [m.name for m in files]
-            assert names.index("b1.txt") < names.index("b?.txt")
+        names = [m.name for m in files]
+        assert names.index("subdir/aY.txt") < names.index("a*.txt")
+        assert archive.read("a*.txt") == _WILDCARD_CONTENTS["a*.txt"]
+        assert "a*.txt" in spawns
         for member_name, expected in _WILDCARD_CONTENTS.items():
             assert archive.read(member_name) == expected
 
@@ -1332,8 +1353,8 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
 ) -> None:
     """A backward seek on a glob name must respawn *and* re-skip the prefix.
 
-    ``b?.txt`` on the solid fixture is not first among matches (``b1.txt`` is), so
-    a respawn that forgot the skip would return ``other-b1`` after ``seek(0)``.
+    ``a*.txt`` is not first among matches (``subdir/aY.txt`` is), so a respawn
+    that forgot the skip would return the nested file after ``seek(0)``.
     """
     spawns: list[object] = []
     original = rar_reader.open_unrar_p
@@ -1344,16 +1365,16 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
 
-    expected = _WILDCARD_CONTENTS["b?.txt"]
+    expected = _WILDCARD_CONTENTS["a*.txt"]
     with open_archive(
         _fixture("wildcard_names_solid__.rar"), seekable_members=True
     ) as archive:
-        with archive.open("b?.txt") as stream:
+        with archive.open("a*.txt") as stream:
             assert stream.seekable() is True
             assert stream.read(6) == expected[:6]
-            assert spawns == ["b?.txt"]
+            assert spawns == ["a*.txt"]
             stream.seek(0)
-            assert spawns == ["b?.txt", "b?.txt"]
+            assert spawns == ["a*.txt", "a*.txt"]
             assert stream.read() == expected
 
 

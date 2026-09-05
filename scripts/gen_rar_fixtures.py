@@ -93,14 +93,18 @@ _HARDLINKS: tuple[_File, ...] = (
 )
 
 # Compressed on purpose: stored members never reach unrar, so a wildcard name on
-# the direct-slice route is not the bug. Windows cannot create these names on disk
-# at test time; the archives are committed.
+# the direct-slice route is not the bug. Tiny payloads store as M0 even with
+# ``-m3``; pad so packed < unpacked. ``subdir/aY.txt`` is a nested basename match
+# for ``a*.txt`` (unrar MATCH_WILDSUBPATH). Windows cannot create ``*``/``?`` on
+# disk at test time; the archives are committed.
+_WILDCARD_PAD = b"0123456789abcdef" * 512  # 8 KiB, compressible
 _WILDCARD_NAMES: tuple[_File, ...] = (
-    _File("a*.txt", b"target-star\n"),
-    _File("aX.txt", b"other-aX\n"),
-    _File("b?.txt", b"target-q\n"),
-    _File("b1.txt", b"other-b1\n"),
-    _File("only*.dat", b"unique\n"),
+    _File("subdir/aY.txt", b"nested-aY\n" + _WILDCARD_PAD),
+    _File("a*.txt", b"target-star\n" + _WILDCARD_PAD),
+    _File("aX.txt", b"other-aX\n" + _WILDCARD_PAD),
+    _File("b?.txt", b"target-q\n" + _WILDCARD_PAD),
+    _File("b1.txt", b"other-b1\n" + _WILDCARD_PAD),
+    _File("only*.dat", b"unique\n" + _WILDCARD_PAD),
 )
 
 # WinRAR ``-ver`` revisions of a single path (oldest → newest / live).
@@ -356,13 +360,27 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         out = out_dir / out_name
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            names = _write_tree(root, files)
             extras = list(extra)
             if comment is not None:
                 cpath = root / ".archive_comment.txt"
                 cpath.write_text(comment, encoding="utf-8")
                 extras.append(f"-z{cpath}")
-            _rar_a(rar_bin, out, names, cwd=root, extra=extras)
+            has_glob = any("*" in f.name or "?" in f.name for f in files)
+            # ``rar a a*.txt`` globs. Add glob-named trees one path at a time so
+            # prefix-skip fixtures keep add order.
+            if has_glob:
+                extras.append("-r")
+                first = True
+                for item in files:
+                    _write_tree(root, (item,))
+                    if first:
+                        _rar_a(rar_bin, out, ["."], cwd=root, extra=extras)
+                        first = False
+                    else:
+                        _rar_a_update(rar_bin, out, ["."], cwd=root, extra=extras)
+            else:
+                names = _write_tree(root, files)
+                _rar_a(rar_bin, out, names, cwd=root, extra=extras)
         print(f"wrote {out.relative_to(REPO_ROOT)}")
 
     # --- RAR5 ---

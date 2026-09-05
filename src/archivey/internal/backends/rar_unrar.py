@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import BinaryIO, cast
 
@@ -94,17 +95,14 @@ def _member_include_switch(member: str) -> str:
     ``unrar`` masks treat ``*`` and ``?`` as wildcards with no escape (``[]`` are
     literal, ``\\`` does not escape). A name containing either is still passed as
     the mask; ``RarReader._open_member`` skips other matching members using the
-    parsed member list and :func:`_unrar_mask_match`.
+    parsed member list and :func:`_unrar_mask_match` (basename-at-any-depth, the
+    same ``MATCH_WILDSUBPATH`` rule ``unrar -n`` uses).
     """
     return "-n./" + member
 
 
-def _unrar_mask_match(name: str, mask: str) -> bool:
-    """Match ``name`` the way ``unrar -n`` does: ``*``/``?`` wildcards, ``[]`` literal.
-
-    Python ``fnmatch`` treats ``[]`` as a character class, which would desync the
-    skip from what ``unrar`` actually concatenates.
-    """
+def _unrar_component_match(name: str, mask: str) -> bool:
+    """Glob-match one path component: ``*``/``?`` wildcards, ``[]`` literal."""
     parts: list[str] = []
     for ch in mask:
         if ch == "*":
@@ -114,6 +112,36 @@ def _unrar_mask_match(name: str, mask: str) -> bool:
         else:
             parts.append(re.escape(ch))
     return re.fullmatch("".join(parts), name, flags=re.DOTALL) is not None
+
+
+def _unrar_mask_match(name: str, mask: str) -> bool:
+    """Match ``name`` the way ``unrar -n`` does.
+
+    No wildcards: exact path (``./`` already stripped by the caller of ``-n./``).
+    With ``*``/``?``: ``MATCH_WILDSUBPATH`` — the last mask component matches the
+    basename at any depth, and a non-wildcard directory prefix constrains which
+    subtrees. ``[]`` are literal (unlike Python ``fnmatch``). On Windows, ``unrar``
+    folds case; we do too so the skip stays aligned with the pipe.
+    """
+    if mask.startswith("./"):
+        mask = mask[2:]
+    name = name.replace("\\", "/")
+    mask = mask.replace("\\", "/")
+    if sys.platform == "win32":
+        name = name.casefold()
+        mask = mask.casefold()
+    if "*" not in mask and "?" not in mask:
+        return name == mask
+    mask_dir, mask_base = mask.rsplit("/", 1) if "/" in mask else ("", mask)
+    name_base = name.rsplit("/", 1)[-1]
+    if not _unrar_component_match(name_base, mask_base):
+        return False
+    if not mask_dir:
+        return True
+    if "*" not in mask_dir and "?" not in mask_dir:
+        name_dir = name.rsplit("/", 1)[0] if "/" in name else ""
+        return name_dir == mask_dir or name_dir.startswith(mask_dir + "/")
+    return True
 
 
 def open_unrar_p(

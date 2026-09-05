@@ -305,14 +305,17 @@ never starts `unrar` and is never asked for a password.
   ([`unrar-boundary.md`](../../review/archive/2026-07-16-rar-reader/unrar-boundary.md) F3).
   A `--` end-of-switches guard fixes the first and **not** the second — `@` expansion still
   happened after `--` — which is why the include mask is the fix: inside `-n`, a leading `-`
-  is not a switch, and a value starting with `.` is not a list-file. The `./` also anchors
-  the mask to the exact archive path instead of matching a basename at any depth.
+  is not a switch, and a value starting with `.` is not a list-file. For a name **without**
+  wildcards, `./` also anchors the mask to the exact archive path. Once the name contains
+  `*` or `?`, `unrar` switches to `MATCH_WILDSUBPATH` and the same mask matches that
+  basename at any depth — which is why the skip walks the parsed member list with the
+  same rule, not a full-path regex.
 - **`*` and `?` in a member name are `unrar` wildcards, not archivey's.** Masks have **no
   escape** (`[` and `]` are literal; `\` does not escape), so `-n./a*.txt` concatenates
-  every matching member in archive order with no headers. `open("a*.txt")` is still an
-  exact-name lookup. The parsed member list is already in that order: skip the unpacked
-  size of earlier payload matches, then stop at the target's size so the fused overrun
-  probe does not see the next match. Stored members never take this path.
+  every matching member in archive order with no headers — including `subdir/aY.txt`.
+  `open("a*.txt")` is still an exact-name lookup. Skip the unpacked size of earlier
+  payload matches, then stop at the target's size so the fused overrun probe does not
+  see the next match. Stored members never take this path.
 - **`-ver` is added** when the target is a history row, or when a solid pass contains any
   versioned payload FILE, because the mask excludes history rows otherwise and the demux
   would go out of alignment.

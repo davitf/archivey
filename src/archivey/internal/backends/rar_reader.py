@@ -524,6 +524,8 @@ class _BoundedMemberPipe(DelegatingStream):
         return self._pos
 
     def read(self, n: int = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
         remaining = self._size - self._pos
         if remaining <= 0:
             return b""
@@ -1121,7 +1123,9 @@ class RarReader(BaseArchiveReader):
             if member is target:
                 return prefix
             prefix += _member_stream_size(member)
-        return prefix
+        raise AssertionError(
+            "glob target missing from the payload walk; skip uses member identity"
+        )
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
@@ -1174,6 +1178,8 @@ class RarReader(BaseArchiveReader):
                     )
                 return tracked
             except BaseException:
+                # BoundedMemberPipe already closed ``tracked`` (and so ``owned``)
+                # if the prefix skip failed; close is idempotent.
                 owned.close()
                 raise
 

@@ -71,8 +71,8 @@ so the read takes the named-`unrar` route; stored members never would.
 
 | Files | Notes |
 | --- | --- |
-| `wildcard_names__.rar` | RAR5 `-m3`; `a*.txt`, `aX.txt`, `b?.txt`, `b1.txt`, `only*.dat` |
-| `wildcard_names_solid__.rar` | RAR5 `-s -m3`; `rar a -s` stored `b1.txt` before `b?.txt` |
+| `wildcard_names__.rar` | RAR5 `-m3`; padded so members compress; add-order `subdir/aY.txt` then `a*.txt` / `aX.txt` / `b?.txt` / `b1.txt` / `only*.dat` |
+| `wildcard_names_solid__.rar` | RAR5 `-s -m3`; same members and add order |
 | `wildcard_names__rar4.rar` | RAR4 `-ma4 -m3`; same members as the nonsolid RAR5 |
 
 (`-m0` store archives do not set the solid bit even with `-s`; the flags still
