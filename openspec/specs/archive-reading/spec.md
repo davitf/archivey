@@ -157,8 +157,9 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 `open_archive()` SHALL accept a multi-volume archive either way and present one
 logical `ArchiveReader`:
 
-- **Single path in a volume set** (e.g. `name.7z.001`, `name.part1.rar`,
-  `name.rar` + `name.r00`…): discover siblings in natural order
+- **Single path in a volume set** (e.g. `name.7z.001`, `name.exe.001`,
+  `name.part1.rar`, `name.part1.sfx`, `name.rar` + `name.r00`…): discover
+  siblings in natural order
 - **Explicit ordered `source` sequence**: use that order as volumes
 
 Joining is format-specific (`format-7z` / `format-rar`): 7z concatenates a split

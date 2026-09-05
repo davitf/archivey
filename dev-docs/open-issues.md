@@ -597,49 +597,26 @@ re-verified failing against the unfixed code). Original write-up below.
 - **Refs:** PR #101 (still open) / `dev-docs/investigations/rar-unrar-piping-investigation.md`
   (when merged); `format-rar`; handbook `formats/rar.md` §4 / §8.
 
-### P17. SFX multi-volume sets are unreadable from any of their files — **confirmed bug**
+### P17. SFX stub-only files do not resolve to their `.001` — **open** (sibling patterns done)
 
-- **What happens.** A self-extracting *and* split archive is readable from none of its
-  parts. Both formats, one root cause. Measured on `main` @ `be1a459`:
+- **Done (1).** Sibling discovery joins SFX first members. `vol.exe.001`…`.00N` share
+  base `vol.exe` (the stub `vol.exe` is not a sibling). `rv.part1.sfx` + later
+  `.partN.rar` share base `rv`, from either the `.sfx` or a later `.rar` part.
+  `_NUMBERED_VOLUME_RE` accepts `.exe` besides `.7z`/`.zip` (still `\d{3,}`);
+  `_RAR_PART_RE` accepts `.sfx`/`.exe` besides `.rar`.
 
-  | Built with | Files | `open_archive` on each |
-  | --- | --- | --- |
-  | `7z a -sfx7zCon.sfx -v40k` | `vol.exe`, `vol.exe.001`…`.004` | stub → `FormatDetectionError`; `.001` → `CorruptionError: Truncated 7z next header: expected 34 bytes` |
-  | `rar a -sfx -v40k` | `rv.part1.sfx`, `rv.part2.rar`…`.part5.rar` | `.part1.sfx` → `TruncatedError: Incomplete RAR multi-volume set`; later parts → `UnsupportedFeatureError: Need first volume` |
+- **Still open (2).** A stub-only file (`vol.exe`, no archive magic anywhere in it)
+  raises `FormatDetectionError` rather than resolving to its `.001`. Detection-side,
+  unlike (1). Measured on `main` @ `be1a459` before (1):
 
-- **Why.** The sibling-discovery patterns in `src/archivey/internal/volumes.py`
-  require the *archive* extension immediately before the part number:
+  | Built with | Files | Before (1) | After (1) |
+  | --- | --- | --- | --- |
+  | `7z a -sfx7zCon.sfx -v40k` | `vol.exe`, `vol.exe.001`…`.004` | stub → `FormatDetectionError`; `.001` → `CorruptionError: Truncated 7z next header` | `.001` joins; stub still `FormatDetectionError` |
+  | `rar a -sfx -v40k` | `rv.part1.sfx`, `rv.part2.rar`…`.part5.rar` | `.part1.sfx` → `TruncatedError`; later parts → `Need first volume` | full set from either |
 
-  ```python
-  _NUMBERED_VOLUME_RE = re.compile(r"^(?P<base>.+\.(?:7z|zip))\.(?P<part>\d+)$", re.IGNORECASE)
-  _RAR_PART_RE        = re.compile(r"^(?P<base>.+)\.part(?P<part>\d+)\.rar$", re.IGNORECASE)
-  ```
-
-  An SFX set replaces that extension on the first member — `vol.exe.001`,
-  `rv.part1.sfx` — so no siblings are found and the backend is handed a lone first
-  volume. The non-SFX equivalents are fine: `vol.7z.001` opens and lists all members.
-
-- **ZIP now shares this, and only this.** Joining 7-Zip `.zip.NNN` sets extended the same
-  regex rather than adding another, so `vol.zip.001` works and `vol.exe.001` misses for
-  exactly the reason above. One more format behind the same blind spot, no new one — and
-  fixing (1) fixes all three at once.
-
-- **Why it matters:** valid input, wrong error. The 7z message (`Truncated 7z next
-  header`) actively misdescribes an intact archive set as corrupt; the RAR one at least
-  says the set is incomplete. Detection itself is not at fault — `rv.part1.sfx` is
-  correctly identified as RAR, and per-file 7z detection behaves as designed (a first
-  volume is claimed by near magic at offset 0, so the SFX scan validator never sees it
-  and its `declared > remaining` gate cannot misfire).
-
-- **Fix is two parts, separable:** (1) widen the sibling patterns so an SFX first member
-  joins its set; (2) decide whether a stub-only file (`vol.exe`, no archive magic
-  anywhere in it) should resolve to its `.001` rather than raising
-  `FormatDetectionError` — a detection-side question, unlike (1).
-
-- **Refs:** `volumes.py` (`_NUMBERED_VOLUME_RE`, `_RAR_PART_RE`); grill after PR #279
-  (7z/RAR SFX hit validators). Belongs
-  on a future `dev-docs/topics/` SFX / executable-prefix page and on the 7z and RAR
-  format pages by link, not by restatement.
+- **Refs:** `volumes.py` (`_NUMBERED_VOLUME_RE`, `_RAR_PART_RE`); handbook
+  `formats/rar.md` §10 #11; `topics/prefixed-archives.md` §6. Grill after PR #279
+  (7z/RAR SFX hit validators).
 
 ### P18. `detected_by="sfx_scan"` names a motive the tier cannot know
 

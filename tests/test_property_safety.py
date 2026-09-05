@@ -510,8 +510,10 @@ def test_resolve_link_pinned_examples(
 _volume_style_names = st.one_of(
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.7z\.\d{1,4}", fullmatch=True),
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.zip\.\d{1,4}", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.exe\.\d{1,4}", fullmatch=True),
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.z\d{2,3}", fullmatch=True),
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.part\d{1,3}\.rar", fullmatch=True),
+    st.from_regex(r"[A-Za-z0-9_]{1,12}\.part\d{1,3}\.sfx", fullmatch=True),
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.r\d{2}", fullmatch=True),
     st.from_regex(r"[A-Za-z0-9_]{1,12}\.rar", fullmatch=True),
     _name_text,
@@ -537,7 +539,7 @@ def test_volume_part_helpers_total(name: str) -> None:
     # key: every part of `my.part1.zip.001 … .003` parsed as 1, so concatenation order
     # fell back to whatever `iterdir` returned.
     base=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,8}(\.part[1-9])?", fullmatch=True),
-    extension=st.sampled_from(["7z", "zip"]),
+    extension=st.sampled_from(["7z", "zip", "exe"]),
     parts=st.lists(
         st.integers(min_value=1, max_value=99), min_size=2, max_size=5, unique=True
     ),
@@ -553,7 +555,7 @@ def test_volume_part_numbers_sort_stable(
 
 
 @given(
-    scheme=st.sampled_from(["7z", "rar_part", "rar_rnn"]),
+    scheme=st.sampled_from(["7z", "exe", "rar_part", "rar_sfx", "rar_rnn"]),
     base=st.from_regex(r"[A-Za-z][A-Za-z0-9_]{0,8}", fullmatch=True),
     n_parts=st.integers(min_value=2, max_value=4),
     missing_anchor=st.booleans(),
@@ -567,8 +569,14 @@ def test_discover_volume_siblings_total(
     names: list[str]
     if scheme == "7z":
         names = [f"{base}.7z.{i:03d}" for i in range(1, n_parts + 1)]
+    elif scheme == "exe":
+        names = [f"{base}.exe.{i:03d}" for i in range(1, n_parts + 1)]
     elif scheme == "rar_part":
         names = [f"{base}.part{i}.rar" for i in range(1, n_parts + 1)]
+    elif scheme == "rar_sfx":
+        names = [f"{base}.part1.sfx"] + [
+            f"{base}.part{i}.rar" for i in range(2, n_parts + 1)
+        ]
     else:
         names = [f"{base}.rar"] + [f"{base}.r{i:02d}" for i in range(n_parts - 1)]
 

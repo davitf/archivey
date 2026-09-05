@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from archivey import extract, open_archive
-from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
+from archivey.exceptions import (
+    CorruptionError,
+    FormatDetectionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.volumes import discover_volume_siblings, join_volumes
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
@@ -64,7 +69,7 @@ def test_discover_orders_parts_when_base_contains_partN(tmp_path: Path) -> None:
     ]
 
 
-@pytest.mark.parametrize("extension", ["zip", "7z"])
+@pytest.mark.parametrize("extension", ["zip", "7z", "exe"])
 def test_discover_short_numeric_suffixes_are_not_a_volume_set(
     tmp_path: Path, extension: str
 ) -> None:
@@ -72,11 +77,22 @@ def test_discover_short_numeric_suffixes_are_not_a_volume_set(
     # downloads of the same file: independent complete archives, not slices. Joining
     # them returns the second file's contents for a caller who asked for the first —
     # wrong bytes, no error. 7-Zip writes three digits from the start (`.001`, widening
-    # past part 999), so requiring three loses nothing it emits.
+    # past part 999), so requiring three loses nothing it emits. The SFX `.exe.NNN`
+    # pattern keeps the same floor: `name.exe.1` is not a set.
     for suffix in ("1", "2", "01", "02"):
         (tmp_path / f"dup.{extension}.{suffix}").write_bytes(b"")
     for suffix in ("1", "01"):
         assert discover_volume_siblings(tmp_path / f"dup.{extension}.{suffix}") is None
+
+
+def test_discover_arbitrary_extension_numeric_suffixes_are_not_a_volume_set(
+    tmp_path: Path,
+) -> None:
+    # 7-Zip's SFX split is `.exe.001`, not an open `name.foo.001`. Joining every
+    # three-digit suffix would concatenate unrelated files that happen to rotate.
+    for name in ("data.foo.001", "data.foo.002"):
+        (tmp_path / name).write_bytes(b"")
+    assert discover_volume_siblings(tmp_path / "data.foo.001") is None
 
 
 def test_short_numeric_suffix_archives_read_their_own_contents(tmp_path: Path) -> None:
@@ -113,6 +129,44 @@ def test_discover_rar_part_volumes(tmp_path: Path) -> None:
     ]
 
 
+def test_discover_sfx_numbered_exe_parts_omit_stub(tmp_path: Path) -> None:
+    # `7z a -sfx … -v` writes a stub `vol.exe` beside `vol.exe.001`…`.00N`. The
+    # numbered parts concatenate; the stub has no archive magic and is not a sibling.
+    (tmp_path / "vol.exe").write_bytes(b"")
+    for name in ("vol.exe.003", "vol.exe.001", "vol.exe.002"):
+        (tmp_path / name).write_bytes(b"")
+    expected = ["vol.exe.001", "vol.exe.002", "vol.exe.003"]
+    for anchor in expected:
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == expected
+    assert discover_volume_siblings(tmp_path / "vol.exe") is None
+
+
+def test_discover_rar_sfx_first_volume_joins_later_rar_parts(tmp_path: Path) -> None:
+    # `rar a -sfx -v` writes `rv.part1.sfx` then `rv.part2.rar`…. Opening either
+    # the SFX first volume or a later `.rar` part must return the full ordered set.
+    for name in ("rv.part3.rar", "rv.part1.sfx", "rv.part2.rar"):
+        (tmp_path / name).write_bytes(b"")
+    expected = ["rv.part1.sfx", "rv.part2.rar", "rv.part3.rar"]
+    for anchor in ("rv.part1.sfx", "rv.part2.rar", "rv.part3.rar"):
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == expected
+
+
+def test_discover_rar_sfx_exe_first_volume_joins_later_rar_parts(
+    tmp_path: Path,
+) -> None:
+    # Windows rar names the SFX first volume `.part1.exe` instead of `.part1.sfx`.
+    for name in ("rv.part2.rar", "rv.part1.exe", "rv.part3.rar"):
+        (tmp_path / name).write_bytes(b"")
+    expected = ["rv.part1.exe", "rv.part2.rar", "rv.part3.rar"]
+    siblings = discover_volume_siblings(tmp_path / "rv.part2.rar")
+    assert siblings is not None
+    assert [p.name for p in siblings] == expected
+
+
 def test_discover_old_rar_rnn_volumes(tmp_path: Path) -> None:
     (tmp_path / "archive.rar").write_bytes(b"")
     for name in ("archive.r01", "archive.r00"):
@@ -138,7 +192,9 @@ def test_multi_volume_7z_is_joined_before_parse(tmp_path: Path) -> None:
         open_archive(tmp_path / "vol.7z.002", format=ArchiveFormat.SEVEN_Z)
 
 
-@pytest.mark.parametrize("extension", ["7z", "zip"], ids=["sevenz", "zip"])
+@pytest.mark.parametrize(
+    "extension", ["7z", "zip", "exe"], ids=["sevenz", "zip", "exe"]
+)
 def test_join_volumes_rejects_numbering_gaps(tmp_path: Path, extension: str) -> None:
     paths = []
     for part in ("001", "003"):
@@ -188,6 +244,82 @@ def test_multi_volume_rar_real_roundtrip(tmp_path: Path) -> None:
     with open_archive(part1) as archive:
         assert archive.info.is_multivolume is True
         assert archive.read("payload.bin") == payload.read_bytes()
+
+
+def _write_sfx_split_payload(tmp_path: Path) -> Path:
+    # Stored 100 KiB of a repeating 256-byte cycle so `-v40k` actually splits
+    # (compressed `VOLDATA!` * N fits in one volume).
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(bytes(range(256)) * 400)
+    return payload
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize(
+    ("extra_args", "first_magic"),
+    [
+        (["-sfx7zCon.sfx"], _7Z_MAGIC),
+        (["-tzip", "-sfx"], b"PK\x03\x04"),
+    ],
+    ids=["sevenz", "zip"],
+)
+def test_sevenzip_sfx_numbered_parts_open_from_any_part(
+    tmp_path: Path, extra_args: list[str], first_magic: bytes
+) -> None:
+    import subprocess
+
+    payload = _write_sfx_split_payload(tmp_path)
+    result = subprocess.run(
+        ["7z", "a", *extra_args, "-mx0", "-v40k", "vol.exe", payload.name],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z cannot build SFX split fixture: {result.stderr!r}")
+    first = tmp_path / "vol.exe.001"
+    second = tmp_path / "vol.exe.002"
+    stub = tmp_path / "vol.exe"
+    if not first.is_file() or not second.is_file() or not stub.is_file():
+        pytest.skip("7z did not produce an SFX numbered volume set")
+    assert first.read_bytes()[: len(first_magic)] == first_magic
+
+    expected = payload.read_bytes()
+    for anchor in (first, second):
+        with open_archive(anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert archive.read("payload.bin") == expected
+
+    # Part 2 of P17: the stub has no archive magic and must not resolve to `.001`.
+    assert discover_volume_siblings(stub) is None
+    with pytest.raises(FormatDetectionError):
+        open_archive(stub)
+
+
+@requires_binary("rar")
+@requires_binary("unrar")
+def test_rar_sfx_split_opens_from_sfx_and_later_part(tmp_path: Path) -> None:
+    import subprocess
+
+    payload = _write_sfx_split_payload(tmp_path)
+    result = subprocess.run(
+        ["rar", "a", "-sfx", "-m0", "-v40k", str(tmp_path / "rv.rar"), payload.name],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"rar cannot build SFX split fixture: {result.stderr!r}")
+    part1 = tmp_path / "rv.part1.sfx"
+    part2 = tmp_path / "rv.part2.rar"
+    if not part1.is_file() or not part2.is_file():
+        pytest.skip("rar did not produce an SFX multi-volume set")
+
+    expected = payload.read_bytes()
+    for anchor in (part1, part2):
+        with open_archive(anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert archive.read("payload.bin") == expected
 
 
 def test_explicit_multi_source_tar_raises_not_multivolume(tmp_path: Path) -> None:

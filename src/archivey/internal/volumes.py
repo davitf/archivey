@@ -27,10 +27,15 @@ SourceSequence = Sequence[SourceItem]
 
 # 7-Zip's ``-v`` writes ``name.7z.001``/``name.zip.001`` — in both cases a *raw byte
 # split* of one finished archive, so the parts concatenate back into the original and
-# one pattern serves both. Info-ZIP's ``name.z01 … name.zip`` deliberately does not
-# match: that is a true spanned set addressed by (disk, offset). A linear join of one
-# lists correctly and then reads only whichever members happen to sit on the last disk,
-# so it is refused in the ZIP backend instead.
+# one pattern serves both. An SFX module replaces the archive extension with ``.exe``
+# (``7z a -sfx … -v`` → ``vol.exe.001`` … ``.00N``); the stub ``vol.exe`` has no
+# ``.NNN`` suffix and is not a sibling — resolving it to ``.001`` is a separate
+# detection question. ``.sfx`` is not in this pattern: 7-Zip does not emit
+# ``name.sfx.001``, and arbitrary ``name.foo.001`` is not a 7-Zip split. Info-ZIP's
+# ``name.z01 … name.zip`` deliberately does not match: that is a true spanned set
+# addressed by (disk, offset). A linear join of one lists correctly and then reads
+# only whichever members happen to sit on the last disk, so it is refused in the ZIP
+# backend instead.
 #
 # **Three digits minimum, not ``\d+``.** 7-Zip numbers from ``.001`` and widens past
 # part 999, so nothing it emits needs fewer. Accepting one or two would swallow
@@ -41,9 +46,15 @@ SourceSequence = Sequence[SourceItem]
 # with ``is_zip_split_segment_name``, which already required ``zip\.\d{3,}``; the two
 # disagreeing about the same name is what let it through.
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip))\.(?P<part>\d{3,})$", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip|exe))\.(?P<part>\d{3,})$", re.IGNORECASE
 )
-_RAR_PART_RE = re.compile(r"^(?P<base>.+)\.part(?P<part>\d+)\.rar$", re.IGNORECASE)
+# WinRAR ``-v`` writes ``name.partN.rar``. An SFX first volume keeps the ``partN``
+# marker and changes only the last extension: ``name.part1.sfx`` (Linux rar) or
+# ``name.part1.exe`` (Windows), with later volumes still ``.partN.rar``. The stem
+# before ``.part`` is the set's base, so mixed extensions on one stem are one set.
+_RAR_PART_RE = re.compile(
+    r"^(?P<base>.+)\.part(?P<part>\d+)\.(?:rar|sfx|exe)$", re.IGNORECASE
+)
 _RAR_RNN_RE = re.compile(r"^(?P<base>.+)\.r(?P<part>\d{2})$", re.IGNORECASE)
 
 
@@ -73,6 +84,8 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     lower = name.lower()
     # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
     # not volume-shaped. Saves a ``stat`` per open_archive (perf review L3).
+    # SFX first members (``*.exe.001``, ``*.part1.sfx``) match the patterns above;
+    # a stub ``*.exe`` / ``*.sfx`` with no part marker still returns here.
     maybe_volume = (
         _NUMBERED_VOLUME_RE.match(name) is not None
         or _RAR_PART_RE.match(name) is not None

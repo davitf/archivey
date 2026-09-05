@@ -356,7 +356,9 @@ errors from their existing requirements.
 ### Requirement: Support multi-volume RAR sets
 
 The system SHALL support multi-volume RAR archives named `name.partN.rar`
-(RAR5/newer RAR4) or `name.rar` + `name.r00`, `name.r01`, ... (older RAR4). The
+(RAR5/newer RAR4), including an SFX first volume named `name.partN.sfx` or
+`name.partN.exe` beside later `.partN.rar` parts, or `name.rar` + `name.r00`,
+`name.r01`, ... (older RAR4). The
 native parser SHALL read volume headers in order and stitch members that span
 volume boundaries into one logical member using continuation flags.
 `open_archive()` SHALL accept either a path inside the set, with sibling
@@ -371,6 +373,7 @@ a truncated error instead of a partial result.
 | Case | Expected |
 | --- | --- |
 | Open `name.part1.rar` with complete siblings | Headers across all volumes parse as one archive |
+| Open `name.part1.sfx` with later `name.partN.rar` siblings | Same as partN: `.sfx` (or `.exe`) is volume 1; one logical archive |
 | Open `name.rar` with `name.r00` / `name.r01` siblings | Same as partN: one logical archive; member data spans volumes |
 | Read a member spanning volumes | Returned stream reassembles the member across boundaries |
 | Open explicit ordered stream volumes | Metadata parses in order; data reads materialize volumes for `unrar` if needed |
