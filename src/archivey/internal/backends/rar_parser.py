@@ -1664,6 +1664,7 @@ def _parse_rar5(
     # reported as EncryptionError rather than CorruptionError (see _check_rar5_password).
     password_verified = False
     needs_next_volume = False
+    listed_via_qo = False
 
     while True:
         header_fd: _Readable = source
@@ -1752,6 +1753,7 @@ def _parse_rar5(
                     if qo_members is not None:
                         if _adopt_rar5_file_members(members, qo_members):
                             needs_next_volume = True
+                        listed_via_qo = True
                         continue
                     source.seek(resume_pos)
             continue
@@ -1804,8 +1806,11 @@ def _parse_rar5(
                 add_size=add_size,
                 volume_index=volume_index,
             )
-            if block_type == _RAR5_FILE:
+            if block_type == _RAR5_FILE and not listed_via_qo:
                 # File-version history rows (extra 0x04) are kept as members.
+                # After a trusted QO table, ignore FILE headers (QO is the
+                # catalog; UnRAR places QO before RR/ENDARC, so this is only
+                # a crafted-archive path).
                 if member.split_before:
                     if members:
                         _merge_split_member(members[-1], member)
