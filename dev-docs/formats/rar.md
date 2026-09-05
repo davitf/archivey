@@ -21,7 +21,8 @@ Registers keep the status — this page states the behaviour and links the row.
 
 **Identification requires RARLAB `unrar` 7.0 or later.** The banner (`UNRAR` plus
 `Alexander Roshal`/`RARLAB`) is parsed for major.minor once, at identification, and
-cached with the probe.
+cached with the probe. The `-n` mask demux and `-ver` behaviour were characterized
+on unrar 7.00; older RARLAB builds are untested rather than known-broken.
 
 **One thing a reader might expect and will not find.** Nothing amortizes repeated random
 reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every out-of-order

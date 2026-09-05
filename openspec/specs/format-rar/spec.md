@@ -140,6 +140,7 @@ naming RARLAB `unrar`. Archivey MUST NOT silently use `unrar-free`, `unar`,
 | Stored member, `unrar` missing | Raw bytes are returned without invoking `unrar` |
 | Compressed member, `unrar` missing | `PackageNotInstalledError` names `unrar` |
 | PATH `unrar` is not RARLAB `unrar` | `PackageNotInstalledError` names RARLAB `unrar` |
+| RARLAB `unrar` older than 7.0, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
 | Listing only, `unrar` missing | No data dependency is checked |
 
 ### Requirement: Constrain unrar argv by call site

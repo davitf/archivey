@@ -26,10 +26,14 @@ from archivey.exceptions import (
     ReadError,
 )
 
-# Inclusive major.minor floor. Parsed from the identification banner
+# Inclusive major.minor floor. The ``-n`` mask demux and ``-ver`` behaviour
+# were characterized on RARLAB unrar 7.00; older builds are untested rather
+# than known-broken. Parsed from the identification banner
 # (``UNRAR 7.00`` / ``UNRAR 7.11``), not from a second spawn.
 _UNRAR_VERSION_FLOOR: tuple[int, int] = (7, 0)
-_UNRAR_VERSION_RE = re.compile(r"UNRAR\s+(\d+)\.(\d+)")
+# Bound the digit runs: unbounded ``\d+`` then ``int()`` raises ``ValueError``
+# past CPython's 4300-digit limit, and that must not cross ``open_archive``.
+_UNRAR_VERSION_RE = re.compile(r"UNRAR\s+(\d{1,4})\.(\d{1,4})")
 
 
 @dataclass(frozen=True, slots=True)
