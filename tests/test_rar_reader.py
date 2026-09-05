@@ -1607,7 +1607,9 @@ def test_unrar_installed_after_miss_is_found(
     dest = tmp_path / ("unrar.exe" if os.name == "nt" else "unrar")
     shutil.copy(rarlab_unrar, dest)
     dest.chmod(0o755)
-    assert rar_unrar.find_rarlab_unrar() == os.path.abspath(str(dest))
+    # Windows ``which`` appends the PATHEXT spelling (``.EXE``), not the
+    # filename casing we wrote. ``Path`` equality is case-insensitive there.
+    assert Path(rar_unrar.find_rarlab_unrar()) == Path(os.path.abspath(str(dest)))
 
 
 def test_transient_probe_oserror_is_not_cached(
