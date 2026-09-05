@@ -8,10 +8,14 @@ secret not in argv) and optional ``-n./member`` include masks.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import tempfile
+import zlib
 from pathlib import Path
 from typing import BinaryIO, cast
 
@@ -29,6 +33,17 @@ _NOT_INSTALLED_MSG = (
     "(or the unrar on PATH is not RARLAB unrar). Install RARLAB unrar — "
     "unrar-free / unar / 7z / 7zz are not supported as substitutes."
 )
+
+_RAR3_ID = b"Rar!\x1a\x07\x00"
+_RAR3_MAIN = 0x73
+_RAR3_FILE = 0x74
+_RAR3_FILE_PASSWORD = 0x0004
+_RAR3_FILE_SALT = 0x0400
+_RAR3_FILE_DICTMASK = 0x00E0
+_RAR3_LONG_BLOCK = 0x8000
+_RAR3_M0 = 0x30
+_RAR3_BLOCK_HEADER = struct.Struct("<HBHH")
+_RAR3_FILE_HEADER = struct.Struct("<LLBLLBBHL")
 
 
 def _is_rarlab_unrar(path: str) -> bool:
@@ -168,6 +183,92 @@ def _unrar_mask_match(name: str, mask: str) -> bool:
         name_dir = name.rsplit("/", 1)[0] if "/" in name else ""
         return name_dir == mask_dir or name_dir.startswith(mask_dir + "/")
     return True
+
+
+def decompress_rar3_blob(
+    *,
+    extract_version: int,
+    compress_type: int,
+    packed: bytes,
+    unpacked_size: int,
+    flags: int,
+    crc16: int,
+    password: str | bytes | None = None,
+) -> bytes | None:
+    """Decode a non-file RAR3 payload by wrapping it in a temporary RAR.
+
+    RAR3 old-style comments hold compressed bytes inside a header, without a
+    FILE block that ``unrar`` can address. A minimal one-file archive lets the
+    existing RARLAB process decode that one blob. This is deliberately limited
+    to metadata blobs; it does not change stream-source member reads.
+
+    ``unrar`` can report a CRC error for the synthetic FILE because old comment
+    blocks retain only a CRC16. The caller validates that CRC16 against the
+    returned bytes, which is the integrity check the on-disk comment provides.
+    """
+    if unpacked_size < 0 or unpacked_size > 0xFFFF:
+        return None
+    if compress_type == _RAR3_M0 and not flags & _RAR3_FILE_PASSWORD:
+        return packed if len(packed) == unpacked_size else None
+
+    file_flags = flags & (_RAR3_FILE_PASSWORD | _RAR3_FILE_SALT | _RAR3_FILE_DICTMASK)
+    file_flags |= _RAR3_LONG_BLOCK
+    filename = b"data"
+    file_body = (
+        _RAR3_FILE_HEADER.pack(
+            len(packed),
+            unpacked_size,
+            0,  # MS-DOS
+            crc16,
+            0,
+            extract_version,
+            compress_type,
+            len(filename),
+            0x20,  # DOS archive attribute
+        )
+        + filename
+    )
+    file_without_crc = (
+        struct.pack(
+            "<BHH", _RAR3_FILE, file_flags, _RAR3_BLOCK_HEADER.size + len(file_body)
+        )
+        + file_body
+    )
+    file_header = (
+        struct.pack("<H", zlib.crc32(file_without_crc) & 0xFFFF) + file_without_crc
+    )
+
+    main_body = b"\0" * 6
+    main_without_crc = (
+        struct.pack("<BHH", _RAR3_MAIN, 0, _RAR3_BLOCK_HEADER.size + len(main_body))
+        + main_body
+    )
+    main_header = (
+        struct.pack("<H", zlib.crc32(main_without_crc) & 0xFFFF) + main_without_crc
+    )
+
+    fd, name = tempfile.mkstemp(suffix=".rar")
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as archive:
+            archive.write(_RAR3_ID + main_header + file_header + packed)
+        proc, stdout = open_unrar_p(path, password=password)
+        try:
+            # A comment's declared unpacked length is a uint16. Bound the
+            # process output so a malformed blob cannot turn archive listing
+            # into an unbounded metadata read.
+            data = stdout.read(unpacked_size + 1)
+            if len(data) != unpacked_size:
+                return None
+            return data
+        finally:
+            try:
+                stdout.close()
+            finally:
+                if proc.poll() is None:
+                    terminate_unrar(proc)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def open_unrar_p(

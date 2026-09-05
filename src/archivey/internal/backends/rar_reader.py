@@ -27,6 +27,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import zlib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import BinaryIO
@@ -38,6 +39,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
+    PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -49,6 +51,8 @@ from archivey.internal.backends.rar_parser import (
     RarEncryptionInfo,
     RarMemberInfo,
     _check_rar5_password,
+    _decode_name,
+    _Rar3Comment,
     convert_blake2sp_to_mac,
     convert_crc_to_mac,
     parse_rar_archive,
@@ -58,6 +62,7 @@ from archivey.internal.backends.rar_parser import (
 from archivey.internal.backends.rar_unrar import (
     _unrar_glob_demux_ok,
     _unrar_mask_match,
+    decompress_rar3_blob,
     open_unrar_p,
     terminate_unrar,
 )
@@ -618,6 +623,9 @@ class RarReader(BaseArchiveReader):
         self._archive, self._unrar_password = self._parse_archive()
         if self._archive.is_volume or self._volume_count > 1:
             self._volume_count = max(self._volume_count, len(self._volume_paths) or 1)
+        self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
+        for info in self._archive.members:
+            info.comment = self._resolve_rar3_comment(info.comment)
         self._members = [self._to_member(info) for info in self._archive.members]
 
     def _open_shared_source(self, source: Path | BinaryIO) -> SharedSource:
@@ -780,10 +788,32 @@ class RarReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
 
+    def _resolve_rar3_comment(self, comment: str | _Rar3Comment | None) -> str | None:
+        """Return a parsed old-style comment, dropping unavailable/invalid payloads."""
+        if not isinstance(comment, _Rar3Comment):
+            return comment
+        try:
+            unpacked = decompress_rar3_blob(
+                extract_version=comment.extract_version,
+                compress_type=comment.compress_type,
+                packed=comment.packed,
+                unpacked_size=comment.unpacked_size,
+                flags=comment.flags,
+                crc16=comment.crc16,
+                password=self._unrar_password,
+            )
+        except (OSError, PackageNotInstalledError, subprocess.SubprocessError):
+            return None
+        if unpacked is None or zlib.crc32(unpacked) & 0xFFFF != comment.crc16:
+            return None
+        return _decode_name(unpacked)
+
     def _to_member(self, info: RarMemberInfo) -> ArchiveMember:
         member_type = self._member_type(info)
         version_history = info.is_file_version_history()
         presented = _presented_filename(info)
+        member_comment = info.comment
+        assert not isinstance(member_comment, _Rar3Comment)
         name = normalize_member_name(
             presented,
             member_type,
@@ -856,6 +886,7 @@ class RarReader(BaseArchiveReader):
             windows_attrs=windows_attrs,
             hashes=_member_hashes(info),
             link_target=link_target,
+            comment=member_comment,
             extra=extra,
             _raw=info,
         )
@@ -1295,12 +1326,14 @@ class RarReader(BaseArchiveReader):
             or self._volume_count > 1
             or len(self._volume_paths) > 1
         )
+        archive_comment = self._archive.comment
+        assert not isinstance(archive_comment, _Rar3Comment)
         return ArchiveInfo(
             format=ArchiveFormat.RAR,
             format_version=str(self._archive.version),
             is_solid=is_solid,
             member_count=len(self._members),
-            comment=self._archive.comment,
+            comment=archive_comment,
             is_encrypted=self._archive.has_header_encryption or any_encrypted,
             is_multivolume=is_multivolume,
             cost=cost,
