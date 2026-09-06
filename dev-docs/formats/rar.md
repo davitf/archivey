@@ -25,8 +25,9 @@ out-of-order solid `open()` is its own whole-archive decode (§2.4). And RARLAB 
 (the trialware writer) is not accepted when `unrar` is missing, even though `rar p`
 matched `unrar p` on the argv archivey actually spawns (§3, §10 #20).
 
-The 6.0 floor is the **banner probe**, not archive open: listing and stored reads
-never call `unrar` (§1).
+The 6.0 floor is the **banner probe**, not archive open. Missing or too-old `unrar`
+does not fail `open_archive` or stored reads; compressed old-style comments stay
+`None` (§1, §2.2).
 
 ## 1. Shape
 
@@ -445,8 +446,9 @@ or an empty stream that reaches EOF cleanly.
 naming RARLAB `unrar` and naming the lookalikes that are *not* accepted. A RARLAB
 binary older than 6.0 (or whose banner version cannot be parsed) raises the same
 exception at the banner probe, once, cached with the probe, naming the floor and the
-version found. Listing and stored reads never call `find_rarlab_unrar`, so they are
-unaffected. There is no silent fallback (§3, threat-model C1).
+version found. Open, listing, and stored reads still succeed: a missing or too-old
+binary is caught when resolving compressed old-style comments, and those stay `None`
+(§2.2). There is no silent fallback (§3, threat-model C1).
 
 ### 2.4 Extract
 
@@ -637,7 +639,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | --- | --- | --- |
 | Native metadata parser; `unrar` for member data only | Listing works with no binary and no `rarfile` dependency, and archivey's cost and streaming model is not bent to another library's | `rarfile`, which couples listing to its own decompressor stack — kept as a test oracle (ADR [0002](../decisions/0002-native-rar-metadata-unrar-data.md)) |
 | RARLAB `unrar` **only**, no silent fallback | The alternatives are measurably worse in ways a caller cannot see: `unar` returns empty files with a success exit on a whole archive class, `7z` depends on a plugin that may or may not be installed, `bsdtar` writes gigabytes on a stored member. A degraded backend chosen behind the caller's back is the failure mode `PackageNotInstalledError` exists to prevent | Probing `PATH` the way `rarfile` does (threat-model C1, [`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)); accepting RARLAB `rar` when `unrar` is missing (parked as §10 #20, not a silent fallback) |
-| Refuse RARLAB `unrar` older than **6.0** at the banner probe | `-n` glob demux and `-ver` were checked from 6.02 up. 5.91 passed those RAR data tests but hangs on an anonymous-fd multi-volume probe that 6.12+ exits 3 on — a path archivey does not use. Floor 6.0 so Debian 12 / Ubuntu 22.04 apt packages work. Parsed from the same identification banner as the RARLAB sniff, cached with the probe, not re-read per member. Listing and stored reads never call the finder | Floor 7.0, which would refuse those distro packages; checking per member; treating a RARLAB banner with no parseable version as 6.0 |
+| Refuse RARLAB `unrar` older than **6.0** at the banner probe | `-n` glob demux and `-ver` were checked from 6.02 up. 5.91 passed those RAR data tests but hangs on an anonymous-fd multi-volume probe that 6.12+ exits 3 on — a path archivey does not use. Floor 6.0 so Debian 12 / Ubuntu 22.04 apt packages work. Parsed from the same identification banner as the RARLAB sniff, cached with the probe, not re-read per member. Open and stored reads do not require it; compressed old-style comments stay `None` | Floor 7.0, which would refuse those distro packages; checking per member; treating a RARLAB banner with no parseable version as 6.0 |
 | Pass the member as `-n./<name>`, never positionally | It is the only construction that neutralizes both hostile prefixes; `--` handles the switch case and leaves `@listfile` expansion intact | `--` alone; shell quoting (there is no shell — argv is a list) |
 | Honour `seekable_members=True` on named `unrar` by respawning the process | A flag that seeks on stored members and raises on compressed ones is a broken contract, and buffering the decoded member would hide the cost VISION forbids | Buffering the member in memory; teaching `ArchiveStream` to reopen every non-seekable inner (the blast radius is every backend for one pipe) |
 | Declare a `RewindWarning` cost floor for the solid prefix | The member stream's `tell()` is only this member; named `unrar` of a solid member re-decodes everything before it. Maxing the predicate against that prefix keeps one diagnostic path | Lowering the global 1 MiB threshold; emitting the diagnostic from the RAR wrapper |
