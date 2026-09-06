@@ -75,12 +75,42 @@ def test_extension_only_is_guess(tmp_path: Path) -> None:
     assert info.detected_by == "extension"
 
 
-@pytest.mark.parametrize("ext", [".jar", ".pyz", ".whl", ".apk"])
+@pytest.mark.parametrize("ext", [".jar", ".pyz", ".whl", ".apk", ".cbz"])
 def test_zip_family_extension_fallback(tmp_path: Path, ext: str) -> None:
     path = tmp_path / f"mystery{ext}"
     path.write_bytes(b"not really a zip")
     info = detect_format(path)
     assert info.format == ArchiveFormat.ZIP
+    assert info.confidence == DetectionConfidence.GUESS
+    assert info.detected_by == "extension"
+
+
+@pytest.mark.parametrize("ext", [".rar", ".cbr"])
+def test_rar_family_extension_fallback(tmp_path: Path, ext: str) -> None:
+    path = tmp_path / f"mystery{ext}"
+    path.write_bytes(b"not really a rar")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.RAR
+    assert info.confidence == DetectionConfidence.GUESS
+    assert info.detected_by == "extension"
+
+
+@pytest.mark.parametrize("ext", [".tar", ".cbt"])
+def test_tar_family_extension_fallback(tmp_path: Path, ext: str) -> None:
+    path = tmp_path / f"mystery{ext}"
+    path.write_bytes(b"not really a tar")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.TAR
+    assert info.confidence == DetectionConfidence.GUESS
+    assert info.detected_by == "extension"
+
+
+@pytest.mark.parametrize("ext", [".7z", ".cb7"])
+def test_sevenz_family_extension_fallback(tmp_path: Path, ext: str) -> None:
+    path = tmp_path / f"mystery{ext}"
+    path.write_bytes(b"not really a 7z")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.SEVEN_Z
     assert info.confidence == DetectionConfidence.GUESS
     assert info.detected_by == "extension"
 
@@ -102,12 +132,63 @@ def test_unrecognized_extension_and_bytes_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _tar_bytes() -> bytes:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("a.txt")
+        payload = io.BytesIO(b"hello")
+        info.size = 5
+        t.addfile(info, payload)
+    return buf.getvalue()
+
+
+def _sevenz_sig() -> bytes:
+    return b"7z\xbc\xaf'\x1c" + b"\x00" * 32
+
+
+@pytest.mark.parametrize(
+    ("name", "kind", "expected"),
+    [
+        ("mystery.cbr", "zip", ArchiveFormat.ZIP),
+        ("mystery.cbz", "rar", ArchiveFormat.RAR),
+        ("mystery.cbt", "zip", ArchiveFormat.ZIP),
+        ("mystery.cb7", "zip", ArchiveFormat.ZIP),
+        ("mystery.cbt", "rar", ArchiveFormat.RAR),
+        ("mystery.cb7", "rar", ArchiveFormat.RAR),
+        ("mystery.cbz", "tar", ArchiveFormat.TAR),
+        ("mystery.cbr", "7z", ArchiveFormat.SEVEN_Z),
+        ("mystery.cbt", "7z", ArchiveFormat.SEVEN_Z),
+    ],
+)
+def test_comic_extension_content_wins_with_conflict(
+    tmp_path: Path, name: str, kind: str, expected: ArchiveFormat
+) -> None:
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.internal.backends.rar_parser import RAR_ID
+
+    payloads = {
+        "zip": _zip_bytes(),
+        "rar": RAR_ID,
+        "tar": _tar_bytes(),
+        "7z": _sevenz_sig(),
+    }
+    path = tmp_path / name
+    path.write_bytes(payloads[kind])
+    info = detect_format(path)
+    assert info.format == expected
+    assert info.confidence == DetectionConfidence.CERTAIN
+    assert info.detected_by == "magic"
+    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
+
+
 def test_magic_wins_over_conflicting_extension(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A conflict needs two formats registered (only ZIP is, in Stage 1), so drive it
-    # through a registry with two synthetic backends: magic says SEVEN_Z, the ".rar"
-    # extension says RAR. Magic must win, with a WARNING on archivey.detection.
+    # Isolates the conflict machinery from real backends: magic says SEVEN_Z, the
+    # ".rar" extension says RAR. Real comic-book alias conflicts are in
+    # ``test_comic_extension_content_wins_with_conflict``.
     from archivey.internal import detection as detection_module
     from archivey.internal.base_reader import ReadBackend
     from archivey.internal.registry import BackendRegistry

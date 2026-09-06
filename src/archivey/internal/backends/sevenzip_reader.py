@@ -792,7 +792,10 @@ class SevenZipReadBackend(ReadBackend):
     """Backend factory for 7z archives."""
 
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.SEVEN_Z,)
-    EXTENSIONS: Mapping[str, ArchiveFormat] = {".7z": ArchiveFormat.SEVEN_Z}
+    EXTENSIONS: Mapping[str, ArchiveFormat] = {
+        ".7z": ArchiveFormat.SEVEN_Z,
+        ".cb7": ArchiveFormat.SEVEN_Z,
+    }
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(0, b"7z\xbc\xaf'\x1c", ArchiveFormat.SEVEN_Z),
     )
