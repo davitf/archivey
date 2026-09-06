@@ -138,8 +138,9 @@ Ordinary RAR M1–M5 SHALL map to `CompressionAlgorithm.RAR`, not to any other
 algorithm name. An unrecognized method byte SHALL not abort listing.
 
 When the FILE header recorded an unpack version, every member — stored
-included — SHALL set `extra["rar.extract_version"]` to that value. RAR5
-members report `50` (RAR5 records no per-file unpack version).
+included — SHALL set `extra["rar.extract_version"]` to that value. RAR3
+copies the `UNP_VER` byte as stored, unvalidated. RAR5 members report `50`
+(RAR5 records no per-file unpack version).
 
 #### Scenario: RAR compression matrix
 
@@ -148,6 +149,8 @@ members report `50` (RAR5 records no per-file unpack version).
 | Stored member (M0) | `STORED`; `extra["rar.extract_version"]` present |
 | Compressed member (M1–M5) | `RAR` with `level` 1–5; `extra["rar.extract_version"]` present |
 | Method byte outside M0–M5 | `UNKNOWN`; `level` is `None`; listing succeeds |
+| RAR3 FILE `UNP_VER` byte 200 | listing succeeds; `extra["rar.extract_version"]` is 200 |
+| RAR5 member | `extra["rar.extract_version"]` is 50 |
 
 ### Requirement: Use RARLAB unrar only for member data that needs it
 

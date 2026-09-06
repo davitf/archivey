@@ -119,7 +119,7 @@ map to `RAR`, not `UNKNOWN`.
 | --- | --- |
 | ZIP member stored with DEFLATE | `(CompressionMethod(algo=CompressionAlgorithm.DEFLATE),)` |
 | 7z member uses BCJ2 + LZMA2 | `(CompressionMethod(BCJ2), CompressionMethod(LZMA2))` |
-| Compressed RAR member (M1–M5) | `(CompressionMethod(algo=CompressionAlgorithm.RAR, level=<1-5>),)`; `extra["rar.extract_version"]` in `{15,20,29,50}` |
+| Compressed RAR member (M1–M5) | `(CompressionMethod(algo=CompressionAlgorithm.RAR, level=<1-5>),)`; `extra["rar.extract_version"]` is the RAR3 `UNP_VER` byte as stored (unvalidated), or `50` for RAR5 |
 | Archive contains an unknown codec ID | `CompressionAlgorithm.UNKNOWN`; no exception |
 
 ### Requirement: ArchiveMember exposes the complete mutable member record

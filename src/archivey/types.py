@@ -340,7 +340,8 @@ EXTRA_IS_JUNCTION = "is_junction"
 # birth time; ZIP splits by extra source, not OS).
 EXTRA_RAR_CREATED_IS_CTIME = "rar.created_is_ctime"
 
-# RAR FILE-header unpack version (15/20/29/50). Lives here, not on
+# RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
+# because RAR5 records no per-file unpack version. Lives here, not on
 # CompressionMethod.level, which is the M1–M5 method-byte offset.
 EXTRA_RAR_EXTRACT_VERSION = "rar.extract_version"
 

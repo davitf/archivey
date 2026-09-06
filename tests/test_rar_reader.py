@@ -680,6 +680,20 @@ def test_member_reports_exact_compression_and_extract_version(
         assert member.extra[EXTRA_RAR_EXTRACT_VERSION] == extract_version
 
 
+def test_rar3_unp_ver_byte_is_reported_unvalidated() -> None:
+    """RAR3 copies UNP_VER as stored; a value outside {15,20,29,50} still lists."""
+    main_hdr, end_hdr = _rar3_main_and_end()
+    file_hdr = _rar3_file_block(
+        b"a.txt", flags=0, pack_lo=0, unp_lo=0, extract_version=200
+    )
+    blob = RAR_ID + main_hdr + file_hdr + end_hdr
+    parsed = parse_rar_archive(io.BytesIO(blob))
+    assert parsed.members[0].extract_version == 200
+    with open_archive(io.BytesIO(blob)) as archive:
+        member = next(m for m in archive.members() if m.name == "a.txt")
+        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] == 200
+
+
 def test_unknown_method_byte_omits_level() -> None:
     """A method byte outside M0–M5 lists as UNKNOWN with no leftover level."""
     info = RarMemberInfo(
@@ -1079,6 +1093,7 @@ def _rar3_file_block(
     unp_hi: int = 0,
     method: int = 0x30,
     block_type: int = 0x74,
+    extract_version: int = 20,
 ) -> bytes:
     """Build one RAR3 FILE block with a valid 16-bit header CRC."""
     from archivey.internal.backends.rar_parser import (
@@ -1094,7 +1109,7 @@ def _rar3_file_block(
         3,  # Unix
         0,  # crc32
         0,  # dos time
-        20,  # extract version
+        extract_version,
         method,
         len(name),
         0o100644,

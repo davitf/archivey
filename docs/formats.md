@@ -132,7 +132,7 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - **Compression:** M0 is `STORED`. M1–M5 is `CompressionAlgorithm.RAR` with `level` 1–5.
   Any other method byte stays `UNKNOWN` (`level` omitted). Unpack version is
   `extra["rar.extract_version"]` on every member whose FILE header recorded one,
-  stored included.
+  stored included: RAR3 copies the `UNP_VER` byte as stored; RAR5 reports `50`.
 - Solid archives: one `unrar p` pipe for the whole of `stream_members()`. A random
   `open()` out of order is a separate `unrar` run that decodes from the start of the
   archive each time, so reading *n* members that way costs *n* full decodes — stream them
