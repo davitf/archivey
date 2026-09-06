@@ -147,8 +147,7 @@ included — it does not leave FILE after the old QO.
 
 **Listing:**
 
-1. Follow the locator and parse QO into FILE copies plus a skip map
-   (`header_offset → packed_end`).
+1. Follow the locator and parse QO into FILE copies keyed by `header_offset`.
 2. Seek back to after MAIN and walk. `CMT` is a normal SERVICE. When `tell()`
    is a FILE in the map, emit those copies in order and seek to the end of
    the consecutive run (the chain is in memory; one seek). AUTO holes — small
