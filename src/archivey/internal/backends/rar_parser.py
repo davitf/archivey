@@ -16,8 +16,10 @@ On-disk layout this module walks::
           optional encryption block before encrypted headers
           optional MAIN locator extra → QO SERVICE (header copies at the tail)
     FILE rows point at packed bytes after the header (``data_offset``).
-    When a stored unencrypted QO is reachable from the locator, listing is
-    filled from those copies (same table extract reads); otherwise header-to-header.
+    When a stored unencrypted QO is reachable from the locator, listing starts
+    from those copies. WinRAR AUTO caches only large files; local FILE headers
+    in the holes are merged. FILE after QO is also kept. A complete ``-qo+``
+    chain has no holes, so listing does not walk FILE.
 
 ``RarArchive.version`` uses **4 for the whole RAR3-on-disk family** (1.5/2.x/3.x) and
 **5 for RAR5** — not "RAR 4.x product version". Multi-volume sets are merged by
@@ -1631,15 +1633,102 @@ def _adopt_rar5_file_members(
     """
     needs_next = False
     for member in incoming:
-        if member.split_before:
-            if members:
-                _merge_split_member(members[-1], member)
-            else:
-                _append_member(members, member)
+        if _emit_rar5_file_member(members, member):
+            needs_next = True
+    return needs_next
+
+
+def _emit_rar5_file_member(members: list[RarMemberInfo], member: RarMemberInfo) -> bool:
+    """Split-merge one FILE into ``members``. Returns ``split_after``."""
+    if member.split_before:
+        if members:
+            _merge_split_member(members[-1], member)
         else:
             _append_member(members, member)
-        if member.split_after:
-            needs_next = True
+    else:
+        _append_member(members, member)
+    return member.split_after
+
+
+def _packed_end(member: RarMemberInfo) -> int:
+    return member.data_offset + member.compress_size
+
+
+def _fill_rar5_qo_file_gaps(
+    source: BinaryIO,
+    *,
+    resume_pos: int,
+    qopen_abs: int,
+    members: list[RarMemberInfo],
+    volume_index: int,
+) -> bool:
+    """Read local FILE headers WinRAR AUTO left out of QO (small files).
+
+    QO is a tail cache of *some* headers, still sitting after every FILE.
+    ``-qo+`` copies all of them, so ``resume_pos`` chains to ``qopen_abs``
+    and this is a no-op. AUTO copies only relatively large files; the rest
+    stay as local headers in the holes, which UnRAR overlays in. Adding a
+    file with ``rar a`` rewrites QO at a new tail — it does not leave FILE
+    after QO.
+    """
+    seen = {m.header_offset for m in members}
+    ordered = sorted(members, key=lambda m: m.header_offset)
+    gaps: list[tuple[int, int]] = []
+    pos = resume_pos
+    for member in ordered:
+        if pos < member.header_offset:
+            gaps.append((pos, member.header_offset))
+        packed_end = _packed_end(member)
+        if packed_end > pos:
+            pos = packed_end
+    if pos < qopen_abs:
+        gaps.append((pos, qopen_abs))
+
+    needs_next = False
+    for start, end in gaps:
+        if start >= end:
+            continue
+        try:
+            source.seek(start)
+        except (OSError, OverflowError):
+            continue
+        while source.tell() < end:
+            parsed = _read_rar5_block(source)
+            if parsed is None:
+                break
+            (
+                block_type,
+                block_flags,
+                hdata,
+                pos,
+                header_offset,
+                header_size,
+                data_offset,
+                add_size,
+                extra_size,
+            ) = parsed
+            if header_offset >= end:
+                break
+            if block_type == _RAR5_FILE:
+                member = _parse_rar5_file_block(
+                    hdata,
+                    pos,
+                    block_flags=block_flags,
+                    extra_size=extra_size,
+                    header_offset=header_offset,
+                    header_size=header_size,
+                    data_offset=data_offset,
+                    add_size=add_size,
+                    volume_index=volume_index,
+                )
+                if member.header_offset not in seen:
+                    if _emit_rar5_file_member(members, member):
+                        needs_next = True
+                    seen.add(member.header_offset)
+            if block_type == _RAR5_ENDARC:
+                break
+            _seek_after_packed(source, data_offset, add_size)
+    members.sort(key=lambda m: m.header_offset)
     return needs_next
 
 
@@ -1664,7 +1753,7 @@ def _parse_rar5(
     # reported as EncryptionError rather than CorruptionError (see _check_rar5_password).
     password_verified = False
     needs_next_volume = False
-    listed_via_qo = False
+    seen_file_offsets: set[int] = set()
 
     while True:
         header_fd: _Readable = source
@@ -1751,9 +1840,20 @@ def _parse_rar5(
                         volume_index=volume_index,
                     )
                     if qo_members is not None:
+                        qo_end = source.tell()
                         if _adopt_rar5_file_members(members, qo_members):
                             needs_next_volume = True
-                        listed_via_qo = True
+                        seen_file_offsets.update(m.header_offset for m in qo_members)
+                        if _fill_rar5_qo_file_gaps(
+                            source,
+                            resume_pos=resume_pos,
+                            qopen_abs=qopen_abs,
+                            members=members,
+                            volume_index=volume_index,
+                        ):
+                            needs_next_volume = True
+                        seen_file_offsets.update(m.header_offset for m in members)
+                        source.seek(qo_end)
                         continue
                     source.seek(resume_pos)
             continue
@@ -1806,20 +1906,14 @@ def _parse_rar5(
                 add_size=add_size,
                 volume_index=volume_index,
             )
-            if block_type == _RAR5_FILE and not listed_via_qo:
+            if block_type == _RAR5_FILE:
                 # File-version history rows (extra 0x04) are kept as members.
-                # After a trusted QO table, ignore FILE headers (QO is the
-                # catalog; UnRAR places QO before RR/ENDARC, so this is only
-                # a crafted-archive path).
-                if member.split_before:
-                    if members:
-                        _merge_split_member(members[-1], member)
-                    else:
-                        _append_member(members, member)
-                else:
-                    _append_member(members, member)
-                if member.split_after:
-                    needs_next_volume = True
+                # Complete QO already listed these; skip duplicates. AUTO holes
+                # were filled from local headers. FILE after QO is still adopted.
+                if member.header_offset not in seen_file_offsets:
+                    if _emit_rar5_file_member(members, member):
+                        needs_next_volume = True
+                    seen_file_offsets.add(member.header_offset)
             elif (
                 block_type == _RAR5_SERVICE
                 and member.filename == "CMT"

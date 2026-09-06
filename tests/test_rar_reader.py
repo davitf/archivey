@@ -2599,3 +2599,124 @@ def test_unreadable_qo_falls_back_to_file_walk(tmp_path: Path) -> None:
         listed = {m.name for m in archive.members() if m.is_file}
         assert listed == set(files)
         assert archive.read("f0.txt") == b"body-0\n"
+
+
+@requires_binary("rar")
+def test_auto_qo_lists_small_files_omitted_from_cache(tmp_path: Path) -> None:
+    """WinRAR AUTO QO caches large files only; local FILE headers still list."""
+    files = {
+        "tiny.txt": b"t" * 240,
+        "large.bin": b"L" * 10240,
+    }
+    archive_path = _rar_a(tmp_path / "auto", "auto.rar", files, ["-m0"])
+    assert b"QO" in archive_path.read_bytes()
+    with open_archive(archive_path) as archive:
+        listed = {m.name for m in archive.members() if m.is_file}
+        assert listed == set(files)
+        assert archive.read("tiny.txt") == files["tiny.txt"]
+        assert archive.read("large.bin") == files["large.bin"]
+
+
+def _rar5_block_ranges(path: Path) -> list[tuple[int, int, int]]:
+    """Return ``(block_type, header_offset, packed_end)`` for each RAR5 block."""
+    from archivey.internal.backends import rar_parser
+
+    ranges: list[tuple[int, int, int]] = []
+    with path.open("rb") as source:
+        assert source.read(len(RAR5_ID)) == RAR5_ID
+        while True:
+            parsed = rar_parser._read_rar5_block(source)
+            if parsed is None:
+                break
+            (
+                block_type,
+                _flags,
+                _hdata,
+                _pos,
+                header_offset,
+                _header_size,
+                data_offset,
+                add_size,
+                _extra_size,
+            ) = parsed
+            ranges.append((block_type, header_offset, data_offset + add_size))
+            if block_type == rar_parser._RAR5_ENDARC:
+                break
+            rar_parser._seek_after_packed(source, data_offset, add_size)
+    return ranges
+
+
+@requires_binary("rar")
+def test_rar_a_rewrites_qo_and_lists_the_new_member(tmp_path: Path) -> None:
+    """``rar a`` rewrites QO at a new tail; the added member is not FILE-after-QO."""
+    from archivey.internal.backends import rar_parser
+
+    first = {"a.txt": b"alpha\n"}
+    archive_path = _rar_a(tmp_path / "incr", "incr.rar", first, ["-m0", "-qo+"])
+    src = tmp_path / "incr" / "src"
+    (src / "b.txt").write_bytes(b"beta\n")
+    result = subprocess.run(
+        ["rar", "a", "-idq", "-ep1", "-m0", "-qo+", str(archive_path), "b.txt"],
+        cwd=src,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"rar cannot add: {result.stderr!r}")
+
+    ranges = _rar5_block_ranges(archive_path)
+    file_starts = [h for t, h, _ in ranges if t == rar_parser._RAR5_FILE]
+    qo_starts = [h for t, h, _ in ranges if t == rar_parser._RAR5_SERVICE]
+    assert file_starts
+    assert qo_starts
+    assert max(file_starts) < min(qo_starts)
+
+    data = archive_path.read_bytes()
+    qo_at = data.rfind(b"QO")
+    assert qo_at != -1
+    assert data.find(b"b.txt", qo_at) != -1
+
+    with open_archive(archive_path) as archive:
+        listed = {m.name for m in archive.members() if m.is_file}
+        assert listed == {"a.txt", "b.txt"}
+        assert archive.read("a.txt") == b"alpha\n"
+        assert archive.read("b.txt") == b"beta\n"
+
+
+@requires_binary("rar")
+def test_file_header_after_qo_is_still_listed(tmp_path: Path) -> None:
+    """A FILE after QO (crafted; not the ``rar a`` path) is adopted, not dropped."""
+    from archivey.internal.backends import rar_parser
+
+    host = _rar_a(tmp_path / "host", "host.rar", {"a.txt": b"alpha\n"}, ["-m0", "-qo+"])
+    donor = _rar_a(
+        tmp_path / "donor", "donor.rar", {"b.txt": b"beta\n"}, ["-m0", "-qo-"]
+    )
+    donor_ranges = _rar5_block_ranges(donor)
+    file_range = next(
+        (h, end) for t, h, end in donor_ranges if t == rar_parser._RAR5_FILE
+    )
+    host_ranges = _rar5_block_ranges(host)
+    endarc_at = next(h for t, h, _ in host_ranges if t == rar_parser._RAR5_ENDARC)
+    spliced = tmp_path / "spliced.rar"
+    host_bytes = host.read_bytes()
+    donor_bytes = donor.read_bytes()
+    spliced.write_bytes(
+        host_bytes[:endarc_at]
+        + donor_bytes[file_range[0] : file_range[1]]
+        + host_bytes[endarc_at:]
+    )
+    file_starts = [
+        h for t, h, _ in _rar5_block_ranges(spliced) if t == rar_parser._RAR5_FILE
+    ]
+    qo_starts = [
+        h for t, h, _ in _rar5_block_ranges(spliced) if t == rar_parser._RAR5_SERVICE
+    ]
+    assert file_starts[-1] > qo_starts[0]
+
+    with open_archive(spliced) as archive:
+        listed = {m.name for m in archive.members() if m.is_file}
+        assert listed == {"a.txt", "b.txt"}
+        assert archive.read("a.txt") == b"alpha\n"
+        assert archive.read("b.txt") == b"beta\n"
