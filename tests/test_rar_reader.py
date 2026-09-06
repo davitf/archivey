@@ -2070,7 +2070,7 @@ def test_rar5_header_size_vint_is_bounded() -> None:
 
 @pytest.mark.timeout(5)
 def test_rar5_qo_non_file_records_parse_in_linear_time() -> None:
-    """QO payload of SERVICE records used to copy `payload[pos:]` per record."""
+    """Non-FILE QO records (2 MiB of SERVICE copies) parse under the timeout."""
     from archivey.internal.backends import rar_parser
 
     hdr = bytes([2, 3, 0])  # hdrlen=2, type=SERVICE, flags=0

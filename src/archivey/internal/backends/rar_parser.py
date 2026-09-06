@@ -1471,8 +1471,7 @@ def _parse_rar5_qo_payload(
     pos = 0
     n = len(payload)
     # Trailing zeros: AES/size overprovisioning. Stop before them; do not try
-    # to parse a CRC=0 record out of the pad. Hoisted: `any(payload[pos:])`
-    # per record copied the remainder each time (O(records × payload)).
+    # to parse a CRC=0 record out of the pad.
     data_end = len(payload.rstrip(b"\0"))
     while pos < data_end:
         if n - pos < 5:
@@ -1663,7 +1662,6 @@ def _emit_and_skip_qo_run(
     source: BinaryIO,
     *,
     qo_by_off: dict[int, RarMemberInfo],
-    qo_spans: dict[int, int],
     members: list[RarMemberInfo],
     seen_file_offsets: set[int],
 ) -> bool | None:
@@ -1681,8 +1679,9 @@ def _emit_and_skip_qo_run(
         if pos in visited:
             return None
         visited.add(pos)
-        run.append(qo_by_off[pos])
-        nxt = qo_spans[pos]
+        member = qo_by_off[pos]
+        run.append(member)
+        nxt = _packed_end(member)
         if nxt <= pos:
             return None
         pos = nxt
@@ -1716,7 +1715,6 @@ def _parse_rar5(
     needs_next_volume = False
     seen_file_offsets: set[int] = set()
     qo_by_off: dict[int, RarMemberInfo] = {}
-    qo_spans: dict[int, int] = {}
 
     while True:
         header_fd: _Readable = source
@@ -1740,7 +1738,6 @@ def _parse_rar5(
         skipped = _emit_and_skip_qo_run(
             source,
             qo_by_off=qo_by_off,
-            qo_spans=qo_spans,
             members=members,
             seen_file_offsets=seen_file_offsets,
         )
@@ -1815,7 +1812,6 @@ def _parse_rar5(
                     if listed is not None:
                         qo_members, _qo_end = listed
                         qo_by_off = {m.header_offset: m for m in qo_members}
-                        qo_spans = {m.header_offset: _packed_end(m) for m in qo_members}
                         # Back to after MAIN. CMT is a normal SERVICE on the
                         # walk; a FILE in the skip map is emitted from the copy.
                         _seek_to(source, resume_pos)
