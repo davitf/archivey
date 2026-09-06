@@ -134,6 +134,34 @@ any other FILE.
 | Nonsolid named `unrar p` of `path;n` | Exact member name; `-ver` not required |
 | Hostile archive with many version rows | Rows count toward member caps |
 
+### Requirement: Map RAR method bytes and unpack version
+
+The RAR backend SHALL map the FILE-header method byte as follows:
+
+| Method | `member.compression` |
+| --- | --- |
+| M0 (`0x30`) | `(CompressionMethod(algo=CompressionAlgorithm.STORED),)` |
+| M1–M5 (`0x31`–`0x35`) | `(CompressionMethod(algo=CompressionAlgorithm.RAR, level=<1-5>),)` with `level` = method − `0x30` |
+| Any other byte | `(CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)` — `level` omitted |
+
+Ordinary RAR M1–M5 SHALL map to `CompressionAlgorithm.RAR`, not to any other
+algorithm name. An unrecognized method byte SHALL not abort listing.
+
+When the FILE header recorded an unpack version, every member — stored
+included — SHALL set `extra["rar.extract_version"]` to that value. RAR3
+copies the `UNP_VER` byte as stored, unvalidated. RAR5 members report `50`
+(RAR5 records no per-file unpack version).
+
+#### Scenario: RAR compression matrix
+
+| Case | Expected |
+| --- | --- |
+| Stored member (M0) | `STORED`; `extra["rar.extract_version"]` present |
+| Compressed member (M1–M5) | `RAR` with `level` 1–5; `extra["rar.extract_version"]` present |
+| Method byte outside M0–M5 | `UNKNOWN`; `level` is `None`; listing succeeds |
+| RAR3 FILE `UNP_VER` byte 200 | listing succeeds; `extra["rar.extract_version"]` is 200 |
+| RAR5 member | `extra["rar.extract_version"]` is 50 |
+
 ### Requirement: Use RARLAB unrar only for member data that needs it
 
 The system SHALL read stored, uncompressed, unencrypted members directly as raw
@@ -366,8 +394,12 @@ errors from their existing requirements.
 ### Requirement: Support multi-volume RAR sets
 
 The system SHALL support multi-volume RAR archives named `name.partN.rar`
-(RAR5/newer RAR4) or `name.rar` + `name.r00`, `name.r01`, ... (older RAR4). The
-native parser SHALL read volume headers in order and stitch members that span
+(RAR5/newer RAR4), including an SFX first volume named `name.partN.sfx` or
+`name.partN.exe` beside later `.partN.rar` parts, or `name.rar` + `name.r00`,
+`name.r01`, ... (older RAR4), including an old-scheme SFX first volume named
+`name.exe` or `name.sfx` beside those `.rNN` parts (prefer `.rar` when more than
+one first-volume name exists). The native parser SHALL read volume headers in
+order and stitch members that span
 volume boundaries into one logical member using continuation flags.
 `open_archive()` SHALL accept either a path inside the set, with sibling
 discovery in order, or an explicit ordered source sequence. For path sources,
@@ -381,7 +413,9 @@ a truncated error instead of a partial result.
 | Case | Expected |
 | --- | --- |
 | Open `name.part1.rar` with complete siblings | Headers across all volumes parse as one archive |
+| Open `name.part1.sfx` with later `name.partN.rar` siblings | Same as partN: `.sfx` (or `.exe`) is volume 1; one logical archive |
 | Open `name.rar` with `name.r00` / `name.r01` siblings | Same as partN: one logical archive; member data spans volumes |
+| Open `name.exe` (or `name.sfx`) with `name.r00` siblings | Same as `.rar` + `.r00`: the SFX file is volume 1 |
 | Read a member spanning volumes | Returned stream reassembles the member across boundaries |
 | Open explicit ordered stream volumes | Metadata parses in order; data reads materialize volumes for `unrar` if needed |
 | Missing or out-of-order volume | Error instead of partial or garbled output |

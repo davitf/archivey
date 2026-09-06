@@ -460,8 +460,10 @@ class ZipReader(BaseArchiveReader):
 
         # A split-set segment stdlib zipfile cannot read. A joined set arrives here
         # still carrying part one's name, so the name alone does not decide it: what
-        # is refused is a segment that was *not* rejoined — Info-ZIP's spanned `.zNN`,
-        # or a `.zip.NNN` part whose siblings were not on disk.
+        # is refused is a segment that was *not* rejoined. Numbered ``.zip.NNN``
+        # incompleteness is ``TruncatedError`` in ``open_archive``; this backstop
+        # is Info-ZIP's spanned ``.zNN`` (and any ``.zip.NNN`` that skipped that
+        # refuse).
         if self._volume_count == 1 and is_zip_split_segment_name(archive_name):
             raise UnsupportedFeatureError(
                 ZIP_MULTI_VOLUME_MSG,

@@ -202,18 +202,29 @@ third-party reader. PPMd, Deflate64, and LZMA1+BCJ are optional-supported via
 
 ### Requirement: Support multi-volume 7z by ordered concatenation
 
-The system SHALL support split 7z sets (`name.7z.001`, `name.7z.002`, ...) by
+The system SHALL support split 7z sets (`name.7z.001`, `name.7z.002`, ..., and
+SFX numbered parts `name.exe.001`, `name.exe.002`, ...) by
 joining volumes in order into one logical byte stream and parsing that stream as
-ordinary 7z. `open_archive()` SHALL accept either a path inside the set, with
+ordinary 7z. The SFX stub `name.exe` (no `.NNN` suffix) is not a volume sibling;
+when it has no archive magic, `open_archive` SHALL follow it to the split first
+volume beside it (`name.exe.001` or `name.7z.001`).
+`open_archive()` SHALL accept either a path inside the set, with
 sibling discovery in numeric order, or an explicit ordered source sequence. If a
 volume is missing or the stream cannot be reconstructed, the system SHALL raise
 `UnsupportedFeatureError` or a truncated/corrupt error, never a partial result.
+A lone numbered part (`name.7z.001` / `name.exe.001` with no siblings) SHALL
+raise `TruncatedError` naming the missing parts.
 
 #### Scenario: volume matrix
 
 | Case | Expected |
 | --- | --- |
 | Open `name.7z.001` with complete siblings | Volumes join in numeric order; listing and reads match a single-file archive |
+| Open `name.exe.001` with complete `name.exe.00N` siblings | Same join; the stub `name.exe` is not a sibling |
+| Open `name.7z.001` or `name.exe.001` with no siblings | `TruncatedError` names the missing parts |
+| Open stub-only `name.exe` beside `name.exe.001` or `name.7z.001` | Same join as opening the first volume |
+| Open stub-only `name.exe` with `format=SEVEN_Z` beside `name.7z.001` | Same join |
+| Open stub-only `name.exe` with `format=SEVEN_Z` beside `name.zip.001` | `ArchiveyUsageError` |
 | Open an explicit ordered volume list | Sources concatenate and read as one archive |
 | Missing or out-of-order volume | Error instead of partial or garbage output |
 
