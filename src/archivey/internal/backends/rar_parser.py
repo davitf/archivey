@@ -16,10 +16,11 @@ On-disk layout this module walks::
           optional encryption block before encrypted headers
           optional MAIN locator extra → QO SERVICE (FILE header copies after the members)
     FILE rows point at packed bytes after the header (``data_offset``).
-    When a stored unencrypted QO is reachable from the locator, listing starts
-    from those copies, then reads only FILE headers QO omitted (uncovered
-    intervals between MAIN and QO). A complete ``-qo+`` copy is zero FILE-header
-    reads — one seek to after QO. FILE after QO is kept.
+    When a stored unencrypted QO is reachable from the locator, listing parses
+    those copies, seeks back to after MAIN, and walks. A FILE whose offset is
+    in QO is emitted from the copy and skipped (consecutive cached spans chain
+    in memory, then one seek). ``CMT`` after MAIN is a normal SERVICE on that
+    walk. FILE after QO is kept.
 
 ``RarArchive.version`` uses **4 for the whole RAR3-on-disk family** (1.5/2.x/3.x) and
 **5 for RAR5** — not "RAR 4.x product version". Multi-volume sets are merged by
@@ -492,8 +493,8 @@ def _require_exact(stream: BinaryIO, n: int, what: str) -> bytes:
     return data
 
 
-def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> None:
-    """Skip past a packed-data region, translating hostile sizes to CorruptionError."""
+def _packed_span_end(data_offset: int, add_size: int) -> int:
+    """First byte after a packed-data region, or CorruptionError on a hostile span."""
     if data_offset < 0 or add_size < 0:
         raise CorruptionError(
             f"Invalid RAR packed-data span: offset={data_offset}, size={add_size}"
@@ -502,12 +503,21 @@ def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> Non
         raise CorruptionError(
             f"RAR packed size {add_size} at offset {data_offset} exceeds the seekable range"
         )
+    return data_offset + add_size
+
+
+def _seek_to(source: BinaryIO, pos: int) -> None:
+    if pos < 0 or pos > _MAX_SEEK:
+        raise CorruptionError(f"Invalid RAR seek offset: {pos}")
     try:
-        source.seek(data_offset + add_size)
+        source.seek(pos)
     except (OverflowError, OSError) as exc:
-        raise CorruptionError(
-            f"RAR packed-data seek failed at offset {data_offset}+{add_size}"
-        ) from exc
+        raise CorruptionError(f"RAR packed-data seek failed at offset {pos}") from exc
+
+
+def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> None:
+    """Skip past a packed-data region, translating hostile sizes to CorruptionError."""
+    _seek_to(source, _packed_span_end(data_offset, add_size))
 
 
 def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
@@ -1453,60 +1463,6 @@ def _decode_rar5_cmt_bytes(raw: bytes) -> str:
     return raw.split(b"\0", 1)[0].decode("utf8", "replace")
 
 
-def _try_consume_rar5_cmt(source: BinaryIO) -> str | None:
-    """If the next block is a stored unencrypted CMT SERVICE, consume it.
-
-    The QO skip-walk only emits FILE blocks, so a CMT sitting after MAIN would
-    be lost if we jumped to QO without reading it. Otherwise rewind so the
-    caller can parse that block as FILE/SERVICE. Header-encrypted archives do
-    not take the QO shortcut, so this helper never sees a decrypted header
-    stream.
-    """
-    saved = source.tell()
-    try:
-        parsed = _read_rar5_block(source)
-        if parsed is None:
-            source.seek(saved)
-            return None
-        (
-            block_type,
-            block_flags,
-            hdata,
-            pos,
-            _header_offset,
-            _header_size,
-            data_offset,
-            add_size,
-            extra_size,
-        ) = parsed
-        if block_type != _RAR5_SERVICE:
-            source.seek(saved)
-            return None
-        member = _parse_rar5_file_block(
-            hdata,
-            pos,
-            block_flags=block_flags,
-            extra_size=extra_size,
-            header_offset=_header_offset,
-            header_size=_header_size,
-            data_offset=data_offset,
-            add_size=add_size,
-            volume_index=0,
-        )
-        if not _is_stored_rar5_cmt(member):
-            source.seek(saved)
-            return None
-        source.seek(data_offset)
-        raw = _require_exact(source, member.file_size, "RAR5 comment")
-        _seek_after_packed(source, data_offset, add_size)
-        return _decode_rar5_cmt_bytes(raw)
-    except PackageNotInstalledError:
-        raise
-    except (CorruptionError, TruncatedError, EncryptionError, OSError):
-        source.seek(saved)
-        return None
-
-
 def _parse_rar5_qo_payload(
     payload: bytes, qo_header_offset: int, volume_index: int
 ) -> list[RarMemberInfo] | None:
@@ -1610,7 +1566,9 @@ def _try_list_via_rar5_qo(
     """Seek to QO and parse FILE copies.
 
     On success the file pointer is at the end of QO's packed span (also
-    returned). None means the caller should walk FILE headers.
+    returned). The caller seeks back to after MAIN and walks, skipping FILE
+    offsets present in the copies. None means the caller should walk FILE
+    headers with an empty skip map.
     """
     try:
         source.seek(qopen_abs)
@@ -1701,85 +1659,36 @@ def _packed_end(member: RarMemberInfo) -> int:
     return member.data_offset + member.compress_size
 
 
-def _fill_rar5_qo_file_gaps(
+def _emit_and_skip_qo_run(
     source: BinaryIO,
     *,
-    resume_pos: int,
-    qopen_abs: int,
+    qo_by_off: dict[int, RarMemberInfo],
+    qo_spans: dict[int, int],
     members: list[RarMemberInfo],
-    volume_index: int,
-) -> bool:
-    """Parse FILE headers that QO omitted (WinRAR AUTO: small files).
+    seen_file_offsets: set[int],
+) -> bool | None:
+    """If ``tell()`` is a QO FILE, emit the consecutive cached run and seek past it.
 
-    After reading QO, compute uncovered intervals from ``resume_pos`` to
-    ``qopen_abs`` using each QO member's packed span. Only those intervals
-    are walked — a FILE already in QO is never seeked to. ``-qo+`` copies
-    every FILE, so the intervals are empty and this is zero FILE I/O (the
-    caller then seeks once to after QO). AUTO omits small files; those
-    local headers are parsed here. ``rar a`` rewrites QO at the new end —
-    it does not leave FILE after QO.
+    Returns ``None`` when ``tell()`` is not a QO FILE (caller parses the block).
+    Otherwise returns whether any emitted member has ``split_after``.
     """
-    seen = {m.header_offset for m in members}
-    ordered = sorted(members, key=lambda m: m.header_offset)
-    gaps: list[tuple[int, int]] = []
-    pos = resume_pos
-    for member in ordered:
-        if pos < member.header_offset:
-            gaps.append((pos, member.header_offset))
-        packed_end = _packed_end(member)
-        if packed_end > pos:
-            pos = packed_end
-    if pos < qopen_abs:
-        gaps.append((pos, qopen_abs))
-
-    needs_next = False
-    for start, end in gaps:
-        if start >= end:
-            continue
-        try:
-            source.seek(start)
-        except (OSError, OverflowError):
-            continue
-        while source.tell() < end:
-            parsed = _read_rar5_block(source)
-            if parsed is None:
-                break
-            (
-                block_type,
-                block_flags,
-                hdata,
-                pos,
-                header_offset,
-                header_size,
-                data_offset,
-                add_size,
-                extra_size,
-            ) = parsed
-            # `_read_rar5_block` sets `header_offset = tell()` as its first
-            # statement, so a block that passed `while tell() < end` cannot
-            # start at `end`. A block that *starts* inside the gap may extend
-            # past `end` (last member before QO); walking it out is fine —
-            # the `while` is the bound.
-            if block_type == _RAR5_FILE:
-                member = _parse_rar5_file_block(
-                    hdata,
-                    pos,
-                    block_flags=block_flags,
-                    extra_size=extra_size,
-                    header_offset=header_offset,
-                    header_size=header_size,
-                    data_offset=data_offset,
-                    add_size=add_size,
-                    volume_index=volume_index,
-                )
-                if member.header_offset not in seen:
-                    if _emit_rar5_file_member(members, member):
-                        needs_next = True
-                    seen.add(member.header_offset)
-            if block_type == _RAR5_ENDARC:
-                break
-            _seek_after_packed(source, data_offset, add_size)
-    members.sort(key=lambda m: m.header_offset)
+    pos = source.tell()
+    if pos not in qo_by_off:
+        return None
+    run: list[RarMemberInfo] = []
+    visited: set[int] = set()
+    while pos in qo_by_off:
+        if pos in visited:
+            return None
+        visited.add(pos)
+        run.append(qo_by_off[pos])
+        nxt = qo_spans[pos]
+        if nxt <= pos:
+            return None
+        pos = nxt
+    needs_next = _adopt_rar5_file_members(members, run)
+    seen_file_offsets.update(m.header_offset for m in run)
+    _seek_to(source, pos)
     return needs_next
 
 
@@ -1806,6 +1715,8 @@ def _parse_rar5(
     password_verified = False
     needs_next_volume = False
     seen_file_offsets: set[int] = set()
+    qo_by_off: dict[int, RarMemberInfo] = {}
+    qo_spans: dict[int, int] = {}
 
     while True:
         header_fd: _Readable = source
@@ -1825,6 +1736,18 @@ def _parse_rar5(
                 raise EncryptionError(
                     f"Failed to decrypt RAR5 headers: {raw_message_of(exc)}"
                 ) from exc
+
+        skipped = _emit_and_skip_qo_run(
+            source,
+            qo_by_off=qo_by_off,
+            qo_spans=qo_spans,
+            members=members,
+            seen_file_offsets=seen_file_offsets,
+        )
+        if skipped is not None:
+            if skipped:
+                needs_next_volume = True
+            continue
 
         # A wrong password produces a garbage decrypted header that fails the block CRC
         # (or advertises an absurd size). Without a check value to prove the key, that is
@@ -1882,9 +1805,6 @@ def _parse_rar5(
             if hdr_enc is None and use_qo:
                 qopen_abs = _rar5_locator_qopen_abs(hdata, extra_size, header_offset)
                 if qopen_abs is not None:
-                    cmt = _try_consume_rar5_cmt(source)
-                    if cmt is not None:
-                        comment = cmt
                     resume_pos = source.tell()
                     listed = _try_list_via_rar5_qo(
                         source,
@@ -1893,26 +1813,14 @@ def _parse_rar5(
                         min_file_offset=resume_pos,
                     )
                     if listed is not None:
-                        qo_members, qo_end = listed
-                        if _adopt_rar5_file_members(members, qo_members):
-                            needs_next_volume = True
-                        seen_file_offsets.update(m.header_offset for m in qo_members)
-                        if _fill_rar5_qo_file_gaps(
-                            source,
-                            resume_pos=resume_pos,
-                            qopen_abs=qopen_abs,
-                            members=members,
-                            volume_index=volume_index,
-                        ):
-                            needs_next_volume = True
-                        seen_file_offsets.update(m.header_offset for m in members)
-                        # FILE headers between MAIN and QO are not visited in
-                        # this loop. Gaps (AUTO holes) were read above; a full
-                        # QO is zero FILE-header reads. Resume at the end of
-                        # QO's packed span for ENDARC / RR / FILE after QO.
-                        source.seek(qo_end)
+                        qo_members, _qo_end = listed
+                        qo_by_off = {m.header_offset: m for m in qo_members}
+                        qo_spans = {m.header_offset: _packed_end(m) for m in qo_members}
+                        # Back to after MAIN. CMT is a normal SERVICE on the
+                        # walk; a FILE in the skip map is emitted from the copy.
+                        _seek_to(source, resume_pos)
                         continue
-                    source.seek(resume_pos)
+                    _seek_to(source, resume_pos)
             continue
 
         if block_type == _RAR5_ENCRYPTION:
@@ -1965,11 +1873,8 @@ def _parse_rar5(
             )
             if block_type == _RAR5_FILE:
                 # File-version history rows (extra 0x04) are kept as members.
-                # This loop only sees FILE after QO (or the no-QO walk).
-                # Cached FILE headers were skipped by `_fill_rar5_qo_file_gaps`
-                # as uncovered-interval math, not by this set. The set stops a
-                # post-QO FILE from being appended twice if its offset was
-                # already adopted.
+                # QO copies are emitted in `_emit_and_skip_qo_run` before this
+                # read; this branch is holes, FILE after QO, and the no-QO walk.
                 if member.header_offset not in seen_file_offsets:
                     if _emit_rar5_file_member(members, member):
                         needs_next_volume = True

@@ -59,10 +59,10 @@ of trying the open and catching the failure; see
 RAR reports `listing_cost=INDEXED`: the native parser builds the member table at
 open, before `members()` is called. RAR5 can carry a **Quick Open** record (`QO`) —
 copies of FILE headers stored after the members, with a pointer from MAIN. Listing
-reads QO first, then only the FILE headers QO omitted. Default WinRAR AUTO may
-omit small files from QO; those still list from their local headers. `-qo+`
-copies every header, so no FILE header is read. Unreadable QO falls back to
-walking every FILE header. With no usable QO there is no central
+reads QO first, seeks back to after MAIN, and skips FILE headers already in QO.
+Default WinRAR AUTO may omit small files from QO; those still list from their
+local headers. `-qo+` copies every header, so that skip is one seek to QO.
+Unreadable QO falls back to walking every FILE header. With no usable QO there is no central
 directory: each header states its own size, so the parser walks header-to-header,
 seeks past every member's packed data, and open-time cost scales with member
 count. Once open, `members()` / `get()` return from the in-memory table at O(1)
