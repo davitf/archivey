@@ -601,14 +601,21 @@ def test_stub_only_exe_opens_windows_7z_first_volume(
     payload = b"seven from stub"
     src = tmp_path / "payload.bin"
     src.write_bytes(payload)
-    first = tmp_path / "vol.7z.001"
-    with py7zr.SevenZipFile(first, "w") as zf:
+    complete = tmp_path / "complete.7z"
+    with py7zr.SevenZipFile(complete, "w") as zf:
         zf.write(src, arcname="payload.bin")
+    data = complete.read_bytes()
+    complete.unlink()
+    mid = max(len(data) // 2, 1)
+    first = tmp_path / "vol.7z.001"
+    first.write_bytes(data[:mid])
+    (tmp_path / "vol.7z.002").write_bytes(data[mid:])
     stub = tmp_path / "vol.exe"
     stub.write_bytes(_mz_stub())
     assert first_volume_for_stub(stub) == first
     with open_archive(stub, format=forced_format) as archive:
         assert archive.read("payload.bin") == payload
+        assert archive.info.is_multivolume is True
     assert detect_format(stub).format == ArchiveFormat.SEVEN_Z
 
 
