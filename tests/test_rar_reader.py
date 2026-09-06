@@ -644,21 +644,76 @@ def test_stored_m0_direct_read() -> None:
     with open_archive(_fixture("stored_m0.rar")) as archive:
         member = next(m for m in archive.members() if m.is_file)
         assert member.compression[0].algo is CompressionAlgorithm.STORED
-        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] in {15, 20, 29, 50}
+        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] == 50
         assert archive.read(member) == b"stored payload"
 
 
 @pytest.mark.parametrize(
-    "name",
-    ["basic_solid__.rar", "basic_solid__rar4.rar"],
+    ("name", "member_name", "algo", "level", "extract_version"),
+    [
+        ("stored_m0.rar", "store.txt", CompressionAlgorithm.STORED, None, 50),
+        ("basic_solid__.rar", "file1.txt", CompressionAlgorithm.RAR, 3, 50),
+        ("basic_solid__rar4.rar", "file1.txt", CompressionAlgorithm.RAR, 3, 29),
+        ("rar15-comment.rar", "FILE1.TXT", CompressionAlgorithm.RAR, 3, 15),
+        ("rar15-comment.rar", "FILE2.TXT", CompressionAlgorithm.STORED, None, 15),
+        (
+            "rar202-comment-nopsw.rar",
+            "FILE1.TXT",
+            CompressionAlgorithm.STORED,
+            None,
+            20,
+        ),
+    ],
 )
-def test_compressed_member_reports_rar_algorithm(name: str) -> None:
+def test_member_reports_exact_compression_and_extract_version(
+    name: str,
+    member_name: str,
+    algo: CompressionAlgorithm,
+    level: int | None,
+    extract_version: int,
+) -> None:
     with open_archive(_fixture(name)) as archive:
-        member = next(m for m in archive.members() if m.name == "file1.txt")
+        member = next(m for m in archive.members() if m.name == member_name)
         method = member.compression[0]
-        assert method.algo is CompressionAlgorithm.RAR
-        assert method.level in {1, 2, 3, 4, 5}
-        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] in {15, 20, 29, 50}
+        assert method.algo is algo
+        assert method.level is level
+        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] == extract_version
+
+
+def test_unknown_method_byte_omits_level() -> None:
+    """A method byte outside M0–M5 lists as UNKNOWN with no leftover level."""
+    info = RarMemberInfo(
+        filename="a.txt",
+        orig_filename=b"a.txt",
+        file_size=0,
+        compress_size=0,
+        compress_type=0x40,
+        crc32=None,
+        blake2sp_hash=None,
+        mtime=None,
+        ctime=None,
+        atime=None,
+        mode=None,
+        host_os=None,
+        flags=0,
+        file_redir=None,
+        file_encryption=None,
+        header_offset=0,
+        header_size=0,
+        data_offset=0,
+        extract_version=50,
+        file_solid=False,
+        is_directory=False,
+        is_symlink=False,
+        is_hardlink_or_copy=False,
+        is_encrypted=False,
+        volume_index=0,
+        split_before=False,
+        split_after=False,
+    )
+    method = rar_reader._compression_for(info)[0]
+    assert method.algo is CompressionAlgorithm.UNKNOWN
+    assert method.level is None
 
 
 _FILE_VERSION_CONTENTS = {

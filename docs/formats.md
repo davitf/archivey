@@ -129,6 +129,10 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - **File-version history (`-ver`):** revision rows appear in `members()` as names like
   `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
   `is_current=True`. Default extract **skips** non-current rows.
+- **Compression:** M0 is `STORED`. M1–M5 is `CompressionAlgorithm.RAR` with `level` 1–5.
+  Any other method byte stays `UNKNOWN` (`level` omitted). Unpack version is
+  `extra["rar.extract_version"]` on every member whose FILE header recorded one,
+  stored included.
 - Solid archives: one `unrar p` pipe for the whole of `stream_members()`. A random
   `open()` out of order is a separate `unrar` run that decodes from the start of the
   archive each time, so reading *n* members that way costs *n* full decodes — stream them

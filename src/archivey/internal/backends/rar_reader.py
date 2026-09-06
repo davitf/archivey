@@ -177,9 +177,9 @@ def _compression_for(info: RarMemberInfo) -> tuple[CompressionMethod, ...]:
     cached = _COMPRESSION_BY_METHOD.get(method)
     if cached is not None:
         return cached
-    # Unusual method byte outside M0–M5: still expose as UNKNOWN.
-    level = method - _RAR_METHOD_STORED if method >= _RAR_METHOD_STORED else None
-    return (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN, level=level),)
+    # Outside M0–M5: UNKNOWN with no level. ``level`` is the M1–M5 method-byte
+    # offset (1–5), not ``method - 0x30`` for an arbitrary byte.
+    return (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
 
 
 def _crc_is_tweaked(info: RarMemberInfo) -> bool:
