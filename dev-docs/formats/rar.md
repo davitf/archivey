@@ -88,19 +88,22 @@ Everything about that boundary is a consequence:
   full re-decode (solid: from the archive start), reported as `STREAM_REWIND_REDECOMPRESSES`
   once the solid prefix plus discarded member progress meets the 1 MiB floor. The unnamed
   ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5).
-- **Identity of the binary costs a process.** `find_rarlab_unrar` runs `unrar` with no
-  arguments and sniffs the banner. Major.minor is parsed from that same text
-  (`UNRAR 6.02` / `UNRAR 7.00`) and cached with the probe — not re-read per member.
-  Below 6.0, or a RARLAB banner whose version cannot be parsed, is still cached as
-  RARLAB (`is_rarlab=True`) and still refused (`PackageNotInstalledError` names the
-  floor and the version found). `shutil.which` re-runs on every call — a miss is
-  never frozen, so installing `unrar` into a directory already on `PATH` is visible
-  without editing the string. The banner verdict is cached for the resolved
-  (absolute) candidate together with its stat identity (`st_dev` / `st_ino` /
-  `st_mtime_ns` / `st_size`); a hit, a durable "not RARLAB" answer, or a too-old
-  RARLAB answer is reused only while that identity is unchanged. A probe that cannot
-  *run* the binary (`OSError`, timeout) is not cached. The cache is one entry, so
-  alternating two `PATH`s re-probes. The lookup does not key cwd or `PATHEXT`.
+- **Identity of the binary costs a process.** `find_rarlab_unrar` looks up the name
+  `unrar` only, runs it with no arguments, and sniffs the banner. Major.minor is
+  parsed from that same text (`UNRAR 6.02` / `UNRAR 7.00`) and cached with the probe
+  — not re-read per member. Below 6.0, or a RARLAB banner whose version cannot be
+  parsed, is still cached as RARLAB (`is_rarlab=True`) and still refused
+  (`PackageNotInstalledError` names the floor and the version found). The RARLAB
+  *writer* binary `rar` is not consulted, even though `rar p` is byte-identical to
+  `unrar p` on the argv archivey actually spawns (§10 #20). `shutil.which` re-runs
+  on every call — a miss is never frozen, so installing `unrar` into a directory
+  already on `PATH` is visible without editing the string. The banner verdict is
+  cached for the resolved (absolute) candidate together with its stat identity
+  (`st_dev` / `st_ino` / `st_mtime_ns` / `st_size`); a hit, a durable "not RARLAB"
+  answer, or a too-old RARLAB answer is reused only while that identity is
+  unchanged. A probe that cannot *run* the binary (`OSError`, timeout) is not
+  cached. The cache is one entry, so alternating two `PATH`s re-probes. The lookup
+  does not key cwd or `PATHEXT`.
 
 **Blocks chain forward and each header states its own size.** There is no index; the walk
 reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
@@ -433,7 +436,12 @@ fails depending on what the host has installed, and listing and reading have dif
 requirements. That asymmetry is the whole reason for the native-metadata split.
 
 **Nothing else on a normal machine is a safe substitute**, which is why the fallback is
-refused rather than merely discouraged. Measured across the candidates
+refused rather than merely discouraged. The one exception that is the *same vendor's
+decompressor under a different name* is RARLAB `rar` (the trialware writer): Ubuntu's
+`rar` package Suggests `unrar` and does not put `unrar` on `PATH`, so `apt install rar`
+alone is a miss today. On 7.00, `rar p` matched `unrar p` on the extract argv; the
+finder still refuses it because the banner is `RAR 7.00`, not `UNRAR 7.00` (§10 #20).
+Measured across the other candidates
 ([`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)):
 
 | Candidate | Verdict |
@@ -807,6 +815,7 @@ floor **6.0**, parsed from the identification banner and cached with the probe.
 | 11 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
 | 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
+| 20 | **Accept RARLAB `rar` when `unrar` is missing.** Prefer `unrar` when both exist. Banner is `RAR 7.00 … Alexander Roshal` / `Trial version` — extend the sniff so a `RAR` token does not match inside `UNRAR`. Floor still 6.0. Specs/docs name both; still refuse `unar` / `7z` / `unrar-free`. Spawn only `p` | Ubuntu/Debian `apt install rar` does not put `unrar` on `PATH` (`Suggests: unrar`). On 7.00, `rar p -inul [-ver] [-p\|-p-] [-n./member]` matched `unrar` on rc and stdout for 18 cases (ALL-pipe, named `-n`, hostile names, `-ver`, volumes, globs, missing-member rc=10, password-on-stdin including rc=11). `_parse_unrar_banner` classifies the writer as not RARLAB because `UNRAR` is absent. Windows `Rar.exe` banner unmeasured. Not this PR | §2.1, §3 |
 
 **On the name for item 9 — decided: plain `RAR`.** `ContainerFormat.RAR` and
 `CompressionAlgorithm.RAR` are *homonyms* (container vs codec sharing a vendor name),
