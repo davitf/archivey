@@ -58,11 +58,13 @@ of trying the open and catching the failure; see
 
 RAR reports `listing_cost=INDEXED`: the native parser builds the member table at
 open, before `members()` is called. RAR5 can carry a **Quick Open** record (`QO`) —
-a stored copy of the file headers at the tail, located from MAIN. When that record
-is present, stored, and unencrypted, listing reads it (same table extract uses).
-Otherwise there is no central directory: each header states its own size, so the
-parser walks header-to-header, seeks past every member's packed data, and open-time
-cost scales with member count. Once open, `members()` / `get()` return from the
+a stored copy of the file headers at the tail, located from MAIN. Forced `-qo+`
+QO is a complete catalog: listing reads it (same table extract uses). Default
+AUTO QO can cache only some members; archivey then lists that subset, fewer than
+`unrar`. Unreadable QO falls back to walking headers. With no usable QO there is
+no central directory: each header states its own size, so the parser walks
+header-to-header, seeks past every member's packed data, and open-time cost
+scales with member count. Once open, `members()` / `get()` return from the
 in-memory table at O(1) cost.
 
 ## Solid archives: prefer one forward pass

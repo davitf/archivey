@@ -12,7 +12,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | Read | Yes — metadata natively, member data through RARLAB `unrar` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
 | Source | Seekable only, in both access modes |
-| Listing cost | `INDEXED` — RAR5 with a usable `QO` reads that index; otherwise a header-to-header walk cached at open (§1) |
+| Listing cost | `INDEXED` — RAR5 with a complete `QO` (`-qo+`) reads that index; AUTO QO can omit members (§10 #20). Otherwise a header-to-header walk cached at open (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Member data needs the RARLAB `unrar` binary on `PATH` (§1) |
@@ -25,7 +25,9 @@ an ancient RARLAB build is accepted and then fails per member rather than at
 identification. §10 #7 is decided (enforce, once at identification; candidate floor 7.0)
 and not shipped. And nothing amortizes repeated random reads of a solid archive: there is
 no `unrar x` anywhere in `src/`, so every out-of-order solid `open()` is its own
-whole-archive decode (§2.3).
+whole-archive decode (§2.3). Default AUTO QO is a third: a RAR5 written with `rar a`
+(no `-qo+`) can list fewer members than `unrar`, because archivey treats QO as a catalog
+and UnRAR treats it as an overlay (§10 #20).
 
 ## 1. Shape
 
@@ -50,7 +52,7 @@ Several properties generate most of this page.
 | **marker** | — | The magic itself, and the only thing found by position. `Rar!\x1a\x07\x00` is the RAR3 family (7 bytes), `Rar!\x1a\x07\x01\x00` is RAR5 (8) |
 | **MAIN** | 1 | One per volume, immediately after the marker. Archive-wide flags — solid, volume, recovery — and, in RAR5, the **volume number** the parser checks the set against. It carries no member data, which is why identifying an archive means parsing this one block (§2.1) |
 | **FILE** | 2 | One per member, followed immediately by that member's packed bytes. Name, sizes, mtime, attributes, host OS, CRC32, compression info, and in RAR5 an *extra area* of typed records: the redirect (symlink/hardlink/copy), the hash, the file times, the per-file encryption record, the version number |
-| **SERVICE** | 3 | Same layout as FILE, but the payload is archive metadata rather than a member — comments (`CMT`), recovery records, NTFS streams, and the **quick-open record** (`QO`), a copy of the file headers written at the tail so a reader can list without walking. archivey reads `CMT`, and uses `QO` when MAIN's locator points at a stored unencrypted copy (§1) |
+| **SERVICE** | 3 | Same layout as FILE, but the payload is archive metadata rather than a member — comments (`CMT`), recovery records, NTFS streams, and the **quick-open record** (`QO`), copies of FILE headers at the tail. WinRAR default AUTO may copy a subset; `-qo+` copies all. archivey reads `CMT`, and uses QO when MAIN's locator points at a stored unencrypted copy (§1) |
 | **ENCRYPTION** | 4 | Present only in a header-encrypted RAR5, and *first* if so: the KDF count, salt and optional password-check value needed to decrypt every block after it. RAR3 has no equivalent block — it encrypts the header stream directly, which is why it has no check value and why a wrong password there is only visible as a structural failure |
 | **ENDARC** | 5 | Terminates the walk. Its flags say whether another volume follows, which is what a lone volume 1 is refused on (§2.2) |
 
@@ -114,25 +116,39 @@ records a volume number in MAIN and the parser checks the set against it, refusi
 headless set (`Need first volume`) or an out-of-order one; RAR3 records only a flag, so
 there the name really is the whole chain.
 
-**Listing is a walk unless RAR5 `QO` is present and usable.** With no `QO` (all RAR3/4;
-small RAR5; `-qo-`; header-encrypted RAR5) the parser starts at MAIN and visits each header
-in turn, using the declared packed size to seek over the data to the next one. That is
-O(members) seeks — the same shape `ListingCost.REQUIRES_SCANNING` names, which is what
-`tar_reader` reports for uncompressed tar. RAR still reports `INDEXED` because the table is
-cached at open.
+**Listing is a walk unless RAR5 `QO` is present and a complete catalog.** With no `QO`
+(all RAR3/4; small RAR5; `-qo-`; header-encrypted RAR5) the parser starts at MAIN and
+visits each header in turn, using the declared packed size to seek over the data to the
+next one. That is O(members) seeks — the same shape `ListingCost.REQUIRES_SCANNING` names,
+which is what `tar_reader` reports for uncompressed tar. RAR still reports `INDEXED`
+because the table is cached at open.
 
-**RAR5 `QO` is the index, used when it is there.** MAIN extra 0x01 (locator) stores the
-distance from MAIN to a tail SERVICE named `QO`. That payload is stored (method 0), not
-packed — no `unrar` / lzma. Each cache record is a CRC'd copy of a FILE header plus an
-offset back to the original header, so `data_offset` is `QOHeaderPos - Offset + header_size`.
+**RAR5 `QO` is an overlay in UnRAR, a catalog here.** MAIN extra 0x01 (locator) stores the
+distance from MAIN to a tail SERVICE named `QO`. UnRAR (`qopen.cpp`) treats the payload as
+stored bytes — it does not run the unpacker on QO — and overlays those copies onto later
+header reads (cache hit → cached bytes, miss → read the FILE). WinRAR's writer switch is
+`-qo-` none, `-qo+` force, default **AUTO** (`QOPEN_AUTO`). Forced QO is stored
+(`compress_type` 0x30, packed = unpacked) even at `-m3`/`-m5`; RAR 7.00 did not emit a
+packed QO. Each cache record is a CRC'd copy of a FILE header plus an offset back to the
+original header, so `data_offset` is `QOHeaderPos - Offset + header_size`.
+
 Measured on `rar a -qo+` (RAR 7.00): locator hits the QO SERVICE; every `RarMemberInfo`
 field `_to_member` and the stored-read path use matches the FILE walk, extras included
 (xtime, hash, redir, encryption, version, owner). `CMT` sits after MAIN and is read before
-the locator jump, so the archive comment is not dropped. Header-encrypted archives
-file-encrypt the QO payload and store IV+ciphertext header copies; reconstructed
-`data_offset` then misses AES padding, so those fall back to the walk. Unreadable QO
-(bad CRC, packed, split, encrypted, locator field 0) also falls back. The table `QO`
-filled is the table extract reads — same trust as ZIP's CDH. §6.
+the locator jump, so the archive comment is not dropped. Member `-p` encryption does not
+encrypt the QO SERVICE; the FILE copies still carry encryption extras, and listing uses
+that QO. Header-encrypted (`-hp`) archives put ENCRYPTION first, so the plaintext QO name
+is absent and we skip QO (`hdr_enc is not None`); even after decrypt the cached headers
+are IV+ciphertext and `data_offset` misses AES padding. Unreadable QO (bad CRC, packed,
+split, encrypted, locator field 0) also falls back.
+
+AUTO is not `-qo+`. `rar a -m0` (no `-qo`) wrote a 55-byte QO listing only `src/b.bin`;
+`rar a -m0 -qo+` wrote 148 bytes, all three members. UnRAR listed all three because QO is
+an overlay. archivey treats a trusted QO as the whole table and ignores later FILE
+headers (`listed_via_qo`), so the AUTO archive lists only `src/b.bin`. That is a listing
+bug versus UnRAR. §10 #20. The table a *complete* QO filled is the table extract reads —
+same trust as ZIP's CDH, which is why a partial AUTO cache must not be trusted that way.
+§6.
 
 **Two on-disk generations hide behind one magic.** `Rar!\x1a\x07\x00` is the RAR3 family —
 which is RAR 1.5, 2.x and 3.x, all one block layout, reported as `format_version == "4"` —
@@ -199,7 +215,10 @@ the part number — [`open-issues.md`](../open-issues.md) P17, shared with 7z an
 
 `rar_parser.py` builds the member table from RAR5 `QO` when a locator points at a stored
 unencrypted copy, otherwise by walking the block chain; no `unrar`, no `rarfile`.
-`reader.get()` and name lookup are served from that table.
+`reader.get()` and name lookup are served from that table. Once that QO is trusted,
+later FILE headers are skipped (`listed_via_qo`). That is correct for `-qo+` and wrong
+for default AUTO, which can cache a subset — UnRAR still lists the uncached FILE
+copies; archivey does not (§10 #20).
 
 **Volumes are resolved before parsing.** `name.partN.rar` (RAR5 and newer RAR4) and
 `name.rar` + `name.r00`, `name.r01`, … (older RAR4) are both discovered from any member of
@@ -555,6 +574,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_members=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ConcurrentAccessError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
 | A compressed RAR 1.5 / 2.x old-style comment is `None` without RARLAB `unrar` | **archivey** | Listing and stored old-style comments stay native; the proprietary compressed blob is decoded only when the optional binary is available (§2.2) |
+| `rar a` without `-qo+` lists fewer members than `unrar` | **archivey** | Default AUTO QO is a partial header cache. archivey treats a trusted QO as the catalog and skips later FILE headers, so members UnRAR still lists are dropped. Forced `-qo+` is complete. Packed QO and `-hp` already fall back. §10 #20 |
 | Opening a compressed member whose stored name has a glob in a directory component, or a backslash, raises `UnsupportedFeatureError` | **archivey** | The include-mask matcher over-matches directory globs against unrar 7.00, and Windows `unrar` treats `\` as a separator so a Linux literal-backslash name emits nothing. Basename globs without `\` still demux. Exact fidelity is §10 #18 |
 | Reading a glob-named member decompresses every earlier match, including on a nonsolid archive | **library** / **archivey** | `unrar -n./a*.txt` concatenates matches. `AccessCost.DIRECT` does not predict that; `_track_decompressed` records the bytes after the fact. Default-deny when that skip is nonzero is §10 #19 |
 
@@ -576,7 +596,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A RAR5 redirect surfaces no digest; RAR3/4's is kept | Keying on the storage shape rather than the member type keeps a genuine digest where one exists and drops a constant that describes nothing. The value dropped is exactly the one a de-duplicating caller would read | Keying on member type, which would have thrown away RAR3/4's real digest; surfacing `crc32(b"")` for symmetry |
 | Surface a link member's digest where the format stores one, and say what it covers | It is a real digest of the bytes the format stores for that member — which for a link is the target *string*, not the content it resolves to. ZIP and 7z store and surface exactly the same thing, so dropping RAR3/4's alone would buy consistency inside RAR at the cost of a worse one across formats. The fix for the misreading is documenting the field, not emptying it (§2.2) | Dropping link digests everywhere, which loses information ZIP and 7z genuinely store; keeping them and saying nothing, which leaves `hashes` implying content |
 | Commit the RAR corpus archives, pinned by a manifest | Otherwise the corpus's RAR column is a licensing decision and runs on Linux only, while the release headlines a native RAR reader | Installing the trialware writer on CI; reworking digest expectations for a platform dependence that measurement showed does not exist (ADR [0016](../decisions/0016-committed-rar-corpus-fixtures.md)) |
-| Use stored unencrypted RAR5 `QO` as the member table when MAIN's locator points at it; walk otherwise | Same trust as ZIP's CDH: listing and extract share one table. Header-encrypted / packed / CRC-bad QO cannot reconstruct `data_offset` the FILE walk would, so those fall back rather than mix tables | Validating QO against the FILE walk (pays the seeks QO exists to avoid) |
+| Use stored unencrypted RAR5 `QO` as the member table when MAIN's locator points at it; walk otherwise | Same trust as ZIP's CDH when QO is a complete catalog (`-qo+`). Packed QO is not something the writer emits (stored even at `-m5`); wrapping QO for `unrar` at list time would violate listing-without-unrar. `-hp` still falls back: `data_offset` is wrong even after decrypt. Residual: AUTO-as-catalog drops members UnRAR lists (§10 #20) | Validating QO against the FILE walk (pays the seeks QO exists to avoid); treating AUTO QO as an overlay (the UnRAR model) |
 
 ## 7. Open questions
 
@@ -625,6 +645,11 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   corrupt encrypted members. That is a reasonable prior and it is untested: no archive has
   turned up in our corpora where a genuinely corrupt encrypted member produced this shape, so
   the cost of the mislabel is unknown.
+- **When does AUTO include which FILE copies?** One three-member stored archive
+  (`rar a -m0`, no `-qo`) cached 1 of 3; a 50-file stored set cached all 50. The
+  heuristic is in the WinRAR writer (`QOPEN_AUTO`), not in UnRAR's overlay. Closing
+  §10 #20 without answering this either treats every AUTO QO as untrusted (always
+  walk) or ports the overlay.
 
 ## 8. Verify
 
@@ -677,6 +702,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
 | Listing without QO is a header-to-header walk; with QO it is not one-seek-per-member (§1) | `::test_listing_without_qo_walks_header_to_header`, `::test_listing_with_qo_does_not_seek_per_member`, `::test_listing_qo_skip_count_does_not_scale_with_member_count` |
 | QO listing serves stored reads and keeps the archive comment; unreadable QO falls back to the walk | `::test_qo_listing_stored_read_and_comment`, `::test_unreadable_qo_falls_back_to_file_walk` |
+| AUTO QO can drop members UnRAR lists; existing QO pins all use `-qo+` | unpinned — live `rar a -m0` without `-qo+`. Do not add a failing test until #20 |
 | Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |
 | RAR5/RAR3 `accessed`/`created` from the time extra, and `None` when the extra or slot is absent | `::test_rar5_xtime_fixture_surfaces_accessed_and_created`, `::test_rar4_xtime_fixture_surfaces_accessed_and_created`, `::test_xtime_absent_accessed_created_are_none`, `::test_parse_rar5_xtime_keeps_ctime_and_atime_with_ns`, `::test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime` |
 | RAR3 compressed-name decode fails closed on overrun; long RLE stays bounded (§4) | `::test_rar3_compressed_name_decode_is_bounded`, `::test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present`, `::test_rar3_rle_name_may_be_longer_than_encdata`, `::test_rar3_rle_name_zero_correction_keeps_hi_byte`, `::test_rar3_unicode_name_decode_matches_reference_and_stays_bounded` |
@@ -781,6 +807,7 @@ transient execute failures not cached.
 | 17 | **`.cbr` is not a registered extension.** Magic detection still works, so only extension-based detection loses. **Decided: register it.** Same call for ZIP: register `.cbz` (ZIP today has `.zip` `.jar` `.pyz` `.whl` `.apk`, no comic-book alias) | Product call, recorded | — |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
 | 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
+| 20 | **Do not treat AUTO QO as a complete catalog.** Fall back to the FILE walk when QO is a partial cache, or overlay like UnRAR (cache hit → QO, miss → FILE). Measured 2026-09-05, RAR 7.00: `rar a -m0` listed 1/3 members; `unrar` listed 3/3. Packed QO and `-hp` stay fallback (writer does not pack; `-hp` offset math is wrong even after decrypt). Do not wrap QO for `unrar` at list time | #5 shipped the ZIP-CD trust model. AUTO is the residual that makes that model drop members | §1, §2.2, §5 |
 
 **On the name for item 9 — decided: plain `RAR`.** `ContainerFormat.RAR` and
 `CompressionAlgorithm.RAR` are *homonyms* (container vs codec sharing a vendor name),
