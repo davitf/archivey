@@ -52,7 +52,15 @@ timestamps, mode, flags, solid state, RAR5 redirect (`file_redir`) records,
 encryption flags, and integrity hashes. Listing SHALL not import `rarfile` or
 invoke `unrar`. Extract version ≤ 20 MUST NOT by itself cause rejection: those
 archives share the same header block layout the parser already understands, and
-member data remains RARLAB `unrar`'s responsibility.
+member data remains RARLAB `unrar`'s responsibility. When a RAR5 MAIN locator
+points at a stored, unencrypted `QO` SERVICE, the parser SHALL parse those
+FILE copies, seek back to after MAIN, and walk. FILE headers whose offsets
+appear in `QO` SHALL be emitted from the copies and skipped; FILE headers
+`QO` omitted SHALL still be parsed. `CMT` after MAIN SHALL be consumed as a
+normal SERVICE on that walk. Extract SHALL use the same table. Otherwise the
+parser SHALL walk FILE headers. A `QO` that is missing, packed, split,
+encrypted, CRC-invalid, or behind header encryption SHALL fall back to the
+walk.
 
 #### Scenario: native header matrix
 
@@ -62,6 +70,8 @@ member data remains RARLAB `unrar`'s responsibility.
 | Open RAR3/RAR4 archive whose members advertise extract version 20 | Listing and reads succeed (stored/small members often carry `unp_ver=20`) |
 | Open RAR4 archive | Members and metadata come from native headers |
 | Open RAR5 archive | Members, flags, hashes, and redirect metadata come from native headers |
+| Open RAR5 with a stored unencrypted `QO` reachable from MAIN's locator | FILE headers in `QO` are emitted from the copies and skipped on the walk; omitted FILE headers and `CMT` after MAIN are parsed |
+| Open RAR5 with no `QO`, locator offset 0, packed/encrypted/`QO` CRC failure, or header encryption | Member table is filled by the FILE-header walk |
 | `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
 | Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
 

@@ -34,6 +34,7 @@ from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
+    RarArchive,
     RarMemberInfo,
     _decode_rar3_unicode_name,
     load_vint,
@@ -2353,6 +2354,34 @@ def test_rar5_header_size_vint_is_bounded() -> None:
     assert time.perf_counter() - start < 1.0
 
 
+@pytest.mark.timeout(5)
+def test_rar5_qo_non_file_records_parse_in_linear_time() -> None:
+    """Non-FILE QO records (2 MiB of SERVICE copies) parse under the timeout."""
+    from archivey.internal.backends import rar_parser
+
+    hdr = bytes([2, 3, 0])  # hdrlen=2, type=SERVICE, flags=0
+    cached = zlib.crc32(hdr).to_bytes(4, "little") + hdr
+    qbody = bytes([0, 1, len(cached)]) + cached
+    size = bytes([len(qbody)])
+    rec = zlib.crc32(size + qbody).to_bytes(4, "little") + size + qbody
+    payload = rec * (2 * 1024 * 1024 // len(rec))
+    result = rar_parser._parse_rar5_qo_payload(payload, 10**9, 0)
+    assert result is None
+
+
+def test_qo_overlapping_spans_are_rejected() -> None:
+    """Inconsistent QO spans must not be trusted for the skip-walk."""
+    from types import SimpleNamespace
+
+    from archivey.internal.backends.rar_parser import _qo_spans_consistent
+
+    first = SimpleNamespace(header_offset=100, data_offset=150, compress_size=80)
+    second = SimpleNamespace(header_offset=200, data_offset=220, compress_size=10)
+    assert not _qo_spans_consistent([first, second], min_offset=100, qopen_abs=400)
+    ok = SimpleNamespace(header_offset=230, data_offset=250, compress_size=10)
+    assert _qo_spans_consistent([first, ok], min_offset=100, qopen_abs=400)
+
+
 def test_load_vint_single_and_multi_byte() -> None:
     """RAR5 vint decode: single-byte hot path and multi-byte continuation agree."""
     assert load_vint(b"\x00", 0) == (0, 1)
@@ -2756,16 +2785,8 @@ def test_open_unrar_p_missing_stdout_pipe_is_typed(
     assert proc.killed is True
 
 
-def test_listing_walks_header_to_header_rather_than_reading_an_index(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """formats/rar.md §1: listing seeks once per member; there is no index region.
-
-    Pinned as a *shape* (seeks scale with member count), not an exact count, because
-    the point is the scaling: ZIP reads one contiguous central directory in a constant
-    number of seeks whatever the member count. If RAR ever learns to read the ``QO``
-    quick-open record (§10 #5) this stops being true and the page must change with it.
-    """
+def _count_packed_skips(path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
+    """Return ``(skip_count, member_count)`` for one ``parse_rar_archive`` call."""
     from archivey.internal.backends import rar_parser
 
     skips = 0
@@ -2777,20 +2798,404 @@ def test_listing_walks_header_to_header_rather_than_reading_an_index(
         return original(source, data_offset, add_size)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_parser, "_seek_after_packed", counting)
+    try:
+        with path.open("rb") as handle:
+            archive = rar_parser.parse_rar_archive(handle)
+        return skips, len(archive.members)
+    finally:
+        monkeypatch.setattr(rar_parser, "_seek_after_packed", original)
 
-    small = _fixture("basic_nonsolid__.rar")
-    with small.open("rb") as handle:
-        archive = rar_parser.parse_rar_archive(handle)
-    assert skips >= len(archive.members), (
-        f"{skips} data skips for {len(archive.members)} members — expected at least one "
+
+def _rar_a(
+    tmp_path: Path, name: str, files: dict[str, bytes], extra: list[str]
+) -> Path:
+    src = tmp_path / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    names: list[str] = []
+    for rel, content in files.items():
+        p = src / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(content)
+        names.append(rel)
+    out = tmp_path / name
+    result = subprocess.run(
+        ["rar", "a", "-idq", "-ep1", *extra, str(out), *names],
+        cwd=src,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0 or not out.is_file():
+        pytest.skip(f"rar cannot build {name}: {result.stderr!r}")
+    return out
+
+
+def test_listing_without_qo_walks_header_to_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """formats/rar.md §1: no QO → listing seeks once per member (walk)."""
+    small_skips, small_n = _count_packed_skips(
+        _fixture("basic_nonsolid__.rar"), monkeypatch
+    )
+    assert small_skips >= small_n, (
+        f"{small_skips} data skips for {small_n} members — expected at least one "
         "per member, i.e. a header-to-header walk"
     )
+    large_skips, large_n = _count_packed_skips(
+        _fixture("many_list_store__.rar"), monkeypatch
+    )
+    assert large_n > 10 * small_n
+    assert large_skips > 10 * small_skips
 
-    # And it scales: a 1000-member archive costs proportionally more, not a constant.
-    small_skips = skips
-    skips = 0
-    large = _fixture("many_list_store__.rar")
-    with large.open("rb") as handle:
-        large_archive = rar_parser.parse_rar_archive(handle)
-    assert len(large_archive.members) > 10 * len(archive.members)
-    assert skips > 10 * small_skips
+
+def test_listing_with_qo_does_not_seek_per_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """formats/rar.md §1: QO present → skips do not scale with member count."""
+    corpus = Path(__file__).parent / "fixtures" / "corpus" / "rar" / "large.rar"
+    if not corpus.is_file():
+        pytest.skip("missing corpus large.rar")
+    skips, n = _count_packed_skips(corpus, monkeypatch)
+    assert n >= 1
+    # MAIN + QO (+ optional CMT/RR). A FILE walk would also skip each packed
+    # member, so the count would be at least n plus those few service seeks.
+    assert skips < n + 2, (
+        f"{skips} packed skips for {n} members — QO listing should not seek "
+        "once per FILE"
+    )
+    assert skips <= 6
+
+
+@requires_binary("rar")
+def test_listing_qo_skip_count_does_not_scale_with_member_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    small_files = {f"s{i:02d}.txt": f"s{i}\n".encode() for i in range(8)}
+    large_files = {f"n{i:03d}.txt": f"n{i}\n".encode() for i in range(40)}
+    small = _rar_a(tmp_path / "small", "small.rar", small_files, ["-m0", "-qo+"])
+    large = _rar_a(tmp_path / "large", "large.rar", large_files, ["-m0", "-qo+"])
+    small_skips, small_n = _count_packed_skips(small, monkeypatch)
+    large_skips, large_n = _count_packed_skips(large, monkeypatch)
+    assert small_n == 8
+    assert large_n == 40
+    assert small_skips < small_n
+    assert large_skips < large_n
+    # Same O(1) shape: 40 members must not cost ~5× the 8-member archive.
+    assert large_skips < small_skips * 2 + 3
+
+
+@requires_binary("rar")
+def test_qo_listing_stored_read_and_comment(tmp_path: Path) -> None:
+    """QO table is what extract reads: stored slice + archive comment still work."""
+    cmt = tmp_path / "cmt.txt"
+    cmt.write_text("hello-comment\n", encoding="utf-8")
+    files = {
+        "a.txt": b"alpha-payload\n",
+        "b.bin": b"\x00\x01\x02" * 10,
+        "c.txt": b"nested\n",
+    }
+    archive_path = _rar_a(
+        tmp_path / "qo",
+        "qo.rar",
+        files,
+        ["-m0", "-qo+", f"-z{cmt}"],
+    )
+    with open_archive(archive_path) as archive:
+        assert archive.info.comment == "hello-comment\n"
+        listed = {m.name: m for m in archive.members() if m.is_file}
+        assert set(listed) == set(files)
+        for name, expected in files.items():
+            assert archive.read(listed[name]) == expected
+
+
+@requires_binary("rar")
+def test_unreadable_qo_falls_back_to_file_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.internal.backends import rar_parser
+
+    files = {f"f{i}.txt": f"body-{i}\n".encode() for i in range(5)}
+    archive_path = _rar_a(tmp_path / "fb", "fb.rar", files, ["-m0", "-qo+"])
+    data = bytearray(archive_path.read_bytes())
+    payload_at = _rar5_qo_data_offset(archive_path)
+    data[payload_at + 8] ^= 0xFF
+    broken = tmp_path / "broken.rar"
+    broken.write_bytes(data)
+    calls: list[object] = []
+    original = rar_parser._parse_rar5_qo_payload
+
+    def wrapping(*args: object, **kwargs: object) -> object:
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rar_parser, "_parse_rar5_qo_payload", wrapping)
+    with open_archive(broken) as archive:
+        listed = {m.name for m in archive.members() if m.is_file}
+        assert listed == set(files)
+        assert archive.read("f0.txt") == b"body-0\n"
+    assert calls, "QO payload was never reached — the flip hit the header"
+
+
+@requires_binary("rar")
+def test_auto_qo_lists_small_files_omitted_from_cache(tmp_path: Path) -> None:
+    """WinRAR AUTO QO caches large files only; local FILE headers still list."""
+    files = {
+        "tiny.txt": b"t" * 240,
+        "large.bin": b"L" * 10240,
+    }
+    archive_path = _rar_a(tmp_path / "auto", "auto.rar", files, ["-m0"])
+    qo_names = _qo_cached_filenames(archive_path)
+    assert "tiny.txt" not in qo_names, f"AUTO cached {qo_names}; skip-walk untested"
+    assert "large.bin" in qo_names
+    with open_archive(archive_path) as archive:
+        listed = {m.name for m in archive.members() if m.is_file}
+        assert listed == set(files)
+        assert archive.read("tiny.txt") == files["tiny.txt"]
+        assert archive.read("large.bin") == files["large.bin"]
+
+
+def _rar5_block_ranges(path: Path) -> list[tuple[int, int, int]]:
+    """Return ``(block_type, header_offset, packed_end)`` for each RAR5 block."""
+    from archivey.internal.backends import rar_parser
+
+    ranges: list[tuple[int, int, int]] = []
+    with path.open("rb") as source:
+        assert source.read(len(RAR5_ID)) == RAR5_ID
+        while True:
+            parsed = rar_parser._read_rar5_block(source)
+            if parsed is None:
+                break
+            (
+                block_type,
+                _flags,
+                _hdata,
+                _pos,
+                header_offset,
+                _header_size,
+                data_offset,
+                add_size,
+                _extra_size,
+            ) = parsed
+            ranges.append((block_type, header_offset, data_offset + add_size))
+            if block_type == rar_parser._RAR5_ENDARC:
+                break
+            rar_parser._seek_after_packed(source, data_offset, add_size)
+    return ranges
+
+
+def _rar5_qo_data_offset(path: Path) -> int:
+    """Packed-data start of the QO SERVICE, or raise if none."""
+    from archivey.internal.backends import rar_parser
+
+    with path.open("rb") as source:
+        assert source.read(len(RAR5_ID)) == RAR5_ID
+        while True:
+            parsed = rar_parser._read_rar5_block(source)
+            if parsed is None:
+                break
+            (
+                block_type,
+                block_flags,
+                hdata,
+                pos,
+                header_offset,
+                header_size,
+                data_offset,
+                add_size,
+                extra_size,
+            ) = parsed
+            if block_type == rar_parser._RAR5_SERVICE:
+                member = rar_parser._parse_rar5_file_block(
+                    hdata,
+                    pos,
+                    block_flags=block_flags,
+                    extra_size=extra_size,
+                    header_offset=header_offset,
+                    header_size=header_size,
+                    data_offset=data_offset,
+                    add_size=add_size,
+                    volume_index=0,
+                )
+                if member.filename == rar_parser._RAR5_QO_NAME:
+                    return data_offset
+            if block_type == rar_parser._RAR5_ENDARC:
+                break
+            rar_parser._seek_after_packed(source, data_offset, add_size)
+    raise AssertionError("no QO SERVICE")
+
+
+def _qo_cached_filenames(path: Path) -> set[str]:
+    """Filenames stored in QO (not the local FILE headers AUTO omitted)."""
+    from archivey.internal.backends import rar_parser
+
+    with path.open("rb") as source:
+        assert source.read(len(RAR5_ID)) == RAR5_ID
+        parsed = rar_parser._read_rar5_block(source)
+        assert parsed is not None
+        (
+            block_type,
+            _flags,
+            hdata,
+            _pos,
+            header_offset,
+            _header_size,
+            data_offset,
+            add_size,
+            extra_size,
+        ) = parsed
+        assert block_type == rar_parser._RAR5_MAIN
+        qopen = rar_parser._rar5_locator_qopen_abs(hdata, extra_size, header_offset)
+        assert qopen is not None
+        rar_parser._seek_after_packed(source, data_offset, add_size)
+        listed = rar_parser._try_list_via_rar5_qo(
+            source,
+            qopen_abs=qopen,
+            volume_index=0,
+            min_file_offset=source.tell(),
+        )
+        assert listed is not None
+        members, _end = listed
+        return {m.filename for m in members}
+
+
+def _listing_snapshot(archive: RarArchive) -> tuple[object, ...]:
+    return (
+        archive.version,
+        archive.is_solid,
+        archive.has_header_encryption,
+        archive.comment,
+        archive.sfx_offset,
+        archive.is_volume,
+        archive.needs_next_volume,
+        tuple(dataclasses.asdict(m) for m in archive.members),
+    )
+
+
+def _assert_qo_walk_parity(path: Path, *, password: str | bytes | None = None) -> None:
+    """QO listing and the FILE-header walk must produce identical member tables."""
+    assert _qo_cached_filenames(path), (
+        f"{path} has no QO table — comparison is walk vs walk"
+    )
+    with path.open("rb") as handle:
+        via_qo = parse_rar_archive(handle, password=password, use_qo=True)
+    with path.open("rb") as handle:
+        via_walk = parse_rar_archive(handle, password=password, use_qo=False)
+    assert _listing_snapshot(via_qo) == _listing_snapshot(via_walk)
+
+
+def test_qo_listing_matches_file_walk_on_corpus() -> None:
+    """formats/rar.md §10 #5: committed QO archive matches the FILE walk."""
+    corpus = Path(__file__).parent / "fixtures" / "corpus" / "rar" / "large.rar"
+    if not corpus.is_file():
+        pytest.skip("missing corpus large.rar")
+    _assert_qo_walk_parity(corpus)
+
+
+@requires_binary("rar")
+@pytest.mark.parametrize(
+    ("files", "extra"),
+    [
+        ({"a.txt": b"alpha\n", "b.bin": b"B" * 64}, ["-m0", "-qo+"]),
+        ({"tiny.txt": b"t" * 240, "large.bin": b"L" * 10240}, ["-m0"]),
+        ({"s.txt": b"solid\n", "t.txt": b"two\n"}, ["-m3", "-s", "-qo+"]),
+        ({"e.txt": b"secret\n"}, ["-m0", "-qo+", "-ppw"]),
+        ({"x.txt": b"stamp\n"}, ["-m0", "-qo+", "-ts+"]),
+        ({"empty.txt": b"", "dir/nested.txt": b"n\n"}, ["-m0", "-qo+"]),
+    ],
+    ids=["qo+", "auto", "solid", "member-encrypted", "xtime", "empty-and-nested"],
+)
+def test_qo_listing_matches_file_walk_live(
+    tmp_path: Path, files: dict[str, bytes], extra: list[str]
+) -> None:
+    archive_path = _rar_a(tmp_path / "parity", "parity.rar", files, extra)
+    _assert_qo_walk_parity(archive_path)
+
+
+@requires_binary("rar")
+def test_qo_listing_matches_file_walk_with_comment(tmp_path: Path) -> None:
+    cmt = tmp_path / "cmt.txt"
+    cmt.write_text("hello-comment\n", encoding="utf-8")
+    archive_path = _rar_a(
+        tmp_path / "cmt",
+        "cmt.rar",
+        {"a.txt": b"alpha\n"},
+        ["-m0", "-qo+", f"-z{cmt}"],
+    )
+    _assert_qo_walk_parity(archive_path)
+
+
+@requires_binary("rar")
+def test_rar_a_rewrites_qo_and_lists_the_new_member(tmp_path: Path) -> None:
+    """``rar a`` rewrites QO at a new tail; the added member is not FILE-after-QO."""
+    from archivey.internal.backends import rar_parser
+
+    first = {"a.txt": b"alpha\n"}
+    archive_path = _rar_a(tmp_path / "incr", "incr.rar", first, ["-m0", "-qo+"])
+    src = tmp_path / "incr" / "src"
+    (src / "b.txt").write_bytes(b"beta\n")
+    result = subprocess.run(
+        ["rar", "a", "-idq", "-ep1", "-m0", "-qo+", str(archive_path), "b.txt"],
+        cwd=src,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"rar cannot add: {result.stderr!r}")
+
+    ranges = _rar5_block_ranges(archive_path)
+    file_starts = [h for t, h, _ in ranges if t == rar_parser._RAR5_FILE]
+    service_starts = [h for t, h, _ in ranges if t == rar_parser._RAR5_SERVICE]
+    assert file_starts
+    assert service_starts
+    assert max(file_starts) < min(service_starts)
+
+    data = archive_path.read_bytes()
+    qo_at = data.rfind(b"QO")
+    assert qo_at != -1
+    assert data.find(b"b.txt", qo_at) != -1
+
+    with open_archive(archive_path) as archive:
+        listed = {m.name for m in archive.members() if m.is_file}
+        assert listed == {"a.txt", "b.txt"}
+        assert archive.read("a.txt") == b"alpha\n"
+        assert archive.read("b.txt") == b"beta\n"
+    _assert_qo_walk_parity(archive_path)
+
+
+@requires_binary("rar")
+def test_file_header_after_qo_is_still_listed(tmp_path: Path) -> None:
+    """A FILE after QO (crafted; not the ``rar a`` path) is adopted, not dropped."""
+    from archivey.internal.backends import rar_parser
+
+    host = _rar_a(tmp_path / "host", "host.rar", {"a.txt": b"alpha\n"}, ["-m0", "-qo+"])
+    donor = _rar_a(
+        tmp_path / "donor", "donor.rar", {"b.txt": b"beta\n"}, ["-m0", "-qo-"]
+    )
+    donor_ranges = _rar5_block_ranges(donor)
+    file_range = next(
+        (h, end) for t, h, end in donor_ranges if t == rar_parser._RAR5_FILE
+    )
+    host_ranges = _rar5_block_ranges(host)
+    endarc_at = next(h for t, h, _ in host_ranges if t == rar_parser._RAR5_ENDARC)
+    spliced = tmp_path / "spliced.rar"
+    host_bytes = host.read_bytes()
+    donor_bytes = donor.read_bytes()
+    spliced.write_bytes(
+        host_bytes[:endarc_at]
+        + donor_bytes[file_range[0] : file_range[1]]
+        + host_bytes[endarc_at:]
+    )
+    file_starts = [
+        h for t, h, _ in _rar5_block_ranges(spliced) if t == rar_parser._RAR5_FILE
+    ]
+    service_starts = [
+        h for t, h, _ in _rar5_block_ranges(spliced) if t == rar_parser._RAR5_SERVICE
+    ]
+    assert file_starts[-1] > service_starts[0]
+
+    with open_archive(spliced) as archive:
+        listed = {m.name for m in archive.members() if m.is_file}
+        assert listed == {"a.txt", "b.txt"}
+        assert archive.read("a.txt") == b"alpha\n"
+        assert archive.read("b.txt") == b"beta\n"

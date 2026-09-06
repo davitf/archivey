@@ -56,13 +56,17 @@ of trying the open and catching the failure; see
 
 ### RAR listing cost
 
-RAR reports `listing_cost=INDEXED`: the native parser walks all file headers at open
-time and builds the member table in memory before `members()` is called. There is no
-central directory — each header states its own size, so the walk seeks past every
-member's packed data and the open-time cost scales with member count. RAR5 can carry
-an optional **Quick Open** record (a copy of the file headers at the tail), but
-archivey currently skips it; listing always does that header-to-header walk. Once
-open, `members()` / `get()` return from the in-memory table at O(1) cost.
+RAR reports `listing_cost=INDEXED`: the native parser builds the member table at
+open, before `members()` is called. RAR5 can carry a **Quick Open** record (`QO`) —
+copies of FILE headers stored after the members, with a pointer from MAIN. Listing
+reads QO first, seeks back to after MAIN, and skips FILE headers already in QO.
+Default WinRAR AUTO may omit small files from QO; those still list from their
+local headers. `-qo+` copies every header, so that skip is one seek to QO.
+Unreadable QO falls back to walking every FILE header. With no usable QO there is no central
+directory: each header states its own size, so the parser walks header-to-header,
+seeks past every member's packed data, and open-time cost scales with member
+count. Once open, `members()` / `get()` return from the in-memory table at O(1)
+cost.
 
 ## Solid archives: prefer one forward pass
 

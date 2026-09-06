@@ -25,6 +25,8 @@ when members are registered into a materialized / resolved list (`members()`,
 `stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
 hatch). Format-local parser bounds (e.g. 7z `num_files` vs header size →
 `CorruptionError`; RAR member-count ceiling at parse) stay as defense-in-depth.
+RAR5 QO records that are not FILE never reach `_append_member`; their bound is
+`_RAR5_QO_PAYLOAD_MAX` (16 MiB), and parse of that payload is linear (PR #311).
 Indexed formats (7z/RAR) may still allocate up to those parser ceilings during
 `open_archive()` before spine listing caps apply. `max_metadata_bytes` budgets
 *retained* member metadata; it does not see a transient decode buffer discarded
