@@ -597,6 +597,7 @@ class RarReader(BaseArchiveReader):
         self._owned_concat: ConcatenatedFile | None = None
         self._archive_path: Path | None = None
         self._volume_paths: list[Path] = []
+        self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
 
         if is_stream(source) and not is_seekable(source):
             raise StreamNotSeekableError(
@@ -606,21 +607,21 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
             )
 
-        # Where the RAR proper starts inside `source`: detection's payload_offset for a
-        # self-extracting file, 0 otherwise. The parser would find the same magic by
-        # scanning, so this is not what makes SFX work — it makes the parse start at the
-        # offset detection already paid for, and it pins the answer: bytes before the
-        # origin are not part of this archive, so a stub carrying its own `Rar!\x1a\x07`
-        # cannot be picked up instead of the real payload.
+        # Where the RAR proper starts inside ``source``: detection's payload_offset
+        # for a self-extracting file, 0 otherwise. Detection validates the main
+        # header at that offset; the parser's own ``_find_sfx_header`` takes the
+        # first raw magic hit, so a stub carrying ``Rar!\x1a\x07`` would win if we
+        # re-scanned. Pin volume 1 to the validated origin. ConcatenatedFile +
+        # parser ``tell()`` offsets are file-absolute (each volume contributes its
+        # full size, stub included), so stored reads must not also shift by
+        # ``_origin`` — that is why a discovered multi-volume set zeroes it after
+        # copying it to ``_volume0_parse_origin``.
         self._origin = start_offset
         self._shared = self._open_shared_source(source)
+        self._volume0_parse_origin = 0
         if self._origin and len(self._volume_paths) > 1:
-            raise UnsupportedFeatureError(
-                "A start offset cannot be combined with a multi-volume RAR set: the "
-                "offset describes one file, and the volumes are separate ones.",
-                archive_name=archive_name,
-                source_format=ArchiveFormat.RAR,
-            )
+            self._volume0_parse_origin = self._origin
+            self._origin = 0
         self._archive, self._unrar_password = self._parse_archive()
         if self._archive.is_volume or self._volume_count > 1:
             self._volume_count = max(self._volume_count, len(self._volume_paths) or 1)
@@ -690,8 +691,11 @@ class RarReader(BaseArchiveReader):
             if len(self._volume_paths) > 1:
                 handles: list[BinaryIO] = []
                 try:
-                    for path in self._volume_paths:
-                        handles.append(path.open("rb"))
+                    for index, path in enumerate(self._volume_paths):
+                        handle = path.open("rb")
+                        if index == 0 and self._volume0_parse_origin:
+                            handle.seek(self._volume0_parse_origin)
+                        handles.append(handle)
                     return parse_rar_volumes(handles, password=password)
                 finally:
                     for handle in handles:

@@ -91,6 +91,7 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     source_name,
 )
+from archivey.internal.volumes import first_volume_for_stub
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
@@ -502,6 +503,7 @@ def detect_format(
     config: ArchiveyConfig | None = None,
     collector: DiagnosticCollector | None = None,
     budget: DetectionBudget | DetectionBudgetPreset | None = None,
+    follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
 
@@ -515,6 +517,11 @@ def detect_format(
     ``budget`` caps what detection may spend; the default is
     :data:`~archivey.detection_cost.BALANCED_BUDGET` (import from
     ``archivey.detection_cost`` — not yet re-exported at the package root).
+
+    A stub-only ``.exe`` / ``.sfx`` (no archive magic) beside a 7-Zip split first
+    volume is detected as that volume's format when ``follow_stub_volumes`` is true
+    — the default, so ``detect_format("vol.exe")`` agrees with ``open_archive``.
+    ``open_archive`` probes with this flag off, then switches the source itself.
     """
     owned_collector = collector is None
     if owned_collector:
@@ -524,13 +531,28 @@ def detect_format(
     else:
         detection_wm = collector.watermark()
 
-    info = _detect_format_body(source, collector, _resolve_budget(budget))
+    resolved_budget = _resolve_budget(budget)
+    try:
+        info = _detect_format_body(source, collector, resolved_budget)
+    except FormatDetectionError:
+        alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
+        if alt is None:
+            raise
+        info = _detect_format_body(alt, collector, resolved_budget)
     diagnostics = (
         collector.snapshot()
         if owned_collector
         else collector.snapshot(since=detection_wm)
     )
     return replace(info, diagnostics=diagnostics)
+
+
+def _first_volume_beside_stub(source: str | Path | BinaryIO) -> Path | None:
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if path.is_file():
+            return first_volume_for_stub(path)
+    return None
 
 
 def _attach_receipt(info: FormatInfo, workspace: PrefixWorkspace) -> FormatInfo:

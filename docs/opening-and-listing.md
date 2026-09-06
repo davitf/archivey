@@ -91,14 +91,23 @@ finds the rest**, in the naming schemes those tools produce:
 
 | Scheme | Give it |
 |---|---|
-| `backup.7z.001`, `.002`, … | Any part |
-| `backup.part1.rar`, `.part2.rar`, … | Any part |
-| `backup.rar` + `backup.r00`, `.r01`, … | The `.rar`, or any `.rNN` |
+| `backup.7z.001` / `backup.exe.001` / `backup.zip.001`, `.002`, … | Any numbered part, or the stub `backup.exe` |
+| `backup.part1.rar` / `backup.part1.sfx`, `.part2.rar`, … | Any part |
+| `backup.rar` / `backup.exe` / `backup.sfx` + `backup.r00`, `.r01`, … | The `.rar`, the SFX stub, or any `.rNN` |
 
 A 7z set is checked for completeness, so a missing middle part is an error rather
-than a silent short read. The old RAR scheme needs its `.rar` present either way: that
-file is volume one, so a `.rNN` on its own is read as a lone file rather than as part
-of a set.
+than a silent short read. The stub executable beside an SFX numbered set is not
+concatenated into the volumes; opening it follows the first volume
+(`backup.exe.001`, `backup.7z.001`, or `backup.zip.001`) so the same path works
+for Linux 7-Zip and Windows 7-Zip, including when you pass `format=` after
+`detect_format`. A file that *is* a self-extracting archive
+(magic behind the stub) still opens as that archive, even if numbered parts sit
+beside it.
+The old RAR scheme needs a first volume either way: `<base>.rar`, or an SFX
+`<base>.exe` / `<base>.sfx` beside the `.rNN` files. A `.rNN` on its own is read
+as a lone file rather than as part of a set. A lone numbered part
+(`.7z.001` / `.zip.001` / `.exe.001` with no siblings) is an incomplete set,
+not a silent mis-parse.
 
 You can also pass the volumes yourself, as an ordered sequence of paths or open
 streams — useful when they are not siblings on disk, or not on disk at all. Do that

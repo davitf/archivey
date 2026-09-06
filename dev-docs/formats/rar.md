@@ -208,17 +208,23 @@ residue is the two-needle choice above, the CRC-checked validator, and the fact 
 `SFX_MAX` is shared with `rar_parser`'s *own* stub scan so the parser and the detector
 cannot disagree about how far to look.
 
-A self-extracting **and** split RAR set (`rv.part1.sfx`, `rv.part2.rar`, …) is readable from
-none of its files, because sibling discovery wants the archive extension immediately before
-the part number — [`open-issues.md`](../open-issues.md) P17, shared with 7z and ZIP.
+A self-extracting **and** split RAR set (`rv.part1.sfx`, `rv.part2.rar`, …) is joined
+from any part — the `.sfx` (or `.exe`) first volume shares the `partN` stem with later
+`.rar` volumes. 7-Zip's stub-only `vol.exe` (no archive magic) follows the split first
+volume beside it, including under `format=`. An old-scheme SFX first volume (`name.exe` /
+`name.sfx` beside `.r00`) is discovered the same way as `name.rar` + `.r00` — prefer
+`.rar` when both exist. A 7-Zip numbered split (`vol.exe` + `vol.exe.001`, no `.r00`)
+is still not an old-scheme set; stub-follow owns that shape.
 
 ### 2.2 Open and list
 
 `rar_parser.py` walks the block chain and builds the member table; no `unrar`, no `rarfile`.
 `reader.get()` and name lookup are served from that table.
 
-**Volumes are resolved before parsing.** `name.partN.rar` (RAR5 and newer RAR4) and
-`name.rar` + `name.r00`, `name.r01`, … (older RAR4) are both discovered from any member of
+**Volumes are resolved before parsing.** `name.partN.rar` (RAR5 and newer RAR4), an SFX
+first volume `name.part1.sfx` / `name.part1.exe` beside later `.partN.rar` parts, and
+`name.rar` (or an old-scheme SFX `name.exe` / `name.sfx`) + `name.r00`, `name.r01`, …
+(older RAR4) are all discovered from any member of
 the set — the old scheme through a two-digit pattern, so a set that runs past `.r99` (WinRAR
 continues `.s00`, `.s01`, …) is not discovered at all — and headers are read across the volumes in order with split members stitched into
 one logical member. `ArchiveInfo.is_multivolume` is `True` and
@@ -564,7 +570,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Reading one member of a solid archive out of order decodes the whole archive, and doing it twice decodes it twice | **format** / **archivey** | No per-block boundaries to resume from (§1), and nothing caches the decode (§2.4). `AccessCost.SOLID` is the signal |
 | Handing over **any non-path stream** — a `BytesIO`, a file object, a network-backed reader — writes a full-size copy of the archive to `/tmp`, with nothing in `diagnostics` or `cost.notes` | **archivey** | `unrar` needs a path (§1). The trigger is per-member, so the first stored member is free and the next compressed one is not. Bounding the copy to one member rather than moving it is §7. [`open-issues.md`](../open-issues.md) P11 |
 | A corrupt encrypted member can be reported as a wrong password | **library** / **archivey** | `unrar` reports both as exit 2/3 with empty output on RAR4 and exposes no signal to separate them — that half is upstream's. Resolving the ambiguity toward `EncryptionError` is ours and is reversible (§2.3) |
-| An SFX archive that is also split is unreadable from every one of its files | **archivey** | Sibling discovery needs the archive extension immediately before the part number; an SFX first member replaces it. Shared with 7z and ZIP — [`open-issues.md`](../open-issues.md) P17 and [`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §6 |
+| A 7-Zip SFX stub sitting beside a numbered split (`vol.exe` next to `vol.exe.001` / `vol.7z.001` / `vol.zip.001`) | **archivey** | Opening the stub follows that first volume. The stub is still not a sibling. An old-scheme SFX first volume (`name.exe` + `.r00`) is discovered as volume 1 of that `.rNN` set |
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | `encoding=` is accepted and has no effect | **archivey** | RAR names are decoded by the parser, so the argument is dropped — with an `ENCODING_ARGUMENT_UNUSED` diagnostic rather than silently (§2.2) |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
@@ -688,7 +694,8 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False | `::test_solid_symlink_demux_and_link_targets` (the `symlinks_solid__` pair; `__rar4` links are stored M0), `::test_solid_hardlink_demux_and_targets` (RAR5 hardlinks), `::test_named_unrar_p_bytes_rejects_no_match`. No RAR 1.5/2.x solid-symlink fixture. Unfixtured existing kinds: `FILE_COPY` (RAR5 redirect type 5), Windows symlink, junction |
 | File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned | `::test_file_version_list_and_read`, `::test_file_version_extract_all_skips_history`, `::test_file_version_solid_demux_aligned` |
 | M0 is `STORED`; M1–M5 is `RAR` with `level` 1–5; unpack version in `extra["rar.extract_version"]` (stored included; RAR3 `UNP_VER` unvalidated, RAR5 reports 50); method bytes outside M0–M5 stay `UNKNOWN` with no `level` | `tests/test_rar_reader.py::test_member_reports_exact_compression_and_extract_version`, `::test_rar3_unp_ver_byte_is_reported_unvalidated`, `::test_unknown_method_byte_omits_level`, `::test_stored_m0_direct_read`, `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes` |
-| Volume sets (`partN` and `.rNN`), stream volumes, and refusal of an incomplete or later-first set | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_raises`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub` |
+| Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, and refusal of an incomplete or later-first set | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_raises`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_discover_old_scheme_sfx_rnn_first_volume`, `::test_old_scheme_sfx_exe_opens_rnn_set`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub` |
+| Stub-only `vol.exe` follows `vol.exe.001` / `vol.7z.001` / `vol.zip.001`; a real SFX is not redirected | `tests/test_volumes.py::test_stub_only_exe_opens_zip_split_first_volume`, `::test_stub_only_exe_opens_windows_7z_first_volume`, `::test_sevenzip_sfx_numbered_parts_open_from_any_part`, `::test_embedded_sfx_zip_is_not_redirected_to_sibling_volume` |
 | RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection | `tests/test_rar_reader.py::test_rar15_and_rar2_list_and_read`, `::test_extract_version_20_payload_accepted` |
 | RAR 1.5 / 2.x archive and member comments match `rarfile`; stored old-style comments need no binary; RAR3 CMT reaches `member.comment`; RAR5 CMT stays archive-only | `::test_rar15_and_rar2_comments_match_rarfile`, `::test_rar3_stored_old_style_main_comment_needs_no_unrar`, `::test_rar3_service_comment_maps_to_member_comment`, `::test_rar5_comment_service_stays_archive_only` |
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
@@ -755,7 +762,7 @@ and what would close it are in
   [PR #101](https://github.com/davitf/archivey/pull/101), which was never merged; its
   conclusions are stated here and its measurements are what the first script re-runs, so the
   PR is provenance rather than a live reference
-- Registers: [`open-issues.md`](../open-issues.md) P6, P11, P17 ·
+- Registers: [`open-issues.md`](../open-issues.md) P6, P11 ·
   [`threat-model.md`](../threat-model.md) O1, C1 · [`known-issues.md`](../known-issues.md)
   (MacPaw `unar` silent-wrong)
 - Topic: [`prefixed-archives.md`](../topics/prefixed-archives.md) (the shared SFX machinery)
@@ -787,7 +794,11 @@ and compressed through `unrar` when present; and **#16** `unrar` probe caching �
 `which` every call, banner verdict keyed on the resolved path plus stat identity,
 transient execute failures not cached; **#17** registered `.cbr` / `.cbz` / `.cbt` /
 `.cb7` and kept `FORMAT_EXTENSION_CONFLICT` on a cross-container comic
-([#307](https://github.com/davitf/archivey/pull/307)).
+([#307](https://github.com/davitf/archivey/pull/307)). Sibling discovery now joins SFX
+first members (`vol.exe.001`, `rv.part1.sfx`); **#11** a stub-only `vol.exe` follows
+the split first volume beside it (`vol.exe.001`, `vol.7z.001`, or `vol.zip.001`);
+old-scheme SFX first volumes (`name.exe` / `name.sfx` + `.r00`) are discovered as
+volume 1 of that set.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
@@ -795,6 +806,5 @@ transient execute failures not cached; **#17** registered `.cbr` / `.cbz` / `.cb
 | 6 | **Signal the stream-source copy** (P11), and consider bounding it to one compressed member via a synthetic single-member archive rather than only relocating it (§7) | The largest hidden cost in the library is in neither `diagnostics` nor `cost.notes`. `open-issues.md` P11 | §5, §7 |
 | 7 | **Enforce an `unrar` version floor**, or stop claiming one. **Decided: enforce.** Parse the version from the banner already read, once at identification (cached with the probe), not per member. Candidate floor is **7.0**; confirm by testing 7.0 and up before coding the cutoff | An ancient RARLAB build is accepted and then fails per member instead of at identification | At a glance |
 | 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
-| 11 | **Widen sibling discovery** so an SFX first member joins its set (`vol.exe.001`, `rv.part1.sfx`), and decide whether a stub-only file resolves to its `.001` | Fixing it once fixes RAR, 7z and ZIP. `open-issues.md` P17 | §2.1, §5 |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
 | 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
