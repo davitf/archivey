@@ -122,7 +122,8 @@ print(info.format, info.confidence)
 the extension only when they are inconclusive. When the two disagree it uses the
 bytes and tells you, via a `FORMAT_EXTENSION_CONFLICT`
 [diagnostic](errors-and-diagnostics.md) naming both candidates — a `.jpg` that is
-really a ZIP opens fine, and you can still find out that the name lied.
+really a ZIP opens fine, and so does a `.cbr` that is a ZIP (the usual comic
+mislabel). You can still find out that the name lied.
 
 `detect_format` reports the same format `open_archive` would use, with one wrinkle
 worth knowing. Telling a `.tar.zst` from a plain `.zst` means decompressing a little

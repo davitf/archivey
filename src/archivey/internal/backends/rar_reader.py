@@ -1369,7 +1369,10 @@ class RarReadBackend(ReadBackend):
     """Backend factory for RAR archives."""
 
     FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.RAR,)
-    EXTENSIONS: Mapping[str, ArchiveFormat] = {".rar": ArchiveFormat.RAR}
+    EXTENSIONS: Mapping[str, ArchiveFormat] = {
+        ".rar": ArchiveFormat.RAR,
+        ".cbr": ArchiveFormat.RAR,
+    }
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(0, RAR5_ID, ArchiveFormat.RAR),
         MagicSignature(0, RAR_ID, ArchiveFormat.RAR),
