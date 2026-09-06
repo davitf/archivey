@@ -414,6 +414,12 @@
   `_materialize_members`'s concurrency gate. Raised while writing `dev-docs/code-map.md`;
   no decision taken.
 
+- **RAR5 QO leftover-copy report.** Skip-walk listing emits a QO FILE only when
+  `tell()` lands on its `header_offset`. Copies the walk never hits are dropped.
+  After the walk, leftover keys in the map could be reported — diagnostic vs
+  `CostReceipt.notes` vs log is undecided. Not a hostile-QO defense: planting extra
+  QO rows is no worse than planting FILE headers. Origin: #311.
+
 - **`pyppmd` exit-after-green abort (mitigated)** — was: required CI’s
   `tests/test_ppmd_raw_streams.py` child finished green then SIGSEGV on teardown.
   Cause: truncated-stream `flush()` passed a large remaining `unpack_size` with the

@@ -153,7 +153,8 @@ included — it does not leave FILE after the old QO.
    the consecutive run (the chain is in memory; one seek). AUTO holes — small
    files QO omitted — are not in the map, so their local headers are parsed.
 3. After QO, keep walking — recovery records, `ENDARC`, and any FILE a writer
-   left past QO.
+   left past QO. A QO copy whose `header_offset` the walk never hits is not a
+   member. Reporting leftover copies is later ([`IDEAS.md`](../IDEAS.md)).
 
 When `-qo+` copied every FILE, the first FILE after MAIN (or after `CMT`) is
 in the map and the chain is one seek to QO. UnRAR (`qopen.cpp`) does the same
@@ -237,10 +238,9 @@ the part number — [`open-issues.md`](../open-issues.md) P17, shared with 7z an
 
 ### 2.2 Open and list
 
-`rar_parser.py` builds the member table from RAR5 `QO` when a locator points at a stored
-unencrypted copy, otherwise by walking the block chain; no `unrar`, no `rarfile`.
-`reader.get()` and name lookup are served from that table. FILE headers already in QO
-are skipped on the walk; ones QO omitted are parsed. §1.1.
+`rar_parser.py` parses RAR5 `QO` copies then walks, skipping FILE headers already
+in the map; no `unrar`, no `rarfile`. `reader.get()` and name lookup are served
+from that table. FILE headers QO omitted are parsed. §1.1.
 
 **Volumes are resolved before parsing.** `name.partN.rar` (RAR5 and newer RAR4) and
 `name.rar` + `name.r00`, `name.r01`, … (older RAR4) are both discovered from any member of
