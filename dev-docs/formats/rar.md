@@ -157,7 +157,9 @@ included — it does not leave FILE after the old QO.
 When `-qo+` copied every FILE, step 2 is only those skips: the packed spans chain
 from after MAIN to QO, and no FILE header is read. UnRAR (`qopen.cpp`) does the
 same work the other way around: it walks FILE headers and substitutes the QO copy
-on a hit. We start from QO and skip the hits.
+on a hit. We start from QO and skip the hits. The win is seeks, not local CPU:
+parsing the copies is a bit slower than a FILE walk on a local disk (per-record
+`BytesIO`, two CRCs) and cheaper when the source is high-latency.
 
 `CMT` after MAIN is consumed before the locator jump, so the archive comment is
 not dropped. Member `-p` encryption does not encrypt the QO SERVICE; the FILE
@@ -716,6 +718,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
 | Listing without QO is a header-to-header walk; with QO, FILE headers already in it are skipped (§1.1) | `::test_listing_without_qo_walks_header_to_header`, `::test_listing_with_qo_does_not_seek_per_member`, `::test_listing_qo_skip_count_does_not_scale_with_member_count` |
 | QO listing serves stored reads and keeps the archive comment; unreadable QO falls back to the walk | `::test_qo_listing_stored_read_and_comment`, `::test_unreadable_qo_falls_back_to_file_walk` |
+| QO payload of non-FILE records parses in linear time; overlapping QO spans are refused | `::test_rar5_qo_non_file_records_parse_in_linear_time`, `::test_qo_overlapping_spans_are_rejected` |
 | AUTO still lists small files QO omitted; `rar a` rewrites QO; FILE after QO is still listed | `::test_auto_qo_lists_small_files_omitted_from_cache`, `::test_rar_a_rewrites_qo_and_lists_the_new_member`, `::test_file_header_after_qo_is_still_listed` |
 | Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |
 | RAR5/RAR3 `accessed`/`created` from the time extra, and `None` when the extra or slot is absent | `::test_rar5_xtime_fixture_surfaces_accessed_and_created`, `::test_rar4_xtime_fixture_surfaces_accessed_and_created`, `::test_xtime_absent_accessed_created_are_none`, `::test_parse_rar5_xtime_keeps_ctime_and_atime_with_ns`, `::test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime` |

@@ -151,9 +151,11 @@ _RAR5_MHEXTRA_LOCATOR = 1
 _RAR5_MHEXTRA_LOCATOR_QLIST = 0x01
 _RAR5_QO_NAME = "QO"
 _RAR5_CMT_NAME = "CMT"
-# Stored QO is copies of FILE headers (~50–200 B each). A 16 MiB cap is well
-# above a full table at the parser member ceiling with typical headers; larger
-# is treated as unreadable so a hostile packed-size cannot force a 2 GiB read.
+# Stored QO is copies of FILE headers (~50–200 B each; measured 55 B/member on
+# `rar a -m0 -qo+`, RAR 7.00). 16 MiB covers roughly 300k members — below the
+# 1 048 576 parser ceiling, so a very large archive silently falls back to the
+# FILE walk (same listing, more seeks). The cap is a read-into-memory bound so a
+# hostile packed-size cannot force a 2 GiB read.
 _RAR5_QO_PAYLOAD_MAX = 16 * 1024 * 1024
 
 _RAR5_XTIME_UNIXTIME = 0x01
@@ -1422,12 +1424,29 @@ def _rar5_locator_qopen_abs(
     return None
 
 
+def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
+    return (
+        member.filename == _RAR5_CMT_NAME
+        and member.compress_type == _RAR3_M0
+        and not member.split_before
+        and not member.split_after
+        and member.compress_size > 0
+        and not member.is_encrypted
+    )
+
+
+def _decode_rar5_cmt_bytes(raw: bytes) -> str:
+    return raw.split(b"\0", 1)[0].decode("utf8", "replace")
+
+
 def _try_consume_rar5_cmt(source: BinaryIO) -> str | None:
     """If the next block is a stored unencrypted CMT SERVICE, consume it.
 
-    Otherwise rewind so the caller can parse that block as FILE/SERVICE.
-    Header-encrypted archives do not take the QO shortcut, so this helper
-    never sees a decrypted header stream.
+    The QO skip-walk only emits FILE blocks, so a CMT sitting after MAIN would
+    be lost if we jumped to QO without reading it. Otherwise rewind so the
+    caller can parse that block as FILE/SERVICE. Header-encrypted archives do
+    not take the QO shortcut, so this helper never sees a decrypted header
+    stream.
     """
     saved = source.tell()
     try:
@@ -1460,20 +1479,13 @@ def _try_consume_rar5_cmt(source: BinaryIO) -> str | None:
             add_size=add_size,
             volume_index=0,
         )
-        if (
-            member.filename != _RAR5_CMT_NAME
-            or member.compress_type != _RAR3_M0
-            or member.split_before
-            or member.split_after
-            or member.compress_size <= 0
-            or member.is_encrypted
-        ):
+        if not _is_stored_rar5_cmt(member):
             source.seek(saved)
             return None
         source.seek(data_offset)
         raw = _require_exact(source, member.file_size, "RAR5 comment")
         _seek_after_packed(source, data_offset, add_size)
-        return raw.split(b"\0", 1)[0].decode("utf8", "replace")
+        return _decode_rar5_cmt_bytes(raw)
     except PackageNotInstalledError:
         raise
     except (CorruptionError, TruncatedError, EncryptionError, OSError):
@@ -1488,11 +1500,11 @@ def _parse_rar5_qo_payload(
     members: list[RarMemberInfo] = []
     pos = 0
     n = len(payload)
-    while pos < n:
-        if not any(payload[pos:]):
-            # Trailing zeros: AES/size overprovisioning. Stop, do not try to
-            # parse a CRC=0 record out of the pad.
-            break
+    # Trailing zeros: AES/size overprovisioning. Stop before them; do not try
+    # to parse a CRC=0 record out of the pad. Hoisted: `any(payload[pos:])`
+    # per record copied the remainder each time (O(records × payload)).
+    data_end = len(payload.rstrip(b"\0"))
+    while pos < data_end:
         if n - pos < 5:
             return None
         try:
@@ -1519,7 +1531,7 @@ def _parse_rar5_qo_payload(
         if data_size < 0 or bp + data_size > len(body):
             return None
         cached = body[bp : bp + data_size]
-        if offset_from_qo > qo_header_offset:
+        if offset_from_qo <= 0 or offset_from_qo > qo_header_offset:
             return None
         original_offset = qo_header_offset - offset_from_qo
         bio = io.BytesIO(cached)
@@ -1562,13 +1574,30 @@ def _parse_rar5_qo_payload(
     return members
 
 
+def _qo_spans_consistent(
+    members: list[RarMemberInfo], *, min_offset: int, qopen_abs: int
+) -> bool:
+    """True if QO-derived packed spans do not overlap and end before QO."""
+    prev_end = min_offset
+    for member in sorted(members, key=lambda m: m.header_offset):
+        if member.header_offset < prev_end:
+            return False
+        prev_end = _packed_end(member)
+    return prev_end <= qopen_abs
+
+
 def _try_list_via_rar5_qo(
     source: BinaryIO,
     *,
     qopen_abs: int,
     volume_index: int,
-) -> list[RarMemberInfo] | None:
-    """Seek to QO and parse FILE copies. None means the caller should walk."""
+    min_file_offset: int,
+) -> tuple[list[RarMemberInfo], int] | None:
+    """Seek to QO and parse FILE copies.
+
+    On success the file pointer is at the end of QO's packed span (also
+    returned). None means the caller should walk FILE headers.
+    """
     try:
         source.seek(qopen_abs)
     except (OSError, OverflowError):
@@ -1617,8 +1646,12 @@ def _try_list_via_rar5_qo(
         qo_members = _parse_rar5_qo_payload(payload, header_offset, volume_index)
         if qo_members is None:
             return None
+        if not _qo_spans_consistent(
+            qo_members, min_offset=min_file_offset, qopen_abs=qopen_abs
+        ):
+            return None
         _seek_after_packed(source, data_offset, add_size)
-        return qo_members
+        return qo_members, source.tell()
     except (CorruptionError, TruncatedError, OSError, OverflowError):
         return None
 
@@ -1707,8 +1740,11 @@ def _fill_rar5_qo_file_gaps(
                 add_size,
                 extra_size,
             ) = parsed
-            if header_offset >= end:
-                break
+            # `_read_rar5_block` sets `header_offset = tell()` as its first
+            # statement, so a block that passed `while tell() < end` cannot
+            # start at `end`. A block that *starts* inside the gap may extend
+            # past `end` (last member before QO); walking it out is fine —
+            # the `while` is the bound.
             if block_type == _RAR5_FILE:
                 member = _parse_rar5_file_block(
                     hdata,
@@ -1834,13 +1870,14 @@ def _parse_rar5(
                     if cmt is not None:
                         comment = cmt
                     resume_pos = source.tell()
-                    qo_members = _try_list_via_rar5_qo(
+                    listed = _try_list_via_rar5_qo(
                         source,
                         qopen_abs=qopen_abs,
                         volume_index=volume_index,
+                        min_file_offset=resume_pos,
                     )
-                    if qo_members is not None:
-                        qo_end = source.tell()
+                    if listed is not None:
+                        qo_members, qo_end = listed
                         if _adopt_rar5_file_members(members, qo_members):
                             needs_next_volume = True
                         seen_file_offsets.update(m.header_offset for m in qo_members)
@@ -1914,18 +1951,10 @@ def _parse_rar5(
                     if _emit_rar5_file_member(members, member):
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
-            elif (
-                block_type == _RAR5_SERVICE
-                and member.filename == "CMT"
-                and member.compress_type == _RAR3_M0
-                and not member.split_before
-                and not member.split_after
-                and member.compress_size > 0
-                and not member.is_encrypted
-            ):
+            elif block_type == _RAR5_SERVICE and _is_stored_rar5_cmt(member):
                 source.seek(data_offset)
                 raw = _require_exact(source, member.file_size, "RAR5 comment")
-                comment = raw.split(b"\0", 1)[0].decode("utf8", "replace")
+                comment = _decode_rar5_cmt_bytes(raw)
             _seek_after_packed(source, data_offset, add_size)
             continue
 
