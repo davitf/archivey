@@ -167,8 +167,6 @@ compressed stream is a real shape for script launchers and not for executable on
 | What you see | Where | More |
 | --- | --- | --- |
 | A prefixed ZIP behind bytes that fire no cue (a JPEG polyglot, a plain concatenation) is not detected, though `open_archive(..., format=ZIP)` reads it | **archivey** | The tail probe is the tier that would find it (§2) |
-| A self-extracting *and* split set is unreadable from any of its files, with the 7z message actively describing an intact set as corrupt | **archivey** | Sibling discovery requires the archive extension immediately before the part number (`vol.7z.001`, `vol.zip.001` — ZIP joined the same pattern rather than adding another, so it shares the blind spot); an SFX set replaces that extension (`vol.exe.001`, `rv.part1.sfx`). [`open-issues.md`](../open-issues.md) P17 |
-| A stub-only file with no archive magic anywhere raises `FormatDetectionError` rather than resolving to its `.001` | **archivey** | Half two of P17, and a detection-side question rather than a volume-discovery one |
 | `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped. Renaming to `prefixed_scan` is cheap while the value is still changeable — [`open-issues.md`](../open-issues.md) P18 |
 | A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the forward scan needs a cue in the first bytes |
 
@@ -189,6 +187,8 @@ produced a confidently wrong one.
 | Mach-O raises no weak cue | `ca fe ba be` is Java class-file magic; a weak cue would scan every `.class` | Treating the magic as a weak cue like `MZ` |
 | Opening an embedded archive is the right default | A caller who opens a file has a reason to think it is an archive; a sweep can filter on the prefix instead | Refusing anything that is not an archive end to end |
 | Report what was found, do not classify the stub | The same tier finds an installer, a program and a polyglot; intent is not in the bytes | Deciding whether a file "is" self-extracting |
+| Stub-only `vol.exe` follows every 7-Zip first-volume name (`exe.001`, `7z.001`, `zip.001`) | Opening the stub is what a caller does; supporting only the Linux name would make the same producer flag work on one OS and fail on the other | Following `exe.001` only; leaving the stub as `FormatDetectionError` |
+| Old-scheme SFX `name.exe` + `name.r00` is volume 1 of that `.rNN` set | Same discovery as `name.rar` + `.r00`; a 7-Zip numbered stub has no `.r00` and still follows `.001` | Treating every `.exe` as maybe-volume (would `iterdir` on random executables) |
 
 ## 8. Verify
 
@@ -241,5 +241,5 @@ the full stub matrix is task 4.3 of `prefixed-archive-detection`.
   — evidence classes, the tail-tier cost argument, the corpus counts above
 - Code: `internal/sfx.py` (bound, cue, scan, `HitOutcome`) · `internal/detection.py` (tier
   order) · `internal/zip_detect.py`, `internal/sevenzip_detect.py`, `internal/rar_detect.py` ·
-  `internal/volumes.py` (sibling discovery, P17)
-- Status: [`open-issues.md`](../open-issues.md) P17 and §Longer-term
+  `internal/volumes.py` (sibling discovery)
+- Status: [`open-issues.md`](../open-issues.md) §Closed (P17)

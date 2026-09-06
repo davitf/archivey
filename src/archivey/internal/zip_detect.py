@@ -5,11 +5,12 @@ Four bytes of ``PK\\x03\\x04`` in a stub are not a ZIP. The cued scan calls
 central-directory confirmation is the tail probe's job, not this check.
 
 Also: :func:`is_zip_split_segment_name` — Info-ZIP ``.zNN`` and 7-Zip
-``name.zip.NNN`` split naming. A name matching it is refused in ``open_archive``
-before format detection (middle/last parts typically have no magic at offset 0),
-*unless* the whole set was found on disk and joined — see
-``internal/volumes.py``, which concatenates 7-Zip's byte slices back into the
-ordinary ZIP they came from. Info-ZIP's spanned sets are never joined.
+``name.zip.NNN`` split naming. Info-ZIP names are refused in ``open_archive``
+before format detection (middle/last parts typically have no magic at offset 0).
+A lone ``.zip.NNN`` is an incomplete numbered set (``TruncatedError``) instead;
+this helper still matches both so the ZIP reader can refuse a spanned ``.zNN``
+that reached it unjoined. See ``internal/volumes.py`` for the byte-slice join.
+Info-ZIP's spanned sets are never joined.
 """
 
 from __future__ import annotations

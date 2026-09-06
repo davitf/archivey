@@ -456,22 +456,24 @@ def test_split_segment_name_rejected(tmp_path: Path) -> None:
 
 
 def test_sevenzip_split_segment_without_siblings_rejected(tmp_path: Path) -> None:
-    # A 7-Zip .zip.NNN part whose siblings are not on disk cannot be rejoined, so it
-    # keeps the rejoin-first refusal. Each file gets its own directory precisely so
-    # no set can be discovered around it.
+    # A 7-Zip .zip.NNN part whose siblings are not on disk cannot be rejoined.
+    # Each file gets its own directory so no set can be discovered around it.
     first = tmp_path / "alone" / "archive.zip.001"
     first.parent.mkdir()
     first.write_bytes(_stdlib_zip_bytes())
-    with pytest.raises(UnsupportedFeatureError) as excinfo:
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set") as excinfo:
         open_archive(first)
-    assert "multi-volume" in str(excinfo.value).lower()
+    assert "found part 1 only" in str(excinfo.value)
+    assert "archive.zip.002" in str(excinfo.value)
 
     later = tmp_path / "orphan" / "archive.zip.003"
     later.parent.mkdir()
     later.write_bytes(b"\x00" * 64)  # no magic at 0
-    with pytest.raises(UnsupportedFeatureError) as excinfo:
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set") as excinfo:
         open_archive(later)
-    assert "multi-volume" in str(excinfo.value).lower()
+    assert "found part 3 only" in str(excinfo.value)
+    assert "archive.zip.001" in str(excinfo.value)
+    assert "archive.zip.002" in str(excinfo.value)
 
 
 def test_volume_shaped_name_honours_explicit_non_zip_format(tmp_path: Path) -> None:
@@ -488,15 +490,22 @@ def test_volume_shaped_name_honours_explicit_non_zip_format(tmp_path: Path) -> N
         tar.addfile(info, io.BytesIO(payload))
     raw = buf.getvalue()
 
-    for name in ("payload.z01", "payload.zip.001"):
-        path = tmp_path / name
-        path.write_bytes(raw)
-        with pytest.raises(UnsupportedFeatureError) as excinfo:
-            open_archive(path)
-        assert "multi-volume" in str(excinfo.value).lower()
-        with open_archive(path, format=ArchiveFormat.TAR_GZ) as ar:
-            assert [m.name for m in ar.members()] == ["hello.txt"]
-            assert ar.read("hello.txt") == b"hello"
+    z01 = tmp_path / "payload.z01"
+    z01.write_bytes(raw)
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(z01)
+    assert "multi-volume" in str(excinfo.value).lower()
+    with open_archive(z01, format=ArchiveFormat.TAR_GZ) as ar:
+        assert [m.name for m in ar.members()] == ["hello.txt"]
+        assert ar.read("hello.txt") == b"hello"
+
+    numbered = tmp_path / "payload.zip.001"
+    numbered.write_bytes(raw)
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set"):
+        open_archive(numbered)
+    with open_archive(numbered, format=ArchiveFormat.TAR_GZ) as ar:
+        assert [m.name for m in ar.members()] == ["hello.txt"]
+        assert ar.read("hello.txt") == b"hello"
 
 
 def _build_sevenzip_split_zip(tmp_path: Path) -> tuple[Path, bytes]:

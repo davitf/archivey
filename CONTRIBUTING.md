@@ -336,7 +336,10 @@ Five questions, in order. The first `yes` wins.
 If it is a *review*, it belongs to the `review/` lifecycle. If it is a *proposed
 behaviour / contract change*, it belongs to `openspec/changes/` so the authoritative
 main specs stay in sync (prefer `--schema minimalist` when proposal/design would only
-be agent bus). Human conclusions still land on handbook pages — specs are the binding
+be agent bus). Scenario-row widenings that do not change a requirement's SHALL
+(extra producer names, the same error type) may edit `openspec/specs/` directly
+when the maintainer says so — do not open a change folder just to add a matrix
+row. Human conclusions still land on handbook pages — specs are the binding
 contract, not the primary reading surface
 ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md)).
 
