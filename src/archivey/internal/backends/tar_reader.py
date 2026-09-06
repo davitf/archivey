@@ -111,7 +111,8 @@ _TAR_COMPRESSED: tuple[ArchiveFormat, ...] = tuple(
 _TAR_FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.TAR, *_TAR_COMPRESSED)
 
 # Canonical extensions are derived from each format (TAR -> ".tar", TAR_GZ -> ".tar.gz",
-# (TAR, LZIP) -> ".tar.lz", …); only the short aliases (.tgz/.tbz/…) are listed by hand.
+# (TAR, LZIP) -> ".tar.lz", …); only the short aliases (.tgz/.tbz/…) and `.cbt`
+# (comic-book TAR) are listed by hand.
 # (Built at module scope: a dict comprehension in the class body can't see class-level names.)
 _TAR_EXTENSIONS: dict[str, ArchiveFormat] = {
     f".{fmt.file_extension()}": fmt for fmt in _TAR_FORMATS
@@ -124,6 +125,7 @@ _TAR_EXTENSIONS.update(
         ".txz": ArchiveFormat.TAR_XZ,
         ".tzst": ArchiveFormat.TAR_ZST,
         ".tlz": ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP),
+        ".cbt": ArchiveFormat.TAR,
     }
 )
 

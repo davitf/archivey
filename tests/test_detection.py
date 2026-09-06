@@ -95,6 +95,26 @@ def test_rar_family_extension_fallback(tmp_path: Path, ext: str) -> None:
     assert info.detected_by == "extension"
 
 
+@pytest.mark.parametrize("ext", [".tar", ".cbt"])
+def test_tar_family_extension_fallback(tmp_path: Path, ext: str) -> None:
+    path = tmp_path / f"mystery{ext}"
+    path.write_bytes(b"not really a tar")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.TAR
+    assert info.confidence == DetectionConfidence.GUESS
+    assert info.detected_by == "extension"
+
+
+@pytest.mark.parametrize("ext", [".7z", ".cb7"])
+def test_sevenz_family_extension_fallback(tmp_path: Path, ext: str) -> None:
+    path = tmp_path / f"mystery{ext}"
+    path.write_bytes(b"not really a 7z")
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.SEVEN_Z
+    assert info.confidence == DetectionConfidence.GUESS
+    assert info.detected_by == "extension"
+
+
 def test_unrecognized_bytes_no_name_raises() -> None:
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(b"this is not any known archive format at all"))
@@ -112,26 +132,52 @@ def test_unrecognized_extension_and_bytes_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cbr_zip_content_wins_with_extension_conflict(tmp_path: Path) -> None:
-    from archivey.diagnostics import DiagnosticCode
+def _tar_bytes() -> bytes:
+    import tarfile
 
-    path = tmp_path / "mystery.cbr"
-    path.write_bytes(_zip_bytes())
-    info = detect_format(path)
-    assert info.format == ArchiveFormat.ZIP
-    assert info.confidence == DetectionConfidence.CERTAIN
-    assert info.detected_by == "magic"
-    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("a.txt")
+        payload = io.BytesIO(b"hello")
+        info.size = 5
+        t.addfile(info, payload)
+    return buf.getvalue()
 
 
-def test_cbz_rar_content_wins_with_extension_conflict(tmp_path: Path) -> None:
+def _sevenz_sig() -> bytes:
+    return b"7z\xbc\xaf'\x1c" + b"\x00" * 32
+
+
+@pytest.mark.parametrize(
+    ("name", "kind", "expected"),
+    [
+        ("mystery.cbr", "zip", ArchiveFormat.ZIP),
+        ("mystery.cbz", "rar", ArchiveFormat.RAR),
+        ("mystery.cbt", "zip", ArchiveFormat.ZIP),
+        ("mystery.cb7", "zip", ArchiveFormat.ZIP),
+        ("mystery.cbt", "rar", ArchiveFormat.RAR),
+        ("mystery.cb7", "rar", ArchiveFormat.RAR),
+        ("mystery.cbz", "tar", ArchiveFormat.TAR),
+        ("mystery.cbr", "7z", ArchiveFormat.SEVEN_Z),
+        ("mystery.cbt", "7z", ArchiveFormat.SEVEN_Z),
+    ],
+)
+def test_comic_extension_content_wins_with_conflict(
+    tmp_path: Path, name: str, kind: str, expected: ArchiveFormat
+) -> None:
     from archivey.diagnostics import DiagnosticCode
     from archivey.internal.backends.rar_parser import RAR_ID
 
-    path = tmp_path / "mystery.cbz"
-    path.write_bytes(RAR_ID)
+    payloads = {
+        "zip": _zip_bytes(),
+        "rar": RAR_ID,
+        "tar": _tar_bytes(),
+        "7z": _sevenz_sig(),
+    }
+    path = tmp_path / name
+    path.write_bytes(payloads[kind])
     info = detect_format(path)
-    assert info.format == ArchiveFormat.RAR
+    assert info.format == expected
     assert info.confidence == DetectionConfidence.CERTAIN
     assert info.detected_by == "magic"
     assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
@@ -141,8 +187,8 @@ def test_magic_wins_over_conflicting_extension(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Isolates the conflict machinery from real backends: magic says SEVEN_Z, the
-    # ".rar" extension says RAR. Real ZIP-named-``.cbr`` / RAR-named-``.cbz``
-    # conflicts are in the two tests above.
+    # ".rar" extension says RAR. Real comic-book alias conflicts are in
+    # ``test_comic_extension_content_wins_with_conflict``.
     from archivey.internal import detection as detection_module
     from archivey.internal.base_reader import ReadBackend
     from archivey.internal.registry import BackendRegistry

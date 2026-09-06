@@ -182,10 +182,13 @@ and, for the stage that delegates, what crosses the boundary.
 
 ### 2.1 Identify
 
-Two magics at offset 0 and two extensions, `.rar` and `.cbr`. Both magics are also
+Two magics at offset 0 and two extensions, `.rar` and `.cbr`. Comic-book aliases
+across containers are `.cbr` → RAR, `.cbz` → ZIP, `.cbt` → TAR, `.cb7` → 7z.
+Magic still wins; a ZIP named `.cbr` (the usual mislabel) opens as ZIP and emits
+`FORMAT_EXTENSION_CONFLICT`. Same for the other aliases. Both magics are also
 the scan needles for a prefixed archive, deliberately rather than their shared
-`Rar!\x1a\x07` prefix: matching
-each id separately resolves RAR4 vs RAR5 at the hit instead of re-reading to disambiguate.
+`Rar!\x1a\x07` prefix: matching each id separately resolves RAR4 vs RAR5 at the
+hit instead of re-reading to disambiguate.
 
 The hit validator (`internal/rar_detect.py`) is the **main header that follows the marker**,
 and it is checksummed, which makes it a stronger validator than ZIP's field-range checks:
@@ -781,7 +784,8 @@ single-live-stream gate ahead of the spawn it was a backstop for; **#12** member
 comments mapped from RAR3 CMT SERVICE and RAR 1.5 / 2.x old-style blocks, stored natively
 and compressed through `unrar` when present; and **#16** `unrar` probe caching —
 `which` every call, banner verdict keyed on the resolved path plus stat identity,
-transient execute failures not cached; **#17** registered `.cbr` / `.cbz`
+transient execute failures not cached; **#17** registered `.cbr` / `.cbz` / `.cbt` /
+`.cb7` and kept `FORMAT_EXTENSION_CONFLICT` on a cross-container comic
 ([#307](https://github.com/davitf/archivey/pull/307)).
 
 | # | Change | Why now | Where it bites on this page |
