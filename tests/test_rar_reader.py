@@ -41,7 +41,9 @@ from archivey.internal.backends.rar_parser import (
 )
 from archivey.types import (
     EXTRA_RAR_CREATED_IS_CTIME,
+    EXTRA_RAR_EXTRACT_VERSION,
     ArchiveMember,
+    CompressionAlgorithm,
     HashAlgorithm,
     MemberType,
 )
@@ -642,8 +644,91 @@ def test_encrypted_data_requires_password(name: str) -> None:
 def test_stored_m0_direct_read() -> None:
     with open_archive(_fixture("stored_m0.rar")) as archive:
         member = next(m for m in archive.members() if m.is_file)
-        assert member.compression[0].algo.name == "STORED"
+        assert member.compression[0].algo is CompressionAlgorithm.STORED
+        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] == 50
         assert archive.read(member) == b"stored payload"
+
+
+@pytest.mark.parametrize(
+    ("name", "member_name", "algo", "level", "extract_version"),
+    [
+        ("stored_m0.rar", "store.txt", CompressionAlgorithm.STORED, None, 50),
+        ("basic_solid__.rar", "file1.txt", CompressionAlgorithm.RAR, 3, 50),
+        ("basic_solid__rar4.rar", "file1.txt", CompressionAlgorithm.RAR, 3, 29),
+        ("rar15-comment.rar", "FILE1.TXT", CompressionAlgorithm.RAR, 3, 15),
+        ("rar15-comment.rar", "FILE2.TXT", CompressionAlgorithm.STORED, None, 15),
+        (
+            "rar202-comment-nopsw.rar",
+            "FILE1.TXT",
+            CompressionAlgorithm.STORED,
+            None,
+            20,
+        ),
+    ],
+)
+def test_member_reports_exact_compression_and_extract_version(
+    name: str,
+    member_name: str,
+    algo: CompressionAlgorithm,
+    level: int | None,
+    extract_version: int,
+) -> None:
+    with open_archive(_fixture(name)) as archive:
+        member = next(m for m in archive.members() if m.name == member_name)
+        method = member.compression[0]
+        assert method.algo is algo
+        assert method.level is level
+        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] == extract_version
+
+
+def test_rar3_unp_ver_byte_is_reported_unvalidated() -> None:
+    """RAR3 copies UNP_VER as stored; a value outside {15,20,29,50} still lists."""
+    main_hdr, end_hdr = _rar3_main_and_end()
+    file_hdr = _rar3_file_block(
+        b"a.txt", flags=0, pack_lo=0, unp_lo=0, extract_version=200
+    )
+    blob = RAR_ID + main_hdr + file_hdr + end_hdr
+    parsed = parse_rar_archive(io.BytesIO(blob))
+    assert parsed.members[0].extract_version == 200
+    with open_archive(io.BytesIO(blob)) as archive:
+        member = next(m for m in archive.members() if m.name == "a.txt")
+        assert member.extra[EXTRA_RAR_EXTRACT_VERSION] == 200
+
+
+def test_unknown_method_byte_omits_level() -> None:
+    """A method byte outside M0–M5 lists as UNKNOWN with no leftover level."""
+    info = RarMemberInfo(
+        filename="a.txt",
+        orig_filename=b"a.txt",
+        file_size=0,
+        compress_size=0,
+        compress_type=0x40,
+        crc32=None,
+        blake2sp_hash=None,
+        mtime=None,
+        ctime=None,
+        atime=None,
+        mode=None,
+        host_os=None,
+        flags=0,
+        file_redir=None,
+        file_encryption=None,
+        header_offset=0,
+        header_size=0,
+        data_offset=0,
+        extract_version=50,
+        file_solid=False,
+        is_directory=False,
+        is_symlink=False,
+        is_hardlink_or_copy=False,
+        is_encrypted=False,
+        volume_index=0,
+        split_before=False,
+        split_after=False,
+    )
+    method = rar_reader._compression_for(info)[0]
+    assert method.algo is CompressionAlgorithm.UNKNOWN
+    assert method.level is None
 
 
 _FILE_VERSION_CONTENTS = {
@@ -1009,6 +1094,7 @@ def _rar3_file_block(
     unp_hi: int = 0,
     method: int = 0x30,
     block_type: int = 0x74,
+    extract_version: int = 20,
 ) -> bytes:
     """Build one RAR3 FILE block with a valid 16-bit header CRC."""
     from archivey.internal.backends.rar_parser import (
@@ -1024,7 +1110,7 @@ def _rar3_file_block(
         3,  # Unix
         0,  # crc32
         0,  # dos time
-        20,  # extract version
+        extract_version,
         method,
         len(name),
         0o100644,

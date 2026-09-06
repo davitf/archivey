@@ -1196,7 +1196,7 @@ def _parse_rar3_file_header(
     host_os = fld[2]
     crc32 = fld[3]
     dos_stamp = fld[4]
-    extract_version = fld[5]
+    extract_version = fld[5]  # UNP_VER as stored; not clamped to 15/20/29/50
     compress_type = fld[6]
     name_size = fld[7]
     mode = fld[8]
