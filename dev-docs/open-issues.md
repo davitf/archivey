@@ -610,6 +610,8 @@ re-verified failing against the unfixed code). Original write-up below.
   first volume beside it: `vol.exe.001` (Linux 7-Zip), `vol.7z.001` or
   `vol.zip.001` (Windows 7-Zip). Two of those names is `UnsupportedFeatureError`.
   A stub that itself contains archive magic still opens as that archive.
+  `format=` follows the same redirect; a container mismatch with the sibling
+  is `ArchiveyUsageError`.
 
 - **Still open (3).** An old-scheme SFX first volume (`name.exe` / `name.sfx`
   beside `name.r00`, `name.r01`, …) is not discovered. The `.rNN` branch

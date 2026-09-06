@@ -99,7 +99,8 @@ A 7z set is checked for completeness, so a missing middle part is an error rathe
 than a silent short read. The stub executable beside an SFX numbered set is not
 concatenated into the volumes; opening it follows the first volume
 (`backup.exe.001`, `backup.7z.001`, or `backup.zip.001`) so the same path works
-for Linux 7-Zip and Windows 7-Zip. A file that *is* a self-extracting archive
+for Linux 7-Zip and Windows 7-Zip, including when you pass `format=` after
+`detect_format`. A file that *is* a self-extracting archive
 (magic behind the stub) still opens as that archive, even if numbered parts sit
 beside it.
 The old RAR scheme needs its `.rar` present either way: that

@@ -198,6 +198,17 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     return None
 
 
+def is_sfx_stub_name(name: str) -> bool:
+    """True for ``*.exe`` / ``*.sfx`` names that are not already volume-shaped."""
+    if (
+        _NUMBERED_VOLUME_RE.match(name) is not None
+        or _RAR_PART_RE.match(name) is not None
+    ):
+        return False
+    lower = name.lower()
+    return lower.endswith(".exe") or lower.endswith(".sfx")
+
+
 def first_volume_for_stub(path: Path) -> Path | None:
     """Return the split first volume beside a stub-only ``.exe`` / ``.sfx``, if any.
 
@@ -217,27 +228,21 @@ def first_volume_for_stub(path: Path) -> Path | None:
     a stub. Two matching first volumes beside the stub is a refusal, not a guess.
     """
     name = path.name
-    if (
-        _NUMBERED_VOLUME_RE.match(name) is not None
-        or _RAR_PART_RE.match(name) is not None
-    ):
-        return None
-    lower = name.lower()
-    if not (lower.endswith(".exe") or lower.endswith(".sfx")):
+    if not is_sfx_stub_name(name):
         return None
     if not path.is_file():
         return None
+    # Exact names, not ``iterdir``. A random ``.exe`` with no volumes beside it
+    # is the common miss; walking a large directory there is wasted work.
+    # Windows ``is_file`` is case-insensitive; Linux is not, so ``VOL.ZIP.001``
+    # beside ``vol.exe`` is only found there if the caller used that casing.
     stem = name[: name.rfind(".")]
-    wanted = {
-        f"{name}.001".lower(),
-        f"{stem}.7z.001".lower(),
-        f"{stem}.zip.001".lower(),
-    }
-    found = [
-        candidate
-        for candidate in path.parent.iterdir()
-        if candidate.is_file() and candidate.name.lower() in wanted
-    ]
+    candidates = (
+        path.parent / f"{name}.001",
+        path.parent / f"{stem}.7z.001",
+        path.parent / f"{stem}.zip.001",
+    )
+    found = [candidate for candidate in candidates if candidate.is_file()]
     if len(found) == 1:
         return found[0]
     if len(found) > 1:

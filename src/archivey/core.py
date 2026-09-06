@@ -75,6 +75,7 @@ from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
     first_volume_for_stub,
+    is_sfx_stub_name,
     resolve_source,
 )
 from archivey.internal.zip_detect import (
@@ -159,6 +160,35 @@ def _refuse_lone_zip_split(
             archive_name=archive_name,
             source_format=ArchiveFormat.ZIP,
         )
+
+
+def _refuse_if_stub_format_conflict(
+    stub: Path, first_volume: Path, requested: ArchiveFormat
+) -> None:
+    try:
+        info = detect_format(first_volume, follow_stub_volumes=False)
+    except FormatDetectionError:
+        return
+    if info.format.container == requested.container:
+        return
+    raise ArchiveyUsageError(
+        f"{display_path(stub)} has no archive magic; the split first volume "
+        f"beside it is {info.format.display_name}, but format={requested!r} "
+        f"was requested."
+    )
+
+
+def _follow_stub_volume(
+    stub: Path, format: ArchiveFormat | None
+) -> ResolvedSource | None:
+    alt = first_volume_for_stub(stub)
+    if alt is None:
+        return None
+    if format is not None:
+        _refuse_if_stub_format_conflict(stub, alt, format)
+    resolved = resolve_source(alt)
+    _refuse_lone_zip_split(resolved, format, resolved.archive_name)
+    return resolved
 
 
 def open_archive(
@@ -320,19 +350,30 @@ def open_archive(
                 reader_source, collector=collector, follow_stub_volumes=False
             )
         except FormatDetectionError:
-            alt = (
-                first_volume_for_stub(reader_source)
+            followed = (
+                _follow_stub_volume(reader_source, format)
                 if isinstance(reader_source, Path)
                 else None
             )
-            if alt is None:
+            if followed is None:
                 raise
-            resolved = resolve_source(alt)
+            resolved = followed
             reader_source = resolved.open_source
             archive_name = resolved.archive_name
-            _refuse_lone_zip_split(resolved, format, archive_name)
             detected = detect_format(reader_source, collector=collector)
         resolved_format = detected.format
+    elif isinstance(reader_source, Path) and is_sfx_stub_name(reader_source.name):
+        # format= still follows a stub-only miss. Skipping this made
+        # detect_format(p); open_archive(p, format=info.format) open the MZ
+        # bytes as ZIP/7z while auto-detect joined the split set.
+        try:
+            detect_format(reader_source, follow_stub_volumes=False)
+        except FormatDetectionError:
+            followed = _follow_stub_volume(reader_source, resolved_format)
+            if followed is not None:
+                resolved = followed
+                reader_source = resolved.open_source
+                archive_name = resolved.archive_name
 
     # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.
     # Info-ZIP's spanned sets never reach this point as a joined source (they are not

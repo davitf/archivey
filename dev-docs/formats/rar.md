@@ -211,7 +211,7 @@ cannot disagree about how far to look.
 A self-extracting **and** split RAR set (`rv.part1.sfx`, `rv.part2.rar`, …) is joined
 from any part — the `.sfx` (or `.exe`) first volume shares the `partN` stem with later
 `.rar` volumes. 7-Zip's stub-only `vol.exe` (no archive magic) follows the split first
-volume beside it. An old-scheme SFX first volume (`name.exe` / `name.sfx` beside `.r00`
+volume beside it, including under `format=`. An old-scheme SFX first volume (`name.exe` / `name.sfx` beside `.r00`
 — RAR 7.00 dropped `-vn`, so no current producer emits it) is still undiscovered.
 [`open-issues.md`](../open-issues.md) P17.
 

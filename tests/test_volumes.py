@@ -12,6 +12,7 @@ import pytest
 
 from archivey import detect_format, extract, open_archive
 from archivey.exceptions import (
+    ArchiveyUsageError,
     CorruptionError,
     FormatDetectionError,
     PackageNotInstalledError,
@@ -509,8 +510,13 @@ def _write_split_zip(tmp_path: Path, first_name: str, payload: bytes) -> Path:
     ["vol.exe.001", "vol.zip.001"],
     ids=["linux-exe-001", "windows-zip-001"],
 )
+@pytest.mark.parametrize(
+    "forced_format",
+    [None, ArchiveFormat.ZIP],
+    ids=["detect", "format-zip"],
+)
 def test_stub_only_exe_opens_zip_split_first_volume(
-    tmp_path: Path, first_name: str
+    tmp_path: Path, first_name: str, forced_format: ArchiveFormat | None
 ) -> None:
     payload = b"hello from split zip" * 200
     first = _write_split_zip(tmp_path, first_name, payload)
@@ -518,13 +524,20 @@ def test_stub_only_exe_opens_zip_split_first_volume(
     stub.write_bytes(_mz_stub())
     assert discover_volume_siblings(stub) is None
     assert first_volume_for_stub(stub) == first
-    with open_archive(stub) as archive:
+    with open_archive(stub, format=forced_format) as archive:
         assert archive.read("payload.bin") == payload
         assert archive.info.is_multivolume is True
     assert detect_format(stub).format == ArchiveFormat.ZIP
 
 
-def test_stub_only_exe_opens_windows_7z_first_volume(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "forced_format",
+    [None, ArchiveFormat.SEVEN_Z],
+    ids=["detect", "format-seven-z"],
+)
+def test_stub_only_exe_opens_windows_7z_first_volume(
+    tmp_path: Path, forced_format: ArchiveFormat | None
+) -> None:
     py7zr = pytest.importorskip("py7zr")
     payload = b"seven from stub"
     src = tmp_path / "payload.bin"
@@ -535,7 +548,7 @@ def test_stub_only_exe_opens_windows_7z_first_volume(tmp_path: Path) -> None:
     stub = tmp_path / "vol.exe"
     stub.write_bytes(_mz_stub())
     assert first_volume_for_stub(stub) == first
-    with open_archive(stub) as archive:
+    with open_archive(stub, format=forced_format) as archive:
         assert archive.read("payload.bin") == payload
     assert detect_format(stub).format == ArchiveFormat.SEVEN_Z
 
@@ -550,13 +563,53 @@ def test_stub_only_exe_without_volumes_stays_undetected(tmp_path: Path) -> None:
         detect_format(stub)
 
 
-def test_embedded_sfx_zip_is_not_redirected_to_sibling_volume(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "forced_format",
+    [None, ArchiveFormat.ZIP],
+    ids=["detect", "format-zip"],
+)
+def test_embedded_sfx_zip_is_not_redirected_to_sibling_volume(
+    tmp_path: Path, forced_format: ArchiveFormat | None
+) -> None:
     stub = tmp_path / "vol.exe"
     stub.write_bytes(_mz_stub() + _zip_bytes({"inside.txt": b"embedded"}))
     _write_split_zip(tmp_path, "vol.zip.001", b"sibling payload" * 200)
-    with open_archive(stub) as archive:
+    with open_archive(stub, format=forced_format) as archive:
         assert [m.name for m in archive.members()] == ["inside.txt"]
         assert archive.read("inside.txt") == b"embedded"
+
+
+def test_stub_only_exe_format_conflicts_with_sibling_container(tmp_path: Path) -> None:
+    _write_split_zip(tmp_path, "vol.zip.001", b"payload" * 200)
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(_mz_stub())
+    with pytest.raises(ArchiveyUsageError, match="format="):
+        open_archive(stub, format=ArchiveFormat.SEVEN_Z)
+
+
+def test_stub_only_exe_format_without_volumes_uses_backend(tmp_path: Path) -> None:
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(_mz_stub())
+    with pytest.raises(CorruptionError):
+        open_archive(stub, format=ArchiveFormat.ZIP)
+
+
+def test_first_volume_for_stub_does_not_walk_the_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(_mz_stub())
+    first = tmp_path / "vol.zip.001"
+    first.write_bytes(b"PK\x03\x04")
+    stray = tmp_path / "other.exe"
+    stray.write_bytes(_mz_stub())
+
+    def _boom(self: Path) -> list[Path]:
+        raise AssertionError(f"iterdir({self})")
+
+    monkeypatch.setattr(Path, "iterdir", _boom)
+    assert first_volume_for_stub(stub) == first
+    assert first_volume_for_stub(stray) is None
 
 
 def test_stub_only_exe_refuses_ambiguous_first_volumes(tmp_path: Path) -> None:
@@ -572,6 +625,10 @@ def test_stub_only_exe_refuses_ambiguous_first_volumes(tmp_path: Path) -> None:
         UnsupportedFeatureError, match="more than one split first volume"
     ):
         open_archive(stub)
+    with pytest.raises(
+        UnsupportedFeatureError, match="more than one split first volume"
+    ):
+        open_archive(stub, format=ArchiveFormat.ZIP)
 
 
 def test_numbered_exe_part_is_not_a_stub(tmp_path: Path) -> None:

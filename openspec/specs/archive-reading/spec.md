@@ -162,8 +162,10 @@ logical `ArchiveReader`:
   siblings in natural order
 - **Stub-only SFX** (`name.exe` / `name.sfx` with no archive magic) beside
   exactly one of `name.exe.001`, `name.7z.001`, `name.zip.001`: open that
-  first volume's set. Two of those names SHALL raise `UnsupportedFeatureError`.
-  A stub that itself contains archive magic SHALL open as that archive.
+  first volume's set, including when `format=` is set. Two of those names
+  SHALL raise `UnsupportedFeatureError`. A stub that itself contains archive
+  magic SHALL open as that archive (no redirect). If `format=` names a
+  different container than the sibling, raise `ArchiveyUsageError`.
 - **Explicit ordered `source` sequence**: use that order as volumes
 
 Joining is format-specific (`format-7z` / `format-rar`): 7z concatenates a split
@@ -177,6 +179,9 @@ boundary-spanning members. Incomplete/out-of-order sets SHALL raise
 | --- | --- |
 | `open_archive("disc.7z.001")` with siblings present | One reader for the whole set |
 | `open_archive("vol.exe")` with a stub-only exe and `vol.exe.001` / `vol.7z.001` / `vol.zip.001` | One reader for that set |
+| `open_archive("vol.exe", format=ZIP)` with a stub-only exe and a zip first volume | One reader for that set |
+| `open_archive("vol.exe", format=SEVEN_Z)` beside a zip first volume | `ArchiveyUsageError` |
+| `open_archive("vol.exe", format=ZIP)` with embedded ZIP SFX and a sibling volume | Opens the stub; no redirect |
 | `open_archive("vol.exe")` with two of those first-volume names | `UnsupportedFeatureError` |
 | `open_archive([vol1, vol2, vol3])` in order | One archive in that order |
 | Missing volume | Raise at open or first dependent read; no partial member list |

@@ -220,6 +220,8 @@ volume is missing or the stream cannot be reconstructed, the system SHALL raise
 | Open `name.7z.001` with complete siblings | Volumes join in numeric order; listing and reads match a single-file archive |
 | Open `name.exe.001` with complete `name.exe.00N` siblings | Same join; the stub `name.exe` is not a sibling |
 | Open stub-only `name.exe` beside `name.exe.001` or `name.7z.001` | Same join as opening the first volume |
+| Open stub-only `name.exe` with `format=SEVEN_Z` beside `name.7z.001` | Same join |
+| Open stub-only `name.exe` with `format=SEVEN_Z` beside `name.zip.001` | `ArchiveyUsageError` |
 | Open an explicit ordered volume list | Sources concatenate and read as one archive |
 | Missing or out-of-order volume | Error instead of partial or garbage output |
 

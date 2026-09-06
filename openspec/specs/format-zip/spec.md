@@ -176,7 +176,9 @@ sibling). Windows 7-Zip keeps the archive extension (`name.zip.001`) and writes
 the stub as `name.exe`. With every
 part `1..N` present beside the one named, `open_archive` SHALL concatenate them
 and read the result as the ordinary ZIP it is, from any part **or from a
-stub-only `name.exe` that has no archive magic**, reporting
+stub-only `name.exe` that has no archive magic** (including under an explicit
+`format=ZIP`; a `format=` naming a different container is `ArchiveyUsageError`),
+reporting
 `ArchiveInfo.is_multivolume = True` and `ArchiveInfo.extra["zip.volume_count"] = N`
 (not `ArchiveMember.extra`, which stays empty).
 A gap in the numbering SHALL raise `TruncatedError`.

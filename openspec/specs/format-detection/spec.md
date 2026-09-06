@@ -387,7 +387,7 @@ validating a hit and resuming the scan past a rejected one is deliberately out o
 | **Weak** executable cue (bare `MZ` / `\x7fELF`), no RAR/7z/ZIP in window | Content probes run unchanged, so a probe may still claim the stub — the accepted residual, per the sibling requirement and `open-issues.md` P12 |
 | Stub containing a decoy needle before the real payload | Earliest match wins; the backend opens at the decoy and fails **loudly** (7z: `CorruptionError`). ZIP usually still succeeds via EOCD-from-tail |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
-| Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` opens the set |
+| Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` (including with `format=` matching that container) opens the set |
 | Same stub, but it *does* contain archive magic | The embedded archive; sibling volumes are ignored |
 | Two of those first-volume names beside the stub | `UnsupportedFeatureError` naming both |
 

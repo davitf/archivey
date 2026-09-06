@@ -162,7 +162,8 @@ complete set is concatenated by `internal/volumes.py` and read as the ordinary
 single-disk ZIP it is — the same code path and the same regex that already joined
 `.7z.NNN`, because it is the same `-v` flag doing the same slicing. The stub
 `name.exe` beside those parts is not a sibling; if it has no archive magic,
-`open_archive` follows it to `name.exe.001` or `name.zip.001`. Info-ZIP's
+`open_archive` follows it to `name.exe.001` or `name.zip.001` (including under
+`format=ZIP`). Info-ZIP's
 `.z01 … .zip` is a genuinely spanned set whose entries are addressed by
 `(disk, offset-within-disk)`, so it keeps refusing. §3 has the producer detail.
 
