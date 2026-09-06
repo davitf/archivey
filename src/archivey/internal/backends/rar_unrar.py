@@ -26,11 +26,14 @@ from archivey.exceptions import (
     ReadError,
 )
 
-# Inclusive major.minor floor. The ``-n`` mask demux and ``-ver`` behaviour
-# were characterized on RARLAB unrar 7.00; older builds are untested rather
-# than known-broken. Parsed from the identification banner
-# (``UNRAR 7.00`` / ``UNRAR 7.11``), not from a second spawn.
-_UNRAR_VERSION_FLOOR: tuple[int, int] = (7, 0)
+# Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
+# against RARLAB unrar 6.02, 6.12, 6.24, and 7.00 (RAR data tests plus
+# ``scripts/exploration/rar_unrar_input_matrix.py``). 5.91 passed those
+# tests too, but hangs on an anonymous-fd multi-volume probe that 6.12+
+# exits 3 on — a path archivey does not use. Floor is 6.0 so Debian 12 /
+# Ubuntu 22.04 apt packages work; 5.x is still refused. Parsed from the
+# identification banner, not from a second spawn.
+_UNRAR_VERSION_FLOOR: tuple[int, int] = (6, 0)
 # Bound the digit runs: unbounded ``\d+`` then ``int()`` raises ``ValueError``
 # past CPython's 4300-digit limit, and that must not cross ``open_archive``.
 _UNRAR_VERSION_RE = re.compile(r"UNRAR\s+(\d{1,4})\.(\d{1,4})")
@@ -156,7 +159,7 @@ def _stat_identity(path: str) -> tuple[int, int, int, int]:
 
 
 def find_rarlab_unrar() -> str:
-    """Return path to RARLAB unrar 7.0+, or raise PackageNotInstalledError."""
+    """Return path to RARLAB unrar 6.0+, or raise PackageNotInstalledError."""
     global _cached_unrar
     path_env = os.environ.get("PATH", "")
     # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``

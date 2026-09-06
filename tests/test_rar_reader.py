@@ -1486,7 +1486,7 @@ def _stub_which_unrar(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
 
 
 def _accepted_unrar_banner(_path: str = "") -> rar_unrar._UnrarBanner:
-    """Stand-in for a RARLAB probe that meets the 7.0 floor."""
+    """Stand-in for a RARLAB probe that meets the 6.0 floor."""
     return rar_unrar._UnrarBanner(is_rarlab=True, version=(7, 0))
 
 
@@ -1622,7 +1622,7 @@ def test_path_change_invalidates_cached_unrar_miss(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     rarlab_unrar = _usable_rarlab_unrar_or_skip(
-        "no usable RARLAB unrar 7.0+ on PATH — cannot test cache invalidation"
+        "no usable RARLAB unrar 6.0+ on PATH — cannot test cache invalidation"
     )
 
     monkeypatch.setenv("PATH", str(tmp_path))
@@ -1639,7 +1639,7 @@ def test_unrar_installed_after_miss_is_found(
 ) -> None:
     """``which`` re-runs on a miss: installing into an unchanged PATH is visible."""
     rarlab_unrar = _usable_rarlab_unrar_or_skip(
-        "no usable RARLAB unrar 7.0+ on PATH — cannot test install-after-miss"
+        "no usable RARLAB unrar 6.0+ on PATH — cannot test install-after-miss"
     )
 
     monkeypatch.setenv("PATH", str(tmp_path))
@@ -1810,7 +1810,9 @@ def test_parse_unrar_banner_version_without_vendor_is_not_rarlab() -> None:
     assert parsed.version is None
 
 
-@pytest.mark.parametrize("version_text", ["7.00", "7.0", "7.11"])
+@pytest.mark.parametrize(
+    "version_text", ["6.00", "6.02", "6.24", "7.00", "7.0", "7.11"]
+)
 def test_rarlab_unrar_at_or_above_floor_is_accepted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version_text: str
 ) -> None:
@@ -1840,15 +1842,15 @@ def test_rarlab_unrar_below_floor_is_rejected_and_cached(
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
-    banner = _RARLAB_BANNER.format(version="6.24")
+    banner = _RARLAB_BANNER.format(version="5.91")
     runs = _stub_unrar_banner(monkeypatch, fake, banner)
 
     shown = display_path(os.path.abspath(str(fake)))
     for _ in range(2):
-        with pytest.raises(PackageNotInstalledError, match="7.0") as info:
+        with pytest.raises(PackageNotInstalledError, match="6.0") as info:
             rar_unrar.find_rarlab_unrar()
         msg = str(info.value)
-        assert "6.24" in msg
+        assert "5.91" in msg
         assert shown in msg
         assert "unrar-free" not in msg
 
@@ -1856,7 +1858,7 @@ def test_rarlab_unrar_below_floor_is_rejected_and_cached(
     cached = rar_unrar._cached_unrar
     assert cached is not None
     assert cached.is_rarlab is True
-    assert cached.version == (6, 24)
+    assert cached.version == (5, 91)
 
 
 def test_unparseable_rarlab_banner_is_rejected_and_cached(
@@ -1880,7 +1882,7 @@ def test_unparseable_rarlab_banner_is_rejected_and_cached(
         ) as info:
             rar_unrar.find_rarlab_unrar()
         msg = str(info.value)
-        assert "7.0" in msg
+        assert "6.0" in msg
         assert shown in msg
         assert "unrar-free" not in msg
 

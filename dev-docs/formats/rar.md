@@ -15,14 +15,15 @@ Registers keep the status — this page states the behaviour and links the row.
 | Listing cost | `INDEXED` — but the walk is header-to-header, which is arguably `REQUIRES_SCANNING` (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
-| Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` **7.0 or later** on `PATH` (§1) |
+| Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` **6.0 or later** on `PATH` (§1) |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
-| Refuses | Non-seekable sources · a non-RARLAB `unrar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`) · a RARLAB `unrar` older than 7.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · writing |
+| Refuses | Non-seekable sources · a non-RARLAB `unrar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`) · a RARLAB `unrar` older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · writing |
 
-**Identification requires RARLAB `unrar` 7.0 or later.** The banner (`UNRAR` plus
+**Identification requires RARLAB `unrar` 6.0 or later.** The banner (`UNRAR` plus
 `Alexander Roshal`/`RARLAB`) is parsed for major.minor once, at identification, and
-cached with the probe. The `-n` mask demux and `-ver` behaviour were characterized
-on unrar 7.00; older RARLAB builds are untested rather than known-broken.
+cached with the probe. `-n` glob demux and `-ver` were checked against 6.02, 6.12,
+6.24, and 7.00. 5.91 passed the same RAR data tests but hangs on an anonymous-fd
+multi-volume probe that 6.12+ exits 3 on (a path archivey does not use).
 
 **One thing a reader might expect and will not find.** Nothing amortizes repeated random
 reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every out-of-order
@@ -89,8 +90,8 @@ Everything about that boundary is a consequence:
   ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5).
 - **Identity of the binary costs a process.** `find_rarlab_unrar` runs `unrar` with no
   arguments and sniffs the banner. Major.minor is parsed from that same text
-  (`UNRAR 7.00` / `UNRAR 7.11`) and cached with the probe — not re-read per member.
-  Below 7.0, or a RARLAB banner whose version cannot be parsed, is still cached as
+  (`UNRAR 6.02` / `UNRAR 7.00`) and cached with the probe — not re-read per member.
+  Below 6.0, or a RARLAB banner whose version cannot be parsed, is still cached as
   RARLAB (`is_rarlab=True`) and still refused (`PackageNotInstalledError` names the
   floor and the version found). `shutil.which` re-runs on every call — a miss is
   never frozen, so installing `unrar` into a directory already on `PATH` is visible
@@ -398,7 +399,7 @@ or an empty stream that reaches EOF cleanly.
 
 **Without the binary**, a compressed or encrypted read raises `PackageNotInstalledError`
 naming RARLAB `unrar` and naming the lookalikes that are *not* accepted. A RARLAB
-binary older than 7.0 (or whose banner version cannot be parsed) raises the same
+binary older than 6.0 (or whose banner version cannot be parsed) raises the same
 exception at identification, naming the floor and the version found. Listing and stored
 reads are unaffected. There is no silent fallback (§3, threat-model C1).
 
@@ -675,8 +676,8 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Listing and stored reads with **no binary on `PATH` at all**, and a compressed read there naming RARLAB `unrar` | `tests/test_rar_reader.py::test_listing_and_stored_reads_need_no_unrar` |
 | A stored nonsolid archive is read end to end with zero subprocesses (the §2.3 measurement) | `::test_stored_nonsolid_archive_spawns_no_unrar_process` |
 | The finder rejects a missing or non-RARLAB binary, and the message names the lookalikes | `::test_missing_unrar_raises`, `::test_unrar_not_installed_message_names_lookalikes`, `::test_non_rarlab_unrar_rejected` |
-| A non-RARLAB binary on `PATH` is rejected, and the one we run is RARLAB's 7.0+ | `::test_non_rarlab_unrar_rejected`, `::test_unrar_on_path_is_the_rarlab_build` |
-| Identification parses major.minor from the probe banner; below 7.0 (or unparseable RARLAB) is refused once and cached as RARLAB | `::test_rarlab_unrar_below_floor_is_rejected_and_cached`, `::test_rarlab_unrar_at_or_above_floor_is_accepted`, `::test_unparseable_rarlab_banner_is_rejected_and_cached` |
+| A non-RARLAB binary on `PATH` is rejected, and the one we run is RARLAB's 6.0+ | `::test_non_rarlab_unrar_rejected`, `::test_unrar_on_path_is_the_rarlab_build` |
+| Identification parses major.minor from the probe banner; below 6.0 (or unparseable RARLAB) is refused once and cached as RARLAB | `::test_rarlab_unrar_below_floor_is_rejected_and_cached`, `::test_rarlab_unrar_at_or_above_floor_is_accepted`, `::test_unparseable_rarlab_banner_is_rejected_and_cached` |
 | The finder caches hits and misses for one `PATH`, then re-probes after `PATH` changes or a cached binary vanishes | `::test_non_rarlab_unrar_negative_probe_is_cached`, `::test_missing_unrar_negative_probe_is_cached`, `::test_path_change_invalidates_cached_unrar_miss`, `::test_deleted_cached_unrar_is_not_returned` |
 | A solid pass spawns `unrar` only on the first read | `::test_solid_pass_spawns_unrar_only_on_the_first_read` |
 | Hostile member names (`-inul`, `@atfile`) read **their own** bytes, RAR4 and RAR5 | `::test_hostile_member_name_reads_its_own_bytes` |
@@ -795,7 +796,7 @@ and compressed through `unrar` when present; **#16** `unrar` probe caching —
 transient execute failures not cached; **#17** registered `.cbr` / `.cbz` / `.cbt` /
 `.cb7` and kept `FORMAT_EXTENSION_CONFLICT` on a cross-container comic
 ([#307](https://github.com/davitf/archivey/pull/307)); and **#7** `unrar` version
-floor **7.0**, parsed from the identification banner and cached with the probe.
+floor **6.0**, parsed from the identification banner and cached with the probe.
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
