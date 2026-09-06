@@ -14,12 +14,12 @@ On-disk layout this module walks::
           each: CRC16 | type | flags | header_size | [body] | [packed add_size]
         RAR5: vint-framed MAIN / FILE / SERVICE / ENCRYPTION / ENDARC
           optional encryption block before encrypted headers
-          optional MAIN locator extra → QO SERVICE (header copies at the tail)
+          optional MAIN locator extra → QO SERVICE (FILE header copies after the members)
     FILE rows point at packed bytes after the header (``data_offset``).
     When a stored unencrypted QO is reachable from the locator, listing starts
-    from those copies. WinRAR AUTO caches only large files; local FILE headers
-    in the holes are merged. FILE after QO is also kept. A complete ``-qo+``
-    chain has no holes, so listing does not walk FILE.
+    from those copies, then walks toward QO and skips FILE headers already in
+    it. FILE headers QO omitted are parsed; FILE after QO is kept. A complete
+    ``-qo+`` copy means the walk is only packed-span skips.
 
 ``RarArchive.version`` uses **4 for the whole RAR3-on-disk family** (1.5/2.x/3.x) and
 **5 for RAR5** — not "RAR 4.x product version". Multi-volume sets are merged by
@@ -1662,14 +1662,14 @@ def _fill_rar5_qo_file_gaps(
     members: list[RarMemberInfo],
     volume_index: int,
 ) -> bool:
-    """Read local FILE headers WinRAR AUTO left out of QO (small files).
+    """Parse FILE headers that QO omitted (WinRAR AUTO: small files).
 
-    QO is a tail cache of *some* headers, still sitting after every FILE.
-    ``-qo+`` copies all of them, so ``resume_pos`` chains to ``qopen_abs``
-    and this is a no-op. AUTO copies only relatively large files; the rest
-    stay as local headers in the holes, which UnRAR overlays in. Adding a
-    file with ``rar a`` rewrites QO at a new tail — it does not leave FILE
-    after QO.
+    After reading QO, walk from ``resume_pos`` toward QO. A FILE already in
+    ``members`` is skipped: seek over its packed span to the next header.
+    ``-qo+`` copies every FILE, so those skips chain to ``qopen_abs`` and this
+    parses nothing. AUTO omits small files; those local headers are parsed
+    here. ``rar a`` rewrites QO at the new end — it does not leave FILE after
+    QO.
     """
     seen = {m.header_offset for m in members}
     ordered = sorted(members, key=lambda m: m.header_offset)
@@ -1908,8 +1908,8 @@ def _parse_rar5(
             )
             if block_type == _RAR5_FILE:
                 # File-version history rows (extra 0x04) are kept as members.
-                # Complete QO already listed these; skip duplicates. AUTO holes
-                # were filled from local headers. FILE after QO is still adopted.
+                # FILE headers already seen via QO (or the skip-walk) are not
+                # appended again. FILE after QO is still adopted.
                 if member.header_offset not in seen_file_offsets:
                     if _emit_rar5_file_member(members, member):
                         needs_next_volume = True
