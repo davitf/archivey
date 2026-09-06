@@ -17,15 +17,15 @@ containers, so a format name would be the wrong thing to install. On a free-thre
 build use `archivey[free-threaded]`; see
 [Platforms and threading](support-matrix.md#free-threaded-python-313t-and-later).
 
-RAR **member data** also needs the RARLAB `unrar` binary on `PATH` (listing works without
-it). How to get that binary is below; format quirks live on
+RAR **member data** also needs RARLAB `unrar` **6.0 or later** on `PATH` (listing works
+without it). How to get that binary is below; format quirks live on
 [Formats and extras](formats.md).
 
 ## What each format needs
 
 The per-format detail lives on [Formats and extras](formats.md); the short version
 is that every format except RAR is a pip install away, and RAR **member data** needs
-the RARLAB `unrar` binary on `PATH` — not `unrar-free`, `unar`, or `7z`. `rarfile`
+RARLAB `unrar` **6.0 or later** on `PATH` — not `unrar-free`, `unar`, or `7z`. `rarfile`
 accepts those last two as data backends; archivey does not: they either cannot read
 solid RAR or fail silently on it. Listing and metadata work without it.
 
@@ -33,13 +33,20 @@ solid RAR or fail silently on it. Listing and metadata work without it.
 
 Listing a RAR works without it. Reading member bytes does not. Archivey looks for a
 binary named `unrar` whose banner contains `UNRAR` plus `Alexander Roshal` or
-`RARLAB` — run `unrar` with no arguments to check.
+`RARLAB`, and whose version in that banner is **6.0 or later** (`UNRAR 6.02`,
+`UNRAR 7.00`). Run `unrar` with no arguments to check. An older RARLAB build is
+refused at identification, not per member.
 
 ### Linux
 
 ```bash
 sudo apt install unrar    # Debian/Ubuntu: non-free / multiverse, not the `unrar-free` package
+unrar                     # confirm UNRAR 6.00+ and RARLAB / Alexander Roshal
 ```
+
+Debian 12 and Ubuntu 22.04 ship 6.x, which is enough. Ubuntu 24.04 ships 7.00.
+A 5.x package (some older releases) is refused — compile from RARLAB source
+(same steps as the macOS recipe below) rather than trusting `apt` on those distros.
 
 Other distros ship an equivalently named package of RARLAB UnRAR.
 
@@ -59,7 +66,7 @@ are not Apple-notarized.
 
 ```bash
 brew install gromgit/new-life/unrar
-unrar   # confirm the banner names RARLAB / Alexander Roshal
+unrar   # confirm UNRAR 6.0+ and RARLAB / Alexander Roshal
 ```
 
 The tap is not Homebrew core. `brew install` trusts whatever formula the tap serves
