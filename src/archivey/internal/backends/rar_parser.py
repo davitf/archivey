@@ -17,9 +17,9 @@ On-disk layout this module walks::
           optional MAIN locator extra → QO SERVICE (FILE header copies after the members)
     FILE rows point at packed bytes after the header (``data_offset``).
     When a stored unencrypted QO is reachable from the locator, listing starts
-    from those copies, then walks toward QO and skips FILE headers already in
-    it. FILE headers QO omitted are parsed; FILE after QO is kept. A complete
-    ``-qo+`` copy means the walk is only packed-span skips.
+    from those copies, then reads only FILE headers QO omitted (uncovered
+    intervals between MAIN and QO). A complete ``-qo+`` copy is zero FILE-header
+    reads — one seek to after QO. FILE after QO is kept.
 
 ``RarArchive.version`` uses **4 for the whole RAR3-on-disk family** (1.5/2.x/3.x) and
 **5 for RAR5** — not "RAR 4.x product version". Multi-volume sets are merged by
@@ -298,10 +298,20 @@ def parse_rar_archive(
     source: BinaryIO,
     *,
     password: str | bytes | None = None,
+    use_qo: bool = True,
 ) -> RarArchive:
-    """Parse from current position (archive start). Source must be seekable."""
+    """Parse from current position (archive start). Source must be seekable.
+
+    ``use_qo=False`` forces the FILE-header walk even when MAIN's locator
+    points at a usable QO. Tests compare the two listings; production always
+    leaves the default.
+    """
     return _parse_rar_one(
-        source, password=password, volume_index=0, allow_continuation=False
+        source,
+        password=password,
+        volume_index=0,
+        allow_continuation=False,
+        use_qo=use_qo,
     )
 
 
@@ -309,6 +319,7 @@ def parse_rar_volumes(
     volumes: Sequence[BinaryIO],
     *,
     password: str | bytes | None = None,
+    use_qo: bool = True,
 ) -> RarArchive:
     """Parse an ordered multi-volume RAR set, merging split members across volumes.
 
@@ -328,6 +339,7 @@ def parse_rar_volumes(
             password=password,
             volume_index=index,
             allow_continuation=index > 0,
+            use_qo=use_qo,
         )
         # Reject sets that do not start at volume 1.
         if index == 0 and (
@@ -401,6 +413,7 @@ def _parse_rar_one(
     password: str | bytes | None,
     volume_index: int,
     allow_continuation: bool,
+    use_qo: bool = True,
 ) -> RarArchive:
     start = source.tell()
     version, sfx_offset = _find_sfx_header(source, start)
@@ -411,6 +424,7 @@ def _parse_rar_one(
             password=password,
             sfx_offset=sfx_offset,
             volume_index=volume_index,
+            use_qo=use_qo,
         )
     else:
         archive = _parse_rar3(
@@ -1697,12 +1711,13 @@ def _fill_rar5_qo_file_gaps(
 ) -> bool:
     """Parse FILE headers that QO omitted (WinRAR AUTO: small files).
 
-    After reading QO, walk from ``resume_pos`` toward QO. A FILE already in
-    ``members`` is skipped: seek over its packed span to the next header.
-    ``-qo+`` copies every FILE, so those skips chain to ``qopen_abs`` and this
-    parses nothing. AUTO omits small files; those local headers are parsed
-    here. ``rar a`` rewrites QO at the new end — it does not leave FILE after
-    QO.
+    After reading QO, compute uncovered intervals from ``resume_pos`` to
+    ``qopen_abs`` using each QO member's packed span. Only those intervals
+    are walked — a FILE already in QO is never seeked to. ``-qo+`` copies
+    every FILE, so the intervals are empty and this is zero FILE I/O (the
+    caller then seeks once to after QO). AUTO omits small files; those
+    local headers are parsed here. ``rar a`` rewrites QO at the new end —
+    it does not leave FILE after QO.
     """
     seen = {m.header_offset for m in members}
     ordered = sorted(members, key=lambda m: m.header_offset)
@@ -1774,6 +1789,7 @@ def _parse_rar5(
     password: str | bytes | None,
     sfx_offset: int,
     volume_index: int = 0,
+    use_qo: bool = True,
 ) -> RarArchive:
     _require_exact(source, len(RAR5_ID), "RAR5 signature")
 
@@ -1863,7 +1879,7 @@ def _parse_rar5(
             # Header-encrypted QO stores IV+ciphertext header copies and
             # file-encrypts the QO payload; reconstructed data_offset then
             # misses AES padding. Treat that QO as unreadable (FILE walk).
-            if hdr_enc is None:
+            if hdr_enc is None and use_qo:
                 qopen_abs = _rar5_locator_qopen_abs(hdata, extra_size, header_offset)
                 if qopen_abs is not None:
                     cmt = _try_consume_rar5_cmt(source)
@@ -1890,6 +1906,10 @@ def _parse_rar5(
                         ):
                             needs_next_volume = True
                         seen_file_offsets.update(m.header_offset for m in members)
+                        # FILE headers between MAIN and QO are not visited in
+                        # this loop. Gaps (AUTO holes) were read above; a full
+                        # QO is zero FILE-header reads. Resume at the end of
+                        # QO's packed span for ENDARC / RR / FILE after QO.
                         source.seek(qo_end)
                         continue
                     source.seek(resume_pos)
@@ -1945,8 +1965,11 @@ def _parse_rar5(
             )
             if block_type == _RAR5_FILE:
                 # File-version history rows (extra 0x04) are kept as members.
-                # FILE headers already seen via QO (or the skip-walk) are not
-                # appended again. FILE after QO is still adopted.
+                # This loop only sees FILE after QO (or the no-QO walk).
+                # Cached FILE headers were skipped by `_fill_rar5_qo_file_gaps`
+                # as uncovered-interval math, not by this set. The set stops a
+                # post-QO FILE from being appended twice if its offset was
+                # already adopted.
                 if member.header_offset not in seen_file_offsets:
                     if _emit_rar5_file_member(members, member):
                         needs_next_volume = True

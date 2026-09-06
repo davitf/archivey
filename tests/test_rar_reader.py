@@ -33,6 +33,7 @@ from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
+    RarArchive,
     RarMemberInfo,
     _decode_rar3_unicode_name,
     load_vint,
@@ -2771,6 +2772,72 @@ def _qo_cached_filenames(path: Path) -> set[str]:
         return {m.filename for m in members}
 
 
+def _listing_snapshot(archive: RarArchive) -> tuple[object, ...]:
+    return (
+        archive.version,
+        archive.is_solid,
+        archive.has_header_encryption,
+        archive.comment,
+        archive.sfx_offset,
+        archive.is_volume,
+        archive.needs_next_volume,
+        tuple(dataclasses.asdict(m) for m in archive.members),
+    )
+
+
+def _assert_qo_walk_parity(path: Path, *, password: str | bytes | None = None) -> None:
+    """QO listing and the FILE-header walk must produce identical member tables."""
+    assert _qo_cached_filenames(path), (
+        f"{path} has no QO table — comparison is walk vs walk"
+    )
+    with path.open("rb") as handle:
+        via_qo = parse_rar_archive(handle, password=password, use_qo=True)
+    with path.open("rb") as handle:
+        via_walk = parse_rar_archive(handle, password=password, use_qo=False)
+    assert _listing_snapshot(via_qo) == _listing_snapshot(via_walk)
+
+
+def test_qo_listing_matches_file_walk_on_corpus() -> None:
+    """formats/rar.md §10 #5: committed QO archive matches the FILE walk."""
+    corpus = Path(__file__).parent / "fixtures" / "corpus" / "rar" / "large.rar"
+    if not corpus.is_file():
+        pytest.skip("missing corpus large.rar")
+    _assert_qo_walk_parity(corpus)
+
+
+@requires_binary("rar")
+@pytest.mark.parametrize(
+    ("files", "extra"),
+    [
+        ({"a.txt": b"alpha\n", "b.bin": b"B" * 64}, ["-m0", "-qo+"]),
+        ({"tiny.txt": b"t" * 240, "large.bin": b"L" * 10240}, ["-m0"]),
+        ({"s.txt": b"solid\n", "t.txt": b"two\n"}, ["-m3", "-s", "-qo+"]),
+        ({"e.txt": b"secret\n"}, ["-m0", "-qo+", "-ppw"]),
+        ({"x.txt": b"stamp\n"}, ["-m0", "-qo+", "-ts+"]),
+        ({"empty.txt": b"", "dir/nested.txt": b"n\n"}, ["-m0", "-qo+"]),
+    ],
+    ids=["qo+", "auto", "solid", "member-encrypted", "xtime", "empty-and-nested"],
+)
+def test_qo_listing_matches_file_walk_live(
+    tmp_path: Path, files: dict[str, bytes], extra: list[str]
+) -> None:
+    archive_path = _rar_a(tmp_path / "parity", "parity.rar", files, extra)
+    _assert_qo_walk_parity(archive_path)
+
+
+@requires_binary("rar")
+def test_qo_listing_matches_file_walk_with_comment(tmp_path: Path) -> None:
+    cmt = tmp_path / "cmt.txt"
+    cmt.write_text("hello-comment\n", encoding="utf-8")
+    archive_path = _rar_a(
+        tmp_path / "cmt",
+        "cmt.rar",
+        {"a.txt": b"alpha\n"},
+        ["-m0", "-qo+", f"-z{cmt}"],
+    )
+    _assert_qo_walk_parity(archive_path)
+
+
 @requires_binary("rar")
 def test_rar_a_rewrites_qo_and_lists_the_new_member(tmp_path: Path) -> None:
     """``rar a`` rewrites QO at a new tail; the added member is not FILE-after-QO."""
@@ -2807,6 +2874,7 @@ def test_rar_a_rewrites_qo_and_lists_the_new_member(tmp_path: Path) -> None:
         assert listed == {"a.txt", "b.txt"}
         assert archive.read("a.txt") == b"alpha\n"
         assert archive.read("b.txt") == b"beta\n"
+    _assert_qo_walk_parity(archive_path)
 
 
 @requires_binary("rar")

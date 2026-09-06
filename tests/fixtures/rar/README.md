@@ -54,6 +54,8 @@ provisioned Linux laptop; they do not run on CI.
 | `test_rar_reader.py::test_listing_qo_skip_count_does_not_scale_with_member_count` | live `rar a -qo+`; skip count must not grow with member count |
 | `test_rar_reader.py::test_qo_listing_stored_read_and_comment` | live `rar a -qo+ -z`; stored slice plus archive comment from the QO table |
 | `test_rar_reader.py::test_unreadable_qo_falls_back_to_file_walk` | live `rar a -qo+`, then a flipped QO payload byte |
+| `test_rar_reader.py::test_qo_listing_matches_file_walk_live` | live `rar a` shapes vs `use_qo=False` FILE walk |
+| `test_rar_reader.py::test_qo_listing_matches_file_walk_with_comment` | live `rar a -qo+ -z`; archive comment field parity |
 
 Committing a small SFX payload (and a real `-sfx` stub) the way this directory
 already does for volumes would close the gap. Tracked in `dev-docs/IDEAS.md`.

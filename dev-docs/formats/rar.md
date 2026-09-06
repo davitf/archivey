@@ -12,7 +12,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | Read | Yes — metadata natively, member data through RARLAB `unrar` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
 | Source | Seekable only, in both access modes |
-| Listing cost | `INDEXED` — RAR5 with QO: read the copies, skip matching FILE headers (§1.1). Otherwise a header-to-header walk cached at open (§1) |
+| Listing cost | `INDEXED` — RAR5 with QO: read the copies, walk only FILE headers QO omitted (§1.1). Otherwise a header-to-header walk cached at open (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Member data needs the RARLAB `unrar` binary on `PATH` (§1) |
@@ -120,7 +120,7 @@ visits each header in turn, using the declared packed size to seek over the data
 next one. That is O(members) seeks — the same shape `ListingCost.REQUIRES_SCANNING` names,
 which is what `tar_reader` reports for uncompressed tar. RAR still reports `INDEXED`
 because the table is cached at open. With a usable `QO`, listing reads those copies
-first and skips the matching FILE headers on the walk (§1.1).
+first and walks only the FILE headers QO omitted (§1.1).
 
 ### 1.1 Quick Open (QO)
 
@@ -148,18 +148,21 @@ included — it does not leave FILE after the old QO.
 **Listing:**
 
 1. Follow the locator and parse QO. That is the starting member table.
-2. Walk from after MAIN (after `CMT`, if it sat there) toward QO. A FILE already
-   in QO is skipped: one seek over its packed span, continue at the next header.
-   A FILE not in QO is parsed and added.
+2. Compute uncovered intervals from after MAIN (after `CMT`, if it sat there)
+   to QO, using each cached member's packed span. Walk only those intervals.
+   A FILE already in QO is never seeked to. AUTO holes — small files QO
+   omitted — are the intervals whose local headers are parsed.
 3. After QO, keep walking — recovery records, `ENDARC`, and any FILE a writer
    left past QO.
 
-When `-qo+` copied every FILE, step 2 is only those skips: the packed spans chain
-from after MAIN to QO, and no FILE header is read. UnRAR (`qopen.cpp`) does the
-same work the other way around: it walks FILE headers and substitutes the QO copy
-on a hit. We start from QO and skip the hits. The win is seeks, not local CPU:
-parsing the copies is a bit slower than a FILE walk on a local disk (per-record
-`BytesIO`, two CRCs) and cheaper when the source is high-latency.
+When `-qo+` copied every FILE, step 2's intervals are empty: zero FILE-header
+reads, one seek to after QO. UnRAR (`qopen.cpp`) does the same work the other
+way around: it walks FILE headers and substitutes the QO copy on a hit. We
+start from QO and skip the hits. The win is seeks, not local CPU: parsing
+the copies is a bit slower than a FILE walk on a local disk (per-record
+`BytesIO`, two CRCs) and cheaper when the source is high-latency. A per-FILE
+skip in the main walk would be n seeks even for a full QO; the interval
+pass is why skip counts do not scale with member count.
 
 `CMT` after MAIN is consumed before the locator jump, so the archive comment is
 not dropped. Member `-p` encryption does not encrypt the QO SERVICE; the FILE
@@ -617,7 +620,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A RAR5 redirect surfaces no digest; RAR3/4's is kept | Keying on the storage shape rather than the member type keeps a genuine digest where one exists and drops a constant that describes nothing. The value dropped is exactly the one a de-duplicating caller would read | Keying on member type, which would have thrown away RAR3/4's real digest; surfacing `crc32(b"")` for symmetry |
 | Surface a link member's digest where the format stores one, and say what it covers | It is a real digest of the bytes the format stores for that member — which for a link is the target *string*, not the content it resolves to. ZIP and 7z store and surface exactly the same thing, so dropping RAR3/4's alone would buy consistency inside RAR at the cost of a worse one across formats. The fix for the misreading is documenting the field, not emptying it (§2.2) | Dropping link digests everywhere, which loses information ZIP and 7z genuinely store; keeping them and saying nothing, which leaves `hashes` implying content |
 | Commit the RAR corpus archives, pinned by a manifest | Otherwise the corpus's RAR column is a licensing decision and runs on Linux only, while the release headlines a native RAR reader | Installing the trialware writer on CI; reworking digest expectations for a platform dependence that measurement showed does not exist (ADR [0016](../decisions/0016-committed-rar-corpus-fixtures.md)) |
-| Read QO, then skip FILE headers already in it; parse the rest | Same table extract uses. `-qo+` copies every FILE, so the walk is only packed-span skips. AUTO omits small files from QO; those still list from their local headers. `rar a` rewrites QO at the new end. Packed QO / `-hp` fall back to a full FILE walk. Wrapping QO for `unrar` at list time would violate listing-without-unrar | Validating QO against a full FILE walk on `-qo+` (pays the seeks QO exists to avoid) |
+| Read QO, then only FILE headers QO omitted | Same table extract uses. `-qo+` copies every FILE, so that pass is zero FILE-header reads. AUTO omits small files from QO; those still list from their local headers. `rar a` rewrites QO at the new end. Packed QO / `-hp` fall back to a full FILE walk. Wrapping QO for `unrar` at list time would violate listing-without-unrar | Validating QO against a full FILE walk *at list time* (pays the seeks QO exists to avoid). Build-time `use_qo=False` comparison is the standing pin |
 
 ## 7. Open questions
 
@@ -716,7 +719,8 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection | `tests/test_rar_reader.py::test_rar15_and_rar2_list_and_read`, `::test_extract_version_20_payload_accepted` |
 | RAR 1.5 / 2.x archive and member comments match `rarfile`; stored old-style comments need no binary; RAR3 CMT reaches `member.comment`; RAR5 CMT stays archive-only | `::test_rar15_and_rar2_comments_match_rarfile`, `::test_rar3_stored_old_style_main_comment_needs_no_unrar`, `::test_rar3_service_comment_maps_to_member_comment`, `::test_rar5_comment_service_stays_archive_only` |
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
-| Listing without QO is a header-to-header walk; with QO, FILE headers already in it are skipped (§1.1) | `::test_listing_without_qo_walks_header_to_header`, `::test_listing_with_qo_does_not_seek_per_member`, `::test_listing_qo_skip_count_does_not_scale_with_member_count` |
+| Listing without QO is a header-to-header walk; with QO, FILE headers already in it are not read (§1.1) | `::test_listing_without_qo_walks_header_to_header`, `::test_listing_with_qo_does_not_seek_per_member`, `::test_listing_qo_skip_count_does_not_scale_with_member_count` |
+| QO listing matches the FILE-header walk field-for-field | `::test_qo_listing_matches_file_walk_on_corpus`, `::test_qo_listing_matches_file_walk_live` |
 | QO listing serves stored reads and keeps the archive comment; unreadable QO falls back to the walk | `::test_qo_listing_stored_read_and_comment`, `::test_unreadable_qo_falls_back_to_file_walk` |
 | QO payload of non-FILE records parses in linear time; overlapping QO spans are refused | `::test_rar5_qo_non_file_records_parse_in_linear_time`, `::test_qo_overlapping_spans_are_rejected` |
 | AUTO still lists small files QO omitted; `rar a` rewrites QO; FILE after QO is still listed | `::test_auto_qo_lists_small_files_omitted_from_cache`, `::test_rar_a_rewrites_qo_and_lists_the_new_member`, `::test_file_header_after_qo_is_still_listed` |
