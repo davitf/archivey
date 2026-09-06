@@ -91,13 +91,17 @@ finds the rest**, in the naming schemes those tools produce:
 
 | Scheme | Give it |
 |---|---|
-| `backup.7z.001` / `backup.exe.001`, `.002`, … | Any numbered part |
+| `backup.7z.001` / `backup.exe.001` / `backup.zip.001`, `.002`, … | Any numbered part, or the stub `backup.exe` |
 | `backup.part1.rar` / `backup.part1.sfx`, `.part2.rar`, … | Any part |
 | `backup.rar` + `backup.r00`, `.r01`, … | The `.rar`, or any `.rNN` |
 
 A 7z set is checked for completeness, so a missing middle part is an error rather
-than a silent short read. The stub executable beside an SFX numbered set
-(`backup.exe` next to `backup.exe.001`) is not a volume — pass a numbered part.
+than a silent short read. The stub executable beside an SFX numbered set is not
+concatenated into the volumes; opening it follows the first volume
+(`backup.exe.001`, `backup.7z.001`, or `backup.zip.001`) so the same path works
+for Linux 7-Zip and Windows 7-Zip. A file that *is* a self-extracting archive
+(magic behind the stub) still opens as that archive, even if numbered parts sit
+beside it.
 The old RAR scheme needs its `.rar` present either way: that
 file is volume one, so a `.rNN` on its own is read as a lone file rather than as part
 of a set.

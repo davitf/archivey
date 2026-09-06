@@ -3,8 +3,10 @@
 ``open_archive`` pipeline (in order): register backends → refuse a wrong-typed
 ``format=`` → validate streaming/concurrency → resolve source → ZIP split-name
 refuse (``.zNN`` / ``.zip.NNN``, skipped when ``format=`` is an explicit non-ZIP)
-→ detect or accept format → other multi-volume checks → backend capability gates
-(password / seekability) → normalize stream origin → ``backend.open_read(...)``.
+→ detect or accept format (a stub-only ``.exe`` / ``.sfx`` with no archive magic
+follows the split first volume beside it) → other multi-volume checks → backend
+capability gates (password / seekability) → normalize stream origin →
+``backend.open_read(...)``.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from archivey.diagnostics import (
 from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyUsageError,
+    FormatDetectionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
     UnsupportedFormatError,
@@ -67,7 +70,13 @@ from archivey.internal.streams.streamtools import (
     is_seekable,
     is_stream,
 )
-from archivey.internal.volumes import ConcatenatedFile, OpenSourceInput, resolve_source
+from archivey.internal.volumes import (
+    ConcatenatedFile,
+    OpenSourceInput,
+    ResolvedSource,
+    first_volume_for_stub,
+    resolve_source,
+)
 from archivey.internal.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -133,6 +142,23 @@ def _raise_multi_volume_not_supported(
         source_format=fmt,
         archive_name=archive_name,
     )
+
+
+def _refuse_lone_zip_split(
+    resolved: ResolvedSource,
+    format: ArchiveFormat | None,
+    archive_name: str | None,
+) -> None:
+    if (
+        resolved.volume_count == 1
+        and is_zip_split_segment_name(archive_name)
+        and (format is None or format == ArchiveFormat.ZIP)
+    ):
+        raise UnsupportedFeatureError(
+            ZIP_MULTI_VOLUME_MSG,
+            archive_name=archive_name,
+            source_format=ArchiveFormat.ZIP,
+        )
 
 
 def open_archive(
@@ -263,16 +289,7 @@ def open_archive(
     #
     # What is left: Info-ZIP's genuinely spanned ``.zNN``, and a lone part whose siblings
     # are absent — both cases where "rejoin first" is still the right answer.
-    if (
-        resolved.volume_count == 1
-        and is_zip_split_segment_name(archive_name)
-        and (format is None or format == ArchiveFormat.ZIP)
-    ):
-        raise UnsupportedFeatureError(
-            ZIP_MULTI_VOLUME_MSG,
-            archive_name=archive_name,
-            source_format=ArchiveFormat.ZIP,
-        )
+    _refuse_lone_zip_split(resolved, format, archive_name)
 
     # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
     # format= is rejected, not ignored); else caller format, else magic detect. ---
@@ -295,7 +312,26 @@ def open_archive(
         # replayed to the backend; the same wrapper is handed over.
         if is_stream(reader_source) and not is_seekable(reader_source):
             reader_source = PeekableStream(reader_source)
-        detected = detect_format(reader_source, collector=collector)
+        # Probe *this* file only. Public detect_format follows a stub-only exe to
+        # the volume beside it; doing that here would report 7z/ZIP while still
+        # handing the stub bytes to the backend.
+        try:
+            detected = detect_format(
+                reader_source, collector=collector, follow_stub_volumes=False
+            )
+        except FormatDetectionError:
+            alt = (
+                first_volume_for_stub(reader_source)
+                if isinstance(reader_source, Path)
+                else None
+            )
+            if alt is None:
+                raise
+            resolved = resolve_source(alt)
+            reader_source = resolved.open_source
+            archive_name = resolved.archive_name
+            _refuse_lone_zip_split(resolved, format, archive_name)
+            detected = detect_format(reader_source, collector=collector)
         resolved_format = detected.format
 
     # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.

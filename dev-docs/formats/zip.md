@@ -161,7 +161,8 @@ are byte slices of one finished archive, so a
 complete set is concatenated by `internal/volumes.py` and read as the ordinary
 single-disk ZIP it is — the same code path and the same regex that already joined
 `.7z.NNN`, because it is the same `-v` flag doing the same slicing. The stub
-`name.exe` beside those parts is not a sibling. Info-ZIP's
+`name.exe` beside those parts is not a sibling; if it has no archive magic,
+`open_archive` follows it to `name.exe.001` or `name.zip.001`. Info-ZIP's
 `.z01 … .zip` is a genuinely spanned set whose entries are addressed by
 `(disk, offset-within-disk)`, so it keeps refusing. §3 has the producer detail.
 
@@ -425,7 +426,6 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | One member name whose UTF-8 flag lies makes the **whole archive** unlistable | **library** | Stdlib decodes flagged names strictly while parsing the central directory, so the failure is archive-wide rather than confined to the bad entry. [`open-issues.md`](../open-issues.md) P4 |
 | A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **library** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow — `zipfile` cannot, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`open-issues.md`](../open-issues.md) P2 |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part — stdlib refuses at open with `File is not a zip file`, and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
-| Opening the stub of a self-extracting numbered split (`vol.exe` beside `vol.exe.001`) does not resolve to `.001` | **archivey** | `vol.exe.001`…`.00N` now join, including a ZIP SFX set 7-Zip named `.exe.NNN`. The stub itself has no archive magic and is not a sibling — that half of [`open-issues.md`](../open-issues.md) P17 is still open |
 | A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk LFHs forward |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted and surface later as corruption | **format** | One-byte verifier. Confirmation narrows it; nothing eliminates it |

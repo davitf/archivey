@@ -172,9 +172,11 @@ target bytes. Under `RAISE`, listing halts with `DiagnosticRaisedError`.
 7-Zip's `-v` byte-splits one finished single-disk ZIP into
 `name.zip.001 … name.zip.00N`, exactly as it splits `name.7z.NNN`. An SFX split
 names the same slices `name.exe.001 … name.exe.00N` (stub `name.exe` is not a
-sibling). With every
+sibling). Windows 7-Zip keeps the archive extension (`name.zip.001`) and writes
+the stub as `name.exe`. With every
 part `1..N` present beside the one named, `open_archive` SHALL concatenate them
-and read the result as the ordinary ZIP it is, from any part, reporting
+and read the result as the ordinary ZIP it is, from any part **or from a
+stub-only `name.exe` that has no archive magic**, reporting
 `ArchiveInfo.is_multivolume = True` and `ArchiveInfo.extra["zip.volume_count"] = N`
 (not `ArchiveMember.extra`, which stays empty).
 A gap in the numbering SHALL raise `TruncatedError`.

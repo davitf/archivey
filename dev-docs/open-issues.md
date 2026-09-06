@@ -597,7 +597,7 @@ re-verified failing against the unfixed code). Original write-up below.
 - **Refs:** PR #101 (still open) / `dev-docs/investigations/rar-unrar-piping-investigation.md`
   (when merged); `format-rar`; handbook `formats/rar.md` §4 / §8.
 
-### P17. SFX stub-only files do not resolve to their `.001` — **open** (partN / numbered siblings done)
+### P17. Old-scheme SFX first volumes (`name.exe` + `.r00`) are undiscovered — **open** (numbered / `partN` siblings and stub-only follow done)
 
 - **Done (1).** Sibling discovery joins SFX first members of the numbered and
   `partN` schemes. `vol.exe.001`…`.00N` share base `vol.exe` (the stub `vol.exe`
@@ -606,14 +606,10 @@ re-verified failing against the unfixed code). Original write-up below.
   besides `.7z`/`.zip` (still `\d{3,}`); `_RAR_PART_RE` accepts `.sfx`/`.exe`
   besides `.rar`.
 
-- **Still open (2).** A stub-only file (`vol.exe`, no archive magic anywhere in it)
-  raises `FormatDetectionError` rather than resolving to its `.001`. Detection-side,
-  unlike (1). Measured on `main` @ `be1a459` before (1):
-
-  | Built with | Files | Before (1) | After (1) |
-  | --- | --- | --- | --- |
-  | `7z a -sfx7zCon.sfx -v40k` | `vol.exe`, `vol.exe.001`…`.004` | stub → `FormatDetectionError`; `.001` → `CorruptionError: Truncated 7z next header` | `.001` joins; stub still `FormatDetectionError` |
-  | `rar a -sfx -v40k` | `rv.part1.sfx`, `rv.part2.rar`…`.part5.rar` | `.part1.sfx` → `TruncatedError`; later parts → `Need first volume` | full set from either |
+- **Done (2).** A stub-only file (`vol.exe`, no archive magic) follows the split
+  first volume beside it: `vol.exe.001` (Linux 7-Zip), `vol.7z.001` or
+  `vol.zip.001` (Windows 7-Zip). Two of those names is `UnsupportedFeatureError`.
+  A stub that itself contains archive magic still opens as that archive.
 
 - **Still open (3).** An old-scheme SFX first volume (`name.exe` / `name.sfx`
   beside `name.r00`, `name.r01`, …) is not discovered. The `.rNN` branch

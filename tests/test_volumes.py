@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import extract, open_archive
+from archivey import detect_format, extract, open_archive
 from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
@@ -18,7 +18,11 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.volumes import discover_volume_siblings, join_volumes
+from archivey.internal.volumes import (
+    discover_volume_siblings,
+    first_volume_for_stub,
+    join_volumes,
+)
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
 
@@ -348,15 +352,17 @@ def test_sevenzip_sfx_numbered_parts_open_from_any_part(
     assert first.read_bytes()[: len(first_magic)] == first_magic
 
     expected = payload.read_bytes()
-    for anchor in (siblings[0], siblings[1]):
+    expected_format = None
+    for anchor in (siblings[0], siblings[1], stub):
         with open_archive(anchor) as archive:
+            expected_format = archive.format
             assert archive.info.is_multivolume is True
             assert archive.read("payload.bin") == expected
 
-    # Part 2 of P17: the stub has no archive magic and must not resolve to `.001`.
+    # The stub is still not a volume sibling; open_archive follows it separately.
     assert discover_volume_siblings(stub) is None
-    with pytest.raises(FormatDetectionError):
-        open_archive(stub)
+    assert first_volume_for_stub(stub) == first
+    assert detect_format(stub).format == expected_format
 
 
 def _tinyvol_sfx_pair(tmp_path: Path, *, decoy: bool) -> tuple[Path, Path]:
@@ -474,3 +480,102 @@ def test_single_member_sequence_equivalent_to_scalar(tmp_path: Path) -> None:
 
     with open_archive([path]) as ar:
         assert ar.read("only.txt") == b"ok"
+
+
+def _mz_stub() -> bytes:
+    return b"MZ" + b"\x00" * 126
+
+
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def _write_split_zip(tmp_path: Path, first_name: str, payload: bytes) -> Path:
+    data = _zip_bytes({"payload.bin": payload})
+    mid = max(len(data) // 2, 1)
+    first = tmp_path / first_name
+    first.write_bytes(data[:mid])
+    base = first_name[: first_name.rfind(".")]
+    (tmp_path / f"{base}.002").write_bytes(data[mid:])
+    return first
+
+
+@pytest.mark.parametrize(
+    "first_name",
+    ["vol.exe.001", "vol.zip.001"],
+    ids=["linux-exe-001", "windows-zip-001"],
+)
+def test_stub_only_exe_opens_zip_split_first_volume(
+    tmp_path: Path, first_name: str
+) -> None:
+    payload = b"hello from split zip" * 200
+    first = _write_split_zip(tmp_path, first_name, payload)
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(_mz_stub())
+    assert discover_volume_siblings(stub) is None
+    assert first_volume_for_stub(stub) == first
+    with open_archive(stub) as archive:
+        assert archive.read("payload.bin") == payload
+        assert archive.info.is_multivolume is True
+    assert detect_format(stub).format == ArchiveFormat.ZIP
+
+
+def test_stub_only_exe_opens_windows_7z_first_volume(tmp_path: Path) -> None:
+    py7zr = pytest.importorskip("py7zr")
+    payload = b"seven from stub"
+    src = tmp_path / "payload.bin"
+    src.write_bytes(payload)
+    first = tmp_path / "vol.7z.001"
+    with py7zr.SevenZipFile(first, "w") as zf:
+        zf.write(src, arcname="payload.bin")
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(_mz_stub())
+    assert first_volume_for_stub(stub) == first
+    with open_archive(stub) as archive:
+        assert archive.read("payload.bin") == payload
+    assert detect_format(stub).format == ArchiveFormat.SEVEN_Z
+
+
+def test_stub_only_exe_without_volumes_stays_undetected(tmp_path: Path) -> None:
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(_mz_stub())
+    assert first_volume_for_stub(stub) is None
+    with pytest.raises(FormatDetectionError):
+        open_archive(stub)
+    with pytest.raises(FormatDetectionError):
+        detect_format(stub)
+
+
+def test_embedded_sfx_zip_is_not_redirected_to_sibling_volume(tmp_path: Path) -> None:
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(_mz_stub() + _zip_bytes({"inside.txt": b"embedded"}))
+    _write_split_zip(tmp_path, "vol.zip.001", b"sibling payload" * 200)
+    with open_archive(stub) as archive:
+        assert [m.name for m in archive.members()] == ["inside.txt"]
+        assert archive.read("inside.txt") == b"embedded"
+
+
+def test_stub_only_exe_refuses_ambiguous_first_volumes(tmp_path: Path) -> None:
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(_mz_stub())
+    (tmp_path / "vol.exe.001").write_bytes(b"PK\x03\x04")
+    (tmp_path / "vol.7z.001").write_bytes(_7Z_MAGIC)
+    with pytest.raises(
+        UnsupportedFeatureError, match="more than one split first volume"
+    ):
+        first_volume_for_stub(stub)
+    with pytest.raises(
+        UnsupportedFeatureError, match="more than one split first volume"
+    ):
+        open_archive(stub)
+
+
+def test_numbered_exe_part_is_not_a_stub(tmp_path: Path) -> None:
+    part = tmp_path / "vol.exe.001"
+    part.write_bytes(b"x")
+    (tmp_path / "vol.exe.002").write_bytes(b"y")
+    assert first_volume_for_stub(part) is None

@@ -11,10 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, TypeGuard
 
+from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyUsageError,
     StreamNotSeekableError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.streams.streamtools import (
     ensure_full_count_reads,
@@ -29,8 +31,9 @@ SourceSequence = Sequence[SourceItem]
 # split* of one finished archive, so the parts concatenate back into the original and
 # one pattern serves both. An SFX module replaces the archive extension with ``.exe``
 # (``7z a -sfx … -v`` → ``vol.exe.001`` … ``.00N``); the stub ``vol.exe`` has no
-# ``.NNN`` suffix and is not a sibling — resolving it to ``.001`` is a separate
-# detection question. ``.sfx`` is not in this pattern: 7-Zip does not emit
+# ``.NNN`` suffix and is not a sibling. After detection misses, ``open_archive``
+# follows that stub to the split first volume beside it (``first_volume_for_stub``).
+# ``.sfx`` is not in this pattern: 7-Zip does not emit
 # ``name.sfx.001``, and arbitrary ``name.foo.001`` is not a 7-Zip split. Info-ZIP's
 # ``name.z01 … name.zip`` deliberately does not match: that is a true spanned set
 # addressed by (disk, offset). A linear join of one lists correctly and then reads
@@ -192,6 +195,58 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
         )
         return siblings if len(siblings) > 1 else None
 
+    return None
+
+
+def first_volume_for_stub(path: Path) -> Path | None:
+    """Return the split first volume beside a stub-only ``.exe`` / ``.sfx``, if any.
+
+    7-Zip's ``-sfx -v`` always writes a standalone stub with no archive magic, then
+    names the volumes three different ways:
+
+    - Linux: ``vol.exe.001`` (the stub's own name plus ``.001``)
+    - Windows 7z: ``vol.7z.001``
+    - Windows ZIP: ``vol.zip.001``
+
+    Opening the stub should work for every one of those, otherwise ``open_archive``
+    on ``vol.exe`` succeeds on Linux and fails on Windows for the same producer
+    flag. The stub is still not a volume sibling — this only names the file to
+    hand to :func:`discover_volume_siblings`.
+
+    A path that is already volume-shaped (``vol.exe.001``, ``rv.part1.exe``) is not
+    a stub. Two matching first volumes beside the stub is a refusal, not a guess.
+    """
+    name = path.name
+    if (
+        _NUMBERED_VOLUME_RE.match(name) is not None
+        or _RAR_PART_RE.match(name) is not None
+    ):
+        return None
+    lower = name.lower()
+    if not (lower.endswith(".exe") or lower.endswith(".sfx")):
+        return None
+    if not path.is_file():
+        return None
+    stem = name[: name.rfind(".")]
+    wanted = {
+        f"{name}.001".lower(),
+        f"{stem}.7z.001".lower(),
+        f"{stem}.zip.001".lower(),
+    }
+    found = [
+        candidate
+        for candidate in path.parent.iterdir()
+        if candidate.is_file() and candidate.name.lower() in wanted
+    ]
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        names = ", ".join(sorted(candidate.name for candidate in found))
+        raise UnsupportedFeatureError(
+            f"{display_path(path)} has no archive magic, and more than one split "
+            f"first volume sits beside it ({names}). Open one of those files.",
+            archive_name=path.as_posix(),
+        )
     return None
 
 
