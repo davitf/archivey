@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from archivey import MemberType, open_archive
+from archivey.types import EXTRA_RAR_EXTRACT_VERSION, CompressionAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.sample_archives import CORPUS, CorpusEntry, corpus_archive_path
 
@@ -42,6 +43,21 @@ def _norm_ts(dt: datetime) -> datetime:
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
     return dt
+
+
+def _assert_compression_matches(member, info) -> None:
+    method = member.compression[0]
+    compress_type = info.compress_type
+    assert member.extra[EXTRA_RAR_EXTRACT_VERSION] == info.extract_version
+    if compress_type == 0x30:
+        assert method.algo is CompressionAlgorithm.STORED
+        assert method.level is None
+    elif 0x31 <= compress_type <= 0x35:
+        assert method.algo is CompressionAlgorithm.RAR
+        assert method.level == compress_type - 0x30
+    else:
+        assert method.algo is CompressionAlgorithm.UNKNOWN
+        assert method.level is None
 
 
 def _assert_timestamps_match(member, info) -> None:
@@ -111,6 +127,7 @@ def test_native_rar_matches_rarfile_metadata_and_bytes(
             assert member.size == info.file_size
             assert native.read(member) == oracle_bytes[filename]
             _assert_timestamps_match(member, info)
+            _assert_compression_matches(member, info)
 
 
 @requires("rarfile")
