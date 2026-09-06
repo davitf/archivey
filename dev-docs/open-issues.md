@@ -597,7 +597,7 @@ re-verified failing against the unfixed code). Original write-up below.
 - **Refs:** PR #101 (still open) / `dev-docs/investigations/rar-unrar-piping-investigation.md`
   (when merged); `format-rar`; handbook `formats/rar.md` §4 / §8.
 
-### P17. Old-scheme SFX first volumes (`name.exe` + `.r00`) are undiscovered — **open** (numbered / `partN` siblings and stub-only follow done)
+### P17. Old-scheme SFX first volumes (`name.exe` + `.r00`) are undiscovered — **CLOSED**
 
 - **Done (1).** Sibling discovery joins SFX first members of the numbered and
   `partN` schemes. `vol.exe.001`…`.00N` share base `vol.exe` (the stub `vol.exe`
@@ -613,15 +613,15 @@ re-verified failing against the unfixed code). Original write-up below.
   `format=` follows the same redirect; a container mismatch with the sibling
   is `ArchiveyUsageError`.
 
-- **Still open (3).** An old-scheme SFX first volume (`name.exe` / `name.sfx`
-  beside `name.r00`, `name.r01`, …) is not discovered. The `.rNN` branch
-  requires `<base>.rar` as volume 1, and `name.exe` matches no pattern. RAR
-  7.00 dropped `-vn`, so no current producer emits this; leave it unimplemented
-  unless a legacy corpus shows up. Not the same question as (2).
+- **Done (3).** An old-scheme SFX first volume (`name.exe` / `name.sfx` beside
+  `name.r00`, `name.r01`, …) is volume 1 of that `.rNN` set. Prefer `<base>.rar`
+  when more than one first-volume name exists. A 7-Zip numbered stub
+  (`vol.exe` + `vol.exe.001`, no `.r00`) is still not this set — stub-follow
+  owns that shape. A lone numbered part (`.7z.001` / `.zip.001` / `.exe.001`)
+  raises `TruncatedError` naming the missing parts.
 
-- **Refs:** `volumes.py` (`_NUMBERED_VOLUME_RE`, `_RAR_PART_RE`); handbook
-  `formats/rar.md` §10 #11; `topics/prefixed-archives.md` §6. Grill after PR #279
-  (7z/RAR SFX hit validators).
+- **Refs:** `volumes.py`; handbook `formats/rar.md` §10 #11;
+  `topics/prefixed-archives.md` §6. Closed in #309.
 
 ### P18. `detected_by="sfx_scan"` names a motive the tier cannot know
 
@@ -726,6 +726,7 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 
 | Item | Closed by |
 | --- | --- |
+| **P17** Old-scheme SFX first volumes (`name.exe` + `.r00`) discovered; lone numbered parts name missing siblings | #309 |
 | Three false negatives from the detection-algorithm analysis §5: a zstd stream behind skippable frames, a zlib stream at any window below 32 KiB, an LZMA Alone stream with a zero dictionary size — all decoded by their own decoders, none detected. Plus the bootable ISO claimed by the Brotli probe, which the far-magic hoist that ships with them closes | `openspec/changes/detection-format-gaps/` |
 | **P10** A wrong-typed `format=` argument is refused, not answered (all four public entry points) | archived `openspec/changes/archive/2026-08-17-reject-wrong-typed-format-arguments/` |
 | **P1** TAR EOF Option F (`observed_kind` split; `strict_archive_eof` default stays `False`) | #149 / #162 — archived `openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/` |

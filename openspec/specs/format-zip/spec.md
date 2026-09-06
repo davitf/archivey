@@ -181,13 +181,15 @@ stub-only `name.exe` that has no archive magic** (including under an explicit
 reporting
 `ArchiveInfo.is_multivolume = True` and `ArchiveInfo.extra["zip.volume_count"] = N`
 (not `ArchiveMember.extra`, which stays empty).
-A gap in the numbering SHALL raise `TruncatedError`.
+A gap in the numbering SHALL raise `TruncatedError`. A lone `.zip.NNN` (or
+SFX `.exe.NNN`) part whose siblings are not on disk SHALL raise the same
+`TruncatedError`, naming the missing parts — not a ZIP spanned-set refusal.
 
 Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
 rejoin-first message rather than mis-read data or surface stdlib `BadZipFile`:
 Info-ZIP `.zNN` segment names, non-zero classic EOCD disk fields (`0xFFFF` is the
-ZIP64 sentinel, not a disk number), ZIP64 locator `disks > 1`, and a `.zip.NNN`
-part whose siblings are not on disk. Info-ZIP `zip -s` writes a genuinely spanned
+ZIP64 sentinel, not a disk number), and ZIP64 locator `disks > 1`. Info-ZIP
+`zip -s` writes a genuinely spanned
 set addressed by `(disk, offset-within-disk)`, which stdlib `zipfile` cannot
 resolve; a linear join lists correctly and then reads only whichever members
 happen to sit on the last disk. It stays deferred to a native ZIP reader.

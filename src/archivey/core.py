@@ -1,9 +1,10 @@
 """Public entry points: open archives and query format support.
 
 ``open_archive`` pipeline (in order): register backends → refuse a wrong-typed
-``format=`` → validate streaming/concurrency → resolve source → ZIP split-name
-refuse (``.zNN`` / ``.zip.NNN``, skipped when ``format=`` is an explicit non-ZIP)
-→ detect or accept format (a stub-only ``.exe`` / ``.sfx`` with no archive magic
+``format=`` → validate streaming/concurrency → resolve source → incomplete
+numbered-volume refuse (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``) then Info-ZIP
+``.zNN`` (both skipped when ``format=`` is an explicit non-joinable format) →
+detect or accept format (a stub-only ``.exe`` / ``.sfx`` with no archive magic
 follows the split first volume beside it) → other multi-volume checks → backend
 capability gates (password / seekability) → normalize stream origin →
 ``backend.open_read(...)``.
@@ -75,6 +76,7 @@ from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
     first_volume_for_stub,
+    incomplete_lone_numbered_volume_error,
     is_sfx_stub_name,
     resolve_source,
 )
@@ -145,6 +147,26 @@ def _raise_multi_volume_not_supported(
     )
 
 
+def _refuse_incomplete_numbered_volume(
+    resolved: ResolvedSource,
+    format: ArchiveFormat | None,
+    archive_name: str | None,
+) -> None:
+    if resolved.volume_count != 1:
+        return
+    # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
+    # must be honoured or refused as a format conflict, not rewritten as a
+    # missing-volume error.
+    if format is not None and format not in (
+        ArchiveFormat.ZIP,
+        ArchiveFormat.SEVEN_Z,
+    ):
+        return
+    error = incomplete_lone_numbered_volume_error(archive_name)
+    if error is not None:
+        raise error
+
+
 def _refuse_lone_zip_split(
     resolved: ResolvedSource,
     format: ArchiveFormat | None,
@@ -160,6 +182,15 @@ def _refuse_lone_zip_split(
             archive_name=archive_name,
             source_format=ArchiveFormat.ZIP,
         )
+
+
+def _refuse_unjoined_volume_names(
+    resolved: ResolvedSource,
+    format: ArchiveFormat | None,
+    archive_name: str | None,
+) -> None:
+    _refuse_incomplete_numbered_volume(resolved, format, archive_name)
+    _refuse_lone_zip_split(resolved, format, archive_name)
 
 
 def _refuse_if_stub_format_conflict(
@@ -187,7 +218,7 @@ def _follow_stub_volume(
     if format is not None:
         _refuse_if_stub_format_conflict(stub, alt, format)
     resolved = resolve_source(alt)
-    _refuse_lone_zip_split(resolved, format, resolved.archive_name)
+    _refuse_unjoined_volume_names(resolved, format, resolved.archive_name)
     return resolved
 
 
@@ -304,22 +335,17 @@ def open_archive(
     reader_source = resolved.open_source
     archive_name = resolved.archive_name
 
-    # ZIP split segments (Info-ZIP ``.zNN``, 7-Zip ``.zip.NNN``): middle/last parts
-    # often have no ZIP magic at offset 0, so detection would raise
-    # FormatDetectionError. Refuse by name before that — same rejoin-first
-    # message as the ZIP backend. Nameless streams are out of scope here.
+    # Numbered 7-Zip parts (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``) and Info-ZIP
+    # ``.zNN``: middle/last parts often have no magic at offset 0, so detection
+    # would raise FormatDetectionError or CorruptionError. Refuse by name first.
+    # A joined set has ``volume_count > 1`` and is skipped. An explicit
+    # ``format=TAR_GZ`` (etc.) is honoured or refused as a format conflict, never
+    # rewritten as a volume error (P8).
     #
-    # Two things narrow it. ``volume_count > 1`` means ``resolve_source`` already found
-    # the whole set on disk and concatenated it, and a joined 7-Zip ``.zip.NNN`` set *is*
-    # an ordinary single-volume ZIP (its ``-v`` is a raw byte split); the joined source
-    # keeps part one's name, so this refuse would otherwise fire on the very set it just
-    # rejoined. And an explicit ``format=TAR_GZ`` (etc.) must be honoured or refused as a
-    # *format conflict*, never as a ZIP multi-volume error (P8 / directory conflict
-    # below).
-    #
-    # What is left: Info-ZIP's genuinely spanned ``.zNN``, and a lone part whose siblings
-    # are absent — both cases where "rejoin first" is still the right answer.
-    _refuse_lone_zip_split(resolved, format, archive_name)
+    # A lone numbered part names the missing siblings (``TruncatedError``). Info-ZIP
+    # ``.zNN`` stays the ZIP rejoin-first ``UnsupportedFeatureError`` — those are
+    # never concatenated.
+    _refuse_unjoined_volume_names(resolved, format, archive_name)
 
     # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
     # format= is rejected, not ignored); else caller format, else magic detect. ---

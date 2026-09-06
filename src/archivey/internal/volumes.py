@@ -48,7 +48,9 @@ SourceSequence = Sequence[SourceItem]
 # catch it either: ``[1, 2]`` is exactly ``1..N``. ``.exe`` is format-agnostic (7-Zip
 # writes it for a 7z or ZIP payload), so this pattern is not kept in step with
 # ``is_zip_split_segment_name`` (still ``zip\.\d{3,}`` / ``.zNN``). A lone
-# ``.exe.001`` is therefore not diagnosed as an unjoined ZIP split.
+# numbered part (``.7z.001`` / ``.zip.001`` / ``.exe.001``) is refused at
+# ``open_archive`` as an incomplete set, naming the missing parts — not as a ZIP
+# spanned-set error. Info-ZIP ``.zNN`` stays that ZIP refusal.
 _NUMBERED_VOLUME_RE = re.compile(
     r"^(?P<base>.+\.(?:7z|zip|exe))\.(?P<part>\d{3,})$", re.IGNORECASE
 )
@@ -95,20 +97,67 @@ def _rnn_part_number(name: str) -> int:
     return int(match.group("part")) if match is not None else 0
 
 
+def _is_old_scheme_first_volume_name(name: str) -> bool:
+    """``<base>.rar`` / ``.exe`` / ``.sfx`` as old-scheme volume 1, not a partN/NNN name."""
+    if (
+        _NUMBERED_VOLUME_RE.match(name) is not None
+        or _RAR_PART_RE.match(name) is not None
+    ):
+        return False
+    lower = name.lower()
+    return lower.endswith(".rar") or lower.endswith(".exe") or lower.endswith(".sfx")
+
+
+def _old_rar_rnn_first_volume(parent: Path, base: str) -> Path | None:
+    """Volume 1 of an old-scheme set: ``.rar``, else ``.exe``, else ``.sfx``."""
+    for suffix in (".rar", ".exe", ".sfx"):
+        candidate = parent / f"{base}{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _collect_old_rar_rnn_volumes(parent: Path, base: str) -> list[Path] | None:
+    first = _old_rar_rnn_first_volume(parent, base)
+    if first is None:
+        return None
+    continuations = sorted(
+        (
+            candidate
+            for candidate in parent.iterdir()
+            if candidate.is_file()
+            and (rnn_match := _RAR_RNN_RE.match(candidate.name)) is not None
+            and rnn_match.group("base").lower() == base.lower()
+        ),
+        key=lambda candidate: _rnn_part_number(candidate.name),
+    )
+    if not continuations:
+        return None
+    return [first, *continuations]
+
+
 def discover_volume_siblings(path: Path) -> list[Path] | None:
     """Return ordered sibling paths when ``path`` is part of a volume set, else ``None``."""
     name = path.name
     lower = name.lower()
     # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
     # not volume-shaped. Saves a ``stat`` per open_archive (perf review L3).
-    # SFX first members (``*.exe.001``, ``*.part1.sfx``) match the patterns above;
-    # a stub ``*.exe`` / ``*.sfx`` with no part marker still returns here.
+    # SFX first members (``*.exe.001``, ``*.part1.sfx``) match the patterns above.
+    # A stub ``*.exe`` / ``*.sfx`` is maybe-volume only when ``<stem>.r00`` exists
+    # (one ``is_file``, no ``iterdir``) so 7-Zip ``vol.exe`` + ``vol.exe.001``
+    # still falls through to stub-follow.
     maybe_volume = (
         _NUMBERED_VOLUME_RE.match(name) is not None
         or _RAR_PART_RE.match(name) is not None
         or _RAR_RNN_RE.match(name) is not None
         or lower.endswith(".rar")
     )
+    if (
+        not maybe_volume
+        and _is_old_scheme_first_volume_name(name)
+        and (path.parent / f"{path.stem}.r00").is_file()
+    ):
+        maybe_volume = True
     if not maybe_volume:
         return None
     if not path.is_file():
@@ -150,50 +199,17 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
             for part in sorted(grouped)
         ]
 
-    if lower.endswith(".rar") and _RAR_PART_RE.match(name) is None:
-        base = name[:-4]
-        r00 = parent / f"{base}.r00"
-        if r00.is_file():
-            siblings = [path]
-            siblings.extend(
-                sorted(
-                    (
-                        candidate
-                        for candidate in parent.iterdir()
-                        if candidate.is_file()
-                        and (rnn_match := _RAR_RNN_RE.match(candidate.name)) is not None
-                        and rnn_match.group("base").lower() == base.lower()
-                    ),
-                    key=lambda candidate: _rnn_part_number(candidate.name),
-                )
-            )
-            return siblings if len(siblings) > 1 else None
-
-    match = _RAR_RNN_RE.match(name)
-    if match is not None:
-        base = match.group("base")
-        first = parent / f"{base}.rar"
-        # The first volume of an old-scheme set is always `<base>.rar`; the `.rNN`
-        # files are its continuation volumes. Without the first volume present we can't
-        # anchor the set at its head (siblings[0] must be volume 1), so a bare `.rNN`
-        # with no `.rar` is treated as a lone file — mirrors the `.rar` branch above,
-        # which requires `.r00` to exist.
-        if not first.is_file():
-            return None
-        siblings: list[Path] = [first]
-        siblings.extend(
-            sorted(
-                (
-                    candidate
-                    for candidate in parent.iterdir()
-                    if candidate.is_file()
-                    and (rnn_match := _RAR_RNN_RE.match(candidate.name)) is not None
-                    and rnn_match.group("base").lower() == base.lower()
-                ),
-                key=lambda candidate: _rnn_part_number(candidate.name),
-            )
-        )
-        return siblings if len(siblings) > 1 else None
+    rnn_base: str | None = None
+    rnn_match = _RAR_RNN_RE.match(name)
+    if rnn_match is not None:
+        rnn_base = rnn_match.group("base")
+    elif _is_old_scheme_first_volume_name(name):
+        rnn_base = name[: name.rfind(".")]
+    if rnn_base is not None:
+        # Volume 1 is `<base>.rar`, or an SFX `<base>.exe` / `<base>.sfx` when no
+        # `.rar` is beside the `.rNN` files. A bare `.rNN` with none of those is
+        # a lone file — siblings[0] must be volume 1.
+        return _collect_old_rar_rnn_volumes(parent, rnn_base)
 
     return None
 
@@ -393,6 +409,34 @@ def _validate_numbered_volume_sequence(paths: Sequence[Path]) -> None:
             f"Incomplete multi-volume set for {base}: "
             f"expected parts {expected}, got {numbered}"
         )
+
+
+def incomplete_lone_numbered_volume_error(
+    archive_name: str | None,
+) -> TruncatedError | None:
+    """``TruncatedError`` when ``archive_name`` is a numbered volume part.
+
+    Discovery returns ``None`` for a single matching file, so a lone
+    ``name.7z.001`` / ``name.zip.001`` / ``name.exe.001`` would otherwise fall
+    through to detection and surface as ``CorruptionError``. The missing parts
+    are a truncated set, not a format-specific spanned-ZIP refusal. Callers
+    skip this when ``format=`` is an explicit non-ZIP / non-7z (P8).
+    """
+    if not archive_name:
+        return None
+    filename = Path(archive_name).name
+    match = _NUMBERED_VOLUME_RE.match(filename)
+    if match is None:
+        return None
+    base = match.group("base")
+    part = int(match.group("part"))
+    missing = [f"{base}.{n:03d}" for n in range(1, part)]
+    missing.append(f"{base}.{part + 1:03d}")
+    missing_text = ", ".join(missing) + ", …"
+    return TruncatedError(
+        f"Incomplete multi-volume set for {base}: "
+        f"found part {part} only; missing {missing_text}"
+    )
 
 
 def join_volumes(paths: Sequence[Path]) -> BinaryIO:

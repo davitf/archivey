@@ -167,10 +167,12 @@ single-disk ZIP it is — the same code path and the same regex that already joi
 `.z01 … .zip` is a genuinely spanned set whose entries are addressed by
 `(disk, offset-within-disk)`, so it keeps refusing. §3 has the producer detail.
 
-Four refusals remain, each with the rejoin-first message. By filename in
-`open_archive` before detection, because middle parts have no magic at offset 0 and
-detection alone would raise `FormatDetectionError`: Info-ZIP `.zNN`, and a
-`.zip.NNN` part whose siblings are not on disk. After stdlib opens the archive:
+A lone numbered part (`.zip.NNN` / `.exe.NNN` / `.7z.NNN` with no siblings) is
+`TruncatedError` naming the missing parts — the same incomplete-set error as a
+gap, not the ZIP "not supported" message. Info-ZIP `.zNN` stays
+`UnsupportedFeatureError` with the rejoin-first text. Both run in `open_archive`
+before detection, because middle parts have no magic at offset 0 and detection
+alone would raise `FormatDetectionError`. After stdlib opens the archive:
 non-zero classic EOCD disk fields (with `0xFFFF` treated as the ZIP64 sentinel),
 which is what catches Info-ZIP's final `.zip` part — it lists cleanly, because it
 holds the central directory — and a ZIP64 locator claiming more than one disk,
@@ -178,9 +180,9 @@ where stdlib raises and archivey re-types by matching the exception text.
 
 Two things narrow the filename refusals. A joined set keeps part one's name, so they key
 off *whether the set was joined*, not off the name alone; otherwise they would fire on
-the very set `open_archive` had just rejoined. And they defer to an explicit non-ZIP
-`format=`, which must be honoured or refused as a *format conflict* rather than as a ZIP
-multi-volume error. Nameless streams are out of scope for them entirely.
+the very set `open_archive` had just rejoined. And they defer to an explicit non-ZIP /
+non-7z `format=`, which must be honoured or refused as a *format conflict* rather than as
+a volume error. Nameless streams are out of scope for them entirely.
 
 `ArchiveInfo.is_multivolume` is `True` for a joined set and
 `ArchiveInfo.extra["zip.volume_count"]` carries the part count, matching what 7z reports
@@ -473,7 +475,7 @@ behaviour a caller already sees.
 | --- | --- |
 | Cost receipt, central-directory lookup without I/O | `tests/test_zip.py::test_cost_receipt`, `::test_central_directory_lookup_no_io` |
 | Non-seekable refused at open | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection` |
-| Spanned set and unjoinable segment refused | `::test_split_segment_name_rejected`, `::test_infozip_spanned_set_still_refused`, `::test_sevenzip_split_segment_without_siblings_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_volume_shaped_name_honours_explicit_non_zip_format` |
+| Spanned set and unjoinable segment refused | `::test_split_segment_name_rejected`, `::test_infozip_spanned_set_still_refused`, `::test_sevenzip_split_segment_without_siblings_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_volume_shaped_name_honours_explicit_non_zip_format`, `tests/test_volumes.py::test_lone_numbered_volume_names_missing_parts` |
 | Split checks do not fire on single-volume archives | `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_prefixed_and_empty_zip_still_open` |
 | `7z -v` set joined, read across a part boundary, opened from any part | `::test_sevenzip_split_zip_set_is_joined_and_read`, `::test_sevenzip_split_zip_set_opens_from_a_middle_part`, `::test_sevenzip_split_zip_set_with_missing_part_is_truncated` |
 | Numbered-part discovery, ordering and gap rejection, `.zNN` left alone | `tests/test_volumes.py::test_discover_zip_volume_siblings_natural_order`, `::test_discover_orders_parts_when_base_contains_partN`, `::test_discover_infozip_zNN_is_not_a_numbered_volume_set`, `::test_join_volumes_rejects_numbering_gaps` |

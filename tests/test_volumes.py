@@ -237,12 +237,71 @@ def test_discover_old_rar_rnn_volumes(tmp_path: Path) -> None:
 
 
 def test_discover_rnn_without_first_volume_is_not_a_set(tmp_path: Path) -> None:
-    # The first volume `<base>.rar` is missing, so a bare `.rNN` can't be anchored at
-    # its head — treat it as a lone file rather than a truncated set with the wrong
-    # first element.
+    # Volume 1 is `<base>.rar` / `.exe` / `.sfx`. A bare `.rNN` with none of those
+    # can't be anchored at its head — treat it as a lone file rather than a
+    # truncated set with the wrong first element.
     for name in ("archive.r00", "archive.r01"):
         (tmp_path / name).write_bytes(b"")
     assert discover_volume_siblings(tmp_path / "archive.r01") is None
+
+
+@pytest.mark.parametrize("first", ["archive.exe", "archive.sfx"])
+def test_discover_old_scheme_sfx_rnn_first_volume(tmp_path: Path, first: str) -> None:
+    (tmp_path / first).write_bytes(b"")
+    for name in ("archive.r01", "archive.r00"):
+        (tmp_path / name).write_bytes(b"")
+    expected = [first, "archive.r00", "archive.r01"]
+    for anchor in (first, "archive.r00", "archive.r01"):
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == expected
+
+
+def test_discover_rnn_sfx_prefers_rar_over_exe(tmp_path: Path) -> None:
+    for name in ("archive.rar", "archive.exe", "archive.r00"):
+        (tmp_path / name).write_bytes(b"")
+    siblings = discover_volume_siblings(tmp_path / "archive.exe")
+    assert siblings is not None
+    assert [p.name for p in siblings] == ["archive.rar", "archive.r00"]
+
+
+def test_old_scheme_sfx_exe_opens_rnn_set(tmp_path: Path) -> None:
+    shutil.copy(_RAR_FIXTURES / "tinyvol_rnn.rar", tmp_path / "archive.exe")
+    shutil.copy(_RAR_FIXTURES / "tinyvol_rnn.r00", tmp_path / "archive.r00")
+    for anchor in (tmp_path / "archive.exe", tmp_path / "archive.r00"):
+        with open_archive(anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            if _have_rarlab_unrar():
+                assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["archive.exe.001", "archive.7z.001", "archive.zip.001"],
+    ids=["exe", "sevenz", "zip"],
+)
+def test_lone_numbered_volume_names_missing_parts(tmp_path: Path, name: str) -> None:
+    path = tmp_path / "alone" / name
+    path.parent.mkdir()
+    path.write_bytes(b"\x00" * 64)
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set") as excinfo:
+        open_archive(path)
+    message = str(excinfo.value)
+    assert "found part 1 only" in message
+    base = name.rsplit(".", 1)[0]
+    assert f"{base}.002" in message
+
+
+def test_lone_later_numbered_volume_names_earlier_parts(tmp_path: Path) -> None:
+    path = tmp_path / "vol.exe.003"
+    path.write_bytes(b"\x00" * 64)
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set") as excinfo:
+        open_archive(path)
+    message = str(excinfo.value)
+    assert "found part 3 only" in message
+    assert "vol.exe.001" in message
+    assert "vol.exe.002" in message
 
 
 def test_multi_volume_7z_is_joined_before_parse(tmp_path: Path) -> None:

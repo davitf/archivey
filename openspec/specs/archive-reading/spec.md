@@ -158,7 +158,8 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 logical `ArchiveReader`:
 
 - **Single path in a volume set** (e.g. `name.7z.001`, `name.exe.001`,
-  `name.part1.rar`, `name.part1.sfx`, `name.rar` + `name.r00`…): discover
+  `name.part1.rar`, `name.part1.sfx`, `name.rar` + `name.r00`…, or an old-scheme
+  SFX first volume `name.exe` / `name.sfx` + `name.r00`): discover
   siblings in natural order
 - **Stub-only SFX** (`name.exe` / `name.sfx` with no archive magic) beside
   exactly one of `name.exe.001`, `name.7z.001`, `name.zip.001`: open that
@@ -178,6 +179,8 @@ boundary-spanning members. Incomplete/out-of-order sets SHALL raise
 | Case | Expected |
 | --- | --- |
 | `open_archive("disc.7z.001")` with siblings present | One reader for the whole set |
+| `open_archive("vol.exe.001")` (or `.7z.001` / `.zip.001`) with no siblings | `TruncatedError` names the missing parts |
+| `open_archive("archive.exe")` with `archive.r00` siblings | One logical RAR archive; `.exe` / `.sfx` is volume 1 |
 | `open_archive("vol.exe")` with a stub-only exe and `vol.exe.001` / `vol.7z.001` / `vol.zip.001` | One reader for that set |
 | `open_archive("vol.exe", format=ZIP)` with a stub-only exe and a zip first volume | One reader for that set |
 | `open_archive("vol.exe", format=SEVEN_Z)` beside a zip first volume | `ArchiveyUsageError` |
