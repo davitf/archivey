@@ -127,9 +127,10 @@ What changes:
 
 - **No external binary for 7z**, and no CLI output parsing. Archivey has a native 7z
   reader (common codecs in the core; PPMd/Deflate64 and AES via `[recommended]`).
-- **RAR still needs `unrar`** for member *data* — metadata and listing are native. That is
-  a licensing constraint, not an oversight: the RAR decompression algorithm may not be
-  reimplemented, so `unrar` stays in the picture for data while metadata does not need it.
+- **RAR still needs RARLAB `unrar` or `rar`** for member *data* — metadata and listing
+  are native. That is a licensing constraint, not an oversight: the RAR decompression
+  algorithm may not be reimplemented, so a RARLAB binary stays in the picture for data
+  while metadata does not need it.
 - **Errors are exceptions, not exit codes**, and hostile archives can't reach a shell:
   the whole point is not handing untrusted filenames to a subprocess.
 - Wrong passwords raise `EncryptionError` rather than prompting on a tty and hanging.
@@ -154,7 +155,7 @@ The reason to switch is memory safety and uniformity: Archivey parses 7z and RAR
 in pure Python rather than delegating to a third-party parser, and the same reader
 interface covers every other format you handle. One RAR difference: `rarfile` will use
 `unar` or `7z` for member data if that is what is on `PATH`; archivey requires RARLAB
-`unrar` and will not fall back.
+`unrar` or `rar` and will not fall back to those lookalikes.
 
 ## Things that will bite you
 

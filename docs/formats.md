@@ -13,16 +13,16 @@ most often surprise callers. Authoritative detail lives in `openspec/specs/forma
 | Directory | yes | — | indexed | direct | Same stream-capability defaults as archives |
 | Single-file gz/bz2/xz | yes | — | one member | seek with `SEEKABLE` | See single-file section |
 | 7z | yes (common codecs) | `[recommended]` for PPMd/Deflate64/zstd/brotli/AES | indexed | solid folders | Native reader; BCJ2 unsupported |
-| RAR | yes (metadata) | **`unrar` binary for data**; `[recommended]` for header crypto | native metadata | solid when solid | No write |
+| RAR | yes (metadata) | **`unrar` or `rar` binary for data**; `[recommended]` for header crypto | native metadata | solid when solid | No write |
 | ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
 | `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | — | rewind seek unless indexed later | |
 | `.lz4` / `.tar.lz4` | no | `[recommended]` | — | rewind seek | |
 | `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
-**RAR member data needs RARLAB `unrar` 6.0 or later on `PATH`.** No pip extra can supply it —
-listing and metadata work without it, reading bytes does not. `rarfile` will use
-`unar` or `7z` if that is what is on `PATH`; archivey will not. How to get RARLAB
-`unrar`: [Install and extras](install.md#getting-rarlab-unrar).
+**RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`.** No pip extra
+can supply it — listing and metadata work without it, reading bytes does not.
+`rarfile` will use `unar` or `7z` if that is what is on `PATH`; archivey will not.
+How to get the binary: [Install and extras](install.md#getting-rarlab-unrar-or-rar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
@@ -118,10 +118,10 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 ## RAR
 
 - Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
-- Member **data**: RARLAB `unrar` **6.0 or later** on `PATH` (not `unrar-free`, `unar`, or `7z` —
-  `rarfile` accepts those last two; archivey does not). Passwords are
-  passed as bare `-p` with the secret on stdin (not in argv).
-  Install: [Getting RARLAB unrar](install.md#getting-rarlab-unrar).
+- Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`,
+  `unar`, or `7z` — `rarfile` accepts those last two; archivey does not). `unrar` is
+  preferred when both exist. Passwords are passed as bare `-p` with the secret on stdin
+  (not in argv). Install: [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
 - `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —
   it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
   verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;
