@@ -460,10 +460,10 @@ byte/ratio/member caps are the shared extraction spine —
 Three things are RAR's own. File-version history rows are skipped by default and recorded
 as `SUPERSEDED`, through the spine's existing `is_current=False` behaviour — their `path;n`
 names are unique, so the shared last-entry-wins pass leaves them alone. Extracting a solid
-archive rides the single streaming pipe rather than opening members one at a time. And the obvious
-amortization — one `unrar x` into a managed temp directory, serving later reads from disk —
-is **not implemented**, so repeated random opens of a large solid archive cost one full
-decode each.
+archive rides the single streaming pipe rather than opening members one at a time. Repeated
+random `open()` of a solid member is a fresh whole-archive decode each time — by design,
+not a gap: amortizing via `unrar x` into a temp directory was considered (**#8**) and
+rejected because it hides decode work behind later reads (`VISION.md`; §6).
 
 ### 2.5 Write
 
@@ -654,6 +654,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Commit the RAR corpus archives, pinned by a manifest | Otherwise the corpus's RAR column is a licensing decision and runs on Linux only, while the release headlines a native RAR reader | Installing the trialware writer on CI; reworking digest expectations for a platform dependence that measurement showed does not exist (ADR [0016](../decisions/0016-committed-rar-corpus-fixtures.md)) |
 | Read QO, seek back, skip matching FILE headers on the walk | Same table extract uses. Consecutive cached spans chain in memory (one seek per run). AUTO omits small files from QO; those still list from their local headers. `CMT` after MAIN is a normal SERVICE on that walk. Packed QO / `-hp` fall back to a full FILE walk. Wrapping QO for `unrar` at list time would violate listing-without-unrar | Validating QO against a full FILE walk *at list time* (pays the seeks QO exists to avoid). Build-time `use_qo=False` comparison is the standing pin |
 | `CompressionAlgorithm.RAR` for M1–M5 (`level` 1–5); extract version in `extra["rar.extract_version"]` | The header identifies the algorithm, so `UNKNOWN` claimed we could not tell. `ContainerFormat.RAR` and `CompressionAlgorithm.RAR` are homonyms (container vs codec), not a reason to invent `RAR_COMPRESSION` / `RARLAB` | Putting 15/20/29/50 in `level`; dropping M1–M5 from `level` |
+| No `unrar x` tempdir cache for solid random `open()` | `AccessCost.SOLID` and per-open decode are the honest signals; a tempdir extraction amortizes work the caller cannot see or bound (**#8**) | `unrar x` into a managed temp directory to serve later random reads from disk |
 
 ## 7. Open questions
 
@@ -859,12 +860,14 @@ first members (`vol.exe.001`, `rv.part1.sfx`); **#11** a stub-only `vol.exe` fol
 the split first volume beside it (`vol.exe.001`, `vol.7z.001`, or `vol.zip.001`);
 old-scheme SFX first volumes (`name.exe` / `name.sfx` + `.r00`) are discovered as
 volume 1 of that set; and **#7** `unrar` version floor **6.0**, parsed from the
-identification banner and cached with the probe.
+identification banner and cached with the probe. **#8** amortize solid random reads via
+`unrar x` into a managed temp directory — **rejected** (`VISION.md`: cost must stay
+visible and honest; caching whole decodes behind later `open()` calls hides work the
+caller cannot query — see §6).
 
 | # | Change | Why now | Where it bites on this page |
 | --- | --- | --- | --- |
 | 6 | **Signal the stream-source copy** (P11), and consider bounding it to one compressed member via a synthetic single-member archive rather than only relocating it (§7) | The largest hidden cost in the library is in neither `diagnostics` nor `cost.notes`. `open-issues.md` P11 | §5, §7 |
-| 8 | **Amortize repeated solid random reads** — one `unrar x` into a managed temp directory, cleaned up on close | *n* random opens of a solid archive are *n* whole-archive decodes today | §2.4, §5 |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
 | 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
 | 20 | **Accept RARLAB `rar` when `unrar` is missing.** Prefer `unrar` when both exist. Banner is `RAR 7.00 … Alexander Roshal` / `Trial version` — extend the sniff so a `RAR` token does not match inside `UNRAR`. Floor still 6.0. Specs/docs name both; still refuse `unar` / `7z` / `unrar-free`. Spawn only `p` | Ubuntu/Debian `apt install rar` does not put `unrar` on `PATH` (`Suggests: unrar`). On 7.00, `rar p -inul [-ver] [-p\|-p-] [-n./member]` matched `unrar` on rc and stdout for 18 cases (ALL-pipe, named `-n`, hostile names, `-ver`, volumes, globs, missing-member rc=10, password-on-stdin including rc=11). `_parse_unrar_banner` classifies the writer as not RARLAB because `UNRAR` is absent. Windows `Rar.exe` banner unmeasured. Not this PR | §1, §3 |
