@@ -242,9 +242,10 @@ def open_archive(
     Member streams are forward-only and single-live by default. Two keyword flags opt
     into more, each unlocking one specific trap:
 
-    - ``seekable_members=True`` — ``seek()`` on a member stream works where the backend
-      can provide positioning. Without it, ``seek()`` raises
-      ``io.UnsupportedOperation``.
+    - ``seekable_members=True`` — ``seek()`` on a member stream from random
+      ``open()`` works. Without it, ``seek()`` raises
+      ``io.UnsupportedOperation``. A backward seek may re-decompress from the
+      start when there is no index or accelerator.
     - ``concurrent_members=True`` — multiple member streams may be open at once
       (coordinated first-touch materialization, then worker fan-out; draining close).
       Without it, a second overlapping ``open()`` raises ``ConcurrentAccessError``.

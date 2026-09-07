@@ -39,8 +39,13 @@ class MemberStreams(Flag):
         Does **not** remove solid open-order cost — see :class:`~archivey.AccessCost`.
 
     ``SEEKABLE``
-        Member streams support ``seek()`` where the backend can position
-        (often via an index or accelerator). Without this flag, seek raises.
+        Member streams from random ``open()`` support ``seek()``. Without this
+        flag, seek raises. A backward seek may re-decompress from the start
+        (loud-slow-rewind) when there is no index or accelerator. This is a
+        guarantee, not a request mask: a backend that can list a file member
+        must also seek it when the flag is set. ``stream_members()`` yields
+        stay a single-pass decode; this flag does not require those handles
+        to seek.
     """
 
     CONCURRENT = auto()

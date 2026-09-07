@@ -17,6 +17,10 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   backward seek **re-decompresses from the start** — loudly, via
   `STREAM_REWIND_REDECOMPRESSES`, but it still costs.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
+- **Don't expect `seek()` on a WinZip AES or encrypted 7z member yet.**
+  `seekable_members=True` is a guarantee on random `open()` everywhere else; those
+  two decrypt wrappers still raise.
+  → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
   compressed TAR, a named `open()` can restart the whole block. Prefer one forward
   pass. `concurrent_members=True` makes overlapping streams *correct*; it does not
