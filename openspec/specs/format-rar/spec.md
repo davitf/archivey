@@ -21,7 +21,9 @@ implementation.
 | `compressed-streams` | Pass-through stored reads and checksum verification |
 | `packaging-and-extras` | RARLAB `unrar` binary and `[recommended]` availability |
 | `testing-contract` | Native parser coverage and `rarfile` oracle checks |
+
 ## Requirements
+
 ### Requirement: Declare RAR format properties
 
 The RAR backend SHALL expose these properties:
@@ -236,9 +238,12 @@ the target member (named `unrar p … <member>`) or extract once with `unrar x`
 into an explicitly managed temporary directory and serve later reads from disk;
 that directory is cleaned up on reader close. `extract_all()` MAY use one
 `unrar x` to a temporary directory. Any temp materialization SHALL be a declared
-RAR strategy, not an implicit in-memory buffer. Mixed-password nonsolid archives
-MUST NOT demultiplex one unnamed `unrar p` ALL pipe against the full member list
-(wrong-password members are omitted from stdout and would desynchronize sizes).
+RAR strategy, not an implicit in-memory buffer. When a stream source is
+materialized to disk for `unrar`, `ar.cost.notes` SHALL include a human-readable
+caveat once the copy has occurred (path sources SHALL NOT). Mixed-password
+nonsolid archives MUST NOT demultiplex one unnamed `unrar p` ALL pipe against the
+full member list (wrong-password members are omitted from stdout and would
+desynchronize sizes).
 
 #### Scenario: random/extract matrix
 
@@ -248,6 +253,7 @@ MUST NOT demultiplex one unnamed `unrar p` ALL pipe against the full member list
 | Repeated random opens in solid RAR | Backend may use one tempdir extraction and remove it on close |
 | `extract_all()` | Backend may use one-shot `unrar x` |
 | Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
+| Stream source materialized for `unrar` | `ar.cost.notes` carries a disk-copy caveat after materialization |
 
 ### Requirement: Support benchmark-gated small-member optimization
 
@@ -420,4 +426,3 @@ a truncated error instead of a partial result.
 | Read a member spanning volumes | Returned stream reassembles the member across boundaries |
 | Open explicit ordered stream volumes | Metadata parses in order; data reads materialize volumes for `unrar` if needed |
 | Missing or out-of-order volume | Error instead of partial or garbled output |
-
