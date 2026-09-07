@@ -261,21 +261,26 @@ _SEEK_ARCHIVES: tuple[_SeekSpec, ...] = (
     # ZipCrypto (stdlib decryptor already seeks)
     _SeekSpec("encrypted", "zip"),
     _SeekSpec("encrypted-mixed", "zip"),
-    # WinZip AES (decrypt wrapper — xfail on encrypted members)
+    # WinZip AES (decrypt wrapper — xfail on encrypted members; mixed
+    # plaintext member is per-file and must still seek)
     _SeekSpec("encrypted", "zip-aes"),
     _SeekSpec("encrypted-mixed", "zip-aes"),
-    # 7z solid LZMA2 (`basic`), stored COPY, encrypted (wrapper xfail)
+    # 7z solid LZMA2 (`basic`), stored COPY, encrypted (wrapper xfail).
+    # Mixed 7z is archive-wide encryption: the corpus-plain file is encrypted too.
     _SeekSpec("basic", "7z"),
     _SeekSpec("sevenzip-stored", "7z", packing="stored"),
     _SeekSpec("encrypted", "7z"),
+    _SeekSpec("encrypted-mixed", "7z"),
     _SeekSpec("encrypted-header", "7z"),
     # RAR stored (existing corpus is urandom/`basic` tiny files — both store)
     _SeekSpec("basic", "rar", packing="stored"),
     _SeekSpec("large", "rar", packing="stored"),
     # RAR genuinely compressed (new corpus row; not the stored slice path)
     _SeekSpec("compressed", "rar", packing="compressed"),
-    # RAR encrypted goes through unrar, not an archivey decrypt wrapper
+    # RAR encrypted goes through unrar, not an archivey decrypt wrapper.
+    # Mixed RAR keeps a real plaintext member (per-member passwords).
     _SeekSpec("encrypted", "rar"),
+    _SeekSpec("encrypted-mixed", "rar"),
     # TAR + compressed TAR + the original contract formats the hand list covered
     _SeekSpec("basic", "tar"),
     _SeekSpec("basic", "tar.gz"),
@@ -306,11 +311,19 @@ def _is_only_stored(member) -> bool:
     return bool(chain) and all(c.algo is CompressionAlgorithm.STORED for c in chain)
 
 
-def _decrypt_wrapper_member(key: str, corpus_member_password: str | None) -> bool:
-    """ZIP AES and 7z encrypted members share the non-seeking decrypt wrapper."""
-    if corpus_member_password is None:
-        return False
-    return key in ("zip-aes", "7z")
+def _decrypt_wrapper_member(key: str, spec: _SeekSpec, corpus_member) -> bool:
+    """ZIP AES and 7z encrypted members share the non-seeking decrypt wrapper.
+
+    ZIP AES is per-member: only a corpus file with a password is wrapped.
+    7z encryption is archive-wide in the py7zr builder — a mixed row's
+    corpus-plain file is still encrypted on disk — so any 7z entry that
+    has passwords xfails every file member.
+    """
+    if key == "zip-aes":
+        return corpus_member.password is not None
+    if key == "7z":
+        return bool(_BY_ID[spec.entry_id].passwords)
+    return False
 
 
 def _seek_member_params(*, requested: bool) -> list:
@@ -326,7 +339,7 @@ def _seek_member_params(*, requested: bool) -> list:
             if member.type is not MemberType.FILE:
                 continue
             marks = []
-            if requested and _decrypt_wrapper_member(spec.key, member.password):
+            if requested and _decrypt_wrapper_member(spec.key, spec, member):
                 marks.append(_DECRYPT_WRAPPER_XFAIL)
             params.append(
                 pytest.param(
@@ -411,9 +424,15 @@ def test_corpus_seekable_members_seek_and_reread(
         _assert_packing(spec, member, name=member_name)
         with ar.open(member) as f:
             assert f.seekable() is True
-            prefix = f.read(16)
+            data = f.read()
             f.seek(0)
-            assert f.read(16) == prefix
+            assert f.read() == data
+            if not data:
+                return
+            mid = min(10, len(data) - 1)
+            f.seek(mid)
+            assert f.read() == data[mid:]
+            assert f.tell() == len(data)
 
 
 # Formats / mechanisms this contract should cover but cannot construct here.
