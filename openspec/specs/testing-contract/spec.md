@@ -235,8 +235,9 @@ error message MUST include the recorded `open_archive()` call site and MUST name
 Without `seekable_members=True`, member streams from random `open()` and
 `stream_members()` MUST report `seekable() is False` and raise
 `io.UnsupportedOperation` from `seek()` on every format, including real directory
-files. With `seekable_members=True`, positioning MUST work where the backend
-provides it. `extract_all()`, including hardlink recovery and symlink-target reads,
+files. With `seekable_members=True`, every member stream from random `open()`
+MUST report `seekable() is True` and positioning MUST work (loud-slow-rewind
+when there is no index). `extract_all()`, including hardlink recovery and symlink-target reads,
 MUST succeed on readers with no declared capabilities. `ArchiveyUsageError` and
 `ConcurrentAccessError` MUST NOT be `ArchiveyError` subclasses. Accelerator/index
 activation MUST be demand-driven and match `seekable-decompressor-streams`.

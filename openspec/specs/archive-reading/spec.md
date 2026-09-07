@@ -96,7 +96,7 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 
 - `concurrent_members=True` — any number of member streams may be open simultaneously
   (full contract: `reader-concurrency`)
-- `seekable_members=True` — seekable where the backend can provide it
+- `seekable_members=True` — every member stream from random `open()` is seekable
 
 The system SHALL NOT expose a flag-enum parameter for this purpose. `open_stream` SHALL
 keep its `seekable: bool` parameter, and both entry points SHALL use the same `seekable`
@@ -123,6 +123,12 @@ stream (random `open()` and `stream_members()` yields) SHALL report
 `seekable() is False`; `seek()` SHALL raise `io.UnsupportedOperation`; `tell()`
 SHALL work. Sequential `open → read → close → open next` is unaffected.
 
+With `seekable_members=True`, every file member stream from random `open()` SHALL
+report `seekable() is True` and `seek()` SHALL work, including a backward seek
+that returns the same bytes. The cost MAY be a full re-decode from the member
+start (loud-slow-rewind). `stream_members()` yields are a single-pass decode;
+SEEKABLE does not require those handles to seek.
+
 `ConcurrentAccessError`'s message SHALL name the parameter a caller would pass to
 allow the operation (`concurrent_members=True`), not an internal type.
 
@@ -148,7 +154,7 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 | Refused second `open()` without `concurrent_members` | Raises before the member is opened — no member stream constructed, no helper process spawned, no member data read |
 | Non-overlapping open/read/close loop, no capabilities declared | All opens succeed |
 | Stream without `seekable_members` (incl. real directory file) | `seekable()` false; `seek()` → `io.UnsupportedOperation`; `tell()` + forward reads OK |
-| Same member with `seekable_members=True` | Seekable where backend provides it; loud-slow-rewind rule for non-accelerated path |
+| Same member via random `open()` with `seekable_members=True` | `seekable()` true; backward seek rereads; loud-slow-rewind when there is no index/accelerator |
 | `extract_all()` with nothing declared | Completes; internal opens ungated |
 | `open_archive(p, member_streams=...)` | `TypeError` — the parameter no longer exists |
 

@@ -35,9 +35,9 @@ concurrent calls from multiple threads to `open(member_or_name)` SHALL be
 supported. Streams from different opens SHALL have independent logical
 positions/state: workers MAY concurrently call `read`, `readinto`, and `close`
 on **different** stream objects, plus `seek`/`tell` when
-`seekable_members=True` was declared and that stream supports positioning. Non-seekable
-streams retain normal `BinaryIO` behavior (`seekable()` false;
-unsupported positioning → `io.UnsupportedOperation`). Simultaneous operations on
+`seekable_members=True` was declared. Without that flag, streams retain normal
+`BinaryIO` behavior (`seekable()` false; unsupported positioning →
+`io.UnsupportedOperation`). Simultaneous operations on
 the **same** stream object require caller synchronization (ordinary file
 semantics). Supported behavior SHALL NOT rely on the GIL.
 
