@@ -32,6 +32,12 @@ already chose in the analogous case: prefer a bool when the mode count is small,
 these are two specific traps rather than an open-ended set. `MemberStreams` remains
 exported and is still the declared-capability value on `CostReceipt` and in diagnostics.
 
+**Amended (PR #299):** `seekable_members=True` is a guarantee on random `open()`, not
+"where the backend can provide it". A backend that can list a file member must seek it
+when the flag is set; loud-slow-rewind is allowed. `stream_members()` stays a
+single-pass decode — SEEKABLE does not require those handles to seek. The original
+decision (off by default, demand-driven indexes) is unchanged.
+
 ## Consequences
 
 - Default path: no shared-handle locks, no seek tables, no accelerators.

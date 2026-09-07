@@ -98,13 +98,17 @@ Without `seekable_members=True`, member streams report `seekable() is False` and
 `seek()` raises `io.UnsupportedOperation`. That is intentional: seek indexes and
 accelerators are not built until you ask.
 
-With `seekable_members=True`:
+With `seekable_members=True`, every member stream from random `open()` reports
+`seekable() is True` and `seek()` works. How the backend does it varies:
 
 - XZ / lzip can seek via native indexes
 - gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed
 - RAR compressed members seek by respawning `unrar`. On a solid archive that
   re-decodes from the start, including members before the one you opened
 - otherwise a backward seek may **re-decompress from the start**
+
+WinZip AES members and encrypted 7z members do not seek yet: `seekable()` stays
+false and `seek()` raises. That is a bug, not an exception to the contract.
 
 Whether that gets a diagnostic is decided by **what the seek actually costs**, not by the
 codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the rewind discards more than
