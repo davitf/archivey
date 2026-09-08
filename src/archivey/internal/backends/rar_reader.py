@@ -115,6 +115,11 @@ _RAR_HOST_OS_TO_CREATE_SYSTEM: dict[int, CreateSystem] = {
     5: CreateSystem.BEOS,
 }
 
+# RAR host_os values used directly below; the same numbers key
+# _RAR_HOST_OS_TO_CREATE_SYSTEM above (the parser maps RAR5 Windows->2, Unix->3).
+_RAR_HOST_OS_WIN32 = 2
+_RAR_HOST_OS_UNIX = 3
+
 _RAR_METHOD_STORED = 0x30
 _RAR_METHOD_MAX = 0x35  # RAR M5
 _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS = 0x02
@@ -618,7 +623,6 @@ class RarReader(BaseArchiveReader):
         # copying it to ``_volume0_parse_origin``.
         self._origin = start_offset
         self._shared = self._open_shared_source(source)
-        self._volume0_parse_origin = 0
         if self._origin and len(self._volume_paths) > 1:
             self._volume0_parse_origin = self._origin
             self._origin = 0
@@ -862,7 +866,7 @@ class RarReader(BaseArchiveReader):
         # other RAR3 hosts store a creation time. Omit the key when there is
         # no created value or host_os is unknown.
         if info.ctime is not None and host_os is not None:
-            extra[EXTRA_RAR_CREATED_IS_CTIME] = host_os == 3
+            extra[EXTRA_RAR_CREATED_IS_CTIME] = host_os == _RAR_HOST_OS_UNIX
 
         mode: int | None = None
         windows_attrs: int | None = None
@@ -871,9 +875,9 @@ class RarReader(BaseArchiveReader):
             # Unix: ArchiveMember.mode is the low 12 permission bits (S_IMODE);
             # mask before the C helper so OverflowError cannot abort listing.
             # Win32: FILE_ATTRIBUTE_* is a 32-bit field.
-            if host_os == 3:  # Unix
+            if host_os == _RAR_HOST_OS_UNIX:
                 mode = stat.S_IMODE(info.mode & 0o7777)
-            elif host_os == 2:  # Win32
+            elif host_os == _RAR_HOST_OS_WIN32:
                 windows_attrs = info.mode & 0xFFFFFFFF
 
         member = ArchiveMember(

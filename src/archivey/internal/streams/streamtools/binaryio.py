@@ -86,7 +86,7 @@ def read_full_count(stream: ReadableStream, n: int) -> bytes:
         got += len(piece)
         if len(piece) < ask:
             break
-    return b"".join(chunks) if chunks else b""
+    return b"".join(chunks)
 
 
 def _is_fifo_or_chardev(stream: Any) -> bool:
