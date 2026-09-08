@@ -861,10 +861,10 @@ class RarReader(BaseArchiveReader):
             if host_os is not None
             else CreateSystem.UNKNOWN
         )
-        # Unix host_os is 3 (RAR3 Unix, and the parser maps RAR5 Unix→3). That
-        # writer's creation slot is st_ctime, not birth; Win32 (2) and the
-        # other RAR3 hosts store a creation time. Omit the key when there is
-        # no created value or host_os is unknown.
+        # Unix (_RAR_HOST_OS_UNIX): RAR3 Unix, and the parser maps RAR5 Unix→3.
+        # That writer's creation slot is st_ctime, not birth; Win32
+        # (_RAR_HOST_OS_WIN32) and the other RAR3 hosts store a creation time.
+        # Omit the key when there is no created value or host_os is unknown.
         if info.ctime is not None and host_os is not None:
             extra[EXTRA_RAR_CREATED_IS_CTIME] = host_os == _RAR_HOST_OS_UNIX
 
