@@ -422,6 +422,15 @@ including when only stored members are read and the copy never happens. There is
 no diagnostic. The copy itself is per-member, so a stored member costs nothing and the
 next compressed member in the same archive costs a full copy.
 
+**Explicit stream volumes do not wait for that trigger.** `_materialize_stream_volumes()`
+runs from `RarReader.__init__` (through `_open_shared_source`), so handing over a list of
+open volume streams copies **every** volume into a temp directory at `open()` — before any
+member is named, and whether or not one ever is. Metadata still parses from the original
+streams, so a caller who only lists pays for a copy nothing reads: measured on the
+two-volume `tinyvol` fixture, 1757 bytes written to `/tmp` at open, 100% of both volumes,
+with no `read()` on the reader. The single-stream path above is lazy and this one is not,
+for no reason the code states. §10 #21.
+
 **What crosses back is an exit code and a byte count.** `-inul` suppresses `unrar`'s
 messages and its stderr is discarded, so archivey reconstructs every data error from those
 two signals:
@@ -625,6 +634,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | `seekable_members=True` on a sequential solid pass is still a pipe | **archivey** | Random `open()` of an `unrar`-backed member respawns the process on a backward seek, the same reopen the other backends use. `stream_members()` is never seekable by design: those handles are a single-pass decode, and seeking would break it. `reader.member_streams` still reports `SEEKABLE` — that is what random `open()` can do |
 | Reading one member of a solid archive out of order decodes the whole archive, and doing it twice decodes it twice | **format** / **archivey** | No per-block boundaries to resume from (§1), and nothing caches the decode (§2.4). `AccessCost.SOLID` is the signal |
 | Handing over **any non-path stream** — a `BytesIO`, a file object, a network-backed reader — may write a full-size copy of the archive to `/tmp`; `cost.notes` says so at open | **archivey** | The RARLAB decompressor needs a path (§1). The copy is per-member, so the first stored member is free and the next compressed one is not. Bounding the copy to one member rather than moving it is §7 / §10 #6 layer 2 |
+| Handing over **open volume streams** copies every volume to `/tmp` at `open()`, even if you only list | **archivey** | The single-stream copy is lazy — it waits for the first member `unrar` has to read (§2.3). Stream volumes materialize from the constructor instead, and listing is served natively from the original streams, so a list-only caller pays for bytes nothing reads. §10 #21 |
 | A corrupt encrypted member can be reported as a wrong password | **library** / **archivey** | `unrar` reports both as exit 2/3 with empty output on RAR4 and exposes no signal to separate them — that half is upstream's. Resolving the ambiguity toward `EncryptionError` is ours and is reversible (§2.3) |
 | A 7-Zip SFX stub sitting beside a numbered split (`vol.exe` next to `vol.exe.001` / `vol.7z.001` / `vol.zip.001`) | **archivey** | Opening the stub follows that first volume. The stub is still not a sibling. An old-scheme SFX first volume (`name.exe` + `.r00`) is discovered as volume 1 of that `.rNN` set |
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
@@ -874,3 +884,4 @@ caller cannot query — see §6).
 | 6 | **Signal the stream-source copy** (P11) — **layer 1 shipped** (`CostReceipt.notes` at open for any non-path stream). **Layer 2 open:** bound it to one compressed member via a synthetic single-member archive (§7) | Layer 1 closes P11's signal gap; layer 2 is the size bound | §5, §7 |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
 | 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
+| 21 | **Materialize stream volumes on first use, not at `open()`** — move `_materialize_stream_volumes()` off the `RarReader` constructor onto the same lazy trigger `_ensure_archive_path()` already uses for a single stream | Listing a stream-volume set is served natively from the original streams, so today's constructor copy is a full-size write nothing reads (measured: 1757/1757 bytes of the `tinyvol` fixture, at open, no `read()`). It is also why the two stream shapes report their cost at different times — the inconsistency #6 otherwise has to specify around. Raised reviewing [#314](https://github.com/davitf/archivey/pull/314) | §2.3, §5 |
