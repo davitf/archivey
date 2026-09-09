@@ -2158,10 +2158,14 @@ def test_non_rarlab_rar_rejected(
 def test_rarrc_cannot_break_probe_or_spawn(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``~/.rarrc`` / ``~/.unrarrc`` switches are disabled via ``-cfg-``."""
+    """Probe and ``p`` argv include ``-cfg-`` so user config cannot inject switches.
+
+    ``subprocess`` is stubbed — the ``~/.rarrc`` uses real ``switches=`` syntax
+    only for realism; the assertion is ``-cfg-`` in both argvs.
+    """
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".rarrc").write_text("-idq\n", encoding="utf-8")
+    (home / ".rarrc").write_text("switches=-idq\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
 

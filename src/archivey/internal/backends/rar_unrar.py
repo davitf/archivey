@@ -64,8 +64,9 @@ class _UnrarProbe:
 
     Keyed on the absolute candidate, not on ``PATH``. ``shutil.which`` re-runs
     every call, so a newly installed binary is visible without editing ``PATH``.
-    The finder walks ``unrar`` then ``rar``; the cache is a dict of those
-    resolved paths (at most two live entries) so a lookalike ``unrar`` plus a
+    The finder walks ``unrar`` then ``rar``; one cache entry per resolved
+    absolute path it has probed (on a stable ``PATH``, at most one per name).
+    Entries persist for the process lifetime so a lookalike ``unrar`` plus a
     usable ``rar`` does not re-probe both on every member read.
     The lookup does not key cwd or ``PATHEXT`` (Windows ``which`` consults both).
     ``version`` is parsed from the same banner as ``is_rarlab`` — a genuine
