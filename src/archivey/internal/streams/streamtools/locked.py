@@ -5,9 +5,9 @@ Two wrappers (easy to mix up):
 - :class:`LockedStream` — hold ``lock`` across **every** read/seek/tell on
   ``inner`` (TAR/ISO under ``MemberStreams.CONCURRENT``: seek-then-read must be
   atomic). Archivey buffering/error wrappers sit *outside* this layer.
-- :class:`CloseLockedStream` — only serializes ``close()`` (and optionally
-  ``flush``); reads stay unlocked. Use when concurrent readers share a handle
-  for I/O but close must not race.
+- :class:`CloseLockedStream` — serializes only ``close()``; reads stay
+  unlocked. Use when concurrent readers share a handle for I/O but close
+  must not race.
 
 For independent logical positions over one file, prefer
 :class:`~archivey.internal.streams.streamtools.shared.SharedSource` instead of

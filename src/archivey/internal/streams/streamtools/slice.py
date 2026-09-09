@@ -162,7 +162,7 @@ class SlicingStream(ReadOnlyIOStream):
         # "needs a buffer in front", which is what ``ensure_full_count_reads`` puts at the
         # source boundary. Every inner a backend slices is full-count already.
         unbounded_drain = n < 0 and self._length is None
-        bounded_drain = n < 0 and not unbounded_drain
+        bounded_drain = n < 0 and self._length is not None
         n = self._compute_bytes_to_read(n)  # stays negative for an unbounded drain
         if n == 0:
             return b""
