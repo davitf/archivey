@@ -156,7 +156,10 @@ def _crc_exactly(
     """
     remaining = nbytes
     crc = 0
-    while remaining:
+    # `> 0`, not truthiness: a stream that over-returns would drive `remaining`
+    # negative, and `read(negative)` is read-everything — the whole-folder gather
+    # this function exists to avoid.
+    while remaining > 0:
         chunk = stream.read(min(chunk_size, remaining))
         if not chunk:
             raise EncryptionError("Wrong password or corrupt 7z folder")
@@ -188,6 +191,12 @@ def _verify_decoded_folder(
     if not member_digests:
         _crc_exactly(stream, expected_size)
         return
+    # The per-member walk covers `expected_size` by construction: the caller derives
+    # it from these same member sizes (`_folder_unpack_size`). Pinned here because
+    # nothing else records the coupling now the whole-folder length check is gone.
+    assert expected_size == sum(size for size, _ in member_digests), (
+        "member digest sizes must sum to the folder unpack size"
+    )
     for size, raw_expected in member_digests:
         actual = _crc_exactly(stream, size)
         if raw_expected is None:
@@ -613,25 +622,6 @@ class SevenZipReader(BaseArchiveReader):
         if track_output:
             return self._track_decompressed(stream)
         return stream
-
-    def _open_folder_pipeline(
-        self,
-        source: BinaryIO,
-        folder: SevenZipFolder,
-        *,
-        password: bytes | None,
-        seekable: bool = False,
-    ) -> BinaryIO:
-        """Compatibility shim for tests that patch/call this method."""
-        return open_folder_pipeline(
-            source,
-            folder,
-            password=password,
-            key_cache=self._key_cache,
-            stream_config=self._stream_config,
-            collector=self._diagnostics_collector,
-            seekable=seekable,
-        )
 
     def _password_for_folder(
         self, folder_index: int, member: ArchiveMember | None

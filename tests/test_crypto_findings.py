@@ -55,7 +55,7 @@ from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.streams import crypto
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, crc32_digest
-from tests.conftest import requires, requires_binary
+from tests.conftest import ReadSizeSpy, requires, requires_binary
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 
@@ -375,7 +375,10 @@ def test_verify_decoded_folder_rejects_mismatched_member_crc() -> None:
 
 
 def test_verify_decoded_folder_rejects_short_stream() -> None:
-    folder = _plain_folder(unpack_size=8, digest_defined=True, crc=0)
+    # The CRC must be the one the truncated bytes actually hash to, so the only thing
+    # that can raise is the short-read guard. With a mismatching CRC (0, say) the
+    # digest compare raises too and the test proves nothing about truncation.
+    folder = _plain_folder(unpack_size=8, digest_defined=True, crc=zlib.crc32(b"short"))
     with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
         _verify_decoded_folder(folder, io.BytesIO(b"short"), expected_size=8)
 
@@ -399,19 +402,7 @@ def test_verify_decoded_folder_reads_in_bounded_chunks() -> None:
         crc=zlib.crc32(payload),
     )
 
-    class _Spy(io.BytesIO):
-        def __init__(self, data: bytes) -> None:
-            super().__init__(data)
-            self.max_requested = 0
-
-        def read(self, n: int = -1, /) -> bytes:
-            if n < 0:
-                self.max_requested = max(self.max_requested, 2**31)
-            else:
-                self.max_requested = max(self.max_requested, n)
-            return super().read(n)
-
-    spy = _Spy(payload)
+    spy = ReadSizeSpy(io.BytesIO(payload))
     _verify_decoded_folder(folder, spy, expected_size=len(payload))
     assert spy.max_requested <= _PASSWORD_CONFIRM_CHUNK
 

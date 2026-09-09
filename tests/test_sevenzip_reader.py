@@ -20,11 +20,14 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFolder
-from archivey.internal.backends.sevenzip_reader import SevenZipReader
+from archivey.internal.backends.sevenzip_reader import (
+    SevenZipReader,
+    open_folder_pipeline,
+)
 from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.streams import codecs, crypto
 from archivey.types import CompressionAlgorithm, HashAlgorithm, MemberType
-from tests.conftest import requires, requires_binary, requires_zstd
+from tests.conftest import ReadSizeSpy, requires, requires_binary, requires_zstd
 
 _FILES = {
     "alpha.txt": b"alpha\n" * 100,
@@ -597,32 +600,37 @@ def test_7z_multi_password_rejects_wrong_candidate_via_crc(
                 f"7z CLI cannot build multi-password 7z fixture: {result.stderr}"
             )
 
-    original_pipeline = SevenZipReader._open_folder_pipeline
+    import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
+
+    # Patch the module-level function the reader actually calls. Patching a method on
+    # SevenZipReader looks equivalent and is not: production has never routed through
+    # one, so the fake below would never run and this test would pass vacuously.
+    original_pipeline = sevenzip_reader_mod.open_folder_pipeline
     first_kdf = "first".encode("utf-16le")
     garbage = b"\x05\x7f\xc6\x01\xebI\x03j\x88\x93\x8e\xe5\xb5"
 
-    def pipeline_with_wrong_first(self, source, folder, *, password, seekable=False):
+    called: list[bool] = []
+
+    def pipeline_with_wrong_first(source, folder, *, password, **kwargs):
         # After the first folder unlocks, known-good "first" is tried on the second
         # folder. Simulate a decompressor that yields plausible garbage of the
         # expected length instead of raising, so only the CRC confirm rejects it.
-        if password == first_kdf:
-            for index, candidate in enumerate(self._archive.folders):
-                if candidate is folder and self._folder_unpack_size(index) == len(
-                    garbage
-                ):
-                    return io.BytesIO(garbage)
-        return original_pipeline(
-            self, source, folder, password=password, seekable=seekable
-        )
+        called.append(True)
+        if password == first_kdf and folder.unpack_sizes[-1] == len(garbage):
+            return io.BytesIO(garbage)
+        return original_pipeline(source, folder, password=password, **kwargs)
 
     monkeypatch.setattr(
-        SevenZipReader, "_open_folder_pipeline", pipeline_with_wrong_first
+        sevenzip_reader_mod, "open_folder_pipeline", pipeline_with_wrong_first
     )
 
     with open_archive(archive, password=["first", "second"]) as reader:
         members = {member.name: member for member in reader.members() if member.is_file}
         assert reader.read(members["first.txt"]) == b"first secret"
         assert reader.read(members["second.txt"]) == b"second secret"
+
+    # Without this the patch could be inert and the test would still pass.
+    assert called, "the patched pipeline was never called"
 
 
 @requires_binary("7z")
@@ -643,27 +651,6 @@ def test_7z_cli_multi_volume_archive_roundtrip(tmp_path: Path) -> None:
         pytest.skip("7z CLI did not split the fixture into multiple volumes")
 
     _assert_roundtrip(first_volume, {payload.name: payload.read_bytes()})
-
-
-class _ReadSizeSpy:
-    """Record the largest ``read(n)`` so a full-folder gather is visible to tests."""
-
-    def __init__(self, inner: object) -> None:
-        self._inner = inner
-        self.max_requested = 0
-
-    def read(self, n: int = -1, /) -> bytes:
-        if n < 0:
-            self.max_requested = max(self.max_requested, 2**31)
-        else:
-            self.max_requested = max(self.max_requested, n)
-        return self._inner.read(n)
-
-    def close(self) -> None:
-        self._inner.close()
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._inner, name)
 
 
 @requires("cryptography")
@@ -705,12 +692,12 @@ def test_password_confirm_does_not_request_the_whole_folder(
     if result.returncode != 0:
         pytest.skip(f"7z CLI cannot build store+AES fixture: {result.stderr}")
 
-    spies: list[_ReadSizeSpy] = []
+    spies: list[ReadSizeSpy] = []
     original = sevenzip_reader_mod.open_folder_pipeline
 
-    def wrapping(*args: object, **kwargs: object) -> _ReadSizeSpy:
+    def wrapping(*args: object, **kwargs: object) -> ReadSizeSpy:
         stream = original(*args, **kwargs)
-        spy = _ReadSizeSpy(stream)
+        spy = ReadSizeSpy(stream)
         spies.append(spy)
         return spy
 
@@ -722,13 +709,28 @@ def test_password_confirm_does_not_request_the_whole_folder(
         with reader.open(member) as stream:
             assert stream.read(1) == payload.read_bytes()[:1]
 
-    assert spies, "confirm must open a folder pipeline"
-    # First pipeline is password confirmation; later ones serve the member read.
+    # One pipeline for the confirm decode, one for the member read. Pinned rather
+    # than left to the comment below, so a change in call count fails here instead of
+    # silently making `spies[0]` the wrong stream.
+    assert len(spies) == 2, f"expected confirm + member pipelines, got {len(spies)}"
+    # `max_requested` is a proxy for peak memory, not a measurement of it: a rewrite
+    # that looped 64 KiB reads into one bytearray would still pass. It pins the
+    # specific regression this PR fixes — a single read sized to the whole folder.
     assert spies[0].max_requested <= sevenzip_reader_mod._PASSWORD_CONFIRM_CHUNK, (
         f"confirm requested {spies[0].max_requested} bytes in one read "
         f"(chunk is {sevenzip_reader_mod._PASSWORD_CONFIRM_CHUNK}, "
         f"folder is {folder_size})"
     )
+
+    # The same fixture with a wrong password is the only end-to-end exercise of the
+    # rewritten CRC branch: store+AES has no decompressor to reject a wrong key, so
+    # the confirm CRC is the sole rejector. Without this the branch is covered only
+    # by BytesIO unit tests.
+    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
+        with open_archive(archive, password="wrong") as reader:
+            member = next(m for m in reader.members() if m.is_file)
+            with reader.open(member) as stream:
+                stream.read(1)
 
 
 def _reader_for_unit_tests() -> SevenZipReader:
@@ -737,6 +739,29 @@ def _reader_for_unit_tests() -> SevenZipReader:
     reader._diagnostics_collector = None  # noqa: SLF001 - focused unit test
     reader._key_cache = crypto.SevenZipKeyCache()  # noqa: SLF001 - focused unit test
     return reader
+
+
+def _open_pipeline(
+    reader: SevenZipReader,
+    source: io.BytesIO,
+    folder: SevenZipFolder,
+    *,
+    password: bytes | None = None,
+) -> object:
+    """Open a folder pipeline with a unit-test reader's own wiring.
+
+    Replaces the `_open_folder_pipeline` shim that used to live on the reader purely
+    so tests could reach it. Production never routed through that method, which is
+    what made a monkeypatch of it silently inert.
+    """
+    return open_folder_pipeline(
+        source,
+        folder,
+        password=password,
+        key_cache=reader._key_cache,  # noqa: SLF001 - focused reader unit test
+        stream_config=reader._stream_config,  # noqa: SLF001 - focused reader unit test
+        collector=reader._diagnostics_collector,  # noqa: SLF001 - focused reader unit test
+    )
 
 
 def _folder(method: bytes, properties: bytes | None = None) -> SevenZipFolder:
@@ -761,8 +786,8 @@ def test_bcj2_folder_is_rejected() -> None:
     reader = _reader_for_unit_tests()
 
     with pytest.raises(UnsupportedFeatureError, match="BCJ2"):
-        reader._open_folder_pipeline(  # noqa: SLF001 - focused reader unit test
-            io.BytesIO(b""), _folder(b"\x03\x03\x01\x1b"), password=None
+        _open_pipeline(
+            reader, io.BytesIO(b""), _folder(b"\x03\x03\x01\x1b"), password=None
         )
 
 
@@ -770,9 +795,7 @@ def test_unknown_folder_method_is_rejected() -> None:
     reader = _reader_for_unit_tests()
 
     with pytest.raises(UnsupportedFeatureError, match="0x99"):
-        reader._open_folder_pipeline(  # noqa: SLF001 - focused reader unit test
-            io.BytesIO(b""), _folder(b"\x99"), password=None
-        )
+        _open_pipeline(reader, io.BytesIO(b""), _folder(b"\x99"), password=None)
 
 
 def test_ppmd_without_pyppmd_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,8 +804,8 @@ def test_ppmd_without_pyppmd_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     properties = struct.pack("<BL", 6, 1 << 20)
 
     with pytest.raises(PackageNotInstalledError, match="pyppmd"):
-        reader._open_folder_pipeline(  # noqa: SLF001 - focused reader unit test
-            io.BytesIO(b""), _folder(b"\x03\x04\x01", properties), password=None
+        _open_pipeline(
+            reader, io.BytesIO(b""), _folder(b"\x03\x04\x01", properties), password=None
         )
 
 
@@ -792,8 +815,11 @@ def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     properties = b"\xc0\x00\x00\x00"  # one-byte salt, one-byte IV, both zero
 
     with pytest.raises(PackageNotInstalledError, match="cryptography"):
-        reader._open_folder_pipeline(  # noqa: SLF001 - focused reader unit test
-            io.BytesIO(b""), _folder(b"\x06\xf1\x07\x01", properties), password=b"pw"
+        _open_pipeline(
+            reader,
+            io.BytesIO(b""),
+            _folder(b"\x06\xf1\x07\x01", properties),
+            password=b"pw",
         )
 
 
@@ -1371,8 +1397,8 @@ def test_lz4_without_lz4_package_raises(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(codecs, "_lz4_frame", None)
 
     with pytest.raises(PackageNotInstalledError, match="lz4"):
-        reader._open_folder_pipeline(  # noqa: SLF001 - focused reader unit test
-            io.BytesIO(b""), _folder(b"\x04\xf7\x11\x04"), password=None
+        _open_pipeline(
+            reader, io.BytesIO(b""), _folder(b"\x04\xf7\x11\x04"), password=None
         )
 
 

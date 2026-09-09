@@ -109,8 +109,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
   has no check value, so a candidate is still judged by decoding and CRCing, but
   confirm now streams 64 KiB chunks instead of `read_exact`ing the whole folder
   (~3× unpack size: 630 MB peak on a 200 MiB LZMA+AES archive). `ExtractionLimits`
-  still do not cover this path; wall time remains `folder_size × candidate_count`
-  (store+AES does not fail fast on a wrong key). Threat-model O12.
+  still do not cover this path, and wall time is unchanged: up to
+  `folder_size × candidate_count` for store/copy+AES, where nothing rejects a wrong key
+  before the CRC. Compressed folders are far cheaper — the codec rejects a wrong key
+  within a few bytes, and confirmation stops at the first member CRC that fails.
+  Threat-model O12.
 - **Bidi override filenames are refused during extraction.** A member name or link
   target containing a Unicode bidi override or isolate (U+202A–202E, U+2066–2069) is
   rejected with the new `DeceptiveNameError` — those characters reorder surrounding
