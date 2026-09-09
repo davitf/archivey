@@ -106,8 +106,26 @@ from archivey.types import (
 )
 
 _STREAM_SOURCE_DISK_COPY_NOTE = (
-    "Copied a stream source to disk so RARLAB unrar could read it."
+    "Reading a compressed member will copy the whole archive to disk so "
+    "RARLAB unrar or rar can read it."
 )
+
+
+def _rar_stream_copy_cost_notes(source: Path | BinaryIO) -> tuple[str, ...]:
+    """Open-time caveat when a compressed read may copy this source to disk.
+
+    Path sources (including ConcatenatedFile of path volumes) do not copy.
+    Any other stream — a BytesIO, a file object, or ConcatenatedFile of stream
+    volumes — may, so the note is a prediction, not a log of a copy that
+    already happened. Keyed here from the source shape so Path items that
+    ``_materialize_stream_volumes`` can copy are not labelled as a stream.
+    """
+    if isinstance(source, Path):
+        return ()
+    if isinstance(source, ConcatenatedFile) and source.volume_paths:
+        return ()
+    return (_STREAM_SOURCE_DISK_COPY_NOTE,)
+
 
 # rarfile / RAR host_os values (parser maps RAR5 Windows→2, Unix→3).
 _RAR_HOST_OS_TO_CREATE_SYSTEM: dict[int, CreateSystem] = {
@@ -602,7 +620,9 @@ class RarReader(BaseArchiveReader):
         self._archive_path: Path | None = None
         self._volume_paths: list[Path] = []
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
-        self._stream_copied_to_disk = False
+        # Open-time caveat from source shape, not from later materialization
+        # (CostReceipt is a static snapshot; see access-mode-and-cost).
+        self._cost_notes = _rar_stream_copy_cost_notes(source)
 
         if is_stream(source) and not is_seekable(source):
             raise StreamNotSeekableError(
@@ -690,15 +710,6 @@ class RarReader(BaseArchiveReader):
             raise
         self._volume_paths = paths
         self._archive_path = paths[0]
-        self._note_stream_disk_copy()
-
-    def _note_stream_disk_copy(self) -> None:
-        self._stream_copied_to_disk = True
-
-    def _rar_cost_notes(self) -> tuple[str, ...]:
-        if self._stream_copied_to_disk:
-            return (_STREAM_SOURCE_DISK_COPY_NOTE,)
-        return ()
 
     def _parse_archive(self) -> tuple[RarArchive, str | None]:
         def parse(password: bytes | None) -> RarArchive:
@@ -802,7 +813,6 @@ class RarReader(BaseArchiveReader):
             raise
         self._temp_path = path
         self._archive_path = path
-        self._note_stream_disk_copy()
         return path
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -1341,7 +1351,7 @@ class RarReader(BaseArchiveReader):
             stream_capability=StreamCapability.SEEKABLE,
             # RAR solid is one continuous compression context; block count is unknown.
             solid_block_count=None,
-            notes=self._rar_cost_notes(),
+            notes=self._cost_notes,
         )
         any_encrypted = any(m.is_encrypted for m in self._archive.members)
         is_multivolume = (

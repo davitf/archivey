@@ -1,7 +1,7 @@
 ## 1. Implementation
 
-- [x] 1.1 Set `CostReceipt.notes` after stream materialization (`_ensure_archive_path`, volume streams)
-- [x] 1.2 Tests: path/stored stream unchanged; compressed stream and stream volumes get the note
+- [x] 1.1 Set `CostReceipt.notes` at open for non-path stream sources
+- [x] 1.2 Tests: path source has no note; stream sources have the note at open (including stored-only)
 
 ## 2. Verify and archive
 

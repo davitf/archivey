@@ -155,14 +155,19 @@ Same-stream access still needs caller synchronization. Reader-wide passes
 ## Non-seekable sources
 
 `streaming=False` (default) **fails fast** if the format needs seek and the source is a
-pipe. Archivey will not silently buffer the whole archive into memory or a temp file.
-Use `streaming=True` for pipes and sockets — it works for TAR (including compressed
-tar) and the single-file compressors.
+pipe. Archivey will not silently buffer a **non-seekable** source into memory or a temp
+file to fake seekability. Use `streaming=True` for pipes and sockets — it works for TAR
+(including compressed tar) and the single-file compressors.
 
 ZIP, ISO, 7z and RAR keep their index at the end of the archive or address it by
 offset, so they need seek in **either** mode; `streaming=True` cannot open them from a
 pipe. The error says so directly rather than proposing a retry that would be refused,
 and the fix is to buffer the source to a file or a `BytesIO` first.
+
+A seekable stream is not that pipe case. RAR still needs a filesystem path for compressed
+member data (RARLAB `unrar` or `rar`), so a `BytesIO` or file object may be copied to a
+temp file when a compressed member is read. `archive.cost.notes` states that caveat at
+open. Path sources do not copy.
 
 ## Streaming mode is one pass
 

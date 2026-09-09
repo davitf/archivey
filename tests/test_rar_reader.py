@@ -888,36 +888,41 @@ def test_multi_volume_rnn_roundtrip() -> None:
 
 
 def _stream_copy_note_present(notes: tuple[str, ...]) -> bool:
-    return any("Copied a stream source to disk" in note for note in notes)
+    return any("will copy the whole archive to disk" in note for note in notes)
 
 
-@requires_binary("unrar")
 def test_path_source_has_no_stream_copy_cost_note() -> None:
     with open_archive(_fixture("basic_solid__.rar")) as archive:
         assert archive.cost.notes == ()
-        archive.read("file1.txt")
-        assert archive.cost.notes == ()
 
 
 @requires_binary("unrar")
-def test_stream_stored_read_has_no_stream_copy_cost_note() -> None:
+def test_path_source_compressed_read_has_no_stream_copy_cost_note() -> None:
+    with open_archive(_fixture("basic_solid__.rar")) as archive:
+        held = archive.cost
+        assert held.notes == ()
+        archive.read("file1.txt")
+        assert archive.cost == held
+
+
+def test_stream_source_has_copy_cost_note_at_open() -> None:
     blob = _fixture("stored_m0.rar").read_bytes()
     with open_archive(io.BytesIO(blob)) as archive:
-        assert archive.cost.notes == ()
+        held = archive.cost
+        assert _stream_copy_note_present(held.notes)
         member = next(m for m in archive.members() if m.is_file)
         assert archive.read(member) == b"stored payload"
-        assert archive.cost.notes == ()
+        assert archive.cost == held
 
 
 @requires_binary("unrar")
-def test_stream_materialization_adds_cost_note() -> None:
+def test_stream_compressed_read_keeps_open_time_cost_note() -> None:
     blob = _fixture("basic_solid__.rar").read_bytes()
     with open_archive(io.BytesIO(blob)) as archive:
-        at_open = archive.cost
-        assert at_open.notes == ()
+        held = archive.cost
+        assert _stream_copy_note_present(held.notes)
         archive.read("file1.txt")
-        assert _stream_copy_note_present(archive.cost.notes)
-        assert at_open.notes == ()
+        assert archive.cost == held
 
 
 @requires_binary("unrar")
@@ -927,8 +932,10 @@ def test_multi_volume_stream_materialization() -> None:
     try:
         with open_archive(streams) as archive:
             assert archive.info.is_multivolume is True
-            assert _stream_copy_note_present(archive.cost.notes)
+            held = archive.cost
+            assert _stream_copy_note_present(held.notes)
             assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+            assert archive.cost == held
     finally:
         for stream in streams:
             stream.close()
