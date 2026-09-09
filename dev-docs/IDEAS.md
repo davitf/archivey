@@ -128,6 +128,27 @@
 
 ## API & ergonomics
 
+- **`stream.verified` plus an on-demand `verify()`** — a member stream today tells the
+  caller nothing about whether its declared digest was actually checked. Verification runs
+  at EOF and an abandoned partial read silently skips it, so a caller who read a prefix
+  cannot distinguish "checked and good" from "never checked". Expose the state as data
+  (`stream.verified`, or a member-level equivalent) and pair it with a `verify()` the
+  caller can call at any point: a no-op when verification already ran, otherwise doing
+  whatever the backend needs — draining the rest of the member, or re-reading it — to
+  reach a verdict.
+  **The password case is why this is more than tidiness.** For ciphers whose only real
+  verifier is the trailing CRC — ZipCrypto (one header check byte) and 7z AES (no check
+  value at all) — an unverified partial read does not merely lack a checksum, it can be
+  *garbage that decrypted under the wrong key*. Reproduced on both: a wrong ZipCrypto
+  password that passes the one-byte check, and a wrong 7z password on a store+AES folder,
+  each return data from `read(1)` with no error and fail only on a full read.
+  `bounded-password-confirmation` covers that hole with the `ENCRYPTED_MEMBER_UNVERIFIED`
+  diagnostic, which was the cheaper of the two answers; this is the better one, and the
+  diagnostic should be revisited when it lands (placement gives a fact exactly one
+  authoritative channel, so the two are alternatives, not additions). Wants a
+  `testing-contract` delta and a decision on the attribute's lifecycle — the value is only
+  final at close, which is what made it awkward enough to defer.
+
 - **`stream_members()` seekability leak** — the intended rule is that a sequential pass
   is never seekable (`seekable_members=True` only changes random `open()`). Enforced
   today only where seeking is physically impossible (solid RAR ALL-pipe, solid 7z).
