@@ -59,12 +59,14 @@ class _UnrarBanner:
 
 @dataclass(frozen=True, slots=True)
 class _UnrarProbe:
-    """Banner verdict for one resolved ``unrar`` path, plus the stat identity
+    """Banner verdict for one resolved decompressor path, plus the stat identity
     that lets a later call skip the subprocess.
 
     Keyed on the absolute candidate, not on ``PATH``. ``shutil.which`` re-runs
     every call, so a newly installed binary is visible without editing ``PATH``.
-    One entry only: alternating two resolved paths re-probes (not worth a dict).
+    The finder walks ``unrar`` then ``rar``; the cache is a dict of those
+    resolved paths (at most two live entries) so a lookalike ``unrar`` plus a
+    usable ``rar`` does not re-probe both on every member read.
     The lookup does not key cwd or ``PATHEXT`` (Windows ``which`` consults both).
     ``version`` is parsed from the same banner as ``is_rarlab`` — a genuine
     RARLAB binary that is too old (or unparseable) stays ``is_rarlab=True``.
@@ -79,11 +81,17 @@ class _UnrarProbe:
     st_size: int
 
 
-# ``None`` means unprobed. A durable "not RARLAB" answer stores ``is_rarlab=False``
-# so a lookalike costs one process, not one per attempted read. A too-old (or
-# unparseable) RARLAB banner stores ``is_rarlab=True`` and is still refused.
-# A ``which`` miss and a probe that could not *run* the binary are not stored.
-_cached_unrar: _UnrarProbe | None = None
+# Keyed by absolute path. A durable "not RARLAB" answer stores
+# ``is_rarlab=False`` so a lookalike costs one process, not one per attempted
+# read. A too-old (or unparseable) RARLAB banner stores ``is_rarlab=True`` and
+# is still refused. A ``which`` miss and a probe that could not *run* the
+# binary are not stored.
+_cached_unrar: dict[str, _UnrarProbe] = {}
+
+# ``rar`` / ``unrar`` prepend ``switches=`` from ``~/.rarrc`` / ``~/.unrarrc``.
+# Archivey builds a complete argv; ``-cfg-`` keeps those files from injecting
+# ``-idq`` (empty identification banner) or ``-x`` (empty ``p`` pipe).
+_RAR_DISABLE_CONFIG = "-cfg-"
 
 _NOT_INSTALLED_MSG = (
     "RARLAB unrar or rar is required to read RAR member data, but neither was found "
@@ -130,7 +138,7 @@ def _is_rarlab_unrar(path: str) -> _UnrarBanner:
     caller can avoid caching a transient failure as "not RARLAB".
     """
     completed = subprocess.run(
-        [path],
+        [path, _RAR_DISABLE_CONFIG],
         capture_output=True,
         timeout=10,
         check=False,
@@ -140,13 +148,20 @@ def _is_rarlab_unrar(path: str) -> _UnrarBanner:
     return _parse_unrar_banner(text)
 
 
-def _unrar_floor_message(path: str, version: tuple[int, int] | None) -> str:
+def _describe_floor_refusal(path: str, version: tuple[int, int] | None) -> str:
     shown = display_path(path)
-    floor = f"{_UNRAR_VERSION_FLOOR[0]}.{_UNRAR_VERSION_FLOOR[1]}"
     if version is None:
-        found = f"the version of {shown} could not be parsed from its banner"
-    else:
-        found = f"{shown} reports version {version[0]}.{version[1]}"
+        return f"the version of {shown} could not be parsed from its banner"
+    return f"{shown} reports version {version[0]}.{version[1]}"
+
+
+def _unrar_floor_message(
+    refusals: list[tuple[str, tuple[int, int] | None]],
+) -> str:
+    floor = f"{_UNRAR_VERSION_FLOOR[0]}.{_UNRAR_VERSION_FLOOR[1]}"
+    found = "; ".join(
+        _describe_floor_refusal(path, version) for path, version in refusals
+    )
     return (
         f"RARLAB unrar or rar {floor} or later is required to read RAR member data, "
         f"but {found}. Install RARLAB unrar or rar {floor} or later."
@@ -182,12 +197,16 @@ def find_rarlab_unrar() -> str:
     too-old ``unrar`` does not hide a usable ``rar``. A ``which`` miss is never
     cached. Spawn sites still only run ``p`` (see :func:`open_unrar_p`).
     """
-    global _cached_unrar
     path_env = os.environ.get("PATH", "")
     # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``
     # rewrite cannot stamp a new lookup with the old key.
-    floor_error: PackageNotInstalledError | None = None
-    run_error: PackageNotInstalledError | None = None
+    floor_refusals: list[tuple[str, tuple[int, int] | None]] = []
+    run_cause: BaseException | None = None
+
+    def _note_floor(path: str, version: tuple[int, int] | None) -> None:
+        if any(existing == path for existing, _ in floor_refusals):
+            return
+        floor_refusals.append((path, version))
 
     for name in _RARLAB_BINARY_NAMES:
         candidate = shutil.which(name, path=path_env)
@@ -198,13 +217,12 @@ def find_rarlab_unrar() -> str:
         try:
             identity = _stat_identity(candidate)
         except PackageNotInstalledError as exc:
-            run_error = exc
+            run_cause = exc.__cause__ if exc.__cause__ is not None else exc
             continue
 
-        cached = _cached_unrar
+        cached = _cached_unrar.get(candidate)
         if (
             cached is not None
-            and cached.unrar_path == candidate
             and (cached.st_dev, cached.st_ino, cached.st_mtime_ns, cached.st_size)
             == identity
         ):
@@ -213,20 +231,17 @@ def find_rarlab_unrar() -> str:
             ):
                 return candidate
             if cached.is_rarlab:
-                floor_error = PackageNotInstalledError(
-                    _unrar_floor_message(candidate, cached.version)
-                )
+                _note_floor(candidate, cached.version)
             continue
 
         try:
             banner = _is_rarlab_unrar(candidate)
         except (OSError, subprocess.SubprocessError) as exc:
-            run_error = PackageNotInstalledError(_NOT_INSTALLED_MSG)
-            run_error.__cause__ = exc
+            run_cause = exc
             continue
 
         st_dev, st_ino, st_mtime_ns, st_size = identity
-        _cached_unrar = _UnrarProbe(
+        _cached_unrar[candidate] = _UnrarProbe(
             unrar_path=candidate,
             is_rarlab=banner.is_rarlab,
             version=banner.version,
@@ -238,14 +253,12 @@ def find_rarlab_unrar() -> str:
         if _banner_meets_floor(banner):
             return candidate
         if banner.is_rarlab:
-            floor_error = PackageNotInstalledError(
-                _unrar_floor_message(candidate, banner.version)
-            )
+            _note_floor(candidate, banner.version)
 
-    if floor_error is not None:
-        raise floor_error
-    if run_error is not None:
-        raise run_error
+    if floor_refusals:
+        raise PackageNotInstalledError(_unrar_floor_message(floor_refusals))
+    if run_cause is not None:
+        raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from run_cause
     raise PackageNotInstalledError(_NOT_INSTALLED_MSG)
 
 
@@ -449,7 +462,7 @@ def open_unrar_p(
     member: str | None = None,
     version_control: bool = False,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
-    """Spawn ``<unrar|rar> p -inul [-ver] [-p|-p-] [-n./member] archive``.
+    """Spawn ``<unrar|rar> p -inul -cfg- [-ver] [-p|-p-] [-n./member] archive``.
 
     ``version_control`` adds ``-ver`` so the pipe includes WinRAR file-version history
     payloads (needed for solid demux when versioned FILE rows are present, and for a
@@ -467,7 +480,7 @@ def open_unrar_p(
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
     unrar = find_rarlab_unrar()
-    cmd = [unrar, "p", "-inul"]
+    cmd = [unrar, "p", "-inul", _RAR_DISABLE_CONFIG]
     if version_control:
         cmd.append("-ver")
     pass_arg = _password_arg(password)
