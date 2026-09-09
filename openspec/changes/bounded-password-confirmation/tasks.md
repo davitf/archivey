@@ -16,18 +16,15 @@
 
 ## 2. 7z ladder
 
-- [ ] 2.1 Tail-padding cheap key check: compute `pack_size - unpack_size` for the AES
-      coder, skip below 4, read the last two ciphertext blocks from the pack view, decrypt
-      one block, require an all-zero tail. Confirm-only — a non-match drops nobody.
-- [ ] 2.2 Rewrite `_verify_decoded_folder` onto `plan_confirm` / `run_confirm_plan`.
+- [ ] 2.1 Rewrite `_verify_decoded_folder` onto `plan_confirm` / `run_confirm_plan`.
       Earliest anchor wins; the folder digest is a fallback, not a first test.
-- [ ] 2.3 Delete the `if not member_digests` full drain.
-- [ ] 2.4 Budget behaviour for a chain with no anchor in reach: bounded prefix for a
+- [ ] 2.2 Delete the `if not member_digests` full drain.
+- [ ] 2.3 Budget behaviour for a chain with no anchor in reach: bounded prefix for a
       rejecting codec; for `Copy` / PPMd, the unbounded pass only when
       `_passwords.is_ambiguous()`.
-- [ ] 2.5 Keep `UnsupportedFeatureError` / `PackageNotInstalledError` passthrough and the
+- [ ] 2.4 Keep `UnsupportedFeatureError` / `PackageNotInstalledError` passthrough and the
       `EncryptionError("Wrong password or corrupt 7z folder")` message.
-- [ ] 2.6 Apply the same ladder to `decode_encoded_header`, which decodes the whole header
+- [ ] 2.5 Apply the same ladder to `decode_encoded_header`, which decodes the whole header
       folder per candidate today.
 
 ## 3. ZIP
@@ -50,20 +47,20 @@
 
 - [ ] 5.1 Red-green on the ladder: a 200 MiB solid fixture where confirmation must decode
       only the first member. Assert bytes decoded, not wall time.
-- [ ] 5.2 Tail-padding matrix: padlen 0 / 1–3 / ≥ 4; correct and wrong candidates; a
-      fixture with deliberately non-zero padding proving no candidate is dropped.
-- [ ] 5.3 Regenerate the codec-rejection evidence as a test (random input to each raw
+- [ ] 5.2 Regenerate the codec-rejection evidence as a test (random input to each raw
       decompressor 7z can chain), so §2 of the design stays true if a dependency changes.
-- [ ] 5.4 Partial-read diagnostic in both readers, including the brute-forced colliding
+- [ ] 5.3 Partial-read diagnostic in both readers, including the brute-forced colliding
       ZipCrypto password (commit the fixture and the password — finding it takes ~300
       tries, but do not brute-force in CI).
-- [ ] 5.5 Store+AES ambiguous with the only anchor at folder end: the correct candidate
+- [ ] 5.4 Store+AES ambiguous with the only anchor at folder end: the correct candidate
       still wins.
-- [ ] 5.6 `./scripts/check.sh && ./scripts/test.sh --all-configs`.
+- [ ] 5.5 `./scripts/check.sh && ./scripts/test.sh --all-configs`.
 
 ## 6. Record
 
-- [ ] 6.1 Threat model **O12**: mark the residual closed, with the measured bound.
+- [ ] 6.1 Threat model **O12**: record what this change bounds and name the one shape it
+      leaves open (`Copy`/PPMd, anchor at folder end, ambiguous candidates), pointing at
+      `sevenzip-aes-tail-key-check`. O12 does not close here.
 - [ ] 6.2 CHANGELOG under Security.
 - [ ] 6.3 Cross-reference the `stream.verified` idea in `dev-docs/IDEAS.md` from the
       diagnostic's docstring, so whoever builds it knows the code is the thing to retire.

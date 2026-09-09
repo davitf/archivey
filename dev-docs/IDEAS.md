@@ -143,7 +143,8 @@
   password that passes the one-byte check, and a wrong 7z password on a store+AES folder,
   each return data from `read(1)` with no error and fail only on a full read.
   `bounded-password-confirmation` covers that hole with the `ENCRYPTED_MEMBER_UNVERIFIED`
-  diagnostic, which was the cheaper of the two answers; this is the better one, and the
+  diagnostic (extended by `sevenzip-aes-tail-key-check`), which was the cheaper of the two
+  answers; this is the better one, and the
   diagnostic should be revisited when it lands (placement gives a fact exactly one
   authoritative channel, so the two are alternatives, not additions). Wants a
   `testing-contract` delta and a decision on the attribute's lifecycle — the value is only

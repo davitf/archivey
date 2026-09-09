@@ -34,11 +34,12 @@ be accepted and an abandoned partial read never reaches the digest. Reproduced o
   authoritative digest still runs on the caller's own stream — which is what
   `2026-07-11-zip-multipassword-disambiguation` already decided for ZIP and 7z never
   followed.
-- **A `cheap_key_check` rung** above the integrity anchor: an O(1) check that confirms the
-  key without touching payload data. ZIP's two already exist (ZipCrypto's check byte,
-  WinZip AES's `pw_verify`) and are named; 7z gets one for the first time, from the
-  zero-padding at the tail of its AES-CBC packed stream. CBC lets that be read as 32 bytes
-  at EOF. Confirm-only, never reject, and only where the padding is ≥ 4 bytes.
+- **A `cheap_key_check` rung** named in the ladder above the integrity anchor: an O(1)
+  check that confirms the key without touching payload data. ZIP's two already exist
+  (ZipCrypto's check byte, WinZip AES's `pw_verify`) and are named here. 7z has none in the
+  format; giving it one is `sevenzip-aes-tail-key-check`, split out because it rests on an
+  empirical premise about writer behaviour rather than on the format, and should be
+  reviewable and revertible on its own.
 - **7z confirm stops at the first sufficient integrity anchor** — earliest anchor wins,
   member or folder, stopping once CRC-verified bytes reach 4 — instead of walking the
   folder. The no-anchor drain is deleted.
@@ -61,4 +62,8 @@ be accepted and an abandoned partial read never reaches the digest. Reproduced o
   now surfaces on the caller's read rather than at open. Adding a diagnostic code is not
   purely additive — a `RAISE` default starts raising on an event working programs never
   saw. Both are why this is a change and not a patch on #318.
-- Closes threat-model **O12**'s residual. Does not depend on #318, but assumes it merged.
+- Closes most of threat-model **O12**'s residual. What survives is one shape — a `Copy` or
+  PPMd chain whose only anchor is at the folder end, with an ambiguous candidate set —
+  which still re-reads the packed stream once per candidate. `sevenzip-aes-tail-key-check`
+  closes that; O12 stays open until it lands.
+- Does not depend on #318, but assumes it merged.

@@ -1,18 +1,7 @@
-# diagnostics — ENCRYPTED_MEMBER_UNVERIFIED delta
+# diagnostics — cheap_key_check value delta
 
-> Pastes the current taxonomy requirement and adds one row, its emission rule, and one
-> scenario. The code clears **admission** (a caller cannot tell, from the declared
-> contract, that the password behind a partially-read member was accepted on a weak check,
-> and can act on it by reading to EOF, passing one known password, or treating the bytes
-> as untrusted) and **placement** (`open()` returns a stream, not a per-item report;
-> extraction always reads to EOF, so this never fires there — the fact has no
-> return-value home today). Per
-> `dev-docs/discussions/2026-08-diagnostics/diagnostics-archive-vs-usage.md` (resolved
-> 2026-08-11), the archive-versus-caller shape of the event is explicitly not the test.
->
-> A `stream.verified` attribute plus an on-demand `verify()` is the better long-term
-> answer and would displace this code under placement; parked in `dev-docs/IDEAS.md`
-> (§API & ergonomics) rather than built here.
+> Pastes the post-`bounded-password-confirmation` taxonomy requirement, so archive that
+> change first. This delta adds one value to `check` and one scenario row.
 
 ## MODIFIED Requirements
 
@@ -93,7 +82,7 @@ and cross-run id stability are not promised.
 `ENCRYPTED_MEMBER_UNVERIFIED` SHALL be emitted when a member of an encrypted unit is
 closed before its declared digest was reached **and** the password behind those bytes was
 accepted on a check weaker than that digest. `check` names what accepted the password
-(`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names
+(`"weak_open_check"`, `"cheap_key_check"`, `"confirm_budget_exhausted"`); `reason` names
 why the digest was not reached (`"partial_read"`). It SHALL NOT be emitted for a partial
 read whose password was confirmed against an integrity anchor — that restates what the
 caller already knows, which the admission clause refuses.
@@ -122,6 +111,7 @@ caller already knows, which the admission clause refuses.
 | --- | --- |
 | ZipCrypto member, candidate accepted on the header check byte, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="weak_open_check"`, `reason="partial_read"`) |
 | 7z store+AES folder, no anchor within budget, single candidate, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
+| 7z folder accepted by the AES tail-padding check alone, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="cheap_key_check"`) |
 | Encrypted member whose password was confirmed against an integrity anchor, stream closed before EOF | No diagnostic |
 | Encrypted member read to EOF | No diagnostic; the digest decides |
 | Unencrypted member, stream closed before EOF | No diagnostic |

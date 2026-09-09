@@ -71,50 +71,27 @@ garbage cleanly — is rejected.
 So one decoded byte settles a compressed folder. PPMd is the exception and is grouped with
 `Copy` throughout.
 
-## 3. The cheap key check: 7z AES tail padding
+## 3. The cheap key check rung
 
-7z AES is AES-256-CBC over the packed (post-compression) bytes with no MAC and no
-in-format verifier. The coder's declared output length is the unpadded compressed size and
-the pack size is that rounded up to 16, so `pack_size - unpack_size` tail bytes are
-padding. Decrypting the last block needs only the last two ciphertext blocks
-(`P_n = D(C_n) XOR C_{n-1}`), so this is a 32-byte read at EOF.
-
-Padding contents, decrypted with the correct key:
-
-| writer | archives | result |
-| --- | --- | --- |
-| p7zip 16.02 (`7z` CLI) | 14 — Copy and LZMA2, payloads 1…1000 bytes | all zero, every case |
-| py7zr 1.1.3 | 14 — same matrix | all zero, every case |
-
-Two independent writers agree, and py7zr follows 7-Zip's reference implementation. Cost
-against the full pass it replaces, 200 MiB store+AES: **0.24 ms versus 261 ms**.
-
-**Confirm-only, never reject.** Zero padding is a writer convention, not a format
-guarantee. A reject-on-mismatch rule would refuse the *correct* password against a writer
-that pads with residue — an unrecoverable failure bought for a fast path. A non-matching
-tail therefore drops nobody; the ladder simply continues.
-
-**Nothing below 4 padding bytes.** The two failure modes compound. A residue-padding
-writer means the correct candidate has a non-zero tail; at 1 padding byte a wrong
-candidate has a zero tail 1/256 of the time. Together they drop the right password, run
-the CRC pass on the wrong one, and report "all candidates rejected" — a hard failure
-produced by an optimisation. Padding length is uniform over 0…15, so the check applies to
-75% of archives, is skipped for the 19% at 1–3 bytes, and has nothing to inspect for the
-6% at 0.
-
-This rung is not new to the library, only to 7z:
+The ladder names a rung above the integrity anchor: an O(1) test that confirms the *key*
+without decoding payload data. It is not new to the library, only to 7z.
 
 | format | cheap key check | strength |
 | --- | --- | --- |
 | ZipCrypto | header verification byte | 2⁻⁸ |
 | WinZip AES | 2-byte `pw_verify` | 2⁻¹⁶ (HMAC-SHA1 is the authoritative check) |
 | 7z AES | none in the format | — |
-| 7z AES, this change | zero-padding at the AES tail | 2⁻⁸ᵖᵃᵈˡᵉⁿ, used at padlen ≥ 4 |
 
-Measured member payload overhead confirms neither ZIP cipher pads: exactly 12 bytes for
-ZipCrypto (the encryption header; byte-wise stream cipher) and exactly 28 for WinZip AES
-(16 salt + 2 `pw_verify` + 10 HMAC; CTR). So the padding trick is 7z-only and the *rung*
-is what generalises.
+Neither ZIP check reaches 2⁻³², so neither confirms on its own; both eliminate. Measured
+member payload overhead confirms neither ZIP cipher pads, so neither has anything else to
+offer: exactly 12 bytes for ZipCrypto (the encryption header; byte-wise stream cipher) and
+exactly 28 for WinZip AES (16 salt + 2 `pw_verify` + 10 HMAC; CTR).
+
+7z can be given one, from the zero padding at the tail of its AES-CBC packed stream.
+That is `sevenzip-aes-tail-key-check`, split out of this change: it is the one piece
+resting on an empirical premise about what writers put in those bytes rather than on the
+format, so it gets its own review and its own revert. This change leaves the rung empty
+for 7z and starts its ladder at the integrity anchor.
 
 ## 4. The partial-read hole, in both readers
 
@@ -168,21 +145,21 @@ no prefix length buys anything.
 ## 6. Rejected
 
 **Lockstep candidate evaluation** — one pass over the packed stream feeding every
-candidate, the shape `zipcrypto.parallel_plaintext_crc32` uses. Rejected because after §1
-and §3 there is almost nothing left for it to amortise. It only ever helped the
-store-or-PPMd, anchor-at-folder-end, ambiguous case; the tail check now confirms 75% of
-those in 0.24 ms, and nothing else re-reads more than a few KiB. It is also not the
-straightforward win it looks like for 7z: each candidate needs its own AES stage,
-decompressor and CRC, so only the source read is shared, and the pipeline is pull-based, so
-running candidates in lockstep past the AES stage needs a tee with a bounded window or
-threads. Worth reopening only if a workload appears with padlen 0, a `Copy` or PPMd chain,
-no early anchor, several candidates, and a source where re-reading is genuinely expensive.
+candidate, the shape `zipcrypto.parallel_plaintext_crc32` uses. Rejected, but not because
+the residual is empty. After §1 the only case left that re-reads more than a few KiB is a
+`Copy` or PPMd chain whose earliest anchor is at the folder end, with an ambiguous
+candidate set: 200 MiB store+AES, four wrong candidates, 1.355 s against 0.337 s for one.
+Lockstep is a poor fit for it anyway. Each candidate needs its own AES stage, decompressor
+and CRC, so only the source read is shareable — 0.218 s of the 0.337 s marginal cost is
+AES and CRC, which lockstep cannot touch — and the pipeline is pull-based, so running
+candidates in step past the AES stage needs a tee with a bounded window or threads.
 
-**Using the tail check to order candidates at padlen 1–3** — trying zero-tail candidates
-first drops nobody, so it is safe, and it would turn an N-candidate CRC pass into a
-1-candidate one for 19% of archives. Left out to keep one rule for the check rather than
-two, and because the population it helps is the one the anchor fix already made cheap.
-Cheap to add later.
+The counter-argument is that a seekable source is not necessarily a *cheap* source: a 7z
+over a network stream or an external disk, or one larger than page cache, pays a real N×
+read where these measurements pay almost none. That is a fair objection and it is why the
+case is not dismissed outright — it is answered by `sevenzip-aes-tail-key-check`, which
+collapses the same case to a 32-byte read at EOF rather than by sharing a full pass.
+Reopen lockstep only if that check turns out not to apply to a real writer.
 
 **Skipping 7z confirmation entirely when unambiguous, as ZIP does** — would make a wrong
 single password surface as `CorruptionError` from the codec instead of `EncryptionError` at
@@ -213,8 +190,11 @@ return-value home exists today. When `stream.verified` lands, one of the two has
 ## 8. Sequencing and open items
 
 1. PR #318 merges first (memory bound, already green). This change assumes it.
-2. This change. Closes threat-model **O12**'s residual.
-3. A seekable AES-CBC stream, as its own change, justified on member access rather than
+2. This change.
+3. `sevenzip-aes-tail-key-check` — the 7z cheap-key-check rung. Closes what this change
+   leaves of threat-model **O12**: the `Copy`/PPMd, anchor-at-folder-end, ambiguous case
+   that still re-reads the packed stream once per candidate. O12 stays open until then.
+4. A seekable AES-CBC stream, as its own change, justified on member access rather than
    confirmation: `AesDecryptStream` (`crypto.py:143`) has no `seek`, so a late member of a
    store+AES folder is positioned with `skip_forward` over the whole prefix and
    `MemberStreams.SEEKABLE` cannot be honoured. Seeking CBC is block-aligned re-init with
@@ -223,8 +203,3 @@ return-value home exists today. When `stream.verified` lands, one of the two has
    it does not make LZMA folders seekable. Once it exists, `plan_confirm` can pick the
    **smallest** anchored member rather than the earliest, which matters for a
    `[200 MiB, 4 KiB]` stored solid folder.
-
-**Open:** the tail-padding premise is verified against p7zip 16.02 and py7zr 1.1.3 only.
-Fixtures from Windows 7-Zip ≥ 21, WinRAR or Bandizip would strengthen it. Confirm-only
-semantics mean an unknown writer costs a fallback rather than a failure, so this does not
-block the change, only how strongly §3 can state its premise.
