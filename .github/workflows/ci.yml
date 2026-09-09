@@ -233,30 +233,33 @@ jobs:
           echo "$DEST" >> "$GITHUB_PATH"
           test -x "$DEST/unrar"
           command -v rar && exit 1 || true
+      # rarlab.com refused the connection often enough to redden Windows runs on
+      # its own (run 34392160804: "connection attempt failed because the
+      # connected party did not properly respond"). Same shape as the macOS leg:
+      # the cache holds the *installed binary* so the common case makes no
+      # request at all, and the installer retries when it does. The key hashes
+      # the installer, whose URL is unversioned — so a cache entry pins whichever
+      # build was current when it was filled, until this script changes or the
+      # entry is evicted (GHA drops caches unused for 7 days).
+      - name: Cache RARLAB unrar (Windows)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rarlab-unrar
+          key: rarlab-unrar-${{ hashFiles('scripts/install-rarlab-unrar.ps1') }}-${{ runner.os }}-${{ runner.arch }}
+          save-always: true
       - name: Install unrar (Windows)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
         shell: pwsh
         run: |
           # Official x64 UnRAR (not chocolatey's x86 package + ShimGen shim — shims
-          # have broken solid ``unrar p`` pipes on this matrix).
+          # have broken solid ``unrar p`` pipes on this matrix). The script no-ops
+          # when the cache already restored UnRAR.exe.
           $dest = Join-Path $env:RUNNER_TEMP 'rarlab-unrar'
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          $sfx = Join-Path $dest 'unrarw64.exe'
-          Invoke-WebRequest -Uri 'https://www.rarlab.com/rar/unrarw64.exe' -OutFile $sfx
-          Push-Location $dest
-          # RARLAB SFX: /s silent, /d<path> extract destination.
-          Start-Process -FilePath $sfx -ArgumentList "/s","/d$dest" -Wait -NoNewWindow
-          Pop-Location
-          $real = Get-ChildItem -Path $dest -Recurse -Filter 'UnRAR.exe' |
-            Select-Object -First 1
-          if (-not $real) {
-            Get-ChildItem -Path $dest -Recurse | Format-Table FullName
-            throw 'UnRAR.exe not found after extracting unrarw64.exe'
-          }
+          ./scripts/install-rarlab-unrar.ps1 -Dest $dest
           # Windows is case-insensitive: shutil.which('unrar') finds UnRAR.exe.
-          # Do not Copy-Item to unrar.exe — that overwrites the file with itself.
-          echo $real.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & $real.FullName 2>&1 | Select-Object -First 2
+          # Do not copy to unrar.exe — that overwrites the file with itself.
+          echo $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Verify RARLAB unrar on PATH
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
         shell: bash
