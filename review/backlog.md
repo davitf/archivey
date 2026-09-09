@@ -49,6 +49,20 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   cannot normalize. #300 records the RAR case as `extra["rar.created_is_ctime"]`.
 - **#300 F5 secondary** — `tests/sample_archives.py` has no atime/ctime notion, so
   the format×shape sweep cannot cover xtime today.
+- **#320 F2 — content pin for the Windows `unrar` download.** `scripts/install-rarlab-unrar.ps1`
+  fetches `https://www.rarlab.com/rar/unrarw64.exe`, which is unversioned "current";
+  the only integrity checks are a PE sniff and the UNRAR banner. macOS has a real
+  content pin (a git commit of the UnRAR source) because GitHub serves that source
+  content-addressed; rarlab publishes no per-version URL to pin against. A hardcoded
+  SHA-256 would close it but turns every upstream release into a red matrix until
+  someone bumps the constant — a maintenance tripwire traded for a flake fix, which is
+  the wrong direction for the PR that introduced it. The real fix, if this is worth
+  paying, is the macOS strategy: build UnRAR from the pinned `pmachapman/unrar` mirror
+  with MSVC on Windows too, which drops rarlab from CI entirely and makes both
+  non-Linux legs content-addressed from one pin. Not free — an MSVC build of
+  `UnRAR.vcxproj` that nobody here has run. Caching does make the current float
+  *sticky* (a bad payload persists up to ~7 days rather than one run), which is the
+  part #320 added and the reason this is recorded rather than forgotten.
 
 ## Parked from archived deep reviews (2026-07 / 2026-08)
 

@@ -20,7 +20,8 @@
     common case; the retry only covers a cache miss.
 
 .PARAMETER Dest
-    Directory to install into. Created if missing.
+    Directory to install into. Created if missing. Must not contain spaces —
+    see the check below.
 
 .PARAMETER Retries
     Download attempts before giving up. Backoff doubles from 2s.
@@ -46,7 +47,9 @@ $PSNativeCommandUseErrorActionPreference = $false
 # Unversioned by design: rarlab publishes only "current" at this path. A cache
 # entry therefore pins whichever build was current when it was filled, until
 # the key changes — the CI key hashes this file, so editing anything here
-# refills it.
+# refills it. There is no content pin here, unlike the macOS installer's git
+# commit; rarlab offers no per-version URL to pin against. review/backlog.md
+# ("#320 F2") records what closing that would cost.
 $Url = 'https://www.rarlab.com/rar/unrarw64.exe'
 
 function Find-UnRARExe {
@@ -55,13 +58,51 @@ function Find-UnRARExe {
         Select-Object -First 1
 }
 
+# The RARLAB banner is what archivey's finder actually requires, so it is the
+# test for "is this binary the right one" on every path through this script —
+# including a <Dest> restored from a cache, which no step here produced.
+function Get-UnRARBanner {
+    param([string] $Exe)
+    # A truncated or non-PE file does not just print the wrong thing — launching
+    # it throws, which under the Stop preference would take the script down
+    # instead of letting the caller reinstall over it. That failure is an
+    # answer ("not a usable unrar"), so catch it and say so.
+    try {
+        $banner = (& $Exe 2>&1 | Select-Object -First 2) -join ' '
+    }
+    catch {
+        return $null
+    }
+    if ($banner -match 'UNRAR') { return $banner }
+    return $null
+}
+
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 $Dest = (Resolve-Path -LiteralPath $Dest).Path
 
+# The SFX takes its destination as /d<path> — one token, with no documented
+# quoting for a path containing spaces. CI's RUNNER_TEMP (D:\a\_temp) has none,
+# so rather than guess at the escaping and have extraction fail somewhere
+# unhelpful, refuse the path up front and say why.
+if ($Dest -match '\s') {
+    throw "install-rarlab-unrar: -Dest must not contain whitespace (the RARLAB SFX /d switch takes an unquoted path): $Dest"
+}
+
 $installed = Join-Path $Dest 'UnRAR.exe'
 if (Test-Path -LiteralPath $installed) {
-    Write-Host "install-rarlab-unrar: already present at $installed"
-    exit 0
+    # Re-check rather than trusting the file: the caller caches <Dest> with
+    # `save-always`, which saves even when a step failed, so a miss that failed
+    # to clean up after itself can leave a bad binary under the key. Reinstall
+    # over it instead of exiting non-zero — one poisoned entry should not hold
+    # the matrix red until the key changes or GHA evicts it (~7 days).
+    $cached = Get-UnRARBanner -Exe $installed
+    if ($cached) {
+        Write-Host "install-rarlab-unrar: already present at $installed"
+        Write-Host "install-rarlab-unrar: $cached"
+        exit 0
+    }
+    Write-Host "install-rarlab-unrar: $installed does not report the UNRAR banner; reinstalling"
+    Remove-Item -LiteralPath $installed -Force
 }
 
 $sfx = Join-Path $Dest 'unrarw64.exe'
@@ -113,14 +154,17 @@ if ($real.DirectoryName -ne $Dest) {
 # add <Dest> to it).
 Remove-Item -LiteralPath $sfx -Force -ErrorAction SilentlyContinue
 
-# The banner is the finder's actual requirement, so check it here rather than
-# discovering a wrong binary two steps later. Delete a binary that fails it: the
-# caller caches <Dest>, and the already-present check above would otherwise
-# accept the bad file on every later run.
-$banner = (& $installed 2>&1 | Select-Object -First 2) -join ' '
-if ($banner -notmatch 'UNRAR') {
+# Check the banner here rather than discovering a wrong binary two steps later.
+# Delete one that fails, so a cache save cannot carry it forward; the
+# already-present branch re-checks anyway, so a delete that does not take is a
+# warning rather than the failure itself.
+$banner = Get-UnRARBanner -Exe $installed
+if (-not $banner) {
     Remove-Item -LiteralPath $installed -Force -ErrorAction SilentlyContinue
-    throw "install-rarlab-unrar: unexpected banner from ${installed}: $banner"
+    if (Test-Path -LiteralPath $installed) {
+        Write-Host "install-rarlab-unrar: WARNING could not delete $installed"
+    }
+    throw "install-rarlab-unrar: $installed does not report the UNRAR banner"
 }
 Write-Host "install-rarlab-unrar: installed $installed"
 Write-Host "install-rarlab-unrar: $banner"

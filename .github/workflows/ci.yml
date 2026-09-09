@@ -257,6 +257,12 @@ jobs:
           # when the cache already restored UnRAR.exe.
           $dest = Join-Path $env:RUNNER_TEMP 'rarlab-unrar'
           ./scripts/install-rarlab-unrar.ps1 -Dest $dest
+          # Same belt-and-suspenders as the macOS leg's `test -x`: assert the
+          # binary before putting the directory on PATH, so a script that
+          # somehow returns 0 without one fails here and not a step later.
+          if (-not (Test-Path -LiteralPath (Join-Path $dest 'UnRAR.exe'))) {
+            throw "UnRAR.exe missing from $dest after install-rarlab-unrar.ps1"
+          }
           # Windows is case-insensitive: shutil.which('unrar') finds UnRAR.exe.
           # Do not copy to unrar.exe — that overwrites the file with itself.
           echo $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
