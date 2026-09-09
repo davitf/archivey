@@ -724,9 +724,10 @@ def test_password_confirm_does_not_request_the_whole_folder(
 
     assert spies, "confirm must open a folder pipeline"
     # First pipeline is password confirmation; later ones serve the member read.
-    assert spies[0].max_requested < folder_size, (
+    assert spies[0].max_requested <= sevenzip_reader_mod._PASSWORD_CONFIRM_CHUNK, (
         f"confirm requested {spies[0].max_requested} bytes in one read "
-        f"(folder is {folder_size})"
+        f"(chunk is {sevenzip_reader_mod._PASSWORD_CONFIRM_CHUNK}, "
+        f"folder is {folder_size})"
     )
 
 

@@ -174,8 +174,11 @@ consumes the pass. A second call raises — including after an early `break`. Us
 
 Multiple password candidates can trigger confirmation reads. ZipCrypto **STORED** members
 are the expensive niche: a wrong candidate that passes the weak open check may force a
-full-member CRC scan. Prefer a single known password when reading huge stored encrypted
-members.
+full-member CRC scan. Encrypted **7z folders** are the same shape without a check value:
+confirm decodes the folder (now in 64 KiB chunks, so peak RAM is not the folder size)
+and CRCs. Store+AES does not fail fast on a wrong key, so wall time is still
+folder size × candidate count. Prefer a single known password when reading huge
+encrypted members.
 
 ## Accelerators and source lifetime
 
