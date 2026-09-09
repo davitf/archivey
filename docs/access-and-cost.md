@@ -176,7 +176,7 @@ Multiple password candidates can trigger confirmation reads. ZipCrypto **STORED*
 are the expensive niche: a wrong candidate that passes the weak open check may force a
 full-member CRC scan. Encrypted **7z folders** are the same shape without a check value:
 confirm decodes the folder (now in 64 KiB chunks, so peak RAM is not the folder size)
-and CRCs. Store+AES does not fail fast on a wrong key, so there wall time is
+and CRCs. Store+AES does not fail fast on a wrong key, so wall time there is
 folder size × candidate count. A compressed folder is far cheaper: the codec rejects a
 wrong key within a few bytes, and confirmation stops at the first member CRC that fails,
 so a wrong candidate costs the key derivation and little else. Prefer a single known

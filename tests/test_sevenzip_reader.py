@@ -609,14 +609,14 @@ def test_7z_multi_password_rejects_wrong_candidate_via_crc(
     first_kdf = "first".encode("utf-16le")
     garbage = b"\x05\x7f\xc6\x01\xebI\x03j\x88\x93\x8e\xe5\xb5"
 
-    called: list[bool] = []
+    garbage_served: list[bool] = []
 
     def pipeline_with_wrong_first(source, folder, *, password, **kwargs):
         # After the first folder unlocks, known-good "first" is tried on the second
         # folder. Simulate a decompressor that yields plausible garbage of the
         # expected length instead of raising, so only the CRC confirm rejects it.
-        called.append(True)
         if password == first_kdf and folder.unpack_sizes[-1] == len(garbage):
+            garbage_served.append(True)
             return io.BytesIO(garbage)
         return original_pipeline(source, folder, password=password, **kwargs)
 
@@ -629,8 +629,9 @@ def test_7z_multi_password_rejects_wrong_candidate_via_crc(
         assert reader.read(members["first.txt"]) == b"first secret"
         assert reader.read(members["second.txt"]) == b"second secret"
 
-    # Without this the patch could be inert and the test would still pass.
-    assert called, "the patched pipeline was never called"
+    # Without this the patch could run and still never take the CRC-only path,
+    # and the test would pass via codec rejection of the wrong key.
+    assert garbage_served, "the CRC-only garbage path was never taken"
 
 
 @requires_binary("7z")
