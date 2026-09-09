@@ -22,16 +22,27 @@
 
 ## 3. Tests
 
+`bounded-password-confirmation` §5 carries a rule these inherit: each test must fail when
+the specific path it names is disabled, not merely when the code is broken. That change's
+preamble has the two #318 incidents behind it. This change is unusually exposed to the
+trap, because the tail check is a *fast path* — every test below can pass on the slow path
+it is supposed to bypass, so "it rejected the wrong password" proves nothing on its own.
+
 - [ ] 3.1 Padding matrix over payload sizes giving padlen 0, 1–3 and ≥ 4, for `Copy` and
       LZMA2: correct candidate confirms at ≥ 4, check is inert below 4 and at 0.
 - [ ] 3.2 A fixture whose padding is deliberately non-zero under the correct password,
       proving no candidate is dropped and the ladder still finds it. Build it by patching
       the ciphertext tail of a known archive, not by hoping a writer misbehaves.
 - [ ] 3.3 Wrong candidates against a padlen ≥ 4 archive: none confirms, all fall through.
+      Assert the tail check reported no match, not just that the open failed — a wrong
+      password fails anyway via the anchor, so the weaker assertion holds with the check
+      deleted.
 - [ ] 3.4 No-anchor folder, several candidates: the right one wins and
       `DIGEST_UNVERIFIABLE` is still emitted.
 - [ ] 3.5 Assert the check decodes no folder bytes — spy on the pipeline, as
-      `test_password_confirm_does_not_request_the_whole_folder` does for #318.
+      `test_password_confirm_does_not_request_the_whole_folder` does for #318. This is the
+      only assertion that distinguishes "confirmed by the tail" from "confirmed by the
+      anchor"; without it 3.1 and 3.4 both pass with the tail check removed.
 - [ ] 3.6 Commit the p7zip and py7zr padding fixtures with a note on which writer and
       version produced each, so the premise in `design.md` has an artefact.
 - [ ] 3.7 `./scripts/check.sh && ./scripts/test.sh --all-configs`.

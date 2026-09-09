@@ -45,15 +45,45 @@
 
 ## 5. Tests
 
+**Every test in this section must fail when the *specific* path it names is disabled, not
+merely when the code is broken somehow.** Name the mutation in a comment next to the
+assertion, and run it before believing the test.
+
+This is not a general plea for rigour; #318 shipped the same defect twice in two rounds,
+and both were invisible to a green suite:
+
+1. `test_7z_multi_password_rejects_wrong_candidate_via_crc` monkeypatched
+   `SevenZipReader._open_folder_pipeline`. Production calls the module-level
+   `open_folder_pipeline`; the method existed only so tests could patch it. The fake never
+   ran, and the test passed on the unmodified reader. Raising inside the fake still left it
+   green.
+2. Patching the right function fixed that, and the test was still wrong. The assertion was
+   `assert called` — proof the fake ran, not proof it served garbage. When the fake declines
+   (its folder matcher keys on a member size that happens to be 13 bytes), the wrong
+   candidate is rejected by **LZMA**, the archive still reads correctly, and `called` is
+   satisfied. The test claims to pin the CRC-only path and was passing via codec rejection.
+   Fixed by recording inside the branch: `assert garbage_served`.
+
+The shape both share: an assertion on *machinery* (was the hook called, did the code run)
+rather than on *the path under test*. Machinery assertions are satisfied by the cheap path
+the test exists to avoid. Assert the effect, and prove it by disabling the mechanism that
+produces it.
+
 - [ ] 5.1 Red-green on the ladder: a 200 MiB solid fixture where confirmation must decode
-      only the first member. Assert bytes decoded, not wall time.
+      only the first member. Assert bytes decoded, not wall time — and verify the assertion
+      fails with the anchor plan forced to walk the whole folder, not merely with
+      `_verify_decoded_folder` broken. A test that only notices total breakage would pass
+      against the pre-change reader, which is the thing it exists to distinguish from.
 - [ ] 5.2 Regenerate the codec-rejection evidence as a test (random input to each raw
       decompressor 7z can chain), so §2 of the design stays true if a dependency changes.
 - [ ] 5.3 Partial-read diagnostic in both readers, including the brute-forced colliding
       ZipCrypto password (commit the fixture and the password — finding it takes ~300
-      tries, but do not brute-force in CI).
+      tries, but do not brute-force in CI). Verify the ZipCrypto case fails when the
+      diagnostic is suppressed *and* that it is the colliding password reaching the read,
+      not a password rejected at the check byte — the second is the §5-preamble trap.
 - [ ] 5.4 Store+AES ambiguous with the only anchor at folder end: the correct candidate
-      still wins.
+      still wins. Verify it fails when the anchor pass is skipped, not only when
+      confirmation is removed entirely.
 - [ ] 5.5 `./scripts/check.sh && ./scripts/test.sh --all-configs`.
 
 ## 6. Record
