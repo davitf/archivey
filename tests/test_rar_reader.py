@@ -887,8 +887,12 @@ def test_multi_volume_rnn_roundtrip() -> None:
         assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
-def _stream_copy_note_present(notes: tuple[str, ...]) -> bool:
+def _single_stream_copy_note_present(notes: tuple[str, ...]) -> bool:
     return any("will copy the whole archive to disk" in note for note in notes)
+
+
+def _stream_volumes_copy_note_present(notes: tuple[str, ...]) -> bool:
+    return any("were copied to a temp directory at open" in note for note in notes)
 
 
 def test_path_source_has_no_stream_copy_cost_note() -> None:
@@ -909,7 +913,7 @@ def test_stream_source_has_copy_cost_note_at_open() -> None:
     blob = _fixture("stored_m0.rar").read_bytes()
     with open_archive(io.BytesIO(blob)) as archive:
         held = archive.cost
-        assert _stream_copy_note_present(held.notes)
+        assert _single_stream_copy_note_present(held.notes)
         member = next(m for m in archive.members() if m.is_file)
         assert archive.read(member) == b"stored payload"
         assert archive.cost == held
@@ -920,7 +924,7 @@ def test_stream_compressed_read_keeps_open_time_cost_note() -> None:
     blob = _fixture("basic_solid__.rar").read_bytes()
     with open_archive(io.BytesIO(blob)) as archive:
         held = archive.cost
-        assert _stream_copy_note_present(held.notes)
+        assert _single_stream_copy_note_present(held.notes)
         archive.read("file1.txt")
         assert archive.cost == held
 
@@ -933,7 +937,7 @@ def test_multi_volume_stream_materialization() -> None:
         with open_archive(streams) as archive:
             assert archive.info.is_multivolume is True
             held = archive.cost
-            assert _stream_copy_note_present(held.notes)
+            assert _stream_volumes_copy_note_present(held.notes)
             assert archive.read("payload.bin") == b"ABCDEFGH" * 200
             assert archive.cost == held
     finally:

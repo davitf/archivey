@@ -105,26 +105,32 @@ from archivey.types import (
     crc32_digest,
 )
 
-_STREAM_SOURCE_DISK_COPY_NOTE = (
+_STREAM_SINGLE_DISK_COPY_NOTE = (
     "Reading a compressed member will copy the whole archive to disk so "
     "RARLAB unrar or rar can read it."
+)
+_STREAM_VOLUMES_DISK_COPY_NOTE = (
+    "Stream volumes were copied to a temp directory at open so "
+    "RARLAB unrar or rar can read them."
 )
 
 
 def _rar_stream_copy_cost_notes(source: Path | BinaryIO) -> tuple[str, ...]:
-    """Open-time caveat when a compressed read may copy this source to disk.
+    """Open-time caveat when member data needs a filesystem path for ``unrar``.
 
-    Path sources (including ConcatenatedFile of path volumes) do not copy.
-    Any other stream — a BytesIO, a file object, or ConcatenatedFile of stream
-    volumes — may, so the note is a prediction, not a log of a copy that
-    already happened. Keyed here from the source shape so Path items that
-    ``_materialize_stream_volumes`` can copy are not labelled as a stream.
+    Path sources (including ``ConcatenatedFile`` of path volumes) get no note.
+    A single non-path stream gets a predictive caveat (copy on first compressed
+    read). ``ConcatenatedFile`` of stream volumes is materialized in ``__init__``,
+    so the note is past tense. Keyed from source shape so ``Path`` items inside
+    ``_materialize_stream_volumes`` are not mis-labelled as streams.
     """
     if isinstance(source, Path):
         return ()
-    if isinstance(source, ConcatenatedFile) and source.volume_paths:
-        return ()
-    return (_STREAM_SOURCE_DISK_COPY_NOTE,)
+    if isinstance(source, ConcatenatedFile):
+        if source.volume_paths:
+            return ()
+        return (_STREAM_VOLUMES_DISK_COPY_NOTE,)
+    return (_STREAM_SINGLE_DISK_COPY_NOTE,)
 
 
 # rarfile / RAR host_os values (parser maps RAR5 Windows→2, Unix→3).
