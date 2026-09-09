@@ -17,25 +17,27 @@ containers, so a format name would be the wrong thing to install. On a free-thre
 build use `archivey[free-threaded]`; see
 [Platforms and threading](support-matrix.md#free-threaded-python-313t-and-later).
 
-RAR **member data** also needs RARLAB `unrar` **6.0 or later** on `PATH` (listing works
-without it). How to get that binary is below; format quirks live on
+RAR **member data** also needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH`
+(listing works without it). How to get that binary is below; format quirks live on
 [Formats and extras](formats.md).
 
 ## What each format needs
 
 The per-format detail lives on [Formats and extras](formats.md); the short version
 is that every format except RAR is a pip install away, and RAR **member data** needs
-RARLAB `unrar` **6.0 or later** on `PATH` — not `unrar-free`, `unar`, or `7z`. `rarfile`
-accepts those last two as data backends; archivey does not: they either cannot read
-solid RAR or fail silently on it. Listing and metadata work without it.
+RARLAB `unrar` or `rar` **6.0 or later** on `PATH` — not `unrar-free`, `unar`, or `7z`.
+`rarfile` accepts those last two as data backends; archivey does not: they either cannot
+read solid RAR or fail silently on it. Listing and metadata work without it.
 
-## Getting RARLAB `unrar`
+## Getting RARLAB `unrar` or `rar`
 
-Listing a RAR works without it. Reading member bytes does not. Archivey looks for a
-binary named `unrar` whose banner contains `UNRAR` plus `Alexander Roshal` or
-`RARLAB`, and whose version in that banner is **6.0 or later** (`UNRAR 6.02`,
-`UNRAR 7.00`). Run `unrar` with no arguments to check. An older RARLAB build is
-refused at identification, not per member.
+Listing a RAR works without either. Reading member bytes does not. Archivey looks for
+`unrar` first, then `rar`, and accepts the first whose banner is RARLAB **6.0 or later**:
+`UNRAR 6.02` / `UNRAR 7.00` plus `Alexander Roshal` or `RARLAB`, or the writer's
+`RAR 7.00 … Alexander Roshal` (often with `Trial version`). A `RAR` token is not taken
+from inside `UNRAR`. Run the binary with no arguments to check. An older RARLAB build
+is refused at identification, not per member. `unar`, `7z`, and `unrar-free` stay
+refused even if they sit on `PATH` under another name.
 
 ### Linux
 
@@ -48,13 +50,19 @@ Debian 12 and Ubuntu 22.04 ship 6.x, which is enough. Ubuntu 24.04 ships 7.00.
 A 5.x package (some older releases) is refused — compile from RARLAB source
 (same steps as the macOS recipe below) rather than trusting `apt` on those distros.
 
+`apt install rar` puts RARLAB's trialware writer on `PATH` and only Suggests `unrar`.
+That `rar` binary is accepted when `unrar` is missing (same 6.0 floor; confirm
+`RAR 6.00+` and Alexander Roshal / RARLAB). Prefer `unrar` when both are installed.
+
 Other distros ship an equivalently named package of RARLAB UnRAR.
 
 ### Windows
 
 Download the official command-line UnRAR from
 [RARLAB](https://www.rarlab.com/rar_add.htm) (the Windows UnRAR row) and put
-`UnRAR.exe` on `PATH`.
+`UnRAR.exe` on `PATH`. The WinRAR `Rar.exe` writer is looked up as `rar` the same
+way as on Unix; its identification banner has not been measured here, so prefer
+`UnRAR.exe` until you have confirmed a `RAR x.yy` / Alexander Roshal banner.
 
 ### macOS
 

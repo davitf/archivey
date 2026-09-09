@@ -9,21 +9,21 @@ Registers keep the status — this page states the behaviour and links the row.
 
 | | |
 | --- | --- |
-| Read | Yes — metadata natively, member data through RARLAB `unrar` |
+| Read | Yes — metadata natively, member data through RARLAB `unrar` or `rar` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
 | Source | Seekable only, in both access modes |
 | Listing cost | `INDEXED` — RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1). Otherwise a header-to-header walk cached at open (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
-| Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` **6.0 or later** on `PATH` (§1) |
+| Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1) |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
-| Refuses | Non-seekable sources · a non-RARLAB `unrar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free` / RARLAB `rar`) · a RARLAB `unrar` older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · writing |
+| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`) · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · writing |
 
 **Two things a reader might expect and will not find.** Nothing amortizes repeated
 random reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every
-out-of-order solid `open()` is its own whole-archive decode (§2.4). And RARLAB `rar`
-(the trialware writer) is not accepted when `unrar` is missing, even though `rar p`
-matched `unrar p` on the argv archivey actually spawns (§3, §10 #20).
+out-of-order solid `open()` is its own whole-archive decode (§2.4). RARLAB `rar`
+(the trialware writer) is accepted when `unrar` is missing; `unrar` wins when both
+exist. Reads still spawn only `p` (§3, §10 #20).
 
 The 6.0 floor is the **banner probe**, not archive open. Missing or too-old `unrar`
 does not fail `open_archive` or stored reads; compressed old-style comments stay
@@ -88,14 +88,14 @@ Everything about that boundary is a consequence:
   full re-decode (solid: from the archive start), reported as `STREAM_REWIND_REDECOMPRESSES`
   once the solid prefix plus discarded member progress meets the 1 MiB floor. The unnamed
   ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5).
-- **Identity of the binary costs a process.** `find_rarlab_unrar` looks up the name
-  `unrar` only, runs it with no arguments, and sniffs the banner. Major.minor is
-  parsed from that same text (`UNRAR 6.02` / `UNRAR 7.00`) and cached with the probe
-  — not re-read per member. Below 6.0, or a RARLAB banner whose version cannot be
+- **Identity of the binary costs a process.** `find_rarlab_unrar` looks up `unrar`
+  first, then `rar`, runs the candidate with no arguments, and sniffs the banner.
+  Major.minor is parsed from that same text (`UNRAR 6.02` / `UNRAR 7.00` /
+  `RAR 7.00`) and cached with the probe — not re-read per member. A `RAR` token
+  does not match inside `UNRAR`. Below 6.0, or a RARLAB banner whose version cannot be
   parsed, is still cached as RARLAB (`is_rarlab=True`) and still refused
-  (`PackageNotInstalledError` names the floor and the version found). The RARLAB
-  *writer* binary `rar` is not consulted, even though `rar p` is byte-identical to
-  `unrar p` on the argv archivey actually spawns (§10 #20). `shutil.which` re-runs
+  (`PackageNotInstalledError` names the floor and the version found). A lookalike
+  or too-old `unrar` does not hide a usable `rar`. `shutil.which` re-runs
   on every call — a miss is never frozen, so installing `unrar` into a directory
   already on `PATH` is visible without editing the string. The banner verdict is
   cached for the resolved (absolute) candidate together with its stat identity
@@ -443,12 +443,12 @@ covers the members `unrar`'s exit code cannot speak for — a hash-less member, 
 or an empty stream that reaches EOF cleanly.
 
 **Without the binary**, a compressed or encrypted read raises `PackageNotInstalledError`
-naming RARLAB `unrar` and naming the lookalikes that are *not* accepted. A RARLAB
-binary older than 6.0 (or whose banner version cannot be parsed) raises the same
+naming RARLAB `unrar` or `rar` and naming the lookalikes that are *not* accepted. A
+RARLAB binary older than 6.0 (or whose banner version cannot be parsed) raises the same
 exception at the banner probe, once, cached with the probe, naming the floor and the
 version found. Open, listing, and stored reads still succeed: a missing or too-old
 binary is caught when resolving compressed old-style comments, and those stay `None`
-(§2.2). There is no silent fallback (§3, threat-model C1).
+(§2.2). There is no silent fallback to `unar` / `7z` / `unrar-free` (§3, threat-model C1).
 
 ### 2.4 Extract
 
@@ -480,12 +480,13 @@ fails depending on what the host has installed, and listing and reading have dif
 requirements. That asymmetry is the whole reason for the native-metadata split.
 
 **Nothing else on a normal machine is a safe substitute**, which is why the fallback is
-refused rather than merely discouraged. The one exception that is the *same vendor's
-decompressor under a different name* is RARLAB `rar` (the trialware writer): Ubuntu's
-`rar` package Suggests `unrar` and does not put `unrar` on `PATH`, so `apt install rar`
-alone is a miss today. On 7.00, `rar p` matched `unrar p` on the extract argv; the
-finder still refuses it because the banner is `RAR 7.00`, not `UNRAR 7.00` (§10 #20).
-Measured across the other candidates
+refused rather than merely discouraged. RARLAB `rar` (the trialware writer) is the
+*same vendor's decompressor under a different name*: Ubuntu's `rar` package Suggests
+`unrar` and does not put `unrar` on `PATH`, so `apt install rar` alone used to miss.
+On 7.00, `rar p` matched `unrar p` on the extract argv; the finder now accepts a
+`RAR x.yy … Alexander Roshal` banner when `unrar` is missing or unusable, still
+preferring `unrar`, still spawning only `p` (§10 #20). Windows `Rar.exe` banner is
+unmeasured. Measured across the other candidates
 ([`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)):
 
 | Candidate | Verdict |
@@ -528,7 +529,7 @@ decision (ADR [0016](../decisions/0016-committed-rar-corpus-fixtures.md)).
 own macOS `unrar` is ad-hoc signed on ARM and unsigned on Intel, with no notarization ticket,
 so a quarantined download is blocked. Homebrew core will not ship an `unrar` formula either
 — that removal was the licence, in 2020, and is independent of Gatekeeper. Published user
-guidance is [`docs/install.md`](../../docs/install.md#getting-rarlab-unrar); CI compiles a
+guidance is [`docs/install.md`](../../docs/install.md#getting-rarlab-unrar-or-rar); CI compiles a
 pinned RARLAB source tree instead of trusting a third-party tap.
 
 **Old archives are still readable and still surprising.** RAR 1.5 and 2.x archives (extract
@@ -638,7 +639,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | Native metadata parser; `unrar` for member data only | Listing works with no binary and no `rarfile` dependency, and archivey's cost and streaming model is not bent to another library's | `rarfile`, which couples listing to its own decompressor stack — kept as a test oracle (ADR [0002](../decisions/0002-native-rar-metadata-unrar-data.md)) |
-| RARLAB `unrar` **only**, no silent fallback | The alternatives are measurably worse in ways a caller cannot see: `unar` returns empty files with a success exit on a whole archive class, `7z` depends on a plugin that may or may not be installed, `bsdtar` writes gigabytes on a stored member. A degraded backend chosen behind the caller's back is the failure mode `PackageNotInstalledError` exists to prevent | Probing `PATH` the way `rarfile` does (threat-model C1, [`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)); accepting RARLAB `rar` when `unrar` is missing (parked as §10 #20, not a silent fallback) |
+| RARLAB `unrar` **or** `rar`, no silent fallback to other tools | The alternatives are measurably worse in ways a caller cannot see: `unar` returns empty files with a success exit on a whole archive class, `7z` depends on a plugin that may or may not be installed, `bsdtar` writes gigabytes on a stored member. A degraded backend chosen behind the caller's back is the failure mode `PackageNotInstalledError` exists to prevent. Accepting RARLAB `rar` is the same vendor's `p` command, not a second engine | Probing `PATH` the way `rarfile` does (threat-model C1, [`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)) |
 | Refuse RARLAB `unrar` older than **6.0** at the banner probe | `-n` glob demux and `-ver` were checked from 6.02 up. 5.91 passed those RAR data tests but hangs on an anonymous-fd multi-volume probe that 6.12+ exits 3 on — a path archivey does not use. Floor 6.0 so Debian 12 / Ubuntu 22.04 apt packages work. Parsed from the same identification banner as the RARLAB sniff, cached with the probe, not re-read per member. Open and stored reads do not require it; compressed old-style comments stay `None` | Floor 7.0, which would refuse those distro packages; checking per member; treating a RARLAB banner with no parseable version as 6.0 |
 | Pass the member as `-n./<name>`, never positionally | It is the only construction that neutralizes both hostile prefixes; `--` handles the switch case and leaves `@listfile` expansion intact | `--` alone; shell quoting (there is no shell — argv is a list) |
 | Honour `seekable_members=True` on named `unrar` by respawning the process | A flag that seeks on stored members and raises on compressed ones is a broken contract, and buffering the decoded member would hide the cost VISION forbids | Buffering the member in memory; teaching `ArchiveStream` to reopen every non-seekable inner (the blast radius is every backend for one pipe) |
@@ -828,7 +829,7 @@ need `-qo+` or live AUTO; the gap and what would close it are in
   (MacPaw `unar` silent-wrong)
 - Topic: [`prefixed-archives.md`](../topics/prefixed-archives.md) (the shared SFX machinery)
 - User-facing: [`docs/formats.md`](../../docs/formats.md#rar) ·
-  [`docs/install.md`](../../docs/install.md#getting-rarlab-unrar) ·
+  [`docs/install.md`](../../docs/install.md#getting-rarlab-unrar-or-rar) ·
   [`docs/gotchas.md`](../../docs/gotchas.md)
 
 ## 10. To fix — temporary
@@ -859,8 +860,10 @@ transient execute failures not cached; **#17** registered `.cbr` / `.cbz` / `.cb
 first members (`vol.exe.001`, `rv.part1.sfx`); **#11** a stub-only `vol.exe` follows
 the split first volume beside it (`vol.exe.001`, `vol.7z.001`, or `vol.zip.001`);
 old-scheme SFX first volumes (`name.exe` / `name.sfx` + `.r00`) are discovered as
-volume 1 of that set; and **#7** `unrar` version floor **6.0**, parsed from the
-identification banner and cached with the probe. **#8** amortize solid random reads via
+volume 1 of that set; **#7** `unrar` version floor **6.0**, parsed from the
+identification banner and cached with the probe; and **#20** RARLAB `rar` accepted
+when `unrar` is missing (`unrar` preferred; banner `RAR x.yy`; still `p` only;
+Windows `Rar.exe` banner unmeasured). **#8** amortize solid random reads via
 `unrar x` into a managed temp directory — **rejected** (`VISION.md`: cost must stay
 visible and honest; caching whole decodes behind later `open()` calls hides work the
 caller cannot query — see §6).
@@ -870,4 +873,3 @@ caller cannot query — see §6).
 | 6 | **Signal the stream-source copy** (P11), and consider bounding it to one compressed member via a synthetic single-member archive rather than only relocating it (§7) | The largest hidden cost in the library is in neither `diagnostics` nor `cost.notes`. `open-issues.md` P11 | §5, §7 |
 | 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
 | 19 | **Default-deny named `unrar` when the `-n` mask would decompress earlier matches first** (`glob_prefix > 0`), with a config opt-in for callers who want that concatenation | A member named `*` on a nonsolid archive is extra decode that `AccessCost.DIRECT` does not advertise, and `ExtractionLimits` do not cover `open()` / `read()` (threat-model O1). Unique glob names (`prefix == 0`) stay readable without a flag — that is the accidental `report*.pdf` case #3 shipped. Solid earlier-member decode is a separate, already-signalled cost (`AccessCost.SOLID`). Not this PR: a public knob. Raised on [#296](https://github.com/davitf/archivey/pull/296) | §2.3, §5 |
-| 20 | **Accept RARLAB `rar` when `unrar` is missing.** Prefer `unrar` when both exist. Banner is `RAR 7.00 … Alexander Roshal` / `Trial version` — extend the sniff so a `RAR` token does not match inside `UNRAR`. Floor still 6.0. Specs/docs name both; still refuse `unar` / `7z` / `unrar-free`. Spawn only `p` | Ubuntu/Debian `apt install rar` does not put `unrar` on `PATH` (`Suggests: unrar`). On 7.00, `rar p -inul [-ver] [-p\|-p-] [-n./member]` matched `unrar` on rc and stdout for 18 cases (ALL-pipe, named `-n`, hostile names, `-ver`, volumes, globs, missing-member rc=10, password-on-stdin including rc=11). `_parse_unrar_banner` classifies the writer as not RARLAB because `UNRAR` is absent. Windows `Rar.exe` banner unmeasured. Not this PR | §1, §3 |

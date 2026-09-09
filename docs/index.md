@@ -53,7 +53,7 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
 - **Zero-dependency core** — ZIP/TAR/directory and the stdlib codecs work with no extra
   installs; optional formats and accelerators are opt-in [extras](install.md).
 - **Native 7z and RAR metadata readers** — no `py7zr`/`rarfile` on the read path (RAR
-  member *data* still uses the system `unrar`).
+  member *data* still uses the system `unrar` or `rar`).
 - **Safe by default** — extraction blocks path traversal, symlink escapes, and archive
   bombs unless you opt out. See [Safe extraction](extracting.md).
 - **Streaming-friendly** — read TAR and the single-file compressors straight from a pipe

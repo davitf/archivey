@@ -215,8 +215,8 @@ should leave accelerators off (`AcceleratorMode.OFF`) or enforce their own
 resource limits. Mutation and Atheris harnesses run with accelerators off for
 this reason.
 
-**External tools:** RAR member *data* may be decompressed by the system `unrar`
-binary. Keep that tool updated; treat its availability and behaviour as part of
+**External tools:** RAR member *data* may be decompressed by the system `unrar` or
+`rar` binary. Keep that tool updated; treat its availability and behaviour as part of
 your deployment’s trust boundary.
 
 Prefer extracting untrusted archives into a dedicated directory with limited

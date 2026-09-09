@@ -874,6 +874,7 @@ def test_multi_volume_roundtrip() -> None:
         assert archive.info.extra.get("rar.volume_count") == 2
         data = archive.read("payload.bin")
         assert data == b"ABCDEFGH" * 200
+        assert archive.cost.notes == ()
 
 
 @requires_binary("unrar")
@@ -999,7 +1000,7 @@ def test_rar3_stored_old_style_main_comment_needs_no_unrar(
     end_hdr = struct.pack("<H", _crc32(end_without_crc) & 0xFFFF) + end_without_crc
 
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     with open_archive(io.BytesIO(RAR_ID + main_hdr + end_hdr)) as archive:
         assert archive.info.comment == text.decode()
 
@@ -1552,8 +1553,14 @@ def test_rar_reader_masks_hostile_unix_mode() -> None:
     assert member_win.windows_attrs == 0x20
 
 
-def _stub_which_unrar(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
-    """Make ``shutil.which('unrar')`` return ``path`` while the file exists.
+def _clear_unrar_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", {})
+
+
+def _stub_which_rarlab(
+    monkeypatch: pytest.MonkeyPatch, mapping: dict[str, Path]
+) -> None:
+    """Make ``shutil.which`` return the given names while those files exist.
 
     Windows ``which`` only returns names in ``PATHEXT`` (``.exe`` / ``.cmd`` / …).
     An extensionless ``unrar`` on PATH is invisible there, so a lookalike that
@@ -1562,14 +1569,20 @@ def _stub_which_unrar(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     Patches ``which`` on the ``shutil`` *module object* (not a local alias);
     ``monkeypatch`` restores it.
     """
-    resolved = str(path)
+    resolved = {name: str(path) for name, path in mapping.items()}
 
     def which(command: str, path: str | None = None, **_kwargs: object) -> str | None:
-        if command == "unrar" and Path(resolved).is_file():
-            return resolved
+        dest = resolved.get(command)
+        if dest is not None and Path(dest).is_file():
+            return dest
         return None
 
     monkeypatch.setattr(rar_unrar.shutil, "which", which)
+
+
+def _stub_which_unrar(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Make ``shutil.which('unrar')`` return ``path``; ``rar`` stays missing."""
+    _stub_which_rarlab(monkeypatch, {"unrar": path})
 
 
 def _accepted_unrar_banner(_path: str = "") -> rar_unrar._UnrarBanner:
@@ -1613,7 +1626,7 @@ def test_non_rarlab_unrar_rejected(
     fake.write_text("#!/bin/sh\necho 'unrar-free fake'\n", encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     with pytest.raises(PackageNotInstalledError, match="RARLAB"):
         rar_unrar.find_rarlab_unrar()
 
@@ -1625,7 +1638,7 @@ def test_non_rarlab_unrar_negative_probe_is_cached(
     fake.write_text("#!/bin/sh\necho 'unrar-free fake'\n", encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     _stub_which_unrar(monkeypatch, fake)
 
     probes = 0
@@ -1659,7 +1672,7 @@ def test_unrar_on_path_is_the_rarlab_build() -> None:
 
 def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     with pytest.raises(PackageNotInstalledError, match="RARLAB"):
         rar_unrar.find_rarlab_unrar()
 
@@ -1669,7 +1682,7 @@ def test_missing_unrar_rechecks_which_and_does_not_probe(
 ) -> None:
     """A ``which`` miss is not cached; the expensive banner probe is never run."""
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
 
     which_calls = 0
     probe_calls = 0
@@ -1693,7 +1706,7 @@ def test_missing_unrar_rechecks_which_and_does_not_probe(
         with pytest.raises(PackageNotInstalledError, match="RARLAB"):
             rar_unrar.find_rarlab_unrar()
 
-    assert which_calls == 2
+    assert which_calls == 4  # unrar + rar, twice; misses are not cached
     assert probe_calls == 0
 
 
@@ -1713,7 +1726,7 @@ def test_path_change_invalidates_cached_unrar_miss(
     )
 
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     with pytest.raises(PackageNotInstalledError, match="RARLAB"):
         rar_unrar.find_rarlab_unrar()
 
@@ -1730,7 +1743,7 @@ def test_unrar_installed_after_miss_is_found(
     )
 
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     with pytest.raises(PackageNotInstalledError, match="RARLAB"):
         rar_unrar.find_rarlab_unrar()
 
@@ -1749,7 +1762,7 @@ def test_transient_probe_oserror_is_not_cached(
     fake.write_bytes(b"x")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     _stub_which_unrar(monkeypatch, fake)
 
     calls = 0
@@ -1775,7 +1788,7 @@ def test_stat_error_on_candidate_is_package_not_installed(
     fake.write_bytes(b"x")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     # Do not use ``_stub_which_unrar``: it stats the candidate, and this test
     # patches ``os.stat``.
     monkeypatch.setattr(
@@ -1803,7 +1816,7 @@ def test_replaced_cached_unrar_is_reprobed(
     fake.write_bytes(b"a")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     _stub_which_unrar(monkeypatch, fake)
 
     probes = 0
@@ -1826,7 +1839,7 @@ def test_deleted_cached_unrar_is_not_returned(
     fake = tmp_path / "unrar"
     fake.write_bytes(b"")
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     _stub_which_unrar(monkeypatch, fake)
     # A shell script is not a Win32 executable; this test pins cache
     # invalidation, not banner sniffing.
@@ -1841,6 +1854,10 @@ def test_deleted_cached_unrar_is_not_returned(
 
 _RARLAB_BANNER = (
     "UNRAR {version} freeware      Copyright (c) 1993-2024 Alexander Roshal"
+)
+_RARLAB_RAR_BANNER = (
+    "RAR {version}     Copyright (c) 1993-2024 Alexander Roshal\n"
+    "Trial version             Type 'rar -?' for help"
 )
 
 
@@ -1897,6 +1914,28 @@ def test_parse_unrar_banner_version_without_vendor_is_not_rarlab() -> None:
     assert parsed.version is None
 
 
+def test_parse_unrar_banner_accepts_rarlab_writer() -> None:
+    parsed = rar_unrar._parse_unrar_banner(_RARLAB_RAR_BANNER.format(version="7.00"))
+    assert parsed.is_rarlab is True
+    assert parsed.version == (7, 0)
+
+
+def test_parse_unrar_banner_rar_token_does_not_match_inside_unrar() -> None:
+    """``RAR x.yy`` must not fire on the ``RAR`` suffix of ``UNRAR x.yy``."""
+    parsed = rar_unrar._parse_unrar_banner(_RARLAB_BANNER.format(version="7.00"))
+    assert parsed.is_rarlab is True
+    assert parsed.version == (7, 0)
+    assert (
+        rar_unrar._RAR_VERSION_RE.search(_RARLAB_BANNER.format(version="7.00")) is None
+    )
+
+
+def test_parse_unrar_banner_writer_version_without_vendor_is_not_rarlab() -> None:
+    parsed = rar_unrar._parse_unrar_banner("RAR 7.00 Trial version")
+    assert parsed.is_rarlab is False
+    assert parsed.version is None
+
+
 @pytest.mark.parametrize(
     "version_text", ["6.00", "6.02", "6.24", "7.00", "7.0", "7.11"]
 )
@@ -1907,15 +1946,15 @@ def test_rarlab_unrar_at_or_above_floor_is_accepted(
     fake.write_bytes(b"x")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     runs = _stub_unrar_banner(
         monkeypatch, fake, _RARLAB_BANNER.format(version=version_text)
     )
     for _ in range(2):
         assert Path(rar_unrar.find_rarlab_unrar()) == Path(os.path.abspath(str(fake)))
     assert runs == [1]
-    cached = rar_unrar._cached_unrar
-    assert cached is not None
+    key = os.path.abspath(str(fake))
+    cached = rar_unrar._cached_unrar[key]
     assert cached.is_rarlab is True
     major, minor = (int(p) for p in version_text.split("."))
     assert cached.version == (major, minor)
@@ -1928,7 +1967,7 @@ def test_rarlab_unrar_below_floor_is_rejected_and_cached(
     fake.write_bytes(b"x")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     banner = _RARLAB_BANNER.format(version="5.91")
     runs = _stub_unrar_banner(monkeypatch, fake, banner)
 
@@ -1942,8 +1981,8 @@ def test_rarlab_unrar_below_floor_is_rejected_and_cached(
         assert "unrar-free" not in msg
 
     assert runs == [1]
-    cached = rar_unrar._cached_unrar
-    assert cached is not None
+    key = os.path.abspath(str(fake))
+    cached = rar_unrar._cached_unrar[key]
     assert cached.is_rarlab is True
     assert cached.version == (5, 91)
 
@@ -1955,7 +1994,7 @@ def test_unparseable_rarlab_banner_is_rejected_and_cached(
     fake.write_bytes(b"x")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     runs = _stub_unrar_banner(
         monkeypatch,
         fake,
@@ -1974,8 +2013,8 @@ def test_unparseable_rarlab_banner_is_rejected_and_cached(
         assert "unrar-free" not in msg
 
     assert runs == [1]
-    cached = rar_unrar._cached_unrar
-    assert cached is not None
+    key = os.path.abspath(str(fake))
+    cached = rar_unrar._cached_unrar[key]
     assert cached.is_rarlab is True
     assert cached.version is None
 
@@ -1988,7 +2027,7 @@ def test_overlong_banner_version_is_package_not_installed(
     fake.write_bytes(b"x")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
     _stub_unrar_banner(
         monkeypatch, fake, _RARLAB_BANNER.format(version="9" * 5000 + ".0")
     )
@@ -1999,8 +2038,310 @@ def test_overlong_banner_version_is_package_not_installed(
 def test_unrar_not_installed_message_names_lookalikes() -> None:
     """Copy of the not-installed message — behaviour tests only match ``RARLAB``."""
     msg = rar_unrar._NOT_INSTALLED_MSG
+    assert "unrar or rar" in msg
     for name in ("unrar-free", "unar", "7z", "7zz"):
         assert name in msg
+
+
+def test_rarlab_rar_is_accepted_when_unrar_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "rar"
+    fake.write_bytes(b"x")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    _clear_unrar_cache(monkeypatch)
+    _stub_which_rarlab(monkeypatch, {"rar": fake})
+    probed: list[str] = []
+
+    def run(
+        argv: list[str],
+        *_args: object,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        probed.append(os.path.abspath(argv[0]))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=_RARLAB_RAR_BANNER.format(version="7.00").encode("utf-8"),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    assert Path(rar_unrar.find_rarlab_unrar()) == Path(os.path.abspath(str(fake)))
+    assert probed == [os.path.abspath(str(fake))]
+
+
+def test_rarlab_unrar_is_preferred_when_rar_is_also_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    unrar = tmp_path / "unrar"
+    rar = tmp_path / "rar"
+    unrar.write_bytes(b"u")
+    rar.write_bytes(b"r")
+    unrar.chmod(0o755)
+    rar.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    _clear_unrar_cache(monkeypatch)
+    _stub_which_rarlab(monkeypatch, {"unrar": unrar, "rar": rar})
+    probed: list[str] = []
+    banners = {
+        os.path.abspath(str(unrar)): _RARLAB_BANNER.format(version="7.00"),
+        os.path.abspath(str(rar)): _RARLAB_RAR_BANNER.format(version="7.00"),
+    }
+
+    def run(
+        argv: list[str],
+        *_args: object,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        probed.append(os.path.abspath(argv[0]))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=banners[os.path.abspath(argv[0])].encode("utf-8"),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    assert Path(rar_unrar.find_rarlab_unrar()) == Path(os.path.abspath(str(unrar)))
+    assert probed == [os.path.abspath(str(unrar))]
+
+
+def test_lookalike_unrar_does_not_hide_rarlab_rar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    unrar = tmp_path / "unrar"
+    rar = tmp_path / "rar"
+    unrar.write_bytes(b"u")
+    rar.write_bytes(b"r")
+    unrar.chmod(0o755)
+    rar.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    _clear_unrar_cache(monkeypatch)
+    _stub_which_rarlab(monkeypatch, {"unrar": unrar, "rar": rar})
+    banners = {
+        os.path.abspath(str(unrar)): "unrar-free fake",
+        os.path.abspath(str(rar)): _RARLAB_RAR_BANNER.format(version="7.00"),
+    }
+
+    def run(
+        argv: list[str],
+        *_args: object,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=banners[os.path.abspath(argv[0])].encode("utf-8"),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    assert Path(rar_unrar.find_rarlab_unrar()) == Path(os.path.abspath(str(rar)))
+
+
+def test_non_rarlab_rar_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "rar"
+    fake.write_bytes(b"x")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    _clear_unrar_cache(monkeypatch)
+    _stub_which_rarlab(monkeypatch, {"rar": fake})
+    _stub_unrar_banner(monkeypatch, fake, "unar 1.10.1")
+    with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+        rar_unrar.find_rarlab_unrar()
+
+
+def test_rarrc_cannot_break_probe_or_spawn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Probe and ``p`` argv include ``-cfg-`` so user config cannot inject switches.
+
+    ``subprocess`` is stubbed — the ``~/.rarrc`` uses real ``switches=`` syntax
+    only for realism; the assertion is ``-cfg-`` in both argvs.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".rarrc").write_text("switches=-idq\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    fake = tmp_path / "bin" / "unrar"
+    fake.parent.mkdir()
+    fake.write_bytes(b"x")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake.parent))
+    _clear_unrar_cache(monkeypatch)
+    _stub_which_rarlab(monkeypatch, {"unrar": fake})
+
+    probe_argv: list[list[str]] = []
+    spawn_argv: list[list[str]] = []
+
+    def run(
+        argv: list[str],
+        *_args: object,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        probe_argv.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=_RARLAB_BANNER.format(version="7.00").encode("utf-8"),
+            stderr=b"",
+        )
+
+    class _FakeStdout:
+        def read(self, _n: int = -1) -> bytes:
+            return b""
+
+        def close(self) -> None:
+            return None
+
+    class _FakeProc:
+        stdin = None
+        stdout = _FakeStdout()
+
+        def poll(self) -> int:
+            return 0
+
+    def popen(
+        cmd: list[str],
+        **_kwargs: object,
+    ) -> _FakeProc:
+        spawn_argv.append(list(cmd))
+        return _FakeProc()
+
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    monkeypatch.setattr(rar_unrar.subprocess, "Popen", popen)
+    assert Path(rar_unrar.find_rarlab_unrar()) == Path(os.path.abspath(str(fake)))
+    assert probe_argv == [[str(fake), rar_unrar._RAR_DISABLE_CONFIG]]
+
+    archive = tmp_path / "probe.rar"
+    archive.write_bytes(b"x")
+    rar_unrar.open_unrar_p(archive)
+    assert spawn_argv[0][:4] == [
+        str(fake),
+        "p",
+        "-inul",
+        rar_unrar._RAR_DISABLE_CONFIG,
+    ]
+
+
+def test_lookalike_unrar_and_rarlab_rar_both_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A negative ``unrar`` cache entry must not force a ``rar`` re-probe every call."""
+    unrar = tmp_path / "unrar"
+    rar = tmp_path / "rar"
+    unrar.write_bytes(b"u")
+    rar.write_bytes(b"r")
+    unrar.chmod(0o755)
+    rar.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    _clear_unrar_cache(monkeypatch)
+    _stub_which_rarlab(monkeypatch, {"unrar": unrar, "rar": rar})
+    banners = {
+        os.path.abspath(str(unrar)): "unrar-free fake",
+        os.path.abspath(str(rar)): _RARLAB_RAR_BANNER.format(version="7.00"),
+    }
+    probed: list[str] = []
+
+    def run(
+        argv: list[str],
+        *_args: object,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        probed.append(os.path.abspath(argv[0]))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=banners[os.path.abspath(argv[0])].encode("utf-8"),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    for _ in range(2):
+        assert Path(rar_unrar.find_rarlab_unrar()) == Path(os.path.abspath(str(rar)))
+    assert probed == [os.path.abspath(str(unrar)), os.path.abspath(str(rar))]
+
+
+def test_open_unrar_p_spawns_p_not_extract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "unrar"
+    fake.write_bytes(b"x")
+    fake.chmod(0o755)
+    archive = tmp_path / "member.rar"
+    archive.write_bytes(b"x")
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: str(fake))
+
+    class _FakeStdout:
+        def read(self, _n: int = -1) -> bytes:
+            return b""
+
+        def close(self) -> None:
+            return None
+
+    class _FakeProc:
+        stdin = None
+        stdout = _FakeStdout()
+
+        def poll(self) -> int:
+            return 0
+
+    captured: list[list[str]] = []
+
+    def popen(
+        cmd: list[str],
+        **_kwargs: object,
+    ) -> _FakeProc:
+        captured.append(list(cmd))
+        return _FakeProc()
+
+    monkeypatch.setattr(rar_unrar.subprocess, "Popen", popen)
+    rar_unrar.open_unrar_p(archive, member="payload.txt")
+    assert captured[0][1] == "p"
+    assert "x" not in captured[0][:4]
+
+
+def test_floor_refusal_lists_both_binaries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    unrar = tmp_path / "unrar"
+    rar = tmp_path / "rar"
+    unrar.write_bytes(b"u")
+    rar.write_bytes(b"r")
+    unrar.chmod(0o755)
+    rar.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    _clear_unrar_cache(monkeypatch)
+    _stub_which_rarlab(monkeypatch, {"unrar": unrar, "rar": rar})
+    banners = {
+        os.path.abspath(str(unrar)): _RARLAB_BANNER.format(version="5.91"),
+        os.path.abspath(str(rar)): _RARLAB_RAR_BANNER.format(version="5.80"),
+    }
+
+    def run(
+        argv: list[str],
+        *_args: object,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=banners[os.path.abspath(argv[0])].encode("utf-8"),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    with pytest.raises(PackageNotInstalledError, match="6.0") as info:
+        rar_unrar.find_rarlab_unrar()
+    msg = str(info.value)
+    assert display_path(os.path.abspath(str(unrar))) in msg
+    assert display_path(os.path.abspath(str(rar))) in msg
 
 
 def test_listing_and_stored_reads_need_no_unrar(
@@ -2013,7 +2354,7 @@ def test_listing_and_stored_reads_need_no_unrar(
     Only a member that must go through ``unrar`` fails, and it fails by naming it.
     """
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(rar_unrar, "_cached_unrar", None)
+    _clear_unrar_cache(monkeypatch)
 
     with open_archive(_fixture("basic_nonsolid__.rar")) as archive:
         files = {m.name: m for m in archive.members() if m.is_file}
