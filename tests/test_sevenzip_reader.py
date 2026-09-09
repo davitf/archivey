@@ -645,6 +645,91 @@ def test_7z_cli_multi_volume_archive_roundtrip(tmp_path: Path) -> None:
     _assert_roundtrip(first_volume, {payload.name: payload.read_bytes()})
 
 
+class _ReadSizeSpy:
+    """Record the largest ``read(n)`` so a full-folder gather is visible to tests."""
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+        self.max_requested = 0
+
+    def read(self, n: int = -1, /) -> bytes:
+        if n < 0:
+            self.max_requested = max(self.max_requested, 2**31)
+        else:
+            self.max_requested = max(self.max_requested, n)
+        return self._inner.read(n)
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+@requires("cryptography")
+@requires_binary("7z")
+def test_password_confirm_does_not_request_the_whole_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Encrypted 7z confirm used to ``read_exact`` the whole folder into RAM.
+
+    7z AES has no verifier, so a candidate is checked by decoding and CRCing. That
+    decode must not materialise the folder: a single ``read(n)`` with ``n`` equal
+    to the unpack size is the previous gather. Store+AES so a wrong-key path
+    cannot fail fast inside LZMA and hide the request size.
+    """
+    import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
+
+    folder_size = 2 * 1024 * 1024
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(bytes(range(256)) * (folder_size // 256))
+    archive = tmp_path / "store-aes.7z"
+    result = subprocess.run(
+        [
+            "7z",
+            "a",
+            "-t7z",
+            "-psecret",
+            "-mhe=off",
+            "-m0=Copy",
+            "-ms=off",
+            str(archive),
+            payload.name,
+            "-y",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build store+AES fixture: {result.stderr}")
+
+    spies: list[_ReadSizeSpy] = []
+    original = sevenzip_reader_mod.open_folder_pipeline
+
+    def wrapping(*args: object, **kwargs: object) -> _ReadSizeSpy:
+        stream = original(*args, **kwargs)
+        spy = _ReadSizeSpy(stream)
+        spies.append(spy)
+        return spy
+
+    monkeypatch.setattr(sevenzip_reader_mod, "open_folder_pipeline", wrapping)
+
+    with open_archive(archive, password="secret") as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        assert member.size == folder_size
+        with reader.open(member) as stream:
+            assert stream.read(1) == payload.read_bytes()[:1]
+
+    assert spies, "confirm must open a folder pipeline"
+    # First pipeline is password confirmation; later ones serve the member read.
+    assert spies[0].max_requested < folder_size, (
+        f"confirm requested {spies[0].max_requested} bytes in one read "
+        f"(folder is {folder_size})"
+    )
+
+
 def _reader_for_unit_tests() -> SevenZipReader:
     reader = object.__new__(SevenZipReader)
     reader._stream_config = DEFAULT_STREAM_CONFIG  # noqa: SLF001 - focused unit test
