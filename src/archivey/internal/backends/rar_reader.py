@@ -105,6 +105,34 @@ from archivey.types import (
     crc32_digest,
 )
 
+_STREAM_SINGLE_DISK_COPY_NOTE = (
+    "Reading a compressed member will copy the whole archive to disk so "
+    "RARLAB unrar or rar can read it."
+)
+_STREAM_VOLUMES_DISK_COPY_NOTE = (
+    "Stream volumes were copied to a temp directory at open so "
+    "RARLAB unrar or rar can read them."
+)
+
+
+def _rar_stream_copy_cost_notes(source: Path | BinaryIO) -> tuple[str, ...]:
+    """Open-time caveat when member data needs a filesystem path for ``unrar``.
+
+    Path sources (including ``ConcatenatedFile`` of path volumes) get no note.
+    A single non-path stream gets a predictive caveat (copy on first compressed
+    read). ``ConcatenatedFile`` of stream volumes is materialized in ``__init__``,
+    so the note is past tense. Keyed from source shape so ``Path`` items inside
+    ``_materialize_stream_volumes`` are not mis-labelled as streams.
+    """
+    if isinstance(source, Path):
+        return ()
+    if isinstance(source, ConcatenatedFile):
+        if source.volume_paths:
+            return ()
+        return (_STREAM_VOLUMES_DISK_COPY_NOTE,)
+    return (_STREAM_SINGLE_DISK_COPY_NOTE,)
+
+
 # rarfile / RAR host_os values (parser maps RAR5 Windows→2, Unix→3).
 _RAR_HOST_OS_TO_CREATE_SYSTEM: dict[int, CreateSystem] = {
     0: CreateSystem.FAT,
@@ -598,6 +626,9 @@ class RarReader(BaseArchiveReader):
         self._archive_path: Path | None = None
         self._volume_paths: list[Path] = []
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
+        # Open-time caveat from source shape, not from later materialization
+        # (CostReceipt is a static snapshot; see access-mode-and-cost).
+        self._cost_notes = _rar_stream_copy_cost_notes(source)
 
         if is_stream(source) and not is_seekable(source):
             raise StreamNotSeekableError(
@@ -1326,6 +1357,7 @@ class RarReader(BaseArchiveReader):
             stream_capability=StreamCapability.SEEKABLE,
             # RAR solid is one continuous compression context; block count is unknown.
             solid_block_count=None,
+            notes=self._cost_notes,
         )
         any_encrypted = any(m.is_encrypted for m in self._archive.members)
         is_multivolume = (
