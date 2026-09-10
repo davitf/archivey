@@ -121,6 +121,29 @@ re-resolve):
 - Type-check: `uv run --no-sync pyrefly check` and `uv run --no-sync ty check`
   (both must stay clean; mypy/pyright are intentionally not used)
 
+### Gates from a `git worktree` (review checkouts)
+
+Reviewing a PR in a `git worktree` is fine, and **both scripts work there unchanged** —
+`./scripts/check.sh` and `./scripts/test.sh`, exactly as in the primary checkout. A
+worktree starts without a `.venv`, so they create one for it (`check.sh` announces
+`=== no .venv in this tree — creating one`). That takes about a second and ~11 MiB: uv
+hardlinks from its global cache, so the second environment on a machine is nearly free.
+
+The tree gets its **own** environment rather than sharing another checkout's, which is
+what makes `test.sh --all-configs` and any dependency change on the branch meaningful
+there.
+
+One trap, if you ever bypass the scripts: a bare `uv run --no-sync` in a worktree creates
+an *empty* `.venv`, fails to spawn the tool, and leaves it behind — after which `pyrefly`
+and `ty` resolve that empty environment and report `missing-import` for every optional
+extra (`pycdlib`, `brotli`, `pyppmd`, `inflate64`, `bcj`, `tqdm`). That output reads like
+a wall of real findings. If you see it, the environment is missing, not the code — and
+running `./scripts/check.sh` is the fix.
+
+If a gate cannot be run for environment reasons, **say it was not run** rather than
+reporting its output. A phantom failure passed off as a result costs the next reader more
+than a skipped gate honestly labelled.
+
 ### Formatting before commit (required)
 
 CI fails on unformatted Python (`ruff format --check` over `src/ tests/ scripts/
