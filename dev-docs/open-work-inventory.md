@@ -50,7 +50,7 @@ below. Do not read the 57 as a debt figure.
 | [#251](https://github.com/davitf/archivey/pull/251) | OpenSpec `bounded-source-spooling` | **Blocked on four maintainer answers**, all in its `design.md` §Open questions. Q1 (the default limit) decides which working RAR-from-stream reads start failing. Merging the proposal does not need them; *scheduling* does |
 | [#244](https://github.com/davitf/archivey/pull/244) | Topic 10 problem catalogue — 57 `design.md` files mined | **Pick one of #243/#244 and close the other.** They are competing attempts at the same deliverable |
 | [#243](https://github.com/davitf/archivey/pull/243) | Topic 10 problem catalogue — early checkpoint sample | The earlier and thinner of the pair. `main` carries only `brief.md` + `harvest/`; neither `catalogue.md` nor `sources.md` exists, so nothing has been chosen yet |
-| [#187](https://github.com/davitf/archivey/pull/187) | rapidgzip + inflate64 native stress harnesses | **Partly superseded; salvage the inflate64 half.** See below |
+| [#187](https://github.com/davitf/archivey/pull/187) | rapidgzip + inflate64 native stress harnesses | **Do not decide in isolation.** It is a coverage question wearing a keep-or-close mask — see [Native codec stress coverage](#native-codec-stress-coverage-its-own-evaluation) |
 | [#185](https://github.com/davitf/archivey/pull/185) | OpenSpec `verification-integrity-mode` (STREAMING default, STRICT opt-in) | **Live but unranked.** July proposal, never reviewed. Decide whether it survives ADR 0014 before spending more on it |
 | [#101](https://github.com/davitf/archivey/pull/101) | RAR `unrar` piping vs temp-file investigation | **Close.** Superseded — see below |
 
@@ -69,12 +69,12 @@ Checked against `main`, not inferred from the documents that mention them.
   Nothing is lost by closing it.
 - **#101 and #187 both write into `docs/internal/`, which no longer exists.** The docs IA
   migration (#221/#222) moved that tree to `dev-docs/`. Neither PR applies as written.
-- **#187's rapidgzip half is superseded in pattern.** `main` now carries
+- **#187's shared-harness scaffolding is superseded in pattern.** `main` now carries
   `.github/workflows/ppmd-native-stress.yml` + `scripts/ppmd_native_stress.py`,
   `rapidgzip-truncation-sweep.yml` + `scripts/rapidgzip_truncation_sweep.py`, and
-  `atheris-fuzz.yml`. The shared-harness idea was adopted; this PR's version of it was not.
-  **`inflate64` is the one codec with no stress coverage** — that half is the only unique
-  content, and it is smaller as a new PR against today's `scripts/` than as a rebase.
+  `atheris-fuzz.yml`. The idea of a shared native-stress harness was adopted; this PR's
+  version of it was not. **What the PR still proposes uniquely is a judgement, not a file** —
+  see the section below.
 - **#315 thread 50 is fixed.** `_open_folder_pipeline` is gone from `src/`; the only
   surviving mention is a comment in `tests/test_sevenzip_reader.py:754` recording that it
   *used to* exist.
@@ -188,6 +188,51 @@ Nothing else has a hard dependency. `single-file-open-time-validation` and
 `seekable-gzip-and-block-writing` are both fully independent — they are the two changes to
 hand someone who wants work that blocks on no decision.
 
+## Native codec stress coverage (its own evaluation)
+
+**#187 is not a keep-or-close call, and treating it as one is how it stalled for seven weeks.**
+The PR adds native stress harnesses for rapidgzip and inflate64. Deciding it needs an answer
+to a question nobody has asked yet: *which native codecs warrant which kind of hostile-input
+coverage, and why?* That is a scoped piece of work with a written output, not a line item.
+
+**Two different things are both called "coverage" here**, and conflating them is what makes
+the PR hard to judge:
+
+| | Fuzzing (`tests/atheris_fuzz/`) | Native stress (`scripts/ppmd_native_stress.py`) |
+| --- | --- | --- |
+| Looks for | Crashes on *malformed* input | Aborts and races under *repeated valid* decode |
+| Shape | Coverage-guided, seeded corpus | Scenario loops, subprocess isolation, soft-pass CI |
+| Exists because | A general guarantee we want to hold | **One specific known upstream defect** |
+
+**What `main` actually has today**, checked rather than assumed:
+
+- **Atheris targets are broader than the registers suggest.** `tests/atheris_fuzz/targets.py`
+  registers 7 required stream codecs (`unix_compress`, `xz`, `lzip`, `gzip`, `bzip2`,
+  `lzma_alone`, `zlib`) and 4 optional ones — **including `deflate64`** — plus the RAR and 7z
+  parser targets. So inflate64 is *not* uncovered, which an earlier draft of this page got
+  wrong. It has fuzz coverage and no native-stress harness.
+- **Native stress exists for exactly one library: `pyppmd`**, and
+  [`known-issues.md`](known-issues.md) §"Intermittent `pyppmd` native aborts on valid PPMd
+  streams" is why. The harness was built to chase a reproducible defect, not as a standard
+  every native dependency is held to.
+- **`rapidgzip` has a sweep, not a stress harness.** `rapidgzip-truncation-sweep.yml` targets
+  one behaviour — truncation detection — from `rapidgzip-truncation-investigation`.
+
+**The question to answer.** The native surface is `pyppmd`, `inflate64`, `rapidgzip` (and its
+bundled `indexed_bzip2`), `brotli`, `lz4`, `cryptography`, `pycdlib`. One of eight has a stress
+harness. Either that is correct — stress harnesses are a response to *evidence* of a defect,
+and building them speculatively for the other seven buys little — or it is a gap, in which
+case #187 is the start of closing it and the same treatment is owed to five more libraries.
+
+**This page does not answer that**, deliberately: the answer changes what CI runs on every PR
+and is a testing-strategy decision, adjacent to [`review/backlog.md`](../review/backlog.md)
+Topic 4 (test-suite strategy, archived) rather than to any open change. What it needs is a
+short evaluation with a stated criterion — the honest candidate being *"a native stress
+harness is built when an upstream defect is observed, not before"*, which would resolve #187
+as **close, with the criterion recorded** rather than as a judgement about the code in it.
+
+Durable home for the question: [`IDEAS.md`](IDEAS.md) §Testing.
+
 ## Plan of attack
 
 Ordered by what unblocks the most, then by what is cheapest to verify.
@@ -197,8 +242,8 @@ Ordered by what unblocks the most, then by what is cheapest to verify.
    Windows-UnRAR entry). *Landed in this pass.*
 2. Merge **#319** and **#297**. Both docs-only and clean.
 3. Close **#101** (superseded by rar.md §9).
-4. Two maintainer calls, each one line: pick **#243 or #244**; keep or close **#187** having
-   noted the inflate64 salvage.
+4. One maintainer call: pick **#243 or #244**. (**#187** is deliberately not a Wave 0 call —
+   it needs the evaluation below first.)
 
 **Wave 1 — the four verified bugs.** One fix PR each, red-green, before any cleanup PR
 touches the same files. Threads 38 and 39 are in `solid.py` and can share a PR; 21 and 17 are
