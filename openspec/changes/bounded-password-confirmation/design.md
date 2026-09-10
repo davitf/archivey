@@ -244,6 +244,7 @@ return-value home exists today. When `stream.verified` lands, one of the two has
    `MemberStreams.SEEKABLE` cannot be honoured. Seeking CBC is block-aligned re-init with
    the preceding ciphertext block as IV, ~30 lines, and the source is always seekable for
    7z. It only yields plaintext offsets when nothing sits between AES and the payload, so
-   it does not make LZMA folders seekable. Once it exists, `plan_confirm` can pick the
-   **smallest** anchored member rather than the earliest, which matters for a
-   `[200 MiB, 4 KiB]` stored solid folder.
+   it does not make LZMA folders seekable. Once it exists, `plan_confirm` can anchor on the
+   smallest CRC-bearing member of at least 4 bytes rather than the earliest — 4 KiB instead
+   of 200 MiB on a `[200 MiB, 4 KiB]` stored solid folder. Written up in `dev-docs/IDEAS.md`
+   §API & ergonomics rather than left here, since this file is archived with the change.
