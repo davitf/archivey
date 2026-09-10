@@ -874,7 +874,12 @@ class ZipReader(BaseArchiveReader):
                 read_exact(fp, name_len + extra_len)
                 header = read_exact(fp, 12)
                 if len(header) != 12:
-                    raise zipfile.BadZipFile("Truncated ZipCrypto header")
+                    # Same short-header case ZipFile.open surfaces as IndexError.
+                    raise TruncatedError(
+                        "Truncated ZipCrypto header",
+                        archive_name=self._archive_name,
+                        source_format=ArchiveFormat.ZIP,
+                    )
                 return header
             finally:
                 fp.seek(saved)
