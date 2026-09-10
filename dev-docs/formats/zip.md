@@ -259,7 +259,7 @@ Encryption is the one place the split is uneven:
 
 | | Path | Notes |
 | --- | --- | --- |
-| Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it. When the 12-byte ZipCrypto header cannot be read (file pointer at EOF), both password dispatch paths report `TruncatedError`: `ZipFile.open` via stdlib `IndexError` from `_init_decrypter`, and the STORED multi-candidate confirm path via `_read_zipcrypto_header`. A truncated ZipCrypto *body* is `EOFError` → `TruncatedError` |
+| Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it. When the 12-byte ZipCrypto header cannot be read (file pointer at EOF), both password dispatch paths report `TruncatedError`: `ZipFile.open` via stdlib `IndexError` from `_init_decrypter` (mapped at the decrypt-open catch, not the general translator — a read-path `IndexError` stays a raw crash), and the STORED multi-candidate confirm path via `_read_zipcrypto_header`. A truncated ZipCrypto *body* is `EOFError` → `TruncatedError` |
 | WinZip AES (method 99, extra `0x9901`) | archivey, natively | PBKDF2-HMAC-SHA1 · AES-CTR · HMAC-SHA1 truncated to 10 bytes; then the codec layer for the real method |
 
 ZipCrypto's weak verifier is why multiple password candidates need confirmation before one
@@ -491,7 +491,7 @@ behaviour a caller already sees.
 | Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass | `tests/test_zip_multipassword.py` |
-| Truncated ZipCrypto header is `TruncatedError` on both password dispatch paths (`IndexError` cause on `ZipFile.open`); codec-path `IndexError` stays raw | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` (`single` / `multi`), `::test_unencrypted_codec_indexerror_is_not_truncated` |
+| Truncated ZipCrypto header is `TruncatedError` on both password dispatch paths (`IndexError` cause on `ZipFile.open`); codec-path and member-read `IndexError` stay raw | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` (`single` / `multi`), `::test_unencrypted_codec_indexerror_is_not_truncated`, `::test_unencrypted_member_read_indexerror_is_not_truncated` |
 | Cross-format member equivalence, per-method decode, AE-2 CRC absence | `tests/test_corpus_sweep.py` (13 ZIP corpus entries) |
 
 **Building fixtures.** Stdlib `zipfile` cannot write encryption, so encrypted fixtures shell

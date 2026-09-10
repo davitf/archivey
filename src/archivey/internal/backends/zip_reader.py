@@ -608,11 +608,6 @@ class ZipReader(BaseArchiveReader):
         if isinstance(exc, EOFError):
             # Truncated member body (stdlib zipfile._ZipDecrypter / ZipExtFile._read2).
             return TruncatedError(f"Truncated ZIP member data: {exc!r}")
-        if isinstance(exc, IndexError):
-            # Short ZipCrypto header: ZipExtFile._init_decrypter indexes [11] of a
-            # read(12) that returned fewer than 12 bytes (Atheris nightly 2026-09-01).
-            # Reachable only from _ZIP_DECRYPT_READ_ERRORS catch sites.
-            return TruncatedError(f"Truncated ZipCrypto header: {exc!r}")
         return None
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -1206,9 +1201,21 @@ class ZipReader(BaseArchiveReader):
         The closed-handle ``ValueError`` is intercepted here rather than in
         ``_translate_exception``, which can only return an ``ArchiveyError``; a lifecycle
         fault is deliberately not one.
+
+        ``IndexError`` is mapped here for the same reason: ``_translate_exception`` is
+        also ArchiveStream's translate hook, so an IndexError from a member *read*
+        (archivey/codec bug) must stay a raw crash. The only legitimate source is
+        ``ZipExtFile._init_decrypter`` at ``ZipFile.open`` time, which the decrypt
+        catch sites funnel through this method.
         """
         if isinstance(exc, ValueError) and _CLOSED_ARCHIVE_MESSAGE in str(exc):
             raise _closed_archive_error() from exc
+        if isinstance(exc, IndexError):
+            # Short ZipCrypto header: ZipExtFile._init_decrypter indexes [11] of a
+            # read(12) that returned fewer than 12 bytes (Atheris nightly 2026-09-01).
+            translated = TruncatedError(f"Truncated ZipCrypto header: {exc!r}")
+            self._stamp_error_context(translated, member_name)
+            raise translated from exc
         self._raise_translated(exc, member_name, stamp_encryption=False)
 
     def _zip_open_raw(
