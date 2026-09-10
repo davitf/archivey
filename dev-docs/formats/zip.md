@@ -259,7 +259,7 @@ Encryption is the one place the split is uneven:
 
 | | Path | Notes |
 | --- | --- | --- |
-| Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it. When the 12-byte ZipCrypto header cannot be read (file pointer at EOF), both password dispatch paths report `TruncatedError`: `ZipFile.open` via stdlib `IndexError` from `_init_decrypter` (mapped at the decrypt-open catch, not the general translator — a read-path `IndexError` stays a raw crash), and the STORED multi-candidate confirm path via `_read_zipcrypto_header`. A truncated ZipCrypto *body* is `EOFError` → `TruncatedError` |
+| Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it. When the 12-byte ZipCrypto header cannot be read (file pointer at EOF), both password dispatch paths report `TruncatedError`: `ZipFile.open` via stdlib `IndexError` from `_init_decrypter` (caught in `_zip_open_raw`, the only `ZipFile.open` call — a read-path `IndexError` stays a raw crash), and the STORED multi-candidate confirm path via `_read_zipcrypto_header`. A truncated ZipCrypto *body* is `EOFError` → `TruncatedError` |
 | WinZip AES (method 99, extra `0x9901`) | archivey, natively | PBKDF2-HMAC-SHA1 · AES-CTR · HMAC-SHA1 truncated to 10 bytes; then the codec layer for the real method |
 
 ZipCrypto's weak verifier is why multiple password candidates need confirmation before one

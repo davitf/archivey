@@ -282,9 +282,9 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
 ) -> None:
     """IndexError on the codec path is an archivey bug, not archive damage.
 
-    ``_ZIP_DECRYPT_READ_ERRORS`` is scoped to ZipFile.open(pwd=…) so a latent
-    off-by-one in ``open_codec_stream`` still fails the Atheris zip target
-    rather than being swallowed as TruncatedError.
+    IndexError is translated only around ``ZipFile.open(pwd=…)`` in
+    ``_zip_open_raw``, so a latent off-by-one in ``open_codec_stream`` still
+    fails the Atheris zip target rather than being swallowed as TruncatedError.
     """
     import archivey.internal.backends.zip_reader as zip_reader
 
@@ -310,7 +310,7 @@ def test_unencrypted_member_read_indexerror_is_not_truncated(
     there turns a codec/stream off-by-one into ``TruncatedError("Truncated ZipCrypto
     header")`` on an unencrypted DEFLATE member. A bounded ``read(n)`` is the path
     that reaches the translator; ``read()`` (n=-1) hits the fused size verifier's
-    opaque-accelerator catch first.
+    opaque-accelerator catch first. The ZipCrypto mapping lives on ``_zip_open_raw``.
     """
     import archivey.internal.backends.zip_reader as zip_reader
 

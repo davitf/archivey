@@ -231,16 +231,6 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     EOFError,
 )
 
-# ZipExtFile._init_decrypter does ``self._decrypter(header)[11]`` after ``read(12)``.
-# A short read — the file pointer at physical EOF, not a compress_size smaller than
-# 12, which zipfile's _SharedFile is not bounded by — is IndexError, not EOFError.
-# Scoped to the sites that call ZipFile.open(pwd=…): on the AES and unencrypted
-# codec paths an IndexError is an archivey bug and must stay a raw crash, or the
-# Atheris zip target swallows it as ArchiveyError.
-_ZIP_DECRYPT_READ_ERRORS: tuple[type[Exception], ...] = _ZIP_MEMBER_READ_ERRORS + (
-    IndexError,
-)
-
 
 def _decode_with_fallback(data: bytes) -> str:
     for encoding in _ZIP_ENCODINGS:
@@ -1183,11 +1173,11 @@ class ZipReader(BaseArchiveReader):
     ) -> BinaryIO:
         """Open via ``zipfile`` and translate member-open failures."""
         try:
-            raw = self._zip_open_raw(info, password=password)
+            raw = self._zip_open_raw(info, password=password, member_name=member_name)
             if self._handle_lock is not None:
                 return CloseLockedStream(raw, self._handle_lock)
             return raw
-        except _ZIP_DECRYPT_READ_ERRORS as exc:
+        except _ZIP_MEMBER_READ_ERRORS as exc:
             self._reraise_member_error(exc, member_name)
 
     def _reraise_member_error(self, exc: Exception, member_name: str) -> NoReturn:
@@ -1201,29 +1191,33 @@ class ZipReader(BaseArchiveReader):
         The closed-handle ``ValueError`` is intercepted here rather than in
         ``_translate_exception``, which can only return an ``ArchiveyError``; a lifecycle
         fault is deliberately not one.
-
-        ``IndexError`` is mapped here for the same reason: ``_translate_exception`` is
-        also ArchiveStream's translate hook, so an IndexError from a member *read*
-        (archivey/codec bug) must stay a raw crash. The only legitimate source is
-        ``ZipExtFile._init_decrypter`` at ``ZipFile.open`` time, which the decrypt
-        catch sites funnel through this method.
         """
         if isinstance(exc, ValueError) and _CLOSED_ARCHIVE_MESSAGE in str(exc):
             raise _closed_archive_error() from exc
-        if isinstance(exc, IndexError):
-            # Short ZipCrypto header: ZipExtFile._init_decrypter indexes [11] of a
-            # read(12) that returned fewer than 12 bytes (Atheris nightly 2026-09-01).
-            translated = TruncatedError(f"Truncated ZipCrypto header: {exc!r}")
-            self._stamp_error_context(translated, member_name)
-            raise translated from exc
         self._raise_translated(exc, member_name, stamp_encryption=False)
 
     def _zip_open_raw(
-        self, info: zipfile.ZipInfo, *, password: bytes | None
+        self,
+        info: zipfile.ZipInfo,
+        *,
+        password: bytes | None,
+        member_name: str,
     ) -> BinaryIO:
         """``ZipFile.open`` under the CONCURRENT handle lock when present."""
         with self._handle_guard():
-            return cast("BinaryIO", self._archive.open(info, pwd=password))
+            try:
+                return cast("BinaryIO", self._archive.open(info, pwd=password))
+            except IndexError as exc:
+                # ZipExtFile._init_decrypter does ``self._decrypter(header)[11]``
+                # after read(12). A short read — file pointer at physical EOF, not a
+                # compress_size smaller than 12 (zipfile's _SharedFile is not bounded
+                # by it) — is IndexError, not EOFError. Caught here, the only
+                # ZipFile.open call, so an IndexError from codec/AES/read stays raw.
+                if password is None:
+                    raise
+                translated = TruncatedError(f"Truncated ZipCrypto header: {exc!r}")
+                self._stamp_error_context(translated, member_name)
+                raise translated from exc
 
     def _zip_close_raw(self, stream: BinaryIO) -> None:
         """Close a raw zip member stream under the CONCURRENT handle lock when present."""
@@ -1258,7 +1252,9 @@ class ZipReader(BaseArchiveReader):
         def decrypt(password: bytes) -> BinaryIO:
             stream: BinaryIO | None = None
             try:
-                stream = self._zip_open_raw(info, password=password)
+                stream = self._zip_open_raw(
+                    info, password=password, member_name=member_name
+                )
                 read_exact(stream, CONFIRM_PREFIX_BYTES)
                 self._zip_close_raw(stream)
                 stream = None
@@ -1266,7 +1262,7 @@ class ZipReader(BaseArchiveReader):
                 return self._open_zipfile_member(
                     info, password=password, member_name=member_name
                 )
-            except _ZIP_DECRYPT_READ_ERRORS as exc:
+            except _ZIP_MEMBER_READ_ERRORS as exc:
                 if _is_candidate_integrity_failure(exc):
                     failure = EncryptionError(
                         "Password candidate failed integrity validation for this ZIP member"
