@@ -239,16 +239,29 @@ def test_truncated_symlink_target_is_typed_error(tmp_path: Path) -> None:
             list(ar)
 
 
-def test_truncated_zipcrypto_header_is_typed_error() -> None:
-    """stdlib zipfile raises IndexError when ZipCrypto's 12-byte header is short.
+@pytest.mark.parametrize(
+    ("password", "expect_indexerror_cause"),
+    [
+        (b"secret", True),
+        ([b"secret", b"other"], False),
+    ],
+    ids=["single", "multi"],
+)
+def test_truncated_zipcrypto_header_is_typed_error(
+    password: bytes | list[bytes], expect_indexerror_cause: bool
+) -> None:
+    """A short ZipCrypto header is TruncatedError on both password dispatch paths.
 
     Found by the Atheris zip target (nightly 2026-09-01, run 33505689273):
     ``ZipExtFile._init_decrypter`` indexes ``[11]`` of whatever ``read(12)``
     returned. Listing still succeeds; opening the encrypted member must raise
-    ``TruncatedError``, not a raw ``IndexError``.
+    ``TruncatedError``, not a raw ``IndexError`` and not ``CorruptionError``.
+
+    A single static password goes through ``ZipFile.open(pwd=…)`` (IndexError
+    cause). Two-or-more candidates take the STORED confirm path through
+    ``_read_zipcrypto_header``.
     """
-    password = b"secret"
-    blob = zip_with_truncated_zipcrypto_header(password, b"x.txt", b"hello")
+    blob = zip_with_truncated_zipcrypto_header(b"secret", b"x.txt", b"hello")
     with open_archive(
         io.BytesIO(blob), format=ArchiveFormat.ZIP, password=password
     ) as ar:
@@ -258,7 +271,10 @@ def test_truncated_zipcrypto_header_is_typed_error() -> None:
         )
         with pytest.raises(TruncatedError) as excinfo:
             ar.open(encrypted[0])
-        assert isinstance(excinfo.value.__cause__, IndexError)
+        if expect_indexerror_cause:
+            assert isinstance(excinfo.value.__cause__, IndexError)
+        else:
+            assert not isinstance(excinfo.value.__cause__, IndexError)
 
 
 def test_unencrypted_codec_indexerror_is_not_truncated(
