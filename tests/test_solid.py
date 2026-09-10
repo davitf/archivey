@@ -107,6 +107,38 @@ def test_failed_lazy_skip_advances_position_by_what_was_consumed() -> None:
     assert reader._pos == 8
 
 
+class _RaiseAfterPrefix:
+    """Yields ``prefix``, then raises — a 7z/unrar decode error mid-skip."""
+
+    def __init__(self, prefix: bytes, exc: BaseException) -> None:
+        self._prefix = prefix
+        self._off = 0
+        self._exc = exc
+
+    def read(self, n: int = -1, /) -> bytes:
+        if self._off >= len(self._prefix):
+            raise self._exc
+        if n < 0:
+            n = len(self._prefix) - self._off
+        out = self._prefix[self._off : self._off + n]
+        self._off += len(out)
+        return out
+
+    def close(self) -> None:
+        return
+
+
+def test_failed_skip_credits_bytes_when_read_raises() -> None:
+    """A raising read() mid-skip must still credit bytes already pulled, not only EOF."""
+    block = _RaiseAfterPrefix(b"AAAA", OSError("decode failed"))
+    reader = SolidBlockReader(block, close_block=False)
+    with pytest.raises(OSError, match="decode failed"):
+        reader.open_member(10, 2)
+    assert reader._pos == 4
+    with pytest.raises(ValueError, match="in order"):
+        reader.open_member(0, 2)
+
+
 def test_close_block_false_leaves_block_open() -> None:
     block = _CountingBlock(b"AAAA")
     reader = SolidBlockReader(block, close_block=False)
@@ -193,3 +225,32 @@ def test_superseded_slice_cannot_read_the_next_member() -> None:
     with pytest.raises(ValueError, match="superseded"):
         first.read(4)
     assert second.read() == b"BBBB"
+
+
+def test_eager_read_after_reader_close_says_reader_closed() -> None:
+    """close() clears _current; that is not a later open_member()."""
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    member = reader.open_member(0, 4)
+    reader.close()
+    with pytest.raises(ValueError, match="SolidBlockReader is closed"):
+        member.read(4)
+
+
+def test_lazy_read_after_reader_close_says_reader_closed() -> None:
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    member = reader.open_member(0, 4, lazy=True)
+    reader.close()
+    with pytest.raises(ValueError, match="SolidBlockReader is closed"):
+        member.read(4)
+
+
+def test_tell_after_reader_close_says_reader_closed() -> None:
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    member = reader.open_member(0, 4)
+    member.read(1)
+    reader.close()
+    with pytest.raises(ValueError, match="SolidBlockReader is closed"):
+        member.tell()

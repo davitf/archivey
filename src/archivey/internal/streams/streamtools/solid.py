@@ -100,6 +100,11 @@ class _MemberSlice(ReadOnlyIOStream):
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         self._ensure_positioned()
+        # close() clears _current without marking slices closed. Check that
+        # before the superseded test, or eager read() claims a later open_member()
+        # that never happened. Lazy already raises here via _ensure_positioned.
+        if self._reader._closed:
+            raise ValueError("SolidBlockReader is closed")
         if self._reader._current is not self:
             raise ValueError("solid member superseded by a later open_member()")
         if self._remaining <= 0:
@@ -113,6 +118,8 @@ class _MemberSlice(ReadOnlyIOStream):
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
+        if self._reader._closed:
+            raise ValueError("SolidBlockReader is closed")
         if self._pending:
             return 0
         return self._size - self._remaining
@@ -167,15 +174,18 @@ class SolidBlockReader:
     def _skip_to(self, offset: int) -> None:
         """Advance the block to ``offset``, crediting every discarded byte to ``_pos``.
 
-        A short stream still updates ``_pos`` by however many bytes were consumed,
-        then raises :class:`EOFError`. Updating ``_pos`` only after a successful skip
-        would leave the counter behind the block and poison every later offset.
+        Credit is per successful ``read``, not after the whole skip. EOF is not the
+        only failure: a 7z folder decode or ``unrar`` pipe can raise mid-skip, and
+        updating ``_pos`` only when ``_discard_bytes`` returns would leave the
+        counter behind the bytes already pulled.
         """
         remaining = offset - self._pos
-        skipped = _discard_bytes(self._block, remaining)
-        self._pos += skipped
-        if skipped < remaining:
-            raise EOFError("stream ended before the requested position")
+        while remaining > 0:
+            chunk = self._block.read(min(remaining, _SKIP_CHUNK))
+            if not chunk:
+                raise EOFError("stream ended before the requested position")
+            self._pos += len(chunk)
+            remaining -= len(chunk)
 
     def _consume(self, n: int) -> bytes:
         data = self._block.read(n)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from typing import Never, get_type_hints
 
 import pytest
 
@@ -55,8 +56,7 @@ def test_readonly_base_name_annotation_does_not_claim_str() -> None:
     """The getter always raises; annotating ``str`` lets a checker accept ``.name.upper()``."""
     getter = ReadOnlyIOStream.name.fget
     assert getter is not None
-    ret = getter.__annotations__.get("return")
-    assert ret not in {"str", str}
+    assert get_type_hints(getter).get("return") is Never
 
 
 def test_delegating_base_name_absent_without_inner_path() -> None:
