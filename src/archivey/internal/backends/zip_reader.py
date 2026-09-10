@@ -1204,20 +1204,22 @@ class ZipReader(BaseArchiveReader):
         member_name: str,
     ) -> BinaryIO:
         """``ZipFile.open`` under the CONCURRENT handle lock when present."""
-        with self._handle_guard():
-            try:
+        try:
+            with self._handle_guard():
                 return cast("BinaryIO", self._archive.open(info, pwd=password))
-            except IndexError as exc:
-                # ZipExtFile._init_decrypter does ``self._decrypter(header)[11]``
-                # after read(12). A short read — file pointer at physical EOF, not a
-                # compress_size smaller than 12 (zipfile's _SharedFile is not bounded
-                # by it) — is IndexError, not EOFError. Caught here, the only
-                # ZipFile.open call, so an IndexError from codec/AES/read stays raw.
-                if password is None:
-                    raise
-                translated = TruncatedError(f"Truncated ZipCrypto header: {exc!r}")
-                self._stamp_error_context(translated, member_name)
-                raise translated from exc
+        except IndexError as exc:
+            # ZipExtFile._init_decrypter does ``self._decrypter(header)[11]``
+            # after read(12). A short read — file pointer at physical EOF, not a
+            # compress_size smaller than 12 (zipfile's _SharedFile is not bounded
+            # by it) — is IndexError, not EOFError. Caught here, the only
+            # ZipFile.open call, so an IndexError from codec/AES/read stays raw.
+            # try is outside _handle_guard so stamping never runs while the
+            # shared-handle lock is held (base_reader._translated_errors).
+            if password is None:
+                raise
+            translated = TruncatedError(f"Truncated ZipCrypto header: {exc!r}")
+            self._stamp_error_context(translated, member_name)
+            raise translated from exc
 
     def _zip_close_raw(self, stream: BinaryIO) -> None:
         """Close a raw zip member stream under the CONCURRENT handle lock when present."""

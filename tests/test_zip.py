@@ -24,6 +24,7 @@ from archivey import (
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.exceptions import (
+    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     StreamNotSeekableError,
@@ -275,6 +276,44 @@ def test_truncated_zipcrypto_header_is_typed_error(
             assert isinstance(excinfo.value.__cause__, IndexError)
         else:
             assert not isinstance(excinfo.value.__cause__, IndexError)
+
+
+def test_truncated_zipcrypto_stamp_releases_handle_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CONCURRENT handle lock is released before TruncatedError is stamped.
+
+    ``_translated_errors`` takes the boundary outside ``_handle_guard()`` so
+    stamping never runs while the shared-handle lock is held. A diagnostics
+    handler that re-enters the reader would otherwise deadlock.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    held_during_stamp: list[bool] = []
+    orig = zip_reader.ZipReader._stamp_error_context
+
+    def _wrapped(
+        self: zip_reader.ZipReader,
+        exc: ArchiveyError,
+        member_name: str | None = None,
+    ) -> None:
+        lock = self._handle_lock
+        held_during_stamp.append(lock.locked() if lock is not None else False)
+        orig(self, exc, member_name)
+
+    monkeypatch.setattr(zip_reader.ZipReader, "_stamp_error_context", _wrapped)
+
+    blob = zip_with_truncated_zipcrypto_header(b"secret", b"x.txt", b"hello")
+    with open_archive(
+        io.BytesIO(blob),
+        format=ArchiveFormat.ZIP,
+        password=b"secret",
+        concurrent_members=True,
+    ) as ar:
+        encrypted = [m for m in ar if m.is_encrypted]
+        with pytest.raises(TruncatedError):
+            ar.open(encrypted[0])
+    assert held_during_stamp == [False]
 
 
 def test_unencrypted_codec_indexerror_is_not_truncated(
