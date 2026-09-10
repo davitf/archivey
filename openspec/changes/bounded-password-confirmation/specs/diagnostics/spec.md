@@ -121,7 +121,77 @@ caller already knows, which the admission clause refuses.
 | Case | Expected |
 | --- | --- |
 | ZipCrypto member, candidate accepted on the header check byte, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="weak_open_check"`, `reason="partial_read"`) |
-| 7z store+AES folder, no anchor within budget, single candidate, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
+| 7z LZMA2, CRC at 200 MiB, correct password, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
+| 7z store+AES, CRC at 200 MiB, correct password, stream closed before EOF | No diagnostic (walked to the CRC) |
+| 7z store+AES, no CRC, single candidate, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
 | Encrypted member whose password was confirmed against an integrity anchor, stream closed before EOF | No diagnostic |
 | Encrypted member read to EOF | No diagnostic; the digest decides |
 | Unencrypted member, stream closed before EOF | No diagnostic |
+
+### Requirement: Named diagnostic policy presets and taxonomy-growth contract
+
+The system SHALL provide named `DiagnosticPolicy` constructors so a caller can express
+a coarse strictness without enumerating the taxonomy:
+
+```python
+ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode]
+
+DiagnosticPolicy.strict()    # RAISE on ARCHIVE_INTEGRITY_CODES, COLLECT otherwise
+DiagnosticPolicy.pedantic()  # RAISE on every code
+```
+
+`ARCHIVE_INTEGRITY_CODES` SHALL be a public frozen set covering the codes that report
+the archive's own bytes or metadata as anomalous:
+
+| In `ARCHIVE_INTEGRITY_CODES` | Excluded |
+| --- | --- |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `MEMBER_TIMESTAMP_INVALID`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED` |
+
+Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
+rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
+forbids treating zero members as an error; `ENCODING_ARGUMENT_UNUSED` and
+`PASSWORD_ARGUMENT_UNUSED` because they report argument hygiene, and a pipeline that
+speculatively passes a password to every call would otherwise raise on every
+unencrypted archive; `EXPLICIT_FORMAT_LISTED_EMPTY` because `format=` is an override
+and an override that halts the caller is not an override; and
+`STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
+than the archive, and is most useful as a deliberately targeted tripwire;
+`PROBE_FORMAT_UNCONFIRMED` because it is emitted while stamping a typed
+`TruncatedError` / `CorruptionError` that already carries `format_unconfirmed=True`,
+and putting it in `strict` would replace that typed error with `DiagnosticRaisedError`;
+`ENCRYPTED_MEMBER_UNVERIFIED` because the trigger is the caller abandoning the stream
+before EOF (extract never fires it), and putting it in `strict` would turn a ZipCrypto
+peek into `DiagnosticRaisedError`. Revisit when `stream.verified` lands and this code
+is retired.
+
+Presets SHALL return ordinary frozen `DiagnosticPolicy` values with per-code
+overrides — no new resolution axis, and no field on `Diagnostic`. A caller MAY build
+its own policy from `ARCHIVE_INTEGRITY_CODES`.
+
+**Taxonomy growth.** New `DiagnosticCode` members MAY be added in minor releases. A
+policy with `default=RAISE` therefore SHALL NOT be described as version-stable: a
+caller running it starts raising on events their working program never produced. The
+documentation SHALL state this, and SHALL present `strict()` — whose membership is
+versioned alongside the taxonomy — as the recommended strict mode. Removing a code
+remains a breaking change.
+
+#### Scenario: preset matrix
+
+| Case | Expected |
+| --- | --- |
+| `strict()`, archive with a truncated TAR trailer | `DiagnosticRaisedError` on `ARCHIVE_EOF_MARKER_MISSING` |
+| `strict()`, unencrypted archive opened with `password=` | No raise; `PASSWORD_ARGUMENT_UNUSED` is collected |
+| `pedantic()`, same call | `DiagnosticRaisedError` on `PASSWORD_ARGUMENT_UNUSED` |
+| `strict()`, legitimately empty tar | No raise; `EMPTY_ARCHIVE` collected |
+| Preset value compared to an equivalent hand-built policy | Equal; presets add no resolution axis |
+| A new code added in a later minor release | `strict()` membership is explicit; a `default=RAISE` policy silently gains it |
+| `ENCRYPTED_MEMBER_UNVERIFIED in ARCHIVE_INTEGRITY_CODES` | False |
+| `strict()`, ZipCrypto member, `read(1)`, close | No raise; `ENCRYPTED_MEMBER_UNVERIFIED` collected |
+| `pedantic()`, same call | `DiagnosticRaisedError` |
+
+#### Scenario: probe code stays out of strict
+
+| Case | Expected |
+| --- | --- |
+| `PROBE_FORMAT_UNCONFIRMED in ARCHIVE_INTEGRITY_CODES` | False |
+| `DiagnosticPolicy.strict()` disposition for that code | COLLECT (via default) |

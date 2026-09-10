@@ -5,13 +5,17 @@
 - [ ] 1.1 Compute the padding length from the AES coder: `pack_size` minus the coder's
       declared output size in `UNPACK_INFO`. Guard a `pack_size` that is not a multiple of
       16 (malformed) and the multi-packed-stream case the reader already refuses.
-- [ ] 1.2 Read the last two ciphertext blocks from the pack view — the IV stands in when
-      the stream is one block — and decrypt one block. No folder decode.
+- [ ] 1.2 Read the last two ciphertext blocks from the pack view — the coder's IV
+      stands in when the stream is one block — and decrypt **one block** with the
+      crypto backend's one-shot CBC. Do not wrap the pack view in `AesDecryptStream`
+      and skip to EOF: that class has no `seek` and would decode the packed stream.
+      Padding length is the AES coder's unpack size vs pack size, never folder
+      unpack size (plaintext).
 - [ ] 1.3 Return `CONFIRMED` only when the padding is ≥ 4 bytes and all zero. A non-zero
       tail returns nothing, never `REJECTED`; below 4 bytes the check does not run.
 - [ ] 1.4 Wire it as the ladder's first rung in `_password_for_folder`, ahead of the
-      anchor plan, and to `decode_encoded_header`, which decodes the whole header folder
-      per candidate today.
+      anchor plan. On `decode_encoded_header`, run it on the pass that already
+      materialises the header (see bounded-password-confirmation task 2.5).
 - [ ] 1.5 Leave `DIGEST_UNVERIFIABLE` firing on a no-anchor folder even when the tail
       confirmed — the check attests the key, not the data.
 

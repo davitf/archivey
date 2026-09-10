@@ -110,7 +110,9 @@ caller already knows, which the admission clause refuses.
 | Case | Expected |
 | --- | --- |
 | ZipCrypto member, candidate accepted on the header check byte, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="weak_open_check"`, `reason="partial_read"`) |
-| 7z store+AES folder, no anchor within budget, single candidate, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
+| 7z LZMA2, CRC at 200 MiB, correct password, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
+| 7z store+AES, CRC at 200 MiB, correct password, stream closed before EOF | No diagnostic (walked to the CRC) |
+| 7z store+AES, no CRC, single candidate, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
 | 7z folder accepted by the AES tail-padding check alone, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="cheap_key_check"`) |
 | Encrypted member whose password was confirmed against an integrity anchor, stream closed before EOF | No diagnostic |
 | Encrypted member read to EOF | No diagnostic; the digest decides |

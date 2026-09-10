@@ -26,7 +26,11 @@ A confirmation step SHALL yield one of three verdicts:
 | `CONFIRMED` | a signal of at least 2⁻³² strength matched; accept |
 | `INCONCLUSIVE` | the candidate survived its budget without reaching a deciding signal |
 
-Backends SHALL apply the strongest signal reachable within budget, in this order:
+The budget is `CONFIRM_PREFIX_BYTES` (64 KiB of decoded plaintext). It is not one
+byte, and it is not `DetectionBudget.max_prefix_bytes`: confirm measures decompressed
+output, detection measures source peeks.
+
+Backends SHALL apply the strongest signal reachable, in this order:
 
 1. **Cheap key check** — an O(1) test that confirms the *key* without decoding payload
    data. Confirms only at ≥ 2⁻³²; SHALL NOT reject on its own where a format permits
@@ -34,14 +38,26 @@ Backends SHALL apply the strongest signal reachable within budget, in this order
 2. **Integrity anchor** — a stored checksum over a decodable prefix of the unit. The
    **earliest sufficient** anchor SHALL be used, and a plan SHALL stop once checksum-verified
    bytes reach 4; a shorter verified prefix carries less than 32 bits and SHALL NOT
-   terminate the plan on its own.
-3. **Codec rejection** — for a compressed unit with no anchor in budget, decoding a
-   bounded plaintext prefix. Surviving the prefix yields `INCONCLUSIVE`, not `CONFIRMED`.
+   terminate the plan on its own. If that anchor sits **inside** the budget, decode to
+   it and stop. If it sits **past** the budget: a chain with a rejecting codec SHALL NOT
+   walk it (rung 3 settles a wrong key without reading the unit); a chain with no
+   rejecting codec SHALL walk it anyway (nothing else can tell a wrong key from a
+   right one).
+3. **Codec rejection** — a chain *rejects* iff it contains a decompressor measured to
+   fail on random input. Surviving a bounded prefix yields `INCONCLUSIVE`, not
+   `CONFIRMED`. Filters (Delta, BCJ) never reject. A codec not yet measured is treated
+   as non-rejecting until a test says otherwise.
 
-When no signal is reachable within budget and the unit is not compressed, the backend
-SHALL run the unbounded pass **only when the candidate set is ambiguous**, because there
-is then something to disambiguate. With a single distinct static candidate it SHALL stop
-at the budget and let the caller's read-time digest be authoritative.
+When no digest exists at all, the backend SHALL NOT invent an unbounded decode to
+discover that. A rejecting chain uses the prefix (`INCONCLUSIVE` on survive). A
+non-rejecting chain runs an unbounded pass **only when the candidate set is
+ambiguous and a checksum exists to match**. Otherwise it stops at the budget and
+the caller's read-time digest is authoritative.
+
+A `CONFIRMED` candidate SHALL be added to known-good. An `INCONCLUSIVE` candidate
+SHALL be added to known-good only when the candidate set is unambiguous. The
+candidate loop remains `_PasswordCandidates.attempt`; confirmation supplies the
+probe. A second driver SHALL NOT be introduced.
 
 Accepting an `INCONCLUSIVE` candidate SHALL emit `ENCRYPTED_MEMBER_UNVERIFIED` if the
 caller then abandons the member's stream before its declared digest is reached.
@@ -69,8 +85,12 @@ the format's normal lazy streaming path.
 | Anchor reachable within budget | Decode to the anchor only, never past it |
 | Unit carries both an early per-item checksum and a whole-unit checksum | The earlier one decides |
 | Checksum-verified prefix shorter than 4 bytes | Plan continues to the next anchor |
-| Compressed unit, no anchor in budget | Bounded prefix decode; survivor is `INCONCLUSIVE` |
-| Uncompressed unit, no anchor in budget, one distinct candidate | Stop at budget; caller's digest is authoritative |
-| Uncompressed unit, no anchor in budget, ambiguous candidates | Unbounded pass; the matching checksum wins |
+| Rejecting codec, CRC past budget | Prefix only; wrong key `REJECTED`; survivor `INCONCLUSIVE` |
+| Non-rejecting codec, CRC past budget | Walk to the CRC |
+| Rejecting codec, no digest at all | Prefix; survivor `INCONCLUSIVE`; no unbounded decode |
+| Non-rejecting codec, no digest, one distinct candidate | Stop at budget; caller's digest is authoritative |
+| Non-rejecting codec, no digest, several candidates | First candidate; `DIGEST_UNVERIFIABLE`; no unbounded decode |
+| Non-rejecting codec, CRC at end, several candidates | Unbounded pass; the matching checksum wins |
 | Cheap key check matches for one candidate at full strength | `CONFIRMED` with no payload decode |
 | Cheap key check matches no candidate | Ladder continues with every candidate; no candidate dropped |
+| `INCONCLUSIVE` accepted, another candidate may still be tried | Not added to known-good |

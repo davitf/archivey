@@ -10,26 +10,32 @@
       member CRCs, no anchor at all).
 - [ ] 1.3 `run_confirm_plan(stream, plan)` — chunked read, rolling CRC, short read is
       `REJECTED`. Keeps PR #318's memory property; reuse its chunk size.
-- [ ] 1.4 `resolve_password(passwords, member, probe, *, accept_inconclusive)` — static
-      candidates, then provider; first `CONFIRMED` wins; owns the winner /
-      ambiguous-failure / password-required outcomes.
+- [ ] 1.4 Do **not** add `resolve_password`. `_PasswordCandidates.attempt` stays the
+      candidate loop. The probe returns `ConfirmVerdict` (or raises `EncryptionError`
+      on `REJECTED`). Promote `CONFIRMED` always; promote `INCONCLUSIVE` only when
+      the set is unambiguous.
 
 ## 2. 7z ladder
 
 - [ ] 2.1 Rewrite `_verify_decoded_folder` onto `plan_confirm` / `run_confirm_plan`.
       Earliest anchor wins; the folder digest is a fallback, not a first test.
 - [ ] 2.2 Delete the `if not member_digests` full drain.
-- [ ] 2.3 Budget behaviour for a chain with no anchor in reach: bounded prefix for a
-      rejecting codec; for `Copy` / PPMd, the unbounded pass only when
-      `_passwords.is_ambiguous()`.
+- [ ] 2.3 D1-C budget: rejecting codec (LZMA1/LZMA2/BZip2/Deflate) with a late CRC
+      stops at `CONFIRM_PREFIX_BYTES`; Copy / PPMd / filters-only walk a late CRC.
+      Unbounded pass only when a checksum exists *and* the set is ambiguous. No CRC
+      at all: first candidate, `DIGEST_UNVERIFIABLE`, no extra decode.
 - [ ] 2.4 Keep `UnsupportedFeatureError` / `PackageNotInstalledError` passthrough and the
       `EncryptionError("Wrong password or corrupt 7z folder")` message.
-- [ ] 2.5 Apply the same ladder to `decode_encoded_header`, which decodes the whole header
-      folder per candidate today.
+- [ ] 2.5 Encoded header: apply codec-error → `REJECTED` and (later) the tail check on
+      the pass that already materialises the header. Do not `run_confirm_plan` and then
+      decode the header again — the decoded bytes *are* the product. Cap is 64 MiB.
 
 ## 3. ZIP
 
-- [ ] 3.1 Move `_open_compressed_confirmed` onto `resolve_password`.
+- [ ] 3.1 Point `_open_compressed_confirmed` at `plan_confirm` / `run_confirm_plan` as
+      the probe under `_finish_password_attempt`. Keep the candidate-failure filter
+      (`BadZipFile` “Bad CRC-32…” / `zlib.error` / `lzma.LZMAError` / BZIP2’s
+      `OSError("Invalid data stream")`).
 - [ ] 3.2 Leave the STORED shared ciphertext pass where it is; check no behaviour moved.
 - [ ] 3.3 Name ZipCrypto's check byte and WinZip AES's `pw_verify` as the cheap-key-check
       rung in code comments so the ladder reads the same in both backends.
@@ -42,6 +48,9 @@
       password was anchor-confirmed.
 - [ ] 4.3 Docs: `docs/access-and-cost.md`, `docs/formats.md`, `docs/extracting.md` —
       replace #318's "wall time still tracks folder size × candidates" text.
+- [ ] 4.4 `ENCRYPTED_MEMBER_UNVERIFIED` stays **out** of `ARCHIVE_INTEGRITY_CODES`
+      (D2-C). Record the reason next to `STREAM_REWIND_REDECOMPRESSES`. Revisit when
+      `stream.verified` lands. Preset-matrix row: `strict()` + ZipCrypto peek → no raise.
 
 ## 5. Tests
 
@@ -69,13 +78,17 @@ rather than on *the path under test*. Machinery assertions are satisfied by the 
 the test exists to avoid. Assert the effect, and prove it by disabling the mechanism that
 produces it.
 
-- [ ] 5.1 Red-green on the ladder: a 200 MiB solid fixture where confirmation must decode
-      only the first member. Assert bytes decoded, not wall time — and verify the assertion
-      fails with the anchor plan forced to walk the whole folder, not merely with
-      `_verify_decoded_folder` broken. A test that only notices total breakage would pass
-      against the pre-change reader, which is the thing it exists to distinguish from.
-- [ ] 5.2 Regenerate the codec-rejection evidence as a test (random input to each raw
-      decompressor 7z can chain), so §2 of the design stays true if a dependency changes.
+- [ ] 5.1 Red-green on the ladder: a 200 MiB solid fixture generated in tmp (do not
+      commit it) where confirmation must decode only the first member. Assert bytes
+      decoded, not wall time — and verify the assertion fails with the anchor plan
+      forced to walk the whole folder, not merely with `_verify_decoded_folder`
+      broken. A test that only notices total breakage would pass against the
+      pre-change reader, which is the thing it exists to distinguish from. Separate
+      cases for LZMA2 (prefix, not 200 MiB) and Copy with CRC at EOF (does walk).
+- [ ] 5.2 Codec-rejection evidence: random input to LZMA1, LZMA2, BZip2, Deflate,
+      **and** Deflate64, ZSTD, Brotli, LZ4, PPMd, Delta, BCJ. The first four must
+      reject; filters must not; the rest decide whether they join the rejecting list
+      or stay with Copy. So §2 of the design stays true if a dependency changes.
 - [ ] 5.3 Partial-read diagnostic in both readers, including the brute-forced colliding
       ZipCrypto password (commit the fixture and the password — finding it takes ~300
       tries, but do not brute-force in CI). Verify the ZipCrypto case fails when the
@@ -94,3 +107,5 @@ produces it.
 - [ ] 6.2 CHANGELOG under Security.
 - [ ] 6.3 Cross-reference the `stream.verified` idea in `dev-docs/IDEAS.md` from the
       diagnostic's docstring, so whoever builds it knows the code is the thing to retire.
+- [ ] 6.4 Implementation PR: the ladder *why* on `dev-docs/formats/` (7z page), not
+      only in this `design.md`.

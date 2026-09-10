@@ -28,15 +28,16 @@ decode already stops early. Only row 2 scales with folder size.
 The cost that hits every caller is the **correct** password, which walks every member CRC
 to the end of the folder and is then followed by a second full decode to serve the member:
 
-| `open()` + `read(1)` of the first member, one correct password | today | decode to first anchor |
+| `open()` + `read(1)` of the first member, one correct password | today | this change |
 | --- | --- | --- |
-| LZMA2+AES 200 MiB solid, first member 4 KiB | 0.471 s | **0.118 s** |
-| store+AES 200 MiB solid, first member 4 KiB | 0.342 s | **0.110 s** |
-| LZMA2+AES 200 MiB, single member | 0.446 s | 0.362 s |
-| store+AES 200 MiB, single member | 0.381 s | 0.261 s |
+| LZMA2+AES 200 MiB solid, first member 4 KiB | 0.471 s | **0.118 s** (first-member CRC) |
+| store+AES 200 MiB solid, first member 4 KiB | 0.342 s | **0.110 s** (first-member CRC) |
+| LZMA2+AES 200 MiB, single member | 0.446 s | ~KDF + 64 KiB prefix (codec settles a wrong key; do not walk 200 MiB) |
+| store+AES 200 MiB, single member | 0.381 s | 0.261 s (walk to the CRC; Copy cannot self-verify) |
 
-Rows 1–2 become pure key derivation. Rows 3–4 are the anchor-at-the-end shape, which the
-cheap key check (§3) addresses instead.
+Rows 1–2 become pure key derivation. Row 3 is the rejecting-codec rule (D1-C): a late
+CRC is not walked when the decompressor will raise on a wrong key. Row 4 still walks;
+`sevenzip-aes-tail-key-check` is what collapses it.
 
 Three defects found while measuring, all fixed here: `_verify_decoded_folder` tests
 `folder.digest_defined` before per-member CRCs, so a folder carrying both anchors at the
@@ -68,8 +69,13 @@ anyway. liblzma's raw LZMA2 decoder requires the first chunk to set properties, 
 why the `0x01` uncompressed-chunk escape — the one path that could have emitted 64 KiB of
 garbage cleanly — is rejected.
 
-So one decoded byte settles a compressed folder. PPMd is the exception and is grouped with
-`Copy` throughout.
+So one decoded byte *can* settle a rejecting codec, but confirmation still reads
+`CONFIRM_PREFIX_BYTES` (64 KiB) of plaintext, not one byte — the same bound ZIP already
+uses, and enough margin that a decoder change of a few bytes does not flip the
+verdict. PPMd is the exception and is grouped with `Copy` throughout. Filters (Delta,
+BCJ) do not reject; `MethodKind.LZMA_FAMILY` includes Delta and is the wrong
+predicate. Deflate64, ZSTD, Brotli and LZ4 are unmeasured and stay with Copy until
+the test in task 5.2 says otherwise.
 
 ## 3. The cheap key check rung
 
@@ -124,23 +130,27 @@ class ConfirmVerdict(Enum):
 
 def plan_confirm(substreams, tail_crc, *, budget, min_verified_bytes=4) -> ConfirmPlan
 def run_confirm_plan(stream, plan) -> ConfirmVerdict      # chunked; short read -> REJECTED
-def resolve_password(passwords, member, probe, *, accept_inconclusive) -> bytes
 ```
 
-`resolve_password` is the duplicated part: walk `iter_candidates()`, then `ask_provider()`,
-first `CONFIRMED` wins, and own the winner / ambiguous-failure / password-required
-outcomes — ZIP's phases 1, 3 and 4 in `_open_stored_confirmed`, open-coded today.
+The candidate loop stays `_PasswordCandidates.attempt`. The probe returns a verdict
+(or raises `EncryptionError` on `REJECTED`); `attempt` already owns known-good order,
+provider reentry, and exhaustion. `CONFIRMED` promotes; `INCONCLUSIVE` promotes only
+when the set is unambiguous. ZIP compressed confirm already goes through
+`_finish_password_attempt` → `attempt()` and keeps its candidate-failure exception
+filter (`BadZipFile` “Bad CRC-32…” / `zlib.error` / `lzma.LZMAError` / BZIP2’s
+`OSError("Invalid data stream")`).
 
 `plan_confirm` takes `(size, crc | None)` substreams: 7z passes its member digests, ZIP
-passes one. It encodes the earliest-anchor and 4-byte rules in one place.
+passes one. It encodes the earliest-anchor, 4-byte, and D1-C late-CRC rules in one place.
 
-7z's `confirm` becomes: tail check, then build a plan, open the pipeline, run the plan, map
-codec errors to `REJECTED` with `UnsupportedFeatureError` / `PackageNotInstalledError`
-passing through unchanged.
+7z's `confirm` becomes: tail check (next change), then build a plan, open the pipeline,
+run the plan, map codec errors to `REJECTED` with `UnsupportedFeatureError` /
+`PackageNotInstalledError` passing through unchanged.
 
-Budget: reuse `CONFIRM_PREFIX_BYTES` (64 KiB) rather than introduce a second knob. Every
-real 7z codec rejects within one byte, so the number only bites on `Copy` and PPMd, where
-no prefix length buys anything.
+Budget: reuse `CONFIRM_PREFIX_BYTES` (64 KiB of decoded plaintext). Do not invent a
+one-byte confirm, and do not merge with `DetectionBudget` — confirm measures
+decompressed output, detection measures source peeks. The 64 KiB figure is already
+the ZIP compressed-confirm bound.
 
 ## 6. Rejected
 
@@ -162,14 +172,26 @@ collapses the same case to a 32-byte read at EOF rather than by sharing a full p
 Reopen lockstep only if that check turns out not to apply to a real writer.
 
 **Skipping 7z confirmation entirely when unambiguous, as ZIP does** — would make a wrong
-single password surface as `CorruptionError` from the codec instead of `EncryptionError` at
-open, and would open the §4 hole on every store+AES read rather than only where no anchor
-is in budget. The bounded ladder keeps the classification at near-zero cost.
+single password on Copy surface as `CorruptionError` from the digest instead of
+`EncryptionError` at open. The ladder still confirms Copy against a CRC when one
+exists. For a rejecting codec the prefix *is* the confirm: a wrong key dies there, so
+skipping a 200 MiB late CRC is not the same as skipping confirmation.
+
+**Walking a late CRC on a rejecting codec** — D1-A. A wrong LZMA key is already dead
+inside the prefix; the extra 200 MiB is the correct-password tax this change exists to
+remove. Maintainer picked D1-C (PR #319).
+
+**Merging the confirm budget with `DetectionBudget`.** Same order of magnitude
+(detection grows 4 KiB → 32 KiB → 2 MiB; inner-TAR probe is 1 MiB). Different
+quantities: confirm is decompressed plaintext, detection is source peeks. Reuse
+`CONFIRM_PREFIX_BYTES`. A shared budget object is a later change if anyone wants one
+number.
 
 **`stream.verified` plus `verify()` instead of the diagnostic** — the better answer, and
 under the placement clause it would displace the code rather than join it. Deferred:
 `dev-docs/IDEAS.md` §API & ergonomics, with the password case recorded as the reason it
-matters. Revisit the diagnostic when that lands.
+matters. Revisit the diagnostic when that lands. `ENCRYPTED_MEMBER_UNVERIFIED` stays
+out of `ARCHIVE_INTEGRITY_CODES` until then (D2-C).
 
 ## 7. Why the diagnostic is admissible
 

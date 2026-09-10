@@ -28,9 +28,9 @@ be accepted and an abandoned partial read never reaches the digest. Reproduced o
 ## What Changes
 
 - **A shared confirmation ladder** in `internal/password_confirm.py`: a three-valued
-  `ConfirmVerdict` (`REJECTED` / `CONFIRMED` / `INCONCLUSIVE`), an anchor planner, a
-  chunked plan runner, and a candidate driver that owns the winner / ambiguous-failure /
-  password-required outcomes. Confirmation is stated as a **rejection filter** — the
+  `ConfirmVerdict` (`REJECTED` / `CONFIRMED` / `INCONCLUSIVE`), an anchor planner, and a
+  chunked plan runner. The candidate loop stays `_PasswordCandidates.attempt`;
+  confirmation is the probe. Confirmation is a **rejection filter** — the
   authoritative digest still runs on the caller's own stream — which is what
   `2026-07-11-zip-multipassword-disambiguation` already decided for ZIP and 7z never
   followed.
@@ -43,25 +43,31 @@ be accepted and an abandoned partial read never reaches the digest. Reproduced o
 - **7z confirm stops at the first sufficient integrity anchor** — earliest anchor wins,
   member or folder, stopping once CRC-verified bytes reach 4 — instead of walking the
   folder. The no-anchor drain is deleted.
-- **A budget for the case with no anchor in reach.** Compressed folders need none: every
-  codec 7z uses rejects a wrong AES key inside the first decoded byte. Store and PPMd get
-  the full pass only when the candidate set is ambiguous; when it is not, confirm stops at
-  the budget and the member digest is authoritative.
+- **A budget that does not ignore a CRC a non-rejecting chain still needs.** The budget
+  is `CONFIRM_PREFIX_BYTES` (64 KiB of decoded plaintext), not one byte. A rejecting
+  codec (LZMA1/LZMA2/BZip2/Deflate) with a late CRC stops at the prefix: a wrong key
+  dies in the decompressor, a survivor is `INCONCLUSIVE`. Copy, PPMd, and filter-only
+  chains walk a late CRC. With no CRC at all, nobody runs an unbounded decode just to
+  find that out.
 - **`ENCRYPTED_MEMBER_UNVERIFIED`**, in both readers: emitted when a member from an
   encrypted unit is closed before its declared digest is reached *and* the password behind
-  it was accepted on a check weaker than that digest. Not on ordinary partial reads.
-- ZIP's compressed-confirm path moves onto the shared driver. Its STORED lockstep CRC pass
-  stays where it is.
+  it was accepted on a check weaker than that digest. Not on ordinary partial reads. Out
+  of `ARCHIVE_INTEGRITY_CODES`; revisit when `stream.verified` lands.
+- ZIP's compressed-confirm path uses `plan_confirm` / `run_confirm_plan` as the probe
+  under `_PasswordCandidates.attempt`. Its STORED lockstep CRC pass stays where it is.
 
 ## Impact
 
 - Capabilities: `archive-reading`, `format-7z`, `format-zip`, `diagnostics`.
 - Code: `internal/password_confirm.py`, `internal/backends/sevenzip_reader.py`,
   `internal/backends/zip_reader.py`, `diagnostics.py`.
-- Behaviour: a wrong single password on an encrypted 7z folder with no anchor in budget
-  now surfaces on the caller's read rather than at open. Adding a diagnostic code is not
-  purely additive — a `RAISE` default starts raising on an event working programs never
-  saw. Both are why this is a change and not a patch on #318.
+- Behaviour: a rejecting codec with a late CRC no longer walks the folder on the
+  correct password (prefix only). A wrong single password on store+AES *with no CRC*
+  surfaces on the caller's read rather than at open; with a CRC at EOF it still fails
+  at open. Adding a diagnostic code is not purely additive — `pedantic()` / a
+  `default=RAISE` policy starts raising on an event working programs never saw;
+  `strict()` does not, the code is out of `ARCHIVE_INTEGRITY_CODES`. Both are why this
+  is a change and not a patch on #318.
 - Closes most of threat-model **O12**'s residual. What survives is one shape — a `Copy` or
   PPMd chain whose only anchor is at the folder end, with an ambiguous candidate set —
   which still re-reads the packed stream once per candidate. `sevenzip-aes-tail-key-check`

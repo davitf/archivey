@@ -45,13 +45,17 @@ to be dropped.
 than decoding the folder: per-member CRCs are consulted in substream order, and the plan
 terminates once CRC-verified bytes reach 4. A folder digest SHALL be used only when it is
 the earliest such anchor — a folder carrying both a digest and per-member CRCs SHALL
-anchor on the members.
+anchor on the members. If that anchor sits past `CONFIRM_PREFIX_BYTES` and the chain
+has a rejecting codec, the plan SHALL NOT walk it (codec rejection settles a wrong
+key). If the chain has no rejecting codec, the plan SHALL walk it anyway.
 
-**Codec rejection.** With no anchor in budget, a folder whose chain contains a codec that
-rejects a wrong key (every LZMA-family, BZip2 and Deflate chain 7z uses) SHALL decode a
-bounded plaintext prefix and treat a survivor as `INCONCLUSIVE`. A `Copy` or PPMd chain
-has no such filter and follows the `archive-reading` rule for that case: the unbounded
-pass only when the candidate set is ambiguous.
+**Codec rejection.** A chain rejects iff it contains a decompressor measured to fail on
+random AES output. Measured: LZMA1, LZMA2, BZip2, Deflate. Filters (Delta, BCJ) never
+reject — `MethodKind.LZMA_FAMILY` includes Delta and is the wrong predicate. PPMd,
+Deflate64, ZSTD, Brotli and LZ4 are treated as non-rejecting until measured. A
+rejecting chain with no reachable anchor decodes a bounded plaintext prefix and treats
+a survivor as `INCONCLUSIVE`. A non-rejecting chain follows the `archive-reading`
+rule: walk a late CRC; with no CRC at all, do not invent an unbounded decode.
 
 When an encrypted folder has **no** folder digest and a member has **no** CRC
 (format-legal for store/copy), the system SHALL still return decoded bytes (best-effort,
@@ -59,7 +63,7 @@ matching 7-Zip) and SHALL emit `DIGEST_UNVERIFIABLE` with
 `DigestContext.reason="no_integrity_anchor"` — it MUST NOT imply the decryption was
 authenticated — a tail-padding confirmation SHALL NOT suppress it, since that check
 attests the key and not the data. The reader SHALL NOT decode such a folder merely to
-discover that nothing can be checked. After decoding a header-encrypted
+discover that nothing can be checked — several candidates do not change that. After decoding a header-encrypted
 `kEncodedHeader`, a parsed result with zero file records SHALL raise `EncryptionError`
 (legitimate writers never encrypt an empty header) so a wrong password cannot open as a
 silent empty listing.
@@ -76,9 +80,14 @@ silent empty listing.
 | Encrypted store/copy member, no folder digest, no member CRC, any password | Bytes returned; `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) emitted |
 | `NumCyclesPower` 25–62 | `UnsupportedFeatureError` (not remapped to wrong-password) |
 | Repeated salt/cycles/password | Derived key cache avoids repeated key derivation |
-| Sole wrong password, no anchor within budget, compressed folder | `EncryptionError` at open (the codec rejects within the prefix) |
-| Sole wrong password, no anchor within budget, store/copy folder | Accepted at open; surfaces on the caller's read; `ENCRYPTED_MEMBER_UNVERIFIED` on an abandoned partial read |
-| Ambiguous candidates, store/copy folder, only anchor at folder end | Unbounded pass; the candidate matching the CRC wins |
+| Sole wrong password, LZMA2, CRC at 200 MiB | `EncryptionError` at open (codec rejects in the prefix; no 200 MiB read) |
+| Correct password, LZMA2, CRC at 200 MiB, `read(1)` then close | `INCONCLUSIVE`; `ENCRYPTED_MEMBER_UNVERIFIED` |
+| Sole wrong password, store/copy, CRC at 200 MiB | Walk to the CRC; `EncryptionError` at open |
+| Correct password, store/copy, CRC at 200 MiB, `read(1)` then close | No diagnostic (anchor confirmed) |
+| Sole wrong password, store/copy, no CRC at all | Accepted at open; surfaces on the caller's read; `ENCRYPTED_MEMBER_UNVERIFIED` on an abandoned partial read |
+| Store/copy, no CRC, two candidates | First candidate; `DIGEST_UNVERIFIABLE`; confirmation ≤ budget |
+| Ambiguous candidates, store/copy folder, only CRC at folder end | Unbounded pass; the candidate matching the CRC wins |
+| AES → Delta → Copy or AES → BCJ → Copy | Treated as non-rejecting (the filter does not reject random input) |
 | Solid folder, first member 4 KiB, folder 200 MiB | Confirmation decodes the first member only |
 | Folder carrying both a folder digest and per-member CRCs | Anchors on the earliest member CRC, not the folder digest |
 | AES tail padding ≥ 4 bytes, all zero for exactly one candidate | `CONFIRMED` with no folder decode |

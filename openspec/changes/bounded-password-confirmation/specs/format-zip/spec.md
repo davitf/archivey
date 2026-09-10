@@ -22,10 +22,11 @@ ZipCrypto's one header verification byte (2⁻⁸) and WinZip AES's two-byte `pw
 cipher pads — ZipCrypto is a byte-wise stream cipher and WinZip AES is CTR, so ciphertext
 length equals plaintext length in both — so ZIP has no tail-padding check to add.
 
-Compressed-member confirmation SHALL run through the shared confirmation driver in
-`internal/password_confirm.py`, returning the three-valued verdict; the STORED shared
-ciphertext pass stays ZIP-local, since running every candidate over one pass is a shape
-the per-candidate driver does not model.
+Compressed-member confirmation SHALL run through `plan_confirm` / `run_confirm_plan`
+as the probe under `_PasswordCandidates.attempt`; the STORED shared ciphertext pass
+stays ZIP-local, since running every candidate over one pass is a shape the
+per-candidate probe does not model. The candidate-failure exception filter below
+SHALL survive the move.
 
 A candidate accepted on the verification byte alone, whose member stream is then closed
 before EOF, SHALL emit `ENCRYPTED_MEMBER_UNVERIFIED` — a wrong ZipCrypto password that
