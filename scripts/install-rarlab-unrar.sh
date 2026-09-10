@@ -14,7 +14,7 @@
 # Usage:
 #   scripts/install-rarlab-unrar.sh --dest DIR [--cache-dir DIR]
 #
-# Writes DIR/unrar. No-ops if that path is already executable.
+# Writes DIR/unrar. No-ops if that path already reports the RARLAB banner.
 set -euo pipefail
 
 # rarlab unrarsrc tarball name; the binary banner reads "UNRAR 7.23"
@@ -33,7 +33,7 @@ Build RARLAB UnRAR from a pinned GitHub mirror and install the unrar binary.
 Usage:
   scripts/install-rarlab-unrar.sh --dest DIR [--cache-dir DIR]
 
-Writes DIR/unrar. No-ops if that path is already executable.
+Writes DIR/unrar. No-ops if that path already reports the RARLAB banner.
 EOF
 }
 
@@ -63,10 +63,39 @@ if [ -z "$DEST" ]; then
   exit 2
 fi
 
+# The RARLAB banner is what archivey's finder actually requires, so it is the
+# test for "is this binary the right one" on every path through this script —
+# including a DEST restored from a GHA cache, which this script did not produce.
+# `-x` is a weaker claim than it looks: it reports the mode bits, and `cp` gives
+# the destination the source's mode, so a copy interrupted partway leaves a
+# truncated file that is still executable and still passes `-x`.
+#
+# Capture the output instead of piping into `grep -q`: under `set -o pipefail` a
+# reader that closes early SIGPIPEs the binary, and a *good* unrar would then
+# fail the check.
+has_rarlab_banner() {
+  local out
+  out="$("$1" 2>/dev/null | head -n 2)" || true
+  case "$out" in
+    *UNRAR*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 mkdir -p "$DEST"
 if [ -x "${DEST}/unrar" ]; then
-  echo "install-rarlab-unrar: already present at ${DEST}/unrar"
-  exit 0
+  # Re-check rather than trusting the file. The CI cache step carries
+  # `save-always`, which saves even when a step failed, so an install that died
+  # partway can leave a bad binary under the key; without this, every later run
+  # would restore it, skip straight past the build, and fail at the Verify step
+  # until the key changed or GHA evicted the entry (~7 days). Rebuild over it
+  # instead of erroring out — one poisoned entry should not be sticky.
+  if has_rarlab_banner "${DEST}/unrar"; then
+    echo "install-rarlab-unrar: already present at ${DEST}/unrar"
+    exit 0
+  fi
+  echo "install-rarlab-unrar: ${DEST}/unrar does not report the UNRAR banner; rebuilding"
+  rm -f "${DEST}/unrar"
 fi
 
 need() {
@@ -110,4 +139,12 @@ make -C "$src" -j"$jobs"
 # macOS install(1) has no GNU -D; copy the binary ourselves.
 cp "${src}/unrar" "${DEST}/unrar"
 chmod +x "${DEST}/unrar"
+
+# Check what was actually written, not what was meant to be: this is the step
+# that can leave a truncated binary behind, and the caller caches DEST.
+if ! has_rarlab_banner "${DEST}/unrar"; then
+  rm -f "${DEST}/unrar"
+  echo "install-rarlab-unrar: built binary does not report the UNRAR banner" >&2
+  exit 1
+fi
 echo "install-rarlab-unrar: installed ${DEST}/unrar"
