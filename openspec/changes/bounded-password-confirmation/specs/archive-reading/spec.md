@@ -26,9 +26,18 @@ A confirmation step SHALL yield one of three verdicts:
 | `CONFIRMED` | a signal of at least 2⁻³² strength matched; accept |
 | `INCONCLUSIVE` | the candidate survived its budget without reaching a deciding signal |
 
-The budget is `CONFIRM_PREFIX_BYTES` (64 KiB of decoded plaintext). It is not one
-byte, and it is not `DetectionBudget.max_prefix_bytes`: confirm measures decompressed
-output, detection measures source peeks.
+The budget has **two** halves, and a spec that names only the first does not bound the
+work. The plaintext half is `CONFIRM_PREFIX_BYTES` (64 KiB of decoded output): not one
+byte, and not `DetectionBudget.max_prefix_bytes`, since confirm measures decompressed
+output where detection measures source peeks. The compressed half is a cap on how much
+input may be consumed to produce that output, and it SHALL be stated too.
+
+A block-transform codec emits nothing until it has consumed a whole block, so an
+output-only bound does not constrain it: decoding 64 KiB of output from a bzip2 stream
+consumes 905 KB of input (13.8× the bound), against 1.1× for LZMA2. The inner-TAR content
+probe already carries a cap sized for exactly this (`_INNER_TAR_MAX_PROBE_BYTES`, 1 MiB,
+chosen for bzip2's worst-case block), and confirm SHALL use a bound of that shape rather
+than re-derive one.
 
 Backends SHALL apply the strongest signal reachable, in this order:
 
@@ -48,11 +57,14 @@ Backends SHALL apply the strongest signal reachable, in this order:
    `CONFIRMED`. Filters (Delta, BCJ) never reject. A codec not yet measured is treated
    as non-rejecting until a test says otherwise.
 
-When no digest exists at all, the backend SHALL NOT invent an unbounded decode to
-discover that. A rejecting chain uses the prefix (`INCONCLUSIVE` on survive). A
-non-rejecting chain runs an unbounded pass **only when the candidate set is
-ambiguous and a checksum exists to match**. Otherwise it stops at the budget and
-the caller's read-time digest is authoritative.
+**When no digest exists anywhere in the unit**, the backend SHALL NOT invent an unbounded
+decode to discover that. A rejecting chain uses the prefix (`INCONCLUSIVE` on survive); a
+non-rejecting chain stops at the budget and the caller's read-time digest is
+authoritative. Candidate ambiguity does not change this: an unbounded multi-candidate pass
+exists to find whose output matches a stored checksum, and there is none to match.
+
+**When a digest exists but sits past the budget**, rung 2 governs, and the unbounded pass a
+non-rejecting chain runs there is per candidate when the set is ambiguous.
 
 A `CONFIRMED` candidate SHALL be added to known-good. An `INCONCLUSIVE` candidate
 SHALL be added to known-good only when the candidate set is unambiguous. The
@@ -86,6 +98,7 @@ the format's normal lazy streaming path.
 | Unit carries both an early per-item checksum and a whole-unit checksum | The earlier one decides |
 | Checksum-verified prefix shorter than 4 bytes | Plan continues to the next anchor |
 | Rejecting codec, CRC past budget | Prefix only; wrong key `REJECTED`; survivor `INCONCLUSIVE` |
+| Block-transform codec (bzip2), 64 KiB output requested | Input consumed stays within the compressed cap, not 64 KiB |
 | Non-rejecting codec, CRC past budget | Walk to the CRC |
 | Rejecting codec, no digest at all | Prefix; survivor `INCONCLUSIVE`; no unbounded decode |
 | Non-rejecting codec, no digest, one distinct candidate | Stop at budget; caller's digest is authoritative |

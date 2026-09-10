@@ -17,6 +17,16 @@
 
 ## 2. 7z ladder
 
+- [ ] 1.5 Give the probe a compressed-input cap alongside the `CONFIRM_PREFIX_BYTES`
+      output target. An output-only bound does not constrain a block-transform codec: 64 KiB
+      of bzip2 output costs 905 KB of input (design §2). Size it from
+      `_INNER_TAR_MAX_PROBE_BYTES` rather than picking a new number, and decide there
+      whether the two probes should share one helper — "decode up to N output bytes from at
+      most M input bytes, did the codec object?" is the whole primitive, and
+      `_probe_inner_tar` is it with a `ustar` check on the end. That is the maintainer's
+      "consider merging with the probing logic" (#319 D1); closing it either way is fine,
+      leaving it unasked is not.
+
 - [ ] 2.1 Rewrite `_verify_decoded_folder` onto `plan_confirm` / `run_confirm_plan`.
       Earliest anchor wins; the folder digest is a fallback, not a first test.
 - [ ] 2.2 Delete the `if not member_digests` full drain.

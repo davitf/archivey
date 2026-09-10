@@ -77,6 +77,28 @@ BCJ) do not reject; `MethodKind.LZMA_FAMILY` includes Delta and is the wrong
 predicate. Deflate64, ZSTD, Brotli and LZ4 are unmeasured and stay with Copy until
 the test in task 5.2 says otherwise.
 
+**The output bound is only half of it.** 64 KiB of plaintext does not bound the compressed
+input a block-transform codec pulls to produce it, because such a codec emits nothing until
+it has consumed a whole block. Measured on incompressible data, asking for 64 KiB of
+output:
+
+| codec | output | input consumed |
+| --- | --- | --- |
+| bzip2 (block-transform) | 65536 B | **905216 B** — 13.8× the bound |
+| LZMA2 (stream) | 65536 B | 69632 B — 1.1× |
+
+So the probe carries a compressed-input cap as well. This is not a new number to invent:
+`_probe_inner_tar` in `internal/detection.py` learned the same thing and sized
+`_INNER_TAR_MAX_PROBE_BYTES` at 1 MiB for bzip2's worst-case 900 KB block. bzip2 in
+practice rejects a wrong key at its `BZh` magic long before any of this matters — the cap
+is for the codec added later that does not.
+
+That overlap is also the maintainer's "consider merging with the probing logic" (#319 D1).
+The shared primitive is small and exact: *decode up to N output bytes from at most M input
+bytes — did the codec object?* `_probe_inner_tar` is that question with a `ustar` check
+bolted on the end, and confirm is that question with nothing bolted on. Whether they should
+share one helper is task 1.5.
+
 ## 3. The cheap key check rung
 
 The ladder names a rung above the integrity anchor: an O(1) test that confirms the *key*
