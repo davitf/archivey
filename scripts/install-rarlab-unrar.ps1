@@ -48,8 +48,14 @@ $PSNativeCommandUseErrorActionPreference = $false
 # entry therefore pins whichever build was current when it was filled, until
 # the key changes — the CI key hashes this file, so editing anything here
 # refills it. There is no content pin here, unlike the macOS installer's git
-# commit; rarlab offers no per-version URL to pin against. review/backlog.md
-# ("#320 F2") records what closing that would cost.
+# commit; rarlab offers no per-version URL to pin against.
+#
+# Do not "fix" that by building from source the way the macOS installer does.
+# CI exists to test archivey against the binary Windows users actually run,
+# which is rarlab's own build — a self-compiled one diverges in toolchain (this
+# library parses unrar's output and pipes `unrar p`) and in version. Maintainer
+# decision on #320; review/backlog.md ("#320 F2") has the reasoning and the
+# integrity options that remain open.
 $Url = 'https://www.rarlab.com/rar/unrarw64.exe'
 
 function Find-UnRARExe {

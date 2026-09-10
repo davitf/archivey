@@ -49,20 +49,43 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   cannot normalize. #300 records the RAR case as `extra["rar.created_is_ctime"]`.
 - **#300 F5 secondary** — `tests/sample_archives.py` has no atime/ctime notion, so
   the format×shape sweep cannot cover xtime today.
-- **#320 F2 — content pin for the Windows `unrar` download.** `scripts/install-rarlab-unrar.ps1`
-  fetches `https://www.rarlab.com/rar/unrarw64.exe`, which is unversioned "current";
-  the only integrity checks are a PE sniff and the UNRAR banner. macOS has a real
-  content pin (a git commit of the UnRAR source) because GitHub serves that source
-  content-addressed; rarlab publishes no per-version URL to pin against. A hardcoded
-  SHA-256 would close it but turns every upstream release into a red matrix until
-  someone bumps the constant — a maintenance tripwire traded for a flake fix, which is
-  the wrong direction for the PR that introduced it. The real fix, if this is worth
-  paying, is the macOS strategy: build UnRAR from the pinned `pmachapman/unrar` mirror
-  with MSVC on Windows too, which drops rarlab from CI entirely and makes both
-  non-Linux legs content-addressed from one pin. Not free — an MSVC build of
-  `UnRAR.vcxproj` that nobody here has run. Caching does make the current float
-  *sticky* (a bad payload persists up to ~7 days rather than one run), which is the
-  part #320 added and the reason this is recorded rather than forgotten.
+- **#320 F2 — integrity check for the Windows `unrar` download.** `scripts/install-rarlab-unrar.ps1`
+  fetches `https://www.rarlab.com/rar/unrarw64.exe`, which is unversioned "current"; the
+  only integrity checks are a PE sniff and the UNRAR banner. Caching (#320) makes that
+  float *sticky* — a bad payload survives up to ~7 days rather than one run — which is
+  why this is recorded.
+
+  **Maintainer decision (#320, 2026-09-10): CI must keep exercising the *official* RARLAB
+  binary.** The reviewer's comparison to macOS, and the follow-up this entry originally
+  recommended — build Windows from the pinned `pmachapman/unrar` mirror with MSVC, as
+  macOS does — are **rejected**. CI's job is to test archivey against what users actually
+  run, and on Windows that is rarlab's own build. Two ways a self-built binary diverges:
+  the toolchain (archivey parses `unrar` output and pipes `unrar p`, and locale/codepage
+  and wide-char handling on Windows are exactly where an MSVC-vs-MinGW runtime difference
+  would show), and the version (a pinned commit freezes it, while testing "current
+  official" also surfaces upstream behaviour changes early). Accepting rarlab as an
+  uncontrolled input is the deliberate trade.
+
+  So the float has to be closed *without* changing where the binary comes from:
+  - **Authenticode signature check** — leading candidate. Verify the downloaded
+    `unrarw64.exe` is signed by win.rar GmbH (`Get-AuthenticodeSignature`). Establishes
+    authenticity, survives every upstream release, needs no constant to maintain.
+    **Unverified**: nobody here has confirmed the SFX is signed, or by what subject —
+    the agent proxy blocks rarlab.com, so this needs someone with network access to check
+    first.
+  - **Pinned SHA-256** — rejected for the same reason it was the first time: the URL is
+    unversioned, so the digest goes stale on every rarlab release and reddens the matrix
+    until someone bumps a constant.
+  - **Accept it** — status quo. TLS to rarlab, plus the PE sniff and banner check.
+
+  **Surfaced by the same decision: macOS is the leg that is now inconsistent with it.**
+  Linux installs the distro `unrar` (built from RARLAB source — what Linux users have) and
+  Windows fetches rarlab's own build, but macOS compiles from the mirror, so it is the one
+  leg testing something no user runs. That was forced — Homebrew disabled the cask because
+  the official macOS binaries fail Gatekeeper notarization — but it may not still be
+  forced: notarization gates *quarantined* downloads, and a binary curl'd onto a CI runner
+  is not quarantined, so RARLAB's official macOS build may run there fine. Worth trying on
+  a real runner before assuming it cannot work.
 
 ## Parked from archived deep reviews (2026-07 / 2026-08)
 
