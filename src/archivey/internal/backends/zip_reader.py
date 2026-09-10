@@ -229,6 +229,10 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     # mid-read (e.g. a corrupt symlink target during listing). Must be translated
     # like the other member-read errors — otherwise it escapes as a raw exception.
     EOFError,
+    # ZipExtFile._init_decrypter does ``self._decrypter(header)[11]`` after
+    # ``read(12)`` of the ZipCrypto header. A short read (truncated extra-field skip,
+    # or ciphertext shorter than 12 bytes) is IndexError, not EOFError.
+    IndexError,
 )
 
 
@@ -597,6 +601,10 @@ class ZipReader(BaseArchiveReader):
             return CorruptionError(f"Corrupt ZIP entry name in local header: {exc!r}")
         if isinstance(exc, EOFError):
             # Truncated member body (stdlib zipfile._ZipDecrypter / ZipExtFile._read2).
+            return TruncatedError(f"Truncated ZIP member data: {exc!r}")
+        if isinstance(exc, IndexError):
+            # Short ZipCrypto header: ZipExtFile._init_decrypter indexes [11] of a
+            # read(12) that returned fewer than 12 bytes (Atheris nightly 2026-09-01).
             return TruncatedError(f"Truncated ZIP member data: {exc!r}")
         return None
 
