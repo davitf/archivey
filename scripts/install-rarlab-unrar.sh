@@ -104,8 +104,10 @@ if [ -x "${DEST}/unrar" ]; then
   # `save-always`, which saves even when a step failed, so an install that died
   # partway can leave a bad binary under the key; without this, every later run
   # would restore it, skip straight past the build, and fail at the Verify step
-  # until the key changed or GHA evicted the entry (~7 days). Rebuild over it
-  # instead of erroring out — one poisoned entry should not be sticky.
+  # until the key changed. Eviction would not rescue it: GHA drops caches *not
+  # accessed* for 7 days, and an entry every run restores is never idle.
+  # Rebuild over it instead of erroring out — one poisoned entry should not be
+  # sticky.
   if has_rarlab_banner "${DEST}/unrar"; then
     echo "install-rarlab-unrar: already present at ${DEST}/unrar"
     exit 0

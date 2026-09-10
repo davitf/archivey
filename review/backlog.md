@@ -51,41 +51,45 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   the format×shape sweep cannot cover xtime today.
 - **#320 F2 — integrity check for the Windows `unrar` download.** `scripts/install-rarlab-unrar.ps1`
   fetches `https://www.rarlab.com/rar/unrarw64.exe`, which is unversioned "current"; the
-  only integrity checks are a PE sniff and the UNRAR banner. Caching (#320) makes that
-  float *sticky* — a bad payload survives up to ~7 days rather than one run — which is
-  why this is recorded.
+  only integrity checks are a PE sniff and the UNRAR banner.
 
-  **Maintainer decision (#320, 2026-09-10): CI must keep exercising the *official* RARLAB
-  binary.** The reviewer's comparison to macOS, and the follow-up this entry originally
-  recommended — build Windows from the pinned `pmachapman/unrar` mirror with MSVC, as
-  macOS does — are **rejected**. CI's job is to test archivey against what users actually
-  run, and on Windows that is rarlab's own build. Two ways a self-built binary diverges:
-  the toolchain (archivey parses `unrar` output and pipes `unrar p`, and locale/codepage
-  and wide-char handling on Windows are exactly where an MSVC-vs-MinGW runtime difference
-  would show), and the version (a pinned commit freezes it, while testing "current
-  official" also surfaces upstream behaviour changes early). Accepting rarlab as an
-  uncontrolled input is the deliberate trade.
+  **Maintainer decision (#320, 2026-09-10): CI installs unrar the way users on that
+  platform actually get it.** That is the criterion — not "prefer the official binary",
+  which was an earlier misreading of it recorded here. It resolves per platform:
+  - **Linux** — distro `unrar` package. What Linux users have. ✓
+  - **Windows** — rarlab's official `unrarw64.exe`. What Windows users download. ✓
+  - **macOS** — compiled from source. Also correct, and *not* an inconsistency: macOS
+    users have no official prebuilt route either (Homebrew disabled the cask; the
+    official binaries fail Gatekeeper notarization), so building is what they do too.
 
-  So the float has to be closed *without* changing where the binary comes from:
+  So the follow-up originally recommended here — build Windows from the pinned
+  `pmachapman/unrar` mirror with MSVC — stays **rejected**, and for the sharper reason:
+  it would make CI test a binary no Windows user runs. A self-built one diverges in
+  toolchain (archivey parses `unrar` output and pipes `unrar p`, and Windows
+  locale/codepage handling is where an MSVC-vs-MinGW runtime difference would surface)
+  and in version.
+
+  **Staleness is handled (#320):** the Windows cache key carries a rotating window, so
+  the tested binary is never more than N days old (N=7, in ci.yml's "Compute unrar cache
+  window" step). This is not something eviction would have done — GHA drops caches *not
+  accessed* for 7 days, so an entry restored by every run never expires, and whichever
+  build first filled the cache would have been the build CI tested indefinitely.
+
+  **Still open — authenticity, not freshness.** Rotation bounds *age*; it does not
+  establish that the payload is rarlab's. Options that do not move the source:
   - **Authenticode signature check** — leading candidate. Verify the downloaded
-    `unrarw64.exe` is signed by win.rar GmbH (`Get-AuthenticodeSignature`). Establishes
-    authenticity, survives every upstream release, needs no constant to maintain.
-    **Unverified**: nobody here has confirmed the SFX is signed, or by what subject —
-    the agent proxy blocks rarlab.com, so this needs someone with network access to check
-    first.
-  - **Pinned SHA-256** — rejected for the same reason it was the first time: the URL is
-    unversioned, so the digest goes stale on every rarlab release and reddens the matrix
-    until someone bumps a constant.
+    `unrarw64.exe` is signed by win.rar GmbH (`Get-AuthenticodeSignature`). Survives every
+    upstream release, needs no constant to maintain. **Unverified**: nobody here has
+    confirmed the SFX is signed or by what subject — the agent proxy blocks rarlab.com,
+    so this needs someone with network access to check first.
+  - **Pinned SHA-256** — rejected. The URL is unversioned, so the digest goes stale on
+    every release; worse now that rotation deliberately re-downloads on a cadence.
   - **Accept it** — status quo. TLS to rarlab, plus the PE sniff and banner check.
 
-  **Surfaced by the same decision: macOS is the leg that is now inconsistent with it.**
-  Linux installs the distro `unrar` (built from RARLAB source — what Linux users have) and
-  Windows fetches rarlab's own build, but macOS compiles from the mirror, so it is the one
-  leg testing something no user runs. That was forced — Homebrew disabled the cask because
-  the official macOS binaries fail Gatekeeper notarization — but it may not still be
-  forced: notarization gates *quarantined* downloads, and a binary curl'd onto a CI runner
-  is not quarantined, so RARLAB's official macOS build may run there fine. Worth trying on
-  a real runner before assuming it cannot work.
+  **Adjacent question, not urgent:** macOS pins a *source commit*, so its binary is
+  version-frozen the way the Windows one no longer is. Bumping a source pin is at least a
+  visible git change rather than a silent float, but if the aim is tracking what users
+  build today, that pin also ages.
 
 ## Parked from archived deep reviews (2026-07 / 2026-08)
 

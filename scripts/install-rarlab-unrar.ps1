@@ -44,10 +44,11 @@ $ErrorActionPreference = 'Stop'
 # banner check below reads them itself.
 $PSNativeCommandUseErrorActionPreference = $false
 
-# Unversioned by design: rarlab publishes only "current" at this path. A cache
-# entry therefore pins whichever build was current when it was filled, until
-# the key changes — the CI key hashes this file, so editing anything here
-# refills it. There is no content pin here, unlike the macOS installer's git
+# Unversioned by design: rarlab publishes only "current" at this path, so a
+# cache entry pins whichever build was current when it was filled. CI's key
+# therefore carries a rotating window as well as this file's hash, bounding how
+# stale the tested binary can get; see the "Compute unrar cache window" step in
+# ci.yml. Editing anything here also refills it. There is no content pin here, unlike the macOS installer's git
 # commit; rarlab offers no per-version URL to pin against.
 #
 # Do not "fix" that by building from source the way the macOS installer does.
@@ -100,7 +101,9 @@ if (Test-Path -LiteralPath $installed) {
     # `save-always`, which saves even when a step failed, so a miss that failed
     # to clean up after itself can leave a bad binary under the key. Reinstall
     # over it instead of exiting non-zero — one poisoned entry should not hold
-    # the matrix red until the key changes or GHA evicts it (~7 days).
+    # the matrix red until the key changes. Eviction would not rescue it either:
+    # GHA drops caches *not accessed* for 7 days, and an entry every run
+    # restores is never idle.
     $cached = Get-UnRARBanner -Exe $installed
     if ($cached) {
         Write-Host "install-rarlab-unrar: already present at $installed"

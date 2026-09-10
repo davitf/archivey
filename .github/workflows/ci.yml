@@ -237,16 +237,36 @@ jobs:
       # its own (run 34392160804: "connection attempt failed because the
       # connected party did not properly respond"). Same shape as the macOS leg:
       # the cache holds the *installed binary* so the common case makes no
-      # request at all, and the installer retries when it does. The key hashes
-      # the installer, whose URL is unversioned — so a cache entry pins whichever
-      # build was current when it was filled, until this script changes or the
-      # entry is evicted (GHA drops caches unused for 7 days).
+      # request at all, and the installer retries when it does.
+      #
+      # The key carries a rotating window as well as the installer's hash,
+      # because rarlab's URL is unversioned "current": without it, whichever
+      # build happened to fill the cache would be the build CI tests from then
+      # on. Eviction does not solve that — GHA drops caches *not accessed* for
+      # 7 days, and an entry restored by every run is never idle, so on a busy
+      # branch it would never expire at all. Rotating the key bounds how old the
+      # tested binary can be, which is the point: CI is here to test archivey
+      # against what Windows users actually download.
+      - name: Compute unrar cache window (Windows)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
+        id: unrar-window
+        shell: bash
+        run: |
+          # Refresh cadence, in days. Lower tracks rarlab's current build more
+          # closely; higher means fewer downloads, so fewer chances to land on a
+          # rarlab outage. The binary is never older than this many days.
+          days=7
+          echo "window=$(( $(date -u +%s) / 86400 / days ))" >> "$GITHUB_OUTPUT"
       - name: Cache RARLAB unrar (Windows)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/rarlab-unrar
-          key: rarlab-unrar-${{ hashFiles('scripts/install-rarlab-unrar.ps1') }}-${{ runner.os }}-${{ runner.arch }}
+          # Do NOT add restore-keys here. A prefix fallback would restore the
+          # previous window's binary on the very run that is meant to refresh
+          # it, the installer would find a valid UnRAR.exe and accept it, and
+          # the rotation above would buy nothing.
+          key: rarlab-unrar-${{ hashFiles('scripts/install-rarlab-unrar.ps1') }}-${{ runner.os }}-${{ runner.arch }}-w${{ steps.unrar-window.outputs.window }}
           save-always: true
       - name: Install unrar (Windows)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
