@@ -1,0 +1,228 @@
+# Open work inventory and sequencing
+
+> **A dated snapshot, not a register.** Snapshot: **2026-09-10** against `main` @ `8e88e4f`.
+> Every item below lives somewhere canonical — [`open-issues.md`](open-issues.md),
+> [`threat-model.md`](threat-model.md), [`IDEAS.md`](IDEAS.md),
+> [`review/backlog.md`](../review/backlog.md), [`review/STATUS.md`](../review/STATUS.md),
+> the `§10` register on [`formats/rar.md`](formats/rar.md), or an `openspec/changes/`
+> directory. This page adds the one thing none of them can carry: **what blocks what, across
+> registers**, and which entries are already dead. When it disagrees with a register, the
+> register wins and this page is stale.
+>
+> Written because the registers each answer "what is open in my area?" and none answers
+> "what should happen next?". [`review/STATUS.md`](../review/STATUS.md) §What is next is the
+> closest, and it ranks *review topics* only — it was last revised 2026-08-15, before the
+> five OpenSpec changes and the #315 review pass existed.
+
+## The shape of it
+
+Eleven registers hold open work. The count that matters is not the total — it is that
+**four items block twelve others**, and roughly a fifth of what is written down is already
+dead.
+
+| Register | Open items | Health |
+| --- | --- | --- |
+| Open PRs (10) | 5 live, 5 dormant drafts | Drafts last touched 2026-08-23 by a bulk event, not by work |
+| [#315](https://github.com/davitf/archivey/pull/315) review threads | **54, none resolved** | Two already fixed on `main`; the largest single block of actionable work |
+| `openspec/changes/` (5 active) | 4 unimplemented, 1 half-done | `prefixed-archive-detection` is 31/68; the rest are 0/N |
+| [`open-issues.md`](open-issues.md) | 8 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned |
+| [`formats/rar.md`](formats/rar.md) `§10` | 4 of 21 (#6 layer 2, #18, #19, #21) | Healthy — 17 closed with PR links |
+| [`formats/rar.md`](formats/rar.md) `§7` | 5 open questions | Contains a **duplicated entry** (fixed in this pass) |
+| [`IDEAS.md`](IDEAS.md) | 57 entries | A park, **not a queue** — see below |
+| [`review/backlog.md`](../review/backlog.md) | 3 PR parks, 7 archived-review parks, Topics 6/7 | #320 F2 is the only one with a live question |
+| [`review/STATUS.md`](../review/STATUS.md) | Topics 8 + 10 in flight, docs IA in flight | Ranked list predates the current OpenSpec set |
+| [`threat-model.md`](threat-model.md) | `O*` register | O12 is closed by #319's second change |
+| [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
+
+**[`IDEAS.md`](IDEAS.md) is not backlog.** 57 entries across six sections, and its job is to
+stop the same speculative idea being re-derived. Nothing in it is late. Treat an `IDEAS.md`
+entry as work only when something else pulls it in — which happens for exactly two entries
+below. Do not read the 57 as a debt figure.
+
+## Open PRs
+
+| PR | What | Verdict |
+| --- | --- | --- |
+| [#319](https://github.com/davitf/archivey/pull/319) | Two OpenSpec changes for the #318 password-confirmation follow-ups | **Merge first.** Docs-only, `mergeable_state: clean`, sequenced behind #318 which has landed. Closes threat-model **O12** and unblocks the 7z work |
+| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge** — head *is* `main`. It is a container for 54 threads. Never close it while threads are open; drain them into fix PRs |
+| [#297](https://github.com/davitf/archivey/pull/297) | Capability declaration vs corpus behaviour (387-line investigation) | **Merge.** Adds one `dev-docs/investigations/` page plus its index row. No dependencies |
+| [#274](https://github.com/davitf/archivey/pull/274) | OpenSpec `archive-origin-reporting` proposal | **Merge as a proposal.** Specs-first, nothing implemented. Overlaps `detection-result-surface` — see the graph |
+| [#251](https://github.com/davitf/archivey/pull/251) | OpenSpec `bounded-source-spooling` | **Blocked on four maintainer answers**, all in its `design.md` §Open questions. Q1 (the default limit) decides which working RAR-from-stream reads start failing. Merging the proposal does not need them; *scheduling* does |
+| [#244](https://github.com/davitf/archivey/pull/244) | Topic 10 problem catalogue — 57 `design.md` files mined | **Pick one of #243/#244 and close the other.** They are competing attempts at the same deliverable |
+| [#243](https://github.com/davitf/archivey/pull/243) | Topic 10 problem catalogue — early checkpoint sample | The earlier and thinner of the pair. `main` carries only `brief.md` + `harvest/`; neither `catalogue.md` nor `sources.md` exists, so nothing has been chosen yet |
+| [#187](https://github.com/davitf/archivey/pull/187) | rapidgzip + inflate64 native stress harnesses | **Partly superseded; salvage the inflate64 half.** See below |
+| [#185](https://github.com/davitf/archivey/pull/185) | OpenSpec `verification-integrity-mode` (STREAMING default, STRICT opt-in) | **Live but unranked.** July proposal, never reviewed. Decide whether it survives ADR 0014 before spending more on it |
+| [#101](https://github.com/davitf/archivey/pull/101) | RAR `unrar` piping vs temp-file investigation | **Close.** Superseded — see below |
+
+The five drafts (#243, #244, #187, #185, #101) all report `updated_at` within one minute of
+each other on 2026-08-23. That is a bulk repository event, not activity: none has been worked
+since creation.
+
+## Already dead
+
+Checked against `main`, not inferred from the documents that mention them.
+
+- **#101 is superseded by its own successor page.** [`formats/rar.md`](formats/rar.md) §9
+  says so outright: *"[PR #101], which was never merged; its conclusions are stated here and
+  its measurements are what the first script re-runs, so the PR is provenance rather than a
+  live reference."* The measurements live in `scripts/exploration/rar_unrar_input_matrix.py`.
+  Nothing is lost by closing it.
+- **#101 and #187 both write into `docs/internal/`, which no longer exists.** The docs IA
+  migration (#221/#222) moved that tree to `dev-docs/`. Neither PR applies as written.
+- **#187's rapidgzip half is superseded in pattern.** `main` now carries
+  `.github/workflows/ppmd-native-stress.yml` + `scripts/ppmd_native_stress.py`,
+  `rapidgzip-truncation-sweep.yml` + `scripts/rapidgzip_truncation_sweep.py`, and
+  `atheris-fuzz.yml`. The shared-harness idea was adopted; this PR's version of it was not.
+  **`inflate64` is the one codec with no stress coverage** — that half is the only unique
+  content, and it is smaller as a new PR against today's `scripts/` than as a rebase.
+- **#315 thread 50 is fixed.** `_open_folder_pipeline` is gone from `src/`; the only
+  surviving mention is a comment in `tests/test_sevenzip_reader.py:754` recording that it
+  *used to* exist.
+- **#315 thread 52 is fixed by [#318](https://github.com/davitf/archivey/pull/318).**
+  Password confirmation no longer materialises the folder; `sevenzip_reader.py:661` records
+  the chunked replacement and its measured ~3× peak.
+- **[`IDEAS.md`](IDEAS.md) §Testing "Pin and checksum the Windows UnRAR download" is
+  contradicted by a later decision.** #320 (2026-09-10) **rejected** a pinned SHA-256 — the
+  URL is unversioned, so the digest goes stale on every upstream release — and handled
+  staleness with a rotating cache window instead. The entry also recommends copying the macOS
+  pinned-commit pattern, which the same decision rejected as making CI test a binary no
+  Windows user runs. Rewritten in this pass to point at the live question
+  ([`review/backlog.md`](../review/backlog.md) #320 F2: Authenticode, unverified because the
+  agent proxy blocks rarlab.com).
+- **[`formats/rar.md`](formats/rar.md) §7 asked the same question twice** — *"Can the
+  stream-source copy be made small, rather than just moved?"* appeared as both a short and a
+  long bullet. Merged in this pass.
+
+## #315 — the 54 threads
+
+The largest single pool of actionable work, and the only one with verified correctness bugs
+in it. Threads 1–15 are maintainer questions from 2026-09-07; 16–54 are an agent review pass
+from 2026-09-08 concentrated on `streamtools/` and the two native backends.
+
+| Group | Threads | Character |
+| --- | --- | --- |
+| `streamtools/` internals | 16–42 (27) | Layering, duplication, two-classes-in-one-name, and four real bugs |
+| `backends/rar_reader.py` | 43–49 (7) | Hand-rolled `SlicingStream`, duplicated walks, a 115-line function |
+| `backends/rar_parser.py` | 1–2, 4–9 (8) | Maintainer questions: explain, rename, or delete |
+| `backends/sevenzip_reader.py` | 50–54 (5) | Two already fixed; one perf, two clarity |
+| Module placement | 10, 14 | Should `rar_detect.py` / `zip_aes.py` move under `backends/` or a detection package? |
+| Crypto consolidation | 3, 15 | A dead AES-CBC class, and `zip_aes.py` bypassing the crypto module |
+| Explain-this | 11, 12, 26, 29, 35, 41, 44, 49, 51 | Docstring and comment work, no behaviour change |
+| Performance | 13 | `volumes.py` bisects on every read; should cache on seek |
+
+**Verified still-live bugs, ranked.** These four I reproduced or read on `main` today; they
+are the reason #315 outranks the OpenSpec queue.
+
+1. **Thread 38 — a stale member slice reads the next member's bytes** (`streamtools/solid.py:90`).
+   `_MemberSlice.read` checks neither `self.closed` nor whether it is still the reader's
+   active member, and calls `self._reader._consume(n)` regardless. Closing the slice does not
+   stop it. Silent wrong data, which is the worst failure class this library has.
+2. **Thread 39 — a failed skip desynchronises the reader's position** (`streamtools/solid.py:38`).
+   `skip_forward` consumes bytes and raises `EOFError` without reporting how many; both
+   callers update `_pos` on the line *after* the call, so a partial skip leaves `_pos` behind
+   the block's real position.
+3. **Thread 21 — a text-mode handle passes the `TypeGuard[BinaryIO]`** (`streamtools/binaryio.py:278`).
+   Reproduced: `is_stream(open("README.md"))` returns `True` because `TextIOWrapper` is an
+   `io.IOBase`, `ensure_binaryio` hands it back unwrapped, and `read(4)` returns `'# ar'` —
+   a `str`, typed as `bytes`. The user finds out several layers down.
+4. **Thread 17 — `name` is annotated `-> str` and always raises** (`streamtools/base.py:91`,
+   and `DelegatingStream.name` at `:161`). The raise is deliberate (pycdlib duck-types on
+   `hasattr`), so the **annotation** is the defect: a checker accepts `stream.name.upper()`
+   and it crashes.
+
+Threads 1 and 2 are also potential bugs rather than questions — whether a RAR header-decrypt
+offset accounts for `_buf` and for encrypted block boundaries — but answering them needs the
+parser read that threads 5–9 also want, so they belong to one RAR-parser pass.
+
+## OpenSpec changes
+
+| Change | Tasks | State |
+| --- | --- | --- |
+| `prefixed-archive-detection` | **31/68** | The only one in flight. Finish or explicitly park it before opening another detection change |
+| `detection-evidence-ledger` | 0/70 | The big one. Rebuilds detection on graded evidence |
+| `detection-result-surface` | 0/44 | **Blocked by the ledger** — it exposes what the ledger produces. Its own proposal says so |
+| `single-file-open-time-validation` | 0/25 | Self-contained. Closes [`open-issues.md`](open-issues.md) **P15** and **P16** |
+| `seekable-gzip-and-block-writing` | 0/24 | Self-contained, no `.openspec.yaml` (predates the schema). BGZF + mgzip random access, zero new dependencies |
+| `bounded-source-spooling` (#251) | 0/33 | Blocked on four `design.md` answers. Subsumes rar `§10` **#6 layer 2** and **#21** |
+| `archive-origin-reporting` (#274) | 0/? | Proposal only. Overlaps `detection-result-surface` on `ArchiveInfo` |
+| `bounded-password-confirmation` (#319) | 0/? | Merge the proposal, then implement. Closes most of **O12** |
+| `sevenzip-aes-tail-key-check` (#319) | 0/59 | After the above. Split out deliberately: the only piece resting on an empirical premise about writer padding, so the easiest to revert alone |
+
+**Three detection changes touch the same surface.** `prefixed-archive-detection` (in flight),
+`detection-evidence-ledger`, `detection-result-surface`, plus `archive-origin-reporting` and
+four [`IDEAS.md`](IDEAS.md) §API entries that the ledger explicitly absorbs
+(`FormatInfo.corroborated`, extension-first ordering, "content decides, extension
+corroborates", "presence and value are different questions"). This is the one place where
+doing things in the wrong order costs real rework: **the ledger defines the vocabulary the
+other three report in.**
+
+## What blocks what
+
+```
+#319 (merge) ──> bounded-password-confirmation ──> sevenzip-aes-tail-key-check ──> O12 closed
+                                                            │
+                                                            └──> seekable AES-CBC stream (thread 3)
+
+#315 threads 38, 39, 21, 17 ─────> (nothing; land now, one fix PR each)
+
+#315 streamtools cleanup (16-42) ──> #315 rar_reader cleanup (43-49)
+        │                                    ("this is SlicingStream rebuilt by hand"
+        │                                      needs SlicingStream settled first)
+        └──> thread 3 (dead AES-CBC class) ──> thread 15 (zip_aes via crypto module)
+
+prefixed-archive-detection (31/68) ──> detection-evidence-ledger ──> detection-result-surface
+                                                 │                          │
+                                                 │                          └──> #274 archive-origin-reporting
+                                                 └──> 4 IDEAS.md §API entries retire
+
+#251 design Q1-Q4 (maintainer) ──> bounded-source-spooling ──> rar §10 #6 layer 2
+                                                          └──> rar §10 #21
+                                                          └──> open-issues P11 closed
+
+Topic 8 (docs content) ∥ Topic 10 (catalogue) ──> Topic 6 (perf) ──> Topic 7 (capstone, last)
+        │
+        └── pick #243 or #244 first; Topic 10 cannot proceed with two candidate catalogues
+```
+
+Nothing else has a hard dependency. `single-file-open-time-validation` and
+`seekable-gzip-and-block-writing` are both fully independent — they are the two changes to
+hand someone who wants work that blocks on no decision.
+
+## Plan of attack
+
+Ordered by what unblocks the most, then by what is cheapest to verify.
+
+**Wave 0 — clear the desk.** Doc-only, no decisions needed.
+1. This page, plus the two register cleanups it names (rar.md §7 duplicate, IDEAS.md
+   Windows-UnRAR entry). *Landed in this pass.*
+2. Merge **#319** and **#297**. Both docs-only and clean.
+3. Close **#101** (superseded by rar.md §9).
+4. Two maintainer calls, each one line: pick **#243 or #244**; keep or close **#187** having
+   noted the inflate64 salvage.
+
+**Wave 1 — the four verified bugs.** One fix PR each, red-green, before any cleanup PR
+touches the same files. Threads 38 and 39 are in `solid.py` and can share a PR; 21 and 17 are
+`binaryio.py` / `base.py` typing-and-guard fixes. This is the highest value per line in the
+whole inventory, and it is blocked on nothing.
+
+**Wave 2 — drain #315 by file, not by theme.** `streamtools/` first (16–42), because
+`rar_reader.py`'s findings (43–49) are stated as "this is `SlicingStream` rebuilt by hand"
+and cannot be settled until `SlicingStream` is. Then `rar_reader.py`, then the RAR-parser
+questions (1–2, 5–9) as one reading pass, then the placement questions (10, 14) as one
+mechanical move. Resolve threads 50 and 52 with a pointer to the commits that fixed them.
+
+**Wave 3 — the two unblocked OpenSpec changes.** `single-file-open-time-validation` (closes
+P15 + P16) and `seekable-gzip-and-block-writing`. Neither waits on anyone.
+
+**Wave 4 — decisions, then detection.** Answer #251's four questions. Finish or park
+`prefixed-archive-detection`. Then `detection-evidence-ledger` → `detection-result-surface`
+→ #274, in that order, retiring the four `IDEAS.md` §API entries as the ledger absorbs them.
+
+**Wave 5 — the review topics.** Topic 8 ∥ Topic 10 → Topic 6 → Topic 7 last, per
+[`review/STATUS.md`](../review/STATUS.md). Unchanged; this page does not re-rank them.
+
+**Not scheduled, on purpose:** `verification-integrity-mode` (#185) needs a keep-or-kill
+judgement against ADR 0014 before it earns a slot; rar `§10` **#18** is marked *very low
+priority — remaining names are adversarial*; rar `§10` **#19** is a public knob and wants a
+config decision; [`open-issues.md`](open-issues.md) **P2/P3/P4** belong to the native
+streaming ZIP theme, which is an `IDEAS.md` entry rather than a scheduled change.

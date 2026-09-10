@@ -778,7 +778,14 @@
   `tests/fixtures/rar/README.md`. Linux `setup-dev-env.sh` still apt-installs
   `rar`, so these are not dark on a provisioned Linux laptop — only on CI /
   macOS.
-- **Pin and checksum the Windows UnRAR download.** The Windows CI leg still
-  `Invoke-WebRequest`s `https://www.rarlab.com/rar/unrarw64.exe` with no version
-  pin and no SHA-256, then runs the SFX. The macOS leg now fetches a pinned git
-  commit instead. Same pattern would close the gap; not blocking.
+- **Establish that the Windows UnRAR download is rarlab's.** The Windows CI leg
+  `Invoke-WebRequest`s `https://www.rarlab.com/rar/unrarw64.exe` and runs the SFX; the
+  only integrity checks are a PE sniff and the UNRAR banner. **A pinned SHA-256 is
+  rejected** and copying the macOS pinned-commit pattern is rejected with it — #320's
+  criterion is that CI installs unrar the way users on that platform actually get it, and
+  the URL is unversioned so a digest goes stale on every upstream release. **Staleness is
+  already handled**: the cache key carries a rotating window, so the tested binary is
+  never more than 7 days old. What remains is *authenticity, not freshness* — the leading
+  candidate is an Authenticode check that the SFX is signed by win.rar GmbH, unverified
+  because the agent proxy blocks rarlab.com. Live discussion and the full reasoning:
+  [`review/backlog.md`](../review/backlog.md) §Parked from PR reviews, #320 F2.

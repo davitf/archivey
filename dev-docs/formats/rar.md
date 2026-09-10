@@ -680,6 +680,23 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   out-of-order solid `open()` being a whole decode each time — is **already decided**:
   [`open-issues.md`](../open-issues.md) P9 says not a diagnostic, because `access_cost`
   already carries it, and only a once-per-reader `warnings.warn` is still parked.
+
+  Two ideas compose here and only the combination is interesting. A `memfd` is seekable,
+  anonymous, freed on close, and `unrar` reads one happily (§1) — but on its own it only
+  trades unbounded disk for unbounded RAM, which is the worse of the two for a large
+  archive, and it is **Linux-only**, and it cannot serve a volume set because `unrar` needs
+  sibling names on disk (§2.2). What makes the size bounded is `rarfile`'s trick: build a
+  *synthetic* single-member archive — a marker, a synthesized MAIN, the member's own FILE
+  header and packed bytes copied verbatim, a synthesized ENDARC — so the copy is one
+  **compressed member** rather than the whole archive. `rarfile` writes that to a small temp
+  file and guards it heavily (never for solid, split, or encrypted members, and never above
+  ~20 MB); a `memfd` is simply a better container for the same bytes where the platform has
+  one. Unmeasured, and the guards are the hard part: RAR3 and RAR5 need different header
+  synthesis. [`IDEAS.md`](../IDEAS.md) carries the neighbouring idea — the same synthetic
+  archive fed to libarchive instead, to drop the `unrar` requirement entirely. Bounding this
+  copy is also what `openspec/changes/bounded-source-spooling` ([PR
+  #251](https://github.com/davitf/archivey/pull/251)) would put under one configured limit.
+
 - **Does `ListingCost.INDEXED` mean "cheap" or "already paid"?** With a usable RAR5 `QO`,
   listing reads a real index region (§1.1). Without one, RAR still walks header-to-header
   and reports `INDEXED`; TAR does that walk and reports `REQUIRES_SCANNING`. Only one of
@@ -689,20 +706,6 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   the second answer for RAR and the first for TAR. This is not RAR's question to settle:
   it changes `tar_reader` and the enum's documented meaning, and `access-and-cost` is the
   published page that would have to say which.
-- **Can the stream-source copy be made small, rather than just moved?** Two ideas compose
-  here and only the combination is interesting. A `memfd` is seekable, anonymous, freed on
-  close, and `unrar` reads one happily (§1) — but on its own it only trades unbounded disk
-  for unbounded RAM, which is the worse of the two for a large archive, and it is
-  **Linux-only**, and it cannot serve a volume set because `unrar` needs sibling names on
-  disk (§2.2). What makes the size bounded is `rarfile`'s trick: build a *synthetic*
-  single-member archive — a marker, a synthesized MAIN, the member's own FILE header and
-  packed bytes copied verbatim, a synthesized ENDARC — so the copy is one **compressed
-  member** rather than the whole archive. `rarfile` writes that to a small temp file and
-  guards it heavily (never for solid, split, or encrypted members, and never above ~20 MB);
-  a `memfd` is simply a better container for the same bytes where the platform has one.
-  Unmeasured, and the guards are the hard part: RAR3 and RAR5 need different header
-  synthesis. [`IDEAS.md`](../IDEAS.md) carries the neighbouring idea — the same synthetic
-  archive fed to libarchive instead, to drop the `unrar` requirement entirely.
 - **Should `unar` become an opt-in second engine?** It is the one candidate the
   decompressor matrix left open, and Homebrew dropping the `rar` cask is what keeps it open
   (§3). Blocked on three things nobody has done: the fixture matrix against a Homebrew

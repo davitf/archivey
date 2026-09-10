@@ -147,6 +147,7 @@ often they turn out to be the right place:
 | Is this a known unfixed gap? | `dev-docs/threat-model.md` (`O*` register), `dev-docs/open-issues.md` |
 | Has this already been reviewed? | `review/STATUS.md`, then the archive tables under `review/archive/` |
 | Was this deliberately deferred? | `review/backlog.md`, `dev-docs/IDEAS.md` |
+| What is open right now, and in what order? | `dev-docs/open-work-inventory.md` — a dated snapshot across every register; the registers themselves stay authoritative |
 | Was this discussed but not settled? | `dev-docs/discussions/` |
 | What does the user-facing story say? | `docs/` (published guide only) |
 
