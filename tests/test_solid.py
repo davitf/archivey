@@ -80,6 +80,31 @@ def test_truncated_block_raises_eof_on_skip() -> None:
     reader.open_member(0, 4).read(1)
     with pytest.raises(EOFError):
         reader.open_member(8, 2)  # skip of 7 bytes over a 3-byte remainder
+    # The failed skip consumed the remainder; _pos must not stay at the pre-skip value.
+    assert reader._pos == 4
+
+
+def test_failed_skip_advances_position_by_what_was_consumed() -> None:
+    """A skip that hits EOF must still credit bytes discarded, or later offsets are wrong."""
+    block = _CountingBlock(b"AAAABBBB")  # 8 bytes
+    reader = SolidBlockReader(block)
+    with pytest.raises(EOFError):
+        reader.open_member(100, 4)
+    assert reader._pos == 8
+    # With a correct _pos, a later open behind the consumed range is rejected as
+    # out of order rather than skipping from a stale origin of 0.
+    with pytest.raises(ValueError, match="in order"):
+        reader.open_member(0, 4)
+
+
+def test_failed_lazy_skip_advances_position_by_what_was_consumed() -> None:
+    """The lazy path has the same skip/_pos pair; a failed first-read must not desync it."""
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    member = reader.open_member(100, 4, lazy=True)
+    with pytest.raises(EOFError):
+        member.read()
+    assert reader._pos == 8
 
 
 def test_close_block_false_leaves_block_open() -> None:

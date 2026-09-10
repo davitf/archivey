@@ -27,16 +27,27 @@ from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 _SKIP_CHUNK = 1 << 20  # 1 MiB
 
 
+def _discard_bytes(stream: BinaryIO, count: int) -> int:
+    """Read and discard up to ``count`` bytes. Returns how many were actually discarded."""
+    remaining = count
+    consumed = 0
+    while remaining > 0:
+        chunk = stream.read(min(remaining, _SKIP_CHUNK))
+        if not chunk:
+            break
+        n = len(chunk)
+        consumed += n
+        remaining -= n
+    return consumed
+
+
 def skip_forward(stream: BinaryIO, count: int) -> None:
     """Read and discard exactly ``count`` bytes from a forward-only ``stream``.
 
     Raises :class:`EOFError` if the stream ends before ``count`` bytes are consumed.
     """
-    while count > 0:
-        chunk = stream.read(min(count, _SKIP_CHUNK))
-        if not chunk:
-            raise EOFError("stream ended before the requested position")
-        count -= len(chunk)
+    if _discard_bytes(stream, count) < count:
+        raise EOFError("stream ended before the requested position")
 
 
 class _MemberSlice(ReadOnlyIOStream):
@@ -81,8 +92,7 @@ class _MemberSlice(ReadOnlyIOStream):
             )
         # Finalize any prior active member and jump the gap (same as eager open_member).
         reader._current = None
-        skip_forward(reader._block, self._offset - reader._pos)
-        reader._pos = self._offset
+        reader._skip_to(self._offset)
         reader._current = self
         self._pending = False
 
@@ -149,11 +159,23 @@ class SolidBlockReader:
         # Finalize the previous member and jump the gap in one forward skip. This is where
         # a prior member's unread tail is actually consumed (lazy drain).
         self._current = None
-        skip_forward(self._block, offset - self._pos)
-        self._pos = offset
+        self._skip_to(offset)
         slice_ = _MemberSlice(self, offset, size, pending=False)
         self._current = slice_
         return slice_
+
+    def _skip_to(self, offset: int) -> None:
+        """Advance the block to ``offset``, crediting every discarded byte to ``_pos``.
+
+        A short stream still updates ``_pos`` by however many bytes were consumed,
+        then raises :class:`EOFError`. Updating ``_pos`` only after a successful skip
+        would leave the counter behind the block and poison every later offset.
+        """
+        remaining = offset - self._pos
+        skipped = _discard_bytes(self._block, remaining)
+        self._pos += skipped
+        if skipped < remaining:
+            raise EOFError("stream ended before the requested position")
 
     def _consume(self, n: int) -> bytes:
         data = self._block.read(n)
