@@ -16,6 +16,31 @@ ARCHIVEY_TEST_CACHE = os.environ.get(
 )
 
 
+class ReadSizeSpy:
+    """Wrap a stream and record the largest ``read(n)`` it was asked for.
+
+    Used to pin that 7z password confirmation reads in bounded chunks: a single
+    request sized to the whole folder is the gather that PR #318 removed. It is a
+    proxy for peak memory, not a measurement of it.
+    """
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+        self.max_requested = 0
+
+    def read(self, n: int = -1, /) -> bytes:
+        # A negative n is read-everything, which is the unbounded case; record it as
+        # larger than any real request rather than as 0.
+        self.max_requested = max(self.max_requested, 2**31 if n < 0 else n)
+        return self._inner.read(n)
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
 def requires(*packages: str) -> pytest.MarkDecorator:
     """Skip a test (or parametrization) when an optional package is not importable.
 

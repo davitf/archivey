@@ -84,12 +84,12 @@ from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.crypto import SevenZipKeyCache
 from archivey.internal.streams.streamtools import (
+    ReadableStream,
     SharedSource,
     SlicingStream,
     SolidBlockReader,
     is_seekable,
     is_stream,
-    read_exact,
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
@@ -109,6 +109,11 @@ from archivey.types import (
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
+# Drain/CRC step for encrypted-folder password confirm. 7z AES has no check
+# value, so a candidate is judged by decoding and CRCing; this keeps peak
+# memory at one chunk instead of the whole folder (same size as the sized
+# drain in ``verify.py`` and ZipCrypto's parallel CRC).
+_PASSWORD_CONFIRM_CHUNK = 65536
 
 # Local aliases keep test imports of these private names working.
 _TimestampIssue = TimestampIssue
@@ -139,27 +144,64 @@ def _member_stream_size(member: ArchiveMember) -> int:
     return member.size if member.size is not None else 0
 
 
+def _crc_exactly(
+    stream: ReadableStream,
+    nbytes: int,
+    *,
+    chunk_size: int = _PASSWORD_CONFIRM_CHUNK,
+) -> int:
+    """Read ``nbytes`` from ``stream``, folding CRC32.
+
+    Raise ``EncryptionError`` on a short read. Peak extra memory is one chunk.
+    """
+    remaining = nbytes
+    crc = 0
+    # `> 0`, not truthiness: a stream that over-returns would drive `remaining`
+    # negative, and `read(negative)` is read-everything — the whole-folder gather
+    # this function exists to avoid.
+    while remaining > 0:
+        chunk = stream.read(min(chunk_size, remaining))
+        if not chunk:
+            raise EncryptionError("Wrong password or corrupt 7z folder")
+        crc = zlib.crc32(chunk, crc)
+        remaining -= len(chunk)
+    return crc
+
+
 def _verify_decoded_folder(
     folder: SevenZipFolder,
-    decoded: bytes,
+    stream: ReadableStream,
     *,
+    expected_size: int,
     member_digests: list[tuple[int, int | None]] | None = None,
 ) -> None:
-    """Raise ``EncryptionError`` when decoded folder bytes fail CRC checks."""
+    """Raise ``EncryptionError`` when decoded folder bytes fail CRC checks.
+
+    Reads incrementally so peak memory is O(chunk), not O(folder). A stream
+    that ends early still fails, including the no-anchor case (no folder
+    digest and CRC-less members): that case accepts only after a full-length
+    drain, matching 7-Zip's best-effort decrypt.
+    """
     if folder.digest_defined:
+        actual = _crc_exactly(stream, expected_size)
         expected = (folder.crc if folder.crc is not None else 0) & 0xFFFFFFFF
-        if zlib.crc32(decoded) & 0xFFFFFFFF != expected:
+        if actual & 0xFFFFFFFF != expected:
             raise EncryptionError("Wrong password or corrupt 7z folder")
         return
     if not member_digests:
+        _crc_exactly(stream, expected_size)
         return
-    offset = 0
+    # The per-member walk covers `expected_size` by construction: the caller derives
+    # it from these same member sizes (`_folder_unpack_size`). Pinned here because
+    # nothing else records the coupling now the whole-folder length check is gone.
+    assert expected_size == sum(size for size, _ in member_digests), (
+        "member digest sizes must sum to the folder unpack size"
+    )
     for size, raw_expected in member_digests:
-        chunk = decoded[offset : offset + size]
-        offset += size
+        actual = _crc_exactly(stream, size)
         if raw_expected is None:
             continue
-        if zlib.crc32(chunk) & 0xFFFFFFFF != raw_expected & 0xFFFFFFFF:
+        if actual & 0xFFFFFFFF != raw_expected & 0xFFFFFFFF:
             raise EncryptionError("Wrong password or corrupt 7z folder")
 
 
@@ -581,25 +623,6 @@ class SevenZipReader(BaseArchiveReader):
             return self._track_decompressed(stream)
         return stream
 
-    def _open_folder_pipeline(
-        self,
-        source: BinaryIO,
-        folder: SevenZipFolder,
-        *,
-        password: bytes | None,
-        seekable: bool = False,
-    ) -> BinaryIO:
-        """Compatibility shim for tests that patch/call this method."""
-        return open_folder_pipeline(
-            source,
-            folder,
-            password=password,
-            key_cache=self._key_cache,
-            stream_config=self._stream_config,
-            collector=self._diagnostics_collector,
-            seekable=seekable,
-        )
-
     def _password_for_folder(
         self, folder_index: int, member: ArchiveMember | None
     ) -> bytes | None:
@@ -634,11 +657,14 @@ class SevenZipReader(BaseArchiveReader):
                 collector=self._diagnostics_collector,
             )
             try:
-                total = self._folder_unpack_size(folder_index)
-                decoded = read_exact(stream, total)
-                if len(decoded) != total:
-                    raise EncryptionError("Wrong password or corrupt 7z folder")
-                _verify_decoded_folder(folder, decoded, member_digests=member_digests)
+                # AES has no check value. Confirm by decoding and CRCing, in
+                # chunks: materialising the folder peaked at ~3× unpack size.
+                _verify_decoded_folder(
+                    folder,
+                    stream,
+                    expected_size=self._folder_unpack_size(folder_index),
+                    member_digests=member_digests,
+                )
                 return kdf_password
             except (UnsupportedFeatureError, PackageNotInstalledError):
                 # Hostile NumCyclesPower / missing cryptography must not look like a wrong password.

@@ -180,7 +180,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`; `stream_members()` is intentionally unguarded. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`; `stream_members()` is intentionally unguarded. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES. |
 
 ## Limits
 
@@ -198,7 +198,12 @@ Loosen per call with `limits=` (extraction only), raise `listing_limits` at
 
 Bomb guards apply during **extraction**. Listing caps apply when a full member list is
 materialized — prefer `stream_members()` for huge untrusted archives when you only need
-a sequential subset.
+a sequential subset. Encrypted 7z folders confirm the password by decoding on the first
+member read, which is neither listing nor extract: peak memory is a 64 KiB chunk plus
+codec buffers. Wall time is *at most* folder size per candidate, and reaches that only
+for **store/copy+AES**, where nothing rejects a wrong key early — a compressed folder's
+codec rejects one within a few bytes, and confirmation stops at the first member CRC
+that fails.
 
 **The bomb tracker is per-archive, not nesting-aware.** It measures the expansion of
 the archive it is extracting, so a zip-of-zips can amplify past your budget one level

@@ -400,6 +400,50 @@ itself — and whether limits are per-detection aggregates or per-candidate — 
 that lands, a hostile prefix can still force unbounded decode work under the default
 budget's scan path once those tiers are enabled.
 
+### O12. 7z password confirmation decoded the whole folder into RAM — memory mitigated
+
+O1 covers listing-time metadata bombs; `ExtractionLimits` covers bytes *written
+during extract*. Neither saw 7z password confirmation.
+
+`_password_for_folder.confirm` runs on the first read of any member in an
+encrypted folder, before any extract limit, once per password candidate. 7z AES
+has no check value, so a candidate is judged by decoding and CRCing. That CRC is
+unavoidable. Holding the decoded folder is not. Pre-fix `confirm` called
+`read_exact(stream, total)` and then `_verify_decoded_folder` over the resulting
+`bytes`. `read_exact` grows a `bytearray` by doubling and copies to `bytes`.
+
+Measured (200 MiB compressible LZMA):
+
+| archive | peak (`tracemalloc`) | `ru_maxrss` |
+| --- | --- | --- |
+| 200 MiB LZMA, no password | 4.6 MB | 35.4 MB |
+| 200 MiB LZMA, **AES**, correct password | **630.2 MB** | 654.5 MB |
+| 200 MiB LZMA, AES, 1 wrong + correct | 630.2 MB | 654.6 MB |
+
+Encrypting a 7z took peak from 4.6 MB to 630 MB — ~3× folder size, not 1×.
+Store+AES (`-m0=Copy`) does not fail fast on a wrong key, so extra candidates
+decode the whole folder (100 MiB): 1 candidate 420.2 MB / 2.7 s; 4 wrong +
+correct 525.1 MB / 8.3 s. Both dimensions are attacker-controlled.
+
+`ExtractionLimits(max_extracted_bytes=1024, max_ratio=1.0,
+ratio_activation_threshold=1024)` fired only *after* confirm had already
+buffered ~630 MB (`ERR _AlwaysStopResourceLimitError` at 1048576 bytes written;
+peak still 630.4 MB). The encoded-header path already caps unpack size at
+`_MAX_NEXT_HEADER_SIZE` (64 MiB) before `read_exact`; the folder-data path had
+no analogue.
+
+*Mitigation:* confirm now reads the pipeline in 64 KiB chunks and folds a
+running CRC (folder digest, or per-member CRC over consecutive substreams). A
+short stream still raises `EncryptionError`. Peak memory is O(chunk + codec
+buffers), not O(folder).
+
+*Residual — time, not memory.* Streaming does not bound total work: a hostile
+archive can still force `folder_size × candidate_count` of decoding. A confirm
+byte-cap (first-member CRC rather than a hard ceiling, so a legitimate huge
+folder still opens) or routing confirm through `ExtractionLimits` /
+`_track_decompressed` would close that; neither is in this change. Found on
+PR #315; tracked from PR #318.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed

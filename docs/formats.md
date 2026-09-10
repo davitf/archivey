@@ -109,6 +109,13 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
   value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
   `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the payload as unverified.
+- **Encrypted-folder password confirmation** streams the CRC check in 64 KiB chunks.
+  Peak memory is not proportional to folder size. Wall time is, once per candidate, but
+  only for **store/copy+AES** — nothing there rejects a wrong key before the CRC. A
+  compressed folder's codec rejects one within a few bytes, and confirmation stops at
+  the first member CRC that fails, so a wrong candidate mostly costs key derivation.
+  Prefer a single known password on huge encrypted store/copy folders.
+  `ExtractionLimits` do not apply here.
 - **Header-encrypted wrong password:** a decoded header with zero file records is
   rejected as `EncryptionError` (never a silent empty listing).
 - `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
