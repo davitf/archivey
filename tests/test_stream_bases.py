@@ -45,6 +45,33 @@ def test_readonly_base_read_is_the_runtime_guard() -> None:
         _ForgotRead().read()
 
 
+def test_readonly_base_name_is_absent() -> None:
+    """Nameless streams must not expose ``name`` (pycdlib Windows + reopen-by-name)."""
+    s = _FixedReader(b"x")
+    assert not hasattr(s, "name")
+
+
+def test_readonly_base_name_annotation_does_not_claim_str() -> None:
+    """The getter always raises; annotating ``str`` lets a checker accept ``.name.upper()``."""
+    getter = ReadOnlyIOStream.name.fget
+    assert getter is not None
+    ret = getter.__annotations__.get("return")
+    assert ret not in {"str", str}
+
+
+def test_delegating_base_name_absent_without_inner_path() -> None:
+    s = DelegatingStream(io.BytesIO(b"x"))
+    assert not hasattr(s, "name")
+
+
+def test_delegating_base_forwards_name_from_inner_file(tmp_path) -> None:
+    path = tmp_path / "x.bin"
+    path.write_bytes(b"x")
+    with open(path, "rb") as inner:
+        s = DelegatingStream(inner)
+        assert s.name == str(path)
+
+
 def test_delegating_base_forwards_to_inner() -> None:
     inner = io.BytesIO(b"abcdefgh")
     s = DelegatingStream(inner)

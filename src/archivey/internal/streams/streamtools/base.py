@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import abc
 import io
-from typing import TYPE_CHECKING, Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO, Never
 
 from archivey.internal.streams.streamtools.binaryio import is_seekable, source_name
 
@@ -81,12 +81,16 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
         return "rb"
 
     @property
-    def name(self) -> str:
-        # Same typing.IO stub issue for `name`: pycdlib on Windows does
-        # `hasattr(fp, 'name') and fp.name.startswith(r'\\.\')` and crashes when the
-        # stub returns None. Streams without a real path name (BytesIO, in-memory views)
-        # must not expose `name` at all — match their duck-typing surface where
-        # hasattr(..., 'name') is False.
+    def name(self) -> Never:
+        """Always raises :exc:`AttributeError`.
+
+        The raise *is* the contract: ``hasattr(stream, "name")`` must be false
+        so duck-typing consumers (pycdlib on Windows does
+        ``fp.name.startswith(...)`` on a device path) do not crash on ``None``.
+        Streams without a real path (``BytesIO``, in-memory views) must not
+        expose ``name`` at all. Do not "fix" this by returning a string or
+        ``None``.
+        """
         raise AttributeError("name")
 
 
@@ -158,7 +162,13 @@ class DelegatingStream(ReadOnlyIOStream):
         super().close()
 
     @property
-    def name(self) -> str:
+    def name(self) -> str:  # type: ignore[override]  # base is Never; this returns a path when the inner has one
+        """Path of the inner stream, or raise :exc:`AttributeError` if it has none.
+
+        Raising keeps ``hasattr(..., "name")`` false when the inner is nameless
+        (the :class:`ReadOnlyIOStream` contract). Returning ``None`` would make
+        ``hasattr`` true and crash pycdlib's Windows ``fp.name.startswith(...)``.
+        """
         resolved = source_name(self._inner)
         if resolved is not None:
             return resolved

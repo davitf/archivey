@@ -83,7 +83,7 @@ class PeekableStream(ReadOnlyIOStream):
         return self._pos
 
     @property
-    def name(self) -> str:
+    def name(self) -> str:  # type: ignore[override]  # base is Never; this returns a path when the inner has one
         resolved = source_name(self._underlying)
         if resolved is not None:
             return resolved
