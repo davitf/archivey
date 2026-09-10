@@ -259,7 +259,7 @@ Encryption is the one place the split is uneven:
 
 | | Path | Notes |
 | --- | --- | --- |
-| Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it |
+| Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it. When the 12-byte ZipCrypto header cannot be read (file pointer at EOF), both password dispatch paths report `TruncatedError`: `ZipFile.open` via stdlib `IndexError` from `_init_decrypter` (caught in `_zip_open_raw`, the only `ZipFile.open` call — a read-path `IndexError` stays a raw crash), and the STORED multi-candidate confirm path via `_read_zipcrypto_header`. A truncated ZipCrypto *body* is `EOFError` → `TruncatedError` |
 | WinZip AES (method 99, extra `0x9901`) | archivey, natively | PBKDF2-HMAC-SHA1 · AES-CTR · HMAC-SHA1 truncated to 10 bytes; then the codec layer for the real method |
 
 ZipCrypto's weak verifier is why multiple password candidates need confirmation before one
@@ -447,6 +447,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. A linear join of the second lists correctly and then reads only the members that happen to sit on the last disk (§3) | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
+| Short ZipCrypto header is `TruncatedError` on both password paths | Physical EOF, same condition as the stdlib `IndexError`; callers matching `TruncatedError` vs `CorruptionError` would otherwise see a dispatch-dependent split | Mapping the confirm path's `BadZipFile` through the generic ZIP translator (`CorruptionError`); leaving the split |
 
 ## 7. Open questions
 
@@ -490,6 +491,7 @@ behaviour a caller already sees.
 | Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass | `tests/test_zip_multipassword.py` |
+| Truncated ZipCrypto header is `TruncatedError` on both password dispatch paths (`IndexError` cause on `ZipFile.open`); codec-path and member-read `IndexError` stay raw; CONCURRENT stamp releases the handle lock | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` (`single` / `multi`), `::test_unencrypted_codec_indexerror_is_not_truncated`, `::test_unencrypted_member_read_indexerror_is_not_truncated`, `::test_truncated_zipcrypto_stamp_releases_handle_lock` |
 | Cross-format member equivalence, per-method decode, AE-2 CRC absence | `tests/test_corpus_sweep.py` (13 ZIP corpus entries) |
 
 **Building fixtures.** Stdlib `zipfile` cannot write encryption, so encrypted fixtures shell

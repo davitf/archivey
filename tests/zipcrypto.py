@@ -152,6 +152,60 @@ def build_zipcrypto_zip(
     return lfh + enc + cdh + eocd
 
 
+def zip_with_truncated_zipcrypto_header(
+    password: bytes,
+    name: bytes,
+    data: bytes,
+) -> bytes:
+    """A ZipCrypto ZIP whose 12-byte encryption header cannot be read.
+
+    stdlib ``ZipExtFile._init_decrypter`` does ``self._decrypter(header)[11]`` after
+    ``read(12)``. This fixture inflates the local extra-field length so that skip
+    lands at EOF, then adds a dummy central-directory entry with a huge
+    ``header_offset`` so zipfile's overlap guard does not fire first. Opening the
+    encrypted member then raises a bare ``IndexError`` — the Atheris nightly
+    2026-09-01 finding (run 33505689273).
+    """
+    blob = bytearray(
+        build_zipcrypto_zip(password, name, data, compression=zipfile.ZIP_STORED)
+    )
+    # Local extra-field length (LFH offset 28). 0xFFFF skips past the 12-byte header
+    # and the rest of the file, whether zipfile uses read() (3.11) or seek() (3.12+).
+    struct.pack_into("<H", blob, 28, 0xFFFF)
+    eocd_at = blob.rfind(b"PK\x05\x06")
+    if eocd_at < 0:
+        raise ValueError("EOCD not found")
+    dummy_name = b"pad.bin"
+    dummy_cdh = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            20,
+            20,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            len(dummy_name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            10_000_000,
+        )
+        + dummy_name
+    )
+    n_this, n_total, cd_size = struct.unpack_from("<HHI", blob, eocd_at + 8)
+    struct.pack_into(
+        "<HHI", blob, eocd_at + 8, n_this + 1, n_total + 1, cd_size + len(dummy_cdh)
+    )
+    return bytes(blob[:eocd_at] + dummy_cdh + blob[eocd_at:])
+
+
 def corrupt_zipcrypto_payload(blob: bytes) -> bytes:
     """Flip encrypted member data after its intact 12-byte ZipCrypto header."""
     name_len, extra_len = struct.unpack_from("<HH", blob, 26)

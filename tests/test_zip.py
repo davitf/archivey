@@ -24,6 +24,7 @@ from archivey import (
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.exceptions import (
+    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     StreamNotSeekableError,
@@ -33,6 +34,7 @@ from archivey.exceptions import (
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires_binary
 from tests.streams_util import NonSeekableBytesIO
+from tests.zipcrypto import zip_with_truncated_zipcrypto_header
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -236,6 +238,134 @@ def test_truncated_symlink_target_is_typed_error(tmp_path: Path) -> None:
     with pytest.raises((TruncatedError, CorruptionError)):
         with open_archive(io.BytesIO(truncated), format=ArchiveFormat.ZIP) as ar:
             list(ar)
+
+
+@pytest.mark.parametrize(
+    ("password", "expect_indexerror_cause"),
+    [
+        (b"secret", True),
+        ([b"secret", b"other"], False),
+    ],
+    ids=["single", "multi"],
+)
+def test_truncated_zipcrypto_header_is_typed_error(
+    password: bytes | list[bytes], expect_indexerror_cause: bool
+) -> None:
+    """A short ZipCrypto header is TruncatedError on both password dispatch paths.
+
+    Found by the Atheris zip target (nightly 2026-09-01, run 33505689273):
+    ``ZipExtFile._init_decrypter`` indexes ``[11]`` of whatever ``read(12)``
+    returned. Listing still succeeds; opening the encrypted member must raise
+    ``TruncatedError``, not a raw ``IndexError`` and not ``CorruptionError``.
+
+    A single static password goes through ``ZipFile.open(pwd=…)`` (IndexError
+    cause). Two-or-more candidates take the STORED confirm path through
+    ``_read_zipcrypto_header``.
+    """
+    blob = zip_with_truncated_zipcrypto_header(b"secret", b"x.txt", b"hello")
+    with open_archive(
+        io.BytesIO(blob), format=ArchiveFormat.ZIP, password=password
+    ) as ar:
+        encrypted = [m for m in ar if m.is_encrypted]
+        assert encrypted, (
+            "fixture must list the ZipCrypto member so the crash is on open"
+        )
+        with pytest.raises(TruncatedError) as excinfo:
+            ar.open(encrypted[0])
+        if expect_indexerror_cause:
+            assert isinstance(excinfo.value.__cause__, IndexError)
+        else:
+            assert not isinstance(excinfo.value.__cause__, IndexError)
+
+
+def test_truncated_zipcrypto_stamp_releases_handle_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CONCURRENT handle lock is released before TruncatedError is stamped.
+
+    ``_translated_errors`` takes the boundary outside ``_handle_guard()`` so
+    stamping never runs while the shared-handle lock is held. A diagnostics
+    handler that re-enters the reader would otherwise deadlock.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    held_during_stamp: list[bool] = []
+    orig = zip_reader.ZipReader._stamp_error_context
+
+    def _wrapped(
+        self: zip_reader.ZipReader,
+        exc: ArchiveyError,
+        member_name: str | None = None,
+    ) -> None:
+        lock = self._handle_lock
+        held_during_stamp.append(lock.locked() if lock is not None else False)
+        orig(self, exc, member_name)
+
+    monkeypatch.setattr(zip_reader.ZipReader, "_stamp_error_context", _wrapped)
+
+    blob = zip_with_truncated_zipcrypto_header(b"secret", b"x.txt", b"hello")
+    with open_archive(
+        io.BytesIO(blob),
+        format=ArchiveFormat.ZIP,
+        password=b"secret",
+        concurrent_members=True,
+    ) as ar:
+        encrypted = [m for m in ar if m.is_encrypted]
+        with pytest.raises(TruncatedError):
+            ar.open(encrypted[0])
+    assert held_during_stamp == [False]
+
+
+def test_unencrypted_codec_indexerror_is_not_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IndexError on the codec path is an archivey bug, not archive damage.
+
+    IndexError is translated only around ``ZipFile.open(pwd=…)`` in
+    ``_zip_open_raw``, so a latent off-by-one in ``open_codec_stream`` still
+    fails the Atheris zip target rather than being swallowed as TruncatedError.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("x.txt", b"hello world" * 10)
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise IndexError("index out of range")
+
+    monkeypatch.setattr(zip_reader, "open_codec_stream", _boom)
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
+        with pytest.raises(IndexError, match="index out of range"):
+            ar.open(next(iter(ar)))
+
+
+def test_unencrypted_member_read_indexerror_is_not_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IndexError during a ZIP member *read* is an archivey bug, not ZipCrypto truncation.
+
+    ``_translate_exception`` is ArchiveStream's translate hook. Mapping IndexError
+    there turns a codec/stream off-by-one into ``TruncatedError("Truncated ZipCrypto
+    header")`` on an unencrypted DEFLATE member. A bounded ``read(n)`` is the path
+    that reaches the translator; ``read()`` (n=-1) hits the fused size verifier's
+    opaque-accelerator catch first. The ZipCrypto mapping lives on ``_zip_open_raw``.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("x.txt", b"hello world" * 10)
+
+    class _Boom(io.BytesIO):
+        def read(self, *args: object, **kwargs: object) -> bytes:
+            raise IndexError("index out of range")
+
+    monkeypatch.setattr(zip_reader, "open_codec_stream", lambda *_a, **_k: _Boom())
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
+        stream = ar.open(next(iter(ar)))
+        with pytest.raises(IndexError, match="index out of range"):
+            stream.read(10)
 
 
 def _symlink_zip(tmp_path: Path) -> Path:

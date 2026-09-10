@@ -859,7 +859,12 @@ class ZipReader(BaseArchiveReader):
                 read_exact(fp, name_len + extra_len)
                 header = read_exact(fp, 12)
                 if len(header) != 12:
-                    raise zipfile.BadZipFile("Truncated ZipCrypto header")
+                    # Same short-header case ZipFile.open surfaces as IndexError.
+                    raise TruncatedError(
+                        "Truncated ZipCrypto header",
+                        archive_name=self._archive_name,
+                        source_format=ArchiveFormat.ZIP,
+                    )
                 return header
             finally:
                 fp.seek(saved)
@@ -1168,7 +1173,7 @@ class ZipReader(BaseArchiveReader):
     ) -> BinaryIO:
         """Open via ``zipfile`` and translate member-open failures."""
         try:
-            raw = self._zip_open_raw(info, password=password)
+            raw = self._zip_open_raw(info, password=password, member_name=member_name)
             if self._handle_lock is not None:
                 return CloseLockedStream(raw, self._handle_lock)
             return raw
@@ -1192,11 +1197,29 @@ class ZipReader(BaseArchiveReader):
         self._raise_translated(exc, member_name, stamp_encryption=False)
 
     def _zip_open_raw(
-        self, info: zipfile.ZipInfo, *, password: bytes | None
+        self,
+        info: zipfile.ZipInfo,
+        *,
+        password: bytes | None,
+        member_name: str,
     ) -> BinaryIO:
         """``ZipFile.open`` under the CONCURRENT handle lock when present."""
-        with self._handle_guard():
-            return cast("BinaryIO", self._archive.open(info, pwd=password))
+        try:
+            with self._handle_guard():
+                return cast("BinaryIO", self._archive.open(info, pwd=password))
+        except IndexError as exc:
+            # ZipExtFile._init_decrypter does ``self._decrypter(header)[11]``
+            # after read(12). A short read — file pointer at physical EOF, not a
+            # compress_size smaller than 12 (zipfile's _SharedFile is not bounded
+            # by it) — is IndexError, not EOFError. Caught here, the only
+            # ZipFile.open call, so an IndexError from codec/AES/read stays raw.
+            # try is outside _handle_guard so stamping never runs while the
+            # shared-handle lock is held (base_reader._translated_errors).
+            if password is None:
+                raise
+            translated = TruncatedError(f"Truncated ZipCrypto header: {exc!r}")
+            self._stamp_error_context(translated, member_name)
+            raise translated from exc
 
     def _zip_close_raw(self, stream: BinaryIO) -> None:
         """Close a raw zip member stream under the CONCURRENT handle lock when present."""
@@ -1231,7 +1254,9 @@ class ZipReader(BaseArchiveReader):
         def decrypt(password: bytes) -> BinaryIO:
             stream: BinaryIO | None = None
             try:
-                stream = self._zip_open_raw(info, password=password)
+                stream = self._zip_open_raw(
+                    info, password=password, member_name=member_name
+                )
                 read_exact(stream, CONFIRM_PREFIX_BYTES)
                 self._zip_close_raw(stream)
                 stream = None
