@@ -18,6 +18,7 @@ from archivey.internal.streams.streamtools import (
     ReadableStream,
     ensure_binaryio,
     ensure_bufferedio,
+    ensure_full_count_reads,
     is_filename,
     is_seekable,
     is_stream,
@@ -103,6 +104,13 @@ def test_is_filename() -> None:
 def test_is_stream_accepts_iobase() -> None:
     assert is_stream(io.BytesIO(b"x"))
     assert not is_stream("path.zip")
+
+
+def test_is_stream_rejects_text_mode() -> None:
+    assert not is_stream(io.StringIO("hello"))
+    # encoding= so this stays valid on Windows (default ANSI there).
+    with open("README.md", encoding="utf-8") as f:
+        assert not is_stream(f)
 
 
 def test_is_stream_rejects_partial_object() -> None:
@@ -386,6 +394,44 @@ def test_ensure_binaryio_wraps_partial_object() -> None:
     assert wrapped.readable() is True
     assert wrapped.writable() is False
     assert wrapped.seekable() is False
+
+
+def test_ensure_binaryio_rejects_text_mode() -> None:
+    with pytest.raises(TypeError, match="text-mode"):
+        ensure_binaryio(io.StringIO("hello"))
+    with open("README.md", encoding="utf-8") as f:
+        with pytest.raises(TypeError, match="text-mode"):
+            ensure_binaryio(f)
+
+
+def test_ensure_bufferedio_rejects_text_mode() -> None:
+    with pytest.raises(TypeError, match="text-mode"):
+        ensure_bufferedio(io.StringIO("hello"))
+
+
+def test_ensure_full_count_reads_rejects_text_mode() -> None:
+    with pytest.raises(TypeError, match="text-mode"):
+        ensure_full_count_reads(io.StringIO("hello"))  # type: ignore[arg-type]
+
+
+def test_open_archive_rejects_text_mode_handle(tmp_path) -> None:
+    from archivey import open_archive
+
+    path = tmp_path / "note.txt"
+    path.write_text("not an archive\n", encoding="utf-8")
+    with open(path, encoding="utf-8") as handle:
+        with pytest.raises(TypeError, match="unsupported source type"):
+            open_archive(handle)
+
+
+def test_open_stream_rejects_text_mode_handle(tmp_path) -> None:
+    from archivey import open_stream
+
+    path = tmp_path / "note.txt"
+    path.write_text("not a stream\n", encoding="utf-8")
+    with open(path, encoding="utf-8") as handle:
+        with pytest.raises(TypeError, match="binary stream"):
+            open_stream(handle)
 
 
 # --- ensure_bufferedio -----------------------------------------------------------------
