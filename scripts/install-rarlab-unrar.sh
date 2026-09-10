@@ -14,7 +14,7 @@
 # Usage:
 #   scripts/install-rarlab-unrar.sh --dest DIR [--cache-dir DIR]
 #
-# Writes DIR/unrar. No-ops if that path is already executable.
+# Writes DIR/unrar. No-ops if that path already reports the RARLAB banner.
 set -euo pipefail
 
 # rarlab unrarsrc tarball name; the binary banner reads "UNRAR 7.23"
@@ -33,7 +33,7 @@ Build RARLAB UnRAR from a pinned GitHub mirror and install the unrar binary.
 Usage:
   scripts/install-rarlab-unrar.sh --dest DIR [--cache-dir DIR]
 
-Writes DIR/unrar. No-ops if that path is already executable.
+Writes DIR/unrar. No-ops if that path already reports the RARLAB banner.
 EOF
 }
 
@@ -63,10 +63,57 @@ if [ -z "$DEST" ]; then
   exit 2
 fi
 
+# The RARLAB banner is what archivey's finder actually requires, so it is the
+# test for "is this binary the right one" on every path through this script —
+# including a DEST restored from a GHA cache, which this script did not produce.
+# `-x` is a weaker claim than it looks: it reports the mode bits, and `cp` gives
+# the destination the source's mode, so a copy interrupted partway leaves a
+# truncated file that is still executable and still passes `-x`.
+#
+# Two things below look like they could be simplified. Both are load-bearing;
+# please read this before tidying them.
+#
+# 1. The output is captured, rather than the obvious
+#      "$1" | head -n 2 | grep -q UNRAR
+#    `head` exits the moment it has its two lines. unrar is still writing (its
+#    no-argument usage runs to 62 lines) and is killed by SIGPIPE for writing to
+#    a pipe nobody is reading any more — exit 141. `grep` itself succeeded, but
+#    `set -o pipefail` at the top of this file makes a pipeline report a failing
+#    *member* rather than just the last command, so the whole test comes back
+#    false for a perfectly good unrar. This is not theoretical and not a race:
+#    the naive form rejects /usr/bin/unrar every time. It would also not show up
+#    as a flake — every run would rebuild, the post-build check would reject the
+#    result too, and macOS CI would be red permanently.
+#
+# 2. `|| true` is not defensive noise. The binary's own exit status is data
+#    here, not failure: a truncated unrar segfaults (139), and without this
+#    `set -e` would kill the script instead of letting the caller reinstall.
+#    The `case` below is what decides the answer.
+has_rarlab_banner() {
+  local out
+  out="$("$1" 2>/dev/null | head -n 2)" || true
+  case "$out" in
+    *UNRAR*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 mkdir -p "$DEST"
 if [ -x "${DEST}/unrar" ]; then
-  echo "install-rarlab-unrar: already present at ${DEST}/unrar"
-  exit 0
+  # Re-check rather than trusting the file. The CI cache step carries
+  # `save-always`, which saves even when a step failed, so an install that died
+  # partway can leave a bad binary under the key; without this, every later run
+  # would restore it, skip straight past the build, and fail at the Verify step
+  # until the key changed. Eviction would not rescue it: GHA drops caches *not
+  # accessed* for 7 days, and an entry every run restores is never idle.
+  # Rebuild over it instead of erroring out — one poisoned entry should not be
+  # sticky.
+  if has_rarlab_banner "${DEST}/unrar"; then
+    echo "install-rarlab-unrar: already present at ${DEST}/unrar"
+    exit 0
+  fi
+  echo "install-rarlab-unrar: ${DEST}/unrar does not report the UNRAR banner; rebuilding"
+  rm -f "${DEST}/unrar"
 fi
 
 need() {
@@ -110,4 +157,12 @@ make -C "$src" -j"$jobs"
 # macOS install(1) has no GNU -D; copy the binary ourselves.
 cp "${src}/unrar" "${DEST}/unrar"
 chmod +x "${DEST}/unrar"
+
+# Check what was actually written, not what was meant to be: this is the step
+# that can leave a truncated binary behind, and the caller caches DEST.
+if ! has_rarlab_banner "${DEST}/unrar"; then
+  rm -f "${DEST}/unrar"
+  echo "install-rarlab-unrar: built binary does not report the UNRAR banner" >&2
+  exit 1
+fi
 echo "install-rarlab-unrar: installed ${DEST}/unrar"

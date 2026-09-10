@@ -233,30 +233,59 @@ jobs:
           echo "$DEST" >> "$GITHUB_PATH"
           test -x "$DEST/unrar"
           command -v rar && exit 1 || true
+      # rarlab.com refused the connection often enough to redden Windows runs on
+      # its own (run 34392160804: "connection attempt failed because the
+      # connected party did not properly respond"). Same shape as the macOS leg:
+      # the cache holds the *installed binary* so the common case makes no
+      # request at all, and the installer retries when it does.
+      #
+      # The key carries a rotating window as well as the installer's hash,
+      # because rarlab's URL is unversioned "current": without it, whichever
+      # build happened to fill the cache would be the build CI tests from then
+      # on. Eviction does not solve that — GHA drops caches *not accessed* for
+      # 7 days, and an entry restored by every run is never idle, so on a busy
+      # branch it would never expire at all. Rotating the key bounds how old the
+      # tested binary can be, which is the point: CI is here to test archivey
+      # against what Windows users actually download.
+      - name: Compute unrar cache window (Windows)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
+        id: unrar-window
+        shell: bash
+        run: |
+          # Refresh cadence, in days. Lower tracks rarlab's current build more
+          # closely; higher means fewer downloads, so fewer chances to land on a
+          # rarlab outage. The binary is never older than this many days.
+          days=7
+          echo "window=$(( $(date -u +%s) / 86400 / days ))" >> "$GITHUB_OUTPUT"
+      - name: Cache RARLAB unrar (Windows)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rarlab-unrar
+          # Do NOT add restore-keys here. A prefix fallback would restore the
+          # previous window's binary on the very run that is meant to refresh
+          # it, the installer would find a valid UnRAR.exe and accept it, and
+          # the rotation above would buy nothing.
+          key: rarlab-unrar-${{ hashFiles('scripts/install-rarlab-unrar.ps1') }}-${{ runner.os }}-${{ runner.arch }}-w${{ steps.unrar-window.outputs.window }}
+          save-always: true
       - name: Install unrar (Windows)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
         shell: pwsh
         run: |
           # Official x64 UnRAR (not chocolatey's x86 package + ShimGen shim — shims
-          # have broken solid ``unrar p`` pipes on this matrix).
+          # have broken solid ``unrar p`` pipes on this matrix). The script no-ops
+          # when the cache already restored UnRAR.exe.
           $dest = Join-Path $env:RUNNER_TEMP 'rarlab-unrar'
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          $sfx = Join-Path $dest 'unrarw64.exe'
-          Invoke-WebRequest -Uri 'https://www.rarlab.com/rar/unrarw64.exe' -OutFile $sfx
-          Push-Location $dest
-          # RARLAB SFX: /s silent, /d<path> extract destination.
-          Start-Process -FilePath $sfx -ArgumentList "/s","/d$dest" -Wait -NoNewWindow
-          Pop-Location
-          $real = Get-ChildItem -Path $dest -Recurse -Filter 'UnRAR.exe' |
-            Select-Object -First 1
-          if (-not $real) {
-            Get-ChildItem -Path $dest -Recurse | Format-Table FullName
-            throw 'UnRAR.exe not found after extracting unrarw64.exe'
+          ./scripts/install-rarlab-unrar.ps1 -Dest $dest
+          # Same belt-and-suspenders as the macOS leg's `test -x`: assert the
+          # binary before putting the directory on PATH, so a script that
+          # somehow returns 0 without one fails here and not a step later.
+          if (-not (Test-Path -LiteralPath (Join-Path $dest 'UnRAR.exe'))) {
+            throw "UnRAR.exe missing from $dest after install-rarlab-unrar.ps1"
           }
           # Windows is case-insensitive: shutil.which('unrar') finds UnRAR.exe.
-          # Do not Copy-Item to unrar.exe — that overwrites the file with itself.
-          echo $real.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & $real.FullName 2>&1 | Select-Object -First 2
+          # Do not copy to unrar.exe — that overwrites the file with itself.
+          echo $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Verify RARLAB unrar on PATH
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
         shell: bash
