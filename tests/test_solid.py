@@ -134,3 +134,37 @@ def test_skip_forward_helper_raises_on_short_stream() -> None:
     stream.seek(0)
     with pytest.raises(EOFError):
         skip_forward(stream, 5)
+
+
+def test_read_on_closed_member_raises() -> None:
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    member = reader.open_member(0, 4)
+    member.close()
+    with pytest.raises(ValueError, match="closed file"):
+        member.read(4)
+    # Close is not a drain; a closed unread member must not pull bytes.
+    assert block.bytes_read == 0
+
+
+def test_closed_slice_cannot_read_the_next_member() -> None:
+    """Close A, open B: A.read() must raise, not return B's bytes (and starve B)."""
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    first = reader.open_member(0, 4)
+    first.close()
+    second = reader.open_member(4, 4)
+    with pytest.raises(ValueError, match="closed file"):
+        first.read(4)
+    assert second.read() == b"BBBB"
+
+
+def test_superseded_slice_cannot_read_the_next_member() -> None:
+    """An still-open slice that a later open_member replaced must not consume B."""
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    first = reader.open_member(0, 4)
+    second = reader.open_member(4, 4)
+    with pytest.raises(ValueError, match="superseded"):
+        first.read(4)
+    assert second.read() == b"BBBB"

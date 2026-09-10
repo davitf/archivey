@@ -87,7 +87,11 @@ class _MemberSlice(ReadOnlyIOStream):
         self._pending = False
 
     def read(self, n: int = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
         self._ensure_positioned()
+        if self._reader._current is not self:
+            raise ValueError("solid member superseded by a later open_member()")
         if self._remaining <= 0:
             return b""
         if n < 0 or n > self._remaining:
