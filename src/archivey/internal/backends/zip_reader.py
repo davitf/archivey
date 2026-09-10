@@ -229,9 +229,15 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     # mid-read (e.g. a corrupt symlink target during listing). Must be translated
     # like the other member-read errors — otherwise it escapes as a raw exception.
     EOFError,
-    # ZipExtFile._init_decrypter does ``self._decrypter(header)[11]`` after
-    # ``read(12)`` of the ZipCrypto header. A short read (truncated extra-field skip,
-    # or ciphertext shorter than 12 bytes) is IndexError, not EOFError.
+)
+
+# ZipExtFile._init_decrypter does ``self._decrypter(header)[11]`` after ``read(12)``.
+# A short read — the file pointer at physical EOF, not a compress_size smaller than
+# 12, which zipfile's _SharedFile is not bounded by — is IndexError, not EOFError.
+# Scoped to the sites that call ZipFile.open(pwd=…): on the AES and unencrypted
+# codec paths an IndexError is an archivey bug and must stay a raw crash, or the
+# Atheris zip target swallows it as ArchiveyError.
+_ZIP_DECRYPT_READ_ERRORS: tuple[type[Exception], ...] = _ZIP_MEMBER_READ_ERRORS + (
     IndexError,
 )
 
@@ -605,7 +611,8 @@ class ZipReader(BaseArchiveReader):
         if isinstance(exc, IndexError):
             # Short ZipCrypto header: ZipExtFile._init_decrypter indexes [11] of a
             # read(12) that returned fewer than 12 bytes (Atheris nightly 2026-09-01).
-            return TruncatedError(f"Truncated ZIP member data: {exc!r}")
+            # Reachable only from _ZIP_DECRYPT_READ_ERRORS catch sites.
+            return TruncatedError(f"Truncated ZipCrypto header: {exc!r}")
         return None
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -1180,7 +1187,7 @@ class ZipReader(BaseArchiveReader):
             if self._handle_lock is not None:
                 return CloseLockedStream(raw, self._handle_lock)
             return raw
-        except _ZIP_MEMBER_READ_ERRORS as exc:
+        except _ZIP_DECRYPT_READ_ERRORS as exc:
             self._reraise_member_error(exc, member_name)
 
     def _reraise_member_error(self, exc: Exception, member_name: str) -> NoReturn:
@@ -1247,7 +1254,7 @@ class ZipReader(BaseArchiveReader):
                 return self._open_zipfile_member(
                     info, password=password, member_name=member_name
                 )
-            except _ZIP_MEMBER_READ_ERRORS as exc:
+            except _ZIP_DECRYPT_READ_ERRORS as exc:
                 if _is_candidate_integrity_failure(exc):
                     failure = EncryptionError(
                         "Password candidate failed integrity validation for this ZIP member"

@@ -256,8 +256,33 @@ def test_truncated_zipcrypto_header_is_typed_error() -> None:
         assert encrypted, (
             "fixture must list the ZipCrypto member so the crash is on open"
         )
-        with pytest.raises(TruncatedError):
+        with pytest.raises(TruncatedError) as excinfo:
             ar.open(encrypted[0])
+        assert isinstance(excinfo.value.__cause__, IndexError)
+
+
+def test_unencrypted_codec_indexerror_is_not_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IndexError on the codec path is an archivey bug, not archive damage.
+
+    ``_ZIP_DECRYPT_READ_ERRORS`` is scoped to ZipFile.open(pwd=…) so a latent
+    off-by-one in ``open_codec_stream`` still fails the Atheris zip target
+    rather than being swallowed as TruncatedError.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("x.txt", b"hello world" * 10)
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise IndexError("index out of range")
+
+    monkeypatch.setattr(zip_reader, "open_codec_stream", _boom)
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
+        with pytest.raises(IndexError, match="index out of range"):
+            ar.open(next(iter(ar)))
 
 
 def _symlink_zip(tmp_path: Path) -> Path:

@@ -259,7 +259,7 @@ Encryption is the one place the split is uneven:
 
 | | Path | Notes |
 | --- | --- | --- |
-| Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it. A header shorter than 12 bytes is `TruncatedError` (stdlib raises `IndexError` from `_init_decrypter`; the sibling truncated *body* is `EOFError`) |
+| Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it. When `ZipFile.open` cannot read the 12-byte header (file pointer at EOF), stdlib raises `IndexError` from `_init_decrypter` and archivey reports `TruncatedError`. A truncated ZipCrypto *body* is `EOFError` → `TruncatedError`. The multi-candidate confirm path currently reports the same short header as `CorruptionError` (`BadZipFile("Truncated ZipCrypto header")`) — ununified |
 | WinZip AES (method 99, extra `0x9901`) | archivey, natively | PBKDF2-HMAC-SHA1 · AES-CTR · HMAC-SHA1 truncated to 10 bytes; then the codec layer for the real method |
 
 ZipCrypto's weak verifier is why multiple password candidates need confirmation before one
@@ -490,7 +490,7 @@ behaviour a caller already sees.
 | Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass | `tests/test_zip_multipassword.py` |
-| Truncated ZipCrypto header is `TruncatedError`, not `IndexError` | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` |
+| Truncated ZipCrypto header is `TruncatedError` with `IndexError` cause; codec-path `IndexError` stays raw | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error`, `::test_unencrypted_codec_indexerror_is_not_truncated` |
 | Cross-format member equivalence, per-method decode, AE-2 CRC absence | `tests/test_corpus_sweep.py` (13 ZIP corpus entries) |
 
 **Building fixtures.** Stdlib `zipfile` cannot write encryption, so encrypted fixtures shell
