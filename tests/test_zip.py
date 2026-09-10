@@ -33,6 +33,7 @@ from archivey.exceptions import (
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires_binary
 from tests.streams_util import NonSeekableBytesIO
+from tests.zipcrypto import zip_with_truncated_zipcrypto_header
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -236,6 +237,27 @@ def test_truncated_symlink_target_is_typed_error(tmp_path: Path) -> None:
     with pytest.raises((TruncatedError, CorruptionError)):
         with open_archive(io.BytesIO(truncated), format=ArchiveFormat.ZIP) as ar:
             list(ar)
+
+
+def test_truncated_zipcrypto_header_is_typed_error() -> None:
+    """stdlib zipfile raises IndexError when ZipCrypto's 12-byte header is short.
+
+    Found by the Atheris zip target (nightly 2026-09-01, run 33505689273):
+    ``ZipExtFile._init_decrypter`` indexes ``[11]`` of whatever ``read(12)``
+    returned. Listing still succeeds; opening the encrypted member must raise
+    ``TruncatedError``, not a raw ``IndexError``.
+    """
+    password = b"secret"
+    blob = zip_with_truncated_zipcrypto_header(password, b"x.txt", b"hello")
+    with open_archive(
+        io.BytesIO(blob), format=ArchiveFormat.ZIP, password=password
+    ) as ar:
+        encrypted = [m for m in ar if m.is_encrypted]
+        assert encrypted, (
+            "fixture must list the ZipCrypto member so the crash is on open"
+        )
+        with pytest.raises(TruncatedError):
+            ar.open(encrypted[0])
 
 
 def _symlink_zip(tmp_path: Path) -> Path:
