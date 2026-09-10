@@ -301,6 +301,34 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
             ar.open(next(iter(ar)))
 
 
+def test_unencrypted_member_read_indexerror_is_not_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IndexError during a ZIP member *read* is an archivey bug, not ZipCrypto truncation.
+
+    ``_translate_exception`` is ArchiveStream's translate hook. Mapping IndexError
+    there turns a codec/stream off-by-one into ``TruncatedError("Truncated ZipCrypto
+    header")`` on an unencrypted DEFLATE member. A bounded ``read(n)`` is the path
+    that reaches the translator; ``read()`` (n=-1) hits the fused size verifier's
+    opaque-accelerator catch first.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("x.txt", b"hello world" * 10)
+
+    class _Boom(io.BytesIO):
+        def read(self, *args: object, **kwargs: object) -> bytes:
+            raise IndexError("index out of range")
+
+    monkeypatch.setattr(zip_reader, "open_codec_stream", lambda *_a, **_k: _Boom())
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
+        stream = ar.open(next(iter(ar)))
+        with pytest.raises(IndexError, match="index out of range"):
+            stream.read(10)
+
+
 def _symlink_zip(tmp_path: Path) -> Path:
     import stat as stat_module
 
