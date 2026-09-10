@@ -32,6 +32,21 @@ done
 PATHS=(src/ tests/ scripts/ benchmarks/)
 FAILED=()
 
+# The gates below run with `--no-sync`, which assumes this tree already has an
+# environment. A `git worktree` (the natural way to review a PR branch) has none, and
+# without this uv would create an empty `.venv` here and fail to spawn each tool — after
+# which pyrefly and ty resolve that empty environment and report `missing-import` for
+# every optional extra. That output reads like a wall of real findings rather than a
+# missing environment, which is the actual failure being prevented here.
+#
+# Giving the tree its own environment (rather than borrowing another checkout's) is what
+# keeps the gates honest when a branch changes dependencies. It costs about a second:
+# uv hardlinks from its global cache, so a second environment on one machine is ~11 MiB.
+if [ ! -d "$ROOT/.venv" ]; then
+  printf '\n\033[1m=== no .venv in this tree — creating one\033[0m\n'
+  uv sync --group dev --extra all || exit 1
+fi
+
 run() {
   local name="$1"; shift
   printf '\n\033[1m=== %s\033[0m\n' "$name"
