@@ -70,9 +70,25 @@ fi
 # the destination the source's mode, so a copy interrupted partway leaves a
 # truncated file that is still executable and still passes `-x`.
 #
-# Capture the output instead of piping into `grep -q`: under `set -o pipefail` a
-# reader that closes early SIGPIPEs the binary, and a *good* unrar would then
-# fail the check.
+# Two things below look like they could be simplified. Both are load-bearing;
+# please read this before tidying them.
+#
+# 1. The output is captured, rather than the obvious
+#      "$1" | head -n 2 | grep -q UNRAR
+#    `head` exits the moment it has its two lines. unrar is still writing (its
+#    no-argument usage runs to 62 lines) and is killed by SIGPIPE for writing to
+#    a pipe nobody is reading any more — exit 141. `grep` itself succeeded, but
+#    `set -o pipefail` at the top of this file makes a pipeline report a failing
+#    *member* rather than just the last command, so the whole test comes back
+#    false for a perfectly good unrar. This is not theoretical and not a race:
+#    the naive form rejects /usr/bin/unrar every time. It would also not show up
+#    as a flake — every run would rebuild, the post-build check would reject the
+#    result too, and macOS CI would be red permanently.
+#
+# 2. `|| true` is not defensive noise. The binary's own exit status is data
+#    here, not failure: a truncated unrar segfaults (139), and without this
+#    `set -e` would kill the script instead of letting the caller reinstall.
+#    The `case` below is what decides the answer.
 has_rarlab_banner() {
   local out
   out="$("$1" 2>/dev/null | head -n 2)" || true
