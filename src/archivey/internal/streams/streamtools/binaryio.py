@@ -549,14 +549,19 @@ class _NonClosingBufferedReader(io.BufferedReader):
     """
 
     def close(self) -> None:
-        # detach() leaves .closed raising ValueError, so a second close cannot
-        # consult it. Remember the detach ourselves; IOBase.close is otherwise
-        # idempotent.
+        # detach() makes IOBase.closed raise, so a second close cannot consult
+        # it. Remember the detach ourselves; set the flag *after* detach so a
+        # raising detach cannot claim the raw is gone while it is still attached.
+        # getattr: no __init__ override, so the attribute may not exist yet.
         if getattr(self, "_detached", False):
             return
-        self._detached = True
-        if not self.closed:
+        if not super().closed:
             self.detach()
+        self._detached = True
+
+    @property
+    def closed(self) -> bool:
+        return getattr(self, "_detached", False) or super().closed
 
 
 def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
@@ -569,10 +574,12 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     is why we branch on ``RawIOBase`` here rather than calling :func:`ensure_binaryio`,
     whose result may be a ``BufferedIOBase`` that ``BufferedReader`` would reject.
 
-    A ``RawIOBase`` whose ``readinto`` refuses (the default raises
+    A ``RawIOBase`` whose ``readinto`` is the ``RawIOBase`` default (raises
     ``NotImplementedError``) is also wrapped: ``BufferedReader.read(n)`` drives
     ``readinto``, and a class that only implemented ``read()`` would otherwise
-    raise a bare ``NotImplementedError`` from the buffer.
+    raise a bare ``NotImplementedError`` from the buffer. A class that
+    *overrides* ``readinto`` and then refuses is **not** wrapped — that is the
+    MRO probe's trade-off (see the comment at the branch).
     """
     raise_if_text_stream(obj)
     if isinstance(obj, io.BufferedIOBase):
@@ -581,8 +588,12 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     # Do not *call* readinto to decide. A zero-length probe still runs work on
     # ReadOnlyIOStream subclasses (a pending solid member skip-decodes;
     # ArchiveStream opens). Compare the unbound method: the RawIOBase default
-    # raises NotImplementedError, so wrap those. An override that still refuses
-    # is handled at read time by BinaryIOWrapper.readinto.
+    # raises NotImplementedError, so wrap those.
+    #
+    # A class that *overrides* readinto and then refuses is not wrapped. The
+    # buffer raises that refusal at read time. The previous call-based probe
+    # caught this via BinaryIOWrapper; it was given up so wrap-time cannot
+    # skip-decode a pending solid member. Parked as #329 C1.
     if (
         isinstance(obj, io.RawIOBase)
         and type(obj).readinto is not io.RawIOBase.readinto

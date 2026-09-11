@@ -101,6 +101,15 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   via `source_name`. The long rationale (the `typing.IO` trap, pyrefly
   `bad-override` on `Never`) lives in only one of the four copies. Deferred rather
   than grow Parcel C into `peekable.py`.
+- **#329 C1 — wrap a `RawIOBase` that overrides `readinto` and then refuses.**
+  `ensure_bufferedio` uses an MRO probe (`type(obj).readinto is not
+  io.RawIOBase.readinto`) so wrap-time cannot skip-decode a pending solid
+  member. A class that *declares* `readinto` and raises `UnsupportedOperation`
+  is therefore not wrapped; `BufferedReader.read(n)` raises that refusal. The
+  previous call-based probe (`try_readinto(obj, bytearray(0))`) wrapped it via
+  `BinaryIOWrapper` and `read(4)` succeeded. Restoring coverage means wrapping
+  every `RawIOBase` (one extra indirection on `FileIO`) — measure first. Do not
+  bring back a call-based probe.
 
 ## Parked from archived deep reviews (2026-07 / 2026-08)
 
