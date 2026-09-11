@@ -111,11 +111,12 @@ def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
 
 
 def read_exact(stream: ReadableStream, n: int) -> bytes:
-    """Read exactly ``n`` bytes, or fewer only if the stream ends first.
+    """Read ``n`` bytes, treating a short non-empty return as "ask again".
 
-    Unlike a single ``read(n)`` (which may legally return a short chunk), this loops
-    until ``n`` bytes are gathered or EOF is hit — the behaviour parsers want when
-    pulling fixed-size headers.
+    Stops only on empty (EOF) or once ``n`` bytes are gathered. That is the
+    ``io.RawIOBase`` contract: a short chunk is not a terminal signal.
+    Contrast :func:`read_full_count`, which stops on the first short — the
+    difference is what a short *means*, not how many bytes are wanted.
     """
     if n < 0:
         raise ValueError("n must be non-negative")
@@ -130,13 +131,12 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
 
 
 def read_full_count(stream: ReadableStream, n: int) -> bytes:
-    """Full-count gather of up to ``n`` bytes, stopping on empty or a short read.
+    """Read up to ``n`` bytes, treating a short non-empty return as terminal.
 
-    Like :func:`read_exact` for healthy full-count inners, but **stops on the first
-    short non-empty return**. That preserves deferred truncation on
-    ``DecompressorStream`` (return the prefix now; raise on the next empty
-    ``read``). Continuing after a short — as ``read_exact`` does for RawIOBase —
-    would pull that deferred error into the same call.
+    Stops on empty *or* the first piece shorter than asked. Full-count inners
+    (a ``DecompressorStream`` with deferred truncation) hand back the
+    recoverable prefix now and raise on the next empty ``read``; asking again
+    — as :func:`read_exact` would — would pull that error into this call.
     """
     if n < 0:
         raise ValueError("n must be non-negative")
