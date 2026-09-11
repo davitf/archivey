@@ -14,7 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from archivey.internal.streams.streamtools import SharedSource
+from archivey.internal.streams.streamtools import (
+    SharedSource,
+    SharedView,
+    SlicingStream,
+)
 
 DATA = b"0123456789abcdefghijklmnopqrstuvwxyz"
 
@@ -152,6 +156,53 @@ class TestSharedSourceMisuse:
         partial = shared.view(len(DATA) - 3, 100)
         assert partial.size == 3
         assert partial.read() == DATA[-3:]
+
+    def test_direct_slice_and_view_agree_on_over_declared_length(self) -> None:
+        payload = io.BytesIO(DATA[:10])
+        direct = SlicingStream(io.BytesIO(DATA[:10]), start=0, length=999)
+        via_view = SharedSource(payload).view(0, 999)
+        assert direct.size == via_view.size == 10
+        assert isinstance(via_view, SharedView)
+        assert isinstance(via_view, SlicingStream)
+
+    def test_view_clamps_over_declared_length_through_seek_counting_wrap(self) -> None:
+        # wrap_handle installs SeekCountingStream; source_byte_size on that wrapper
+        # used to return None, so construction clamp was a no-op and .size stayed 999.
+        from archivey.internal.measurement import SeekCounter
+        from archivey.internal.streams.counting import SeekCountingStream
+
+        shared = SharedSource(
+            io.BytesIO(DATA[:10]),
+            wrap_handle=lambda h: SeekCountingStream(h, SeekCounter()),
+        )
+        assert shared.size == 10
+        view = shared.view(0, 999)
+        assert view.size == 10
+        assert view.read() == DATA[:10]
+
+    def test_repeated_views_do_not_seek_buffered_file(self, tmp_path: Path) -> None:
+        # Construction clamp used SEEK_END on BufferedReader, which discards its
+        # buffer. SharedSource.view must not move the raw FileIO at all.
+        class CountingFileIO(io.FileIO):
+            seeks = 0
+
+            def seek(self, o: int, w: int = 0) -> int:  # type: ignore[override]
+                type(self).seeks += 1
+                return super().seek(o, w)
+
+        path = tmp_path / "blob.bin"
+        path.write_bytes(DATA * 20)
+        raw = CountingFileIO(str(path), "rb")
+        try:
+            buf = io.BufferedReader(raw)
+            shared = SharedSource(buf)
+            CountingFileIO.seeks = 0
+            for i in range(32):
+                view = shared.view(i, 1)
+                assert view.size == 1
+            assert CountingFileIO.seeks == 0
+        finally:
+            raw.close()
 
     def test_view_does_not_close_source(self) -> None:
         buf = io.BytesIO(DATA)

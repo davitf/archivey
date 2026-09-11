@@ -774,6 +774,10 @@ class SevenZipReader(BaseArchiveReader):
                 skip_forward(folder_stream, prefix)
                 inner = SlicingStream(folder_stream, length=size, own_source=True)
         except EOFError as exc:
+            # Construction no longer seeks, so a truncated folder raises from the
+            # first read (or from skip_forward), not from SlicingStream.__init__.
+            # EOFError is still translated by _translate_exception; this handler
+            # covers skip_forward and keeps the close-on-failure pairing.
             folder_stream.close()
             raise TruncatedError("7z folder ended before the requested member") from exc
         except BaseException:

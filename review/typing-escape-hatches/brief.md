@@ -62,13 +62,28 @@ A floor, not the job. Everything below was verified on `8e88e4f` unless marked.
 
 ### Census in `src/`
 
+**Re-measured 2026-09-11 against `main` @ `fb88c1b0`.** The counts below replace the ones
+taken at `8e88e4f`: [#324](https://github.com/davitf/archivey/pull/324) merged in between and
+closed two rows outright. See S2 and S3 for what that means — neither is work you still need
+to do.
+
 | Hatch | Count | Concentration |
 |---|---|---|
-| `# type: ignore[...]` | 2 | both dead — see below |
-| `cast(...)` | 26 | `tar_reader` 6, `zip_reader` 5 |
-| `Any` annotation | 37 | `streamtools/binaryio.py` 12, `iso_reader.py` 8 |
-| `TypeGuard[...]` | 3 | `binaryio.py` ×2, `volumes.py` ×1 |
+| `# type: ignore[...]` | **0** (was 2) | Both deleted by #324. Nothing left to disposition |
+| `# pyrefly: ignore[<code>]` | **2** (was 0 in `src/`) | `streamtools/base.py:195`, `streams/peekable.py:86` — both `bad-override` on the `Never` → `str` `name` widening, both with inline reasons. Already the form S1 recommends |
+| `cast(...)` | 26 | `tar_reader` 6, `zip_reader` 5, then `binaryio.py` / `archive_stream.py` / `selection.py` 2 each |
+| `Any` annotation | **38** | `streamtools/binaryio.py` 13, `iso_reader.py` 8, then `types.py` / `decompressor_stream.py` / `decompress.py` 4 each |
+| `TypeGuard[...]` | 3 | `binaryio.py` ×2 (`is_filename`, `is_stream`), `volumes.py` ×1 (`_is_source_sequence`) |
 | `assert isinstance` | 13 | mixed: some real invariants, some checker appeasement |
+
+**The live population is `cast()` + `Any` + `TypeGuard` + `assert isinstance` — 80 sites.**
+The suppression comments, which are the visible form and the obvious place to start, are now
+the *smallest* part of this review and are already in the recommended shape. That is worth
+knowing up front: the job is almost entirely the invisible hatches.
+
+One `TypeGuard` of the three is the review's own precedent and is already fixed — `is_stream`
+now rejects `io.TextIOBase` (#324 finding 3). Check the other two against the same question:
+does the guard return `True` for anything it does not describe?
 
 ### S1 — `# type: ignore[code]` is a *blanket* line suppression here
 
@@ -92,26 +107,40 @@ not specific in this repo. Rewrite it so the specific forms are
 `# pyrefly: ignore[<code>]` / `# ty: ignore[<code>]`, say plainly why, and keep the
 existing "carry an inline reason" bullet.
 
-### S2 — both existing `src/` suppressions are dead
+### S2 — the two dead suppressions are gone. **Closed, no action.**
 
-- `src/archivey/internal/backends/zip_reader.py:497` — `# type: ignore[arg-type]`
-- `src/archivey/internal/diagnostics_collector.py:232` — `# type: ignore[misc]`
+- ~~`src/archivey/internal/backends/zip_reader.py:497` — `# type: ignore[arg-type]`~~
+- ~~`src/archivey/internal/diagnostics_collector.py:232` — `# type: ignore[misc]`~~
 
-Removing both leaves `pyrefly: 0 errors` and `ty: All checks passed`. **DELETE** them.
-Keep the surrounding explanatory comments (e.g. `zip_reader.py:496`, "typeshed types
-`ZipFile` too narrowly") — they document a real constraint even with no suppression
-attached.
+Both **deleted** by #324's `chore(types)` commit, which confirmed the same thing this seed
+did: neither produced a live pyrefly or ty error. Its commit message records the reasoning
+worth keeping — rewriting them as `# pyrefly: ignore` "would have been decorative, the same
+F6 failure mode." The surrounding explanatory comments were kept, as this seed asked.
 
-### S3 — two more exist only on PR #324's branch
+`grep -c "type: ignore" src/` is now **0**. Verified 2026-09-11.
 
-`streamtools/base.py:165` and `streams/peekable.py:86` (`cursor/streamtools-wave1-fixes-f93c`).
-Both are load-bearing for pyrefly (`bad-override`); ty does not object. They are already
-covered by finding **F6** in that PR's review. Do not duplicate that work — sequence
-after #324 merges, or coordinate.
+### S3 — #324's two suppressions are now on `main`. **Closed, no action.**
+
+`streamtools/base.py:195` and `streams/peekable.py:86`. This seed said to sequence after #324
+merged; it has, and they arrived in the state the review would have asked for:
+
+```
+def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; this returns a path when the inner has one
+```
+
+Code-checked form, inline reason, and the underlying type model *fixed* rather than
+re-labelled — `ReadOnlyIOStream.name` is now `Never`, which is what makes the override a
+deliberate widening instead of an unexplained disagreement. `base.py:92-124` carries the full
+rationale, including why the `BinaryIO` base stays despite being what forces these two
+(dropping it was measured at 64 errors on pyrefly and 64 on ty).
+
+**Do not re-open these as findings.** If anything, they are the worked example of the
+disposition this review wants elsewhere: fix the model, keep one narrow checked suppression,
+say why inline.
 
 ### S4 — start at `streamtools/binaryio.py`
 
-12 `Any`, 2 `cast`, and 2 of the 3 `TypeGuard`s, including the `is_stream` that #324 just
+13 `Any`, 2 `cast`, and 2 of the 3 `TypeGuard`s, including the `is_stream` that #324 just
 corrected. Densest file, live precedent, and the module every archive source crosses. It
 calibrates the rest.
 

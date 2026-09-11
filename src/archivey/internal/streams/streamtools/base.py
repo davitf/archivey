@@ -132,6 +132,12 @@ class DelegatingStream(ReadOnlyIOStream):
     Subclasses override only the method whose behavior they change (e.g. just ``seek`` to add a
     warning, or just ``close`` to add a cleanup guard).
 
+    ``peel_for_source_size`` is an opt-in for pass-through wrappers whose cheap size
+    *is* the inner's (a seek counter on ``ZipFile.fp``). :func:`source_byte_size`
+    peels those and never every :class:`DelegatingStream` — a transforming wrapper
+    (decrypt, BCJ, ``OutputCountingStream`` on a decompressor) must not report the
+    underlying file's size as its own.
+
     **Consistency caveat (``readinto_passthrough``).** By default ``readinto`` forwards straight
     to ``inner.readinto`` (zero-copy), which *bypasses this class's ``read``*. That is correct
     for a plain delegator, but a subclass that overrides ``read`` with a side effect (tracking
@@ -148,6 +154,9 @@ class DelegatingStream(ReadOnlyIOStream):
     the wrapper closed without closing ``inner`` a second time. Subclasses that only
     need to hold a lock around close wrap ``super().close()`` in the lock instead.
     """
+
+    # Opt-in class flag; :func:`source_byte_size` peels only when this is True.
+    peel_for_source_size: bool = False
 
     def __init__(
         self,
