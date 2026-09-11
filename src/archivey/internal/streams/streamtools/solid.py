@@ -64,8 +64,10 @@ class _MemberSlice(ReadOnlyIOStream):
     and flow through the reader so it always knows the block's position.
 
     When constructed with ``pending=True`` (``open_member(..., lazy=True)``), the
-    skip-to-``offset`` runs on first read rather than at construction; closing without
-    reading never touches the block.
+    skip-to-``offset`` runs on first read rather than at construction. Closing a
+    slice never advances or drains the block — pending *and* already-positioned
+    unread closes are free. The gap before the next member is consumed by the
+    next ``open_member`` (or a pending slice's first read).
     """
 
     def __init__(
@@ -121,15 +123,6 @@ class _MemberSlice(ReadOnlyIOStream):
         if self._reader._current is not self:
             raise ValueError("solid member superseded by a later open_member()")
         return self._size - self._remaining
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        # Closing a member never advances or drains the block. The gap before
-        # the next member is consumed by the next open_member (or a pending
-        # slice's first read), so an unread close is free for both pending
-        # and already-positioned slices.
-        super().close()
 
 
 class SolidBlockReader:
@@ -190,8 +183,8 @@ class SolidBlockReader:
         self._current = member
 
     def open_member(self, offset: int, size: int, *, lazy: bool = False) -> BinaryIO:
-        self._claim_offset(offset)
         if lazy:
+            self._claim_offset(offset)
             return _MemberSlice(self, offset, size, pending=True)
         slice_ = _MemberSlice(self, offset, size, pending=False)
         self._advance_to(slice_)
