@@ -174,13 +174,22 @@ def _is_fifo_or_chardev(stream: Any) -> bool:
     return stat.S_ISFIFO(mode) or stat.S_ISCHR(mode)
 
 
+_BUFFER_TYPES = (io.BufferedReader, io.BufferedRandom)
+
+
 def is_seekable(stream: Any) -> bool:
     """Whether ``stream`` can actually seek.
 
-    A ``BufferedReader`` reports its own ``seekable()`` as ``True`` even when wrapping a
-    non-seekable raw stream, so unwrap to the underlying raw object first. Streams that
-    lack a ``seekable()`` method are conservatively treated as non-seekable — except known
-    types we can assert statically (``mmap``).
+    Unwraps ``BufferedReader`` / ``BufferedRandom`` via :func:`_under_buffer` first.
+    ``BufferedReader.seekable()`` already forwards to the raw, so this is not
+    "because the buffer reports True over a non-seekable raw" — that claim was
+    wrong. The unwrap exists so a detached buffer (``raw is None`` after
+    ``detach()``) is treated as non-seekable rather than raising, and so the
+    FIFO/char-device override below sees the same object as the other probes
+    in this file.
+
+    Streams that lack a ``seekable()`` method are conservatively treated as
+    non-seekable — except known types we can assert statically (``mmap``).
 
     We deliberately do *not* probe by calling ``seek()``: that would make this predicate
     side-effecting (it's called on hot paths and on streams someone is mid-read on), and a
@@ -197,8 +206,13 @@ def is_seekable(stream: Any) -> bool:
     member streams are forward-only by design (``r|`` forbids backward seeks), so treating
     them as non-seekable is correct.
     """
-    if isinstance(stream, io.BufferedReader):
-        return is_seekable(stream.raw)
+    inner = _under_buffer(stream)
+    if inner is not stream:
+        return is_seekable(inner)
+    if isinstance(stream, _BUFFER_TYPES):
+        # Detached: _under_buffer returned stream because raw is None.
+        # stream.seekable() would raise ValueError: raw stream has been detached.
+        return False
     # mmap is always seekable but (before Python 3.13) exposes no seekable() method and is
     # not an io.IOBase, so the generic check below would miss it.
     if isinstance(stream, mmap.mmap):
@@ -281,8 +295,9 @@ def _seek_end_is_cheap(stream: Any) -> bool:
     """
     if isinstance(stream, (io.BytesIO, io.FileIO, mmap.mmap)):
         return True
-    if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
-        return _seek_end_is_cheap(stream.raw)
+    inner = _under_buffer(stream)
+    if inner is not stream:
+        return _seek_end_is_cheap(inner)
     return False
 
 
@@ -296,7 +311,7 @@ def _under_buffer(stream: Any) -> Any:
     stream's read position where they found it, so consulting them through the buffer
     cannot desync it — unlike a ``SEEK_END`` probe, which must stay on the buffer itself.
     """
-    if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
+    if isinstance(stream, _BUFFER_TYPES):
         raw = stream.raw
         if raw is not None:  # None once detached (see _NonClosingBufferedReader)
             return raw

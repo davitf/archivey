@@ -198,9 +198,17 @@ def test_is_seekable_true_false() -> None:
 
 
 def test_is_seekable_unwraps_buffered_reader() -> None:
-    # A BufferedReader reports seekable()=True even over a non-seekable raw stream.
+    # BufferedReader.seekable() already forwards to the raw (False here). The
+    # unwrap is shared with _under_buffer / _seek_end_is_cheap, not a lie-correction.
     buffered = io.BufferedReader(NonSeekableBytesIO(DATA))
     assert not is_seekable(buffered)
+
+
+def test_is_seekable_detached_buffer_is_false() -> None:
+    buffered = io.BufferedReader(io.BytesIO(DATA))
+    buffered.detach()
+    assert buffered.raw is None
+    assert is_seekable(buffered) is False
 
 
 def test_is_seekable_object_without_seekable_method() -> None:
