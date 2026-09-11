@@ -68,8 +68,12 @@ class SlicingStream(ReadOnlyIOStream):
         ``seek`` does. A cheap ``source_byte_size`` probe (metadata: ``fstat`` /
         ``getbuffer``, not ``SEEK_END`` on a ``BufferedReader``) may run so an
         over-declared ``length`` can be clamped; the handle is left where the
-        caller had it. Pass ``source_size`` with ``probe_source_size=False`` to
+        caller had it.         Pass ``source_size`` with ``probe_source_size=False`` to
         skip that probe (``SharedSource.view`` already knows ``_size``).
+        ``probe_source_size=False`` is not implied by ``source_size is None``:
+        a caller that knows the size is unknowable (``SharedSource`` with an
+        unsized handle) still wants the probe skipped, and merging the two
+        would reintroduce a per-view probe.
 
     ``read(n)`` is **full-count over a full-count inner** (ADR 0014): it coalesces with
     ``read_full_count``, so it returns ``n`` bytes unless the slice ends, the inner ends,

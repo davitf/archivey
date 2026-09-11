@@ -266,7 +266,9 @@ def _peel_passthrough(stream: Any) -> Any:
 
     Only wrappers that set ``peel_for_source_size`` are unwrapped. Transforming
     wrappers (decrypt, BCJ, ``OutputCountingStream``) must not opt in — their
-    cheap size is not the inner file's.
+    cheap size is not the inner file's. The peel is for the cheapness decision
+    and metadata; :func:`source_byte_size` still I/Os the original wrapper on
+    the ``SEEK_END`` fallback so the counter sees those seeks.
     """
     seen: set[int] = set()
     while getattr(stream, "peel_for_source_size", False) is True:
@@ -368,22 +370,27 @@ def source_byte_size(source: Any) -> int | None:
        file, ``len(mmap)``, ``BytesIO.getbuffer().nbytes``), falling back to a
        ``SEEK_END``/restore round trip only for types whose end-seek is provably
        O(1) *and* whose metadata would lie (``BufferedRandom`` with an unflushed
-       write; a block/character device). An unrecognized seekable stream could be
-       a decompressor whose end-seek decodes the entire payload, so it yields
+       write; a block/character device). Probe 4 runs only on a seekable source:
+       a whitelisted type that reports ``seekable() is False`` still yields
+       ``None`` (the total size would overstate what a forward-only,
+       already-consumed stream has left). An unrecognized seekable stream could
+       be a decompressor whose end-seek decodes the entire payload, so it yields
        ``None`` instead.
 
     Probes 2 and 3 look through a ``BufferedReader`` to the stream it wraps
-    (:func:`_under_buffer`). Probe 4's metadata path does too; the ``SEEK_END``
-    fallback stays on the buffer. Pass-through wrappers that set
-    ``peel_for_source_size`` are peeled before any of these probes.
+    (:func:`_under_buffer`). Probe 4's metadata path does too. Pass-through
+    wrappers that set ``peel_for_source_size`` are peeled for the cheapness
+    decision and the metadata read; the ``SEEK_END`` fallback still I/Os the
+    original wrapper so a seek counter on the outside sees those two calls.
     """
     if is_filename(source):
         try:
             return os.stat(source).st_size
         except OSError:
             return None
-    source = _peel_passthrough(source)
-    metadata_source = _under_buffer(source)
+    outer = source
+    peeled = _peel_passthrough(source)
+    metadata_source = _under_buffer(peeled)
     size = getattr(metadata_source, "size", None)
     if isinstance(size, int) and not isinstance(size, bool):
         return size
@@ -391,14 +398,16 @@ def source_byte_size(source: Any) -> int | None:
     if callable(try_get_size):
         result = try_get_size()
         return result if isinstance(result, int) else None
-    metadata_end = _metadata_end_size(source)
+    if not is_seekable(outer):
+        return None
+    metadata_end = _metadata_end_size(peeled)
     if metadata_end is not None:
         return metadata_end
-    if is_seekable(source) and _seek_end_is_cheap(source):
+    if _seek_end_is_cheap(peeled):
         try:
-            pos = source.tell()
-            end = source.seek(0, io.SEEK_END)
-            source.seek(pos)
+            pos = outer.tell()
+            end = outer.seek(0, io.SEEK_END)
+            outer.seek(pos)
         except OSError:
             return None
         return end

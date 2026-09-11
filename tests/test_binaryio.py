@@ -621,6 +621,40 @@ class TestSourceByteSize:
             assert isinstance(f, io.BufferedRandom)
             assert source_byte_size(f) == 14
 
+    def test_seek_end_fallback_counts_through_seek_counting_stream(
+        self, tmp_path
+    ) -> None:
+        # Peel decides cheapness; the SEEK_END I/O must still go through the
+        # wrapper so source_seek_count sees it (PR #328 F14).
+        from archivey.internal.measurement import SeekCounter
+        from archivey.internal.streams.counting import SeekCountingStream
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        p = tmp_path / "f.bin"
+        p.write_bytes(b"x" * 100)
+        with open(p, "r+b") as f:
+            assert isinstance(f, io.BufferedRandom)
+            counter = SeekCounter()
+            wrapped = SeekCountingStream(f, counter)
+            assert source_byte_size(wrapped) == 100
+            assert counter.count == 2  # SEEK_END + restore; tell is not counted
+
+    def test_non_seekable_bytesio_subclass_is_none(self) -> None:
+        # Probe 4 used to run only after is_seekable. Metadata-first would
+        # answer for a BytesIO subclass that reports seekable() False
+        # (PR #328 F15). The suite's NonSeekableBytesIO is a RawIOBase
+        # wrapper, not a BytesIO subclass, so it would not catch this.
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        class _NonSeekableBytesIO(io.BytesIO):
+            def seekable(self) -> bool:
+                return False
+
+            def seek(self, *args: object, **kwargs: object) -> int:
+                raise io.UnsupportedOperation("seek")
+
+        assert source_byte_size(_NonSeekableBytesIO(b"0123456789")) is None
+
     def test_decompressor_streams_are_never_probed(self, tmp_path) -> None:
         # SEEK_END on a decompressor means decompressing to the end; the helper must
         # return None for such streams rather than trigger that work. GzipFile is the

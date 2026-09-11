@@ -45,8 +45,13 @@ class Scale:
 
 SCALES: dict[str, Scale] = {
     # ~128 KiB ZIP/TAR, 64 KiB gzip, ~2 MiB solid — PR structural gate.
-    # common_members is 32 (not 8): two extra seeks per member is invisible
-    # at 8 members against ±8 slack.
+    # common_members is 32 (not 8) so per-member costs show in wall time and
+    # in the solid/listing cases. The seek baselines cannot catch a
+    # construction-probe regression on their own: source_seek_count counts
+    # logical seeks on the measurement wrapper, not syscalls, so a
+    # buffer-locality regression moves real I/O without moving this number
+    # (PR #328 F4 / F13). The unit guard is
+    # tests/test_binaryio.py::TestSourceByteSize::test_buffered_reader_over_file_is_not_seeked.
     "ci": Scale(
         name="ci",
         common_members=32,
