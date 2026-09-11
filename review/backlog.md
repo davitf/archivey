@@ -91,6 +91,17 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   visible git change rather than a silent float, but if the aim is tracking what users
   build today, that pin also ages.
 
+- **#329 C4 — `name`/`mode` shim mixin in `binaryio.py`.** Third copy of `name`,
+  second of `mode`: `BinaryIOWrapper` duplicates `DelegatingStream.name` /
+  `PeekableStream.name` and `ReadOnlyIOStream.mode`. Inheriting `ReadOnlyIOStream`
+  from `binaryio.py` is a circular import (`base.py` imports that module), but a
+  mixin *defined in* `binaryio.py` could be inherited by `ReadOnlyIOStream`,
+  `PeekableStream`, and `BinaryIOWrapper` with no cycle. The `name` implementations
+  are not identical: `ReadOnlyIOStream.name` always raises; the other three forward
+  via `source_name`. The long rationale (the `typing.IO` trap, pyrefly
+  `bad-override` on `Never`) lives in only one of the four copies. Deferred rather
+  than grow Parcel C into `peekable.py`.
+
 ## Parked from archived deep reviews (2026-07 / 2026-08)
 
 Items consciously deferred when archiving deep reviews. Do not re-open those
