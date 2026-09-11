@@ -21,6 +21,7 @@ from archivey.exceptions import (
 from archivey.internal.streams.streamtools import (
     ensure_full_count_reads,
     is_stream,
+    raise_if_text_stream,
     source_name,
 )
 
@@ -501,6 +502,7 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
     if isinstance(source, Path):
         return _resolve_single(source)
     if not is_stream(source):
+        raise_if_text_stream(source)
         raise TypeError(f"unsupported source type: {type(source)!r}")
     return _resolve_single(ensure_full_count_reads(source))
 

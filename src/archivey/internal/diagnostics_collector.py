@@ -229,7 +229,7 @@ class DiagnosticCollector:
             if escalate_as is not None:
                 msg = escalate_message if escalate_message is not None else message
                 kwargs = escalate_kwargs if escalate_kwargs is not None else {}
-                raise escalate_as(msg, **kwargs)  # type: ignore[misc]
+                raise escalate_as(msg, **kwargs)
             if should_raise_diagnostic:
                 raise DiagnosticRaisedError(message, diagnostic=diagnostic)
         finally:

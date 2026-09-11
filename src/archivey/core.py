@@ -70,6 +70,7 @@ from archivey.internal.streams.streamtools import (
     fix_stream_start_position,
     is_seekable,
     is_stream,
+    raise_if_text_stream,
 )
 from archivey.internal.volumes import (
     ConcatenatedFile,
@@ -582,6 +583,7 @@ def open_stream(
         source_is_seekable = True
     else:
         if not is_stream(source):
+            raise_if_text_stream(source)
             raise TypeError(
                 f"open_stream source must be a path or binary stream, got {type(source)!r}"
             )

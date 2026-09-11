@@ -278,9 +278,13 @@ def source_byte_size(source: Any) -> int | None:
 def is_stream(obj: Any) -> TypeGuard[BinaryIO]:
     """Whether ``obj`` already satisfies the ``BinaryIO`` interface we rely on.
 
-    ``io.IOBase`` instances qualify directly; anything else must expose the full method
+    ``io.RawIOBase`` / ``io.BufferedIOBase`` instances qualify directly.
+    ``io.TextIOBase`` (``TextIOWrapper``, ``StringIO``) does not — ``read()``
+    returns ``str``, not ``bytes``. Anything else must expose the full method
     set in :data:`_IO_METHODS` and a ``closed`` attribute.
     """
+    if isinstance(obj, io.TextIOBase):
+        return False
     if isinstance(obj, io.IOBase):
         return True
     if is_filename(obj):
@@ -290,14 +294,31 @@ def is_stream(obj: Any) -> TypeGuard[BinaryIO]:
     return hasattr(obj, "closed")
 
 
+def raise_if_text_stream(obj: Any) -> None:
+    """Raise :class:`TypeError` if ``obj`` is a text-mode stream (``io.TextIOBase``).
+
+    Public openers call this *before* the generic "unsupported source type" path so
+    a text handle gets the same message whether it arrived bare, in a list, or via
+    ``open_stream``.
+    """
+    if isinstance(obj, io.TextIOBase):
+        raise TypeError(
+            f"{type(obj).__name__} is a text-mode stream; a binary source is required "
+            f"(open the file with mode 'rb')"
+        )
+
+
 class BinaryIOWrapper(io.RawIOBase, BinaryIO):
     """Adapt an object that exposes a *partial* file API to the full ``BinaryIO`` interface.
 
-    Most streams never need this. Every stdlib stream — ``open()`` (``BufferedReader`` /
-    ``FileIO``), ``BytesIO``, ``GzipFile`` / ``BZ2File`` / ``LZMAFile``, zipfile's
-    ``ZipExtFile``, tarfile's ``ExFileObject`` — and modern network responses
-    (``http.client.HTTPResponse``, ``urllib3>=2`` ``HTTPResponse``) subclass ``io.IOBase``,
-    so :func:`is_stream` passes them through unwrapped.
+    Most streams never need this. Every stdlib **binary** stream — ``open()`` in
+    ``"rb"`` (``BufferedReader`` / ``FileIO``), ``BytesIO``, ``GzipFile`` /
+    ``BZ2File`` / ``LZMAFile``, zipfile's ``ZipExtFile``, tarfile's
+    ``ExFileObject`` — and modern network responses (``http.client.HTTPResponse``,
+    ``urllib3>=2`` ``HTTPResponse``) subclass ``io.RawIOBase`` or
+    ``io.BufferedIOBase``, so :func:`is_stream` passes them through unwrapped.
+    A text-mode handle (``io.TextIOBase``) is not a binary stream: :func:`is_stream`
+    returns ``False`` and :func:`ensure_binaryio` raises ``TypeError``.
 
     Wrapping is for objects that implement a few file methods *without* subclassing
     ``io.IOBase``, so the type checker won't accept them as ``BinaryIO`` and they may be
@@ -437,6 +458,7 @@ def ensure_binaryio(obj: Any) -> BinaryIO:
     that specifically need a ``RawIOBase`` — e.g. to feed ``io.BufferedReader`` — should use
     :func:`ensure_bufferedio`, which handles that requirement internally.
     """
+    raise_if_text_stream(obj)
     if is_stream(obj):
         return obj
     logger.debug(
@@ -473,6 +495,7 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     is why we branch on ``RawIOBase`` here rather than calling :func:`ensure_binaryio`,
     whose result may be a ``BufferedIOBase`` that ``BufferedReader`` would reject.
     """
+    raise_if_text_stream(obj)
     if isinstance(obj, io.BufferedIOBase):
         return obj
     raw: io.RawIOBase
@@ -508,6 +531,7 @@ def ensure_full_count_reads(stream: BinaryIO) -> BinaryIO:
     that are already buffered (``open()``'s ``BufferedReader``, ``BytesIO``) are returned
     unchanged and pay nothing.
     """
+    raise_if_text_stream(stream)
     if not is_seekable(stream):
         return stream
     # BufferedIOBase is a BinaryIO at runtime; typeshed models the two separately.

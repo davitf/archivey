@@ -493,8 +493,7 @@ class ZipReader(BaseArchiveReader):
             # `metadata_encoding` (3.11+) decodes names stored without the UTF-8 flag with
             # the caller's encoding instead of the cp437 default (UTF-8-flagged names are
             # unaffected). Reading the central directory here decodes every member name.
-            # typeshed types ZipFile too narrowly; a binary stream is valid here.
-            self._archive: zipfile.ZipFile = zipfile.ZipFile(  # type: ignore[arg-type]
+            self._archive: zipfile.ZipFile = zipfile.ZipFile(
                 zip_source, "r", metadata_encoding=encoding
             )
         except zipfile.BadZipFile as exc:
