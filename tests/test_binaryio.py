@@ -584,11 +584,20 @@ def test_ensure_bufferedio_does_not_close_raw_source() -> None:
 
 
 def test_ensure_bufferedio_close_is_idempotent() -> None:
-    """detach() makes .closed raise; a second close must not (#329 C8)."""
+    """detach() would make IOBase.closed raise; a second close must not (#329 C8)."""
     inner = CountingBytesIO(DATA)
     buffered = ensure_bufferedio(inner)
     buffered.close()
     buffered.close()
+    assert not inner.closed
+
+
+def test_ensure_bufferedio_closed_is_true_after_close() -> None:
+    """After detach, .closed must still answer True (#329 C10)."""
+    inner = CountingBytesIO(DATA)
+    buffered = ensure_bufferedio(inner)
+    buffered.close()
+    assert buffered.closed is True
     assert not inner.closed
 
 
