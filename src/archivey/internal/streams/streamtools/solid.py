@@ -125,7 +125,10 @@ class _MemberSlice(ReadOnlyIOStream):
     def close(self) -> None:
         if self.closed:
             return
-        # Unopened pending slices must not touch the block.
+        # Closing a member never advances or drains the block. The gap before
+        # the next member is consumed by the next open_member (or a pending
+        # slice's first read), so an unread close is free for both pending
+        # and already-positioned slices.
         super().close()
 
 
