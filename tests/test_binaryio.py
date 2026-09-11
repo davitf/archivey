@@ -601,6 +601,18 @@ def test_ensure_bufferedio_closed_is_true_after_close() -> None:
     assert not inner.closed
 
 
+def test_ensure_bufferedio_close_after_direct_detach() -> None:
+    """A caller that detach()s first must still be able to close (#329 round 4)."""
+    inner = CountingBytesIO(DATA)
+    buffered = ensure_bufferedio(inner)
+    buffered.detach()
+    assert buffered.raw is None
+    assert buffered.closed is True
+    buffered.close()
+    assert buffered.closed is True
+    assert not inner.closed
+
+
 def test_plain_bufferedreader_closes_source_demonstrates_why_we_detach() -> None:
     """Contrast: a *plain* BufferedReader closes its raw stream on close().
 

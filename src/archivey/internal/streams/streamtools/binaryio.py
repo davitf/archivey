@@ -636,18 +636,20 @@ class _NonClosingBufferedReader(io.BufferedReader):
 
     def close(self) -> None:
         # detach() makes IOBase.closed raise, so a second close cannot consult
-        # it. Remember the detach ourselves; set the flag *after* detach so a
-        # raising detach cannot claim the raw is gone while it is still attached.
-        # getattr: no __init__ override, so the attribute may not exist yet.
+        # it. .raw returns None after a *direct* detach() without raising —
+        # that is the guard, not super().closed. Set the flag *after* detach
+        # so a raising detach cannot claim the raw is gone while it is still
+        # attached. getattr: no __init__ override, so the attribute may not
+        # exist yet.
         if getattr(self, "_detached", False):
             return
-        if not super().closed:
+        if self.raw is not None:
             self.detach()
         self._detached = True
 
     @property
     def closed(self) -> bool:
-        return getattr(self, "_detached", False) or super().closed
+        return getattr(self, "_detached", False) or self.raw is None or super().closed
 
 
 def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
