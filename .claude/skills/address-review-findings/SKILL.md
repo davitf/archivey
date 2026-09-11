@@ -223,6 +223,33 @@ The test: could the maintainer answer without opening the PR? If not, it is not 
 **Do not** paste the reviewer’s full finding list into the escalation. That list belongs on
 the PR for the implementor. The maintainer only receives packets for real human calls.
 
+### A settled decision is not settled until it is on the PR
+
+An escalation ends when the answer is **on the PR**, not when the maintainer answers you in
+chat. Once every packet you raised has been decided, post the round — findings and
+decisions together — before you consider the round closed. Never hold the write-up back
+waiting for a decision that has already been made.
+
+**Name the decider.** A settled call must be visibly the maintainer’s:
+
+> **Maintainer decision (davitf, [r3988422276](https://github.com/davitf/archivey/pull/326#discussion_r3988422276)):**
+> raise rather than clamp — dropping consumed bytes desynchronizes the stream. `ValueError`,
+> since `streamtools` cannot raise `ArchiveyUsageError`.
+
+The attribution is the load-bearing half, not politeness. The implementor cannot tell a
+settled call from a reviewer’s preference by reading the text, and anything that reads as
+an opinion gets re-litigated next round — or quietly skipped. Link the comment or packet
+the decision came from where one exists. "We decided" and "it was decided" both read as the
+reviewer; write who decided.
+
+The same applies in reverse: a recommendation the maintainer has **not** ruled on stays
+marked as the reviewer’s, however confident it is. Do not promote your own preference to
+"decided" because nobody objected.
+
+Never leave a settled decision only in the chat transcript. A fresh container has no memory
+of earlier sessions (`CLAUDE.md`); the PR and the repo are the durable record, and the next
+agent starts cold.
+
 ---
 
 ## 7. Reply on the PR
@@ -237,6 +264,10 @@ Once the round is done, the PR should record what happened to every finding.
   wall of stale unresolved threads is how a later round loses track of what was settled;
   #236 finished with four threads that had been answered and fixed but never resolved.
 - **Say what you did not do, and why.** Deferred and disproven findings get a line each.
+- **Attribute every settled decision to the maintainer** (§6). In the status table, a row
+  decided by a human reads `maintainer decision` in the column where the others read
+  `important` or `nit`, so the implementor can see at a glance which rows are not open to
+  argument.
 - **Report gates honestly.** Say which legs you ran and what they returned. If you skipped
   a leg, say that instead of implying it passed.
 - **Lead with what changed**, not with a recap of the review the maintainer already has.
@@ -257,6 +288,10 @@ Reply once per round, not once per fix.
 - "Fixed in `a1b2c3d`" with no statement of what was wrong or how it was verified.
 - Fixing a false positive to make a comment go away.
 - Batching every open decision into one wall of numbered questions.
+- Getting a decision from the maintainer in chat and never posting it, so the PR still shows
+  an open question and the implementor re-opens it.
+- Writing a settled maintainer decision as if it were the reviewer's suggestion — or your
+  own un-ruled preference as if it were settled.
 - Pushing after `ruff` without `pyrefly` / `ty` / `pytest`.
 - Marking a change complete and leaving it unarchived, or checking the last box early to
   look finished.
