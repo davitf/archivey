@@ -3,7 +3,10 @@
 This subpackage is the codec- and format-agnostic core of the stream layer: it knows
 nothing about archivey's error hierarchy or any codec, only about stdlib binary streams.
 That independence is deliberate — it could be lifted out as a standalone library — so
-nothing here may import from the rest of ``archivey``.
+nothing here may import from the rest of ``archivey``. The import rule is the half
+tooling enforces; concept leaks count too. Do not put archivey types, the error
+hierarchy, or codec internals in the *API* of this package (call-site examples in
+"when to use" comments can stay).
 
 Module map:
 
@@ -43,6 +46,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     raise_if_text_stream,
     read_exact,
     read_full_count,
+    readinto_via_read,
     source_byte_size,
     source_name,
 )
@@ -77,6 +81,7 @@ __all__ = [
     "raise_if_text_stream",
     "read_exact",
     "read_full_count",
+    "readinto_via_read",
     "skip_forward",
     "source_byte_size",
     "source_name",

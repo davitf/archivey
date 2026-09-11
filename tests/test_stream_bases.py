@@ -8,6 +8,7 @@ from typing import Never, get_type_hints
 import pytest
 
 from archivey.internal.streams.streamtools import DelegatingStream, ReadOnlyIOStream
+from tests.streams_util import NonSeekableBytesIO
 
 
 class _FixedReader(ReadOnlyIOStream):
@@ -33,6 +34,18 @@ def test_readonly_base_derives_readinto_readall_and_flags() -> None:
     assert s.writable() is False
     with pytest.raises(io.UnsupportedOperation):
         s.write(b"x")
+
+
+def test_readonly_readinto_raises_on_overlong_read() -> None:
+    """A misbehaving read() that ignores n is a contract violation, not silent truncation."""
+
+    class _OverRead(ReadOnlyIOStream):
+        def read(self, n: int = -1, /) -> bytes:
+            return b"abcdef"
+
+    buf = bytearray(4)
+    with pytest.raises(ValueError, match=r"read\(4\) returned 6 bytes"):
+        _OverRead().readinto(buf)
 
 
 def test_readonly_base_read_is_the_runtime_guard() -> None:
@@ -87,6 +100,29 @@ def test_delegating_base_forwards_to_inner() -> None:
     assert s.readable() is True and s.writable() is False
 
 
+def test_delegating_seekable_is_fixed_at_construction() -> None:
+    class _Flip(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"x")
+            self.flag = True
+
+        def seekable(self) -> bool:
+            return self.flag
+
+    inner = _Flip()
+    s = DelegatingStream(inner)
+    assert s.seekable() is True
+    inner.flag = False
+    assert s.seekable() is True
+
+
+def test_replace_inner_recaches_seekable() -> None:
+    s = DelegatingStream(io.BytesIO(b"x"))
+    assert s.seekable() is True
+    s._replace_inner(NonSeekableBytesIO(b"y"))
+    assert s.seekable() is False
+
+
 def test_delegating_base_close_closes_inner() -> None:
     inner = io.BytesIO(b"data")
     s = DelegatingStream(inner)
@@ -94,6 +130,27 @@ def test_delegating_base_close_closes_inner() -> None:
     assert inner.closed
     assert s.closed
     s.close()  # idempotent
+
+
+def test_delegating_close_marks_closed_when_inner_close_fails() -> None:
+    class _FailingClose(io.BytesIO):
+        def close(self) -> None:
+            raise OSError("boom")
+
+    s = DelegatingStream(_FailingClose(b"x"))
+    with pytest.raises(OSError, match="boom"):
+        s.close()
+    assert s.closed
+    s.close()  # idempotent after the failed inner close
+
+
+def test_delegating_manual_inner_close_skips_inner() -> None:
+    inner = io.BytesIO(b"data")
+    s = DelegatingStream(inner, manual_inner_close=True)
+    s.close()
+    assert s.closed
+    assert not inner.closed
+    inner.close()
 
 
 def test_delegating_base_readinto_falls_back_without_inner_readinto() -> None:
@@ -108,6 +165,36 @@ def test_delegating_base_readinto_falls_back_without_inner_readinto() -> None:
     buf = bytearray(2)
     assert s.readinto(buf) == 2
     assert bytes(buf) == b"xy"
+
+
+class _RawIOWithoutReadinto(io.RawIOBase):
+    """``io.RawIOBase`` advertises ``readinto`` but the default raises ``NotImplementedError``."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._b = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._b.read(n)
+
+
+def test_delegating_readinto_falls_back_when_inner_readinto_unimplemented() -> None:
+    s = DelegatingStream(_RawIOWithoutReadinto(b"xyz"))
+    buf = bytearray(2)
+    assert s.readinto(buf) == 2
+    assert bytes(buf) == b"xy"
+
+
+def test_delegating_readinto_none_raises_blocking() -> None:
+    class _NonBlockingReadinto(io.BytesIO):
+        def readinto(self, b):  # type: ignore[no-untyped-def]
+            return None
+
+    with pytest.raises(BlockingIOError):
+        DelegatingStream(_NonBlockingReadinto(b"x")).readinto(bytearray(4))
 
 
 def test_delegating_readinto_passthrough_false_routes_through_read() -> None:
@@ -129,3 +216,158 @@ def test_delegating_readinto_passthrough_false_routes_through_read() -> None:
     assert s.readinto(buf) == 4
     assert bytes(buf) == b"abcd"
     assert reads == [4]  # read() ran (passthrough would have left this empty)
+
+
+def test_delegating_stream_does_not_forward_resume_offset() -> None:
+    class _Inner(io.BytesIO):
+        def nearest_resume_offset(self, target: int) -> int:
+            return 0
+
+    s = DelegatingStream(_Inner(b"x"))
+    assert not hasattr(s, "nearest_resume_offset")
+
+
+def test_ask_resume_offset_helper() -> None:
+    from archivey.internal.streams.resume import ask_resume_offset
+
+    class _Inner:
+        def nearest_resume_offset(self, target: int) -> int:
+            return target // 2
+
+    assert ask_resume_offset(_Inner(), 10) == 5
+    assert ask_resume_offset(io.BytesIO(b"x"), 10) is None
+    assert ask_resume_offset(None, 10) is None
+
+
+def test_verifying_stream_forwards_resume_offset() -> None:
+    from archivey.internal.streams.verify import VerifyingStream
+
+    class _Inner(io.BytesIO):
+        def nearest_resume_offset(self, target: int) -> int:
+            return 7
+
+    s = VerifyingStream(_Inner(b"x"), {})
+    assert s.nearest_resume_offset(1) == 7
+
+
+def _import_all_archivey_modules() -> None:
+    """Import every archivey module so ``__subclasses__()`` is not collection-order-blind.
+
+    ``archivey.__main__`` calls ``main()`` at import, so it is skipped.
+
+    This walk also proves every ``archivey.*`` module imports with no extras
+    (the ``[core-only]`` lazy-optional-import boundary). A top-level extra
+    import fails here, not as an unrelated ``ImportError`` later in the suite.
+    """
+    import importlib
+    import pkgutil
+
+    import archivey
+
+    for module in pkgutil.walk_packages(archivey.__path__, prefix="archivey."):
+        if module.name.endswith("__main__"):
+            continue
+        try:
+            importlib.import_module(module.name)
+        except Exception as exc:  # noqa: BLE001 - any import-time failure is this check
+            raise ImportError(
+                f"{module.name} failed to import while walking archivey modules "
+                "for the ReadOnlyIOStream resume-offset inventory. This walk also "
+                "proves every archivey module imports with no extras ([core-only]); "
+                "a top-level extra import fails here."
+            ) from exc
+
+
+def _readonly_stream_subclasses() -> set[type]:
+    found: set[type] = set()
+    stack = [ReadOnlyIOStream]
+    while stack:
+        cls = stack.pop()
+        for sub in cls.__subclasses__():
+            if sub not in found:
+                found.add(sub)
+                stack.append(sub)
+    found = {
+        cls for cls in found if getattr(cls, "__module__", "").startswith("archivey.")
+    }
+    # Seed is ReadOnlyIOStream; subclasses include DelegatingStream. Discard both
+    # bases so the inventory is the wrappers that need a resume-offset decision.
+    found.discard(ReadOnlyIOStream)
+    found.discard(DelegatingStream)
+    return found
+
+
+def test_readonly_stream_resume_offset_inventory() -> None:
+    """Every ReadOnlyIOStream subclass is classified: forwards/owns, or not on the chain.
+
+    Forwarding is opt-in. A new wrapper that sits between ArchiveStream and a
+    seek-point table and forgets nearest_resume_offset becomes a silent
+    diagnostic hole (None → resume 0). Walking only ``DelegatingStream`` misses
+    ``VerifyingStream``-shaped holes; importing five modules by hand misses
+    subclasses in modules this test never imported.
+
+    Importing the package first also proves every ``archivey.*`` module imports
+    with no extras (see ``_import_all_archivey_modules``).
+    """
+    _import_all_archivey_modules()
+
+    import archivey.internal.backends.iso_reader as iso_reader
+    import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.detection as detection
+    import archivey.internal.streams.archive_stream as archive_stream
+    import archivey.internal.streams.codecs as codecs
+    import archivey.internal.streams.counting as counting
+    import archivey.internal.streams.crypto as crypto
+    import archivey.internal.streams.decompressor_stream as decompressor_stream
+    import archivey.internal.streams.peekable as peekable
+    import archivey.internal.streams.streamtools.locked as locked
+    import archivey.internal.streams.streamtools.slice as slice_mod
+    import archivey.internal.streams.streamtools.solid as solid
+    import archivey.internal.streams.verify as verify
+    import archivey.internal.zip_aes as zip_aes
+
+    forwards_or_owns = {
+        archive_stream.ArchiveStream,
+        codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
+        codecs._GzipTruncationCheckStream,
+        counting.OutputCountingStream,
+        decompressor_stream.DecompressorStream,
+        verify.VerifyingStream,
+    }
+    remaps_or_not_on_chain = {
+        locked.LockedStream,
+        locked.CloseLockedStream,
+        counting.CountingReader,
+        counting.SeekCountingStream,
+        rar_reader._UnrarOwnedStream,
+        rar_reader._BoundedMemberPipe,
+        rar_reader._UnrarRespawnStream,
+        iso_reader._PyCdlibStream,
+        solid._MemberSlice,
+        slice_mod.SlicingStream,  # explicit decline of a remapped offset space
+        peekable.PeekableStream,
+        crypto.AesDecryptStream,
+        zip_aes.WinZipAesDecryptStream,
+        detection._BoundedPeekReader,
+    }
+
+    found = _readonly_stream_subclasses()
+    leftover = found - forwards_or_owns - remaps_or_not_on_chain
+    assert leftover == set(), (
+        "new ReadOnlyIOStream subclass needs a nearest_resume_offset decision "
+        f"(forwards/owns a table, or remaps / not on the decompressed chain): {leftover}"
+    )
+    extra_classified = (forwards_or_owns | remaps_or_not_on_chain) - found
+    assert extra_classified == set(), (
+        "classified a class the walk did not find (typo or it is no longer "
+        f"a ReadOnlyIOStream): {extra_classified}"
+    )
+    missing_method = [
+        cls.__name__
+        for cls in forwards_or_owns
+        if "nearest_resume_offset" not in cls.__dict__
+    ]
+    assert missing_method == [], (
+        "classified as forwards/owns but does not define nearest_resume_offset: "
+        f"{missing_method}"
+    )

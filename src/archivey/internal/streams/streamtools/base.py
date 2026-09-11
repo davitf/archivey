@@ -23,7 +23,12 @@ import abc
 import io
 from typing import TYPE_CHECKING, Any, BinaryIO, Never
 
-from archivey.internal.streams.streamtools.binaryio import is_seekable, source_name
+from archivey.internal.streams.streamtools.binaryio import (
+    is_seekable,
+    readinto_via_read,
+    source_name,
+    try_readinto,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -50,10 +55,7 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
         """Canonical ``readinto``: read into ``b`` via the subclass's ``read``."""
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        return readinto_via_read(self, b)
 
     def readall(self) -> bytes:
         chunks = bytearray()
@@ -139,39 +141,48 @@ class DelegatingStream(ReadOnlyIOStream):
     (We use an explicit flag rather than auto-detecting an overridden ``read``: a plain
     pass-through override of ``read`` should keep the zero-copy path, and silent auto-detection
     would make that choice invisible and bug-prone.)
+
+    **Close ownership.** ``close`` closes ``inner`` and then marks this wrapper closed.
+    A subclass that must close ``inner`` itself (a finalize guard, reaping a subprocess)
+    passes ``manual_inner_close=True`` and calls ``super().close()`` afterwards to mark
+    the wrapper closed without closing ``inner`` a second time. Subclasses that only
+    need to hold a lock around close wrap ``super().close()`` in the lock instead.
     """
 
-    def __init__(self, inner: BinaryIO, *, readinto_passthrough: bool = True) -> None:
+    def __init__(
+        self,
+        inner: BinaryIO,
+        *,
+        readinto_passthrough: bool = True,
+        manual_inner_close: bool = False,
+    ) -> None:
         super().__init__()
         self._inner = inner
         self._readinto_passthrough = readinto_passthrough
+        # True when the subclass closes ``_inner`` itself (finalize guard, reap a
+        # subprocess) and then calls ``super().close()`` only to mark this wrapper closed.
+        self._manual_inner_close = manual_inner_close
+        # Cached at construction; a subclass that swaps ``_inner`` must go through
+        # ``_replace_inner`` so seekable() tracks the new engine.
+        self._seekable = is_seekable(inner)
 
-    def nearest_resume_offset(self, target: int) -> int | None:
-        """Forward the rewind-cost query inward (see ``ArchiveStream._maybe_warn_rewind``).
-
-        Decompressed streams reach the public handle through several of these wrappers
-        (truncation backstop, accelerator guard, byte counters), and only the innermost
-        one knows the seek-point table. Forwarding by default here keeps every wrapper
-        transparent to the question; a wrapper that *changes* the offset space (a slice)
-        must override or decline. ``None`` from an inner that cannot answer means "no cost
-        signal", which the caller treats as "say nothing" rather than "free".
-        """
-        ask = getattr(self._inner, "nearest_resume_offset", None)
-        if ask is None:
-            return None
-        offset = ask(target)
-        return offset if isinstance(offset, int) else None
+    def _replace_inner(self, inner: BinaryIO) -> None:
+        """Swap the inner stream, recaching anything derived from it."""
+        self._inner = inner
+        self._seekable = is_seekable(inner)
 
     def read(self, n: int = -1, /) -> bytes:
         return self._inner.read(n)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        # Zero-copy passthrough when allowed and the inner exposes readinto; otherwise route
-        # through self.read() (the read()-based base), so an overridden read() is not bypassed.
+        # Zero-copy passthrough when allowed and the inner exposes a usable
+        # readinto; otherwise route through self.read() so an overridden
+        # read() is not bypassed. try_readinto treats a missing, refused, or
+        # NotImplemented inner readinto as "not usable".
         if self._readinto_passthrough:
-            inner_readinto = getattr(self._inner, "readinto", None)
-            if inner_readinto is not None:
-                return inner_readinto(b)
+            n = try_readinto(self._inner, b)
+            if n is not None:
+                return n
         return super().readinto(b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
@@ -183,13 +194,18 @@ class DelegatingStream(ReadOnlyIOStream):
     def seekable(self) -> bool:
         # is_seekable() handles the edge cases a bare inner.seekable() misses (a BufferedReader
         # over a non-seekable raw; a pipe that reports seekable()=True but cannot reposition).
-        return is_seekable(self._inner)
+        # Cached at construction; a subclass that swaps ``_inner`` must go through
+        # ``_replace_inner``.
+        return self._seekable
 
     def close(self) -> None:
         if self.closed:
             return
-        self._inner.close()
-        super().close()
+        try:
+            if not self._manual_inner_close:
+                self._inner.close()
+        finally:
+            super().close()
 
     @property
     def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; this returns a path when the inner has one

@@ -90,6 +90,7 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   version-frozen the way the Windows one no longer is. Bumping a source pin is at least a
   visible git change rather than a silent float, but if the aim is tracking what users
   build today, that pin also ages.
+- **#326 H4 — `RawIOBase` with only `read()` fails at `ensure_bufferedio` with a bare `NotImplementedError`.** Pre-existing on `main`, not #326. A user subclass of `io.RawIOBase` that implements only `read()` — legal-looking, and the shape `try_readinto` documents — never reaches `BinaryIOWrapper`. `ensure_bufferedio` wraps the raw in `io.BufferedReader`, which drives `raw.readinto()`; the default raises from `detection_workspace.peek_range` with an empty message. Parcel C / `ensure_bufferedio` should detect a raw whose `readinto` refuses and route it through `BinaryIOWrapper`.
 
 ## Parked from archived deep reviews (2026-07 / 2026-08)
 

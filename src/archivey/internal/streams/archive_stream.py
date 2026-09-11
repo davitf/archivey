@@ -29,10 +29,12 @@ from archivey.diagnostics import (
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
+from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
     read_full_count,
+    readinto_via_read,
 )
 from archivey.internal.streams.verify import MemberVerifier, build_member_verifier
 from archivey.types import HashAlgorithm
@@ -399,10 +401,7 @@ class ArchiveStream(ReadOnlyIOStream):
     def readinto(self, b: "WriteableBuffer", /) -> int:
         # Always route through read() so full-count coalesce (and fused verify)
         # stay consistent — inner.readinto may be up-to-n.
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        return readinto_via_read(self, b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable_hint:
@@ -421,14 +420,7 @@ class ArchiveStream(ReadOnlyIOStream):
 
     def nearest_resume_offset(self, target: int) -> int | None:
         """Delegate the cost question inward; ``ArchiveStream``s nest over each other."""
-        inner = self._inner
-        if inner is None:
-            return None
-        ask = getattr(inner, "nearest_resume_offset", None)
-        if ask is None:
-            return None
-        offset = ask(target)
-        return offset if isinstance(offset, int) else None
+        return ask_resume_offset(self._inner, target)
 
     def _maybe_warn_rewind(self, before: int, after: int) -> None:
         """Report a backward seek that discards an expensive amount of decoded progress.

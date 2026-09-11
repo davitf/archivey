@@ -1111,6 +1111,41 @@ def test_gzip_truncation_check_read0_mid_stream_is_not_eof(tmp_path) -> None:
     assert stream.read() == b""  # clean EOF: the full total matches ISIZE
 
 
+def test_gzip_truncation_check_forwards_resume_offset(tmp_path) -> None:
+    payload = b"hello world" * 100
+    path = tmp_path / "f.gz"
+    path.write_bytes(gzip.compress(payload))
+
+    class _Inner(io.BytesIO):
+        def nearest_resume_offset(self, target: int) -> int:
+            return 9
+
+    stream = _make_gzip_check_stream(_Inner(payload), path)
+    assert stream.nearest_resume_offset(100) == 9
+
+
+def test_gzip_truncation_fallback_recaches_seekable(tmp_path, monkeypatch) -> None:
+    """Silent-empty fallback replaces `_inner`; seekable() must follow the new engine.
+
+    DelegatingStream caches is_seekable at construction. This is the one subclass
+    that assigns a new `_inner` afterwards. A fallback engine that is not seekable
+    must not leave the wrapper reporting the accelerator's cached True.
+    """
+    payload = b"hello world" * 100
+    path = tmp_path / "f.gz"
+    path.write_bytes(gzip.compress(payload))
+
+    monkeypatch.setattr(
+        codecs_module,
+        "GzipDecompressorStream",
+        lambda source: NonSeekableBytesIO(payload),
+    )
+    stream = _make_gzip_check_stream(io.BytesIO(b""), path)
+    assert stream.seekable() is True
+    stream.read(5)
+    assert stream.seekable() is False
+
+
 def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"

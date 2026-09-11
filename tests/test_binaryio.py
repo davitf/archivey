@@ -23,6 +23,7 @@ from archivey.internal.streams.streamtools import (
     is_seekable,
     is_stream,
     read_exact,
+    readinto_via_read,
 )
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
 
@@ -44,6 +45,36 @@ class ReadIntoStream(OnlyReadStream):
 
     def readinto(self, b) -> int:  # type: ignore[no-untyped-def]  # test double
         return self._inner.readinto(b)
+
+
+# --- readinto_via_read -----------------------------------------------------------------
+
+
+def test_readinto_via_read_fills_buffer() -> None:
+    inner = io.BytesIO(DATA)
+    buf = bytearray(4)
+    assert readinto_via_read(inner, buf) == 4
+    assert bytes(buf) == DATA[:4]
+    # Source position, not just the reported count: nothing extra was consumed.
+    assert inner.read() == DATA[4:]
+
+
+def test_readinto_via_read_short_at_eof() -> None:
+    inner = io.BytesIO(b"ab")
+    buf = bytearray(10)
+    assert readinto_via_read(inner, buf) == 2
+    assert buf[:2] == b"ab"
+    assert inner.read() == b""
+
+
+def test_readinto_via_read_raises_on_overlong_read() -> None:
+    class _OverRead:
+        def read(self, n: int = -1) -> bytes:
+            return b"abcdef"
+
+    buf = bytearray(4)
+    with pytest.raises(ValueError, match=r"read\(4\) returned 6 bytes"):
+        readinto_via_read(_OverRead(), buf)
 
 
 # --- read_exact ------------------------------------------------------------------------

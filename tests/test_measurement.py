@@ -49,6 +49,19 @@ def test_output_counting_stream_feeds_shared_counter() -> None:
     assert counter.total == 11
 
 
+def test_output_counting_stream_forwards_resume_offset() -> None:
+    class _Inner(io.BytesIO):
+        def nearest_resume_offset(self, target: int) -> int:
+            return 12
+
+    wrapped = OutputCountingStream(_Inner(b"x"), ByteCounter())
+    assert wrapped.nearest_resume_offset(100) == 12
+    assert (
+        OutputCountingStream(io.BytesIO(b"x"), ByteCounter()).nearest_resume_offset(0)
+        is None
+    )
+
+
 def test_seek_counting_stream_records_seeks_only() -> None:
     counter = SeekCounter()
     inner = io.BytesIO(b"0123456789")

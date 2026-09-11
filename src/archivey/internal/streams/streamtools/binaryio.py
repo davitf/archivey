@@ -43,6 +43,73 @@ class ReadableStream(Protocol):
     def read(self, n: int = ..., /) -> bytes: ...
 
 
+_BLOCKING_READ_MESSAGE = (
+    "underlying stream returned no data without reaching EOF (non-blocking "
+    "stream?); archivey requires a blocking stream"
+)
+
+
+def try_readinto(stream: Any, b: "WriteableBuffer") -> int | None:
+    """Call ``stream.readinto(b)`` when it is a real implementation.
+
+    Returns the filled-byte count, or ``None`` if ``stream`` has no usable
+    ``readinto`` so the caller can fall back to ``read``:
+
+    - the attribute is missing (a partial file-like with only ``read``);
+    - the call raises ``NotImplementedError`` or ``UnsupportedOperation``
+      (``io.RawIOBase`` advertises ``readinto`` but the default raises;
+      some duck-typed objects advertise it and then refuse).
+
+    A native ``readinto`` that returns ``None`` is the non-blocking empty
+    case and raises ``BlockingIOError``, matching :meth:`BinaryIOWrapper.read`.
+
+    Implementations must raise before writing into ``b``. A ``readinto`` that
+    consumes from the source and then refuses has already lost those bytes;
+    falling back to ``read`` would deliver the *next* ones as if they were
+    first. That is not detectable here at all: a ``readinto`` that consumed
+    without writing leaves no trace in ``b`` (``io.RawIOBase``'s default and
+    the advertised-then-refuse file-likes raise before touching the buffer).
+    """
+    readinto = getattr(stream, "readinto", None)
+    if readinto is None:
+        return None
+    try:
+        n = readinto(b)
+    except (NotImplementedError, io.UnsupportedOperation):
+        # See docstring: raise-before-write is a contract, not something this
+        # except can verify.
+        return None
+    if n is None:
+        raise BlockingIOError(_BLOCKING_READ_MESSAGE)
+    return n
+
+
+def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
+    """Fill ``b`` from ``src.read``, for streams that have no ``readinto``.
+
+    Copies at most ``len(b)`` bytes. A ``read`` that returns more than the
+    buffer is a contract violation: those extra bytes are already consumed and
+    cannot be delivered without losing them, so this raises ``ValueError``
+    rather than truncating.
+
+    That ``ValueError`` means the *source object* is broken, not that a
+    payload is damaged. Callers that translate ``ValueError`` into
+    archive-corruption errors must carve this out, the way a closed-handle
+    ``ValueError`` already is. Not reachable through the routes exercised
+    today (seekable ZIP, streaming TAR): slicers and full-count gathers clamp
+    the request before it reaches this helper.
+    """
+    mv = memoryview(b).cast("B")
+    data = src.read(len(mv))
+    if len(data) > len(mv):
+        raise ValueError(
+            f"read({len(mv)}) returned {len(data)} bytes; the excess is already consumed "
+            "and cannot be delivered without losing it"
+        )
+    mv[: len(data)] = data
+    return len(data)
+
+
 def read_exact(stream: ReadableStream, n: int) -> bytes:
     """Read exactly ``n`` bytes, or fewer only if the stream ends first.
 
@@ -349,33 +416,14 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
             # alike return b"". archivey's readers pull synchronously and cannot make
             # progress on a non-blocking source, so surface that explicitly instead of
             # fabricating b"" (which would look like EOF and silently truncate the data).
-            raise BlockingIOError(
-                "underlying stream returned no data without reaching EOF (non-blocking "
-                "stream?); archivey requires a blocking stream"
-            )
+            raise BlockingIOError(_BLOCKING_READ_MESSAGE)
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        raw_readinto = getattr(self._raw, "readinto", None)
-        if raw_readinto is not None:
-            # Some partial file-likes advertise readinto but raise when actually called
-            # (e.g. NotImplementedError); fall back to read() in that case.
-            try:
-                n = raw_readinto(b)
-            except (NotImplementedError, io.UnsupportedOperation):
-                pass
-            else:
-                if n is None:
-                    # Same non-blocking case as read() above; don't report a 0-byte read.
-                    raise BlockingIOError(
-                        "underlying stream returned no data without reaching EOF "
-                        "(non-blocking stream?); archivey requires a blocking stream"
-                    )
-                return n
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        n = try_readinto(self._raw, b)
+        if n is not None:
+            return n
+        return readinto_via_read(self, b)
 
     def write(self, data: Any, /) -> int:
         write = getattr(self._raw, "write", None)

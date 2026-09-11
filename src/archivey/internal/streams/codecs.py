@@ -67,6 +67,7 @@ from archivey.internal.streams.decompress import (
     ZlibDecompressorStream,
 )
 from archivey.internal.streams.lzip import LzipDecompressorStream
+from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ensure_binaryio,
@@ -167,7 +168,7 @@ class _AcceleratorStream(DelegatingStream):
     """
 
     def __init__(self, inner: object, *, trap: "_TrappingSource | None" = None) -> None:
-        super().__init__(ensure_binaryio(inner))
+        super().__init__(ensure_binaryio(inner), manual_inner_close=True)
         # The finalize callback must NOT reference self — a bound method would pin the wrapper
         # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
         self._finalize = weakref.finalize(self, self._close_inner, self._inner)
@@ -243,7 +244,7 @@ class _AcceleratorStream(DelegatingStream):
             return
         # Trigger the finalize guard (closes the raw object) once; it is then disarmed.
         self._finalize()
-        super(DelegatingStream, self).close()
+        super().close()
 
 
 class _TrappingSource(io.RawIOBase):
@@ -716,6 +717,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
             self._verify = False
         return result
 
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # Sits on the decompressed chain (accelerator, then maybe stdlib fallback).
+        return ask_resume_offset(self._inner, target)
+
     def _begin_stdlib_fallback(self, size: int) -> bytes:
         """Replace rapidgzip with the stdlib gzip engine after a silent empty EOF.
 
@@ -732,7 +737,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
         fallback: CodecSource = (
             self._fallback_path if self._fallback_path is not None else self._reopen()
         )
-        self._inner = GzipDecompressorStream(fallback)
+        self._replace_inner(GzipDecompressorStream(fallback))
         self._verify = False
         try:
             old.close()

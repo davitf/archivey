@@ -323,7 +323,7 @@ class _UnrarOwnedStream(DelegatingStream):
         encrypted: bool = False,
     ) -> None:
         # Track bytes via read(); disable readinto passthrough so counting is not skipped.
-        super().__init__(stdout, readinto_passthrough=False)
+        super().__init__(stdout, readinto_passthrough=False, manual_inner_close=True)
         self._proc = proc
         self._named_member = named_member
         self._has_verifiable_hash = has_verifiable_hash
@@ -400,8 +400,8 @@ class _UnrarOwnedStream(DelegatingStream):
                 self._proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 terminate_unrar(self._proc)
-        # Mark closed without relying on DelegatingStream (already closed inner).
-        super(DelegatingStream, self).close()
+        # Mark closed without DelegatingStream closing inner a second time.
+        super().close()
         # Early-stop close: map now if the completing-read path never did.
         # (If read already mapped, ``_exit_mapped`` skips a second raise.)
         # Do not let that mapped error replace an exception from inner.close().
