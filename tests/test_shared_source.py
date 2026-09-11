@@ -180,6 +180,30 @@ class TestSharedSourceMisuse:
         assert view.size == 10
         assert view.read() == DATA[:10]
 
+    def test_repeated_views_do_not_seek_buffered_file(self, tmp_path: Path) -> None:
+        # Construction clamp used SEEK_END on BufferedReader, which discards its
+        # buffer. SharedSource.view must not move the raw FileIO at all.
+        class CountingFileIO(io.FileIO):
+            seeks = 0
+
+            def seek(self, o: int, w: int = 0) -> int:  # type: ignore[override]
+                type(self).seeks += 1
+                return super().seek(o, w)
+
+        path = tmp_path / "blob.bin"
+        path.write_bytes(DATA * 20)
+        raw = CountingFileIO(str(path), "rb")
+        try:
+            buf = io.BufferedReader(raw)
+            shared = SharedSource(buf)
+            CountingFileIO.seeks = 0
+            for i in range(32):
+                view = shared.view(i, 1)
+                assert view.size == 1
+            assert CountingFileIO.seeks == 0
+        finally:
+            raw.close()
+
     def test_view_does_not_close_source(self) -> None:
         buf = io.BytesIO(DATA)
         shared = SharedSource(buf)

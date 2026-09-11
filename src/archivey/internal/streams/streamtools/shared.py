@@ -89,11 +89,14 @@ class SharedSource:
 
         ``length is None`` means "to the end of the source". When ``_size`` is
         already known, over-long ``length`` is clamped here (and an omitted one
-        frozen to the remaining bytes) so a ``wrap_handle`` that hides cheap size
-        from ``source_byte_size`` (``SeekCountingStream``) still yields a short
-        view. :class:`SharedView` construction clamps again from the handle when
-        that probe succeeds. Past-EOF (``start >= size``) is the empty-view case
-        of the same clamp. Negative ``start``/``length`` remain hard errors.
+        frozen to the remaining bytes) so a ``wrap_handle`` that hid cheap size
+        from ``source_byte_size`` still yields a short view. That pre-clamp is
+        kept so ``view()`` without a length stays a bounded drain, matching main
+        (the constructor could leave ``length`` untouched once ``source_size`` is
+        a separate argument; that would be a behaviour change on every SharedSource
+        view). The constructed :class:`SharedView` is told ``source_size`` so it
+        does not re-probe the handle. Past-EOF (``start >= size``) is the empty-view
+        case of the same clamp. Negative ``start``/``length`` remain hard errors.
         """
         self._raise_if_closed()
         if start < 0:
@@ -109,6 +112,8 @@ class SharedSource:
             length=length,
             lock=self._lock,
             check_open=self._raise_if_closed,
+            source_size=self._size,
+            probe_source_size=False,
         )
 
     def close(self) -> None:

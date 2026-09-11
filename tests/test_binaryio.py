@@ -569,6 +569,58 @@ class TestSourceByteSize:
         with open(p, "rb") as f:  # BufferedReader over FileIO
             assert source_byte_size(f) == 55
 
+    def test_buffered_reader_over_file_is_not_seeked(self, tmp_path) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        class CountingFileIO(io.FileIO):
+            seeks = 0
+
+            def seek(self, o: int, w: int = 0) -> int:  # type: ignore[override]
+                type(self).seeks += 1
+                return super().seek(o, w)
+
+        p = tmp_path / "f.bin"
+        p.write_bytes(b"y" * 55)
+        raw = CountingFileIO(str(p), "rb")
+        try:
+            buf = io.BufferedReader(raw)
+            CountingFileIO.seeks = 0
+            assert source_byte_size(buf) == 55
+            assert CountingFileIO.seeks == 0
+            assert buf.tell() == 0
+        finally:
+            raw.close()
+
+    def test_bytesio_probe_does_not_seek(self) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        class _Ops(io.BytesIO):
+            def __init__(self, data: bytes) -> None:
+                super().__init__(data)
+                self.seeks = 0
+
+            def seek(self, offset: int, whence: int = 0) -> int:  # type: ignore[override]
+                self.seeks += 1
+                return super().seek(offset, whence)
+
+        buf = _Ops(b"x" * 77)
+        buf.seek(10)
+        buf.seeks = 0
+        assert source_byte_size(buf) == 77
+        assert buf.tell() == 10
+        assert buf.seeks == 0
+
+    def test_buffered_random_unflushed_write_uses_seek_end(self, tmp_path) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        p = tmp_path / "f.bin"
+        p.write_bytes(b"0123456789")
+        with open(p, "r+b") as f:
+            f.seek(0, io.SEEK_END)
+            f.write(b"abcd")
+            assert isinstance(f, io.BufferedRandom)
+            assert source_byte_size(f) == 14
+
     def test_decompressor_streams_are_never_probed(self, tmp_path) -> None:
         # SEEK_END on a decompressor means decompressing to the end; the helper must
         # return None for such streams rather than trigger that work. GzipFile is the

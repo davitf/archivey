@@ -44,10 +44,12 @@ class Scale:
 
 
 SCALES: dict[str, Scale] = {
-    # ~32 KiB ZIP/TAR, 64 KiB gzip, ~2 MiB solid — PR structural gate.
+    # ~128 KiB ZIP/TAR, 64 KiB gzip, ~2 MiB solid — PR structural gate.
+    # common_members is 32 (not 8): two extra seeks per member is invisible
+    # at 8 members against ±8 slack.
     "ci": Scale(
         name="ci",
-        common_members=8,
+        common_members=32,
         common_member_size=4 * 1024,
         gzip_size=64 * 1024,
         solid_members=32,

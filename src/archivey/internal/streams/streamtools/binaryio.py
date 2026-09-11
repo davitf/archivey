@@ -261,6 +261,59 @@ def source_name(source: Any) -> str | None:
     return name if isinstance(name, str) else None
 
 
+def _peel_passthrough(stream: Any) -> Any:
+    """Walk opt-in pass-through wrappers so a seek counter does not hide cheap size.
+
+    Only wrappers that set ``peel_for_source_size`` are unwrapped. Transforming
+    wrappers (decrypt, BCJ, ``OutputCountingStream``) must not opt in — their
+    cheap size is not the inner file's.
+    """
+    seen: set[int] = set()
+    while getattr(stream, "peel_for_source_size", False) is True:
+        ident = id(stream)
+        if ident in seen:
+            break
+        seen.add(ident)
+        inner = getattr(stream, "_inner", None)
+        if inner is None:
+            break
+        stream = inner
+    return stream
+
+
+def _metadata_end_size(stream: Any) -> int | None:
+    """Byte size from metadata that does not move the handle, else ``None``.
+
+    ``BufferedRandom`` is excluded: only ``SEEK_END`` flushes a pending write, so
+    ``fstat`` would under-report. Block/character devices report ``st_size == 0``;
+    those fall through to the seek probe.
+    """
+    if isinstance(stream, io.BufferedRandom):
+        return None
+    target = stream
+    if isinstance(stream, io.BufferedReader):
+        raw = stream.raw
+        if raw is not None:
+            target = raw
+    if isinstance(target, io.BytesIO):
+        view = target.getbuffer()
+        try:
+            return view.nbytes
+        finally:
+            view.release()
+    if isinstance(target, mmap.mmap):
+        return len(target)
+    if isinstance(target, io.FileIO):
+        try:
+            st = os.fstat(target.fileno())
+        except (OSError, ValueError):
+            return None
+        if stat.S_ISREG(st.st_mode):
+            return st.st_size
+        return None
+    return None
+
+
 def _seek_end_is_cheap(stream: Any) -> bool:
     """Whether ``SEEK_END`` on ``stream`` is O(1) — never a decompression or scan.
 
@@ -288,7 +341,8 @@ def _under_buffer(stream: Any) -> Any:
     :func:`ensure_full_count_reads`) — and with it the cheap source size a nested
     ``open_archive(reader.open("inner.zip"))`` reports. Both probes leave the wrapped
     stream's read position where they found it, so consulting them through the buffer
-    cannot desync it — unlike a ``SEEK_END`` probe, which must stay on the buffer itself.
+    cannot desync it. Probe 4's metadata path peels a ``BufferedReader`` the same way;
+    a ``SEEK_END`` fallback still runs on the buffer itself (it flushes ``BufferedRandom``).
     """
     if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
         raw = stream.raw
@@ -310,19 +364,25 @@ def source_byte_size(source: Any) -> int | None:
        answers from an index/trailer scan or returns ``None``, and its presence marks
        the stream as one whose ``SEEK_END`` may decompress, so its answer is final
        (no fall-through to the probe);
-    4. a ``SEEK_END``/restore round trip, but **only** for types whose end-seek is
-       provably O(1) (real files, ``BytesIO``, ``mmap`` — see ``_seek_end_is_cheap``);
-       an unrecognized seekable stream could be a decompressor whose end-seek decodes
-       the entire payload, so it yields ``None`` instead.
+    4. a metadata end-size that does not move the handle (``fstat`` on a regular
+       file, ``len(mmap)``, ``BytesIO.getbuffer().nbytes``), falling back to a
+       ``SEEK_END``/restore round trip only for types whose end-seek is provably
+       O(1) *and* whose metadata would lie (``BufferedRandom`` with an unflushed
+       write; a block/character device). An unrecognized seekable stream could be
+       a decompressor whose end-seek decodes the entire payload, so it yields
+       ``None`` instead.
 
     Probes 2 and 3 look through a ``BufferedReader`` to the stream it wraps
-    (:func:`_under_buffer`); probe 4 does not.
+    (:func:`_under_buffer`). Probe 4's metadata path does too; the ``SEEK_END``
+    fallback stays on the buffer. Pass-through wrappers that set
+    ``peel_for_source_size`` are peeled before any of these probes.
     """
     if is_filename(source):
         try:
             return os.stat(source).st_size
         except OSError:
             return None
+    source = _peel_passthrough(source)
     metadata_source = _under_buffer(source)
     size = getattr(metadata_source, "size", None)
     if isinstance(size, int) and not isinstance(size, bool):
@@ -331,6 +391,9 @@ def source_byte_size(source: Any) -> int | None:
     if callable(try_get_size):
         result = try_get_size()
         return result if isinstance(result, int) else None
+    metadata_end = _metadata_end_size(source)
+    if metadata_end is not None:
+        return metadata_end
     if is_seekable(source) and _seek_end_is_cheap(source):
         try:
             pos = source.tell()
