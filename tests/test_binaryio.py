@@ -198,8 +198,9 @@ def test_is_seekable_true_false() -> None:
 
 
 def test_is_seekable_unwraps_buffered_reader() -> None:
-    # BufferedReader.seekable() already forwards to the raw (False here). The
-    # unwrap is shared with _under_buffer / _seek_end_is_cheap, not a lie-correction.
+    # BufferedReader.seekable() already forwards to the raw (False here).
+    # Unwrap still recurses onto the raw so a detached buffer is False rather
+    # than ValueError — not a lie-correction.
     buffered = io.BufferedReader(NonSeekableBytesIO(DATA))
     assert not is_seekable(buffered)
 
@@ -561,12 +562,34 @@ def test_ensure_bufferedio_rawiobase_with_only_read() -> None:
     assert buffered.read() == DATA[4:]
 
 
+def test_ensure_bufferedio_does_not_position_a_pending_solid_slice() -> None:
+    """Wrap-time must not skip-decode a lazy solid member (#329 C1)."""
+    from archivey.internal.streams.streamtools import SolidBlockReader
+
+    reader = SolidBlockReader(io.BytesIO(b"A" * 10 + b"B" * 10), close_block=False)
+    member = reader.open_member(10, 10, lazy=True)
+    assert reader._pos == 0
+    assert member._pending is True
+    ensure_bufferedio(member)
+    assert reader._pos == 0
+    assert member._pending is True
+
+
 def test_ensure_bufferedio_does_not_close_raw_source() -> None:
     inner = CountingBytesIO(DATA)
     buffered = ensure_bufferedio(inner)
     assert buffered.read(4) == DATA[:4]
     buffered.close()
     assert not inner.closed  # the non-closing buffer detaches rather than closing
+
+
+def test_ensure_bufferedio_close_is_idempotent() -> None:
+    """detach() makes .closed raise; a second close must not (#329 C8)."""
+    inner = CountingBytesIO(DATA)
+    buffered = ensure_bufferedio(inner)
+    buffered.close()
+    buffered.close()
+    assert not inner.closed
 
 
 def test_plain_bufferedreader_closes_source_demonstrates_why_we_detach() -> None:
