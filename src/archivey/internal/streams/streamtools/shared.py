@@ -44,8 +44,8 @@ class SharedSource:
     seekable ``BinaryIO`` (does **not** take ownership — the caller closes it).
 
     ``wrap_handle`` (optional) is applied once to the underlying file handle after it is
-    opened or accepted — used by the benchmark harness to install a seek counter without
-    changing view semantics.
+    opened or accepted. Production readers use it to install a seek counter when
+    measurement is enabled, and identity otherwise.
     """
 
     def __init__(
