@@ -66,9 +66,9 @@ def try_readinto(stream: Any, b: "WriteableBuffer") -> int | None:
     Implementations must raise before writing into ``b``. A ``readinto`` that
     consumes from the source and then refuses has already lost those bytes;
     falling back to ``read`` would deliver the *next* ones as if they were
-    first. That is undetectable here without copying ``b`` on every call
-    (``io.RawIOBase``'s default and the advertised-then-refuse file-likes
-    raise before touching the buffer).
+    first. That is not detectable here at all: a ``readinto`` that consumed
+    without writing leaves no trace in ``b`` (``io.RawIOBase``'s default and
+    the advertised-then-refuse file-likes raise before touching the buffer).
     """
     readinto = getattr(stream, "readinto", None)
     if readinto is None:
@@ -95,9 +95,9 @@ def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
     That ``ValueError`` means the *source object* is broken, not that a
     payload is damaged. Callers that translate ``ValueError`` into
     archive-corruption errors must carve this out, the way a closed-handle
-    ``ValueError`` already is. Unreachable today through the public open
-    path: slicers and full-count gathers clamp the request before it reaches
-    this helper.
+    ``ValueError`` already is. Not reachable through the routes exercised
+    today (seekable ZIP, streaming TAR): slicers and full-count gathers clamp
+    the request before it reaches this helper.
     """
     mv = memoryview(b).cast("B")
     data = src.read(len(mv))
