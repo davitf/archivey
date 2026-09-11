@@ -128,6 +128,92 @@
 
 ## API & ergonomics
 
+- **Verification state as data: `stream.verified` plus an on-demand `verify()`** — a member
+  stream today tells the caller nothing about whether its declared digest was actually
+  checked. Verification runs at EOF and an abandoned partial read silently skips it, so a
+  caller who read a prefix cannot distinguish "checked and good" from "never checked".
+
+  **The password case is why this is more than tidiness.** For ciphers whose only real
+  verifier is the trailing CRC — ZipCrypto (one header check byte) and 7z AES (no check
+  value at all) — an unverified partial read does not merely lack a checksum, it can be
+  *garbage that decrypted under the wrong key*. Reproduced on both: a wrong ZipCrypto
+  password that passes the one-byte check, and a wrong 7z password on a store+AES folder,
+  each return data from `read(1)` with no error and fail only on a full read.
+
+  **Two axes, one public scale.** What can be established splits into *the password is
+  right* and *the payload is intact*, and each member offers a different combination:
+  ZipCrypto's check byte and WinZip AES's `pw_verify` attest the password from the header;
+  the 7z AES tail padding attests it from the content; a decoder accepting the bytes
+  attests structure; a stored CRC or hash attests content. Those are two axes, not one —
+  but they are ordered by an implication that collapses them for the only question callers
+  ask. A matching content digest proves the password (2⁻³²); a confirmed password proves
+  nothing about the payload. So model both axes where they are computed — the confirm
+  ladder produces the password signal, `MemberVerifier` produces the content one, in
+  different code — and expose one ordered scale:
+
+  | level | established by | note |
+  | --- | --- | --- |
+  | `NONE` | nothing | |
+  | `KEY` | a cheap key check: 7z tail padding, WinZip `pw_verify`, ZipCrypto check byte | encrypted members only; spans 2⁻⁸ to 2⁻³², so it means "not obviously wrong", not "right" |
+  | `STRUCTURE` | a decoder accepted the bytes | |
+  | `CONTENT` | this member's stored digest matched over the bytes delivered | |
+
+  An unencrypted member runs `NONE → STRUCTURE → CONTENT` and never occupies `KEY`; that
+  is a level not reached, not a claim that no password was needed. The per-axis detail is
+  worth keeping for diagnosis rather than for decisions, so it belongs on the diagnostic
+  context (`ENCRYPTED_MEMBER_UNVERIFIED` already carries a `check` field naming which
+  password signal fired), not on the primary attribute.
+
+  **A ceiling as well as a level.** "Cannot be verified" is not a lower rung — a stored 7z
+  member with no CRC can never reach `CONTENT`, so `while stream.verified < CONTENT:
+  stream.verify()` would spin. Pair the level with the most it could ever reach. The
+  ceiling is not static, which is why it is worth exposing rather than deriving: it drops
+  when no digest exists, when a decode error abandons verification, and — per ADR 0014 —
+  when a seek off the frontier forfeits the checksum while keeping the length check.
+  `CostReceipt`-reports-capability / diagnostics-report-events is the existing shape to
+  copy.
+
+  **`verify(at_least=…)`, one method with an argument.** Not two methods: they would
+  duplicate both the no-op-if-already-there logic and the could-not-get-there error
+  contract, and become four the day a level is added (a signed manifest, per-block hashes).
+  Default to the ceiling. Raise when the requested level is out of reach, since the caller
+  asked for a guarantee; `stream.verified` is the non-raising way to look.
+
+  **The promise is bounded, and saying so up front avoids a broken one.** Reaching
+  `CONTENT` means the digest over all the member's bytes. Mid-read that is a drain — cheap,
+  but it discards bytes the caller may have wanted. After close it is a re-open, which on a
+  solid 7z folder re-decodes the whole folder and on a forward-only source may be
+  impossible. So a stream-level `verify()` upgrades only while the stream is alive;
+  anything beyond that is `reader.verify(member)`, a different capability with a different
+  cost. Do not write "callable at any time" into the contract.
+
+  `bounded-password-confirmation` covers the hole with the `ENCRYPTED_MEMBER_UNVERIFIED`
+  diagnostic (extended by `sevenzip-aes-tail-key-check`), which was the cheaper of the two
+  answers; this is the better one. With the scale above the diagnostic becomes exactly
+  derivable — level below `CONTENT` at close, with the password attested no better than
+  `KEY` — so retiring it is mechanical rather than a judgement call. Placement gives a fact
+  exactly one authoritative channel, so the two are alternatives, not additions. Wants a
+  `testing-contract` delta.
+
+- **Confirm a stored encrypted folder from its smallest anchored member** — 7z
+  confirmation walks to the *earliest* member CRC in a solid folder. For a `Copy` chain the
+  plaintext offset equals the ciphertext offset, so any member's byte range is directly
+  addressable and the cheapest anchor is the **smallest member of at least 4 bytes that
+  carries a CRC** — on a `[200 MiB, 4 KiB]` stored solid folder, 4 KiB instead of 200 MiB.
+  Four bytes is where a CRC-32 carries its full 2⁻³²; below that the match is only as
+  strong as the member is long.
+
+  Deliberately *not* "the smallest set of members summing to 4 bytes". Folders whose every
+  anchored member is under 4 bytes are rare enough not to pay for the extra rule, and
+  combining non-contiguous members trades one seek for several.
+
+  Needs the seekable AES-CBC stream (`AesDecryptStream`, `crypto.py`, has no `seek`) and
+  applies to `Copy` chains only — with anything compressing between the cipher and the
+  payload, a plaintext offset is not a ciphertext offset. Narrower than it first looks:
+  once `sevenzip-aes-tail-key-check` lands, the `Copy` case is O(1) for the ~75% of
+  archives with at least 4 padding bytes, leaving `Copy` + short-or-nonstandard padding +
+  a multi-member solid folder. Promote with the seekable-stream change rather than alone.
+
 - **`stream_members()` seekability leak** — the intended rule is that a sequential pass
   is never seekable (`seekable_members=True` only changes random `open()`). Enforced
   today only where seeking is physically impossible (solid RAR ALL-pipe, solid 7z).
