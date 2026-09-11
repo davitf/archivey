@@ -111,7 +111,7 @@ class SharedSource:
         entry point that would open a fresh ``open(path, 'rb')`` per view; today every
         view shares the single locked handle.
         """
-        self._check_open()
+        self._raise_if_closed()
         if start < 0:
             raise ValueError(f"view start must be non-negative, got {start}")
         if length is not None and length < 0:
@@ -132,7 +132,7 @@ class SharedSource:
             start=start,
             length=length,
             lock=self._lock,
-            check_open=self._check_open,
+            check_open=self._raise_if_closed,
         )
 
     def close(self) -> None:
@@ -149,6 +149,6 @@ class SharedSource:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def _check_open(self) -> None:
+    def _raise_if_closed(self) -> None:
         if self._closed:
             raise ValueError("I/O operation on closed file.")

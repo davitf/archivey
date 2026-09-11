@@ -131,7 +131,7 @@ class SlicingStream(ReadOnlyIOStream):
         self._seekable = is_seekable(stream)
         self._io_guard = io_guard
         self._seek_before_read = seek_before_read
-        self._check_open_fn = check_open
+        self._source_check = check_open
         self._pos = 0  # position relative to the start of the slice
 
         if not self._seekable:
@@ -157,11 +157,11 @@ class SlicingStream(ReadOnlyIOStream):
         # Locked views re-seek on every read, so they are never "unpositioned".
         self._unpositioned = not self._seek_before_read
 
-    def _check_open(self) -> None:
+    def _raise_if_closed(self) -> None:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        if self._check_open_fn is not None:
-            self._check_open_fn()
+        if self._source_check is not None:
+            self._source_check()
 
     def _compute_bytes_to_read(self, n: int) -> int:
         if self._length is not None:
@@ -172,7 +172,7 @@ class SlicingStream(ReadOnlyIOStream):
         return n
 
     def read(self, n: int = -1, /) -> bytes:
-        self._check_open()
+        self._raise_if_closed()
         # Three gather policies, and the difference matters (ADR 0014):
         #
         # * Sized ``read(n)`` — ``read_full_count``: keep asking while each piece returns
@@ -194,7 +194,9 @@ class SlicingStream(ReadOnlyIOStream):
         if n == 0:
             return b""
         with self._io_guard:
-            self._check_open()
+            # Recheck under the lock: another thread may have closed the source
+            # (or this view) after the outer check and before we I/O.
+            self._raise_if_closed()
             # Re-seek mode: reposition to this view's absolute offset so interleaved
             # views never clobber each other. Single-consumer: the first I/O seeks
             # to start (construction left the handle where the caller had it); later
@@ -215,7 +217,7 @@ class SlicingStream(ReadOnlyIOStream):
             return data
 
     def tell(self, /) -> int:
-        self._check_open()
+        self._raise_if_closed()
         return self._pos
 
     def nearest_resume_offset(self, target: int) -> None:
@@ -230,7 +232,7 @@ class SlicingStream(ReadOnlyIOStream):
         return
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        self._check_open()
+        self._raise_if_closed()
         if not self._seekable:
             raise io.UnsupportedOperation("seek on non-seekable stream")
 
@@ -246,7 +248,7 @@ class SlicingStream(ReadOnlyIOStream):
                 # No declared length: the slice ends where the underlying stream does,
                 # so probe that end on demand.
                 with self._io_guard:
-                    self._check_open()
+                    self._raise_if_closed()
                     end_relative = self._stream.seek(0, io.SEEK_END) - start_abs
             else:
                 end_relative = self._length
@@ -357,7 +359,7 @@ class SharedView(SlicingStream):
             start=self._start,
             length=self._length,
             lock=self._io_guard,
-            check_open=self._check_open_fn,
+            check_open=self._source_check,
         )
 
 
