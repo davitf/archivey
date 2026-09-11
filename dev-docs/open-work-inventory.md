@@ -1,6 +1,6 @@
 # Open work inventory and sequencing
 
-> **A dated snapshot, not a register.** Snapshot: **2026-09-10** against `main` @ `8e88e4f`.
+> **A dated snapshot, not a register.** Snapshot: **2026-09-11** against `main` @ `e50ffdd4`.
 > Every item below lives somewhere canonical — [`open-issues.md`](open-issues.md),
 > [`threat-model.md`](threat-model.md), [`IDEAS.md`](IDEAS.md),
 > [`review/backlog.md`](../review/backlog.md), [`review/STATUS.md`](../review/STATUS.md),
@@ -22,16 +22,18 @@ dead.
 
 | Register | Open items | Health |
 | --- | --- | --- |
-| Open PRs (10) | 5 live, 5 dormant drafts | Drafts last touched 2026-08-23 by a bulk event, not by work |
-| [#315](https://github.com/davitf/archivey/pull/315) review threads | **54, none resolved** | Two already fixed on `main`; the largest single block of actionable work |
+| Open PRs (10) | 4 live, 5 dormant drafts, 1 hub | #319 and #324 merged since the first snapshot; drafts last touched 2026-08-23 by a bulk event, not by work |
+| [#315](https://github.com/davitf/archivey/pull/315) review threads | 54 total, **5 resolved, 49 open** | Wave 1 closed four (#324); thread 16 self-resolved. Still the largest single block of actionable work |
 | `openspec/changes/` (5 active) | 4 unimplemented, 1 half-done | `prefixed-archive-detection` is 31/68; the rest are 0/N |
 | [`open-issues.md`](open-issues.md) | 8 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned |
 | [`formats/rar.md`](formats/rar.md) `§10` | 4 of 21 (#6 layer 2, #18, #19, #21) | Healthy — 17 closed with PR links |
 | [`formats/rar.md`](formats/rar.md) `§7` | 5 open questions | Contains a **duplicated entry** (fixed in this pass) |
 | [`IDEAS.md`](IDEAS.md) | 57 entries | A park, **not a queue** — see below |
 | [`review/backlog.md`](../review/backlog.md) | 3 PR parks, 7 archived-review parks, Topics 6/7 | #320 F2 is the only one with a live question |
-| [`review/STATUS.md`](../review/STATUS.md) | Topics 8 + 10 in flight, docs IA in flight | Ranked list predates the current OpenSpec set |
-| [`threat-model.md`](threat-model.md) | `O*` register | O12 is closed by #319's second change |
+| [`review/STATUS.md`](../review/STATUS.md) | Topics 8 + 10 in flight, docs IA in flight, **+2 commissioned 2026-09-11** | Ranked list predates the current OpenSpec set |
+| [`review/typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | ~81 typing hatches + 13 `assert isinstance` | **Two census rows already stale** — see below |
+| [`review/exception-catchalls/`](../review/exception-catchalls/brief.md) | 30 marked blind `except` sites | A verification review; its own brief says a large "actually fine" section is the expected outcome |
+| [`threat-model.md`](threat-model.md) | `O*` register | O12 is closed by `sevenzip-aes-tail-key-check`, registered in the merged #319 |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
 
 **[`IDEAS.md`](IDEAS.md) is not backlog.** 57 entries across six sections, and its job is to
@@ -43,8 +45,7 @@ below. Do not read the 57 as a debt figure.
 
 | PR | What | Verdict |
 | --- | --- | --- |
-| [#319](https://github.com/davitf/archivey/pull/319) | Two OpenSpec changes for the #318 password-confirmation follow-ups | **Merge first.** Docs-only, `mergeable_state: clean`, sequenced behind #318 which has landed. Closes threat-model **O12** and unblocks the 7z work |
-| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge** — head *is* `main`. It is a container for 54 threads. Never close it while threads are open; drain them into fix PRs |
+| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge** — head *is* `main`. A container for 54 threads, 49 still open. Never close it while threads are open; drain them into fix PRs |
 | [#297](https://github.com/davitf/archivey/pull/297) | Capability declaration vs corpus behaviour (387-line investigation) | **Merge.** Adds one `dev-docs/investigations/` page plus its index row. No dependencies |
 | [#274](https://github.com/davitf/archivey/pull/274) | OpenSpec `archive-origin-reporting` proposal | **Merge as a proposal.** Specs-first, nothing implemented. Overlaps `detection-result-surface` — see the graph |
 | [#251](https://github.com/davitf/archivey/pull/251) | OpenSpec `bounded-source-spooling` | **Blocked on four maintainer answers**, all in its `design.md` §Open questions. Q1 (the default limit) decides which working RAR-from-stream reads start failing. Merging the proposal does not need them; *scheduling* does |
@@ -110,8 +111,10 @@ from 2026-09-08 concentrated on `streamtools/` and the two native backends.
 | Explain-this | 11, 12, 26, 29, 35, 41, 44, 49, 51 | Docstring and comment work, no behaviour change |
 | Performance | 13 | `volumes.py` bisects on every read; should cache on seek |
 
-**Verified still-live bugs, ranked.** These four I reproduced or read on `main` today; they
-are the reason #315 outranks the OpenSpec queue.
+**The four verified bugs are fixed** — [#324](https://github.com/davitf/archivey/pull/324),
+merged 2026-09-11, threads 17/21/38/39 resolved. Kept here because the PR's own review cycle
+added findings F5–F13 on top, and because the shape of each is the precedent the two new
+reviews in #325 were commissioned from.
 
 1. **Thread 38 — a stale member slice reads the next member's bytes** (`streamtools/solid.py:90`).
    `_MemberSlice.read` checks neither `self.closed` nor whether it is still the reader's
@@ -133,6 +136,60 @@ are the reason #315 outranks the OpenSpec queue.
 Threads 1 and 2 are also potential bugs rather than questions — whether a RAR header-decrypt
 offset accounts for `_buf` and for encrypted block boundaries — but answering them needs the
 parser read that threads 5–9 also want, so they belong to one RAR-parser pass.
+
+## What #324 settled, and what it left
+
+Wave 1 landed as [#324](https://github.com/davitf/archivey/pull/324) and did more than fix
+four bugs. Three things worth carrying forward:
+
+**Two #315 threads closed themselves, and that is the useful outcome.** Thread 16 proposed
+moving `mode` / `name` off `ReadOnlyIOStream` onto `_PyCdlibStream`; the maintainer pushed
+back, the proposal was **retracted with evidence** (pycdlib receives the *source* stream, so
+for a mid-positioned source that is a `SlicingStream` — the base class is the right home and
+removing `mode` breaks the open with `TypeError`). What survived was smaller: the comments
+framed a general requirement as a pycdlib workaround. #324's last commit rewrote both as
+docstrings stating the requirement first. Thread 42's leak list shrank the same way, from
+three items to one.
+
+**Thread 42 still stands on that one item.** `nearest_resume_offset`
+(`streamtools/base.py:149`, declined in `slice.py:190`) names `ArchiveStream._maybe_warn_rewind`
+and a seek-point table — both archivey concepts — inside the package whose docstring says
+nothing here knows about the rest of archivey. `DelegatingStream` forwards it by default, so
+every wrapper inherits it. The proposed narrow fix is to move the forwarding onto the wrappers
+that actually sit in a decompressed stream's chain. **This is the one concept leak the import
+rule cannot see**, which is the thread's real point: the rule that gets enforced by tooling is
+the one that was never violated.
+
+**`src/` now has zero `# type: ignore`.** #324 deleted both dead ones and expressed the two
+live suppressions as `# pyrefly: ignore[bad-override]` with inline reasons. That matters
+because pyrefly does not validate the code inside `# type: ignore[...]` brackets — a bogus
+code still silences the line, so that form is a blanket suppression in this repo while
+`# pyrefly: ignore[<code>]` fails closed.
+
+## The two reviews commissioned in #325
+
+Both against `8e88e4f`, both `src/`-only, disjoint sources, designed to run in parallel.
+
+| Review | Population | Character |
+| --- | --- | --- |
+| [`typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 2 `type: ignore`, 26 `cast()`, 37 `Any`, 3 `TypeGuard`, 13 `assert isinstance` | **Excavation.** Its precedent is #324's finding 3: a `TypeGuard` that lied, which the checkers then believed and propagated |
+| [`exception-catchalls/`](../review/exception-catchalls/brief.md) | 30 marked blind `except` sites, in five patterns | **Verification.** Its own brief says recon found no smoking gun and warns against manufacturing severity |
+
+**The typing brief's census is already stale in two rows, because #324 merged after it was
+written.** Worth fixing before anyone starts, so the first hour is not spent rediscovering it:
+
+- **S2 — "both existing `src/` suppressions are dead, DELETE them"** is **done**. #324's
+  `chore(types)` commit removed both; `grep -c "type: ignore" src/` is now 0.
+- **S3 — "two more exist only on #324's branch, sequence after it merges"** has happened.
+  Both are on `main` now (`streamtools/base.py:195`, `streams/peekable.py:86`), already in
+  the `# pyrefly: ignore[bad-override]` form with inline reasons, which is the outcome the
+  brief wanted rather than work it still needs.
+
+What survives untouched is the larger half: **26 `cast()` and 37 `Any`**, concentrated in
+`tar_reader` (6 casts), `zip_reader` (5), `streamtools/binaryio.py` (12 `Any`) and
+`iso_reader.py` (8). Plus seed **S1**, which is a `CONTRIBUTING.md` fix rather than an audit
+finding: the rule currently offers `# type: ignore[attr-defined]` as an example of a
+*specific* suppression, and in this repo it is not one.
 
 ## OpenSpec changes
 
@@ -239,22 +296,35 @@ Ordered by what unblocks the most, then by what is cheapest to verify.
 
 **Wave 0 — clear the desk.** Doc-only, no decisions needed.
 1. This page, plus the two register cleanups it names (rar.md §7 duplicate, IDEAS.md
-   Windows-UnRAR entry). *Landed in this pass.*
-2. Merge **#319** and **#297**. Both docs-only and clean.
+   Windows-UnRAR entry). *Landed.*
+2. Merge **#319** *(done, 2026-09-11)* and **#297** *(still open, docs-only and clean)*.
 3. Close **#101** (superseded by rar.md §9).
 4. One maintainer call: pick **#243 or #244**. (**#187** is deliberately not a Wave 0 call —
-   it needs the evaluation below first.)
+   it needs the native-stress evaluation above first.)
 
-**Wave 1 — the four verified bugs.** One fix PR each, red-green, before any cleanup PR
-touches the same files. Threads 38 and 39 are in `solid.py` and can share a PR; 21 and 17 are
-`binaryio.py` / `base.py` typing-and-guard fixes. This is the highest value per line in the
-whole inventory, and it is blocked on nothing.
+**Wave 1 — the four verified bugs. Done.**
+[#324](https://github.com/davitf/archivey/pull/324), merged 2026-09-11: threads 17, 21, 38, 39
+fixed red-green, plus F5–F13 from the PR's own review cycle. Thread 16 resolved with it. It
+also surfaced the two reviews now commissioned in #325, and left `src/` with zero
+`# type: ignore`.
 
-**Wave 2 — drain #315 by file, not by theme.** `streamtools/` first (16–42), because
-`rar_reader.py`'s findings (43–49) are stated as "this is `SlicingStream` rebuilt by hand"
-and cannot be settled until `SlicingStream` is. Then `rar_reader.py`, then the RAR-parser
-questions (1–2, 5–9) as one reading pass, then the placement questions (10, 14) as one
-mechanical move. Resolve threads 50 and 52 with a pointer to the commits that fixed them.
+**Wave 2 — drain #315 by file, not by theme.** 49 threads left. `streamtools/` first
+(16–42, five now closed), because `rar_reader.py`'s findings (43–49) are stated as "this is
+`SlicingStream` rebuilt by hand" and cannot be settled until `SlicingStream` is. Then
+`rar_reader.py`, then the RAR-parser questions (1–2, 5–9) as one reading pass, then the
+placement questions (10, 14) as one mechanical move. Resolve threads 50 and 52 with a pointer
+to the commits that fixed them.
+
+*Start with thread 42's surviving item* — moving `nearest_resume_offset` forwarding off
+`DelegatingStream` — because it is the one finding in the group that changes a boundary rather
+than tidying inside one, and every later `streamtools/` cleanup is easier once the base class
+is honest.
+
+**Wave 2b — the two #325 reviews, in parallel with Wave 2.** Disjoint sources, and both are
+`src/`-only audits rather than changes, so they do not contend with the #315 drain for the same
+files in the way two refactors would. **Refresh the typing brief's census first** (S2 and S3
+are stale, see above) — a five-minute edit that stops the reviewer's first hour going into
+rediscovery. `exception-catchalls` needs nothing before it starts.
 
 **Wave 3 — the two unblocked OpenSpec changes.** `single-file-open-time-validation` (closes
 P15 + P16) and `seekable-gzip-and-block-writing`. Neither waits on anyone.
