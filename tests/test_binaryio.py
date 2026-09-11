@@ -50,15 +50,20 @@ class ReadIntoStream(OnlyReadStream):
 
 
 def test_readinto_via_read_fills_buffer() -> None:
+    inner = io.BytesIO(DATA)
     buf = bytearray(4)
-    assert readinto_via_read(io.BytesIO(DATA), buf) == 4
+    assert readinto_via_read(inner, buf) == 4
     assert bytes(buf) == DATA[:4]
+    # Source position, not just the reported count: nothing extra was consumed.
+    assert inner.read() == DATA[4:]
 
 
 def test_readinto_via_read_short_at_eof() -> None:
+    inner = io.BytesIO(b"ab")
     buf = bytearray(10)
-    assert readinto_via_read(io.BytesIO(b"ab"), buf) == 2
+    assert readinto_via_read(inner, buf) == 2
     assert buf[:2] == b"ab"
+    assert inner.read() == b""
 
 
 def test_readinto_via_read_raises_on_overlong_read() -> None:
