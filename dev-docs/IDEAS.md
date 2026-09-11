@@ -778,7 +778,28 @@
   `tests/fixtures/rar/README.md`. Linux `setup-dev-env.sh` still apt-installs
   `rar`, so these are not dark on a provisioned Linux laptop — only on CI /
   macOS.
-- **Pin and checksum the Windows UnRAR download.** The Windows CI leg still
-  `Invoke-WebRequest`s `https://www.rarlab.com/rar/unrarw64.exe` with no version
-  pin and no SHA-256, then runs the SFX. The macOS leg now fetches a pinned git
-  commit instead. Same pattern would close the gap; not blocking.
+- **Decide what native-codec stress coverage is for.** One of the eight native
+  dependencies (`pyppmd`, `inflate64`, `rapidgzip` + bundled `indexed_bzip2`, `brotli`,
+  `lz4`, `cryptography`, `pycdlib`) has a stress harness, and it exists because of a
+  *specific observed* upstream abort (`known-issues.md` §Intermittent `pyppmd` native
+  aborts). Fuzzing is separate and broader: `tests/atheris_fuzz/targets.py` registers 7
+  required stream codecs plus 4 optional ones, `deflate64` included. So the open question
+  is not "which codec is missing a harness" but **what earns one**: a response to observed
+  evidence, or a standard every native dependency is held to. The honest-looking criterion
+  — *built when an upstream defect is observed, not before* — would resolve
+  [PR #187](https://github.com/davitf/archivey/pull/187) (rapidgzip + inflate64 harnesses)
+  as close-with-criterion-recorded. Worth a short written evaluation because the answer
+  changes what CI runs on every PR; adjacent to the archived Topic 4 (test-suite strategy).
+  Context and today's measured state: [`open-work-inventory.md`](open-work-inventory.md)
+  §Native codec stress coverage.
+- **Establish that the Windows UnRAR download is rarlab's.** The Windows CI leg
+  `Invoke-WebRequest`s `https://www.rarlab.com/rar/unrarw64.exe` and runs the SFX; the
+  only integrity checks are a PE sniff and the UNRAR banner. **A pinned SHA-256 is
+  rejected** and copying the macOS pinned-commit pattern is rejected with it — #320's
+  criterion is that CI installs unrar the way users on that platform actually get it, and
+  the URL is unversioned so a digest goes stale on every upstream release. **Staleness is
+  already handled**: the cache key carries a rotating window, so the tested binary is
+  never more than 7 days old. What remains is *authenticity, not freshness* — the leading
+  candidate is an Authenticode check that the SFX is signed by win.rar GmbH, unverified
+  because the agent proxy blocks rarlab.com. Live discussion and the full reasoning:
+  [`review/backlog.md`](../review/backlog.md) §Parked from PR reviews, #320 F2.

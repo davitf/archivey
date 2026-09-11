@@ -10,6 +10,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | Format / topic handbook | [`formats/zip.md`](formats/zip.md) — the first page, and the worked example for the shape (pair-workflow §Format page structure) · [`formats/rar.md`](formats/rar.md) — the only format whose read path crosses a process boundary · [`topics/prefixed-archives.md`](topics/prefixed-archives.md) — archives that do not start at byte 0. Create `formats/<format>.md` or `topics/<topic>.md` with the first change that needs it; do not add empty directories |
 | [Threat model](threat-model.md) | Trust boundaries, enforced guarantees, open security/compat gaps |
 | [Open issues (gotchas triage)](open-issues.md) | Fixable leftovers vs irreducible user gotchas; docs/spec drift |
+| [Open work inventory](open-work-inventory.md) | Dated cross-register snapshot: which open PRs, OpenSpec changes and register entries are live, what blocks what, and what is already dead. Indexes the registers; never the source of truth for one |
 | [Compression-library analysis](library-analysis.md) | Per-codec backend choice and rationale |
 | [Known issues](known-issues.md) | Defect/contract forensics: upstream bugs, our mitigations, and the evidence behind them |
 | [Release checklist](release-checklist.md) | Every-release loop: CHANGELOG, perf vs prior tag, docs, tag/publish |
