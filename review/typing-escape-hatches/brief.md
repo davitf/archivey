@@ -128,6 +128,34 @@ either fix the predicate or narrow the declared type to what the check actually 
 (`io.TextIOBase`) and its PR body records two more left open — write-only `IOBase`, and
 duck-typed objects whose `read()` returns `str`.
 
+### S5b — settled 2026-09-11: `ReadOnlyIOStream.name` stays as it is
+
+Maintainer decision. Do not re-open; the alternatives were measured.
+
+`ReadOnlyIOStream.name` is a property that always raises, annotated `-> Never`, and
+`DelegatingStream` / `PeekableStream` override it with `-> str` under
+`# pyrefly: ignore[bad-override]`. That looks like a hatch worth removing. It is not:
+
+- **Deleting the property does not remove the attribute.** `typing.BinaryIO` is in the
+  MRO and `typing.IO.name` is a real runtime property returning `None`, so a subclass
+  that does not override it advertises `name = None` — `hasattr` says yes and the value
+  is unusable, which is the pycdlib-on-Windows crash the raise prevents. Verified: with
+  the property deleted, `hasattr(r, "name")` is `True` and `r.name` is `None`, and
+  `test_readonly_base_name_is_absent` fails.
+- **The root cause is that `typing.IO` declares `name` unconditionally**, which the
+  stdlib does not honour: `open(p, "rb").name` is the path, while `io.BytesIO()` and
+  `io.BufferedReader(BytesIO())` have no `name` at all. Raising is how a nameless
+  wrapper opts back out of a declaration that should have been optional.
+- **Dropping the `BinaryIO` base would fix it cleanly and costs too much.** It is what
+  makes these wrappers nominally `BinaryIO` for the checkers — the reason it is there.
+  Removing it yields **64 errors on pyrefly and 64 diagnostics on ty** (measured at
+  `8e88e4f`), because typeshed models `typing.BinaryIO` and the `io.*` classes as
+  separate hierarchies; doing it properly means a Protocol across the internal surface.
+
+So the two `# pyrefly: ignore[bad-override]` suppressions are **KEEP-WITH-REASON**, and
+the reason is the third-party typing model, not this codebase. Verify the docstring still
+explains all three points; do not re-derive the decision.
+
 ### S6 — a standing unknown in the gate
 
 `uv run pyrefly check` reports **"12 warnings not shown"** on a clean tree. Neither
