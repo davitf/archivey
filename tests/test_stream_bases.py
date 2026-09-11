@@ -183,3 +183,59 @@ def test_verifying_stream_forwards_resume_offset() -> None:
 
     s = VerifyingStream(_Inner(b"x"), {})
     assert s.nearest_resume_offset(1) == 7
+
+
+def test_delegating_stream_resume_offset_inventory() -> None:
+    """Every DelegatingStream subclass is classified: forwards/owns, or not on the chain.
+
+    Forwarding is opt-in. A new wrapper that sits between ArchiveStream and a
+    seek-point table and forgets nearest_resume_offset becomes a silent
+    diagnostic hole (None → resume 0).
+    """
+    import archivey.internal.backends.iso_reader as iso_reader
+    import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.streams.codecs as codecs
+    import archivey.internal.streams.counting as counting
+    import archivey.internal.streams.streamtools.locked as locked
+
+    forwards_or_owns = {
+        codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
+        codecs._GzipTruncationCheckStream,
+        counting.OutputCountingStream,
+    }
+    not_on_decompressed_chain = {
+        locked.LockedStream,
+        locked.CloseLockedStream,
+        counting.CountingReader,
+        counting.SeekCountingStream,
+        rar_reader._UnrarOwnedStream,
+        rar_reader._BoundedMemberPipe,
+        iso_reader._PyCdlibStream,
+    }
+
+    found: set[type] = set()
+    stack = [DelegatingStream]
+    while stack:
+        cls = stack.pop()
+        for sub in cls.__subclasses__():
+            if sub not in found:
+                found.add(sub)
+                stack.append(sub)
+    found = {
+        cls for cls in found if getattr(cls, "__module__", "").startswith("archivey.")
+    }
+    found.discard(DelegatingStream)
+    leftover = found - forwards_or_owns - not_on_decompressed_chain
+    assert leftover == set(), (
+        "new DelegatingStream subclass needs a nearest_resume_offset decision "
+        f"(forwards/owns a table, or not on the decompressed chain): {leftover}"
+    )
+    missing_method = [
+        cls.__name__
+        for cls in forwards_or_owns
+        if "nearest_resume_offset" not in cls.__dict__
+    ]
+    assert missing_method == [], (
+        "classified as forwards/owns but does not define nearest_resume_offset: "
+        f"{missing_method}"
+    )
