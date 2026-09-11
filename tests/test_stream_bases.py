@@ -223,36 +223,25 @@ def test_verifying_stream_forwards_resume_offset() -> None:
     assert s.nearest_resume_offset(1) == 7
 
 
-def test_delegating_stream_resume_offset_inventory() -> None:
-    """Every DelegatingStream subclass is classified: forwards/owns, or not on the chain.
+def _import_all_archivey_modules() -> None:
+    """Import every archivey module so ``__subclasses__()`` is not collection-order-blind.
 
-    Forwarding is opt-in. A new wrapper that sits between ArchiveStream and a
-    seek-point table and forgets nearest_resume_offset becomes a silent
-    diagnostic hole (None → resume 0).
+    ``archivey.__main__`` calls ``main()`` at import, so it is skipped.
     """
-    import archivey.internal.backends.iso_reader as iso_reader
-    import archivey.internal.backends.rar_reader as rar_reader
-    import archivey.internal.streams.codecs as codecs
-    import archivey.internal.streams.counting as counting
-    import archivey.internal.streams.streamtools.locked as locked
+    import importlib
+    import pkgutil
 
-    forwards_or_owns = {
-        codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
-        codecs._GzipTruncationCheckStream,
-        counting.OutputCountingStream,
-    }
-    not_on_decompressed_chain = {
-        locked.LockedStream,
-        locked.CloseLockedStream,
-        counting.CountingReader,
-        counting.SeekCountingStream,
-        rar_reader._UnrarOwnedStream,
-        rar_reader._BoundedMemberPipe,
-        iso_reader._PyCdlibStream,
-    }
+    import archivey
 
+    for module in pkgutil.walk_packages(archivey.__path__, prefix="archivey."):
+        if module.name.endswith("__main__"):
+            continue
+        importlib.import_module(module.name)
+
+
+def _readonly_stream_subclasses() -> set[type]:
     found: set[type] = set()
-    stack = [DelegatingStream]
+    stack = [ReadOnlyIOStream]
     while stack:
         cls = stack.pop()
         for sub in cls.__subclasses__():
@@ -262,11 +251,74 @@ def test_delegating_stream_resume_offset_inventory() -> None:
     found = {
         cls for cls in found if getattr(cls, "__module__", "").startswith("archivey.")
     }
+    # Seed is ReadOnlyIOStream; subclasses include DelegatingStream. Discard both
+    # bases so the inventory is the wrappers that need a resume-offset decision.
+    found.discard(ReadOnlyIOStream)
     found.discard(DelegatingStream)
-    leftover = found - forwards_or_owns - not_on_decompressed_chain
+    return found
+
+
+def test_readonly_stream_resume_offset_inventory() -> None:
+    """Every ReadOnlyIOStream subclass is classified: forwards/owns, or not on the chain.
+
+    Forwarding is opt-in. A new wrapper that sits between ArchiveStream and a
+    seek-point table and forgets nearest_resume_offset becomes a silent
+    diagnostic hole (None → resume 0). Walking only ``DelegatingStream`` misses
+    ``VerifyingStream``-shaped holes; importing five modules by hand misses
+    subclasses in modules this test never imported.
+    """
+    _import_all_archivey_modules()
+
+    import archivey.internal.backends.iso_reader as iso_reader
+    import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.detection as detection
+    import archivey.internal.streams.archive_stream as archive_stream
+    import archivey.internal.streams.codecs as codecs
+    import archivey.internal.streams.counting as counting
+    import archivey.internal.streams.crypto as crypto
+    import archivey.internal.streams.decompressor_stream as decompressor_stream
+    import archivey.internal.streams.peekable as peekable
+    import archivey.internal.streams.streamtools.locked as locked
+    import archivey.internal.streams.streamtools.slice as slice_mod
+    import archivey.internal.streams.streamtools.solid as solid
+    import archivey.internal.streams.verify as verify
+    import archivey.internal.zip_aes as zip_aes
+
+    forwards_or_owns = {
+        archive_stream.ArchiveStream,
+        codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
+        codecs._GzipTruncationCheckStream,
+        counting.OutputCountingStream,
+        decompressor_stream.DecompressorStream,
+        verify.VerifyingStream,
+    }
+    remaps_or_not_on_chain = {
+        locked.LockedStream,
+        locked.CloseLockedStream,
+        counting.CountingReader,
+        counting.SeekCountingStream,
+        rar_reader._UnrarOwnedStream,
+        rar_reader._BoundedMemberPipe,
+        rar_reader._UnrarRespawnStream,
+        iso_reader._PyCdlibStream,
+        solid._MemberSlice,
+        slice_mod.SlicingStream,  # explicit decline of a remapped offset space
+        peekable.PeekableStream,
+        crypto.AesDecryptStream,
+        zip_aes.WinZipAesDecryptStream,
+        detection._BoundedPeekReader,
+    }
+
+    found = _readonly_stream_subclasses()
+    leftover = found - forwards_or_owns - remaps_or_not_on_chain
     assert leftover == set(), (
-        "new DelegatingStream subclass needs a nearest_resume_offset decision "
-        f"(forwards/owns a table, or not on the decompressed chain): {leftover}"
+        "new ReadOnlyIOStream subclass needs a nearest_resume_offset decision "
+        f"(forwards/owns a table, or remaps / not on the decompressed chain): {leftover}"
+    )
+    extra_classified = (forwards_or_owns | remaps_or_not_on_chain) - found
+    assert extra_classified == set(), (
+        "classified a class the walk did not find (typo or it is no longer "
+        f"a ReadOnlyIOStream): {extra_classified}"
     )
     missing_method = [
         cls.__name__
