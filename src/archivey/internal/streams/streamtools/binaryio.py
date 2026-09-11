@@ -294,7 +294,13 @@ def is_stream(obj: Any) -> TypeGuard[BinaryIO]:
     return hasattr(obj, "closed")
 
 
-def _raise_if_text_stream(obj: Any) -> None:
+def raise_if_text_stream(obj: Any) -> None:
+    """Raise :class:`TypeError` if ``obj`` is a text-mode stream (``io.TextIOBase``).
+
+    Public openers call this *before* the generic "unsupported source type" path so
+    a text handle gets the same message whether it arrived bare, in a list, or via
+    ``open_stream``.
+    """
     if isinstance(obj, io.TextIOBase):
         raise TypeError(
             f"{type(obj).__name__} is a text-mode stream; a binary source is required "
@@ -452,7 +458,7 @@ def ensure_binaryio(obj: Any) -> BinaryIO:
     that specifically need a ``RawIOBase`` — e.g. to feed ``io.BufferedReader`` — should use
     :func:`ensure_bufferedio`, which handles that requirement internally.
     """
-    _raise_if_text_stream(obj)
+    raise_if_text_stream(obj)
     if is_stream(obj):
         return obj
     logger.debug(
@@ -489,7 +495,7 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     is why we branch on ``RawIOBase`` here rather than calling :func:`ensure_binaryio`,
     whose result may be a ``BufferedIOBase`` that ``BufferedReader`` would reject.
     """
-    _raise_if_text_stream(obj)
+    raise_if_text_stream(obj)
     if isinstance(obj, io.BufferedIOBase):
         return obj
     raw: io.RawIOBase
@@ -525,7 +531,7 @@ def ensure_full_count_reads(stream: BinaryIO) -> BinaryIO:
     that are already buffered (``open()``'s ``BufferedReader``, ``BytesIO``) are returned
     unchanged and pay nothing.
     """
-    _raise_if_text_stream(stream)
+    raise_if_text_stream(stream)
     if not is_seekable(stream):
         return stream
     # BufferedIOBase is a BinaryIO at runtime; typeshed models the two separately.

@@ -83,7 +83,10 @@ class PeekableStream(ReadOnlyIOStream):
         return self._pos
 
     @property
-    def name(self) -> str:  # type: ignore[override]  # base is Never; this returns a path when the inner has one
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; this returns a path when the inner has one
+        """Path of the underlying stream, or raise :exc:`AttributeError` if it has none
+        (see :class:`ReadOnlyIOStream.name` — ``hasattr`` must stay false).
+        """
         resolved = source_name(self._underlying)
         if resolved is not None:
             return resolved

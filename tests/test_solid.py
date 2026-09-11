@@ -184,6 +184,18 @@ def test_lazy_then_read_after_later_member_raises() -> None:
         early.read()
 
 
+def test_lazy_same_offset_does_not_steal_later_member() -> None:
+    """A lazy zero-size member at the successor's offset must not claim the live slice."""
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    reader.open_member(0, 4).read()
+    empty = reader.open_member(4, 0, lazy=True)
+    later = reader.open_member(4, 4)
+    with pytest.raises(ValueError, match="superseded"):
+        empty.read()
+    assert later.read() == b"BBBB"
+
+
 def test_skip_forward_helper_raises_on_short_stream() -> None:
     stream = io.BytesIO(b"1234")
     skip_forward(stream, 4)
@@ -225,6 +237,16 @@ def test_superseded_slice_cannot_read_the_next_member() -> None:
     with pytest.raises(ValueError, match="superseded"):
         first.read(4)
     assert second.read() == b"BBBB"
+
+
+def test_tell_on_superseded_slice_raises() -> None:
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    first = reader.open_member(0, 4)
+    first.read(2)
+    reader.open_member(4, 4)
+    with pytest.raises(ValueError, match="superseded"):
+        first.tell()
 
 
 def test_eager_read_after_reader_close_says_reader_closed() -> None:

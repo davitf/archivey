@@ -162,7 +162,7 @@ class DelegatingStream(ReadOnlyIOStream):
         super().close()
 
     @property
-    def name(self) -> str:  # type: ignore[override]  # base is Never; this returns a path when the inner has one
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; this returns a path when the inner has one
         """Path of the inner stream, or raise :exc:`AttributeError` if it has none.
 
         Raising keeps ``hasattr(..., "name")`` false when the inner is nameless

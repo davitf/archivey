@@ -106,10 +106,11 @@ def test_is_stream_accepts_iobase() -> None:
     assert not is_stream("path.zip")
 
 
-def test_is_stream_rejects_text_mode() -> None:
+def test_is_stream_rejects_text_mode(tmp_path) -> None:
     assert not is_stream(io.StringIO("hello"))
-    # encoding= so this stays valid on Windows (default ANSI there).
-    with open("README.md", encoding="utf-8") as f:
+    path = tmp_path / "note.txt"
+    path.write_text("x", encoding="utf-8")
+    with open(path, encoding="utf-8") as f:
         assert not is_stream(f)
 
 
@@ -396,10 +397,12 @@ def test_ensure_binaryio_wraps_partial_object() -> None:
     assert wrapped.seekable() is False
 
 
-def test_ensure_binaryio_rejects_text_mode() -> None:
+def test_ensure_binaryio_rejects_text_mode(tmp_path) -> None:
     with pytest.raises(TypeError, match="text-mode"):
         ensure_binaryio(io.StringIO("hello"))
-    with open("README.md", encoding="utf-8") as f:
+    path = tmp_path / "note.txt"
+    path.write_text("x", encoding="utf-8")
+    with open(path, encoding="utf-8") as f:
         with pytest.raises(TypeError, match="text-mode"):
             ensure_binaryio(f)
 
@@ -411,7 +414,7 @@ def test_ensure_bufferedio_rejects_text_mode() -> None:
 
 def test_ensure_full_count_reads_rejects_text_mode() -> None:
     with pytest.raises(TypeError, match="text-mode"):
-        ensure_full_count_reads(io.StringIO("hello"))  # type: ignore[arg-type]
+        ensure_full_count_reads(io.StringIO("hello"))
 
 
 def test_open_archive_rejects_text_mode_handle(tmp_path) -> None:
@@ -420,8 +423,10 @@ def test_open_archive_rejects_text_mode_handle(tmp_path) -> None:
     path = tmp_path / "note.txt"
     path.write_text("not an archive\n", encoding="utf-8")
     with open(path, encoding="utf-8") as handle:
-        with pytest.raises(TypeError, match="unsupported source type"):
+        with pytest.raises(TypeError, match="text-mode"):
             open_archive(handle)
+        with pytest.raises(TypeError, match="text-mode"):
+            open_archive([handle])
 
 
 def test_open_stream_rejects_text_mode_handle(tmp_path) -> None:
@@ -430,7 +435,7 @@ def test_open_stream_rejects_text_mode_handle(tmp_path) -> None:
     path = tmp_path / "note.txt"
     path.write_text("not a stream\n", encoding="utf-8")
     with open(path, encoding="utf-8") as handle:
-        with pytest.raises(TypeError, match="binary stream"):
+        with pytest.raises(TypeError, match="text-mode"):
             open_stream(handle)
 
 
