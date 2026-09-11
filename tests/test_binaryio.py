@@ -375,14 +375,40 @@ def test_wrapper_writable_for_object_without_writable_method() -> None:
         def write(self, data):  # type: ignore[no-untyped-def]
             return len(data)
 
-    # Has write() but no writable() -> falls back to hasattr(write) -> True.
-    assert BinaryIOWrapper(_Writer(DATA)).writable() is True
+        def writable(self) -> bool:
+            return True
+
+    # The wrapper is read-only even when the raw would accept writes.
+    wrapper = BinaryIOWrapper(_Writer(DATA))
+    assert wrapper.writable() is False
+    with pytest.raises(io.UnsupportedOperation, match="write"):
+        wrapper.write(b"x")
 
 
 def test_wrapper_write_unsupported_on_readonly() -> None:
     wrapper = BinaryIOWrapper(OnlyReadStream(DATA))
     with pytest.raises(io.UnsupportedOperation):
         wrapper.write(b"x")
+
+
+def test_wrapper_mode_is_rb_not_none() -> None:
+    """typing.BinaryIO.mode returns None; pycdlib does ``'b' not in fp.mode``."""
+    wrapper = BinaryIOWrapper(OnlyReadStream(DATA))
+    assert wrapper.mode == "rb"
+    assert "b" in wrapper.mode
+
+
+def test_wrapper_name_absent_without_inner_path() -> None:
+    wrapper = BinaryIOWrapper(OnlyReadStream(DATA))
+    assert not hasattr(wrapper, "name")
+
+
+def test_wrapper_name_forwards_from_inner_file(tmp_path) -> None:
+    path = tmp_path / "x.bin"
+    path.write_bytes(b"x")
+    with open(path, "rb") as inner:
+        wrapper = BinaryIOWrapper(inner)
+        assert wrapper.name == str(path)
 
 
 def test_wrapper_seek_tell_unsupported_when_absent() -> None:

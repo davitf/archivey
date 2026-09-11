@@ -426,10 +426,9 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         return readinto_via_read(self, b)
 
     def write(self, data: Any, /) -> int:
-        write = getattr(self._raw, "write", None)
-        if write is None:
-            raise io.UnsupportedOperation("write")
-        return write(data)
+        # Must exist and raise UnsupportedOperation: io.RawIOBase.write raises
+        # NotImplementedError, which is the wrong exception for a read-only stream.
+        raise io.UnsupportedOperation("write")
 
     def readable(self) -> bool:
         # Prefer the stream's own answer; fall back to "does it expose a reader?" for
@@ -440,15 +439,35 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         return hasattr(self._raw, "read") or hasattr(self._raw, "readinto")
 
     def writable(self) -> bool:
-        # hasattr(raw, "write") is NOT a reliable signal: every io.IOBase defines write()
-        # even when opened read-only (it raises io.UnsupportedOperation — GzipFile raises
-        # OSError). The honest answer is the stream's own writable(); only fall back to
-        # hasattr() for partial file-likes that don't implement writable() (e.g. urllib3's
-        # HTTPResponse, which omits write() entirely).
-        raw_writable = getattr(self._raw, "writable", None)
-        if raw_writable is not None:
-            return bool(raw_writable())
-        return hasattr(self._raw, "write")
+        return False
+
+    @property
+    def mode(self) -> str:
+        """Always ``"rb"``.
+
+        ``typing.BinaryIO`` is in the MRO, and ``typing.IO.mode`` is a real
+        runtime property whose body returns ``None``. pycdlib does
+        ``'b' not in fp.mode``, which raises ``TypeError`` on that ``None``.
+        Copied here rather than inherited from ``ReadOnlyIOStream``:
+        ``base.py`` imports this module, so deriving from that class is a
+        circular import, and this class must stay an ``io.RawIOBase`` so
+        :func:`ensure_bufferedio` can feed ``io.BufferedReader``.
+        """
+        return "rb"
+
+    @property
+    def name(self) -> str:
+        """Path of the wrapped stream, or raise :exc:`AttributeError` if it has none.
+
+        Same ``typing.BinaryIO`` trap as :meth:`mode`: the inherited ``name``
+        returns ``None``, so ``hasattr`` is true and pycdlib's Windows
+        ``fp.name.startswith(...)`` crashes. Raising keeps ``hasattr`` false
+        for nameless streams; a real path is forwarded.
+        """
+        resolved = source_name(self._raw)
+        if resolved is not None:
+            return resolved
+        raise AttributeError("name")
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         seek = getattr(self._raw, "seek", None)
