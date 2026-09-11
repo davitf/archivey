@@ -14,7 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from archivey.internal.streams.streamtools import SharedSource
+from archivey.internal.streams.streamtools import (
+    SharedSource,
+    SharedView,
+    SlicingStream,
+)
 
 DATA = b"0123456789abcdefghijklmnopqrstuvwxyz"
 
@@ -152,6 +156,14 @@ class TestSharedSourceMisuse:
         partial = shared.view(len(DATA) - 3, 100)
         assert partial.size == 3
         assert partial.read() == DATA[-3:]
+
+    def test_direct_slice_and_view_agree_on_over_declared_length(self) -> None:
+        payload = io.BytesIO(DATA[:10])
+        direct = SlicingStream(io.BytesIO(DATA[:10]), start=0, length=999)
+        via_view = SharedSource(payload).view(0, 999)
+        assert direct.size == via_view.size == 10
+        assert isinstance(via_view, SharedView)
+        assert isinstance(via_view, SlicingStream)
 
     def test_view_does_not_close_source(self) -> None:
         buf = io.BytesIO(DATA)

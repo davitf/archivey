@@ -1,17 +1,22 @@
-"""``SlicingStream`` — a bounded view over a region of another binary stream.
+"""Bound views over a region of another binary stream.
 
 Used to present a member's byte range inside a container as a standalone stream, and (via
 ``fix_stream_start_position``) to give a mid-positioned stream a clean ``tell() == 0``
 origin for codec libraries that assume it.
 
-Two modes (same class — easy to miss):
+Two construction contracts (two classes, shared bound/tell/size arithmetic):
 
-1. **Single-consumer (no lock, historical default)** — ``read`` continues from wherever
-   the underlying handle currently sits. Correct when only one view is live.
-2. **SharedSource mode (``lock`` set)** — every ``read`` does
+1. :class:`SlicingStream` — **single-consumer**. ``read`` continues from wherever the
+   underlying handle currently sits. Correct when only one view is live. Construction
+   does not seek the handle to ``start``; the first ``read``/``seek`` positions it.
+2. :class:`SharedView` — **locked, re-seek-before-read**. Every ``read`` does
    ``seek(start + _pos); read(n)`` under the lock so interleaved views never clobber
-   each other. Construction must not call unlocked ``tell``/``seek`` on that shared
-   handle when ``start`` is already known — ``BufferedReader.tell`` is not thread-safe.
+   each other. Construction does not call unlocked ``tell``/``seek`` on the shared
+   handle — ``BufferedReader.tell`` is not thread-safe. A cheap size probe (to clamp
+   ``length``) runs under the lock and restores the handle.
+
+``SharedSource.view`` returns :class:`SharedView`. Direct ``SlicingStream(..., lock=…)``
+is gone; pass ``lock`` to :class:`SharedView`.
 """
 
 from __future__ import annotations
@@ -29,14 +34,36 @@ from archivey.internal.streams.streamtools.binaryio import (
 )
 
 
+def _clamp_slice_length(
+    start: int | None, length: int | None, source_size: int | None
+) -> int | None:
+    """Cap a slice to the source's cheap size.
+
+    When ``source_size`` is known, an omitted ``length`` becomes the remaining bytes
+    and an over-long ``length`` is truncated. The source is assumed not to grow —
+    the result is frozen at construction. When size is unknowable, ``length`` is
+    returned unchanged (including ``None`` for an open-ended slice).
+    """
+    if source_size is None or start is None:
+        return length
+    available = max(source_size - start, 0)
+    if length is None:
+        return available
+    return min(length, available)
+
+
 class SlicingStream(ReadOnlyIOStream):
-    """A view over ``[start, start+length)`` of an underlying binary stream.
+    """A single-consumer view over ``[start, start+length)`` of an underlying stream.
 
     Seekable underlying stream:
       - ``start`` is the absolute offset where the slice begins (default: the stream's
-        current position).
+        current position, observed via ``tell()`` — that does not move the handle).
       - ``length`` caps the slice (default: to the end of the underlying stream).
       - Seeking is relative to the start of the slice.
+      - Construction does **not** seek the handle to ``start``. The first ``read`` or
+        ``seek`` does. A cheap ``source_byte_size`` probe (tell / SEEK_END / restore)
+        may run so an over-declared ``length`` can be clamped; the handle is left
+        where the caller had it.
 
     ``read(n)`` is **full-count over a full-count inner** (ADR 0014): it coalesces with
     ``read_full_count``, so it returns ``n`` bytes unless the slice ends, the inner ends,
@@ -47,19 +74,6 @@ class SlicingStream(ReadOnlyIOStream):
     Non-seekable underlying stream:
       - ``start`` must be ``None`` (the slice begins at the current position).
       - ``length`` caps how many bytes may be read; seeking is unsupported.
-
-    Optional ``lock`` (SharedSource mode):
-      - Every ``read`` does ``seek(start + _pos); read(n)`` under the lock so the
-        seek+read pair is atomic across interleaved views.
-      - Construction does not call ``tell``/``seek`` on the shared handle when
-        ``start`` is given (and takes the lock if ``start`` must be read from
-        ``tell``). Unlocked ``BufferedReader.tell`` under concurrency corrupts the
-        buffer even when every later ``read`` is locked.
-      - ``seek`` only updates this view's ``_pos`` (the next ``read`` re-seeks); without
-        a lock, ``seek`` also repositions the underlying (single-consumer behaviour).
-      - Internally split into ``_io_guard`` (the lock or a shared ``nullcontext``) and
-        ``_seek_before_read`` so the re-seek policy is explicit and can later be
-        engaged independently of locking.
 
     Optional ``check_open``: called at the start of I/O; raise to signal a closed source
     (SharedSource uses this so a closed factory poisons its views).
@@ -83,11 +97,31 @@ class SlicingStream(ReadOnlyIOStream):
         start: int | None = None,
         length: int | None = None,
         *,
-        lock: ContextManager[object] | None = None,
         check_open: Callable[[], None] | None = None,
         own_source: bool = False,
     ) -> None:
         super().__init__()
+        self._init_from_source(
+            stream,
+            start,
+            length,
+            io_guard=nullcontext(),
+            seek_before_read=False,
+            check_open=check_open,
+            own_source=own_source,
+        )
+
+    def _init_from_source(
+        self,
+        stream: BinaryIO,
+        start: int | None,
+        length: int | None,
+        *,
+        io_guard: ContextManager[object],
+        seek_before_read: bool,
+        check_open: Callable[[], None] | None,
+        own_source: bool,
+    ) -> None:
         self._stream = stream
         # A view is non-owning by default (never closes the underlying — the container
         # owns it). ``own_source=True`` is the opt-in for the case where this view is the
@@ -95,38 +129,33 @@ class SlicingStream(ReadOnlyIOStream):
         # for this slice) that should be closed together with the view.
         self._own_source = own_source
         self._seekable = is_seekable(stream)
-        # Split lock into the I/O guard and the re-seek policy so the latter can later
-        # be engaged without a lock (e.g. a single-consumer view that still re-seeks).
-        self._io_guard: ContextManager[object] = (
-            lock if lock is not None else nullcontext()
-        )
-        self._seek_before_read = lock is not None
+        self._io_guard = io_guard
+        self._seek_before_read = seek_before_read
         self._check_open_fn = check_open
-
-        if self._seekable:
-            # Re-seek mode (locked / SharedSource views): do not touch the shared handle
-            # at construction — not even ``tell()``. ``io.BufferedReader.tell`` is not
-            # thread-safe; concurrent unlocked tells while another view holds the lock
-            # for seek+read corrupt the buffer and yield wrong bytes / CRC mismatches
-            # (ZIP ``MemberStreams.CONCURRENT`` fan-out). Resolve a missing ``start``
-            # under the guard; otherwise leave the handle alone until the first read.
-            if self._seek_before_read:
-                if start is None:
-                    with self._io_guard:
-                        start = stream.tell()
-            else:
-                initial_pos = stream.tell()
-                if start is None:
-                    start = initial_pos
-                # Single-consumer: eager seek so the slice starts at ``start``.
-                if initial_pos != start:
-                    stream.seek(start)
-        elif start is not None:
-            raise ValueError("Cannot slice a non-seekable stream with a start position")
-
-        self._start = start  # absolute start in the underlying stream (seekable only)
-        self._length = length
         self._pos = 0  # position relative to the start of the slice
+
+        if not self._seekable:
+            if start is not None:
+                raise ValueError(
+                    "Cannot slice a non-seekable stream with a start position"
+                )
+            self._start = None
+            self._length = length
+            self._unpositioned = False
+            return
+
+        # Resolve start and clamp length. For a locked view this block holds the
+        # lock so a cheap size probe never unlocked-tells a BufferedReader.
+        # Single-consumer: the probe restores the caller's position; we do not
+        # seek to ``start`` here (first read/seek does).
+        with self._io_guard:
+            if start is None:
+                start = stream.tell()
+            source_size = source_byte_size(stream)
+        self._start = start
+        self._length = _clamp_slice_length(start, length, source_size)
+        # Locked views re-seek on every read, so they are never "unpositioned".
+        self._unpositioned = not self._seek_before_read
 
     def _check_open(self) -> None:
         if self.closed:
@@ -169,11 +198,15 @@ class SlicingStream(ReadOnlyIOStream):
         with self._io_guard:
             self._check_open()
             # Re-seek mode: reposition to this view's absolute offset so interleaved
-            # views never clobber each other. Otherwise read from wherever the handle
-            # currently sits (single-consumer contract).
-            if self._seek_before_read:
-                assert self._start is not None  # re-seek views are always seekable
+            # views never clobber each other. Single-consumer: the first I/O seeks
+            # to start (construction left the handle where the caller had it); later
+            # reads continue from wherever the handle sits.
+            if self._seek_before_read or self._unpositioned:
+                assert (
+                    self._start is not None
+                )  # re-seek / lazy-position views are seekable
                 self._stream.seek(self._start + self._pos)
+                self._unpositioned = False
             if unbounded_drain:
                 data = self._stream.read(n)
             elif bounded_drain:
@@ -236,6 +269,7 @@ class SlicingStream(ReadOnlyIOStream):
         if not self._seek_before_read:
             # Single-consumer: keep the underlying handle in sync with the view.
             self._stream.seek(start_abs + new_relative)
+            self._unpositioned = False
         # Re-seek mode: only update _pos — the next read re-seeks under the guard.
         self._pos = new_relative
         return self._pos
@@ -243,29 +277,17 @@ class SlicingStream(ReadOnlyIOStream):
     def seekable(self) -> bool:
         return self._seekable
 
-    def is_shared_view(self) -> bool:
-        """Whether this is a locked ``SharedSource`` view (re-seek-before-read mode)."""
-        return self._seek_before_read
-
-    def independent_view(self) -> "SlicingStream":
+    def independent_view(self) -> SlicingStream:
         """A fresh, position-isolated sibling over the same region, lock, and source.
 
-        Only valid on a locked ``SharedSource`` view: the sibling shares the underlying
+        Only valid on a :class:`SharedView`: the sibling shares the underlying
         handle + lock + bounds but keeps its own ``_pos``, so a second consumer (e.g. a
         truncation scan running while the accelerator holds another view mid-stream) re-seeks
         under the same lock and never clobbers this view's cursor. A single-consumer view has
         no lock to coordinate on, so this raises there.
         """
-        if not self._seek_before_read:
-            raise io.UnsupportedOperation(
-                "independent_view requires a locked SharedSource view"
-            )
-        return SlicingStream(
-            self._stream,
-            start=self._start,
-            length=self._length,
-            lock=self._io_guard,
-            check_open=self._check_open_fn,
+        raise io.UnsupportedOperation(
+            "independent_view requires a locked SharedSource view"
         )
 
     def close(self) -> None:
@@ -280,9 +302,9 @@ class SlicingStream(ReadOnlyIOStream):
     def size(self) -> int | None:
         """Total slice length when cheaply knowable (the fsspec-style ``size`` convention).
 
-        A declared ``length`` answers directly; an open-ended slice derives it from the
-        underlying stream's cheap size (``source_byte_size``), and reports ``None`` when
-        that is unknowable — never by an expensive end-seek.
+        A declared (and construction-clamped) ``length`` answers directly; an open-ended
+        slice derives it from the underlying stream's cheap size (``source_byte_size``),
+        and reports ``None`` when that is unknowable — never by an expensive end-seek.
         """
         if self._length is not None:
             return self._length
@@ -292,6 +314,53 @@ class SlicingStream(ReadOnlyIOStream):
         if underlying is None:
             return None
         return max(underlying - self._start, 0)
+
+
+class SharedView(SlicingStream):
+    """Locked re-seek-before-read view over ``[start, start+length)``.
+
+    Every ``read`` does ``seek(start + _pos); read(n)`` under ``lock`` so interleaved
+    views never clobber each other. ``seek`` only updates this view's ``_pos``; the
+    next ``read`` re-seeks.
+
+    Construction does not call unlocked ``tell``/``seek`` on the shared handle.
+    A missing ``start`` is read from ``tell()`` under the lock. A cheap size probe
+    (to clamp ``length``) also runs under the lock and restores the handle.
+    Unlocked ``BufferedReader.tell`` under concurrency corrupts the buffer even when
+    every later ``read`` is locked.
+    """
+
+    def __init__(
+        self,
+        stream: BinaryIO,
+        start: int | None = None,
+        length: int | None = None,
+        *,
+        lock: ContextManager[object],
+        check_open: Callable[[], None] | None = None,
+        own_source: bool = False,
+    ) -> None:
+        # Skip SlicingStream.__init__: that path is the single-consumer contract
+        # (nullcontext, lazy-position). ReadOnlyIOStream sets the RawIOBase closed flag.
+        ReadOnlyIOStream.__init__(self)
+        self._init_from_source(
+            stream,
+            start,
+            length,
+            io_guard=lock,
+            seek_before_read=True,
+            check_open=check_open,
+            own_source=own_source,
+        )
+
+    def independent_view(self) -> SharedView:
+        return SharedView(
+            self._stream,
+            start=self._start,
+            length=self._length,
+            lock=self._io_guard,
+            check_open=self._check_open_fn,
+        )
 
 
 def fix_stream_start_position(stream: BinaryIO) -> BinaryIO:

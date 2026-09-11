@@ -7,9 +7,9 @@ offset — even on a single thread. :class:`SharedSource` mints independent, see
 and every read re-seeks the underlying to that absolute position under a shared lock so
 the seek+read pair is atomic.
 
-Views are :class:`~archivey.internal.streams.streamtools.slice.SlicingStream` instances
-with the source lock engaged (design §H: compose, don't replace) — the same bound/tell
-logic, plus lock+reseek on every read.
+Views are :class:`~archivey.internal.streams.streamtools.slice.SharedView` instances
+(a :class:`~archivey.internal.streams.streamtools.slice.SlicingStream` subclass) with
+the source lock engaged — the same bound/tell logic, plus lock+reseek on every read.
 
 This is the streamtools analogue of stdlib ``zipfile._SharedFile``. It is deliberately
 archivey-dependency-free: it raises stdlib-shaped errors (``ValueError`` / ``OSError`` /
@@ -39,7 +39,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
     source_byte_size,
 )
-from archivey.internal.streams.streamtools.slice import SlicingStream
+from archivey.internal.streams.streamtools.slice import SharedView
 
 
 class SharedSource:
@@ -75,11 +75,13 @@ class SharedSource:
             self._path = path
             self._handle: BinaryIO = open(path, "rb")
             self._owns_handle = True
+            # Frozen at construction: the source is assumed not to grow.
             self._size: int | None = source_byte_size(path)
         else:
             if not is_seekable(source):
                 raise ValueError("SharedSource requires a seekable BinaryIO source")
             self._handle = source
+            # Frozen at construction: the source is assumed not to grow.
             self._size = source_byte_size(source)
 
         if wrap_handle is not None:
@@ -94,14 +96,16 @@ class SharedSource:
         """Cheap total byte size of the source, when knowable."""
         return self._size
 
-    def view(self, start: int, length: int | None = None) -> BinaryIO:
+    def view(self, start: int, length: int | None = None) -> SharedView:
         """Mint a non-owning seekable view over ``[start, start+length)``.
 
-        ``length is None`` means "to the end of the source". When the source size is
-        known, a view that extends past EOF is **clamped** to the available bytes (like a
-        real stream / :class:`SlicingStream`) — so a backend opening a member from a
-        truncated archive still gets a readable short view instead of failing at
-        construction. Negative ``start``/``length`` remain hard errors.
+        ``length is None`` means "to the end of the source". Clamping of an over-long
+        ``length`` (and freezing an omitted one to the remaining bytes) lives in
+        :class:`SharedView` / :class:`SlicingStream` construction, so a backend opening
+        a member from a truncated archive still gets a readable short view instead of
+        failing here. This method only applies the ``start >= size → empty view``
+        shortcut when ``_size`` is already known, to skip a second size probe.
+        Negative ``start``/``length`` remain hard errors.
 
         When ``independent_handles`` is eventually engaged for a path source, this is the
         entry point that would open a fresh ``open(path, 'rb')`` per view; today every
@@ -114,21 +118,16 @@ class SharedSource:
             raise ValueError(f"view length must be non-negative, got {length}")
 
         size = self._size
-        if size is not None:
-            if start >= size:
-                # Past EOF: empty view (reads return b""), matching a real stream seek
-                # past the end. Keep ``start`` so tell/seek stay well-defined.
-                length = 0
-            elif length is None:
-                length = size - start
-            else:
-                length = min(length, size - start)
+        if size is not None and start >= size:
+            # Past EOF: empty view (reads return b""), matching a real stream seek
+            # past the end. Keep ``start`` so tell/seek stay well-defined.
+            length = 0
 
         # independent_handles is dormant: always share ``_handle``. When engaged for a
         # path source, mint ``open(self._path, "rb")`` here instead and adjust close
         # semantics so the per-view FD is owned by the view.
         _ = self._independent_handles  # documented seam; intentionally unused for now
-        return SlicingStream(
+        return SharedView(
             self._handle,
             start=start,
             length=length,

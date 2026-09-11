@@ -16,6 +16,7 @@ import pytest
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.streams.streamtools import (
+    SharedView,
     SlicingStream,
     ensure_full_count_reads,
     fix_stream_start_position,
@@ -314,6 +315,48 @@ class TestSlicingStreamSize:
         sliced = SlicingStream(NonSeekableBytesIO(DATA), length=None)
         assert sliced.size is None
 
+    def test_over_declared_length_is_clamped_to_source(self) -> None:
+        # Direct construction used to report the declared length even when the
+        # source was shorter (SharedSource.view already clamped). Truncated-archive
+        # members take this door; size is the ratio-guard denominator.
+        short = io.BytesIO(DATA[:10])
+        sliced = SlicingStream(short, start=0, length=999)
+        assert sliced.size == 10
+        assert sliced.read() == DATA[:10]
+
+
+class TestSlicingStreamConstruction:
+    def test_single_consumer_does_not_leave_handle_at_start(self) -> None:
+        """Construction must not reposition the caller's handle to ``start``.
+
+        The historical eager seek left the handle at ``start`` before any read.
+        A cheap size probe (tell / SEEK_END / restore) is allowed; the handle
+        must end where the caller left it.
+        """
+
+        class _Ops(io.BytesIO):
+            def __init__(self, data: bytes) -> None:
+                super().__init__(data)
+                self.ops: list[tuple[object, ...]] = []
+
+            def tell(self) -> int:
+                pos = super().tell()
+                self.ops.append(("tell", pos))
+                return pos
+
+            def seek(self, offset: int, whence: int = 0) -> int:  # type: ignore[override]
+                result = super().seek(offset, whence)
+                self.ops.append(("seek", offset, whence))
+                return result
+
+        underlying = _Ops(DATA)
+        underlying.seek(7)
+        underlying.ops.clear()
+        sliced = SlicingStream(underlying, start=2, length=4)
+        assert underlying.tell() == 7
+        assert ("seek", 2, 0) not in underlying.ops
+        assert sliced.read() == DATA[2:6]
+
 
 class TestSlicingStreamOwnSource:
     class _Tracked(io.BytesIO):
@@ -334,22 +377,31 @@ class TestSlicingStreamOwnSource:
         assert underlying.closed_flag is True
 
 
-class TestSlicingStreamLockedConstruction:
+class TestSharedViewConstruction:
     """Locked views must not probe the shared handle unlocked at construction.
 
     ``io.BufferedReader.tell`` is not thread-safe. A concurrent unlocked ``tell`` while
     another thread holds the lock for seek+read corrupts the buffer — the ZIP
-    ``MemberStreams.CONCURRENT`` CRC race.
+    ``MemberStreams.CONCURRENT`` CRC race. A cheap size probe (to clamp ``length``)
+    may tell/seek, but only under the lock.
     """
 
-    def test_locked_with_start_does_not_call_tell(self) -> None:
-        class _NoTell(io.BytesIO):
-            def tell(self) -> int:
-                raise AssertionError("locked SlicingStream must not tell() at init")
-
+    def test_locked_with_start_does_not_call_tell_unlocked(self) -> None:
         lock = threading.Lock()
-        underlying = _NoTell(DATA)
-        sliced = SlicingStream(underlying, start=5, length=4, lock=lock)
+
+        class _NoUnlockedTell(io.BytesIO):
+            def tell(self) -> int:
+                if not lock.locked():
+                    raise AssertionError("SharedView must not tell() unlocked at init")
+                return super().tell()
+
+            def seek(self, offset: int, whence: int = 0) -> int:  # type: ignore[override]
+                if not lock.locked():
+                    raise AssertionError("SharedView must not seek() unlocked at init")
+                return super().seek(offset, whence)
+
+        underlying = _NoUnlockedTell(DATA)
+        sliced = SharedView(underlying, start=5, length=4, lock=lock)
         assert sliced.read() == DATA[5:9]
 
     def test_locked_without_start_tells_under_lock(self) -> None:
@@ -363,8 +415,9 @@ class TestSlicingStreamLockedConstruction:
 
         underlying = _TellUnderLock(DATA)
         underlying.seek(7)
-        sliced = SlicingStream(underlying, length=3, lock=lock)
-        assert held == [True]
+        sliced = SharedView(underlying, length=3, lock=lock)
+        assert held
+        assert all(held)
         assert sliced.read() == DATA[7:10]
 
     def test_concurrent_locked_views_over_zipfile_fp(self, tmp_path: Path) -> None:
@@ -401,7 +454,7 @@ class TestSlicingStreamLockedConstruction:
                                 fp.seek(saved)
                         # Construct outside the lock (as ZipReader does after
                         # ``_local_data_region``) — must not unlock-tell the shared fp.
-                        raw = SlicingStream(
+                        raw = SharedView(
                             zf.fp,  # type: ignore[arg-type]
                             start=start,
                             length=info.compress_size,

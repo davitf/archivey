@@ -85,6 +85,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.streamtools import (
     CloseLockedStream,
+    SharedView,
     SlicingStream,
     is_seekable,
     is_stream,
@@ -430,7 +431,7 @@ class ZipReader(BaseArchiveReader):
         # ZipFile.open / ZipExtFile.close / ZipFile.close. Serialize those under
         # CONCURRENT; leave reads to zipfile's own _SharedFile lock so independent
         # members can still decompress in parallel. The unencrypted codec path uses
-        # the same ZipFile._lock via locked SlicingStream views.
+        # the same ZipFile._lock via SharedView.
         self._handle_lock: threading.Lock | None = (
             threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
         )
@@ -1030,7 +1031,7 @@ class ZipReader(BaseArchiveReader):
                 fp.seek(saved)
 
     def _raw_member_stream(self, info: zipfile.ZipInfo) -> BinaryIO:
-        """Locked :class:`SlicingStream` over the member's raw compressed payload."""
+        """Locked :class:`SharedView` over the member's raw compressed payload."""
         data_start, length = self._local_data_region(info)
         fp = self._archive.fp
         if fp is None:
@@ -1040,7 +1041,7 @@ class ZipReader(BaseArchiveReader):
             if self._archive.fp is None:
                 raise _closed_archive_error()
 
-        return SlicingStream(
+        return SharedView(
             cast("BinaryIO", fp),
             start=data_start,
             length=length,
