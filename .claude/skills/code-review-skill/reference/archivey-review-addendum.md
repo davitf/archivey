@@ -117,6 +117,27 @@ When posting to a PR for a split implementor/maintainer workflow: put blocks 1�
 PR; if you also chat with the maintainer, **send only block 3 packets** unless they ask
 for the full handoff.
 
+**A decision the maintainer already settled is no longer a block 3 item.** Move it into
+block 2 where the implementor works, marked as theirs and not yours:
+
+> **Maintainer decision (davitf): fix, do not defer.** Nits on this PR are to be closed,
+> not carried.
+
+Re-raising a settled call as an open question sends the implementor back to the maintainer
+for an answer that exists; leaving it unmarked lets it read as reviewer preference, which
+gets argued with or skipped. Name the decider and link the comment or packet it came from
+where there is one. A recommendation the maintainer has **not** ruled on stays yours,
+however confident — do not promote your own preference to "decided" because nobody
+objected.
+
+**Do not hold the review waiting on a decision that has already been made.** Once every
+block 3 packet is settled, the review goes on the PR. The counterpart rule for the
+responding agent is in
+[`address-review-findings`](../../address-review-findings/SKILL.md) §6; this is the same
+discipline on the reviewer's side, and both exist because a settled decision that lives
+only in a chat transcript is lost — a fresh container has no memory of earlier sessions
+(`CLAUDE.md`).
+
 Same three blocks apply when reviewing an OpenSpec proposal (§9); “what this change is”
 summarizes the proposal’s intent, and block 2 is the handoff for whoever will revise the
 proposal / implement later.
@@ -632,6 +653,33 @@ Two mechanisms satisfy this; use whichever your environment gives you:
 
   Other hosts use their own equivalent — the requirement is the *identifiability*, not that
   specific string. Do not sign a comment with a tool that did not write it.
+
+**Claude Code: do not write that footer yourself — the tool appends it.** Verified on #326
+against review bodies, inline review comments, and thread replies: each came back carrying
+exactly one server-added footer when the posted text had none. A footer you add as well is
+deduplicated on inline comments and replies, but **not** on a review body, which then shows
+it twice ([review 5178024776](https://github.com/davitf/archivey/pull/326#pullrequestreview-5178024776)).
+Leave it off and let the tool add it.
+
+This is host-specific. **Cursor and any other host whose posting path does not append a
+footer must still add its own** — the requirement is identifiability, and a comment posted
+through the maintainer's account with no marker fails it. If you do not know whether your
+host appends one, post one comment without it and read the stored body back before assuming.
+
+### A short marker at the top, not only a footer
+
+A footer is only visible once the reader reaches the end. Open **every** posted comment —
+review body, inline finding, reply — with one short line naming the agent, the skill, and
+the HEAD it reviewed:
+
+```
+**Claude Code** · `code-review-skill` · review of `3060ac51`
+```
+
+On a PR whose threads mix maintainer questions, `cursor[bot]` dispositions, and a reviewer
+posting through the maintainer's account, this is what makes a thread scannable — the
+author avatar says `davitf` for two of those three. Keep it to one line; the detail belongs
+in the finding.
 
 ### Name the responder skill in the review body
 
