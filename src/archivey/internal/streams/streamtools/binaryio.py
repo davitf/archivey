@@ -47,13 +47,17 @@ def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
     """Fill ``b`` from ``src.read``, for streams that have no ``readinto``.
 
     Copies at most ``len(b)`` bytes. A ``read`` that returns more than the
-    buffer (a contract violation) is truncated to the buffer rather than
-    raising ``ValueError`` on the memoryview assignment and over-reporting.
+    buffer is a contract violation: those extra bytes are already consumed and
+    cannot be delivered without losing them, so this raises ``ValueError``
+    rather than truncating.
     """
     mv = memoryview(b).cast("B")
     data = src.read(len(mv))
     if len(data) > len(mv):
-        data = data[: len(mv)]
+        raise ValueError(
+            f"read({len(mv)}) returned {len(data)} bytes; the excess is already consumed "
+            "and cannot be delivered without losing it"
+        )
     mv[: len(data)] = data
     return len(data)
 

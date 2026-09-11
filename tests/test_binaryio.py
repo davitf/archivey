@@ -61,14 +61,14 @@ def test_readinto_via_read_short_at_eof() -> None:
     assert buf[:2] == b"ab"
 
 
-def test_readinto_via_read_truncates_overlong_read() -> None:
+def test_readinto_via_read_raises_on_overlong_read() -> None:
     class _OverRead:
         def read(self, n: int = -1) -> bytes:
             return b"abcdef"
 
     buf = bytearray(4)
-    assert readinto_via_read(_OverRead(), buf) == 4
-    assert bytes(buf) == b"abcd"
+    with pytest.raises(ValueError, match=r"read\(4\) returned 6 bytes"):
+        readinto_via_read(_OverRead(), buf)
 
 
 # --- read_exact ------------------------------------------------------------------------

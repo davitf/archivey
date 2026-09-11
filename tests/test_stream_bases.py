@@ -34,16 +34,16 @@ def test_readonly_base_derives_readinto_readall_and_flags() -> None:
         s.write(b"x")
 
 
-def test_readonly_readinto_truncates_overlong_read() -> None:
-    """A misbehaving read() that ignores n must not raise or over-report on readinto."""
+def test_readonly_readinto_raises_on_overlong_read() -> None:
+    """A misbehaving read() that ignores n is a contract violation, not silent truncation."""
 
     class _OverRead(ReadOnlyIOStream):
         def read(self, n: int = -1, /) -> bytes:
             return b"abcdef"
 
     buf = bytearray(4)
-    assert _OverRead().readinto(buf) == 4
-    assert bytes(buf) == b"abcd"
+    with pytest.raises(ValueError, match=r"read\(4\) returned 6 bytes"):
+        _OverRead().readinto(buf)
 
 
 def test_readonly_base_read_is_the_runtime_guard() -> None:
