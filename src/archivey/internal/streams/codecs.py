@@ -737,9 +737,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
         fallback: CodecSource = (
             self._fallback_path if self._fallback_path is not None else self._reopen()
         )
-        self._inner = GzipDecompressorStream(fallback)
-        # New engine: recache so seekable() matches the fallback, not the accelerator.
-        self._seekable = is_seekable(self._inner)
+        self._replace_inner(GzipDecompressorStream(fallback))
         self._verify = False
         try:
             old.close()

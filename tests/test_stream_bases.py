@@ -7,6 +7,7 @@ import io
 import pytest
 
 from archivey.internal.streams.streamtools import DelegatingStream, ReadOnlyIOStream
+from tests.streams_util import NonSeekableBytesIO
 
 
 class _FixedReader(ReadOnlyIOStream):
@@ -86,6 +87,13 @@ def test_delegating_seekable_is_fixed_at_construction() -> None:
     assert s.seekable() is True
     inner.flag = False
     assert s.seekable() is True
+
+
+def test_replace_inner_recaches_seekable() -> None:
+    s = DelegatingStream(io.BytesIO(b"x"))
+    assert s.seekable() is True
+    s._replace_inner(NonSeekableBytesIO(b"y"))
+    assert s.seekable() is False
 
 
 def test_delegating_base_close_closes_inner() -> None:

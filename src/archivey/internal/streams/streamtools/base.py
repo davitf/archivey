@@ -127,8 +127,13 @@ class DelegatingStream(ReadOnlyIOStream):
         # True when the subclass closes ``_inner`` itself (finalize guard, reap a
         # subprocess) and then calls ``super().close()`` only to mark this wrapper closed.
         self._manual_inner_close = manual_inner_close
-        # Seekability does not change for any source archivey wraps. Cache it so
-        # LockedStream does not need a second copy of the same answer.
+        # Cached at construction; a subclass that swaps ``_inner`` must go through
+        # ``_replace_inner`` so seekable() tracks the new engine.
+        self._seekable = is_seekable(inner)
+
+    def _replace_inner(self, inner: BinaryIO) -> None:
+        """Swap the inner stream, recaching anything derived from it."""
+        self._inner = inner
         self._seekable = is_seekable(inner)
 
     def read(self, n: int = -1, /) -> bytes:
@@ -152,7 +157,8 @@ class DelegatingStream(ReadOnlyIOStream):
     def seekable(self) -> bool:
         # is_seekable() handles the edge cases a bare inner.seekable() misses (a BufferedReader
         # over a non-seekable raw; a pipe that reports seekable()=True but cannot reposition).
-        # Cached at construction: seekability does not change under us.
+        # Cached at construction; a subclass that swaps ``_inner`` must go through
+        # ``_replace_inner``.
         return self._seekable
 
     def close(self) -> None:
