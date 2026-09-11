@@ -81,6 +81,27 @@ def test_delegating_base_close_closes_inner() -> None:
     s.close()  # idempotent
 
 
+def test_delegating_close_marks_closed_when_inner_close_fails() -> None:
+    class _FailingClose(io.BytesIO):
+        def close(self) -> None:
+            raise OSError("boom")
+
+    s = DelegatingStream(_FailingClose(b"x"))
+    with pytest.raises(OSError, match="boom"):
+        s.close()
+    assert s.closed
+    s.close()  # idempotent after the failed inner close
+
+
+def test_delegating_manual_inner_close_skips_inner() -> None:
+    inner = io.BytesIO(b"data")
+    s = DelegatingStream(inner, manual_inner_close=True)
+    s.close()
+    assert s.closed
+    assert not inner.closed
+    inner.close()
+
+
 def test_delegating_base_readinto_falls_back_without_inner_readinto() -> None:
     class _NoReadinto:
         def __init__(self, data: bytes) -> None:

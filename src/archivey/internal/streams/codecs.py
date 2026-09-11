@@ -167,7 +167,7 @@ class _AcceleratorStream(DelegatingStream):
     """
 
     def __init__(self, inner: object, *, trap: "_TrappingSource | None" = None) -> None:
-        super().__init__(ensure_binaryio(inner))
+        super().__init__(ensure_binaryio(inner), manual_inner_close=True)
         # The finalize callback must NOT reference self — a bound method would pin the wrapper
         # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
         self._finalize = weakref.finalize(self, self._close_inner, self._inner)
@@ -243,7 +243,7 @@ class _AcceleratorStream(DelegatingStream):
             return
         # Trigger the finalize guard (closes the raw object) once; it is then disarmed.
         self._finalize()
-        super(DelegatingStream, self).close()
+        super().close()
 
 
 class _TrappingSource(io.RawIOBase):

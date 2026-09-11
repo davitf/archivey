@@ -20,10 +20,7 @@ import io
 import threading
 from typing import TYPE_CHECKING, BinaryIO
 
-from archivey.internal.streams.streamtools.base import (
-    DelegatingStream,
-    ReadOnlyIOStream,
-)
+from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
     readinto_via_read,
@@ -73,13 +70,8 @@ class LockedStream(DelegatingStream):
     def close(self) -> None:
         if self.closed:
             return
-        try:
-            with self._lock:
-                self._inner.close()
-        finally:
-            # Mark the wrapper closed without re-entering the lock via super().close()
-            # if DelegatingStream.close also closes inner — close inner once under lock.
-            ReadOnlyIOStream.close(self)
+        with self._lock:
+            super().close()
 
 
 class CloseLockedStream(DelegatingStream):
@@ -101,8 +93,5 @@ class CloseLockedStream(DelegatingStream):
     def close(self) -> None:
         if self.closed:
             return
-        try:
-            with self._lock:
-                self._inner.close()
-        finally:
-            ReadOnlyIOStream.close(self)
+        with self._lock:
+            super().close()

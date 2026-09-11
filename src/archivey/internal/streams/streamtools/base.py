@@ -106,12 +106,27 @@ class DelegatingStream(ReadOnlyIOStream):
     (We use an explicit flag rather than auto-detecting an overridden ``read``: a plain
     pass-through override of ``read`` should keep the zero-copy path, and silent auto-detection
     would make that choice invisible and bug-prone.)
+
+    **Close ownership.** ``close`` closes ``inner`` and then marks this wrapper closed.
+    A subclass that must close ``inner`` itself (a finalize guard, reaping a subprocess)
+    passes ``manual_inner_close=True`` and calls ``super().close()`` afterwards to mark
+    the wrapper closed without closing ``inner`` a second time. Subclasses that only
+    need to hold a lock around close wrap ``super().close()`` in the lock instead.
     """
 
-    def __init__(self, inner: BinaryIO, *, readinto_passthrough: bool = True) -> None:
+    def __init__(
+        self,
+        inner: BinaryIO,
+        *,
+        readinto_passthrough: bool = True,
+        manual_inner_close: bool = False,
+    ) -> None:
         super().__init__()
         self._inner = inner
         self._readinto_passthrough = readinto_passthrough
+        # True when the subclass closes ``_inner`` itself (finalize guard, reap a
+        # subprocess) and then calls ``super().close()`` only to mark this wrapper closed.
+        self._manual_inner_close = manual_inner_close
 
     def nearest_resume_offset(self, target: int) -> int | None:
         """Forward the rewind-cost query inward (see ``ArchiveStream._maybe_warn_rewind``).
@@ -155,8 +170,11 @@ class DelegatingStream(ReadOnlyIOStream):
     def close(self) -> None:
         if self.closed:
             return
-        self._inner.close()
-        super().close()
+        try:
+            if not self._manual_inner_close:
+                self._inner.close()
+        finally:
+            super().close()
 
     @property
     def name(self) -> str:

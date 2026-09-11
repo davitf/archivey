@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from archivey.internal.streams.streamtools import LockedStream
+from archivey.internal.streams.streamtools import CloseLockedStream, LockedStream
 
 pytestmark = pytest.mark.concurrent_reader
 
@@ -84,3 +84,33 @@ def test_tar_iso_concurrent_open_uses_lock(tmp_path) -> None:
         assert s2.read() == b"bb"
         s1.close()
         s2.close()
+
+
+class _CloseCounter(io.BytesIO):
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+def test_locked_stream_close_closes_inner_once() -> None:
+    inner = _CloseCounter(b"data")
+    s = LockedStream(inner, threading.Lock())
+    s.close()
+    assert inner.close_calls == 1
+    assert s.closed
+    s.close()
+    assert inner.close_calls == 1
+
+
+def test_close_locked_stream_close_closes_inner_once() -> None:
+    inner = _CloseCounter(b"data")
+    s = CloseLockedStream(inner, threading.Lock())
+    s.close()
+    assert inner.close_calls == 1
+    assert s.closed
+    s.close()
+    assert inner.close_calls == 1
