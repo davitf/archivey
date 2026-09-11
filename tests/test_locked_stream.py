@@ -96,6 +96,38 @@ class _CloseCounter(io.BytesIO):
         super().close()
 
 
+class _RawIOWithoutReadinto(io.RawIOBase):
+    """``io.RawIOBase`` advertises ``readinto`` but the default raises ``NotImplementedError``."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._b = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._b.read(n)
+
+
+def test_locked_stream_readinto_falls_back_when_inner_readinto_unimplemented() -> None:
+    s = LockedStream(_RawIOWithoutReadinto(b"xyz"), threading.Lock())
+    buf = bytearray(2)
+    assert s.readinto(buf) == 2
+    assert bytes(buf) == b"xy"
+
+
+def test_locked_stream_readinto_none_raises_blocking() -> None:
+    class _NonBlockingReadinto(io.BytesIO):
+        def readinto(self, b):  # type: ignore[no-untyped-def]
+            return None
+
+    with pytest.raises(BlockingIOError):
+        LockedStream(_NonBlockingReadinto(b"x"), threading.Lock()).readinto(
+            bytearray(4)
+        )
+
+
 def test_locked_stream_close_closes_inner_once() -> None:
     inner = _CloseCounter(b"data")
     s = LockedStream(inner, threading.Lock())

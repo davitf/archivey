@@ -140,6 +140,36 @@ def test_delegating_base_readinto_falls_back_without_inner_readinto() -> None:
     assert bytes(buf) == b"xy"
 
 
+class _RawIOWithoutReadinto(io.RawIOBase):
+    """``io.RawIOBase`` advertises ``readinto`` but the default raises ``NotImplementedError``."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._b = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._b.read(n)
+
+
+def test_delegating_readinto_falls_back_when_inner_readinto_unimplemented() -> None:
+    s = DelegatingStream(_RawIOWithoutReadinto(b"xyz"))
+    buf = bytearray(2)
+    assert s.readinto(buf) == 2
+    assert bytes(buf) == b"xy"
+
+
+def test_delegating_readinto_none_raises_blocking() -> None:
+    class _NonBlockingReadinto(io.BytesIO):
+        def readinto(self, b):  # type: ignore[no-untyped-def]
+            return None
+
+    with pytest.raises(BlockingIOError):
+        DelegatingStream(_NonBlockingReadinto(b"x")).readinto(bytearray(4))
+
+
 def test_delegating_readinto_passthrough_false_routes_through_read() -> None:
     """With readinto_passthrough=False, readinto goes through the subclass's read() (so a
     side-effecting read override is not bypassed) — even when the inner has its own readinto."""

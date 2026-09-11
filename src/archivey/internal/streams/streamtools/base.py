@@ -27,6 +27,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
     readinto_via_read,
     source_name,
+    try_readinto,
 )
 
 if TYPE_CHECKING:
@@ -140,12 +141,14 @@ class DelegatingStream(ReadOnlyIOStream):
         return self._inner.read(n)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        # Zero-copy passthrough when allowed and the inner exposes readinto; otherwise route
-        # through self.read() (the read()-based base), so an overridden read() is not bypassed.
+        # Zero-copy passthrough when allowed and the inner exposes a usable
+        # readinto; otherwise route through self.read() so an overridden
+        # read() is not bypassed. try_readinto treats a missing, refused, or
+        # NotImplemented inner readinto as "not usable".
         if self._readinto_passthrough:
-            inner_readinto = getattr(self._inner, "readinto", None)
-            if inner_readinto is not None:
-                return inner_readinto(b)
+            n = try_readinto(self._inner, b)
+            if n is not None:
+                return n
         return super().readinto(b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:

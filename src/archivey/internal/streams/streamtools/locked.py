@@ -21,7 +21,10 @@ import threading
 from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.internal.streams.streamtools.base import DelegatingStream
-from archivey.internal.streams.streamtools.binaryio import readinto_via_read
+from archivey.internal.streams.streamtools.binaryio import (
+    readinto_via_read,
+    try_readinto,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -44,11 +47,14 @@ class LockedStream(DelegatingStream):
             return self._inner.read(n)
 
     def readinto(self, b: WriteableBuffer, /) -> int:
+        # Stay under the lock for both the native and fallback path.
+        # super().readinto() would call self.read() on fallback, and
+        # LockedStream.read re-acquires this (non-reentrant) lock.
         with self._lock:
-            readinto = getattr(self._inner, "readinto", None)
-            if readinto is None:
-                return readinto_via_read(self._inner, b)
-            return readinto(b)
+            n = try_readinto(self._inner, b)
+            if n is not None:
+                return n
+            return readinto_via_read(self._inner, b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self.seekable():

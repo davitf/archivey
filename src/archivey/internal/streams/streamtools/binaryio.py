@@ -43,6 +43,38 @@ class ReadableStream(Protocol):
     def read(self, n: int = ..., /) -> bytes: ...
 
 
+_BLOCKING_READ_MESSAGE = (
+    "underlying stream returned no data without reaching EOF (non-blocking "
+    "stream?); archivey requires a blocking stream"
+)
+
+
+def try_readinto(stream: Any, b: "WriteableBuffer") -> int | None:
+    """Call ``stream.readinto(b)`` when it is a real implementation.
+
+    Returns the filled-byte count, or ``None`` if ``stream`` has no usable
+    ``readinto`` so the caller can fall back to ``read``:
+
+    - the attribute is missing (a partial file-like with only ``read``);
+    - the call raises ``NotImplementedError`` or ``UnsupportedOperation``
+      (``io.RawIOBase`` advertises ``readinto`` but the default raises;
+      some duck-typed objects advertise it and then refuse).
+
+    A native ``readinto`` that returns ``None`` is the non-blocking empty
+    case and raises ``BlockingIOError``, matching :meth:`BinaryIOWrapper.read`.
+    """
+    readinto = getattr(stream, "readinto", None)
+    if readinto is None:
+        return None
+    try:
+        n = readinto(b)
+    except (NotImplementedError, io.UnsupportedOperation):
+        return None
+    if n is None:
+        raise BlockingIOError(_BLOCKING_READ_MESSAGE)
+    return n
+
+
 def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
     """Fill ``b`` from ``src.read``, for streams that have no ``readinto``.
 
@@ -347,29 +379,13 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
             # alike return b"". archivey's readers pull synchronously and cannot make
             # progress on a non-blocking source, so surface that explicitly instead of
             # fabricating b"" (which would look like EOF and silently truncate the data).
-            raise BlockingIOError(
-                "underlying stream returned no data without reaching EOF (non-blocking "
-                "stream?); archivey requires a blocking stream"
-            )
+            raise BlockingIOError(_BLOCKING_READ_MESSAGE)
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        raw_readinto = getattr(self._raw, "readinto", None)
-        if raw_readinto is not None:
-            # Some partial file-likes advertise readinto but raise when actually called
-            # (e.g. NotImplementedError); fall back to read() in that case.
-            try:
-                n = raw_readinto(b)
-            except (NotImplementedError, io.UnsupportedOperation):
-                pass
-            else:
-                if n is None:
-                    # Same non-blocking case as read() above; don't report a 0-byte read.
-                    raise BlockingIOError(
-                        "underlying stream returned no data without reaching EOF "
-                        "(non-blocking stream?); archivey requires a blocking stream"
-                    )
-                return n
+        n = try_readinto(self._raw, b)
+        if n is not None:
+            return n
         return readinto_via_read(self, b)
 
     def write(self, data: Any, /) -> int:
