@@ -183,15 +183,13 @@ class SlicingStream(ReadOnlyIOStream):
         #   *next* empty read, and ``read_exact`` here would pull that ``TruncatedError``
         #   into this call and drop the prefix.
         # * Bounded ``read(-1)`` — ``read_exact``: the caller asked for the whole slice and
-        #   will not call again, so gather to the bound or EOF (the complete-stream shape
-        #   ``DecompressorStream.readall`` also takes).
+        #   will not call again (``test_bounded_drain_pulls_deferred_truncation``).
         # * Unbounded ``read(-1)`` — no count to fill; pass through.
         #
         # None of this rescues a RawIO that shorts mid-stream; per ADR 0014 that inner
         # "needs a buffer in front", which is what ``ensure_full_count_reads`` puts at the
         # source boundary. Every inner a backend slices is full-count already.
-        unbounded_drain = n < 0 and self._length is None
-        bounded_drain = n < 0 and self._length is not None
+        drain = n < 0
         n = self._compute_bytes_to_read(n)  # stays negative for an unbounded drain
         if n == 0:
             return b""
@@ -207,12 +205,12 @@ class SlicingStream(ReadOnlyIOStream):
                 )  # re-seek / lazy-position views are seekable
                 self._stream.seek(self._start + self._pos)
                 self._unpositioned = False
-            if unbounded_drain:
-                data = self._stream.read(n)
-            elif bounded_drain:
-                data = read_exact(self._stream, n)
-            else:
+            if not drain:
                 data = read_full_count(self._stream, n)
+            elif self._length is None:
+                data = self._stream.read(n)
+            else:
+                data = read_exact(self._stream, n)
             self._pos += len(data)
             return data
 

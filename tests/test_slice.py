@@ -26,6 +26,23 @@ from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
 DATA = b"0123456789abcdefghijklmnopqrstuvwxyz"
 
 
+class _DeliverThenRaise(io.RawIOBase):
+    """Mimics DecompressorStream: short prefix, then raise on the empty read."""
+
+    def __init__(self, prefix: bytes) -> None:
+        self._prefix = prefix
+        self._delivered = False
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:  # type: ignore[override]
+        if not self._delivered:
+            self._delivered = True
+            return self._prefix
+        raise TruncatedError("stream ended before the declared size")
+
+
 class TestSlicingStream:
     def test_read_with_start_and_length(self) -> None:
         sliced = SlicingStream(io.BytesIO(DATA), start=5, length=10)
@@ -170,29 +187,25 @@ class TestSlicingStream:
         which is exactly what a truncated 7z member read through
         ``SlicingStream(folder_stream, length=size)`` would lose.
         """
-
-        class _DeliverThenRaise(io.RawIOBase):
-            """Mimics DecompressorStream: short prefix, then raise on the empty read."""
-
-            def __init__(self, prefix: bytes) -> None:
-                self._prefix = prefix
-                self._delivered = False
-
-            def readable(self) -> bool:
-                return True
-
-            def read(self, size: int = -1) -> bytes:  # type: ignore[override]
-                if not self._delivered:
-                    self._delivered = True
-                    return self._prefix
-                raise TruncatedError("stream ended before the declared size")
-
         prefix = DATA[:4]
         sliced = SlicingStream(_DeliverThenRaise(prefix), length=20)
 
         assert sliced.read(20) == prefix  # prefix delivered, not swallowed
         with pytest.raises(TruncatedError):
             sliced.read(20)
+
+    def test_bounded_drain_pulls_deferred_truncation(self) -> None:
+        """Bounded ``read(-1)`` uses ``read_exact``; a deliver-then-raise prefix is lost.
+
+        Contrast ``test_sized_read_preserves_deliver_then_raise``: sized ``read(n)``
+        returns the prefix. Drain is the complete-stream shape and will not be
+        called again, so it gathers. Pinned so the two helpers' docstrings are not
+        the only record of the asymmetry.
+        """
+        prefix = DATA[:4]
+        sliced = SlicingStream(_DeliverThenRaise(prefix), length=20)
+        with pytest.raises(TruncatedError):
+            sliced.read(-1)
 
     def test_bounded_read_all_gathers_across_short_reads(self) -> None:
         """``read()`` on a bounded slice must gather across short sized reads.
