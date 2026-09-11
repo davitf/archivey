@@ -43,6 +43,21 @@ class ReadableStream(Protocol):
     def read(self, n: int = ..., /) -> bytes: ...
 
 
+def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
+    """Fill ``b`` from ``src.read``, for streams that have no ``readinto``.
+
+    Copies at most ``len(b)`` bytes. A ``read`` that returns more than the
+    buffer (a contract violation) is truncated to the buffer rather than
+    raising ``ValueError`` on the memoryview assignment and over-reporting.
+    """
+    mv = memoryview(b).cast("B")
+    data = src.read(len(mv))
+    if len(data) > len(mv):
+        data = data[: len(mv)]
+    mv[: len(data)] = data
+    return len(data)
+
+
 def read_exact(stream: ReadableStream, n: int) -> bytes:
     """Read exactly ``n`` bytes, or fewer only if the stream ends first.
 
@@ -351,10 +366,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
                         "(non-blocking stream?); archivey requires a blocking stream"
                     )
                 return n
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        return readinto_via_read(self, b)
 
     def write(self, data: Any, /) -> int:
         write = getattr(self._raw, "write", None)

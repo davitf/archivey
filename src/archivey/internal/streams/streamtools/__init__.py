@@ -42,6 +42,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     is_stream,
     read_exact,
     read_full_count,
+    readinto_via_read,
     source_byte_size,
     source_name,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "is_stream",
     "read_exact",
     "read_full_count",
+    "readinto_via_read",
     "skip_forward",
     "source_byte_size",
     "source_name",

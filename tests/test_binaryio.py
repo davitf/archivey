@@ -22,6 +22,7 @@ from archivey.internal.streams.streamtools import (
     is_seekable,
     is_stream,
     read_exact,
+    readinto_via_read,
 )
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
 
@@ -43,6 +44,31 @@ class ReadIntoStream(OnlyReadStream):
 
     def readinto(self, b) -> int:  # type: ignore[no-untyped-def]  # test double
         return self._inner.readinto(b)
+
+
+# --- readinto_via_read -----------------------------------------------------------------
+
+
+def test_readinto_via_read_fills_buffer() -> None:
+    buf = bytearray(4)
+    assert readinto_via_read(io.BytesIO(DATA), buf) == 4
+    assert bytes(buf) == DATA[:4]
+
+
+def test_readinto_via_read_short_at_eof() -> None:
+    buf = bytearray(10)
+    assert readinto_via_read(io.BytesIO(b"ab"), buf) == 2
+    assert buf[:2] == b"ab"
+
+
+def test_readinto_via_read_truncates_overlong_read() -> None:
+    class _OverRead:
+        def read(self, n: int = -1) -> bytes:
+            return b"abcdef"
+
+    buf = bytearray(4)
+    assert readinto_via_read(_OverRead(), buf) == 4
+    assert bytes(buf) == b"abcd"
 
 
 # --- read_exact ------------------------------------------------------------------------

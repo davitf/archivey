@@ -33,6 +33,7 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
     read_full_count,
+    readinto_via_read,
 )
 from archivey.internal.streams.verify import MemberVerifier, build_member_verifier
 from archivey.types import HashAlgorithm
@@ -399,10 +400,7 @@ class ArchiveStream(ReadOnlyIOStream):
     def readinto(self, b: "WriteableBuffer", /) -> int:
         # Always route through read() so full-count coalesce (and fused verify)
         # stay consistent — inner.readinto may be up-to-n.
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        return readinto_via_read(self, b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable_hint:

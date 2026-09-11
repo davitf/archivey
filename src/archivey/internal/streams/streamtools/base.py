@@ -23,7 +23,11 @@ import abc
 import io
 from typing import TYPE_CHECKING, Any, BinaryIO
 
-from archivey.internal.streams.streamtools.binaryio import is_seekable, source_name
+from archivey.internal.streams.streamtools.binaryio import (
+    is_seekable,
+    readinto_via_read,
+    source_name,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -50,10 +54,7 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
         """Canonical ``readinto``: read into ``b`` via the subclass's ``read``."""
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        return readinto_via_read(self, b)
 
     def readall(self) -> bytes:
         chunks = bytearray()

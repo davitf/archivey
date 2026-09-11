@@ -24,7 +24,10 @@ from archivey.internal.streams.streamtools.base import (
     DelegatingStream,
     ReadOnlyIOStream,
 )
-from archivey.internal.streams.streamtools.binaryio import is_seekable
+from archivey.internal.streams.streamtools.binaryio import (
+    is_seekable,
+    readinto_via_read,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -51,10 +54,7 @@ class LockedStream(DelegatingStream):
         with self._lock:
             readinto = getattr(self._inner, "readinto", None)
             if readinto is None:
-                mv = memoryview(b).cast("B")
-                data = self._inner.read(len(mv))
-                mv[: len(data)] = data
-                return len(data)
+                return readinto_via_read(self._inner, b)
             return readinto(b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:

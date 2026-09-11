@@ -34,6 +34,18 @@ def test_readonly_base_derives_readinto_readall_and_flags() -> None:
         s.write(b"x")
 
 
+def test_readonly_readinto_truncates_overlong_read() -> None:
+    """A misbehaving read() that ignores n must not raise or over-report on readinto."""
+
+    class _OverRead(ReadOnlyIOStream):
+        def read(self, n: int = -1, /) -> bytes:
+            return b"abcdef"
+
+    buf = bytearray(4)
+    assert _OverRead().readinto(buf) == 4
+    assert bytes(buf) == b"abcd"
+
+
 def test_readonly_base_read_is_the_runtime_guard() -> None:
     # read() is @abstractmethod. On Python 3.12+ ABCMeta rejects construction of a
     # subclass that omits it (TypeError). On 3.11, io.RawIOBase's C __new__ still lets
