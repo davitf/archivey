@@ -72,6 +72,22 @@ def test_delegating_base_forwards_to_inner() -> None:
     assert s.readable() is True and s.writable() is False
 
 
+def test_delegating_seekable_is_fixed_at_construction() -> None:
+    class _Flip(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"x")
+            self.flag = True
+
+        def seekable(self) -> bool:
+            return self.flag
+
+    inner = _Flip()
+    s = DelegatingStream(inner)
+    assert s.seekable() is True
+    inner.flag = False
+    assert s.seekable() is True
+
+
 def test_delegating_base_close_closes_inner() -> None:
     inner = io.BytesIO(b"data")
     s = DelegatingStream(inner)

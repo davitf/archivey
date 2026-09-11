@@ -127,6 +127,9 @@ class DelegatingStream(ReadOnlyIOStream):
         # True when the subclass closes ``_inner`` itself (finalize guard, reap a
         # subprocess) and then calls ``super().close()`` only to mark this wrapper closed.
         self._manual_inner_close = manual_inner_close
+        # Seekability does not change for any source archivey wraps. Cache it so
+        # LockedStream does not need a second copy of the same answer.
+        self._seekable = is_seekable(inner)
 
     def nearest_resume_offset(self, target: int) -> int | None:
         """Forward the rewind-cost query inward (see ``ArchiveStream._maybe_warn_rewind``).
@@ -165,7 +168,8 @@ class DelegatingStream(ReadOnlyIOStream):
     def seekable(self) -> bool:
         # is_seekable() handles the edge cases a bare inner.seekable() misses (a BufferedReader
         # over a non-seekable raw; a pipe that reports seekable()=True but cannot reposition).
-        return is_seekable(self._inner)
+        # Cached at construction: seekability does not change under us.
+        return self._seekable
 
     def close(self) -> None:
         if self.closed:

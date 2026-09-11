@@ -21,10 +21,7 @@ import threading
 from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.internal.streams.streamtools.base import DelegatingStream
-from archivey.internal.streams.streamtools.binaryio import (
-    is_seekable,
-    readinto_via_read,
-)
+from archivey.internal.streams.streamtools.binaryio import readinto_via_read
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -41,7 +38,6 @@ class LockedStream(DelegatingStream):
     def __init__(self, inner: BinaryIO, lock: threading.Lock | threading.RLock) -> None:
         super().__init__(inner)
         self._lock = lock
-        self._inner_seekable = is_seekable(inner)
 
     def read(self, n: int = -1, /) -> bytes:
         with self._lock:
@@ -55,7 +51,7 @@ class LockedStream(DelegatingStream):
             return readinto(b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        if not self._inner_seekable:
+        if not self.seekable():
             raise io.UnsupportedOperation("seek")
         with self._lock:
             return self._inner.seek(offset, whence)
@@ -63,9 +59,6 @@ class LockedStream(DelegatingStream):
     def tell(self, /) -> int:
         with self._lock:
             return self._inner.tell()
-
-    def seekable(self) -> bool:
-        return self._inner_seekable
 
     def close(self) -> None:
         if self.closed:
