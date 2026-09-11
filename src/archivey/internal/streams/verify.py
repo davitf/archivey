@@ -52,7 +52,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
-from archivey.internal.streams.resume import forward_resume_offset
+from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
@@ -595,7 +595,7 @@ class VerifyingStream(ReadOnlyIOStream):
 
     def nearest_resume_offset(self, target: int) -> int | None:
         # Length backstop around a codec stream; preserve the inner's offset space.
-        return forward_resume_offset(self._inner, target)
+        return ask_resume_offset(self._inner, target)
 
     def close(self) -> None:
         if self.closed:

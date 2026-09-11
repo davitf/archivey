@@ -162,16 +162,16 @@ def test_delegating_stream_does_not_forward_resume_offset() -> None:
     assert not hasattr(s, "nearest_resume_offset")
 
 
-def test_forward_resume_offset_helper() -> None:
-    from archivey.internal.streams.resume import forward_resume_offset
+def test_ask_resume_offset_helper() -> None:
+    from archivey.internal.streams.resume import ask_resume_offset
 
     class _Inner:
         def nearest_resume_offset(self, target: int) -> int:
             return target // 2
 
-    assert forward_resume_offset(_Inner(), 10) == 5
-    assert forward_resume_offset(io.BytesIO(b"x"), 10) is None
-    assert forward_resume_offset(None, 10) is None
+    assert ask_resume_offset(_Inner(), 10) == 5
+    assert ask_resume_offset(io.BytesIO(b"x"), 10) is None
+    assert ask_resume_offset(None, 10) is None
 
 
 def test_verifying_stream_forwards_resume_offset() -> None:

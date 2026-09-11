@@ -67,7 +67,7 @@ from archivey.internal.streams.decompress import (
     ZlibDecompressorStream,
 )
 from archivey.internal.streams.lzip import LzipDecompressorStream
-from archivey.internal.streams.resume import forward_resume_offset
+from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ensure_binaryio,
@@ -719,7 +719,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
 
     def nearest_resume_offset(self, target: int) -> int | None:
         # Sits on the decompressed chain (accelerator, then maybe stdlib fallback).
-        return forward_resume_offset(self._inner, target)
+        return ask_resume_offset(self._inner, target)
 
     def _begin_stdlib_fallback(self, size: int) -> bytes:
         """Replace rapidgzip with the stdlib gzip engine after a silent empty EOF.

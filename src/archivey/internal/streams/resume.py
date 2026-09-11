@@ -9,14 +9,20 @@ offset space and sit in a decompressed stream's chain forward the query;
 from __future__ import annotations
 
 
-def forward_resume_offset(inner: object | None, target: int) -> int | None:
+def ask_resume_offset(inner: object | None, target: int) -> int | None:
     """Ask ``inner`` for the decompressed offset a seek to ``target`` would resume from.
 
+    Named ``ask_`` so this is a query of the inner, not a forward (SEEK_CUR) seek.
     ``None`` means the inner cannot answer (no method, or a non-int result), which
     the caller treats as "no cost signal" rather than "free".
     """
     if inner is None:
         return None
+    # ``nearest_resume_offset`` is defined on decompressing engines that own a
+    # seek-point table (``DecompressorStream``, ``_AcceleratorStream``) and
+    # re-exposed by wrappers that preserve that offset space (``ArchiveStream``,
+    # ``OutputCountingStream``, ``VerifyingStream``, ``_GzipTruncationCheckStream``).
+    # ``DelegatingStream`` does not grow it; a missing attribute is "no signal".
     ask = getattr(inner, "nearest_resume_offset", None)
     if ask is None:
         return None

@@ -17,7 +17,7 @@ Package map:
   (index scan / LZW) that also plug into ``DecompressorStream``.
 - :mod:`.archive_stream` — public member/codec handle: exception translate+stamp,
   lazy open, nested collapse, fused digest verify, lease/finalizer.
-- :mod:`.resume` — ``forward_resume_offset`` (rewind-cost query; archivey-specific,
+- :mod:`.resume` — ``ask_resume_offset`` (rewind-cost query; archivey-specific,
   deliberately outside ``streamtools``).
 - :mod:`.verify` — ``MemberVerifier`` (+ standalone ``VerifyingStream`` for codec
   length backstops).

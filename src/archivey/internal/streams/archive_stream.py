@@ -29,7 +29,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.resume import forward_resume_offset
+from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
@@ -420,7 +420,7 @@ class ArchiveStream(ReadOnlyIOStream):
 
     def nearest_resume_offset(self, target: int) -> int | None:
         """Delegate the cost question inward; ``ArchiveStream``s nest over each other."""
-        return forward_resume_offset(self._inner, target)
+        return ask_resume_offset(self._inner, target)
 
     def _maybe_warn_rewind(self, before: int, after: int) -> None:
         """Report a backward seek that discards an expensive amount of decoded progress.
