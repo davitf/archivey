@@ -192,9 +192,9 @@ class SlicingStream(ReadOnlyIOStream):
 
         Offsets here are relative to ``start``, while an inner seek-point table is in
         the inner's space, so forwarding would report a distance against the wrong
-        origin. ``None`` means "no cost signal". Redundant with a missing attribute
-        now that ``DelegatingStream`` does not forward; kept as an explicit decline
-        of a remapped offset space.
+        origin. ``None`` means "no cost signal". Kept as an explicit decline so a
+        future slice-like wrapper does not quietly acquire forwarding; Parcel B
+        removes it.
         """
         return
 
