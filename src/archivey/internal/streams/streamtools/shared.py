@@ -15,11 +15,6 @@ This is the streamtools analogue of stdlib ``zipfile._SharedFile``. It is delibe
 archivey-dependency-free: it raises stdlib-shaped errors (``ValueError`` / ``OSError`` /
 ``io.UnsupportedOperation``), never ``archivey.exceptions``.
 
-**Path-source independent handles (dormant).** For a path source, ``view()`` *can* mint a
-fresh ``open(path, 'rb')`` handle per view for true parallel I/O (see
-``independent_handles``). That seam is **default off** for now: every view shares one
-handle + lock. Engaging live per-view handles belongs with parallel extraction.
-
 **Views are unbuffered.** Every ``read`` is one locked seek+read on the shared handle —
 cheap (an in-memory offset move on a regular file / ``BytesIO``), and the current
 consumers (codec streams, which buffer internally) already read in large chunks. A
@@ -57,22 +52,15 @@ class SharedSource:
         self,
         source: Path | BinaryIO,
         *,
-        independent_handles: bool = False,
         wrap_handle: Callable[[BinaryIO], BinaryIO] | None = None,
     ) -> None:
-        # Seam for true parallel I/O on path sources (fresh FD per view). Dormant:
-        # ignored for now; every view shares ``_handle`` + ``_lock``. See module docstring.
-        self._independent_handles = independent_handles
-
         self._lock = threading.Lock()
         self._closed = False
-        self._path: Path | None = None
         self._owns_handle = False
 
         if isinstance(source, Path) or is_filename(source):
             # ``is_filename`` admits bytes; Path wants str/PathLike[str], so fsdecode.
             path = source if isinstance(source, Path) else Path(os.fsdecode(source))
-            self._path = path
             self._handle: BinaryIO = open(path, "rb")
             self._owns_handle = True
             # Frozen at construction: the source is assumed not to grow.
@@ -106,10 +94,6 @@ class SharedSource:
         failing here. This method only applies the ``start >= size → empty view``
         shortcut when ``_size`` is already known, to skip a second size probe.
         Negative ``start``/``length`` remain hard errors.
-
-        When ``independent_handles`` is eventually engaged for a path source, this is the
-        entry point that would open a fresh ``open(path, 'rb')`` per view; today every
-        view shares the single locked handle.
         """
         self._raise_if_closed()
         if start < 0:
@@ -123,10 +107,6 @@ class SharedSource:
             # past the end. Keep ``start`` so tell/seek stay well-defined.
             length = 0
 
-        # independent_handles is dormant: always share ``_handle``. When engaged for a
-        # path source, mint ``open(self._path, "rb")`` here instead and adjust close
-        # semantics so the per-view FD is owned by the view.
-        _ = self._independent_handles  # documented seam; intentionally unused for now
         return SharedView(
             self._handle,
             start=start,
