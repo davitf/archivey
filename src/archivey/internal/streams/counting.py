@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, BinaryIO
 
+from archivey.internal.streams.resume import forward_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 
 if TYPE_CHECKING:
@@ -86,6 +87,10 @@ class OutputCountingStream(DelegatingStream):
         n = inner_readinto(b)
         self._counter.add(n)
         return n
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # Measurement wrapper around decoded output; preserve the inner's offset space.
+        return forward_resume_offset(self._inner, target)
 
 
 class SeekCountingStream(DelegatingStream):

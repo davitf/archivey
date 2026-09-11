@@ -151,3 +151,35 @@ def test_delegating_readinto_passthrough_false_routes_through_read() -> None:
     assert s.readinto(buf) == 4
     assert bytes(buf) == b"abcd"
     assert reads == [4]  # read() ran (passthrough would have left this empty)
+
+
+def test_delegating_stream_does_not_forward_resume_offset() -> None:
+    class _Inner(io.BytesIO):
+        def nearest_resume_offset(self, target: int) -> int:
+            return 0
+
+    s = DelegatingStream(_Inner(b"x"))
+    assert not hasattr(s, "nearest_resume_offset")
+
+
+def test_forward_resume_offset_helper() -> None:
+    from archivey.internal.streams.resume import forward_resume_offset
+
+    class _Inner:
+        def nearest_resume_offset(self, target: int) -> int:
+            return target // 2
+
+    assert forward_resume_offset(_Inner(), 10) == 5
+    assert forward_resume_offset(io.BytesIO(b"x"), 10) is None
+    assert forward_resume_offset(None, 10) is None
+
+
+def test_verifying_stream_forwards_resume_offset() -> None:
+    from archivey.internal.streams.verify import VerifyingStream
+
+    class _Inner(io.BytesIO):
+        def nearest_resume_offset(self, target: int) -> int:
+            return 7
+
+    s = VerifyingStream(_Inner(b"x"), {})
+    assert s.nearest_resume_offset(1) == 7
