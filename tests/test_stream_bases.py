@@ -227,6 +227,10 @@ def _import_all_archivey_modules() -> None:
     """Import every archivey module so ``__subclasses__()`` is not collection-order-blind.
 
     ``archivey.__main__`` calls ``main()`` at import, so it is skipped.
+
+    This walk also proves every ``archivey.*`` module imports with no extras
+    (the ``[core-only]`` lazy-optional-import boundary). A top-level extra
+    import fails here, not as an unrelated ``ImportError`` later in the suite.
     """
     import importlib
     import pkgutil
@@ -236,7 +240,15 @@ def _import_all_archivey_modules() -> None:
     for module in pkgutil.walk_packages(archivey.__path__, prefix="archivey."):
         if module.name.endswith("__main__"):
             continue
-        importlib.import_module(module.name)
+        try:
+            importlib.import_module(module.name)
+        except Exception as exc:  # noqa: BLE001 - any import-time failure is this check
+            raise ImportError(
+                f"{module.name} failed to import while walking archivey modules "
+                "for the ReadOnlyIOStream resume-offset inventory. This walk also "
+                "proves every archivey module imports with no extras ([core-only]); "
+                "a top-level extra import fails here."
+            ) from exc
 
 
 def _readonly_stream_subclasses() -> set[type]:
@@ -266,6 +278,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     diagnostic hole (None → resume 0). Walking only ``DelegatingStream`` misses
     ``VerifyingStream``-shaped holes; importing five modules by hand misses
     subclasses in modules this test never imported.
+
+    Importing the package first also proves every ``archivey.*`` module imports
+    with no extras (see ``_import_all_archivey_modules``).
     """
     _import_all_archivey_modules()
 
