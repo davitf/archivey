@@ -576,6 +576,8 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     if isinstance(obj, io.BufferedIOBase):
         return obj
     raw: io.RawIOBase
+    # bytearray(0): a working readinto must not consume. bytearray(1) would skip
+    # the first byte of every FileIO/CountingBytesIO source. None means wrap.
     if isinstance(obj, io.RawIOBase) and try_readinto(obj, bytearray(0)) is not None:
         raw = obj
     else:

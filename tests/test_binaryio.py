@@ -370,15 +370,15 @@ def test_wrapper_readinto_falls_back_when_native_raises() -> None:
     assert bytes(buf) == DATA[:5]
 
 
-def test_wrapper_writable_trusts_raw_writable_not_hasattr_write() -> None:
-    """A read-only file *has* a write() method (it raises); writable() is the truth."""
+def test_wrapper_over_readonly_file_is_not_writable() -> None:
+    """A read-only file *has* a write() method (it raises); the wrapper still is not writable."""
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "f.bin")
         with open(path, "wb") as f:
             f.write(DATA)
-        # A read-only file object: it exposes write() but writable() is False.
+        # A read-only file object: it exposes write() but the wrapper must not.
         raw = open(path, "rb", buffering=0)
-        assert hasattr(raw, "write")  # the trap the old hasattr() check fell into
+        assert hasattr(raw, "write")
         wrapper = BinaryIOWrapper(raw)
         assert wrapper.writable() is False
         assert wrapper.readable() is True
