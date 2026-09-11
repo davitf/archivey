@@ -284,14 +284,10 @@ def source_name(source: Any) -> str | None:
 def _seek_end_is_cheap(stream: Any) -> bool:
     """Whether ``SEEK_END`` on ``stream`` is O(1) — never a decompression or scan.
 
-    Deliberately a **whitelist** of concrete types whose end-seek is a plain offset
-    move: a decompressor stream (stdlib ``GzipFile``/``BZ2File``/``LZMAFile``, our
-    ``DecompressorStream`` family, accelerator wrappers) services ``SEEK_END`` by
-    decoding to the end, which :func:`source_byte_size` must never trigger. Duck checks
-    (``fileno`` + ``S_ISREG``) are unsafe here — wrappers like ``GzipFile`` forward
-    ``fileno`` to their *compressed* underlying file. Streams outside the whitelist
-    advertise their size via a ``size`` attribute or a ``try_get_size()`` method
-    instead.
+    Whitelist only: ``BytesIO``, ``FileIO``, ``mmap``, and those under a buffer.
+    Duck checks (``fileno`` + ``S_ISREG``) are unsafe — ``GzipFile`` forwards
+    ``fileno`` to the compressed file. Anything else advertises size via
+    ``size`` or ``try_get_size()``.
     """
     if isinstance(stream, (io.BytesIO, io.FileIO, mmap.mmap)):
         return True
@@ -302,14 +298,13 @@ def _seek_end_is_cheap(stream: Any) -> bool:
 
 
 def _under_buffer(stream: Any) -> Any:
-    """The stream a ``BufferedReader`` wraps, for probes that only read *metadata*.
+    """The stream a ``BufferedReader``/``BufferedRandom`` wraps, for metadata probes.
 
-    A buffer forwards the I/O methods and nothing else, so a wrapped stream's ``size`` /
-    ``try_get_size()`` would vanish the moment the source boundary buffered it (see
-    :func:`ensure_full_count_reads`) — and with it the cheap source size a nested
-    ``open_archive(reader.open("inner.zip"))`` reports. Both probes leave the wrapped
-    stream's read position where they found it, so consulting them through the buffer
-    cannot desync it — unlike a ``SEEK_END`` probe, which must stay on the buffer itself.
+    A buffer forwards I/O methods and nothing else, so ``size`` / ``try_get_size()``
+    on the wrapped stream would vanish once :func:`ensure_full_count_reads`
+    buffered it. Those probes do not move the read position. ``SEEK_END`` must
+    stay on the buffer itself. ``raw is None`` after ``detach()`` — this
+    module's :class:`_NonClosingBufferedReader` — returns ``stream``.
     """
     if isinstance(stream, _BUFFER_TYPES):
         raw = stream.raw
@@ -321,22 +316,11 @@ def _under_buffer(stream: Any) -> Any:
 def source_byte_size(source: Any) -> int | None:
     """Total byte size of a path or stream source when **cheaply** knowable, else ``None``.
 
-    Cheap means no data is read or decompressed. Probe order:
-
-    1. a path-like is ``stat``-ed;
-    2. an integer ``size`` attribute is trusted — the fsspec convention, also exposed
-       by archivey's own wrappers (``ArchiveStream``, ``SlicingStream``) when they
-       know their length;
-    3. a ``try_get_size()`` method (archivey's decompressor streams) is called — it
-       answers from an index/trailer scan or returns ``None``, and its presence marks
-       the stream as one whose ``SEEK_END`` may decompress, so its answer is final
-       (no fall-through to the probe);
-    4. a ``SEEK_END``/restore round trip, but **only** for types whose end-seek is
-       provably O(1) (real files, ``BytesIO``, ``mmap`` — see ``_seek_end_is_cheap``);
-       an unrecognized seekable stream could be a decompressor whose end-seek decodes
-       the entire payload, so it yields ``None`` instead.
-
-    Probes 2 and 3 look through a ``BufferedReader`` to the stream it wraps
+    Cheap means no data is read or decompressed. Probe order: ``stat`` a path;
+    trust an integer ``size`` attribute; call ``try_get_size()`` if present
+    (its answer is final — presence marks a stream whose ``SEEK_END`` may
+    decompress); else a ``SEEK_END``/restore round trip, but only for types
+    :func:`_seek_end_is_cheap` accepts. Probes 2 and 3 look through a buffer
     (:func:`_under_buffer`); probe 4 does not.
     """
     if is_filename(source):
@@ -595,29 +579,18 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
 
 
 def ensure_full_count_reads(stream: BinaryIO) -> BinaryIO:
-    """Buffer a seekable source whose ``read(n)`` may legally return short.
+    """Buffer a seekable source so ``read(n)`` returns the full count short of EOF.
 
-    ``read(n)`` on a raw stream is an *up-to-n* contract — ``io.RawIOBase`` says so, and
-    real sources use the latitude (sockets, FUSE mounts, user-written wrappers all return
-    short chunks mid-stream with no EOF in sight). Archive header parsers assume the full
-    count: they pull a fixed-size structure with one ``read(n)`` and read anything shorter
-    as EOF. That is true of archivey's own parsers *and* of the stdlib/third-party readers
-    it hands the source to (``zipfile``, ``tarfile``, ``pycdlib``), which we cannot change
-    — so a healthy archive from a short-returning source was reported as corrupt.
-    ``io.BufferedIOBase.read(n)`` promises the full count, so one buffer here restores the
-    assumption for every consumer at once. It also collapses the header parsers' many tiny
-    reads — RAR reads 5 bytes, then up to 10 single bytes, then the rest, *per member*: a
-    1000-member listing went from 2007 ``read`` + 2007 ``seek`` calls on an unbuffered
-    handle to 7 reads and no seeks. A path source never paid that (``open()`` hands back a
-    ``BufferedReader``), which is why only stream sources saw the amplification.
+    ``io.RawIOBase.read(n)`` is up-to-n; header parsers (ours and stdlib
+    ``zipfile``/``tarfile``/``pycdlib``) treat a short as EOF.
+    ``io.BufferedIOBase.read`` promises the full count. Non-seekable sources
+    are returned unchanged — implicitly making one seekable would violate the
+    testing contract, and they already coalesce through ``PeekableStream``.
+    Already-buffered sources (``open()``'s ``BufferedReader``, ``BytesIO``)
+    are returned unchanged.
 
-    Non-seekable sources are returned unchanged: ``io.BufferedReader`` would report
-    ``seekable()`` from itself rather than its raw stream, and a backend that requires
-    random access must keep seeing the honest answer (``testing-contract``: never
-    implicitly buffer a non-seekable source into a seekable one). They need no help
-    anyway — archivey routes them through ``PeekableStream``, which coalesces. Sources
-    that are already buffered (``open()``'s ``BufferedReader``, ``BytesIO``) are returned
-    unchanged and pay nothing.
+    Why the boundary is here, and the listing-amplification measurement, live
+    in the archived ``short-read-source-contract`` change.
     """
     raise_if_text_stream(stream)
     if not is_seekable(stream):
