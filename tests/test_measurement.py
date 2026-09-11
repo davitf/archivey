@@ -75,6 +75,26 @@ def test_seek_counting_stream_records_seeks_only() -> None:
     assert wrapped.read(2) == b"01"
 
 
+def test_seek_counting_stream_exposes_inner_cheap_size() -> None:
+    from archivey.internal.streams.streamtools import source_byte_size
+
+    counter = SeekCounter()
+    wrapped = SeekCountingStream(io.BytesIO(b"0123456789"), counter)
+    assert wrapped.size == 10
+    assert source_byte_size(wrapped) == 10
+    # Construction may SEEK_END the inner to freeze size; that is not a counted seek.
+    assert counter.count == 0
+
+
+def test_output_counting_stream_does_not_advertise_size() -> None:
+    # Do not teach source_byte_size to unwrap every DelegatingStream: this
+    # wrapper sits on decompressors whose SEEK_END is not cheap.
+    from archivey.internal.streams.streamtools import source_byte_size
+
+    wrapped = OutputCountingStream(io.BytesIO(b"hello-world"), ByteCounter())
+    assert source_byte_size(wrapped) is None
+
+
 def test_measurement_off_leaves_counters_at_zero(tmp_path: Path) -> None:
     path = tmp_path / "a.zip"
     with zipfile.ZipFile(path, "w") as zf:

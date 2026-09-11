@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.internal.streams.resume import ask_resume_offset
-from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.streams.streamtools import DelegatingStream, source_byte_size
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -98,11 +98,18 @@ class SeekCountingStream(DelegatingStream):
 
     ``read`` / ``readinto`` are pass-through (no byte counting). Installed only when
     measurement is on so the non-measure path pays nothing.
+
+    ``size`` is the inner's cheap byte size, frozen at wrap time. This wrapper sits
+    on archive-facing handles (``ZipFile.fp``, a ``SharedSource`` path handle) that
+    do not grow. Exposing ``size`` lets ``source_byte_size`` clamp a ``SharedView``
+    without unwrapping every ``DelegatingStream`` — ``OutputCountingStream`` sits
+    on decompressors, whose ``SEEK_END`` is not cheap.
     """
 
     def __init__(self, inner: BinaryIO, counter: "SeekCounter") -> None:
         super().__init__(inner)
         self._counter = counter
+        self.size: int | None = source_byte_size(inner)
 
     def seek(self, offset: int, whence: int = 0, /) -> int:
         self._counter.record()

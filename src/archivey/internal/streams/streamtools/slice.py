@@ -328,6 +328,9 @@ class SharedView(SlicingStream):
     (to clamp ``length``) also runs under the lock and restores the handle.
     Unlocked ``BufferedReader.tell`` under concurrency corrupts the buffer even when
     every later ``read`` is locked.
+
+    The source must be seekable: every ``read`` re-seeks. A non-seekable stream
+    is a ``ValueError`` at construction, matching :class:`SharedSource`.
     """
 
     def __init__(
@@ -340,6 +343,8 @@ class SharedView(SlicingStream):
         check_open: Callable[[], None] | None = None,
         own_source: bool = False,
     ) -> None:
+        if not is_seekable(stream):
+            raise ValueError("SharedView requires a seekable stream")
         # Skip SlicingStream.__init__: that path is the single-consumer contract
         # (nullcontext, lazy-position). ReadOnlyIOStream sets the RawIOBase closed flag.
         ReadOnlyIOStream.__init__(self)

@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.measurement import SeekCounter
+from archivey.internal.streams.counting import SeekCountingStream
 from archivey.internal.streams.streamtools import (
     SharedView,
     SlicingStream,
@@ -398,6 +400,35 @@ class TestSharedViewConstruction:
     ``MemberStreams.CONCURRENT`` CRC race. A cheap size probe (to clamp ``length``)
     may tell/seek, but only under the lock.
     """
+
+    def test_clamps_over_declared_length_on_seek_counting_stream(self) -> None:
+        # ZIP _raw_member_stream constructs SharedView on ZipFile.fp, which is
+        # the seek-counter wrapper when measurement is on. Clamp must not depend
+        # on SharedSource._size.
+        wrapped = SeekCountingStream(io.BytesIO(DATA[:10]), SeekCounter())
+        view = SharedView(wrapped, start=0, length=999, lock=threading.Lock())
+        assert view.size == 10
+        assert view.read() == DATA[:10]
+
+    def test_non_seekable_rejected_at_init(self) -> None:
+        with pytest.raises(ValueError, match="seekable"):
+            SharedView(NonSeekableBytesIO(b"x"), lock=threading.Lock())
+
+    def test_slicing_stream_independent_view_raises(self) -> None:
+        sliced = SlicingStream(io.BytesIO(DATA), start=0, length=5)
+        with pytest.raises(io.UnsupportedOperation, match="locked SharedSource view"):
+            sliced.independent_view()
+
+    def test_independent_view_is_lock_sharing_sibling_at_offset_zero(self) -> None:
+        lock = threading.Lock()
+        view = SharedView(io.BytesIO(DATA), start=5, length=4, lock=lock)
+        assert view.read(2) == DATA[5:7]
+        sibling = view.independent_view()
+        assert sibling.tell() == 0
+        assert sibling.size == 4
+        assert sibling.read() == DATA[5:9]
+        assert view.read() == DATA[7:9]
+        assert sibling._io_guard is lock
 
     def test_locked_with_start_does_not_call_tell_unlocked(self) -> None:
         lock = threading.Lock()

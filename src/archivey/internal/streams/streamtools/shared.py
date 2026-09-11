@@ -34,7 +34,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
     source_byte_size,
 )
-from archivey.internal.streams.streamtools.slice import SharedView
+from archivey.internal.streams.streamtools.slice import SharedView, _clamp_slice_length
 
 
 class SharedSource:
@@ -87,13 +87,13 @@ class SharedSource:
     def view(self, start: int, length: int | None = None) -> SharedView:
         """Mint a non-owning seekable view over ``[start, start+length)``.
 
-        ``length is None`` means "to the end of the source". Clamping of an over-long
-        ``length`` (and freezing an omitted one to the remaining bytes) lives in
-        :class:`SharedView` / :class:`SlicingStream` construction, so a backend opening
-        a member from a truncated archive still gets a readable short view instead of
-        failing here. This method only applies the ``start >= size → empty view``
-        shortcut when ``_size`` is already known, to skip a second size probe.
-        Negative ``start``/``length`` remain hard errors.
+        ``length is None`` means "to the end of the source". When ``_size`` is
+        already known, over-long ``length`` is clamped here (and an omitted one
+        frozen to the remaining bytes) so a ``wrap_handle`` that hides cheap size
+        from ``source_byte_size`` (``SeekCountingStream``) still yields a short
+        view. :class:`SharedView` construction clamps again from the handle when
+        that probe succeeds. Past-EOF (``start >= size``) is the empty-view case
+        of the same clamp. Negative ``start``/``length`` remain hard errors.
         """
         self._raise_if_closed()
         if start < 0:
@@ -101,11 +101,7 @@ class SharedSource:
         if length is not None and length < 0:
             raise ValueError(f"view length must be non-negative, got {length}")
 
-        size = self._size
-        if size is not None and start >= size:
-            # Past EOF: empty view (reads return b""), matching a real stream seek
-            # past the end. Keep ``start`` so tell/seek stay well-defined.
-            length = 0
+        length = _clamp_slice_length(start, length, self._size)
 
         return SharedView(
             self._handle,

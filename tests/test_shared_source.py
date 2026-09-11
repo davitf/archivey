@@ -165,6 +165,21 @@ class TestSharedSourceMisuse:
         assert isinstance(via_view, SharedView)
         assert isinstance(via_view, SlicingStream)
 
+    def test_view_clamps_over_declared_length_through_seek_counting_wrap(self) -> None:
+        # wrap_handle installs SeekCountingStream; source_byte_size on that wrapper
+        # used to return None, so construction clamp was a no-op and .size stayed 999.
+        from archivey.internal.measurement import SeekCounter
+        from archivey.internal.streams.counting import SeekCountingStream
+
+        shared = SharedSource(
+            io.BytesIO(DATA[:10]),
+            wrap_handle=lambda h: SeekCountingStream(h, SeekCounter()),
+        )
+        assert shared.size == 10
+        view = shared.view(0, 999)
+        assert view.size == 10
+        assert view.read() == DATA[:10]
+
     def test_view_does_not_close_source(self) -> None:
         buf = io.BytesIO(DATA)
         shared = SharedSource(buf)
