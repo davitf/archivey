@@ -75,21 +75,51 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
 
     @property
     def mode(self) -> str:
-        # typing.IO declares an abstract `mode` property whose stub body returns None at
-        # runtime; libraries that duck-type it (pycdlib does `'b' not in fp.mode`) then
-        # crash on our wrappers. Every stream here is read-only binary by construction.
+        """Always ``"rb"``: every stream here is read-only binary by construction.
+
+        Like :meth:`name`, this override exists because ``typing.BinaryIO`` is in our
+        MRO. ``typing.IO.mode`` is a real runtime property whose body returns ``None``,
+        so a subclass that does not override it advertises ``mode = None`` rather than
+        having no ``mode`` at all. Libraries that duck-type it break on that: pycdlib
+        does ``'b' not in fp.mode``, which raises ``TypeError`` on ``None``.
+
+        Unlike :meth:`name`, there is a correct answer for every stream in this module,
+        so this one returns a value instead of raising.
+        """
         return "rb"
 
     @property
     def name(self) -> Never:
-        """Always raises :exc:`AttributeError`.
+        """Always raises :exc:`AttributeError`. The raise *is* the contract.
 
-        The raise *is* the contract: ``hasattr(stream, "name")`` must be false
-        so duck-typing consumers (pycdlib on Windows does
-        ``fp.name.startswith(...)`` on a device path) do not crash on ``None``.
-        Streams without a real path (``BytesIO``, in-memory views) must not
-        expose ``name`` at all. Do not "fix" this by returning a string or
-        ``None``.
+        Deleting this property does **not** remove the attribute. ``typing.BinaryIO``
+        is in our MRO and ``typing.IO.name`` is a real runtime property returning
+        ``None``, so a subclass that does not override it advertises ``name = None``
+        to duck-typing consumers — worse than absence, because ``hasattr`` says yes
+        and the value is unusable. pycdlib on Windows does
+        ``fp.name.startswith(...)`` on a device path and raises ``AttributeError`` on
+        exactly that.
+
+        ``typing.IO`` declaring ``name`` at all is arguably a typing bug, because the
+        stdlib treats it as optional: ``open(path, "rb").name`` is the path, while
+        ``io.BytesIO()`` and ``io.BufferedReader(io.BytesIO())`` have no ``name``
+        attribute whatsoever. Streams without a real path must match that duck-typing
+        surface, so raising is how we opt back out of the declaration.
+
+        We keep the ``BinaryIO`` base regardless — it is what makes these wrappers
+        nominally ``BinaryIO`` for the checkers, which is the point of having it.
+        Dropping it costs 64 errors on both pyrefly and ty (measured 2026-09-11) and
+        would mean replacing ``typing.BinaryIO`` with a Protocol across the internal
+        surface.
+
+        ``Never`` is the honest return type: this returns nothing, ever. It is also
+        why subclasses that *do* have a path (:class:`DelegatingStream` here, and
+        ``PeekableStream`` outside this module) need ``# pyrefly: ignore[bad-override]``
+        — widening ``Never`` to ``str`` is a deliberate LSP exception, not an
+        oversight.
+
+        Do not "fix" this by returning a string or ``None``. See :meth:`mode`, which
+        overrides the same ``typing.IO`` stub for the same reason.
         """
         raise AttributeError("name")
 
