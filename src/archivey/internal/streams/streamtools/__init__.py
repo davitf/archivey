@@ -12,7 +12,7 @@ Module map:
 
 - :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
 - :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
-- :mod:`.slice` — ``SlicingStream`` bound view + ``fix_stream_start_position``
+- :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
 - :mod:`.locked` — ``LockedStream`` / ``CloseLockedStream`` (whole-op lock wrappers)
 - :mod:`.solid` — ``SolidBlockReader`` (forward-only solid demux)
@@ -20,7 +20,7 @@ Module map:
 When to use which concurrency helper:
 
 - ``LockedStream`` — one shared handle; hold a lock across each seek+read (TAR/ISO).
-- ``SharedSource`` + locked ``SlicingStream`` — each consumer has its own logical
+- ``SharedSource`` + ``SharedView`` — each consumer has its own logical
   position; every read re-seeks under the lock (ZIP-style shared file).
 - ``SolidBlockReader`` — one forward decode; hand out consecutive member slices
   (7z folder / RAR pipe). Not seekable.
@@ -53,6 +53,7 @@ from archivey.internal.streams.streamtools.binaryio import (
 from archivey.internal.streams.streamtools.locked import CloseLockedStream, LockedStream
 from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import (
+    SharedView,
     SlicingStream,
     fix_stream_start_position,
 )
@@ -69,6 +70,7 @@ __all__ = [
     "ReadOnlyIOStream",
     "ReadableStream",
     "SharedSource",
+    "SharedView",
     "SlicingStream",
     "SolidBlockReader",
     "ensure_binaryio",

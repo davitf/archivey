@@ -202,7 +202,10 @@ Phase 6 native 7z/RAR should:
 **Still deferred:**
 
 - Parallel extraction feature / ExtractionCoordinator fan-out.
-- Engaging SharedSource `independent_handles`.
+- Per-view independent FDs on SharedSource (the `independent_handles` flag
+  was removed — it had no caller and did nothing). Re-add when parallel
+  extraction actually opens per-view FDs; until then every view shares one
+  handle + lock.
 - Native TAR reader / SharedSource-at-`offset_data` (lower priority than the lock
   wrapper in `tar-concurrent-open`).
 

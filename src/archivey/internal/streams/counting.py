@@ -98,7 +98,14 @@ class SeekCountingStream(DelegatingStream):
 
     ``read`` / ``readinto`` are pass-through (no byte counting). Installed only when
     measurement is on so the non-measure path pays nothing.
+
+    ``peel_for_source_size`` is True: this wrapper sits on archive-facing handles
+    and does not change their cheap size, so ``source_byte_size`` looks through it
+    the same way with measurement on or off. Do not copy this onto
+    :class:`OutputCountingStream` — that one sits on decompressors.
     """
+
+    peel_for_source_size = True
 
     def __init__(self, inner: BinaryIO, counter: "SeekCounter") -> None:
         super().__init__(inner)
