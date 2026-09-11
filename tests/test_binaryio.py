@@ -24,6 +24,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     read_exact,
     readinto_via_read,
+    source_name,
 )
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
 
@@ -130,6 +131,15 @@ def test_is_filename() -> None:
     assert is_filename(os.fspath("/tmp/x"))
     assert not is_filename(io.BytesIO(b"x"))
     assert not is_filename(OnlyReadStream(b"x"))
+
+
+def test_source_name_decodes_bytes_stream_name(tmp_path) -> None:
+    """open(bytes_path).name is bytes; callers of source_name want a str path."""
+    path = tmp_path / "x.bin"
+    path.write_bytes(b"")
+    with open(os.fsencode(path), "rb") as f:
+        assert isinstance(f.name, bytes)
+        assert source_name(f) == os.fsdecode(f.name)
 
 
 def test_is_stream_accepts_iobase() -> None:

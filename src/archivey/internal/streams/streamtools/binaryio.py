@@ -252,13 +252,19 @@ def source_name(source: Any) -> str | None:
     """Best-effort human-readable name for a source, for error messages and metadata.
 
     A path-like source yields its string form; a file-like stream yields its ``name``
-    attribute when that is a string (``open()`` sets it, ``BytesIO`` does not, and some
-    streams expose an integer fd there — both of those yield ``None``).
+    attribute when that is a path (``open()`` sets it, ``BytesIO`` does not). ``open()``
+    with a bytes path stores ``name`` as bytes — typeshed notes this — and this
+    decodes it with ``os.fsdecode`` rather than widening the return type. An integer
+    fd stored as ``name`` yields ``None``.
     """
     if is_filename(source):
         return os.fsdecode(source)
     name = getattr(source, "name", None)
-    return name if isinstance(name, str) else None
+    if isinstance(name, str):
+        return name
+    if isinstance(name, bytes):
+        return os.fsdecode(name)
+    return None
 
 
 def _seek_end_is_cheap(stream: Any) -> bool:
