@@ -62,6 +62,13 @@ def try_readinto(stream: Any, b: "WriteableBuffer") -> int | None:
 
     A native ``readinto`` that returns ``None`` is the non-blocking empty
     case and raises ``BlockingIOError``, matching :meth:`BinaryIOWrapper.read`.
+
+    Implementations must raise before writing into ``b``. A ``readinto`` that
+    consumes from the source and then refuses has already lost those bytes;
+    falling back to ``read`` would deliver the *next* ones as if they were
+    first. That is undetectable here without copying ``b`` on every call
+    (``io.RawIOBase``'s default and the advertised-then-refuse file-likes
+    raise before touching the buffer).
     """
     readinto = getattr(stream, "readinto", None)
     if readinto is None:
@@ -69,6 +76,8 @@ def try_readinto(stream: Any, b: "WriteableBuffer") -> int | None:
     try:
         n = readinto(b)
     except (NotImplementedError, io.UnsupportedOperation):
+        # See docstring: raise-before-write is a contract, not something this
+        # except can verify.
         return None
     if n is None:
         raise BlockingIOError(_BLOCKING_READ_MESSAGE)
@@ -82,6 +91,13 @@ def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
     buffer is a contract violation: those extra bytes are already consumed and
     cannot be delivered without losing them, so this raises ``ValueError``
     rather than truncating.
+
+    That ``ValueError`` means the *source object* is broken, not that a
+    payload is damaged. Callers that translate ``ValueError`` into
+    archive-corruption errors must carve this out, the way a closed-handle
+    ``ValueError`` already is. Unreachable today through the public open
+    path: slicers and full-count gathers clamp the request before it reaches
+    this helper.
     """
     mv = memoryview(b).cast("B")
     data = src.read(len(mv))
