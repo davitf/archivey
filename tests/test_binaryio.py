@@ -536,6 +536,31 @@ def test_ensure_bufferedio_wraps_non_iobase_object() -> None:
     assert buffered.read() == DATA
 
 
+def test_ensure_bufferedio_rawiobase_with_only_read() -> None:
+    """A RawIOBase that implements only read() is legal; BufferedReader.read(n) is not.
+
+    ``io.RawIOBase.readinto`` defaults to ``NotImplementedError``. ``BufferedReader.read(n)``
+    drives that, so ``ensure_bufferedio`` must wrap through ``BinaryIOWrapper`` first
+    (#326 H4). ``read()`` without a size happens to fall back to ``raw.read()`` and
+    would hide the bug.
+    """
+
+    class _OnlyReadRaw(io.RawIOBase):
+        def __init__(self, data: bytes) -> None:
+            super().__init__()
+            self._buf = io.BytesIO(data)
+
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1, /) -> bytes:
+            return self._buf.read(n)
+
+    buffered = ensure_bufferedio(_OnlyReadRaw(DATA))
+    assert buffered.read(4) == DATA[:4]
+    assert buffered.read() == DATA[4:]
+
+
 def test_ensure_bufferedio_does_not_close_raw_source() -> None:
     inner = CountingBytesIO(DATA)
     buffered = ensure_bufferedio(inner)

@@ -566,12 +566,17 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     source is first adapted via :class:`BinaryIOWrapper` (which *is* a ``RawIOBase``) — this
     is why we branch on ``RawIOBase`` here rather than calling :func:`ensure_binaryio`,
     whose result may be a ``BufferedIOBase`` that ``BufferedReader`` would reject.
+
+    A ``RawIOBase`` whose ``readinto`` refuses (the default raises
+    ``NotImplementedError``) is also wrapped: ``BufferedReader.read(n)`` drives
+    ``readinto``, and a class that only implemented ``read()`` would otherwise
+    raise a bare ``NotImplementedError`` from the buffer.
     """
     raise_if_text_stream(obj)
     if isinstance(obj, io.BufferedIOBase):
         return obj
     raw: io.RawIOBase
-    if isinstance(obj, io.RawIOBase):
+    if isinstance(obj, io.RawIOBase) and try_readinto(obj, bytearray(0)) is not None:
         raw = obj
     else:
         raw = BinaryIOWrapper(obj)
