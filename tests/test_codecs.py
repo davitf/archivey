@@ -800,9 +800,9 @@ def test_verify_bounded_read_stops_on_short_inner() -> None:
 
     The ``n``-or-terminal guarantee is the *inner's*: inners that only short at EOF
     (``DecompressorStream``, typical ``ZipExtFile``) are full-count for healthy data.
-    A RawIOBase that shorts mid-stream needs a buffer in front; we do not keep pulling
-    after a short, so deferred truncation on ``DecompressorStream`` still returns the
-    prefix from this call.
+    A RawIOBase that shorts mid-stream needs a full-count wrapper in front; we do not
+    keep pulling after a short, so deferred truncation on ``DecompressorStream`` still
+    returns the prefix from this call.
     """
 
     class FillOrEof(io.BytesIO):

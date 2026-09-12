@@ -387,8 +387,8 @@ class ArchiveStream(ReadOnlyIOStream):
         # ``n``-or-terminal guarantee is the inner's (fill-or-EOF); a short non-empty
         # return is a terminal signal to forward, not "ask again" — retrying it would
         # pull a decoder's deferred truncation into this call. An inner that shorts
-        # mid-stream needs a buffer in front (``ensure_full_count_reads``), not a loop
-        # here.
+        # mid-stream needs a full-count wrapper in front (``ensure_full_count_reads``),
+        # not a loop here.
         inner = self._ensure_open()
         verifier = self._verifier
         try:
