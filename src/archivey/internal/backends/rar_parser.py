@@ -65,9 +65,11 @@ class _Readable(Protocol):
     """Header-walk surface: sequential ``read`` plus a ciphertext ``tell``.
 
     Both the archive ``BinaryIO`` and :class:`_HeaderDecryptStream` provide this.
-    Packed-data skips seek the underlying ``source``, not this object — the decrypt
-    stream has no ``seek``, because AES-CBC cannot reposition without resetting
-    the IV chain.
+    It is not ``BinaryIO``: the decrypt stream is not an ``IOBase`` (no
+    ``readinto`` / ``close`` / ``writable``), and the walk never seeks it —
+    packed-data skips go through the underlying ``source`` so AES-CBC state is
+    not asked to reposition. streamtools bases either close the inner stream
+    or have no ciphertext ``tell``.
     """
 
     def read(self, n: int = -1, /) -> bytes: ...
@@ -701,6 +703,13 @@ class _HeaderDecryptStream:
     asks: after the header is consumed this wrapper is discarded and packed-data
     skips go through ``source``. Do not prefetch plaintext and rewind — that is
     why :func:`_read_rar5_block` reads the size vint byte-at-a-time.
+
+    Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`. That wrapper
+    closes its source, has no ciphertext ``tell``, allows unbounded reads, and
+    ``finalize``-pads a short last block with zeros (the 7z convention). Header
+    parsing needs a non-owning cursor, ``read_exact`` of each AES block, and a
+    reject for ``read(-1)``. The decrypt *stage* is shared; the pull stream is
+    not. Parcel F / #315 thread 3 owns whether ``AesDecryptStream`` stays.
     """
 
     def __init__(self, source: BinaryIO, key: bytes, iv: bytes) -> None:

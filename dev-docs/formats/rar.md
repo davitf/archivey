@@ -294,6 +294,13 @@ fixtures every FILE `header_size % 16 != 0`, and that counterfactual fails the p
 skips go through the underlying `source` after the wrapper is discarded. CBC cannot
 reposition without resetting the IV chain, and the parser never asks it to.
 
+The decrypt *stage* (`open_aes_decrypt_stage`) is shared with 7z; the pull stream
+(`AesDecryptStream` in `streams/crypto.py`) is not a replacement. That class closes
+its source, has no `tell`, allows unbounded reads, and zero-pads a short last block
+on `finalize` (7z). Header parsing needs the opposite. Whether `AesDecryptStream`
+itself should be removed or fixed is #315 thread 3 (parcel F) — do not wire headers
+through it until that is decided.
+
 **`encoding=` is not applied.** RAR names are decoded by the parser, so the argument is
 dropped — but not silently: supplying it emits `ENCODING_ARGUMENT_UNUSED`, which is the
 interface-wide answer for an argument a format cannot honour, and a structured diagnostic
@@ -680,6 +687,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | `CompressionAlgorithm.RAR` for M1–M5 (`level` 1–5); extract version in `extra["rar.extract_version"]` | The header identifies the algorithm, so `UNKNOWN` claimed we could not tell. `ContainerFormat.RAR` and `CompressionAlgorithm.RAR` are homonyms (container vs codec), not a reason to invent `RAR_COMPRESSION` / `RARLAB` | Putting 15/20/29/50 in `level`; dropping M1–M5 from `level` |
 | No `unrar x` tempdir cache for solid random `open()` | `AccessCost.SOLID` and per-open decode are the honest signals; a tempdir extraction amortizes work the caller cannot see or bound (**#8**) | `unrar x` into a managed temp directory to serve later random reads from disk |
 | Encrypted-header `tell()` is the ciphertext cursor; leftover `_buf` is AES padding | `data_offset` must skip the padded ciphertext so the next salt/IV is aligned. Subtracting leftover plaintext lands in padding — measured on both `encrypted_header__*.rar` fixtures, where every FILE `header_size % 16 != 0` | Reporting a logical plaintext offset from `tell()` |
+| Keep `_HeaderDecryptStream`; share only the AES *stage* with `crypto.py` | Header walk needs a non-owning ciphertext `tell`, exact 16-byte CBC reads, and must not close the archive or 7z-pad a short final block. `AesDecryptStream` does the opposite. #315 thread 3 (parcel F) owns whether that class stays | Wrapping headers in `open_aes_decrypt_stream`; replacing `_Readable` with `BinaryIO` / a streamtools base |
 
 ## 7. Open questions
 
