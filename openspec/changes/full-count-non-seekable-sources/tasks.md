@@ -60,9 +60,9 @@ to accurate prose, not a correction of wrong prose.
     `ensure_bufferedio` without a second adapter layer: `type(obj).readinto is not
     io.RawIOBase.readinto` holds, so it is not re-wrapped in `BinaryIOWrapper`.
   - No buffer; `seekable()` stays `False`. Docstring carries D2/D3 inline: why no
-    read-ahead, and why `read_exact` rather than `read_full_count` (the three gather
-    policies enumerated in `slice.py`, per ADR 0014 — the enumeration is in `slice.py`,
-    not in the ADR).
+    read-ahead, and why `read_exact` rather than a single forwarded `inner.read(n)` (the
+    two gather policies enumerated in `slice.py`, per ADR 0014 — the enumeration is in
+    `slice.py`, not in the ADR).
 - [ ] 2.1a Keep the wrapper transparent to the metadata probes (maintainer decision,
   packet 2 — see `design.md` D8). Forward exactly two things, and no more:
   - A `name` property forwarding through `source_name(self._inner)`, re-raising

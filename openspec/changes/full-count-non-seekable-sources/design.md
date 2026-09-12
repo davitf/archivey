@@ -113,14 +113,22 @@ there *because* read-ahead is recoverable by seeking and because it collapses th
 parsers' tiny reads (the archived measurement: a 1000-member RAR listing went from 2007
 reads to 7). Neither benefit applies to a pipe; neither is needed there.
 
-### D3 — `read_exact`, not `read_full_count`
+### D3 — `read_exact`, not a single forwarded `read`
 
-`slice.py` documents three gather policies (ADR 0014) and the difference is what a short
+`slice.py` documents two gather policies (ADR 0014) and the difference is what a short
 return *means*. At the source boundary the inner is a raw byte source, not a decoder with
 a deferred truncation error to preserve, so a short means "ask again" — `read_exact`.
 That matches what `BufferedReader` gives the seekable branch, which keeps the two halves
-of `ensure_full_count_reads` behaviourally identical. `read_full_count` would stop on the
-first short and reintroduce the exact bug this boundary exists to prevent.
+of `ensure_full_count_reads` behaviourally identical. Forwarding a single `inner.read(n)`
+— what every *other* bounded read in the stream layer does, because those inners are
+already fill-or-EOF — would stop on the first short and reintroduce the exact bug this
+boundary exists to prevent.
+
+This is the one place in the library that gathers at a public `read(n)`, and the reason is
+that it is the only one whose inner is not full-count already. (Originally written against
+`read_full_count`; that helper turned out to be a single `stream.read(n)` behind a loop
+that could not iterate, and was removed — the policy contrast above is unchanged, only
+the name of the thing being contrasted.)
 
 ### D4 — This is not the buffering ADR 0010 forbids
 

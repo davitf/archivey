@@ -203,8 +203,8 @@ class TestSlicingStream:
 
         Contrast ``test_sized_read_preserves_deliver_then_raise``: sized ``read(n)``
         returns the prefix. Drain is the complete-stream shape and will not be
-        called again, so it gathers. Pinned so the two helpers' docstrings are not
-        the only record of the asymmetry.
+        called again, so it gathers. Pinned so ``read_exact``'s docstring and the
+        ``SlicingStream.read`` comment are not the only record of the asymmetry.
         """
         prefix = DATA[:4]
         sliced = SlicingStream(_DeliverThenRaise(prefix), length=20)

@@ -33,7 +33,6 @@ from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
-    read_full_count,
     readinto_via_read,
 )
 from archivey.internal.streams.verify import MemberVerifier, build_member_verifier
@@ -383,8 +382,13 @@ class ArchiveStream(ReadOnlyIOStream):
         # _ensure_open is outside the try: its read-after-close ValueError is the
         # wrapper's own (plain file semantics, not translated), and a lazy open failure
         # is already routed through _fail inside it.
-        # Full-count ``read(n)`` (ADR 0014): coalesce over short-reading inners so
-        # ``read(member.size)`` is a real verifying event when a verifier is fused.
+        # Full-count ``read(n)`` (ADR 0014): one ``inner.read(n)``, so
+        # ``read(member.size)`` is a real verifying event when a verifier is fused. The
+        # ``n``-or-terminal guarantee is the inner's (fill-or-EOF); a short non-empty
+        # return is a terminal signal to forward, not "ask again" — retrying it would
+        # pull a decoder's deferred truncation into this call. An inner that shorts
+        # mid-stream needs a buffer in front (``ensure_full_count_reads``), not a loop
+        # here.
         inner = self._ensure_open()
         verifier = self._verifier
         try:
@@ -392,15 +396,13 @@ class ArchiveStream(ReadOnlyIOStream):
                 return verifier.read(inner, n)
             if n == 0:
                 return b""
-            if n < 0:
-                return inner.read(n)
-            return read_full_count(inner, n)
+            return inner.read(n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail(e)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        # Always route through read() so full-count coalesce (and fused verify)
-        # stay consistent — inner.readinto may be up-to-n.
+        # Always route through read() so the one-read / stop-on-short policy above
+        # (and fused verify) stay consistent — inner.readinto may be up-to-n.
         return readinto_via_read(self, b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:

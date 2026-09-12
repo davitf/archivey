@@ -96,8 +96,8 @@ def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
     payload is damaged. Callers that translate ``ValueError`` into
     archive-corruption errors must carve this out, the way a closed-handle
     ``ValueError`` already is. Not reachable through the routes exercised
-    today (seekable ZIP, streaming TAR): slicers and full-count gathers clamp
-    the request before it reaches this helper.
+    today (seekable ZIP, streaming TAR): slicers clamp the request before it
+    reaches this helper.
     """
     mv = memoryview(b).cast("B")
     data = src.read(len(mv))
@@ -115,8 +115,12 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
 
     Stops only on empty (EOF) or once ``n`` bytes are gathered. That is the
     ``io.RawIOBase`` contract: a short chunk is not a terminal signal.
-    Contrast :func:`read_full_count`, which stops on the first short — the
-    difference is what a short *means*, not how many bytes are wanted.
+
+    This is the *exception*, not the default. Most bounded reads in the stream
+    layer issue a plain ``inner.read(n)``, because their inner is full-count
+    (fill-or-EOF) and a short return there is a terminal signal to forward, not
+    to retry — see ADR 0014 and the comment in ``SlicingStream.read``. Use this
+    only where the caller will not read again, so a short must be gathered here.
     """
     if n < 0:
         raise ValueError("n must be non-negative")
@@ -128,32 +132,6 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
             break
         data.extend(chunk)
     return bytes(data)
-
-
-def read_full_count(stream: ReadableStream, n: int) -> bytes:
-    """Read up to ``n`` bytes, treating a short non-empty return as terminal.
-
-    Stops on empty *or* the first piece shorter than asked. Full-count inners
-    (a ``DecompressorStream`` with deferred truncation) hand back the
-    recoverable prefix now and raise on the next empty ``read``; asking again
-    — as :func:`read_exact` would — would pull that error into this call.
-    """
-    if n < 0:
-        raise ValueError("n must be non-negative")
-    if n == 0:
-        return b""
-    chunks: list[bytes] = []
-    got = 0
-    while got < n:
-        ask = n - got
-        piece = stream.read(ask)
-        if not piece:
-            break
-        chunks.append(piece)
-        got += len(piece)
-        if len(piece) < ask:
-            break
-    return b"".join(chunks)
 
 
 def _is_fifo_or_chardev(stream: Any) -> bool:
