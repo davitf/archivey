@@ -62,9 +62,16 @@ from archivey.internal.timestamps import filetime_to_datetime
 
 
 class _Readable(Protocol):
+    """Header-walk surface: sequential ``read`` plus a ciphertext ``tell``.
+
+    Both the archive ``BinaryIO`` and :class:`_HeaderDecryptStream` provide this.
+    Packed-data skips seek the underlying ``source``, not this object — the decrypt
+    stream has no ``seek``, because AES-CBC cannot reposition without resetting
+    the IV chain.
+    """
+
     def read(self, n: int = -1, /) -> bytes: ...
     def tell(self) -> int: ...
-    def seek(self, offset: int, whence: int = 0, /) -> int: ...
 
 
 # ---------------------------------------------------------------------------
@@ -676,11 +683,24 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
 
 
 class _HeaderDecryptStream:
-    """Decrypt subsequent header bytes with AES-CBC; seek/tell pass through.
+    """Decrypt one encrypted RAR header with AES-CBC.
 
-    ``seek`` clears the decrypt buffer. Do not prefetch plaintext then rewind:
-    ``tell`` is the ciphertext cursor, so a plaintext over-read leaves the
-    underlying stream ahead of the logical header position.
+    Each encrypted header is its own CBC message: RAR3 prefixes an 8-byte salt,
+    RAR5 a 16-byte IV, then ciphertext padded to 16-byte blocks. ``read`` returns
+    plaintext; leftover bytes in ``_buf`` are the unread tail of the last
+    decrypted block — padding after a header whose size is not a multiple of 16,
+    not bytes this header still owes the caller.
+
+    ``tell`` is the underlying **ciphertext** cursor, including that padding.
+    ``data_offset`` needs that position so the next salt/IV (or packed data)
+    starts on a block boundary. Subtracting ``len(_buf)`` would report the
+    logical plaintext offset and land inside the padding; the next header then
+    decrypts as garbage.
+
+    There is no ``seek``. CBC state cannot reposition, and the parser never
+    asks: after the header is consumed this wrapper is discarded and packed-data
+    skips go through ``source``. Do not prefetch plaintext and rewind — that is
+    why :func:`_read_rar5_block` reads the size vint byte-at-a-time.
     """
 
     def __init__(self, source: BinaryIO, key: bytes, iv: bytes) -> None:
@@ -689,11 +709,11 @@ class _HeaderDecryptStream:
         self._buf = bytearray()
 
     def tell(self) -> int:
+        # Ciphertext position, not plaintext-consumed. Leftover ``_buf`` is AES
+        # padding; see the class docstring. Measured: every FILE header on
+        # ``encrypted_header__.rar`` / ``encrypted_header__rar4.rar`` has
+        # ``header_size % 16 != 0``, and ``tell() - len(_buf)`` fails the parse.
         return self._source.tell()
-
-    def seek(self, offset: int, whence: int = 0) -> int:
-        self._buf.clear()
-        return self._source.seek(offset, whence)
 
     def read(self, n: int = -1) -> bytes:
         if n is None or n < 0:
@@ -1907,8 +1927,8 @@ def _read_rar5_block(
     data_offset, add_size, extra_size)`` or ``None`` at EOF.
 
     Reads the size vint byte-at-a-time rather than prefetching a large window and
-    seeking back: rewind is unsafe when ``fd`` is a :class:`_HeaderDecryptStream`
-    (ciphertext ``tell`` vs plaintext over-read).
+    seeking back: :class:`_HeaderDecryptStream` has no ``seek``, and its ``tell``
+    is the ciphertext cursor (leftover ``_buf`` is AES padding, not rewind room).
     """
     header_offset = fd.tell()
     preload = 4 + 1
@@ -1939,6 +1959,8 @@ def _read_rar5_block(
     hdata = start_bytes + read_exact(fd, header_size - len(start_bytes))
     if len(hdata) != header_size:
         raise CorruptionError("Unexpected EOF while reading RAR5 header body")
+    # Ciphertext cursor, including AES block padding. Same invariant as the
+    # RAR3 walk: this is where packed data (or the next header's IV) starts.
     data_offset = fd.tell()
 
     if header_crc != _crc32(memoryview(hdata)[4:]):

@@ -282,6 +282,18 @@ password and `cryptography` installed, with no `unrar` involved. Without a passw
 `EncryptionError`; with a password and no crypto backend, `PackageNotInstalledError`. A
 password *list* is iterated correctly on both generations.
 
+Each encrypted header is its own AES-CBC message (RAR3: 8-byte salt; RAR5: 16-byte IV)
+padded to a 16-byte block. `_HeaderDecryptStream.tell()` is the **ciphertext** cursor,
+including that padding — that is the correct `data_offset`, because packed data and the
+next header's salt/IV start after the padded ciphertext, not after the logical
+`header_size`. Leftover bytes in `_buf` are the unread tail of the last decrypted block
+(padding), not bytes the header still owes. Subtracting `len(_buf)` from `tell()` lands
+inside the padding: on the committed `encrypted_header__.rar` / `encrypted_header__rar4.rar`
+fixtures every FILE `header_size % 16 != 0`, and that counterfactual fails the parse
+(`CorruptionError` / `EncryptionError`). The decrypt stream has no `seek`; packed-data
+skips go through the underlying `source` after the wrapper is discarded. CBC cannot
+reposition without resetting the IV chain, and the parser never asks it to.
+
 **`encoding=` is not applied.** RAR names are decoded by the parser, so the argument is
 dropped — but not silently: supplying it emits `ENCODING_ARGUMENT_UNUSED`, which is the
 interface-wide answer for an argument a format cannot honour, and a structured diagnostic
@@ -667,6 +679,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Read QO, seek back, skip matching FILE headers on the walk | Same table extract uses. Consecutive cached spans chain in memory (one seek per run). AUTO omits small files from QO; those still list from their local headers. `CMT` after MAIN is a normal SERVICE on that walk. Packed QO / `-hp` fall back to a full FILE walk. Wrapping QO for `unrar` at list time would violate listing-without-unrar | Validating QO against a full FILE walk *at list time* (pays the seeks QO exists to avoid). Build-time `use_qo=False` comparison is the standing pin |
 | `CompressionAlgorithm.RAR` for M1–M5 (`level` 1–5); extract version in `extra["rar.extract_version"]` | The header identifies the algorithm, so `UNKNOWN` claimed we could not tell. `ContainerFormat.RAR` and `CompressionAlgorithm.RAR` are homonyms (container vs codec), not a reason to invent `RAR_COMPRESSION` / `RARLAB` | Putting 15/20/29/50 in `level`; dropping M1–M5 from `level` |
 | No `unrar x` tempdir cache for solid random `open()` | `AccessCost.SOLID` and per-open decode are the honest signals; a tempdir extraction amortizes work the caller cannot see or bound (**#8**) | `unrar x` into a managed temp directory to serve later random reads from disk |
+| Encrypted-header `tell()` is the ciphertext cursor; leftover `_buf` is AES padding | `data_offset` must skip the padded ciphertext so the next salt/IV is aligned. Subtracting leftover plaintext lands in padding — measured on both `encrypted_header__*.rar` fixtures, where every FILE `header_size % 16 != 0` | Reporting a logical plaintext offset from `tell()` |
 
 ## 7. Open questions
 
