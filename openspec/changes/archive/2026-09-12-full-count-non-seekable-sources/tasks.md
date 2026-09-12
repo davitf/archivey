@@ -138,7 +138,7 @@ regresses `open_stream` — see the measurement in `design.md` D5.
   `io.UnsupportedOperation`, which is already in the caught tuple, so the refusal should
   survive unchanged. Optionally also assert a short-returning *seekable* volume item goes
   through the boundary. **Do not** add a streaming multi-volume path in this change.
-- [ ] 4.4 Run all three dependency configs before pushing (`[all]`, `[all-lowest]`,
+- [x] 4.4 Run all three dependency configs before pushing (`[all]`, `[all-lowest]`,
   `[core-only]`) per `CONTRIBUTING.md`.
 
 ## 5. Docs and specs
@@ -170,6 +170,6 @@ regresses `open_stream` — see the measurement in `design.md` D5.
   it answers `tell()` rather than raising. Grep for the name — `dev-docs/history/SPEC.md` and
   an archived change also carry it; those are history and stay as they are.
 - [x] 5.4 `openspec validate --strict full-count-non-seekable-sources`
-- [ ] 5.5 `./scripts/check.sh --fix` and `./scripts/test.sh` clean.
-- [ ] 5.6 `openspec archive full-count-non-seekable-sources --yes` in the finishing PR;
+- [x] 5.5 `./scripts/check.sh --fix` and `./scripts/test.sh` clean.
+- [x] 5.6 `openspec archive full-count-non-seekable-sources --yes` in the finishing PR;
   commit the resulting `openspec/specs/` diff.
