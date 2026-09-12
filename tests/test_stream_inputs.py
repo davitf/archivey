@@ -478,11 +478,15 @@ def test_ensure_full_count_reads_returns_the_full_count(
     try:
         normalized = ensure_full_count_reads(stream)
         if not case.seekable:
-            assert normalized.seekable() is False
+            # The library predicate, not stream.seekable(): a Windows pipe's
+            # BufferedReader reports True while is_seekable() is False, and the
+            # boundary returns that buffer unchanged.
+            assert is_seekable(normalized) is False
             if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
                 assert normalized is stream
             else:
                 assert normalized is not stream
+                assert normalized.seekable() is False
         assert normalized.read(128) == CONTENT[:128]
         assert normalized.read(4000) == CONTENT[128:4128]
     finally:
