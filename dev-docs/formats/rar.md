@@ -286,10 +286,11 @@ Each encrypted header is its own AES-CBC message (RAR3: 8-byte salt; RAR5: 16-by
 padded to a 16-byte block. `_HeaderDecryptStream.tell()` is the **ciphertext** cursor,
 including that padding — that is the correct `data_offset`, because packed data and the
 next header's salt/IV start after the padded ciphertext, not after the logical
-`header_size`. Leftover bytes in `_buf` are the unread tail of the last decrypted block
-(padding), not bytes the header still owes. Subtracting `len(_buf)` from `tell()` lands
-inside the padding: on the committed `encrypted_header__.rar` / `encrypted_header__rar4.rar`
-fixtures every FILE `header_size % 16 != 0`, and that counterfactual fails the parse
+`header_size`. Leftover bytes in `_buf` are the unread tail of the last decrypted block.
+Mid-header that tail is still-owed plaintext; after `header_size` it is AES padding.
+Either way, subtracting `len(_buf)` from `tell()` is wrong: on the committed
+`encrypted_header__.rar` / `encrypted_header__rar4.rar` fixtures every FILE
+`header_size % 16 != 0`, and that counterfactual fails the parse
 (`CorruptionError` / `EncryptionError`). The decrypt stream has no `seek`; packed-data
 skips go through the underlying `source` after the wrapper is discarded. CBC cannot
 reposition without resetting the IV chain, and the parser never asks it to.
@@ -298,7 +299,7 @@ The decrypt *stage* (`open_aes_decrypt_stage`) is shared with 7z; the pull strea
 (`AesDecryptStream` in `streams/crypto.py`) is not a replacement. That class closes
 its source, has no `tell`, allows unbounded reads, and zero-pads a short last block
 on `finalize` (7z). Header parsing needs the opposite. Whether `AesDecryptStream`
-itself should be removed or fixed is #315 thread 3 (parcel F) — do not wire headers
+itself should be removed or fixed is #315 thread 3 — do not wire headers
 through it until that is decided.
 
 **`encoding=` is not applied.** RAR names are decoded by the parser, so the argument is

@@ -700,14 +700,15 @@ class _HeaderDecryptStream:
     Each encrypted header is its own CBC message: RAR3 prefixes an 8-byte salt,
     RAR5 a 16-byte IV, then ciphertext padded to 16-byte blocks. ``read`` returns
     plaintext; leftover bytes in ``_buf`` are the unread tail of the last
-    decrypted block — padding after a header whose size is not a multiple of 16,
-    not bytes this header still owes the caller.
+    decrypted block. Mid-header, that tail is still-owed plaintext. After the
+    walk has consumed ``header_size``, it is AES padding — not bytes this header
+    still owes. Either way ``tell`` is the ciphertext cursor (see below).
 
-    ``tell`` is the underlying **ciphertext** cursor, including that padding.
-    ``data_offset`` needs that position so the next salt/IV (or packed data)
-    starts on a block boundary. Subtracting ``len(_buf)`` would report the
-    logical plaintext offset and land inside the padding; the next header then
-    decrypts as garbage.
+    ``tell`` is the underlying **ciphertext** cursor, including unread leftover.
+    After a full header read, ``data_offset`` needs that position so the next
+    salt/IV (or packed data) starts on a block boundary. Subtracting
+    ``len(_buf)`` would report the logical plaintext offset and land inside the
+    padding; the next header then decrypts as garbage.
 
     There is no ``seek``. CBC state cannot reposition, and the parser never
     asks: after the header is consumed this wrapper is discarded and packed-data
@@ -719,7 +720,7 @@ class _HeaderDecryptStream:
     ``finalize``-pads a short last block with zeros (the 7z convention). Header
     parsing needs a non-owning cursor, ``read_exact`` of each AES block, and a
     reject for ``read(-1)``. The decrypt *stage* is shared; the pull stream is
-    not. Parcel F / #315 thread 3 owns whether ``AesDecryptStream`` stays.
+    not.
     """
 
     def __init__(self, source: BinaryIO, key: bytes, iv: bytes) -> None:
@@ -728,10 +729,12 @@ class _HeaderDecryptStream:
         self._buf = bytearray()
 
     def tell(self) -> int:
-        # Ciphertext position, not plaintext-consumed. Leftover ``_buf`` is AES
-        # padding; see the class docstring. Measured: every FILE header on
-        # ``encrypted_header__.rar`` / ``encrypted_header__rar4.rar`` has
-        # ``header_size % 16 != 0``, and ``tell() - len(_buf)`` fails the parse.
+        # Ciphertext position, not plaintext-consumed. Leftover ``_buf`` is the
+        # unread tail of the last decrypted block (still-owed mid-header; AES
+        # padding after ``header_size``). See the class docstring. Measured:
+        # every FILE header on ``encrypted_header__.rar`` /
+        # ``encrypted_header__rar4.rar`` has ``header_size % 16 != 0``, and
+        # ``tell() - len(_buf)`` fails the parse.
         return self._source.tell()
 
     def read(self, n: int = -1) -> bytes:
@@ -1971,7 +1974,8 @@ def _read_rar5_block(
 
     Reads the size vint byte-at-a-time rather than prefetching a large window and
     seeking back: :class:`_HeaderDecryptStream` has no ``seek``, and its ``tell``
-    is the ciphertext cursor (leftover ``_buf`` is AES padding, not rewind room).
+    is the ciphertext cursor. Leftover ``_buf`` is not rewind room — mid-header
+    it is still-owed plaintext; after ``header_size`` it is AES padding.
     """
     header_offset = fd.tell()
     preload = 4 + 1

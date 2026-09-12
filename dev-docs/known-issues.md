@@ -100,7 +100,9 @@ corruption to a reused `bytearray` seed so later rounds match WinRAR. Short
 passwords (UTF-16LE password + 8-byte salt ≤ 64 bytes) never hit the path.
 Ported from `rarfile` 4.3 `Rar3Sha1`. Evidence: `tests/test_rar_parser.py` (digest
 of the original bytes, seed mutated afterwards, long-password s2k vs `rarfile`).
-Handbook: [`formats/rar.md`](formats/rar.md) §3.
+The committed `-hp` fixtures use `header_password` (UTF-16LE + salt is 38 bytes),
+so they never hit the mutation; that path is pinned by the unit tests, not by
+listing those archives. Handbook: [`formats/rar.md`](formats/rar.md) §3.
 
 ## Importing the ISO backend patches pycdlib process-globally (by design)
 
