@@ -795,13 +795,14 @@ def test_verify_read0_hashless_does_not_truncate_on_close() -> None:
     stream.close()  # must not raise TruncatedError
 
 
-def test_verify_full_count_over_short_reading_inner() -> None:
-    """Bounded read(n) coalesces across fill-or-EOF shorts (stop on terminal short).
+def test_verify_bounded_read_stops_on_short_inner() -> None:
+    """Bounded read(n) issues one inner read and forwards a short as terminal.
 
-    Inners that only short at EOF (``DecompressorStream``, typical ``ZipExtFile``)
-    are full-count for healthy data. A RawIOBase that shorts mid-stream needs a
-    buffer in front; we do not keep pulling after a short, so deferred truncation
-    on ``DecompressorStream`` still returns the prefix from this call.
+    The ``n``-or-terminal guarantee is the *inner's*: inners that only short at EOF
+    (``DecompressorStream``, typical ``ZipExtFile``) are full-count for healthy data.
+    A RawIOBase that shorts mid-stream needs a buffer in front; we do not keep pulling
+    after a short, so deferred truncation on ``DecompressorStream`` still returns the
+    prefix from this call.
     """
 
     class FillOrEof(io.BytesIO):
@@ -955,7 +956,7 @@ def test_verify_sized_readall_propagates_memoryerror_not_truncation() -> None:
 
 
 def test_archive_stream_passthrough_full_count() -> None:
-    """Unverified ArchiveStream.read(n) coalesces until n or a terminal short."""
+    """Unverified ArchiveStream.read(n) is n-or-terminal over a full-count inner."""
     from archivey.internal.streams.archive_stream import ArchiveStream
 
     stream = ArchiveStream(
@@ -964,6 +965,34 @@ def test_archive_stream_passthrough_full_count() -> None:
     )
     assert stream.read(40) == CONTENT[:40]
     assert stream.read(10) == CONTENT[40:50]
+    stream.close()
+
+
+def test_archive_stream_passthrough_read_stops_on_short_inner() -> None:
+    """Unverified ArchiveStream.read(n) forwards one inner read, short included.
+
+    The full count comes from the inner being fill-or-EOF, not from a gather here
+    (ADR 0014 / ``compressed-streams``): retrying a short would pull a decoder's
+    deferred truncation into the same call and drop the recoverable prefix. An inner
+    that shorts mid-stream is fixed with ``ensure_full_count_reads`` in front.
+    """
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    class ShortOnce(io.BytesIO):
+        """Returns at most 3 bytes per read, but empty only at true EOF."""
+
+        def read(self, n: int = -1) -> bytes:
+            if n is None or n < 0:
+                return super().read(n)
+            return super().read(min(3, n)) if n else b""
+
+    stream = ArchiveStream(
+        lambda: ShortOnce(CONTENT),
+        translate=lambda _exc: None,
+    )
+    assert stream.read(40) == CONTENT[:3]
+    assert stream.read(0) == b""
+    assert stream.read(-1) == CONTENT[3:]
     stream.close()
 
 

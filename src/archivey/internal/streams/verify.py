@@ -13,8 +13,9 @@ Two delivery shapes (same rules, different wrappers):
 
 Per ADR 0014 / ``compressed-streams``:
 
-- Public ``read(n)`` (``n ≥ 1``) is **full-count**: coalesce to ``n`` or a terminal
-  boundary (stop on empty or short — see ``read_full_count``).
+- Public ``read(n)`` (``n ≥ 1``) is **full-count**: ``n`` bytes or a terminal boundary,
+  from one ``inner.read(n)`` — the guarantee is the inner's (fill-or-EOF), and a short
+  non-empty return is terminal, never "ask again" (ADR 0014).
 - Verification runs on a read that **reaches the end** (declared size, or decoder
   EOS). A partial read is never verified. ``read(0)`` is a no-op (not EOF).
 - A seek off the sequential frontier forfeits the **checksum** only (incremental
@@ -56,7 +57,6 @@ from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
-    read_full_count,
 )
 from archivey.types import HashAlgorithm
 
@@ -300,7 +300,7 @@ class MemberVerifier:
                 want = min(
                     _SIZED_DRAIN_CHUNK, self._expected_size - self._furthest_read_pos
                 )
-                piece = read_full_count(inner, want)
+                piece = inner.read(want)
                 if not piece:
                     break
                 self._furthest_read_pos += len(piece)
@@ -364,7 +364,9 @@ class MemberVerifier:
         ``expected_size`` is a decompression-bomb bound: do **not** delegate to
         ``inner.read(-1)``, which would pull an over-long adversarial payload into
         RAM. A single ``inner.read(remaining)`` is also insufficient — ``BinaryIO``
-        may short-read without EOF.
+        may short-read without EOF — so this loop re-asks until empty. Unlike a
+        bounded ``read(n)``, continuing past a short is *wanted* here: this call
+        drains to EOF, so a decoder's deferred truncation belongs in it.
 
         On digest / over-run fault the verdict raises here and returns no bytes
         (withhold), matching ADR 0014's size-declared reaching-read rule.
@@ -375,7 +377,7 @@ class MemberVerifier:
             remaining = self._expected_size - self._pos
             want = min(_SIZED_DRAIN_CHUNK, remaining)
             try:
-                piece = read_full_count(inner, want)
+                piece = inner.read(want)
             except ArchiveyError:
                 self._abandon()
                 raise
@@ -413,9 +415,10 @@ class MemberVerifier:
     def read(self, inner: BinaryIO, n: int = -1) -> bytes:
         """Read from ``inner``, update digests/bounds, and verify on clean EOF.
 
-        Bounded ``read(n)`` is full-count (coalesces via ``read_full_count``). A
-        size-declared reaching read that fails digest / over-run raises and
-        returns no bytes for that call.
+        Bounded ``read(n)`` is full-count by way of one ``inner.read`` — the inner is
+        fill-or-EOF, and a short non-empty return is a terminal boundary to forward
+        rather than retry (ADR 0014). A size-declared reaching read that fails
+        digest / over-run raises and returns no bytes for that call.
         """
         # read(0) is a no-op — never treat it as EOF (stdlib file / BytesIO contract).
         if n == 0:
@@ -442,7 +445,7 @@ class MemberVerifier:
         # Bounded full-count read.
         if self._abandoned or self._verified:
             try:
-                return read_full_count(inner, n)
+                return inner.read(n)
             except Exception:  # noqa: BLE001
                 self._abandon()
                 raise
@@ -462,7 +465,7 @@ class MemberVerifier:
             reaches_declared = want == remaining
 
         try:
-            data = read_full_count(inner, want)
+            data = inner.read(want)
         except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
             self._abandon()
             raise

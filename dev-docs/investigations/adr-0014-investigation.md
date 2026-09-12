@@ -160,6 +160,30 @@ front if a caller needs true `BufferedReader` mid-stream coalesce. The public
 contract still holds: a healthy archivey stream does not return short except at
 a terminal boundary.
 
+> **Correction (2026-09).** `read_full_count` never looped: it asked for the whole
+> remainder every pass, so a full piece ended the loop by satisfying `n` and a short
+> one broke out — the helper was `stream.read(n)` with an unreachable guard, from the
+> commit that introduced it (#183, the change this document investigates) to its
+> removal. Nothing in between touched the loop: #317 simplified the return expression
+> and #329 rewrote the docstring. The *policy* above is right and is what the code
+> does; "coalesce" was only ever the inner's fill-or-EOF guarantee, never a gather in
+> the helper. It was removed and its call sites now read `inner.read(n)` directly,
+> with the stop-on-short reasoning stated where the decision is made
+> (`SlicingStream.read`, `ArchiveStream.read`, `MemberVerifier.read`). `read_exact`
+> stays for the one case that must gather — a declared-length `read(-1)` drain. Later
+> mentions of `read_full_count` in this document refer to that removed helper.
+>
+> It also never changed behaviour at any call site: every adoption replaced a plain
+> single read (`inner.read(n)` in `ArchiveStream.read`, `inner.read(want)` in
+> `MemberVerifier.read`, both #183; `self._stream.read(n)` on `SlicingStream`'s sized
+> path, #219), and none ever replaced a `read_exact`. So the full-count contract this
+> document argues for was already satisfied at those three surfaces when it was
+> written — by the inners being fill-or-EOF, which the paragraph above says outright.
+> The removal restores the pre-#183 lines. The one surface where an inner genuinely
+> shorts mid-stream never got the helper at all, and is still open as
+> `full-count-non-seekable-sources`, where the fix is `read_exact` — a real gather,
+> in the one place that needs one.
+
 ### Where the verdict fires
 
 Content-integrity verdicts (stored checksum / digest, encrypted-member authentication
