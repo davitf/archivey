@@ -316,7 +316,7 @@ def parse_rar_archive(
     points at a usable QO. Tests compare the two listings; production always
     leaves the default.
     """
-    return _parse_rar_one(
+    return _parse_rar_volume(
         source,
         password=password,
         volume_index=0,
@@ -344,7 +344,7 @@ def parse_rar_volumes(
     merged: RarArchive | None = None
     base_offset = 0
     for index, volume in enumerate(volumes):
-        part = _parse_rar_one(
+        part = _parse_rar_volume(
             volume,
             password=password,
             volume_index=index,
@@ -417,7 +417,7 @@ def _append_member(members: list[RarMemberInfo], member: RarMemberInfo) -> None:
     members.append(member)
 
 
-def _parse_rar_one(
+def _parse_rar_volume(
     source: BinaryIO,
     *,
     password: str | bytes | None,
@@ -425,6 +425,16 @@ def _parse_rar_one(
     allow_continuation: bool,
     use_qo: bool = True,
 ) -> RarArchive:
+    """Parse one volume — one seekable source — into a :class:`RarArchive`.
+
+    ``parse_rar_archive`` calls this for a single-file archive (volume index 0).
+    ``parse_rar_volumes`` calls it once per volume and merges split members.
+    ``volume_index`` is the 0-based position in that set, not a RAR format
+    version: RAR3-on-disk is ``archive.version == 4``, RAR5 is ``5``.
+    ``allow_continuation`` is False on the first volume so a ``split_before``
+    member is refused there ("Need first volume") rather than listed as a
+    fragment.
+    """
     start = source.tell()
     version, sfx_offset = _find_sfx_header(source, start)
     source.seek(start + sfx_offset)
