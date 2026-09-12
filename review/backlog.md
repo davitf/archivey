@@ -108,16 +108,19 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   visible git change rather than a silent float, but if the aim is tracking what users
   build today, that pin also ages.
 
-- **#329 C4 — `name`/`mode` shim mixin in `binaryio.py`.** Third copy of `name`,
+- **#329 C4 — `name`/`mode` shim mixin in `binaryio.py`.** Fourth copy of `name`,
   second of `mode`: `BinaryIOWrapper` duplicates `DelegatingStream.name` /
-  `PeekableStream.name` and `ReadOnlyIOStream.mode`. Inheriting `ReadOnlyIOStream`
-  from `binaryio.py` is a circular import (`base.py` imports that module), but a
-  mixin *defined in* `binaryio.py` could be inherited by `ReadOnlyIOStream`,
-  `PeekableStream`, and `BinaryIOWrapper` with no cycle. The `name` implementations
-  are not identical: `ReadOnlyIOStream.name` always raises; the other three forward
-  via `source_name`. The long rationale (the `typing.IO` trap, pyrefly
-  `bad-override` on `Never`) lives in only one of the four copies. Deferred rather
-  than grow Parcel C into `peekable.py`.
+  `PeekableStream.name` / `FullCountStream.name` and `ReadOnlyIOStream.mode`.
+  Inheriting `ReadOnlyIOStream` from `binaryio.py` is a circular import
+  (`base.py` imports that module), but a mixin *defined in* `binaryio.py` could
+  be inherited by `ReadOnlyIOStream`, `PeekableStream`, `FullCountStream`, and
+  `BinaryIOWrapper` with no cycle — `FullCountStream` now lives in
+  `full_count.py`, which already imports `binaryio`. The `name` implementations
+  are not identical: `ReadOnlyIOStream.name` always raises; the other four
+  forward via `source_name`. The long rationale (the `typing.IO` trap, pyrefly
+  `bad-override` on `Never`) lives in only one of the copies. Deferred rather
+  than grow this PR into the mixin; the split that made the mixin easy is the
+  `full-count-non-seekable-sources` landing.
 - **#329 C1 — wrap a `RawIOBase` that overrides `readinto` and then refuses.**
   `ensure_bufferedio` uses an MRO probe (`type(obj).readinto is not
   io.RawIOBase.readinto`) so wrap-time cannot skip-decode a pending solid

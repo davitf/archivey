@@ -10,8 +10,9 @@ hierarchy, or codec internals in the *API* of this package (call-site examples i
 
 Module map:
 
-- :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` / ``FullCountStream`` (wrapper bases)
+- :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
 - :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
+- :mod:`.full_count` — ``FullCountStream`` / ``ensure_full_count_reads`` (source-boundary full-count)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
 - :mod:`.locked` — ``LockedStream`` / ``CloseLockedStream`` (whole-op lock wrappers)
@@ -32,7 +33,6 @@ from __future__ import annotations
 
 from archivey.internal.streams.streamtools.base import (
     DelegatingStream,
-    FullCountStream,
     ReadOnlyIOStream,
 )
 from archivey.internal.streams.streamtools.binaryio import (
@@ -40,7 +40,6 @@ from archivey.internal.streams.streamtools.binaryio import (
     ReadableStream,
     ensure_binaryio,
     ensure_bufferedio,
-    ensure_full_count_reads,
     is_filename,
     is_seekable,
     is_stream,
@@ -49,6 +48,10 @@ from archivey.internal.streams.streamtools.binaryio import (
     readinto_via_read,
     source_byte_size,
     source_name,
+)
+from archivey.internal.streams.streamtools.full_count import (
+    FullCountStream,
+    ensure_full_count_reads,
 )
 from archivey.internal.streams.streamtools.locked import CloseLockedStream, LockedStream
 from archivey.internal.streams.streamtools.shared import SharedSource

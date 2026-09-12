@@ -585,5 +585,6 @@ and views that no boundary buffer sits in front of.
 | Healthy archive, short-returning source | Never `CorruptionError` / `TruncatedError` |
 | Each streaming-capable format, `ShortReadNonSeekable(max_chunk=1)`, detected and with explicit `format=` | Both match the full-count open; the explicit-`format=` case does not depend on `PeekableStream` being in the chain |
 | `ensure_full_count_reads(non_seekable_short_source).read(n)` | Returns exactly `n` bytes short of EOF, and consumes exactly `n` bytes from the source |
-| The returned boundary stream over a non-seekable source | `seekable()` is `False`; no read-ahead is buffered |
+| The returned boundary stream over a non-seekable raw source | `seekable()` is `False`; no read-ahead is buffered |
+| `ensure_full_count_reads` on an already-buffered non-seekable source (`io.BufferedReader`) | Returns that buffer unchanged |
 | `read(-1)` / `readall()` on the boundary stream over a non-seekable short-returning source | Returns every remaining byte, and keeps doing so when the inner also returns short on `read(-1)` — the drain must not depend on the inner's `readall()` |

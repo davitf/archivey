@@ -66,6 +66,13 @@ def test_ensure_full_count_reads_does_not_read_ahead() -> None:
     assert source.consumed == 20
 
 
+def test_ensure_full_count_reads_leaves_existing_buffer() -> None:
+    """A caller's ``BufferedReader`` is already full-count; wrapping it drops ``fileno()``."""
+    source = ShortReadNonSeekable(DATA, max_chunk=len(DATA))
+    buffered = io.BufferedReader(source)
+    assert ensure_full_count_reads(buffered) is buffered
+
+
 def test_buffered_reader_over_non_seekable_over_reads() -> None:
     """The seekable-branch wrapper is unsafe on a pipe: it reads ahead."""
     source = ShortReadNonSeekable(DATA, max_chunk=len(DATA))
@@ -101,6 +108,24 @@ def test_read_negative_one_drains_even_when_inner_shorts_on_drain() -> None:
     wrapped = ensure_full_count_reads(source)
     assert wrapped.read(-1) == DATA
     assert source.consumed == len(DATA)
+
+
+def test_sized_read_past_eof_returns_the_remainder() -> None:
+    """Stop-on-empty, not raise: a sized read past EOF is a short return.
+
+    Collapsing ``read`` into a bare ``read_exact`` that raised, or a loop that
+    treated empty as "ask again", would break this edge. ``read(0)`` is a
+    no-op (``compressed-streams``).
+    """
+    source = ShortReadNonSeekable(b"abcde", 1)
+    wrapped = ensure_full_count_reads(source)
+    assert wrapped.read(0) == b""
+    assert source.consumed == 0
+    assert wrapped.read(100) == b"abcde"
+    assert source.consumed == 5
+    assert wrapped.read(5) == b""
+    buf = bytearray(4)
+    assert wrapped.readinto(buf) == 0
 
 
 def test_readall_drains_a_short_inner() -> None:
@@ -172,8 +197,9 @@ def test_full_count_wrapper_preserves_real_fifo_name(tmp_path: Path) -> None:
     """``open(fifo, "rb")`` is a non-seekable ``BufferedReader`` that carries ``.name``.
 
     The seekable branch keeps that name for free (``BufferedReader.name`` forwards
-    at C level). An opaque wrapper would make the two branches of one function
-    disagree about the same source.
+    at C level). The non-seekable branch returns the same buffer unchanged, so
+    ``fileno()`` stays intact too — wrapping it would make the two halves of one
+    function disagree about the same source.
     """
     fifo = tmp_path / "pipe-ish.tar"
     payload = b"hello from a named fifo"
@@ -181,11 +207,11 @@ def test_full_count_wrapper_preserves_real_fifo_name(tmp_path: Path) -> None:
         assert raw.seekable() is False
         assert raw.name == str(fifo)
         wrapped = ensure_full_count_reads(raw)
+        assert wrapped is raw
         assert source_name(wrapped) == str(fifo)
         assert wrapped.name == str(fifo)
         assert wrapped.seekable() is False
-        with pytest.raises(io.UnsupportedOperation):
-            wrapped.fileno()
+        assert wrapped.fileno() == raw.fileno()
         peek = PeekableStream(wrapped)
         assert peek.name == str(fifo)
         assert wrapped.read(len(payload)) == payload

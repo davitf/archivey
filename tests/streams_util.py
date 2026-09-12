@@ -121,6 +121,10 @@ class ShortReadNonSeekable(ShortReadBytesIO):
     :class:`ShortReadBytesIO` is seekable; :class:`NonSeekableBytesIO` delegates to
     ``BytesIO`` and is therefore always full-count. Neither covers this axis pair,
     which is why the non-seekable half of the source-boundary contract went untested.
+
+    ``tell()`` still answers, matching :class:`NonSeekableBytesIO`:
+    ``ConcatenatedFile`` probes it before ``seek()``, so a double that raised on
+    both would test a different refusal path.
     """
 
     def __init__(

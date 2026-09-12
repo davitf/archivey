@@ -43,7 +43,11 @@ class PeekableStream(ReadOnlyIOStream):
     def __init__(self, underlying: BinaryIO) -> None:
         super().__init__()
         # Own the full-count precondition: open_stream hands this class the raw
-        # caller stream, which never went through resolve_source.
+        # caller stream, which never went through resolve_source. Both src/
+        # construction sites gate on ``not is_seekable``; a seekable raw would
+        # take the buffering branch (read-ahead this class never unwinds and
+        # never closes). An already full-count inner (``FullCountStream``, or
+        # the caller's ``BufferedReader``) is returned unchanged.
         self._underlying = ensure_full_count_reads(underlying)
         # Bytes read ahead from the underlying stream but not yet consumed by read().
         self._buffer = bytearray()

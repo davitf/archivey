@@ -1,6 +1,6 @@
 """Cross-library matrix: the stream helpers vs. every stream type a caller might supply.
 
-The ``streams/streamtools/binaryio.py`` helpers (``is_stream`` / ``is_seekable`` / ``ensure_binaryio`` /
+The ``streams/streamtools`` helpers (``is_stream`` / ``is_seekable`` / ``ensure_binaryio`` /
 ``ensure_bufferedio`` / ``ensure_full_count_reads`` / ``BinaryIOWrapper``) are core
 infrastructure: every backend feeds them whatever stream the *source* produced. This module
 verifies they behave correctly against the real objects those sources return — local files,
@@ -470,15 +470,19 @@ def test_ensure_full_count_reads_returns_the_full_count(
 ) -> None:
     """The archive-source boundary guarantee: ``read(n)`` yields ``n`` short of EOF.
 
-    A non-seekable source is wrapped in ``FullCountStream`` (not returned
+    A non-seekable raw source is wrapped in ``FullCountStream`` (not returned
     unchanged, and not a ``BufferedReader`` — that would over-read a pipe).
+    An already-buffered non-seekable source is returned unchanged.
     """
     stream = ensure_binaryio(case.build(tmp_path))
     try:
         normalized = ensure_full_count_reads(stream)
         if not case.seekable:
-            assert normalized is not stream
             assert normalized.seekable() is False
+            if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
+                assert normalized is stream
+            else:
+                assert normalized is not stream
         assert normalized.read(128) == CONTENT[:128]
         assert normalized.read(4000) == CONTENT[128:4128]
     finally:
