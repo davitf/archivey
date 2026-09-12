@@ -76,7 +76,7 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.shared import SharedSource
-from archivey.internal.streams.streamtools.slice import SlicingStream
+from archivey.internal.streams.streamtools.slice import SharedView
 from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.internal.streams.zstd_framing import (
@@ -570,7 +570,7 @@ def _gzip_backstop_source(
         # ty fspath-overload idiom used elsewhere in this file for CodecSource paths).
         path = os.fspath(source)
         return source, (lambda: open(path, "rb"))
-    if isinstance(source, SlicingStream) and source.is_shared_view():
+    if isinstance(source, SharedView):
         return source, source.independent_view
     if is_seekable(source):
         shared = SharedSource(source)

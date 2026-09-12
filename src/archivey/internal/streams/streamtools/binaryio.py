@@ -111,11 +111,12 @@ def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
 
 
 def read_exact(stream: ReadableStream, n: int) -> bytes:
-    """Read exactly ``n`` bytes, or fewer only if the stream ends first.
+    """Read up to ``n`` bytes, treating a short non-empty return as "ask again".
 
-    Unlike a single ``read(n)`` (which may legally return a short chunk), this loops
-    until ``n`` bytes are gathered or EOF is hit — the behaviour parsers want when
-    pulling fixed-size headers.
+    Stops only on empty (EOF) or once ``n`` bytes are gathered. That is the
+    ``io.RawIOBase`` contract: a short chunk is not a terminal signal.
+    Contrast :func:`read_full_count`, which stops on the first short — the
+    difference is what a short *means*, not how many bytes are wanted.
     """
     if n < 0:
         raise ValueError("n must be non-negative")
@@ -130,13 +131,12 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
 
 
 def read_full_count(stream: ReadableStream, n: int) -> bytes:
-    """Full-count gather of up to ``n`` bytes, stopping on empty or a short read.
+    """Read up to ``n`` bytes, treating a short non-empty return as terminal.
 
-    Like :func:`read_exact` for healthy full-count inners, but **stops on the first
-    short non-empty return**. That preserves deferred truncation on
-    ``DecompressorStream`` (return the prefix now; raise on the next empty
-    ``read``). Continuing after a short — as ``read_exact`` does for RawIOBase —
-    would pull that deferred error into the same call.
+    Stops on empty *or* the first piece shorter than asked. Full-count inners
+    (a ``DecompressorStream`` with deferred truncation) hand back the
+    recoverable prefix now and raise on the next empty ``read``; asking again
+    — as :func:`read_exact` would — would pull that error into this call.
     """
     if n < 0:
         raise ValueError("n must be non-negative")
@@ -174,13 +174,21 @@ def _is_fifo_or_chardev(stream: Any) -> bool:
     return stat.S_ISFIFO(mode) or stat.S_ISCHR(mode)
 
 
+_BUFFER_TYPES = (io.BufferedReader, io.BufferedRandom)
+
+
 def is_seekable(stream: Any) -> bool:
     """Whether ``stream`` can actually seek.
 
-    A ``BufferedReader`` reports its own ``seekable()`` as ``True`` even when wrapping a
-    non-seekable raw stream, so unwrap to the underlying raw object first. Streams that
-    lack a ``seekable()`` method are conservatively treated as non-seekable — except known
-    types we can assert statically (``mmap``).
+    Unwraps ``BufferedReader`` / ``BufferedRandom`` so a detached buffer
+    (``raw is None`` after ``detach()``) is treated as non-seekable rather than
+    raising. ``BufferedReader.seekable()`` already forwards to the raw, so this
+    is not "because the buffer reports True over a non-seekable raw" — that
+    claim was wrong. ``fileno()`` also forwards, so the FIFO/char-device
+    override below does not need the unwrap.
+
+    Streams that lack a ``seekable()`` method are conservatively treated as
+    non-seekable — except known types we can assert statically (``mmap``).
 
     We deliberately do *not* probe by calling ``seek()``: that would make this predicate
     side-effecting (it's called on hot paths and on streams someone is mid-read on), and a
@@ -197,8 +205,9 @@ def is_seekable(stream: Any) -> bool:
     member streams are forward-only by design (``r|`` forbids backward seeks), so treating
     them as non-seekable is correct.
     """
-    if isinstance(stream, io.BufferedReader):
-        return is_seekable(stream.raw)
+    if isinstance(stream, _BUFFER_TYPES):
+        raw = stream.raw
+        return False if raw is None else is_seekable(raw)
     # mmap is always seekable but (before Python 3.13) exposes no seekable() method and is
     # not an io.IOBase, so the generic check below would miss it.
     if isinstance(stream, mmap.mmap):
@@ -252,45 +261,106 @@ def source_name(source: Any) -> str | None:
     """Best-effort human-readable name for a source, for error messages and metadata.
 
     A path-like source yields its string form; a file-like stream yields its ``name``
-    attribute when that is a string (``open()`` sets it, ``BytesIO`` does not, and some
-    streams expose an integer fd there — both of those yield ``None``).
+    attribute when that is a path (``open()`` sets it, ``BytesIO`` does not). ``open()``
+    with a bytes path stores ``name`` as bytes — typeshed notes this — and this
+    decodes it with ``os.fsdecode`` rather than widening the return type. An integer
+    fd stored as ``name`` yields ``None``.
     """
     if is_filename(source):
         return os.fsdecode(source)
     name = getattr(source, "name", None)
-    return name if isinstance(name, str) else None
+    if isinstance(name, str):
+        return name
+    if isinstance(name, bytes):
+        return os.fsdecode(name)
+    return None
+
+
+def _peel_passthrough(stream: Any) -> Any:
+    """Walk opt-in pass-through wrappers so a seek counter does not hide cheap size.
+
+    Only wrappers that set ``peel_for_source_size`` are unwrapped. Transforming
+    wrappers (decrypt, BCJ, ``OutputCountingStream``) must not opt in — their
+    cheap size is not the inner file's. The peel is for the cheapness decision
+    and metadata; :func:`source_byte_size` still I/Os the original wrapper on
+    the ``SEEK_END`` fallback so the counter sees those seeks.
+    """
+    seen: set[int] = set()
+    while getattr(stream, "peel_for_source_size", False) is True:
+        ident = id(stream)
+        if ident in seen:
+            break
+        seen.add(ident)
+        inner = getattr(stream, "_inner", None)
+        if inner is None:
+            break
+        stream = inner
+    return stream
+
+
+def _metadata_end_size(stream: Any) -> int | None:
+    """Byte size from metadata that does not move the handle, else ``None``.
+
+    ``BufferedRandom`` is excluded: only ``SEEK_END`` flushes a pending write, so
+    ``fstat`` would under-report. Block/character devices report ``st_size == 0``;
+    those fall through to the seek probe.
+    """
+    if isinstance(stream, io.BufferedRandom):
+        return None
+    target = stream
+    if isinstance(stream, io.BufferedReader):
+        raw = stream.raw
+        if raw is not None:
+            target = raw
+    if isinstance(target, io.BytesIO):
+        view = target.getbuffer()
+        try:
+            return view.nbytes
+        finally:
+            view.release()
+    if isinstance(target, mmap.mmap):
+        return len(target)
+    if isinstance(target, io.FileIO):
+        try:
+            st = os.fstat(target.fileno())
+        except (OSError, ValueError):
+            return None
+        if stat.S_ISREG(st.st_mode):
+            return st.st_size
+        return None
+    return None
 
 
 def _seek_end_is_cheap(stream: Any) -> bool:
     """Whether ``SEEK_END`` on ``stream`` is O(1) — never a decompression or scan.
 
-    Deliberately a **whitelist** of concrete types whose end-seek is a plain offset
-    move: a decompressor stream (stdlib ``GzipFile``/``BZ2File``/``LZMAFile``, our
-    ``DecompressorStream`` family, accelerator wrappers) services ``SEEK_END`` by
-    decoding to the end, which :func:`source_byte_size` must never trigger. Duck checks
-    (``fileno`` + ``S_ISREG``) are unsafe here — wrappers like ``GzipFile`` forward
-    ``fileno`` to their *compressed* underlying file. Streams outside the whitelist
-    advertise their size via a ``size`` attribute or a ``try_get_size()`` method
-    instead.
+    Whitelist only: ``BytesIO``, ``FileIO``, ``mmap``, and those under a buffer.
+    Duck checks (``fileno`` + ``S_ISREG``) are unsafe — ``GzipFile`` forwards
+    ``fileno`` to the compressed file. Anything else advertises size via
+    ``size`` or ``try_get_size()``.
     """
     if isinstance(stream, (io.BytesIO, io.FileIO, mmap.mmap)):
         return True
-    if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
-        return _seek_end_is_cheap(stream.raw)
+    inner = _under_buffer(stream)
+    if inner is not stream:
+        return _seek_end_is_cheap(inner)
     return False
 
 
 def _under_buffer(stream: Any) -> Any:
-    """The stream a ``BufferedReader`` wraps, for probes that only read *metadata*.
+    """The stream a ``BufferedReader``/``BufferedRandom`` wraps, for metadata probes.
 
     A buffer forwards the I/O methods and nothing else, so a wrapped stream's ``size`` /
     ``try_get_size()`` would vanish the moment the source boundary buffered it (see
     :func:`ensure_full_count_reads`) — and with it the cheap source size a nested
     ``open_archive(reader.open("inner.zip"))`` reports. Both probes leave the wrapped
     stream's read position where they found it, so consulting them through the buffer
-    cannot desync it — unlike a ``SEEK_END`` probe, which must stay on the buffer itself.
+    cannot desync it. Probe 4's metadata path peels a ``BufferedReader`` the same way;
+    a ``SEEK_END`` fallback still runs on the buffer itself (it flushes ``BufferedRandom``).
+    ``raw is None`` after ``detach()`` — this module's :class:`_NonClosingBufferedReader`
+    — returns ``stream``.
     """
-    if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
+    if isinstance(stream, _BUFFER_TYPES):
         raw = stream.raw
         if raw is not None:  # None once detached (see _NonClosingBufferedReader)
             return raw
@@ -310,20 +380,31 @@ def source_byte_size(source: Any) -> int | None:
        answers from an index/trailer scan or returns ``None``, and its presence marks
        the stream as one whose ``SEEK_END`` may decompress, so its answer is final
        (no fall-through to the probe);
-    4. a ``SEEK_END``/restore round trip, but **only** for types whose end-seek is
-       provably O(1) (real files, ``BytesIO``, ``mmap`` — see ``_seek_end_is_cheap``);
-       an unrecognized seekable stream could be a decompressor whose end-seek decodes
-       the entire payload, so it yields ``None`` instead.
+    4. a metadata end-size that does not move the handle (``fstat`` on a regular
+       file, ``len(mmap)``, ``BytesIO.getbuffer().nbytes``), falling back to a
+       ``SEEK_END``/restore round trip only for types whose end-seek is provably
+       O(1) *and* whose metadata would lie (``BufferedRandom`` with an unflushed
+       write; a block/character device). Probe 4 runs only on a seekable source:
+       a whitelisted type that reports ``seekable() is False`` still yields
+       ``None`` (the total size would overstate what a forward-only,
+       already-consumed stream has left). An unrecognized seekable stream could
+       be a decompressor whose end-seek decodes the entire payload, so it yields
+       ``None`` instead.
 
     Probes 2 and 3 look through a ``BufferedReader`` to the stream it wraps
-    (:func:`_under_buffer`); probe 4 does not.
+    (:func:`_under_buffer`). Probe 4's metadata path does too. Pass-through
+    wrappers that set ``peel_for_source_size`` are peeled for the cheapness
+    decision and the metadata read; the ``SEEK_END`` fallback still I/Os the
+    original wrapper so a seek counter on the outside sees those two calls.
     """
     if is_filename(source):
         try:
             return os.stat(source).st_size
         except OSError:
             return None
-    metadata_source = _under_buffer(source)
+    outer = source
+    peeled = _peel_passthrough(source)
+    metadata_source = _under_buffer(peeled)
     size = getattr(metadata_source, "size", None)
     if isinstance(size, int) and not isinstance(size, bool):
         return size
@@ -331,11 +412,16 @@ def source_byte_size(source: Any) -> int | None:
     if callable(try_get_size):
         result = try_get_size()
         return result if isinstance(result, int) else None
-    if is_seekable(source) and _seek_end_is_cheap(source):
+    if not is_seekable(outer):
+        return None
+    metadata_end = _metadata_end_size(peeled)
+    if metadata_end is not None:
+        return metadata_end
+    if _seek_end_is_cheap(peeled):
         try:
-            pos = source.tell()
-            end = source.seek(0, io.SEEK_END)
-            source.seek(pos)
+            pos = outer.tell()
+            end = outer.seek(0, io.SEEK_END)
+            outer.seek(pos)
         except OSError:
             return None
         return end
@@ -376,7 +462,7 @@ def raise_if_text_stream(obj: Any) -> None:
 
 
 class BinaryIOWrapper(io.RawIOBase, BinaryIO):
-    """Adapt an object that exposes a *partial* file API to the full ``BinaryIO`` interface.
+    """Adapt an object that exposes a *partial* file API to a read-only ``BinaryIO``.
 
     Most streams never need this. Every stdlib **binary** stream — ``open()`` in
     ``"rb"`` (``BufferedReader`` / ``FileIO``), ``BytesIO``, ``GzipFile`` /
@@ -426,10 +512,9 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         return readinto_via_read(self, b)
 
     def write(self, data: Any, /) -> int:
-        write = getattr(self._raw, "write", None)
-        if write is None:
-            raise io.UnsupportedOperation("write")
-        return write(data)
+        # Must exist and raise UnsupportedOperation: io.RawIOBase.write raises
+        # NotImplementedError, which is the wrong exception for a read-only stream.
+        raise io.UnsupportedOperation("write")
 
     def readable(self) -> bool:
         # Prefer the stream's own answer; fall back to "does it expose a reader?" for
@@ -440,15 +525,36 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         return hasattr(self._raw, "read") or hasattr(self._raw, "readinto")
 
     def writable(self) -> bool:
-        # hasattr(raw, "write") is NOT a reliable signal: every io.IOBase defines write()
-        # even when opened read-only (it raises io.UnsupportedOperation — GzipFile raises
-        # OSError). The honest answer is the stream's own writable(); only fall back to
-        # hasattr() for partial file-likes that don't implement writable() (e.g. urllib3's
-        # HTTPResponse, which omits write() entirely).
-        raw_writable = getattr(self._raw, "writable", None)
-        if raw_writable is not None:
-            return bool(raw_writable())
-        return hasattr(self._raw, "write")
+        return False
+
+    @property
+    def mode(self) -> str:
+        """Always ``"rb"``.
+
+        ``typing.BinaryIO`` is in the MRO, and ``typing.IO.mode`` is a real
+        runtime property whose body returns ``None``. pycdlib does
+        ``'b' not in fp.mode``, which raises ``TypeError`` on that ``None``.
+        Copied from :class:`ReadOnlyIOStream` rather than subclassing it
+        (``base.py`` imports this module). A mixin defined here could be
+        shared with that class and ``PeekableStream``; parked as #329 C4.
+        This class must stay an ``io.RawIOBase`` so :func:`ensure_bufferedio`
+        can feed ``io.BufferedReader``.
+        """
+        return "rb"
+
+    @property
+    def name(self) -> str:
+        """Path of the wrapped stream, or raise :exc:`AttributeError` if it has none.
+
+        Same ``typing.BinaryIO`` trap as :meth:`mode`: the inherited ``name``
+        returns ``None``, so ``hasattr`` is true and pycdlib's Windows
+        ``fp.name.startswith(...)`` crashes. Raising keeps ``hasattr`` false
+        for nameless streams; a real path is forwarded.
+        """
+        resolved = source_name(self._raw)
+        if resolved is not None:
+            return resolved
+        raise AttributeError("name")
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         seek = getattr(self._raw, "seek", None)
@@ -529,8 +635,21 @@ class _NonClosingBufferedReader(io.BufferedReader):
     """
 
     def close(self) -> None:
-        if not self.closed:
+        # detach() makes IOBase.closed raise, so a second close cannot consult
+        # it. .raw returns None after a *direct* detach() without raising —
+        # that is the guard, not super().closed. Set the flag *after* detach
+        # so a raising detach cannot claim the raw is gone while it is still
+        # attached. getattr: no __init__ override, so the attribute may not
+        # exist yet.
+        if getattr(self, "_detached", False):
+            return
+        if self.raw is not None:
             self.detach()
+        self._detached = True
+
+    @property
+    def closed(self) -> bool:
+        return getattr(self, "_detached", False) or self.raw is None or super().closed
 
 
 def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
@@ -542,12 +661,31 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     source is first adapted via :class:`BinaryIOWrapper` (which *is* a ``RawIOBase``) — this
     is why we branch on ``RawIOBase`` here rather than calling :func:`ensure_binaryio`,
     whose result may be a ``BufferedIOBase`` that ``BufferedReader`` would reject.
+
+    A ``RawIOBase`` whose ``readinto`` is the ``RawIOBase`` default (raises
+    ``NotImplementedError``) is also wrapped: ``BufferedReader.read(n)`` drives
+    ``readinto``, and a class that only implemented ``read()`` would otherwise
+    raise a bare ``NotImplementedError`` from the buffer. A class that
+    *overrides* ``readinto`` and then refuses is **not** wrapped — that is the
+    MRO probe's trade-off (see the comment at the branch).
     """
     raise_if_text_stream(obj)
     if isinstance(obj, io.BufferedIOBase):
         return obj
     raw: io.RawIOBase
-    if isinstance(obj, io.RawIOBase):
+    # Do not *call* readinto to decide. A zero-length probe still runs work on
+    # ReadOnlyIOStream subclasses (a pending solid member skip-decodes;
+    # ArchiveStream opens). Compare the unbound method: the RawIOBase default
+    # raises NotImplementedError, so wrap those.
+    #
+    # A class that *overrides* readinto and then refuses is not wrapped. The
+    # buffer raises that refusal at read time. The previous call-based probe
+    # caught this via BinaryIOWrapper; it was given up so wrap-time cannot
+    # skip-decode a pending solid member. Parked as #329 C1.
+    if (
+        isinstance(obj, io.RawIOBase)
+        and type(obj).readinto is not io.RawIOBase.readinto
+    ):
         raw = obj
     else:
         raw = BinaryIOWrapper(obj)
@@ -555,29 +693,51 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
 
 
 def ensure_full_count_reads(stream: BinaryIO) -> BinaryIO:
-    """Buffer a seekable source whose ``read(n)`` may legally return short.
+    """Make a source's ``read(n)`` return the full count short of EOF.
 
-    ``read(n)`` on a raw stream is an *up-to-n* contract — ``io.RawIOBase`` says so, and
-    real sources use the latitude (sockets, FUSE mounts, user-written wrappers all return
-    short chunks mid-stream with no EOF in sight). Archive header parsers assume the full
-    count: they pull a fixed-size structure with one ``read(n)`` and read anything shorter
-    as EOF. That is true of archivey's own parsers *and* of the stdlib/third-party readers
-    it hands the source to (``zipfile``, ``tarfile``, ``pycdlib``), which we cannot change
-    — so a healthy archive from a short-returning source was reported as corrupt.
-    ``io.BufferedIOBase.read(n)`` promises the full count, so one buffer here restores the
-    assumption for every consumer at once. It also collapses the header parsers' many tiny
-    reads — RAR reads 5 bytes, then up to 10 single bytes, then the rest, *per member*: a
-    1000-member listing went from 2007 ``read`` + 2007 ``seek`` calls on an unbuffered
-    handle to 7 reads and no seeks. A path source never paid that (``open()`` hands back a
-    ``BufferedReader``), which is why only stream sources saw the amplification.
+    ``io.RawIOBase.read(n)`` is an *up-to-n* contract and real sources use the
+    latitude, but header parsers — archivey's own and the stdlib's
+    (``zipfile``/``tarfile``/``pycdlib``) — pull a fixed-size structure with one
+    ``read(n)`` and read anything shorter as EOF, so a healthy archive from a
+    short-returning source was reported as corrupt.
 
-    Non-seekable sources are returned unchanged: ``io.BufferedReader`` would report
-    ``seekable()`` from itself rather than its raw stream, and a backend that requires
-    random access must keep seeing the honest answer (``testing-contract``: never
-    implicitly buffer a non-seekable source into a seekable one). They need no help
-    anyway — archivey routes them through ``PeekableStream``, which coalesces. Sources
-    that are already buffered (``open()``'s ``BufferedReader``, ``BytesIO``) are returned
-    unchanged and pay nothing.
+    A **seekable** source is wrapped in ``io.BufferedReader``, whose ``read``
+    promises the full count. Its readahead is bounded and recoverable — the
+    over-read stays in the buffer and the source can be repositioned anyway — and
+    it also collapses the parsers' many tiny reads. Already-buffered sources
+    (``open()``'s ``BufferedReader``, ``BytesIO``) pay nothing.
+
+    A **non-seekable** source is returned unchanged, and that is a known gap, not
+    a design: this function does not currently honour its contract for pipes and
+    sockets. Two corrections to the reasons previously given here:
+
+    * It is *not* because buffering would make the source look seekable.
+      ``BufferedReader.seekable()`` forwards to the raw (see :func:`is_seekable`),
+      so a buffered pipe still reports ``False``.
+    * It is *not* what ADR 0010 (``no-silent-buffer-nonseekable``) forbids either.
+      That rule is about faking seekability and materializing a pipe into memory
+      or a temp file, neither of which a full-count wrapper does.
+
+    The real obstacle is narrower: ``BufferedReader`` reads *ahead*, and from a
+    pipe that over-read is unrecoverable — ``_NonClosingBufferedReader`` detaches
+    on close and strands whatever it pulled. So the buffer cannot simply be
+    applied to both branches.
+
+    Until it is fixed, the guarantee on the non-seekable path comes from
+    downstream layers this function does not own, and they do not cover the same
+    ground: ``PeekableStream`` (only when detection runs — an explicit ``format=``
+    skips that wrap), ``ensure_bufferedio`` inside ``DecompressorStream`` (only
+    when a codec is in the chain), and, for a plain non-seekable TAR, stdlib
+    ``tarfile._Stream``'s own buffering. The last one is why no test fails today.
+
+    The fix is a ``FullCountStream`` that gathers with :func:`read_exact` — asking
+    only for the bytes still missing, so it consumes exactly what was requested
+    and buffers nothing — applied to the non-seekable branch. Tracked in the
+    ``full-count-non-seekable-sources`` OpenSpec change; do not paper over this
+    with a ``BufferedReader`` on both branches.
+
+    Why the boundary is here, and the listing-amplification measurement, live
+    in the archived ``short-read-source-contract`` change.
     """
     raise_if_text_stream(stream)
     if not is_seekable(stream):

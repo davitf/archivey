@@ -64,8 +64,10 @@ class _MemberSlice(ReadOnlyIOStream):
     and flow through the reader so it always knows the block's position.
 
     When constructed with ``pending=True`` (``open_member(..., lazy=True)``), the
-    skip-to-``offset`` runs on first read rather than at construction; closing without
-    reading never touches the block.
+    skip-to-``offset`` runs on first read rather than at construction. Closing a
+    slice never advances or drains the block — pending *and* already-positioned
+    unread closes are free. The gap before the next member is consumed by the
+    next ``open_member`` (or a pending slice's first read).
     """
 
     def __init__(
@@ -89,23 +91,7 @@ class _MemberSlice(ReadOnlyIOStream):
             return
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        reader = self._reader
-        if reader._closed:
-            raise ValueError("SolidBlockReader is closed")
-        if self._offset < reader._pos:
-            raise ValueError(
-                f"solid members must be opened in order: offset {self._offset} < "
-                f"position {reader._pos}"
-            )
-        current = reader._current
-        # Offsets alone cannot order two slices at the same offset (a zero-size
-        # member sharing its successor's start). A strictly newer claim wins.
-        if current is not None and current is not self and current._seq > self._seq:
-            raise ValueError("solid member superseded by a later open_member()")
-        # Finalize any prior active member and jump the gap (same as eager open_member).
-        reader._current = None
-        reader._skip_to(self._offset)
-        reader._current = self
+        self._reader._advance_to(self)
         self._pending = False
 
     def read(self, n: int = -1, /) -> bytes:
@@ -137,12 +123,6 @@ class _MemberSlice(ReadOnlyIOStream):
         if self._reader._current is not self:
             raise ValueError("solid member superseded by a later open_member()")
         return self._size - self._remaining
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        # Unopened pending slices must not touch the block.
-        super().close()
 
 
 class SolidBlockReader:
@@ -177,22 +157,37 @@ class SolidBlockReader:
         self._seq += 1
         return self._seq
 
-    def open_member(self, offset: int, size: int, *, lazy: bool = False) -> BinaryIO:
+    def _claim_offset(self, offset: int) -> None:
         if self._closed:
             raise ValueError("SolidBlockReader is closed")
         if offset < self._pos:
             raise ValueError(
-                f"solid members must be opened in order: offset {offset} < position "
-                f"{self._pos}"
+                f"solid members must be opened in order: offset {offset} < "
+                f"position {self._pos}"
             )
-        if lazy:
-            return _MemberSlice(self, offset, size, pending=True)
-        # Finalize the previous member and jump the gap in one forward skip. This is where
-        # a prior member's unread tail is actually consumed (lazy drain).
+
+    def _advance_to(self, member: _MemberSlice) -> None:
+        """Position the block at ``member`` and make it current.
+
+        Shared by eager ``open_member`` and a pending slice's first read.
+        Uses :meth:`_skip_to` so a raising mid-skip still credits ``_pos``.
+        """
+        self._claim_offset(member._offset)
+        current = self._current
+        # Offsets alone cannot order two slices at the same offset (a zero-size
+        # member sharing its successor's start). A strictly newer claim wins.
+        if current is not None and current is not member and current._seq > member._seq:
+            raise ValueError("solid member superseded by a later open_member()")
         self._current = None
-        self._skip_to(offset)
+        self._skip_to(member._offset)
+        self._current = member
+
+    def open_member(self, offset: int, size: int, *, lazy: bool = False) -> BinaryIO:
+        if lazy:
+            self._claim_offset(offset)
+            return _MemberSlice(self, offset, size, pending=True)
         slice_ = _MemberSlice(self, offset, size, pending=False)
-        self._current = slice_
+        self._advance_to(slice_)
         return slice_
 
     def _skip_to(self, offset: int) -> None:

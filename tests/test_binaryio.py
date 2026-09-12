@@ -24,6 +24,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     read_exact,
     readinto_via_read,
+    source_name,
 )
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
 
@@ -132,6 +133,15 @@ def test_is_filename() -> None:
     assert not is_filename(OnlyReadStream(b"x"))
 
 
+def test_source_name_decodes_bytes_stream_name(tmp_path) -> None:
+    """open(bytes_path).name is bytes; callers of source_name want a str path."""
+    path = tmp_path / "x.bin"
+    path.write_bytes(b"")
+    with open(os.fsencode(path), "rb") as f:
+        assert isinstance(f.name, bytes)
+        assert source_name(f) == os.fsdecode(f.name)
+
+
 def test_is_stream_accepts_iobase() -> None:
     assert is_stream(io.BytesIO(b"x"))
     assert not is_stream("path.zip")
@@ -188,9 +198,18 @@ def test_is_seekable_true_false() -> None:
 
 
 def test_is_seekable_unwraps_buffered_reader() -> None:
-    # A BufferedReader reports seekable()=True even over a non-seekable raw stream.
+    # BufferedReader.seekable() already forwards to the raw (False here).
+    # Unwrap still recurses onto the raw so a detached buffer is False rather
+    # than ValueError — not a lie-correction.
     buffered = io.BufferedReader(NonSeekableBytesIO(DATA))
     assert not is_seekable(buffered)
+
+
+def test_is_seekable_detached_buffer_is_false() -> None:
+    buffered = io.BufferedReader(io.BytesIO(DATA))
+    buffered.detach()
+    assert buffered.raw is None
+    assert is_seekable(buffered) is False
 
 
 def test_is_seekable_object_without_seekable_method() -> None:
@@ -352,15 +371,15 @@ def test_wrapper_readinto_falls_back_when_native_raises() -> None:
     assert bytes(buf) == DATA[:5]
 
 
-def test_wrapper_writable_trusts_raw_writable_not_hasattr_write() -> None:
-    """A read-only file *has* a write() method (it raises); writable() is the truth."""
+def test_wrapper_over_readonly_file_is_not_writable() -> None:
+    """A read-only file *has* a write() method (it raises); the wrapper still is not writable."""
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "f.bin")
         with open(path, "wb") as f:
             f.write(DATA)
-        # A read-only file object: it exposes write() but writable() is False.
+        # A read-only file object: it exposes write() but the wrapper must not.
         raw = open(path, "rb", buffering=0)
-        assert hasattr(raw, "write")  # the trap the old hasattr() check fell into
+        assert hasattr(raw, "write")
         wrapper = BinaryIOWrapper(raw)
         assert wrapper.writable() is False
         assert wrapper.readable() is True
@@ -375,14 +394,40 @@ def test_wrapper_writable_for_object_without_writable_method() -> None:
         def write(self, data):  # type: ignore[no-untyped-def]
             return len(data)
 
-    # Has write() but no writable() -> falls back to hasattr(write) -> True.
-    assert BinaryIOWrapper(_Writer(DATA)).writable() is True
+        def writable(self) -> bool:
+            return True
+
+    # The wrapper is read-only even when the raw would accept writes.
+    wrapper = BinaryIOWrapper(_Writer(DATA))
+    assert wrapper.writable() is False
+    with pytest.raises(io.UnsupportedOperation, match="write"):
+        wrapper.write(b"x")
 
 
 def test_wrapper_write_unsupported_on_readonly() -> None:
     wrapper = BinaryIOWrapper(OnlyReadStream(DATA))
     with pytest.raises(io.UnsupportedOperation):
         wrapper.write(b"x")
+
+
+def test_wrapper_mode_is_rb_not_none() -> None:
+    """typing.BinaryIO.mode returns None; pycdlib does ``'b' not in fp.mode``."""
+    wrapper = BinaryIOWrapper(OnlyReadStream(DATA))
+    assert wrapper.mode == "rb"
+    assert "b" in wrapper.mode
+
+
+def test_wrapper_name_absent_without_inner_path() -> None:
+    wrapper = BinaryIOWrapper(OnlyReadStream(DATA))
+    assert not hasattr(wrapper, "name")
+
+
+def test_wrapper_name_forwards_from_inner_file(tmp_path) -> None:
+    path = tmp_path / "x.bin"
+    path.write_bytes(b"x")
+    with open(path, "rb") as inner:
+        wrapper = BinaryIOWrapper(inner)
+        assert wrapper.name == str(path)
 
 
 def test_wrapper_seek_tell_unsupported_when_absent() -> None:
@@ -492,12 +537,80 @@ def test_ensure_bufferedio_wraps_non_iobase_object() -> None:
     assert buffered.read() == DATA
 
 
+def test_ensure_bufferedio_rawiobase_with_only_read() -> None:
+    """A RawIOBase that implements only read() is legal; BufferedReader.read(n) is not.
+
+    ``io.RawIOBase.readinto`` defaults to ``NotImplementedError``. ``BufferedReader.read(n)``
+    drives that, so ``ensure_bufferedio`` must wrap through ``BinaryIOWrapper`` first
+    (#326 H4). ``read()`` without a size happens to fall back to ``raw.read()`` and
+    would hide the bug.
+    """
+
+    class _OnlyReadRaw(io.RawIOBase):
+        def __init__(self, data: bytes) -> None:
+            super().__init__()
+            self._buf = io.BytesIO(data)
+
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1, /) -> bytes:
+            return self._buf.read(n)
+
+    buffered = ensure_bufferedio(_OnlyReadRaw(DATA))
+    assert buffered.read(4) == DATA[:4]
+    assert buffered.read() == DATA[4:]
+
+
+def test_ensure_bufferedio_does_not_position_a_pending_solid_slice() -> None:
+    """Wrap-time must not skip-decode a lazy solid member (#329 C1)."""
+    from archivey.internal.streams.streamtools import SolidBlockReader
+
+    reader = SolidBlockReader(io.BytesIO(b"A" * 10 + b"B" * 10), close_block=False)
+    member = reader.open_member(10, 10, lazy=True)
+    assert reader._pos == 0
+    assert member._pending is True
+    ensure_bufferedio(member)
+    assert reader._pos == 0
+    assert member._pending is True
+
+
 def test_ensure_bufferedio_does_not_close_raw_source() -> None:
     inner = CountingBytesIO(DATA)
     buffered = ensure_bufferedio(inner)
     assert buffered.read(4) == DATA[:4]
     buffered.close()
     assert not inner.closed  # the non-closing buffer detaches rather than closing
+
+
+def test_ensure_bufferedio_close_is_idempotent() -> None:
+    """detach() would make IOBase.closed raise; a second close must not (#329 C8)."""
+    inner = CountingBytesIO(DATA)
+    buffered = ensure_bufferedio(inner)
+    buffered.close()
+    buffered.close()
+    assert not inner.closed
+
+
+def test_ensure_bufferedio_closed_is_true_after_close() -> None:
+    """After detach, .closed must still answer True (#329 C10)."""
+    inner = CountingBytesIO(DATA)
+    buffered = ensure_bufferedio(inner)
+    buffered.close()
+    assert buffered.closed is True
+    assert not inner.closed
+
+
+def test_ensure_bufferedio_close_after_direct_detach() -> None:
+    """A caller that detach()s first must still be able to close (#329 round 4)."""
+    inner = CountingBytesIO(DATA)
+    buffered = ensure_bufferedio(inner)
+    buffered.detach()
+    assert buffered.raw is None
+    assert buffered.closed is True
+    buffered.close()
+    assert buffered.closed is True
+    assert not inner.closed
 
 
 def test_plain_bufferedreader_closes_source_demonstrates_why_we_detach() -> None:
@@ -568,6 +681,92 @@ class TestSourceByteSize:
         p.write_bytes(b"y" * 55)
         with open(p, "rb") as f:  # BufferedReader over FileIO
             assert source_byte_size(f) == 55
+
+    def test_buffered_reader_over_file_is_not_seeked(self, tmp_path) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        class CountingFileIO(io.FileIO):
+            seeks = 0
+
+            def seek(self, o: int, w: int = 0) -> int:  # type: ignore[override]
+                type(self).seeks += 1
+                return super().seek(o, w)
+
+        p = tmp_path / "f.bin"
+        p.write_bytes(b"y" * 55)
+        raw = CountingFileIO(str(p), "rb")
+        try:
+            buf = io.BufferedReader(raw)
+            CountingFileIO.seeks = 0
+            assert source_byte_size(buf) == 55
+            assert CountingFileIO.seeks == 0
+            assert buf.tell() == 0
+        finally:
+            raw.close()
+
+    def test_bytesio_probe_does_not_seek(self) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        class _Ops(io.BytesIO):
+            def __init__(self, data: bytes) -> None:
+                super().__init__(data)
+                self.seeks = 0
+
+            def seek(self, offset: int, whence: int = 0) -> int:  # type: ignore[override]
+                self.seeks += 1
+                return super().seek(offset, whence)
+
+        buf = _Ops(b"x" * 77)
+        buf.seek(10)
+        buf.seeks = 0
+        assert source_byte_size(buf) == 77
+        assert buf.tell() == 10
+        assert buf.seeks == 0
+
+    def test_buffered_random_unflushed_write_uses_seek_end(self, tmp_path) -> None:
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        p = tmp_path / "f.bin"
+        p.write_bytes(b"0123456789")
+        with open(p, "r+b") as f:
+            f.seek(0, io.SEEK_END)
+            f.write(b"abcd")
+            assert isinstance(f, io.BufferedRandom)
+            assert source_byte_size(f) == 14
+
+    def test_seek_end_fallback_counts_through_seek_counting_stream(
+        self, tmp_path
+    ) -> None:
+        # Peel decides cheapness; the SEEK_END I/O must still go through the
+        # wrapper so source_seek_count sees it (PR #328 F14).
+        from archivey.internal.measurement import SeekCounter
+        from archivey.internal.streams.counting import SeekCountingStream
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        p = tmp_path / "f.bin"
+        p.write_bytes(b"x" * 100)
+        with open(p, "r+b") as f:
+            assert isinstance(f, io.BufferedRandom)
+            counter = SeekCounter()
+            wrapped = SeekCountingStream(f, counter)
+            assert source_byte_size(wrapped) == 100
+            assert counter.count == 2  # SEEK_END + restore; tell is not counted
+
+    def test_non_seekable_bytesio_subclass_is_none(self) -> None:
+        # Probe 4 used to run only after is_seekable. Metadata-first would
+        # answer for a BytesIO subclass that reports seekable() False
+        # (PR #328 F15). The suite's NonSeekableBytesIO is a RawIOBase
+        # wrapper, not a BytesIO subclass, so it would not catch this.
+        from archivey.internal.streams.streamtools import source_byte_size
+
+        class _NonSeekableBytesIO(io.BytesIO):
+            def seekable(self) -> bool:
+                return False
+
+            def seek(self, *args: object, **kwargs: object) -> int:
+                raise io.UnsupportedOperation("seek")
+
+        assert source_byte_size(_NonSeekableBytesIO(b"0123456789")) is None
 
     def test_decompressor_streams_are_never_probed(self, tmp_path) -> None:
         # SEEK_END on a decompressor means decompressing to the end; the helper must

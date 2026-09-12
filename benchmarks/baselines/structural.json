@@ -6,56 +6,56 @@
   "cases": {
     "zip_open_list": {
       "bytes_decompressed": 0,
-      "source_seek_count": 4,
+      "source_seek_count": 7,
       "unpacked_bytes": null,
       "notes": "vs zipfile; Q1 listing band 2\u20133\u00d7"
     },
     "zip_read_all": {
-      "bytes_decompressed": 32768,
-      "source_seek_count": 28,
-      "unpacked_bytes": 32768,
+      "bytes_decompressed": 131072,
+      "source_seek_count": 103,
+      "unpacked_bytes": 131072,
       "notes": ""
     },
     "zip_extract": {
-      "bytes_decompressed": 32768,
-      "source_seek_count": 28,
-      "unpacked_bytes": 32768,
+      "bytes_decompressed": 131072,
+      "source_seek_count": 103,
+      "unpacked_bytes": 131072,
       "notes": ""
     },
     "zip_lzma_read_all": {
-      "bytes_decompressed": 16384,
-      "source_seek_count": 24,
-      "unpacked_bytes": 16384,
+      "bytes_decompressed": 65536,
+      "source_seek_count": 87,
+      "unpacked_bytes": 65536,
       "notes": "native ZIP LZMA codec; no stdlib peer (zipfile writes only)"
     },
     "zip_aes_read_all": {
       "bytes_decompressed": 16384,
-      "source_seek_count": 28,
+      "source_seek_count": 31,
       "unpacked_bytes": 16384,
       "notes": "WinZip AES-256 AE-2; requires [crypto]"
     },
     "zip_read_all_accel_off": {
-      "bytes_decompressed": 32768,
-      "source_seek_count": 28,
-      "unpacked_bytes": 32768,
+      "bytes_decompressed": 131072,
+      "source_seek_count": 103,
+      "unpacked_bytes": 131072,
       "notes": "stdlib deflate codec; accelerators forced OFF"
     },
     "zip_read_all_accel_on": {
-      "bytes_decompressed": 32768,
-      "source_seek_count": 44,
-      "unpacked_bytes": 32768,
-      "notes": "rapidgzip accelerator ON for in-ZIP deflate ([seekable]); absolute seek bound exempt — gated by ON>OFF engagement"
+      "bytes_decompressed": 131072,
+      "source_seek_count": 167,
+      "unpacked_bytes": 131072,
+      "notes": "rapidgzip accelerator ON for in-ZIP deflate ([seekable])"
     },
     "tar_open_list": {
       "bytes_decompressed": 0,
-      "source_seek_count": 8,
+      "source_seek_count": 32,
       "unpacked_bytes": null,
       "notes": "vs tarfile.getmembers; Q1 listing band 2\u20133\u00d7"
     },
     "tar_read_all": {
-      "bytes_decompressed": 32768,
-      "source_seek_count": 16,
-      "unpacked_bytes": 32768,
+      "bytes_decompressed": 131072,
+      "source_seek_count": 64,
+      "unpacked_bytes": 131072,
       "notes": "plain uncompressed TAR vs tarfile r: (not .tar.gz)"
     },
     "gzip_read_all": {
@@ -65,58 +65,58 @@
       "notes": ""
     },
     "targz_read_all_accel_off": {
-      "bytes_decompressed": 32768,
+      "bytes_decompressed": 131072,
       "source_seek_count": 0,
-      "unpacked_bytes": 32768,
+      "unpacked_bytes": 131072,
       "notes": "stdlib gzip/bz2 codec; accelerators forced OFF"
     },
     "targz_read_all_accel_on": {
-      "bytes_decompressed": 32768,
+      "bytes_decompressed": 131072,
       "source_seek_count": 0,
-      "unpacked_bytes": 32768,
-      "notes": "rapidgzip accelerator ON; vs accel_off 0.73\u00d7"
+      "unpacked_bytes": 131072,
+      "notes": "rapidgzip accelerator ON; vs accel_off 0.80\u00d7"
     },
     "tarbz2_read_all_accel_off": {
-      "bytes_decompressed": 32768,
+      "bytes_decompressed": 131072,
       "source_seek_count": 0,
-      "unpacked_bytes": 32768,
+      "unpacked_bytes": 131072,
       "notes": "stdlib gzip/bz2 codec; accelerators forced OFF"
     },
     "tarbz2_read_all_accel_on": {
-      "bytes_decompressed": 32768,
+      "bytes_decompressed": 131072,
       "source_seek_count": 0,
-      "unpacked_bytes": 32768,
-      "notes": "rapidgzip accelerator ON; vs accel_off 0.25\u00d7"
+      "unpacked_bytes": 131072,
+      "notes": "rapidgzip accelerator ON; vs accel_off 0.57\u00d7"
     },
     "sevenzip_open_list": {
       "bytes_decompressed": 0,
-      "source_seek_count": 3,
+      "source_seek_count": 4,
       "unpacked_bytes": null,
       "notes": "vs py7zr.list; Q1 native listing target \u2248parity"
     },
-    "sevenzip_many_open_list": {
-      "bytes_decompressed": 0,
-      "source_seek_count": 3,
-      "unpacked_bytes": null,
-      "notes": "vs py7zr.list; 1000 tiny COPY members (solid); listing-cost regression guard"
-    },
-    "sevenzip_nonsolid_open_list": {
-      "bytes_decompressed": 0,
-      "source_seek_count": 3,
-      "unpacked_bytes": null,
-      "notes": "vs py7zr.list; 256 store members (-ms=off); negative control (no per-folder amortize)"
-    },
     "sevenzip_solid_sequential": {
       "bytes_decompressed": 2097152,
-      "source_seek_count": 4,
+      "source_seek_count": 5,
       "unpacked_bytes": 2097152,
       "notes": "solid invariant: bytes_decompressed <= unpacked * factor"
     },
     "sevenzip_solid_random": {
       "bytes_decompressed": 34603008,
-      "source_seek_count": 35,
+      "source_seek_count": 36,
       "unpacked_bytes": 2097152,
       "notes": "re-decode recorded; gated vs baseline\u00d7SOLID_RANDOM_BYTES_FACTOR"
+    },
+    "sevenzip_many_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 4,
+      "unpacked_bytes": null,
+      "notes": "vs py7zr.list; 1000 tiny COPY members (solid); listing-cost regression guard"
+    },
+    "sevenzip_nonsolid_open_list": {
+      "bytes_decompressed": 0,
+      "source_seek_count": 4,
+      "unpacked_bytes": null,
+      "notes": "vs py7zr.list; 256 store members (-ms=off); negative control (no per-folder amortize)"
     },
     "rar_open_list": {
       "bytes_decompressed": 0,

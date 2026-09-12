@@ -762,6 +762,12 @@
   adoption wedge) and the **metadata-fidelity boundary** (xattrs/ACLs — threat-model
   C3; read-side is additive later, but write-side fidelity must be a day-one decision
   of the writing spec, since it shapes `add_member` and the round-trip contract).
+- **SharedSource per-view handles** — a constructor flag `independent_handles` used
+  to promise a fresh `open(path)` per `view()` for parallel I/O, but it had no
+  caller and silently did nothing. Removed in the #315 Parcel B pass so the
+  documented API cannot lie. Re-add when parallel extraction actually opens
+  per-view FDs; until then every view shares one handle + lock. See
+  `dev-docs/investigations/parallel-reader.md`.
 - **Free-threading position** (threat-model C4) — parallel extraction / parallel
   decode under 3.13t; interacts with the existing parallel-extraction idea above.
 - **CLI earlier, as dev tool + demo** — ~~`archivey list/test/extract` was
