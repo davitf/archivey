@@ -61,17 +61,19 @@ class FullCountStream(ReadOnlyIOStream):
 
     def read(self, n: int = -1, /) -> bytes:
         if n is None or n < 0:
-            # Loop: an inner that overrides read() can return short on -1,
-            # even though RawIOBase.read(-1) is documented to drain. Do not
-            # trust readall() here.
-            out = bytearray()
-            while chunk := self._inner.read(-1):
-                out.extend(chunk)
-            return bytes(out)
+            # Drain through readall(), which issues sized reads against the
+            # branch below. Never depends on the inner honouring read(-1)
+            # or readall() — an inner that overrides those can return short.
+            return self.readall()
         data = self._inner.read(n)
-        if len(data) == n:
+        got = len(data)
+        if got == n:
             return data  # common case: no copy
-        return data + read_exact(self._inner, n - len(data))
+        if got > n:
+            raise ValueError(
+                f"inner returned {got} bytes for read({n}): {self._inner!r}"
+            )
+        return data + read_exact(self._inner, n - got)
 
     def close(self) -> None:
         # Do not close the inner. This is the source-boundary wrapper: the

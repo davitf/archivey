@@ -18,6 +18,7 @@ import pytest
 
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools import (
+    FullCountStream,
     ensure_bufferedio,
     ensure_full_count_reads,
     source_byte_size,
@@ -99,15 +100,33 @@ def test_boundary_stream_stays_non_seekable_and_tell_raises() -> None:
 
 
 def test_read_negative_one_drains_even_when_inner_shorts_on_drain() -> None:
-    """``read(-1)`` must not lean on the inner's ``readall()``.
+    """``read(-1)`` must not lean on the inner's ``read(-1)`` / ``readall()``.
 
     ``cap_drain`` makes ``read(-1)`` illegal RawIOBase behaviour (it caps instead
-    of draining). The wrapper still has to return every remaining byte.
+    of draining). Drain goes through sized ``read(n)``, so this never calls
+    the inner's ``read(-1)`` at all.
     """
     source = ShortReadNonSeekable(DATA, 1, cap_drain=True)
     wrapped = ensure_full_count_reads(source)
     assert wrapped.read(-1) == DATA
     assert source.consumed == len(DATA)
+
+
+def test_over_returning_inner_raises() -> None:
+    """An inner that returns more than asked is a broken RawIOBase, not a clamp."""
+
+    class _OverRead(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1) -> bytes:  # type: ignore[override]
+            if n is None or n < 0:
+                return b"abcdefghij"
+            return b"abcdefghij"[: n + 5]
+
+    wrapped = FullCountStream(_OverRead())
+    with pytest.raises(ValueError, match="inner returned 9 bytes for read\\(4\\)"):
+        wrapped.read(4)
 
 
 def test_sized_read_past_eof_returns_the_remainder() -> None:

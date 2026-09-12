@@ -514,9 +514,11 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         runtime property whose body returns ``None``. pycdlib does
         ``'b' not in fp.mode``, which raises ``TypeError`` on that ``None``.
         Copied from :class:`ReadOnlyIOStream` rather than subclassing it
-        (``base.py`` imports this module). A mixin defined here could be
-        shared with that class, ``PeekableStream``, and ``FullCountStream``;
-        parked as #329 C4.
+        (``base.py`` imports this module). Four wrappers forward ``name`` via
+        ``source_name`` (this class, :class:`DelegatingStream`,
+        ``PeekableStream``, ``FullCountStream``) on three different inner
+        attributes (``_raw`` / ``_inner`` / ``_underlying``); parked as #329 C4
+        rather than a mixin in this PR.
         This class must stay an ``io.RawIOBase`` so :func:`ensure_bufferedio`
         can feed ``io.BufferedReader``.
         """
