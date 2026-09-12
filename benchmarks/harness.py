@@ -26,6 +26,27 @@ Modes:
   artifact (preserving ``measured_at``); a full re-measure is forced at least
   every ~30 days. VISION absolute bands stay informational prints.
 
+Comparing two revisions (read this before believing a wall-time delta):
+
+- **Check the workload before the clock.** Fixture sizes change over time — #328 took
+  the ZIP/TAR fixtures from ~32 KiB to ~128 KiB — so ``wall_s`` is not comparable
+  across a range that crosses such a commit. Diff ``bytes_decompressed`` and
+  ``unpacked_bytes`` per case first; where they differ, compare wall *per byte* or
+  not at all. Skipping this reads as a 2-3x regression on exactly the cases whose
+  fixture grew, which is how one nearly got reported.
+- **Pin both sides by SHA.** A local ``main`` in a fresh container can be far behind
+  ``origin/main``; ``git checkout main`` then silently measures something else.
+  ``git rev-parse`` both revisions and put the SHAs in the write-up.
+- **One run each way cannot resolve a small effect.** Per-case wall noise here is
+  roughly +-7%. Alternate the two revisions (A, B, A, B, ...) so drift cancels, take
+  the per-case *minimum* over 15-20 runs, and establish the floor with a null control
+  — the identical procedure with the same SHA on both sides, which should come out
+  near 50/50 with a median near zero. A consistent sign across cases is the signal;
+  a sign test over the per-case deltas states it honestly. A structural run is ~2 s,
+  so 20 alternating pairs costs about 90 s.
+- Structural fields (``bytes_decompressed``, ``source_seek_count``) are exact and need
+  none of this: diff them directly.
+
 Formats covered here: ZIP (deflate / LZMA / WinZip AES), TAR, gzip,
 tar.gz/tar.bz2 (+ accelerators), in-ZIP accelerated deflate, solid 7z, and RAR
 data paths on committed fixtures when RARLAB ``unrar`` is present (large solid

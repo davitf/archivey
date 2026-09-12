@@ -123,38 +123,51 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     to retry — see ADR 0014 and the comment in ``SlicingStream.read``. Use this
     only where the caller will not read again, so a short must be gathered here.
 
-    When one read satisfies the ask the inner's own ``bytes`` is returned rather
-    than a copy, the same fast path :meth:`FullCountStream.read` has.
+    When one read satisfies the ask the inner's own object is returned rather than
+    a copy, the same fast path :meth:`FullCountStream.read` has, so **callers must
+    not mutate the result**. ``ReadableStream.read`` is typed ``-> bytes``; an
+    inner that breaks that and hands back a ``bytearray`` has it passed through
+    here, where the gather path would have coerced it via ``join``. Guarding with
+    ``type(data) is bytes`` was measured at +3% on this path and declined: it
+    would buy conformance from an inner that is already violating the protocol,
+    at the cost of the fast path this exists for, and ``FullCountStream.read``
+    returns identically — a guard here alone would just move the inconsistency.
     """
     if n < 0:
         raise ValueError("n must be non-negative")
+    if n == 0:
+        # Answerable without I/O, and ``read(0)`` is not free on every source
+        # (a decoder may prime state). The loop this replaced never issued it.
+        return b""
+
+    # A falsy first return is terminal *on this call*, exactly as the loop this
+    # replaced treated it: ``None`` from a non-blocking raw, or ``b""`` at EOF.
+    # Reading again would both waste I/O at EOF and change the result on a source
+    # that yields data after a falsy return.
+    data = stream.read(n)
+    if not data:
+        return b""
 
     # Fast path, and the common one now that ``ensure_full_count_reads`` makes
-    # every archive source full-count: one read satisfies the ask, so hand back
-    # the inner's own object. The gather below copies the result twice (into the
-    # bytearray, then out of it), which on a large read — a whole decoded 7z
-    # folder in ``sevenzip_pipeline`` — is 3x peak memory instead of 1x.
-    data = stream.read(n)
-    if data and len(data) == n:
+    # every archive source full-count: one read satisfied the ask, so hand back
+    # the inner's own object instead of copying it. On a large read — a whole
+    # decoded 7z folder in ``sevenzip_pipeline`` — that is 1x peak memory where
+    # copying out was 3x.
+    if len(data) == n:
         return data
 
     # Collect and ``join`` rather than ``bytearray`` + ``extend``: join sizes the
     # result once from the chunk lengths and copies each chunk once, where the
     # bytearray grows by realloc and then pays a second full copy in
-    # ``bytes(...)``. Its one-element fast path returns the chunk itself, so a
-    # gather that ends up needing a single read does not copy either.
+    # ``bytes(...)``.
     #
     # Preallocating ``bytearray(n)`` and slice-assigning is the obvious third
     # option and is slower than both: the allocation zero-fills ``n`` bytes that
     # are then overwritten, and ``bytes(...)`` still copies at the end, so it
     # moves 2n plus a memset where join moves n. Measured across 3 to 65 536
     # chunks: join wins every size, extend by 1.05-1.2x and prealloc by 1.3-1.5x.
-    #
-    # ``if data``: a non-blocking raw returns None rather than bytes, which this
-    # loop has always treated as EOF. Keep that — this is about copies, not
-    # semantics.
-    chunks = [data] if data else []
-    gathered = len(data) if data else 0
+    chunks = [data]
+    gathered = len(data)
     while gathered < n:
         chunk = stream.read(n - gathered)
         if not chunk:
