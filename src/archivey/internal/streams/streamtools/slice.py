@@ -79,7 +79,7 @@ class SlicingStream(ReadOnlyIOStream):
     signals a terminal boundary with a short return. It deliberately does *not* keep
     pulling past a short — that would collapse a decoder's deliver-then-raise truncation
     shape. The full count is the inner's guarantee, not this view's: a raw inner that
-    shorts mid-stream needs a buffer in front.
+    shorts mid-stream needs a full-count wrapper in front.
 
     Non-seekable underlying stream:
       - ``start`` must be ``None`` (the slice begins at the current position).
@@ -225,9 +225,9 @@ class SlicingStream(ReadOnlyIOStream):
         #   (``test_bounded_drain_pulls_deferred_truncation``), so a short must be
         #   gathered here.
         #
-        # Neither rescues a RawIO that shorts mid-stream; per ADR 0014 that inner "needs a
-        # buffer in front", which is what ``ensure_full_count_reads`` puts at the source
-        # boundary. Every inner a backend slices is full-count already.
+        # Neither rescues a RawIO that shorts mid-stream; per ADR 0014 that inner needs a
+        # full-count wrapper in front, which is what ``ensure_full_count_reads`` puts at
+        # the source boundary. Every inner a backend slices is full-count already.
         drain = n < 0
         n = self._compute_bytes_to_read(n)  # stays negative for an unbounded drain
         if n == 0:

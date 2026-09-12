@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 
 from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
 
 def test_peek_does_not_consume() -> None:
@@ -14,6 +14,15 @@ def test_peek_does_not_consume() -> None:
     # A second peek sees the same bytes; nothing was consumed.
     assert stream.peek(4) == b"0123"
     assert stream.tell() == 0
+
+
+def test_peek_and_read_over_short_returning_non_seekable() -> None:
+    """``_fill_to`` is a single read; the inner must already be full-count."""
+    data = b"0123456789"
+    stream = PeekableStream(ShortReadNonSeekable(data, 1))
+    assert stream.peek(4) == data[:4]
+    assert stream.read(6) == data[:6]
+    assert stream.read() == data[6:]
 
 
 def test_read_replays_buffer_then_passes_through() -> None:
@@ -84,6 +93,16 @@ def test_name_passthrough(tmp_path) -> None:
     with open(path, "rb") as f:
         stream = PeekableStream(f)
         assert stream.name == str(path)
+
+
+def test_name_passthrough_through_full_count_wrap() -> None:
+    """Detection reads the name through ``FullCountStream`` after 3.1."""
+
+    class _Named(ShortReadNonSeekable):
+        name = "/tmp/pipe-ish.tar"
+
+    stream = PeekableStream(_Named(b"abc"))
+    assert stream.name == "/tmp/pipe-ish.tar"
 
 
 def test_name_absent_for_anonymous_stream() -> None:

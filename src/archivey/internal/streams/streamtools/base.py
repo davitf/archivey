@@ -15,6 +15,7 @@
 
 This module is part of the codec-/format-agnostic ``streamtools`` core: it imports only from
 ``streamtools`` itself (``is_seekable``), nothing from the rest of ``archivey``.
+The source-boundary full-count wrapper lives in :mod:`.full_count`.
 """
 
 from __future__ import annotations

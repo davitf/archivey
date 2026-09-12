@@ -216,8 +216,8 @@ or a raised content error). Implementations SHALL issue one `inner.read(n)` and
 forward a short non-empty return as terminal — they SHALL NOT retry it, which would
 pull a decoder's deferred truncation into the call. The `n`-or-terminal guarantee
 therefore rests on inners being fill-or-EOF (`DecompressorStream`, `ZipExtFile`,
-`BytesIO`); an inner that may short mid-stream SHALL be given a buffer in front
-(`streamtools.ensure_full_count_reads`) rather than a gather loop at the public
+`BytesIO`); an inner that may short mid-stream SHALL be given a full-count wrapper in
+front (`streamtools.ensure_full_count_reads`) rather than a gather loop at the public
 surface. `read(0)` is a no-op, never EOF.
 
 `VerifyingStream` / fused `MemberVerifier` SHALL verify digests (CRC and other

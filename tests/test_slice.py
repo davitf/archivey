@@ -159,7 +159,7 @@ class TestSlicingStream:
         Every slice in the backends views a full-count inner: a ``SharedSource`` handle
         (``open()``'s ``BufferedReader``, or a caller stream normalized by
         ``ensure_full_count_reads``), or a decoder. A raw stream that shorts mid-stream
-        gets that buffer in front rather than a gathering loop inside the view — see
+        gets that full-count wrapper in front rather than a gathering loop inside the view — see
         ``test_sized_read_over_a_raw_short_inner_stops_on_short`` and ADR 0014.
         """
         sliced = SlicingStream(
@@ -177,7 +177,7 @@ class TestSlicingStream:
         Deliberate: over a decoder, continuing past a short would pull the deferred
         ``TruncatedError`` into the same call (see
         ``test_sized_read_preserves_deliver_then_raise``). A RawIO that shorts mid-stream
-        is fixed with a buffer in front, not by gathering here.
+        is fixed with a full-count wrapper in front, not by gathering here.
         """
         sliced = SlicingStream(ShortReadBytesIO(DATA), start=5, length=10)
         assert sliced.read(7) == DATA[5:6]

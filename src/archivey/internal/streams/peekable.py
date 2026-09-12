@@ -16,7 +16,11 @@ from __future__ import annotations
 
 from typing import BinaryIO
 
-from archivey.internal.streams.streamtools import ReadOnlyIOStream, source_name
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    ensure_full_count_reads,
+    source_name,
+)
 
 # Default amount buffered for detection (matches ``format-detection``'s DETECTION_LIMIT).
 # The buffer grows on demand up to whatever ``peek(n)`` asks for — e.g. 32 774 bytes when
@@ -38,18 +42,32 @@ class PeekableStream(ReadOnlyIOStream):
 
     def __init__(self, underlying: BinaryIO) -> None:
         super().__init__()
-        self._underlying = underlying
+        # Own the full-count precondition: open_stream hands this class the raw
+        # caller stream, which never went through resolve_source. Both src/
+        # construction sites gate on ``not is_seekable``; a seekable raw would
+        # take the buffering branch (read-ahead this class never unwinds and
+        # never closes). An already full-count inner (``FullCountStream``, or
+        # the caller's ``BufferedReader``) is returned unchanged.
+        self._underlying = ensure_full_count_reads(underlying)
         # Bytes read ahead from the underlying stream but not yet consumed by read().
         self._buffer = bytearray()
         # Total bytes consumed via read() (the logical position of this stream).
         self._pos = 0
 
     def _fill_to(self, n: int) -> None:
-        """Read ahead until the buffer holds ``n`` bytes or the underlying stream ends."""
-        while len(self._buffer) < n:
-            chunk = self._underlying.read(n - len(self._buffer))
-            if not chunk:
-                break
+        """Read ahead until the buffer holds ``n`` bytes or the underlying stream ends.
+
+        A single read: ``__init__`` applied ``ensure_full_count_reads``, so a short
+        return is EOF, not a legal mid-stream short. The gather loop this used to
+        be is redundant once that precondition holds — and is wrong to keep as the
+        thing that *supplies* the guarantee, because not every construction site
+        had it.
+        """
+        missing = n - len(self._buffer)
+        if missing <= 0:
+            return
+        chunk = self._underlying.read(missing)
+        if chunk:
             self._buffer.extend(chunk)
 
     def peek(self, n: int) -> bytes:

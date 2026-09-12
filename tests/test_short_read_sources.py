@@ -7,9 +7,8 @@ short return as EOF — in archivey's own RAR parser, in the stdlib/third-party 
 delegates to (``zipfile``, ``tarfile``, ``pycdlib``), and in the ``indexed_bzip2`` seek-index
 accelerator alike — so a **healthy** archive from such a source was reported as
 ``CorruptionError`` / ``TruncatedError``. Two layers fix it: the source boundary coalesces
-short reads for seekable streams (non-seekable ones already went through
-``PeekableStream``), and archivey's own parsers and views gather fixed-size structures with
-``read_exact``.
+short reads for **both** seekable and non-seekable streams, and archivey's own parsers
+and views gather fixed-size structures with ``read_exact``.
 
 Every case compares against a ``BytesIO`` open of the *same bytes*, so it asserts parity
 rather than a hardcoded expectation — a format that cannot be built or read in this
@@ -18,7 +17,11 @@ environment simply matches on both sides (or skips).
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import io
+import lzma
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -26,10 +29,14 @@ import pytest
 from archivey import open_archive, open_stream
 from archivey.exceptions import ArchiveyError
 from archivey.internal.backends.rar_parser import parse_rar_archive
-from archivey.types import ContainerFormat, MemberType
+from archivey.types import ArchiveFormat, ContainerFormat, MemberType
 from tests.sample_archives import CORPUS, FORMAT_KEYS, CorpusEntry, skip_unless_runnable
 from tests.sample_archives import corpus_archive_path as _corpus_archive_path
-from tests.streams_util import ShortReadBytesIO
+from tests.streams_util import (
+    NonSeekableBytesIO,
+    ShortReadBytesIO,
+    ShortReadNonSeekable,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -59,7 +66,11 @@ _CORPUS_CASES = [
 
 
 def _probe(
-    source: io.BytesIO | ShortReadBytesIO, passwords: tuple[str, ...]
+    source: io.BytesIO | ShortReadBytesIO | ShortReadNonSeekable | NonSeekableBytesIO,
+    passwords: tuple[str, ...],
+    *,
+    streaming: bool = False,
+    format: ArchiveFormat | None = None,
 ) -> list[tuple]:
     """Listing + member payloads, with per-member archivey errors recorded as their type.
 
@@ -68,10 +79,25 @@ def _probe(
     must be unreadable the same way from both sources, and a member that reads must return
     the same bytes.
     """
-    with open_archive(source, password=passwords or None) as reader:
+    with open_archive(
+        source, password=passwords or None, streaming=streaming, format=format
+    ) as reader:
         rows: list[tuple] = []
+        if streaming:
+            # stream_members owns each stream: read it before advancing.
+            for member, stream in reader.stream_members():
+                payload: bytes | str | None = None
+                if member.type is MemberType.FILE:
+                    try:
+                        payload = stream.read() if stream is not None else None
+                    except ArchiveyError as exc:
+                        payload = type(exc).__name__
+                rows.append(
+                    (member.name, member.type, member.size, member.link_target, payload)
+                )
+            return rows
         for member in reader.members():
-            payload: bytes | str | None = None
+            payload = None
             if member.type is MemberType.FILE:
                 try:
                     payload = reader.read(member)
@@ -163,3 +189,67 @@ def test_rar_header_offsets_survive_short_reads(rar: str) -> None:
         ]
 
     assert offsets(ShortReadBytesIO(data)) == offsets(io.BytesIO(data))
+
+
+@pytest.mark.parametrize(
+    "compress",
+    [
+        pytest.param(gzip.compress, id="gzip"),
+        pytest.param(bz2.compress, id="bzip2"),
+        pytest.param(
+            lambda payload: lzma.compress(payload, format=lzma.FORMAT_XZ), id="xz"
+        ),
+    ],
+)
+def test_open_stream_detects_short_read_non_seekable(
+    compress: Callable[[bytes], bytes],
+) -> None:
+    """``open_stream`` with ``format=None`` over a short-returning pipe.
+
+    Written on the detected path: the explicit-``format=`` variant is rescued by
+    ``ensure_bufferedio`` inside ``DecompressorStream`` even when ``PeekableStream``
+    does not own the full-count guarantee.
+    """
+    payload = b"hello from a short-returning pipe"
+    data = compress(payload)
+    with open_stream(io.BytesIO(data)) as expected_stream:
+        expected = expected_stream.read()
+    with open_stream(ShortReadNonSeekable(data, 1)) as stream:
+        assert stream.read() == expected
+
+
+_STREAMING_CASES = [
+    pytest.param(entry, key, id=f"{key}-{entry.id}")
+    for entry, key in _one_entry_per_format()
+    if FORMAT_KEYS[key].container in (ContainerFormat.TAR, ContainerFormat.RAW_STREAM)
+]
+
+
+@pytest.mark.parametrize(("entry", "key"), _STREAMING_CASES)
+@pytest.mark.parametrize(
+    "explicit_format", [False, True], ids=["detected", "explicit-format"]
+)
+def test_streaming_format_opens_from_short_read_non_seekable(
+    entry: CorpusEntry, key: str, explicit_format: bool, tmp_path: Path
+) -> None:
+    """Each streaming-capable format, with and without ``format=``.
+
+    The explicit-``format=`` case skips ``PeekableStream`` in ``open_archive``, so
+    the source boundary is the only coalescing layer. Plain uncompressed TAR is
+    in this matrix: that is the path that previously leaned on ``tarfile._Stream``.
+    """
+    skip_unless_runnable(entry, key)
+    data = _corpus_archive_path(entry, key, tmp_path).read_bytes()
+    fmt = FORMAT_KEYS[key] if explicit_format else None
+    baseline = _probe(
+        NonSeekableBytesIO(data), entry.passwords, streaming=True, format=fmt
+    )
+    assert (
+        _probe(
+            ShortReadNonSeekable(data, 1),
+            entry.passwords,
+            streaming=True,
+            format=fmt,
+        )
+        == baseline
+    )

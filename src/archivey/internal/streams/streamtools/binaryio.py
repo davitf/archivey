@@ -4,9 +4,11 @@ Sources reach the library in many shapes — a path, a real file object, a ``Byt
 codec library's file-like that is *almost* a ``BinaryIO`` (e.g. missing ``readinto``). This
 module is the single place that classifies those objects (``is_filename`` / ``is_stream`` /
 ``is_seekable``) and coerces them to a consistent ``BinaryIO`` (``ensure_binaryio`` /
-``ensure_bufferedio`` / ``ensure_full_count_reads`` / ``BinaryIOWrapper``), so the rest of
-the stream layer can assume one interface — including that a ``read(n)`` on the archive
-source returns ``n`` bytes short of EOF (``ensure_full_count_reads``).
+``ensure_bufferedio`` / ``BinaryIOWrapper``), so the rest of the stream layer can assume
+one interface. Full-count ``read(n)`` at the archive-source boundary lives in
+``full_count.py`` (``ensure_full_count_reads``). That guarantee now comes from that
+boundary for both seekable and non-seekable sources; it no longer depends on
+``PeekableStream`` (a layer above) or ``tarfile`` internals.
 """
 
 from __future__ import annotations
@@ -22,7 +24,6 @@ from typing import (
     BinaryIO,
     Protocol,
     TypeGuard,
-    cast,
     runtime_checkable,
 )
 
@@ -513,8 +514,11 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         runtime property whose body returns ``None``. pycdlib does
         ``'b' not in fp.mode``, which raises ``TypeError`` on that ``None``.
         Copied from :class:`ReadOnlyIOStream` rather than subclassing it
-        (``base.py`` imports this module). A mixin defined here could be
-        shared with that class and ``PeekableStream``; parked as #329 C4.
+        (``base.py`` imports this module). Four wrappers forward ``name`` via
+        ``source_name`` (this class, :class:`DelegatingStream`,
+        ``PeekableStream``, ``FullCountStream``) on three different inner
+        attributes (``_raw`` / ``_inner`` / ``_underlying``); parked as #329 C4
+        rather than a mixin in this PR.
         This class must stay an ``io.RawIOBase`` so :func:`ensure_bufferedio`
         can feed ``io.BufferedReader``.
         """
@@ -668,57 +672,3 @@ def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
     else:
         raw = BinaryIOWrapper(obj)
     return _NonClosingBufferedReader(raw)
-
-
-def ensure_full_count_reads(stream: BinaryIO) -> BinaryIO:
-    """Make a source's ``read(n)`` return the full count short of EOF.
-
-    ``io.RawIOBase.read(n)`` is an *up-to-n* contract and real sources use the
-    latitude, but header parsers — archivey's own and the stdlib's
-    (``zipfile``/``tarfile``/``pycdlib``) — pull a fixed-size structure with one
-    ``read(n)`` and read anything shorter as EOF, so a healthy archive from a
-    short-returning source was reported as corrupt.
-
-    A **seekable** source is wrapped in ``io.BufferedReader``, whose ``read``
-    promises the full count. Its readahead is bounded and recoverable — the
-    over-read stays in the buffer and the source can be repositioned anyway — and
-    it also collapses the parsers' many tiny reads. Already-buffered sources
-    (``open()``'s ``BufferedReader``, ``BytesIO``) pay nothing.
-
-    A **non-seekable** source is returned unchanged, and that is a known gap, not
-    a design: this function does not currently honour its contract for pipes and
-    sockets. Two corrections to the reasons previously given here:
-
-    * It is *not* because buffering would make the source look seekable.
-      ``BufferedReader.seekable()`` forwards to the raw (see :func:`is_seekable`),
-      so a buffered pipe still reports ``False``.
-    * It is *not* what ADR 0010 (``no-silent-buffer-nonseekable``) forbids either.
-      That rule is about faking seekability and materializing a pipe into memory
-      or a temp file, neither of which a full-count wrapper does.
-
-    The real obstacle is narrower: ``BufferedReader`` reads *ahead*, and from a
-    pipe that over-read is unrecoverable — ``_NonClosingBufferedReader`` detaches
-    on close and strands whatever it pulled. So the buffer cannot simply be
-    applied to both branches.
-
-    Until it is fixed, the guarantee on the non-seekable path comes from
-    downstream layers this function does not own, and they do not cover the same
-    ground: ``PeekableStream`` (only when detection runs — an explicit ``format=``
-    skips that wrap), ``ensure_bufferedio`` inside ``DecompressorStream`` (only
-    when a codec is in the chain), and, for a plain non-seekable TAR, stdlib
-    ``tarfile._Stream``'s own buffering. The last one is why no test fails today.
-
-    The fix is a ``FullCountStream`` that gathers with :func:`read_exact` — asking
-    only for the bytes still missing, so it consumes exactly what was requested
-    and buffers nothing — applied to the non-seekable branch. Tracked in the
-    ``full-count-non-seekable-sources`` OpenSpec change; do not paper over this
-    with a ``BufferedReader`` on both branches.
-
-    Why the boundary is here, and the listing-amplification measurement, live
-    in the archived ``short-read-source-contract`` change.
-    """
-    raise_if_text_stream(stream)
-    if not is_seekable(stream):
-        return stream
-    # BufferedIOBase is a BinaryIO at runtime; typeshed models the two separately.
-    return cast("BinaryIO", ensure_bufferedio(stream))
