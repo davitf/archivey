@@ -96,8 +96,8 @@ def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
     payload is damaged. Callers that translate ``ValueError`` into
     archive-corruption errors must carve this out, the way a closed-handle
     ``ValueError`` already is. Not reachable through the routes exercised
-    today (seekable ZIP, streaming TAR): slicers and full-count gathers clamp
-    the request before it reaches this helper.
+    today (seekable ZIP, streaming TAR): slicers clamp the request before it
+    reaches this helper.
     """
     mv = memoryview(b).cast("B")
     data = src.read(len(mv))

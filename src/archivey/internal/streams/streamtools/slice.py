@@ -209,9 +209,12 @@ class SlicingStream(ReadOnlyIOStream):
         # non-empty return *means*, not how many bytes are wanted:
         #
         # * One ``read`` on the inner, short-is-terminal: sized ``read(n)``, and a
-        #   ``read(-1)`` drain from a caller who declared no length (the latter passes the
-        #   negative straight through, even when the clamp later filled in a bound —
-        #   ``test_undeclared_length_drain_stays_pass_through``). A short return from an
+        #   ``read(-1)`` drain from a caller who declared no length. That drain asks for
+        #   whatever ``_compute_bytes_to_read`` returned — the clamped remainder once the
+        #   source size is knowable, ``-1`` only with no bound at all — but never
+        #   ``read_exact``: the predicate is ``_declared_length is None``, not the sign of
+        #   ``n`` (``test_undeclared_length_drain_stays_pass_through``, whose inner has
+        #   ``size == 20`` and so is asked ``read(20)``). A short return from an
         #   inner is a terminal signal, not "ask again": a decoder with deferred truncation
         #   (this view sits directly over one in the 7z member and LZMA ``cap_size`` paths)
         #   hands back the recoverable prefix now and raises on the *next* empty read, so

@@ -401,8 +401,8 @@ class ArchiveStream(ReadOnlyIOStream):
             self._fail(e)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        # Always route through read() so full-count coalesce (and fused verify)
-        # stay consistent — inner.readinto may be up-to-n.
+        # Always route through read() so the one-read / stop-on-short policy above
+        # (and fused verify) stay consistent — inner.readinto may be up-to-n.
         return readinto_via_read(self, b)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
