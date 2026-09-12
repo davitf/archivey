@@ -49,6 +49,25 @@ class FullCountStream(ReadOnlyIOStream):
     ``readinto`` straight to the short-returning inner. ``seekable()`` stays
     ``False`` and ``tell()`` stays raising — this does not convert a pipe.
 
+    The inner is the caller's object, un-normalised: this module runs
+    ``raise_if_text_stream`` and the two ``isinstance`` short-circuits, never
+    ``ensure_binaryio``. The one assumption is that ``read(n)`` for ``n > 0``
+    returns at most ``n`` bytes, and empty only at EOF. Both halves are
+    enforced: fewer than ``n`` is gathered with :func:`read_exact`; more than
+    ``n`` raises.
+
+    Nothing beyond that sentence is safe to assume. ``readall()`` is a
+    ``RawIOBase`` method — ``BufferedReader``, ``BytesIO`` and ``GzipFile``
+    have none, and ``typing.BinaryIO`` does not declare it. An inner that
+    reaches here can lack it outright: ``io.BufferedRWPair`` over a pipe is
+    non-seekable, is not in ``_BUFFER_TYPES``, and has no ``readall``.
+    ``read(-1)`` is only documented to drain because ``RawIOBase.read``
+    dispatches to ``readall()``; a class that overrides ``read`` bypasses
+    that dispatch, and a non-blocking raw returns short or ``None`` either
+    way. The drain therefore calls ``self.readall()`` —
+    :class:`ReadOnlyIOStream`'s, issuing sized reads back through this
+    class's own ``read`` — instead of asking the inner to drain itself.
+
     ``peel_for_source_size`` is the existing opt-in for a pass-through wrapper
     whose cheap size *is* the inner's. ``fileno`` is not forwarded.
     """
@@ -61,9 +80,9 @@ class FullCountStream(ReadOnlyIOStream):
 
     def read(self, n: int = -1, /) -> bytes:
         if n is None or n < 0:
-            # Drain through readall(), which issues sized reads against the
-            # branch below. Never depends on the inner honouring read(-1)
-            # or readall() — an inner that overrides those can return short.
+            # ReadOnlyIOStream.readall loops sized self.read(n). Never the
+            # inner's readall()/read(-1) — most inners have no readall
+            # (BufferedReader, BytesIO, GzipFile, BufferedRWPair).
             return self.readall()
         data = self._inner.read(n)
         got = len(data)
@@ -113,7 +132,9 @@ def ensure_full_count_reads(stream: BinaryIO) -> BinaryIO:
 
     A **non-seekable** source that is not already a CPython buffer is wrapped
     in :class:`FullCountStream`, which gathers by re-asking for the bytes still
-    missing and holds no buffer of its own. A ``read(n)`` on the returned
+    missing and holds no buffer of its own. The inner is the caller's object,
+    un-normalised — never ``ensure_binaryio`` — so the wrapper cannot assume
+    ``readall`` or a draining ``read(-1)``. A ``read(n)`` on the returned
     stream takes exactly ``n`` bytes from the source; ``seekable()`` stays
     ``False``. ``BufferedReader`` is not used on this branch because it reads
     *ahead*, and from a pipe that over-read is unrecoverable —
