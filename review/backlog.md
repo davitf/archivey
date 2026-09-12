@@ -37,6 +37,23 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#330 M12 secondary — no non-seekable double fails `tell()`.** Found while retiring
+  `FakeNonSeekable` from `testing-contract`. Every non-seekable double in `tests/`
+  (`NonSeekableBytesIO`, and the ad-hoc ones in `test_binaryio.py`) raises
+  `io.UnsupportedOperation` from `seek()` but answers `tell()` from its inner `BytesIO`. A
+  real pipe or socket fails **both** — `tell()` raises `OSError(ESPIPE)` — so the doubles are
+  strictly weaker than the thing they stand for, and the spec had described the stricter
+  behaviour it never had.
+
+  #330 narrowed the requirement to what the doubles actually enforce (`seek()` and
+  `seekable()`) rather than widening the doubles, because answering `tell()` is relied on:
+  `ConcatenatedFile.__init__` probes `tell()` before `seek()` for its volume refusal, and
+  `fix_stream_start_position` needs a position for the mid-stream origin contract. A stricter
+  double would need both of those traced first, which is more than that change was about.
+
+  Worth a look on its own: whether any streaming path calls `tell()` on a source it declared
+  non-seekable, and would therefore break against a real pipe while passing the suite.
+
 - **#300 F4 / D3 + `created_meaning`** — one follow-up OpenSpec change, not #300:
   add `accessed_utc()` / `created_utc()` on a shared private `_as_utc` with
   `modified_utc()` moved onto it (not a string-keyed `timestamp_utc(field)`),
