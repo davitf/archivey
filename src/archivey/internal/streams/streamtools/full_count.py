@@ -81,8 +81,8 @@ class FullCountStream(ReadOnlyIOStream):
     def read(self, n: int = -1, /) -> bytes:
         if n is None or n < 0:
             # ReadOnlyIOStream.readall loops sized self.read(n). Never the
-            # inner's readall()/read(-1) — most inners have no readall
-            # (BufferedReader, BytesIO, GzipFile, BufferedRWPair).
+            # inner's readall()/read(-1) — an inner may have no readall at all
+            # (BufferedRWPair, or GzipFile over a pipe).
             return self.readall()
         data = self._inner.read(n)
         got = len(data)
