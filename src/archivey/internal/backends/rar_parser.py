@@ -984,15 +984,18 @@ def _decode_rar3_unicode_name(std_name: bytes, encdata: bytes) -> str | None:
 
 
 def _fix_rar3_astral_truncation(unicode_name: str, std_name: bytes) -> str:
-    """Recover non-BMP characters truncated by the RAR3 Unicode name compressor.
+    """Recover non-BMP (astral) characters truncated by the RAR3 Unicode name compressor.
 
-    RAR 2.9–4 encode filenames as compressed UTF-16, which cannot represent characters
-    outside the Basic Multilingual Plane: an emoji like ``😀`` (U+1F600) is stored as a
-    single truncated code unit (U+F600, in the Private Use Area) instead of a surrogate
-    pair. The legacy 8-bit name field carries the same name — commonly as UTF-8 — so where
-    the decompressed name shows a surrogate/PUA code unit exactly ``0x10000`` below the
-    8-bit name's character, prefer the 8-bit decoding. (Workaround ported from the v1
-    reader's ``get_non_corrupted_filename``.)
+    *Astral* is the usual Unicode term for a code point above the Basic
+    Multilingual Plane — U+10000 and up, stored as a UTF-16 surrogate pair.
+
+    RAR 2.9–4 encode filenames as compressed UTF-16, which cannot represent those
+    characters: an emoji like ``😀`` (U+1F600) is stored as a single truncated
+    code unit (U+F600, in the Private Use Area) instead of a surrogate pair. The
+    legacy 8-bit name field carries the same name — commonly as UTF-8 — so where
+    the decompressed name shows a surrogate/PUA code unit exactly ``0x10000``
+    below the 8-bit name's character, prefer the 8-bit decoding. (Workaround
+    ported from the v1 reader's ``get_non_corrupted_filename``.)
     """
     try:
         utf8_name = std_name.decode("utf-8")
