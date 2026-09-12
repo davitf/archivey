@@ -25,7 +25,10 @@ from archivey.internal.streams.streamtools import (
 )
 from tests.streams_util import ShortReadNonSeekable
 
-DATA = bytes(range(256)) * 40  # 10 KiB — larger than BufferedReader's 8 KiB default
+# Larger than BufferedReader's default so the over-read contrast is a partial
+# fill, not EOF. 3.14 raised DEFAULT_BUFFER_SIZE from 8 KiB to 128 KiB (gh-117151);
+# a 10 KiB payload is swallowed whole on that version.
+DATA = bytes(range(256)) * (io.DEFAULT_BUFFER_SIZE // 256 + 8)
 _WINDOWS = sys.platform == "win32"
 
 
@@ -52,9 +55,10 @@ def test_ensure_full_count_reads_consumes_exactly_what_was_asked() -> None:
 
 
 def test_ensure_full_count_reads_does_not_read_ahead() -> None:
-    """Zero read-ahead when the inner *can* fill an 8 KiB buffer.
+    """Zero read-ahead when the inner *can* fill a BufferedReader buffer.
 
-    ``ensure_bufferedio`` on this same source takes 8192 for a ``read(20)``.
+    ``ensure_bufferedio`` on this same source takes ``io.DEFAULT_BUFFER_SIZE``
+    for a ``read(20)``.
     """
     source = ShortReadNonSeekable(DATA, max_chunk=len(DATA))
     wrapped = ensure_full_count_reads(source)
@@ -67,7 +71,7 @@ def test_buffered_reader_over_non_seekable_over_reads() -> None:
     source = ShortReadNonSeekable(DATA, max_chunk=len(DATA))
     buffered = ensure_bufferedio(source)
     assert buffered.read(20) == DATA[:20]
-    assert source.consumed == 8192
+    assert source.consumed == io.DEFAULT_BUFFER_SIZE
 
 
 def test_ensure_full_count_reads_is_idempotent_on_full_count_stream() -> None:

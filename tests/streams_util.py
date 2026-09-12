@@ -55,7 +55,9 @@ class ShortReadBytesIO(io.RawIOBase):
     fixed-size header with a single ``read(n)`` and treating the short return as EOF.
 
     ``consumed`` counts bytes taken from the inner, so a test can see whether a wrapper
-    over-read (a ``BufferedReader`` in front of this double takes 8192 for a ``read(20)``).
+    over-read (a ``BufferedReader`` in front of this double takes
+    ``io.DEFAULT_BUFFER_SIZE`` for a ``read(20)`` — 8 KiB through 3.13,
+    128 KiB from 3.14).
 
     ``cap_drain`` also caps ``read(-1)``. That is deliberately illegal ``RawIOBase``
     behaviour — ``read(-1)`` dispatches to ``readall()``, which must drain — and exists
