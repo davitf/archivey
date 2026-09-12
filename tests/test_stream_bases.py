@@ -320,6 +320,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.streams.crypto as crypto
     import archivey.internal.streams.decompressor_stream as decompressor_stream
     import archivey.internal.streams.peekable as peekable
+    import archivey.internal.streams.streamtools.base as streamtools_base
     import archivey.internal.streams.streamtools.locked as locked
     import archivey.internal.streams.streamtools.slice as slice_mod
     import archivey.internal.streams.streamtools.solid as solid
@@ -347,6 +348,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         slice_mod.SlicingStream,  # explicit decline of a remapped offset space
         slice_mod.SharedView,  # same remapped space; locked subclass of SlicingStream
         peekable.PeekableStream,
+        streamtools_base.FullCountStream,  # source boundary; not on the decompressed chain
         crypto.AesDecryptStream,
         zip_aes.WinZipAesDecryptStream,
         detection._BoundedPeekReader,
