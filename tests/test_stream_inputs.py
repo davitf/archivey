@@ -470,16 +470,15 @@ def test_ensure_full_count_reads_returns_the_full_count(
 ) -> None:
     """The archive-source boundary guarantee: ``read(n)`` yields ``n`` short of EOF.
 
-    A non-seekable source is handed back untouched — buffering it would make ``seekable()``
-    claim random access it does not have, and archivey routes those through
-    ``PeekableStream``, which coalesces.
+    A non-seekable source is wrapped in ``FullCountStream`` (not returned
+    unchanged, and not a ``BufferedReader`` — that would over-read a pipe).
     """
     stream = ensure_binaryio(case.build(tmp_path))
     try:
         normalized = ensure_full_count_reads(stream)
         if not case.seekable:
-            assert normalized is stream
-            return
+            assert normalized is not stream
+            assert normalized.seekable() is False
         assert normalized.read(128) == CONTENT[:128]
         assert normalized.read(4000) == CONTENT[128:4128]
     finally:

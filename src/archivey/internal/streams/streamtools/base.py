@@ -12,6 +12,8 @@
 - :class:`DelegatingStream` additionally holds one inner ``BinaryIO`` and forwards
   ``read``/``readinto``/``seek``/``tell``/``seekable``/``close`` to it, so a wrapper that only
   changes one operation overrides just that method.
+- :class:`FullCountStream` makes a short-returning inner full-count without reading ahead.
+  It lives here rather than in ``binaryio`` because that module is imported by this one.
 
 This module is part of the codec-/format-agnostic ``streamtools`` core: it imports only from
 ``streamtools`` itself (``is_seekable``), nothing from the rest of ``archivey``.
@@ -25,6 +27,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Never
 
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
+    read_exact,
     readinto_via_read,
     source_name,
     try_readinto,
@@ -228,3 +231,67 @@ class DelegatingStream(ReadOnlyIOStream):
         if resolved is not None:
             return resolved
         raise AttributeError("name")
+
+
+class FullCountStream(ReadOnlyIOStream):
+    """Make a short-returning inner full-count without reading ahead.
+
+    ``io.RawIOBase.read(n)`` may legally return short of ``n``. Header parsers
+    treat that as EOF, so this wrapper re-asks for the bytes still missing.
+    That is :func:`read_exact` (a short means "ask again"), not a single
+    forwarded ``inner.read(n)`` (a short means terminal) — the two gather
+    policies are enumerated in ``slice.py``, per ADR 0014. ``BufferedReader`` would
+    also be full-count, but it reads
+    *ahead*; from a pipe that over-read is unrecoverable at a boundary that
+    hands the source between layers. This class holds no buffer of its own:
+    a ``read(n)`` takes exactly ``n`` bytes from the inner (or everything up
+    to EOF).
+
+    :class:`ReadOnlyIOStream` is the base so ``readinto`` routes through this
+    ``read`` and inherits the guarantee. :class:`DelegatingStream` would pass
+    ``readinto`` straight to the short-returning inner. ``seekable()`` stays
+    ``False`` and ``tell()`` stays raising — this does not convert a pipe.
+
+    ``peel_for_source_size`` is the existing opt-in for a pass-through wrapper
+    whose cheap size *is* the inner's. ``fileno`` is not forwarded.
+    """
+
+    peel_for_source_size: bool = True
+
+    def __init__(self, inner: BinaryIO) -> None:
+        super().__init__()
+        self._inner = inner
+
+    def read(self, n: int = -1, /) -> bytes:
+        if n is None or n < 0:
+            # Loop: an inner that overrides read() can return short on -1,
+            # even though RawIOBase.read(-1) is documented to drain. Do not
+            # trust readall() here.
+            out = bytearray()
+            while chunk := self._inner.read(-1):
+                out.extend(chunk)
+            return bytes(out)
+        data = self._inner.read(n)
+        if len(data) == n:
+            return data  # common case: no copy
+        return data + read_exact(self._inner, n - len(data))
+
+    def close(self) -> None:
+        # Do not close the inner. This is the source-boundary wrapper: the
+        # caller owns the stream, same as BinaryIOWrapper / _NonClosingBufferedReader.
+        super().close()
+
+    @property
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; this returns a path when the inner has one
+        """Path of the inner stream, or raise :exc:`AttributeError` if it has none.
+
+        ``source_name`` has no peel path, so this has to forward. Raising keeps
+        ``hasattr(..., "name")`` false when the inner is nameless.
+        """
+        resolved = source_name(self._inner)
+        if resolved is not None:
+            return resolved
+        raise AttributeError("name")
+
+    def __repr__(self) -> str:
+        return f"FullCountStream({self._inner!r})"

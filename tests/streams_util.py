@@ -37,7 +37,7 @@ class NonSeekableBytesIO(io.RawIOBase):
 
 
 class ShortReadBytesIO(io.RawIOBase):
-    """A seekable ``BytesIO`` whose ``read``/``readinto`` never return more than ``max_chunk``.
+    """A ``BytesIO`` whose ``read``/``readinto`` never return more than ``max_chunk``.
 
     ``io.RawIOBase.read(n)`` is documented to return *up to* ``n`` bytes, and real sources
     do: sockets, FUSE mounts, and user-written wrappers hand back short chunks mid-stream
@@ -46,26 +46,57 @@ class ShortReadBytesIO(io.RawIOBase):
     that — which is how short-returning sources stayed invisible until they were reported
     as corrupt archives (see ``test_short_read_sources.py``).
 
+    Seekable by default. That still leaves one axis pair untested: a source that is
+    short-returning *and* non-seekable. :class:`NonSeekableBytesIO` is always full-count,
+    so it cannot stand in. :class:`ShortReadNonSeekable` is this class with
+    ``seekable=False``. The cap lives here so the two cannot drift.
+
     ``max_chunk=1`` is the worst legal case, and the one that catches a parser reading a
     fixed-size header with a single ``read(n)`` and treating the short return as EOF.
+
+    ``consumed`` counts bytes taken from the inner, so a test can see whether a wrapper
+    over-read (a ``BufferedReader`` in front of this double takes 8192 for a ``read(20)``).
+
+    ``cap_drain`` also caps ``read(-1)``. That is deliberately illegal ``RawIOBase``
+    behaviour — ``read(-1)`` dispatches to ``readall()``, which must drain — and exists
+    only so a full-count wrapper's drain branch can be proved not to depend on the inner
+    obeying that.
     """
 
-    def __init__(self, data: bytes, max_chunk: int = 1) -> None:
+    def __init__(
+        self,
+        data: bytes,
+        max_chunk: int = 1,
+        *,
+        seekable: bool = True,
+        cap_drain: bool = False,
+    ) -> None:
         super().__init__()
         self._inner = io.BytesIO(data)
         self._max_chunk = max_chunk
+        self._seekable = seekable
+        self._cap_drain = cap_drain
+        self.consumed = 0
 
     def readable(self) -> bool:
         return True
 
     def seekable(self) -> bool:
-        return True
+        return self._seekable
 
     def read(self, n: int = -1, /) -> bytes:
-        # read(-1) means "everything up to EOF"; it has no legal short form.
+        # read(-1) means "everything up to EOF"; it has no legal short form, unless
+        # cap_drain is set to violate that on purpose (see class docstring).
         if n is None or n < 0:
-            return self._inner.read()
-        return self._inner.read(min(n, self._max_chunk))
+            data = (
+                self._inner.read(self._max_chunk)
+                if self._cap_drain
+                else self._inner.read()
+            )
+        else:
+            data = self._inner.read(min(n, self._max_chunk))
+        self.consumed += len(data)
+        return data
 
     def readinto(self, b) -> int:  # type: ignore[override]  # test double; broad buffer type
         mv = memoryview(b).cast("B")
@@ -74,10 +105,26 @@ class ShortReadBytesIO(io.RawIOBase):
         return len(data)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if not self._seekable:
+            raise io.UnsupportedOperation("seek")
         return self._inner.seek(offset, whence)
 
     def tell(self, /) -> int:
         return self._inner.tell()
+
+
+class ShortReadNonSeekable(ShortReadBytesIO):
+    """Short-returning *and* non-seekable.
+
+    :class:`ShortReadBytesIO` is seekable; :class:`NonSeekableBytesIO` delegates to
+    ``BytesIO`` and is therefore always full-count. Neither covers this axis pair,
+    which is why the non-seekable half of the source-boundary contract went untested.
+    """
+
+    def __init__(
+        self, data: bytes, max_chunk: int = 1, *, cap_drain: bool = False
+    ) -> None:
+        super().__init__(data, max_chunk, seekable=False, cap_drain=cap_drain)
 
 
 class CountingBytesIO(io.RawIOBase):

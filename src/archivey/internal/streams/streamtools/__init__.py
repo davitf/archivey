@@ -10,7 +10,7 @@ hierarchy, or codec internals in the *API* of this package (call-site examples i
 
 Module map:
 
-- :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
+- :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` / ``FullCountStream`` (wrapper bases)
 - :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from archivey.internal.streams.streamtools.base import (
     DelegatingStream,
+    FullCountStream,
     ReadOnlyIOStream,
 )
 from archivey.internal.streams.streamtools.binaryio import (
@@ -65,6 +66,7 @@ __all__ = [
     "BinaryIOWrapper",
     "CloseLockedStream",
     "DelegatingStream",
+    "FullCountStream",
     "LockedStream",
     "ReadOnlyIOStream",
     "ReadableStream",

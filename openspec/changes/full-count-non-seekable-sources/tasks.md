@@ -15,7 +15,7 @@ to accurate prose, not a correction of wrong prose.
 
 ## 1. Red — prove the gap
 
-- [ ] 1.1 Add `ShortReadNonSeekable` to `tests/streams_util.py`. **Do not copy the cap
+- [x] 1.1 Add `ShortReadNonSeekable` to `tests/streams_util.py`. **Do not copy the cap
   logic** — `ShortReadBytesIO` already has it and the cap is the part that must not drift
   between the two. Parameterize the existing class instead (`seekable: bool = True`) and
   make `ShortReadNonSeekable` the thin subclass that flips it and raises
@@ -29,17 +29,17 @@ to accurate prose, not a correction of wrong prose.
     `RawIOBase` behaviour — `read(-1)` dispatches to `readall()`, which must drain — and
     exists only so 2.1's drain branch can be proved not to depend on the inner obeying
     that. Say so in its docstring.
-- [ ] 1.2 Assert the boundary directly, not a backend:
+- [x] 1.2 Assert the boundary directly, not a backend:
   `ensure_full_count_reads(ShortReadNonSeekable(data, 1)).read(n)` returns `n` bytes.
   Watch it fail on `main` — the source is returned unchanged, so it returns 1 byte.
-- [ ] 1.3 Assert exact consumption: after `read(n)`, exactly `n` bytes have been taken
+- [x] 1.3 Assert exact consumption: after `read(n)`, exactly `n` bytes have been taken
   from the underlying source — read it off the `consumed` counter added in 1.1. This is the
   assertion that would fail if someone later "fixes" 1.2 with a `BufferedReader`
   (measured: `ensure_bufferedio` atop the boundary takes 8192 bytes for a `read(20)`).
 
 ## 2. Green — the wrapper
 
-- [ ] 2.1 Add `FullCountStream(ReadOnlyIOStream)`. **Not in `binaryio.py`** — that is a
+- [x] 2.1 Add `FullCountStream(ReadOnlyIOStream)`. **Not in `binaryio.py`** — that is a
   circular import, verified: `base.py:26` imports `is_seekable`, `readinto_via_read`,
   `source_name` and `try_readinto` **from** `binaryio` at module level, so the reverse
   import fails with `ImportError: cannot import name 'ReadOnlyIOStream' from partially
@@ -63,7 +63,7 @@ to accurate prose, not a correction of wrong prose.
     read-ahead, and why `read_exact` rather than a single forwarded `inner.read(n)` (the
     two gather policies enumerated in `slice.py`, per ADR 0014 — the enumeration is in
     `slice.py`, not in the ADR).
-- [ ] 2.1a Keep the wrapper transparent to the metadata probes (maintainer decision,
+- [x] 2.1a Keep the wrapper transparent to the metadata probes (maintainer decision,
   packet 2 — see `design.md` D8). Forward exactly two things, and no more:
   - A `name` property forwarding through `source_name(self._inner)`, re-raising
     `AttributeError` when the inner has none — the shape `BinaryIOWrapper.name` and
@@ -86,20 +86,20 @@ to accurate prose, not a correction of wrong prose.
   - Assert all of it, including through `PeekableStream`: after 3.1 the detection path reads
     the source's name *through* this wrapper, which is how the opacity would reach
     `ResolvedSource.archive_name` and `compressed_source_size`.
-- [ ] 2.2 `ensure_full_count_reads` wraps a non-seekable source in `FullCountStream`
+- [x] 2.2 `ensure_full_count_reads` wraps a non-seekable source in `FullCountStream`
   instead of returning it unchanged, and **is idempotent**: a `FullCountStream` argument is
   returned unchanged (maintainer decision, packet 1 — see `design.md` D5). The seekable
   branch already is, via `ensure_bufferedio`'s `isinstance(obj, io.BufferedIOBase)`
   short-circuit; state the whole-function property in the docstring, since D5 has callers
   relying on it. Replace the docstring's known-gap paragraphs per 5.1.
-- [ ] 2.3 Confirm 1.2 and 1.3 pass; revert 2.1–2.2 and watch them fail again; restore.
+- [x] 2.3 Confirm 1.2 and 1.3 pass; revert 2.1–2.2 and watch them fail again; restore.
 
 ## 3. Simplify the now-redundant gather
 
 Order matters here: 3.1 establishes the guarantee 3.2 then depends on. Doing 3.2 first
 regresses `open_stream` — see the measurement in `design.md` D5.
 
-- [ ] 3.1 `PeekableStream.__init__` calls `ensure_full_count_reads` on its `underlying`
+- [x] 3.1 `PeekableStream.__init__` calls `ensure_full_count_reads` on its `underlying`
   argument (maintainer decision, packet 1). This is an **edit with a test**, not a
   checklist confirmation: `core.py:592` hands it the raw caller stream today, so without
   this the collapse in 3.2 breaks the `open_stream` non-seekable path. Needs 2.2's
@@ -111,28 +111,28 @@ regresses `open_stream` — see the measurement in `design.md` D5.
     regression and would retire this wrongly.
   - `core.py` needs **no** edit under this decision. If you find yourself editing it, the
     wrap is in the wrong place — re-read D5.
-- [ ] 3.2 `PeekableStream._fill_to`: collapse the `while` loop to a single `read` now
+- [x] 3.2 `PeekableStream._fill_to`: collapse the `while` loop to a single `read` now
   that the inner is full-count. Comment why the loop is gone and what guarantees it
   (3.1, not a call-site convention).
-- [ ] 3.3 Re-run 3.1's red test plus the existing detection suite. ~20 sites in `tests/`
+- [x] 3.3 Re-run 3.1's red test plus the existing detection suite. ~20 sites in `tests/`
   construct `PeekableStream` directly over a bare `NonSeekableBytesIO`; they pass today
   only because that double delegates to `BytesIO` and is therefore already full-count.
   After 3.1 they exercise the wrapper, so watch for anything that asserts on
   `PeekableStream.name`, `repr`, or the identity of `_underlying`.
-- [ ] 3.4 `PeekableStream` stays — `peek` pushback is not what `FullCountStream` does.
+- [x] 3.4 `PeekableStream` stays — `peek` pushback is not what `FullCountStream` does.
   Do not delete it or fold the two. 3.1 is not the rejected "route everything through
   `PeekableStream`" alternative: the guarantee stays in `streamtools` and `PeekableStream`
   only calls it.
 
 ## 4. Coverage
 
-- [ ] 4.1 Each streaming-capable format from `ShortReadNonSeekable(max_chunk=1)`,
+- [x] 4.1 Each streaming-capable format from `ShortReadNonSeekable(max_chunk=1)`,
   **with and without** explicit `format=`, parity-asserted against the full-count open.
   The explicit-`format=` case is the one that skips `PeekableStream`.
-- [ ] 4.2 Plain uncompressed TAR is a required case: it is the path where only stdlib
+- [x] 4.2 Plain uncompressed TAR is a required case: it is the path where only stdlib
   `tarfile._Stream` buffering stands between a short-returning pipe and a bogus
   corruption report today.
-- [ ] 4.3 Multi-volume, per `design.md` D7 (the former open question, now closed): assert a
+- [x] 4.3 Multi-volume, per `design.md` D7 (the former open question, now closed): assert a
   non-seekable volume item still raises `StreamNotSeekableError("all volume streams must be
   seekable")` with `FullCountStream` in front of it — `FullCountStream.tell()` raises
   `io.UnsupportedOperation`, which is already in the caught tuple, so the refusal should
@@ -143,7 +143,7 @@ regresses `open_stream` — see the measurement in `design.md` D5.
 
 ## 5. Docs and specs
 
-- [ ] 5.1 Replace the **known-gap** paragraphs of `ensure_full_count_reads`' docstring with
+- [x] 5.1 Replace the **known-gap** paragraphs of `ensure_full_count_reads`' docstring with
   the implemented behaviour. #329 already removed the wrong justification, so this is not a
   correction: on `0ed80b7` the docstring says the non-seekable source "is returned
   unchanged, and that is a known gap", lists the two wrong reasons, names the read-ahead
@@ -152,7 +152,7 @@ regresses `open_stream` — see the measurement in `design.md` D5.
   Those last two paragraphs become a description of what the function now does. Keep the
   two corrections and the read-ahead explanation — they are why the seekable branch still
   differs, and deleting them is how the wrong prose regenerated before.
-- [ ] 5.2 Note the `streamtools` layering win in the `binaryio.py` module docstring: the
+- [x] 5.2 Note the `streamtools` layering win in the `binaryio.py` module docstring: the
   boundary now supplies its own guarantee rather than depending on `PeekableStream` (a layer
   above) or `tarfile` internals.
   - Fix `slice.py` in the same pass. It says a raw inner that shorts mid-stream "needs a
@@ -164,12 +164,12 @@ regresses `open_stream` — see the measurement in `design.md` D5.
     The comment's closing "Every inner a backend slices is full-count already" becomes
     honestly true rather than luckily true with this change — which is the whole point, so
     keep it.
-- [ ] 5.3 Retire `FakeNonSeekable` from `openspec/specs/testing-contract/spec.md` when the
+- [x] 5.3 Retire `FakeNonSeekable` from `openspec/specs/testing-contract/spec.md` when the
   delta lands (the `Non-seekable stream coverage for streaming backends` requirement and its
   matrix). The class has never existed in `tests/`; the double is `NonSeekableBytesIO`, and
   it answers `tell()` rather than raising. Grep for the name — `dev-docs/history/SPEC.md` and
   an archived change also carry it; those are history and stay as they are.
-- [ ] 5.4 `openspec validate --strict full-count-non-seekable-sources`
+- [x] 5.4 `openspec validate --strict full-count-non-seekable-sources`
 - [ ] 5.5 `./scripts/check.sh --fix` and `./scripts/test.sh` clean.
 - [ ] 5.6 `openspec archive full-count-non-seekable-sources --yes` in the finishing PR;
   commit the resulting `openspec/specs/` diff.

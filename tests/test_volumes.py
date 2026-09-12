@@ -16,16 +16,20 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
     PackageNotInstalledError,
+    StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.streams.streamtools import ensure_full_count_reads
 from archivey.internal.volumes import (
+    ConcatenatedFile,
     discover_volume_siblings,
     first_volume_for_stub,
     join_volumes,
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
+from tests.streams_util import ShortReadBytesIO, ShortReadNonSeekable
 
 _7Z_MAGIC = bytes.fromhex("377abcaf271c")
 _RAR_MAGIC = b"Rar!\x1a\x07\x00"
@@ -702,3 +706,22 @@ def test_numbered_exe_part_is_not_a_stub(tmp_path: Path) -> None:
     part.write_bytes(b"x")
     (tmp_path / "vol.exe.002").write_bytes(b"y")
     assert first_volume_for_stub(part) is None
+
+
+def test_non_seekable_volume_item_still_refused() -> None:
+    """``FullCountStream.tell()`` raises, which still trips the ConcatenatedFile refusal."""
+    item = ensure_full_count_reads(ShortReadNonSeekable(b"abc", 1))
+    with pytest.raises(
+        StreamNotSeekableError, match="all volume streams must be seekable"
+    ):
+        ConcatenatedFile([item, io.BytesIO(b"def")])
+
+
+def test_short_returning_seekable_volume_item_reads_through_boundary() -> None:
+    joined = ConcatenatedFile(
+        [
+            ensure_full_count_reads(ShortReadBytesIO(b"hello")),
+            ensure_full_count_reads(ShortReadBytesIO(b"world")),
+        ]
+    )
+    assert joined.read() == b"helloworld"
