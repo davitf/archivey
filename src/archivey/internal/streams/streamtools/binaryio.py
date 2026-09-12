@@ -122,17 +122,32 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     (fill-or-EOF) and a short return there is a terminal signal to forward, not
     to retry — see ADR 0014 and the comment in ``SlicingStream.read``. Use this
     only where the caller will not read again, so a short must be gathered here.
+
+    When one read satisfies the ask the inner's own ``bytes`` is returned rather
+    than a copy, the same fast path :meth:`FullCountStream.read` has.
     """
     if n < 0:
         raise ValueError("n must be non-negative")
 
-    data = bytearray()
-    while len(data) < n:
-        chunk = stream.read(n - len(data))
+    # Fast path, and the common one now that ``ensure_full_count_reads`` makes
+    # every archive source full-count: one read satisfies the ask, so hand back
+    # the inner's own object. The gather below copies the result twice (into the
+    # bytearray, then out of it), which on a large read — a whole decoded 7z
+    # folder in ``sevenzip_pipeline`` — is 3x peak memory instead of 1x.
+    data = stream.read(n)
+    if data and len(data) == n:
+        return data
+
+    # ``data or b""``: a non-blocking raw returns None rather than bytes, which
+    # the gather loop has always treated as EOF. Keep that; this change is about
+    # copies, not semantics.
+    out = bytearray(data or b"")
+    while len(out) < n:
+        chunk = stream.read(n - len(out))
         if not chunk:
             break
-        data.extend(chunk)
-    return bytes(data)
+        out.extend(chunk)
+    return bytes(out)
 
 
 def _is_fifo_or_chardev(stream: Any) -> bool:

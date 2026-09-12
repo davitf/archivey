@@ -118,6 +118,59 @@ def test_read_exact_gathers_across_short_reads() -> None:
     assert read_exact(_Drip(DATA), 5) == DATA[:5]
 
 
+def test_read_exact_issues_one_read_on_a_full_count_inner() -> None:
+    """No gather loop when the first read satisfies the ask."""
+
+    class _Counting(io.BytesIO):
+        def __init__(self, data: bytes) -> None:
+            super().__init__(data)
+            self.calls = 0
+
+        def read(self, n: int | None = -1, /) -> bytes:
+            self.calls += 1
+            return super().read(n)
+
+    stream = _Counting(DATA)
+    assert read_exact(stream, 10) == DATA[:10]
+    assert stream.calls == 1
+
+
+def test_read_exact_does_not_copy_a_satisfied_read() -> None:
+    """The fast path hands back the inner's object.
+
+    Identity, not equality: the gather copies the result twice (into the
+    bytearray and out again), which on a whole decoded 7z folder is 3x peak
+    memory instead of 1x. ``is`` is the only assertion that pins that.
+    """
+    payload = DATA[:10]
+
+    class _OneShot(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1, /) -> bytes:
+            return payload
+
+    assert read_exact(_OneShot(), 10) is payload
+
+
+def test_read_exact_treats_none_as_eof() -> None:
+    """A non-blocking raw returns ``None``; the gather has always read that as EOF.
+
+    Pinned because the fast path had to preserve it deliberately — ``len(None)``
+    would raise instead.
+    """
+
+    class _NonBlocking(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1, /) -> bytes:
+            return None  # pyrefly: ignore[bad-return]  # non-blocking raw; not our contract
+
+    assert read_exact(_NonBlocking(), 10) == b""
+
+
 def test_read_exact_accepts_readablestream_protocol() -> None:
     assert isinstance(OnlyReadStream(DATA), ReadableStream)
 
