@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import pytest
 from archivey.exceptions import CorruptionError, EncryptionError
 from archivey.internal.backends.rar_parser import (
     _HeaderDecryptStream,
+    _rar3_s2k,
+    _Rar3Sha1,
     parse_rar_archive,
 )
 from tests.conftest import requires
@@ -109,3 +112,50 @@ def test_encrypted_header_plaintext_tell_breaks_the_walk(
     path = _fixture(name)
     with path.open("rb") as handle, pytest.raises((CorruptionError, EncryptionError)):
         parse_rar_archive(handle, password="header_password")
+
+
+def test_rar3_sha1_hashes_then_mutates_bytearray_seed() -> None:
+    """The maintainer's reading of the rarbug (#315 thread 8): hashlib SHA-1 of
+    this chunk is correct, then complete SHA-1 blocks in the input bytearray
+    are scrambled so a reused seed hashes different bytes next time.
+
+    ``dpos`` starts at the first block boundary in this chunk, so with an empty
+    hasher the first 64 bytes stay put and the second block is rewritten.
+    ``bytes`` input is not mutated.
+    """
+    seed = bytearray(range(128))
+    original = bytes(seed)
+    hasher = _Rar3Sha1()
+    hasher.update(seed)
+    assert hasher.digest() == hashlib.sha1(original).digest()
+    assert bytes(seed[:64]) == original[:64]
+    assert bytes(seed[64:]) != original[64:]
+
+    frozen = bytes(range(128))
+    hasher_b = _Rar3Sha1()
+    hasher_b.update(frozen)
+    assert frozen == bytes(range(128))
+    assert hasher_b.digest() == hashlib.sha1(frozen).digest()
+
+
+def test_rar3_sha1_short_seed_is_not_mutated() -> None:
+    """Seed ≤ 64 bytes never crosses a SHA-1 block, so the WinRAR mutation
+    does not run. ``header_password`` + 8-byte salt is in this class.
+    """
+    seed = bytearray("header_password".encode("utf-16le") + b"\x00" * 8)
+    assert len(seed) <= 64
+    original = bytes(seed)
+    hasher = _Rar3Sha1()
+    hasher.update(seed)
+    assert bytes(seed) == original
+
+
+@requires("rarfile")
+def test_rar3_s2k_matches_rarfile_for_a_long_password() -> None:
+    """Long password+salt (> 64 bytes) exercises the mutation path; the
+    derived key/IV must still match rarfile's ``rar3_s2k``.
+    """
+    rarfile = pytest.importorskip("rarfile")
+    password = "x" * 40  # 80 UTF-16LE bytes + 8-byte salt > 64
+    salt = bytes(range(8))
+    assert _rar3_s2k(password, salt) == rarfile.rar3_s2k(password, salt)

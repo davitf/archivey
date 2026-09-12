@@ -540,6 +540,12 @@ second engine would be an explicit opt-in, never a probe of `PATH` (threat-model
 downloads a checksum-pinned RAR 6.24 into the user cache purely to build the RAR4 fixtures.
 Any RAR4 archive in the wild today was written by something older than a current WinRAR.
 
+**RAR3 header/file encryption KDF is not stock SHA-1.** WinRAR mutates its SHA-1 block
+buffer in place after hashing it. `hashlib.sha1` does not, so `_Rar3Sha1` hashes
+correctly and then corrupts a reused `bytearray` seed so the next of the 0x4000×16
+rounds matches WinRAR. Seed ≤ 64 bytes (a password of 28 UTF-16 code units plus the
+8-byte salt) never hits it. [`known-issues.md`](../known-issues.md).
+
 **The writer being trialware is also why the corpus fixtures are committed.** The declarative corpus builds each entry
 in every format it declares, and eight entries declare `rar`. All eight ran **nowhere**:
 building them needs the trialware writer, which CI does not install, so `skip_unless_runnable`

@@ -90,6 +90,18 @@ this case. A native TAR header walker (the 7z/RAR strategy applied to TAR, open-
 would validate each header at its offset and close the streaming gap. Documented for users
 in `docs/formats.md` and `docs/gotchas.md`.
 
+## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
+
+**Status: emulated, not an archivey bug.** WinRAR's RAR3 string-to-key runs SHA-1's
+message schedule in place on the 64-byte block buffer and writes the expanded words
+back little-endian. `hashlib.sha1` computes the digest of *this* update correctly
+and does not touch the caller's buffer; archivey then applies the same in-place
+corruption to a reused `bytearray` seed so later rounds match WinRAR. Short
+passwords (UTF-16LE password + 8-byte salt ≤ 64 bytes) never hit the path.
+Ported from `rarfile` 4.3 `Rar3Sha1`. Evidence: `tests/test_rar_parser.py` (digest
+of the original bytes, seed mutated afterwards, long-password s2k vs `rarfile`).
+Handbook: [`formats/rar.md`](formats/rar.md) §3.
+
 ## Importing the ISO backend patches pycdlib process-globally (by design)
 
 `import archivey` eagerly imports the ISO backend to register it, and that import installs a

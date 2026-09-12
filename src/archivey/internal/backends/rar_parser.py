@@ -772,22 +772,39 @@ class _HeaderDecryptStream:
 
 
 class _Rar3Sha1:
-    """Emulate the buggy SHA-1 used by RAR3 key derivation."""
+    """SHA-1 plus the WinRAR 3.x KDF buffer-mutation bug.
+
+    WinRAR's SHA-1 runs the message schedule in place on its 64-byte block
+    buffer, then writes the expanded words back little-endian. ``hashlib.sha1``
+    does not mutate its input, so the digest of *this* ``update`` is correct —
+    and then, when ``data`` is a ``bytearray`` containing a complete SHA-1 block
+    at a block boundary (``dpos`` skips the already-absorbed prefix), this class
+    applies the same in-place corruption so the *next* ``update`` of a reused
+    seed matches WinRAR.
+
+    RAR3 string-to-key hashes the same ``password + salt`` seed 0x4000×16
+    times. After the first block-crossing round the seed itself is scrambled,
+    and later rounds hash that scrambled buffer. Short passwords (seed ≤ 64
+    bytes, including the 8-byte salt) never hit the path. Ported from
+    ``rarfile`` 4.3 ``Rar3Sha1``; there is no non-buggy caller.
+    """
 
     _BLK_BE = struct.Struct(b">16L")
     _BLK_LE = struct.Struct(b"<16L")
     block_size = 64
 
-    def __init__(self, *, rarbug: bool = False) -> None:
+    def __init__(self) -> None:
         self._md = hashlib.sha1()
         self._nbytes = 0
-        self._rarbug = rarbug
 
     def update(self, data: bytes | bytearray) -> None:
         self._md.update(data)
         bufpos = self._nbytes & 63
         self._nbytes += len(data)
-        if self._rarbug and len(data) > 64:
+        if len(data) > 64:
+            # First complete SHA-1 block *boundary* in this chunk. The prefix
+            # that filled the previous partial block is already in hashlib and
+            # is not rewritten.
             dpos = self.block_size - bufpos
             while dpos + self.block_size <= len(data):
                 self._corrupt(data, dpos)
@@ -812,10 +829,14 @@ class _Rar3Sha1:
 
 
 def _rar3_s2k(password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
-    """Derive AES-128 key + IV for RAR3 header/file encryption."""
+    """Derive AES-128 key + IV for RAR3 header/file encryption.
+
+    Uses :class:`_Rar3Sha1` so a long ``password + salt`` seed is mutated between
+    rounds the way WinRAR's SHA-1 mutates its block buffer.
+    """
     wstr = _normalize_password_utf16le(password)
     seed = bytearray(wstr + salt)
-    h = _Rar3Sha1(rarbug=True)
+    h = _Rar3Sha1()
     iv = bytearray()
     for i in range(16):
         for j in range(0x4000):
