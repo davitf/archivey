@@ -1,6 +1,6 @@
 # Open work inventory and sequencing
 
-> **A dated snapshot, not a register.** Snapshot: **2026-09-11** against `main` @ `e50ffdd4`.
+> **A dated snapshot, not a register.** Snapshot: **2026-09-12** against `main` @ `c3259dff`.
 > Every item below lives somewhere canonical — [`open-issues.md`](open-issues.md),
 > [`threat-model.md`](threat-model.md), [`IDEAS.md`](IDEAS.md),
 > [`review/backlog.md`](../review/backlog.md), [`review/STATUS.md`](../review/STATUS.md),
@@ -22,8 +22,8 @@ dead.
 
 | Register | Open items | Health |
 | --- | --- | --- |
-| Open PRs (10) | 4 live, 5 dormant drafts, 1 hub | #319 and #324 merged since the first snapshot; drafts last touched 2026-08-23 by a bulk event, not by work |
-| [#315](https://github.com/davitf/archivey/pull/315) review threads | 55 total, **8 resolved, 47 open** | And **15 of the 47 were rescoped smaller** by their own follow-ups. Still the largest block of actionable work, but less of it than the count suggests |
+| Open PRs | 4 live, 5 dormant drafts, 1 hub | #319, #323, #324, #326, #328, #329 and #330 merged since the first snapshot; the drafts were last touched 2026-08-23 by a bulk event, not by work |
+| [#315](https://github.com/davitf/archivey/pull/315) review threads | 55 total, **31 resolved, 24 open** | Parcels A, B and C closed 23 in one day. What remains is the two RAR files plus the placement questions |
 | `openspec/changes/` (5 active) | 4 unimplemented, 1 half-done | `prefixed-archive-detection` is 31/68; the rest are 0/N |
 | [`open-issues.md`](open-issues.md) | 8 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned |
 | [`formats/rar.md`](formats/rar.md) `§10` | 4 of 21 (#6 layer 2, #18, #19, #21) | Healthy — 17 closed with PR links |
@@ -45,7 +45,7 @@ below. Do not read the 57 as a debt figure.
 
 | PR | What | Verdict |
 | --- | --- | --- |
-| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 55 threads, 47 open |
+| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 55 threads, 24 open |
 | [#297](https://github.com/davitf/archivey/pull/297) | Capability declaration vs corpus behaviour (387-line investigation) | **Merge.** Adds one `dev-docs/investigations/` page plus its index row. No dependencies |
 | [#274](https://github.com/davitf/archivey/pull/274) | OpenSpec `archive-origin-reporting` proposal | **Merge as a proposal.** Specs-first, nothing implemented. Overlaps `detection-result-surface` — see the graph |
 | [#251](https://github.com/davitf/archivey/pull/251) | OpenSpec `bounded-source-spooling` | **Blocked on four maintainer answers**, all in its `design.md` §Open questions. Q1 (the default limit) decides which working RAR-from-stream reads start failing. Merging the proposal does not need them; *scheduling* does |
@@ -100,40 +100,43 @@ The largest single pool of actionable work, and the only one with verified corre
 in it. Threads 1–15 are maintainer questions from 2026-09-07; 16–54 are an agent review pass
 from 2026-09-08 concentrated on `streamtools/` and the two native backends.
 
-**Eight are resolved and fifteen more were rescoped by their own follow-ups**, which changes
-what this pool is. A large fraction of the 2026-09-08 pass was self-corrected on re-reading:
-claims refuted outright, bugs downgraded to readability nits, three-item leak lists reduced to
-one. Read each thread's **last** comment first — the opening comment is often not the finding
-any more.
+**Thirty-one of fifty-five are resolved.** Parcels A, B and C
+([#326](https://github.com/davitf/archivey/pull/326),
+[#328](https://github.com/davitf/archivey/pull/328),
+[#329](https://github.com/davitf/archivey/pull/329)) closed 23 threads on 2026-09-11, on top
+of the eight closed earlier. Every `streamtools/` thread is now done.
 
-| Resolved | Why |
+Read each remaining thread's **last** comment before its first. A large fraction of the
+2026-09-08 pass was self-corrected on re-reading — claims refuted, bugs downgraded to nits,
+a three-item leak list reduced to one — so the opening comment is often no longer the finding.
+
+| Resolved | Closed by |
 | --- | --- |
-| 17, 21, 38, 39 | Fixed by [#324](https://github.com/davitf/archivey/pull/324) |
-| 16 | Proposal retracted with evidence; the surviving comment rewrite landed in #324 |
-| 24 | **Refuted by its own author** — "Ignore the original comment" |
-| 50 | Corrected finding (fix a docstring, repoint one test) overtaken: the shim is deleted and the test now targets module-level `open_folder_pipeline` |
-| 52 | Fixed by [#318](https://github.com/davitf/archivey/pull/318) — confirmation streams in chunks; the unbounded `read_exact(stream, total)` is gone |
+| 17, 21, 38, 39 | [#324](https://github.com/davitf/archivey/pull/324) — Wave 1 |
+| 16, 24, 50, 52 | Retracted by their own authors, or overtaken by #318 |
+| 18, 19, 20, 35, 36, 37, 42, **45** | Parcel A ([#326](https://github.com/davitf/archivey/pull/326)) |
+| 27, 28, 29, 30, 31, 32, 33, 34 | Parcel B ([#328](https://github.com/davitf/archivey/pull/328)) |
+| 22, 23, 25, 26, 40, 41, 55 | Parcel C ([#329](https://github.com/davitf/archivey/pull/329)) |
 
-The 47 that remain, by file. `*` marks a thread whose follow-up narrowed it — usually to
-something much smaller than the opening comment claims.
+**Thread 45 was parcel E's, and parcel A closed it.** It was the third site of
+`DelegatingStream.close`'s workaround; A replaced all of them with `manual_inner_close=True`
+and found an unlisted fourth in `codecs.py` while doing it. E is a six-thread parcel now.
+
+The 24 that remain. `*` marks a thread whose follow-up narrowed it.
 
 | File | Open | Threads |
 | --- | --- | --- |
 | `backends/rar_parser.py` | 8 | 1, 2, 4, 5, 6, 7, 8, 9 |
-| `backends/rar_reader.py` | 7 | 43\*, 44\*, 45, 46\*, 47\*, 48\*, 49 |
-| `streamtools/binaryio.py` | 5 | 22, 23\*, 25\*, 26, 55 |
-| `streamtools/slice.py` | 5 | 27\*, 28\*, 29, 30, 31 |
-| `streamtools/base.py` | 3 | 18, 19, 20 |
-| `streamtools/locked.py` | 3 | 35, 36, 37\* |
-| `streamtools/shared.py` | 3 | 32\*, 33\*, 34 |
+| `backends/rar_reader.py` | 6 | 43\*, 44\*, 46\*, 47\*, 48\*, 49 |
 | `backends/sevenzip_reader.py` | 3 | 51\*, 53, 54 |
-| `streamtools/solid.py` | 2 | 40\*, 41 |
 | `volumes.py` | 2 | 12, 13 |
 | `zip_aes.py` | 2 | 14, 15 |
-| `streamtools/__init__.py` | 1 | 42\* |
 | `streams/crypto.py` | 1 | 3 |
 | `rar_detect.py` | 1 | 10 |
 | `reader_state.py` | 1 | 11 |
+
+**Nothing under `streamtools/` is left.** The remaining 24 are RAR (14), 7z (3), and the
+placement-and-odds group (7).
 
 **The four verified bugs are fixed** — [#324](https://github.com/davitf/archivey/pull/324),
 merged 2026-09-11, threads 17/21/38/39 resolved. Kept here because the PR's own review cycle
@@ -224,10 +227,11 @@ finding: the rule currently offers `# type: ignore[attr-defined]` as an example 
 | `detection-result-surface` | 0/44 | **Blocked by the ledger** — it exposes what the ledger produces. Its own proposal says so |
 | `single-file-open-time-validation` | 0/25 | Self-contained. Closes [`open-issues.md`](open-issues.md) **P15** and **P16** |
 | `seekable-gzip-and-block-writing` | 0/24 | Self-contained, no `.openspec.yaml` (predates the schema). BGZF + mgzip random access, zero new dependencies |
+| `full-count-non-seekable-sources` | 0/21 | **New, from parcel C.** Specs-first. `ensure_full_count_reads` returns non-seekable sources unchanged, so the guarantee is supplied outside `streamtools` by three unrelated mechanisms — one of which is a CPython implementation detail (`tarfile._Stream.__read`). No live failure; a boundary covered by luck |
 | `bounded-source-spooling` (#251) | 0/33 | Blocked on four `design.md` answers. Subsumes rar `§10` **#6 layer 2** and **#21** |
 | `archive-origin-reporting` (#274) | 0/? | Proposal only. Overlaps `detection-result-surface` on `ArchiveInfo` |
-| `bounded-password-confirmation` (#319) | 0/? | Merge the proposal, then implement. Closes most of **O12** |
-| `sevenzip-aes-tail-key-check` (#319) | 0/59 | After the above. Split out deliberately: the only piece resting on an empirical premise about writer padding, so the easiest to revert alone |
+| `bounded-password-confirmation` | 0/26 | In tree since #319 merged. Ready to implement; closes most of **O12** |
+| `sevenzip-aes-tail-key-check` | 0/16 | After the above. Split out deliberately: the only piece resting on an empirical premise about writer padding, so the easiest to revert alone |
 
 **Three detection changes touch the same surface.** `prefixed-archive-detection` (in flight),
 `detection-evidence-ledger`, `detection-result-surface`, plus `archive-origin-reporting` and
@@ -240,16 +244,17 @@ other three report in.**
 ## What blocks what
 
 ```
-#319 (merge) ──> bounded-password-confirmation ──> sevenzip-aes-tail-key-check ──> O12 closed
+bounded-password-confirmation ──> sevenzip-aes-tail-key-check ──> O12 closed
                                                             │
                                                             └──> seekable AES-CBC stream (thread 3)
 
-#315 threads 38, 39, 21, 17 ─────> (nothing; land now, one fix PR each)
+#315 Wave 1 + parcels A, B, C ──> DONE (31 of 55 threads resolved)
+        │
+        ├──> parcel D (rar_parser)   independent, ready
+        ├──> parcel E (rar_reader)   UNBLOCKED by A+B; build 43 on SharedView, not SlicingStream
+        └──> parcel F (placement)    ready; thread 3 <──> parcel D threads 4/5 (same decision)
 
-#315 streamtools cleanup (16-42) ──> #315 rar_reader cleanup (43-49)
-        │                                    ("this is SlicingStream rebuilt by hand"
-        │                                      needs SlicingStream settled first)
-        └──> thread 3 (dead AES-CBC class) ──> thread 15 (zip_aes via crypto module)
+full-count-non-seekable-sources ──> (nothing; specs-first, 21 tasks, no open questions)
 
 prefixed-archive-detection (31/68) ──> detection-evidence-ledger ──> detection-result-surface
                                                  │                          │
@@ -332,26 +337,34 @@ fixed red-green, plus F5–F13 from the PR's own review cycle. Thread 16 resolve
 also surfaced the two reviews now commissioned in #325, and left `src/` with zero
 `# type: ignore`.
 
-**Wave 2 — drain #315 in six independent parcels.** 47 threads left, split by file group so
-each is one agent's work and one reviewable PR. The order below is a dependency order, not a
-priority order; A must land before E.
+**Wave 2 — drain #315 in six parcels. A, B and C are done.** Three remain, and they are now
+fully independent of each other: the dependency that made E wait was A and B, and both have
+landed.
 
-| Parcel | Files | Threads | Notes |
+| Parcel | Files | Threads | State |
 | --- | --- | --- | --- |
-| **A — stream bases** | `streamtools/base.py`, `locked.py`, `__init__.py` | 18, 19, 20, 35, 36, 37\*, 42\* | **Do first.** Owns the `DelegatingStream` close/ownership model and thread 42's surviving `nearest_resume_offset` leak. Parcels C and E both rest on its outcome |
-| **B — slice + shared** | `streamtools/slice.py`, `shared.py` | 27\*, 28\*, 29, 30, 31, 32\*, 33\*, 34 | The `SlicingStream` two-classes-in-one-name question, and where clamping belongs. Independent of A |
-| **C — binaryio + solid** | `streamtools/binaryio.py`, `solid.py` | 22, 23\*, 25\*, 26, 40\*, 41, 55 | Smaller after #324. Thread 40's `_advance_to` refactor is already verified working by its own follow-up |
-| **D — RAR parser** | `backends/rar_parser.py` | 1, 2, 4, 5, 6, 7, 8, 9 | One reading pass. Mostly "explain, rename, or delete", but threads 1 and 2 are potential header-decrypt bugs. Fully independent |
-| **E — RAR reader** | `backends/rar_reader.py` | 43\*, 44\*, 45, 46\*, 47\*, 48\*, 49 | **After A and B.** Five of seven were rescoped, and 43's premise is "this is `SlicingStream` rebuilt by hand" |
-| **F — placement + odds** | `rar_detect.py`, `zip_aes.py`, `streams/crypto.py`, `volumes.py`, `reader_state.py`, `sevenzip_reader.py` | 3, 10, 11, 12, 13, 14, 15, 51\*, 53, 54 | Module placement, the dead AES-CBC class, and `volumes.py`'s per-read bisect. Independent; the placement moves are mechanical |
+| ~~A — stream bases~~ | `base.py`, `locked.py`, `__init__.py` | 18, 19, 20, 35, 36, 37, 42, 45 | **Done** — [#326](https://github.com/davitf/archivey/pull/326) |
+| ~~B — slice + shared~~ | `slice.py`, `shared.py` | 27–34 | **Done** — [#328](https://github.com/davitf/archivey/pull/328) |
+| ~~C — binaryio + solid~~ | `binaryio.py`, `solid.py` | 22, 23, 25, 26, 40, 41, 55 | **Done** — [#329](https://github.com/davitf/archivey/pull/329) |
+| **D — RAR parser** | `backends/rar_parser.py` | 1, 2, 4, 5, 6, 7, 8, 9 | **Ready.** Always was independent. Threads 1 and 2 are potential header-decrypt bugs; the rest are explain-rename-delete |
+| **E — RAR reader** | `backends/rar_reader.py` | 43\*, 44\*, 46\*, 47\*, 48\*, 49 | **Unblocked** — A and B have landed, and A already closed thread 45. Six threads, five rescoped |
+| **F — placement + odds** | `rar_detect.py`, `zip_aes.py`, `crypto.py`, `volumes.py`, `reader_state.py`, `sevenzip_reader.py` | 3, 10, 11, 12, 13, 14, 15, 51\*, 53, 54 | **Ready.** Two are maintainer decisions rather than fixes (10/14 placement, 3 overlaps D) |
+
+**E's prompt needs one edit before it goes out:** it is written as "after A and B", thread 45
+is no longer its business, and parcel B's `SlicingStream` / `SharedView` split changed the
+shape thread 43 builds against — B's own commit says *"Zip member payloads and the rapidgzip
+independent-view type test construct `SharedView`. Parcel E should too."*
 
 **Wave 2b — the two #325 reviews, in parallel with Wave 2.** Disjoint sources, and both are
 `src/`-only audits rather than changes, so they do not contend with the #315 drain for the same
 files in the way two refactors would. The typing brief's census was refreshed 2026-09-11 (S2
 and S3 closed); `exception-catchalls` needs nothing before it starts.
 
-**Wave 3 — the two unblocked OpenSpec changes.** `single-file-open-time-validation` (closes
-P15 + P16) and `seekable-gzip-and-block-writing`. Neither waits on anyone.
+**Wave 3 — the unblocked OpenSpec changes.** Four now, none waiting on anyone:
+`full-count-non-seekable-sources` (21 tasks, the newest and the one with live context — it came
+out of parcel C), `single-file-open-time-validation` (closes P15 + P16, 25),
+`bounded-password-confirmation` (26, closes most of threat-model **O12**), and
+`seekable-gzip-and-block-writing` (24).
 
 **Wave 4 — decisions, then detection.** Answer #251's four questions. Finish or park
 `prefixed-archive-detection`. Then `detection-evidence-ledger` → `detection-result-surface`
