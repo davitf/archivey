@@ -118,6 +118,87 @@ def test_read_exact_gathers_across_short_reads() -> None:
     assert read_exact(_Drip(DATA), 5) == DATA[:5]
 
 
+def test_read_exact_issues_one_read_on_a_full_count_inner() -> None:
+    """No gather loop when the first read satisfies the ask."""
+
+    class _Counting(io.BytesIO):
+        def __init__(self, data: bytes) -> None:
+            super().__init__(data)
+            self.calls = 0
+
+        def read(self, n: int | None = -1, /) -> bytes:
+            self.calls += 1
+            return super().read(n)
+
+    stream = _Counting(DATA)
+    assert read_exact(stream, 10) == DATA[:10]
+    assert stream.calls == 1
+
+
+def test_read_exact_does_not_copy_a_satisfied_read() -> None:
+    """The fast path hands back the inner's object.
+
+    Identity, not equality: an equality assertion passes just as well against a
+    copy, and copying is what this avoids — on a whole decoded 7z folder that is
+    1x peak memory rather than 3x. ``is`` is the only assertion that pins it.
+    """
+    payload = DATA[:10]
+
+    class _OneShot(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1, /) -> bytes:
+            return payload
+
+    assert read_exact(_OneShot(), 10) is payload
+
+
+class _Scripted(io.RawIOBase):
+    """Returns each scripted value in turn, counting calls. ``b""`` once exhausted."""
+
+    def __init__(self, values: list) -> None:
+        self._values = list(values)
+        self.calls = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes:
+        self.calls += 1
+        return self._values.pop(0) if self._values else b""
+
+
+def test_read_exact_stops_at_the_first_empty_read() -> None:
+    """An empty return is terminal on the call that produced it, not a retry.
+
+    A second read past EOF is wasted I/O on every source and a semantic change on
+    one that can yield data after a falsy return.
+    """
+    stream = _Scripted([b""])
+    assert read_exact(stream, 10) == b""
+    assert stream.calls == 1
+
+
+def test_read_exact_zero_does_not_touch_the_stream() -> None:
+    """``n == 0`` is answerable without I/O, and ``read(0)`` is not always free."""
+    stream = _Scripted([b"unwanted"])
+    assert read_exact(stream, 0) == b""
+    assert stream.calls == 0
+
+
+def test_read_exact_treats_none_as_eof() -> None:
+    """A non-blocking raw returns ``None``; the gather has always read that as EOF.
+
+    Scripted as None-then-data on purpose: a double that only ever returns ``None``
+    cannot tell "stopped at the falsy read" from "read again and got nothing", which
+    is the distinction this pins.
+    """
+    stream = _Scripted([None, b"hello"])
+    assert read_exact(stream, 10) == b""
+    assert stream.calls == 1
+
+
 def test_read_exact_accepts_readablestream_protocol() -> None:
     assert isinstance(OnlyReadStream(DATA), ReadableStream)
 

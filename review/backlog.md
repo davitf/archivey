@@ -37,6 +37,36 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#333 follow-up — drop `read_exact` where the receiver is the source handle.**
+  `ensure_full_count_reads` now makes every archive source full-count on both branches,
+  so `read_exact` against the source is a no-op wrapper around one `read(n)`. Of the 30
+  call sites in `src/`, roughly 15 are that shape (`zip_reader` `fp`, `sevenzip_parser`
+  `fp`, `rar_parser` `source`/`stream`, `detection_workspace`'s four handles,
+  `single_file_reader` `src`) and could become a plain `read(n)`, leaving one gather
+  policy visible instead of two.
+
+  **This is a narrow sweep, not a global policy flip, and the boundary between the two
+  is the whole point.** A wholesale replacement was considered and rejected: the
+  boundary normalizes the *source*, not every stream a parser reads from. The remaining
+  sites read something else, and two of them are not interchangeable —
+  `sevenzip_pipeline.py:435` gathers a whole folder from `open_folder_pipeline(...)`, a
+  **decoder chain**, and `rar_parser.py:1915` may be reading through a
+  `_HeaderDecryptStream`. For a decoder a mid-stream short is the deliver-then-raise
+  shape, i.e. terminal, which is exactly the ADR 0014 distinction; swapping in
+  `read(n)` there changes behaviour. `slice.py:250` and `full_count.py:95` are
+  load-bearing by construction. The slice/view sites (`SharedView`, `SlicingStream`)
+  are equivalent in practice but read from something whose contract is
+  short-means-terminal, so they are not obviously the source's guarantee to lean on.
+
+  Do it with a stated rule — *the source is full-count; a view or a decoder is not
+  yours to assume* — and site-by-site, not with a regex. The performance argument for
+  the sweep is already banked separately: `read_exact` grew a single-read fast path in
+  the same PR as this entry, which is where the copies were.
+
+  Worth pairing with: whether `read_exact`'s docstring rule ("use this only where the
+  caller will not read again") is still the right way to describe when to reach for it,
+  once the source-handle sites are gone and what remains is decoders and views.
+
 - **#330 M12 secondary — no non-seekable double fails `tell()`.** Found while retiring
   `FakeNonSeekable` from `testing-contract`. Every non-seekable double in `tests/`
   (`NonSeekableBytesIO`, and the ad-hoc ones in `test_binaryio.py`) raises
