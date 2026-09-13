@@ -328,6 +328,10 @@ when reality or a better design wins.
 
 ## 4. Testing expectations
 
+Review whether the change *has* the right tests. Do **not** re-run the suite as
+part of the review unless you are reproducing a finding or checking a runtime
+claim (§10). Implementer + CI already ran the gates.
+
 - [ ] Prefer **behavior** assertions on the public API; unit-test stream/parser/codec
   internals when they are shared foundations
 - [ ] Corrupt, truncated, encrypted, wrong-password, empty members, weird names,
@@ -455,8 +459,8 @@ Do **not** read the OpenSpec change, design notes, or long PR rationale yet.
 
 - [ ] Scope: `git diff main...HEAD` (or the paths / PR the author named); note size
   (>400 lines? ask to split)
-- [ ] CI / local gates red or green (`ruff`, pyrefly/ty, pytest) — enough to know
-  whether failures are in-scope
+- [ ] CI status if posted (`ruff`, pyrefly/ty, pytest) — glance only, do **not**
+  re-run; enough to know whether failures are in-scope (§10)
 - [ ] Linked artifact **names** only (issue #, `openspec/changes/<name>/`,
   `review/` finding ID) so you know what to open in pass 2 — not the prose yet
 
@@ -499,8 +503,8 @@ Now open the narrative and contracts:
 3. Spec ↔ code ↔ docs: match, intentional revision, or **pause-and-ask** (§3) —
    including “self-contained and clear, but disagrees with the capability scenario
    / invents undecided behavior / breaks format parity.”
-4. Gates relevant to the change (targeted pytest; three configs before push when
-   behavior depends on extras/versions).
+4. Do **not** re-run the gates. Run a command only to reproduce or test a
+   specific claim; then say what you ran (§10).
 5. Write feedback in the **three-block output shape (§0)** — briefing, implementor
    handoff, maintainer decisions — with skill severity labels; put pause-and-ask items
    in block 3, not silent resolutions.
@@ -624,12 +628,17 @@ still open / superseded — before any new findings. Say which HEAD you reviewed
 made an earlier review obsolete, say so explicitly rather than leaving two contradictory
 reviews for the responder to reconcile.
 
-### Say what you actually ran
+### Do not re-run the gates
 
-Gates get **re-run, not copied from the PR body**, and the review says which. "CI green on
-the PR" and "I ran `[all]` locally and got 2334/23" are different claims; conflating them
-is how a review inherits a failure it could have caught. The same applies to a "does not
-reproduce" — show what you ran.
+The implementer and CI already ran `check.sh` / `test.sh`. A review does **not**
+re-run ruff, pyrefly, ty, or the test suite. Glance at CI in logistics (§8) only
+enough to know whether failures are in-scope. The Snapshot "gates if known" line
+is that status — not a claim you re-ran them.
+
+Run a command only when the review itself needs a result CI cannot give:
+reproducing a suspected bug, checking a runtime claim, confirming a "does not
+reproduce." When you do, say exactly what you ran. A "does not reproduce" with
+no command is still a copied claim.
 
 ### Attribution — make it obvious an agent wrote this
 

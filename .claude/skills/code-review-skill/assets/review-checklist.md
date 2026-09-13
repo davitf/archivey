@@ -8,7 +8,8 @@ design / long PR rationale before the cold code pass.
 ## Logistics (≤1 min) — before either pass
 
 - [ ] Scope: diff vs `main` (or named paths); size (<400 lines ideal, else ask to split)
-- [ ] CI / local gates (`ruff`, pyrefly/ty, pytest)
+- [ ] CI status if posted (`ruff`, pyrefly/ty, pytest) — glance only, do not re-run
+  (addendum §10)
 - [ ] Linked artifact **names** only (issue #, `openspec/changes/<name>/`, `review/` ID)
   — not the prose yet
 
