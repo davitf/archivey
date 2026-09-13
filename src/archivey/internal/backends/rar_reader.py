@@ -259,6 +259,36 @@ def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
     return hashes
 
 
+def _rar_member_extra(info: RarMemberInfo) -> tuple[dict[str, object], str | None]:
+    """Build ``ArchiveMember.extra`` and the symlink/junction target."""
+    extra: dict[str, object] = {}
+    link_target: str | None = None
+    if info.file_redir is not None:
+        link_target = info.file_redir[2]
+        if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
+            extra[EXTRA_IS_JUNCTION] = True
+    if info.is_file_version_history():
+        assert info.file_version is not None
+        extra["rar.file_version"] = info.file_version
+    if info.extract_version is not None:
+        extra[EXTRA_RAR_EXTRACT_VERSION] = info.extract_version
+    if _crc_is_tweaked(info):
+        # Stored digests are key-tweaked; keep them out of ``hashes`` (see
+        # ``_member_hashes``) but expose the raw values for callers / forward-verify.
+        if info.crc32 is not None:
+            extra["rar.tweaked_crc32"] = info.crc32
+        if info.blake2sp_hash is not None:
+            extra["rar.tweaked_blake2sp"] = info.blake2sp_hash
+    host_os = info.host_os
+    # Unix (_RAR_HOST_OS_UNIX): RAR3 Unix, and the parser maps RAR5 Unix→3.
+    # That writer's creation slot is st_ctime, not birth; Win32
+    # (_RAR_HOST_OS_WIN32) and the other RAR3 hosts store a creation time.
+    # Omit the key when there is no created value or host_os is unknown.
+    if info.ctime is not None and host_os is not None:
+        extra[EXTRA_RAR_CREATED_IS_CTIME] = host_os == _RAR_HOST_OS_UNIX
+    return extra, link_target
+
+
 def _tweaked_hash_key(enc: RarEncryptionInfo, password: str) -> bytes | None:
     """Return HashKey for ``password``, or ``None`` when the password is provably wrong.
 
@@ -859,39 +889,13 @@ class RarReader(BaseArchiveReader):
             if info.orig_filename is not None
             else info.filename.encode("utf-8", errors="surrogateescape")
         )
-        link_target: str | None = None
-        extra: dict[str, object] = {}
-        tweaked = _crc_is_tweaked(info)
-        if info.file_redir is not None:
-            link_target = info.file_redir[2]
-            if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
-                extra[EXTRA_IS_JUNCTION] = True
-        if version_history:
-            assert info.file_version is not None
-            extra["rar.file_version"] = info.file_version
-        if info.extract_version is not None:
-            extra[EXTRA_RAR_EXTRACT_VERSION] = info.extract_version
-        if tweaked:
-            # Stored digests are key-tweaked; keep them out of ``hashes`` (see
-            # ``_member_hashes``) but expose the raw values for callers / forward-verify.
-            if info.crc32 is not None:
-                extra["rar.tweaked_crc32"] = info.crc32
-            if info.blake2sp_hash is not None:
-                extra["rar.tweaked_blake2sp"] = info.blake2sp_hash
-
+        extra, link_target = _rar_member_extra(info)
         host_os = info.host_os
         create_system = (
             _RAR_HOST_OS_TO_CREATE_SYSTEM.get(host_os, CreateSystem.UNKNOWN)
             if host_os is not None
             else CreateSystem.UNKNOWN
         )
-        # Unix (_RAR_HOST_OS_UNIX): RAR3 Unix, and the parser maps RAR5 Unix→3.
-        # That writer's creation slot is st_ctime, not birth; Win32
-        # (_RAR_HOST_OS_WIN32) and the other RAR3 hosts store a creation time.
-        # Omit the key when there is no created value or host_os is unknown.
-        if info.ctime is not None and host_os is not None:
-            extra[EXTRA_RAR_CREATED_IS_CTIME] = host_os == _RAR_HOST_OS_UNIX
-
         mode: int | None = None
         windows_attrs: int | None = None
         if info.mode is not None:
@@ -925,38 +929,50 @@ class RarReader(BaseArchiveReader):
             extra=extra,
             _raw=info,
         )
+        # Attaches onto the member and can raise under a strict collector.
+        self._emit_member_diagnostics(info, member)
+        return member
+
+    def _emit_member_diagnostics(
+        self, info: RarMemberInfo, member: ArchiveMember
+    ) -> None:
+        """Name-normalization and tweaked-digest diagnostics.
+
+        Both attach onto ``member`` (``attach_to_member=True``) and can raise
+        under a strict collector, so this must run before ``_to_member`` returns.
+        """
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
-            presented_name=presented,
+            presented_name=_presented_filename(info),
             archive_name=self._archive_name,
         )
-        if tweaked and self._unrar_password is None:
-            # No password → cannot forward-transform; surface as unverifiable digests.
-            for algo, present in (
-                (HashAlgorithm.CRC32, info.crc32 is not None),
-                (HashAlgorithm.BLAKE2SP, info.blake2sp_hash is not None),
-            ):
-                if not present:
-                    continue
-                self._diagnostics_collector.emit(
-                    code=DiagnosticCode.DIGEST_UNVERIFIABLE,
-                    message=(
-                        f"Cannot verify tweaked RAR5 {algo} without a password "
-                        f"(ConvertHashToMAC); skipping integrity check for it."
-                    ),
-                    context=DigestContext(
-                        archive_name=self._archive_name,
-                        member_name=member.name,
-                        member_id=member._member_id,
-                        algorithm=algo.value,
-                        reason="tweaked_checksum",
-                    ),
-                    member=member,
-                    attach_to_member=True,
-                    logger=integrity_logger,
-                )
-        return member
+        if not _crc_is_tweaked(info) or self._unrar_password is not None:
+            return
+        # No password → cannot forward-transform; surface as unverifiable digests.
+        for algo, present in (
+            (HashAlgorithm.CRC32, info.crc32 is not None),
+            (HashAlgorithm.BLAKE2SP, info.blake2sp_hash is not None),
+        ):
+            if not present:
+                continue
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                message=(
+                    f"Cannot verify tweaked RAR5 {algo} without a password "
+                    f"(ConvertHashToMAC); skipping integrity check for it."
+                ),
+                context=DigestContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    algorithm=algo.value,
+                    reason="tweaked_checksum",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
 
     @staticmethod
     def _member_type(info: RarMemberInfo) -> MemberType:
