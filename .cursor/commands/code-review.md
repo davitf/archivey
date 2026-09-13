@@ -67,7 +67,7 @@ Short and scannable (about half a screen unless the change is huge):
 
 - **What this change is** — 2–4 plain-language sentences (intent, areas touched,
   behaviour delta); no assumed PR/OpenSpec familiarity
-- **Snapshot** — size, gates if known, **Verdict** (✅ Approve / 💬 Comment /
+- **Snapshot** — size, gates if known (CI status, not re-run), **Verdict** (✅ Approve / 💬 Comment /
   🔄 Request Changes)
 - **Main points** — ranked one-liners for 🔴/🟡 only (severity + gist; no essays)
 - **What’s fine** (optional, 1–3 bullets)

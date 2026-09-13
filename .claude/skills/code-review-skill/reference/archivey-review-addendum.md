@@ -397,7 +397,7 @@ For commissioned deep reviews (not ordinary PR review), inherit
 [`review/README.md`](../../../../review/README.md):
 
 1. **Baseline first** — record green gates (pytest / skips, pyrefly, ty, ruff) and
-   which dependency config.
+   which dependency config. Overrides §10's no-re-run default — no CI run to inherit.
 2. **VISION ranking** — order findings by load-bearing claims (§1).
 3. **Deliverable shape** — `SUMMARY.md` (headline + severity table + status), theme
    files, `QUESTIONS.md` for maintainer decisions, and a **“what is actually fine”**
@@ -460,7 +460,8 @@ Do **not** read the OpenSpec change, design notes, or long PR rationale yet.
 - [ ] Scope: `git diff main...HEAD` (or the paths / PR the author named); note size
   (>400 lines? ask to split)
 - [ ] CI status if posted (`ruff`, pyrefly/ty, pytest) — glance only, do **not**
-  re-run; enough to know whether failures are in-scope (§10)
+  re-run; enough to know whether failures are in-scope. Not posted → say so, don't
+  infer (§10)
 - [ ] Linked artifact **names** only (issue #, `openspec/changes/<name>/`,
   `review/` finding ID) so you know what to open in pass 2 — not the prose yet
 
@@ -503,8 +504,8 @@ Now open the narrative and contracts:
 3. Spec ↔ code ↔ docs: match, intentional revision, or **pause-and-ask** (§3) —
    including “self-contained and clear, but disagrees with the capability scenario
    / invents undecided behavior / breaks format parity.”
-4. Do **not** re-run the gates. Run a command only to reproduce or test a
-   specific claim; then say what you ran (§10).
+4. Run a command only to reproduce or test a specific claim — not to re-run the
+   gates — and then say exactly what you ran (§10).
 5. Write feedback in the **three-block output shape (§0)** — briefing, implementor
    handoff, maintainer decisions — with skill severity labels; put pause-and-ask items
    in block 3, not silent resolutions.
@@ -639,6 +640,13 @@ Run a command only when the review itself needs a result CI cannot give:
 reproducing a suspected bug, checking a runtime claim, confirming a "does not
 reproduce." When you do, say exactly what you ran. A "does not reproduce" with
 no command is still a copied claim.
+
+**CI not posted** (unpushed, or still running): the Snapshot line says
+`gates: CI pending`. Don't infer a result, don't stand in for CI — ask the author
+to push.
+
+**Exception — commissioned `review/` briefs** (§6): baseline first still holds.
+No CI run to inherit, and the skip count is itself evidence.
 
 ### Attribution — make it obvious an agent wrote this
 
