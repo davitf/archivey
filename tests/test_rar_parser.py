@@ -23,7 +23,7 @@ _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 def _fixture(name: str) -> Path:
     path = _FIXTURES / name
     if not path.is_file():
-        pytest.skip(f"missing vendored fixture {name}")
+        pytest.fail(f"committed fixture {name} is missing")
     return path
 
 
@@ -50,8 +50,9 @@ def test_header_decrypt_tell_is_ciphertext_cursor_not_plaintext() -> None:
     assert first == plaintext[:7]
     assert len(stream._buf) == 9
     assert stream.tell() == 16
-    # The counterfactual from thread 1: accounting for leftover plaintext.
-    assert stream.tell() - len(stream._buf) == 7
+    # Thread 1 counterfactual: tell() - len(_buf) would be 7, the plaintext
+    # offset, which is the wrong data_offset for the next salt/IV. The walk
+    # pin is test_encrypted_header_plaintext_tell_breaks_the_walk.
 
     rest = stream.read(9)
     assert rest == plaintext[7:16]
@@ -121,7 +122,8 @@ def test_rar3_sha1_hashes_then_mutates_bytearray_seed() -> None:
 
     ``dpos`` starts at the first block boundary in this chunk, so with an empty
     hasher the first 64 bytes stay put and the second block is rewritten.
-    ``bytes`` input is not mutated.
+    ``bytes`` input cannot be mutated and must fail loud — a silent skip would
+    derive a different key.
     """
     seed = bytearray(range(128))
     original = bytes(seed)
@@ -133,9 +135,9 @@ def test_rar3_sha1_hashes_then_mutates_bytearray_seed() -> None:
 
     frozen = bytes(range(128))
     hasher_b = _Rar3Sha1()
-    hasher_b.update(frozen)
+    with pytest.raises(TypeError, match="mutable seed"):
+        hasher_b.update(frozen)
     assert frozen == bytes(range(128))
-    assert hasher_b.digest() == hashlib.sha1(frozen).digest()
 
 
 def test_rar3_sha1_short_seed_is_not_mutated() -> None:
@@ -155,7 +157,8 @@ def test_rar3_s2k_matches_rarfile_for_a_long_password() -> None:
     """Long password+salt (> 64 bytes) exercises the mutation path; the
     derived key/IV must still match rarfile's ``rar3_s2k``.
     """
-    rarfile = pytest.importorskip("rarfile")
+    import rarfile
+
     password = "x" * 40  # 80 UTF-16LE bytes + 8-byte salt > 64
     salt = bytes(range(8))
     assert _rar3_s2k(password, salt) == rarfile.rar3_s2k(password, salt)

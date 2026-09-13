@@ -786,10 +786,13 @@ class _Rar3Sha1:
     seed matches WinRAR.
 
     RAR3 string-to-key hashes the same ``password + salt`` seed 0x4000×16
-    times. After the first block-crossing round the seed itself is scrambled,
-    and later rounds hash that scrambled buffer. Short passwords (seed ≤ 64
-    bytes, including the 8-byte salt) never hit the path. Ported from
-    ``rarfile`` 4.3 ``Rar3Sha1``; there is no non-buggy caller.
+    times. Mutation is not "the first time the seed crosses 64 bytes": it
+    fires only when this ``update`` contains a complete SHA-1 block at a
+    hasher block boundary (``dpos + 64 <= len(data)``). A 65-byte seed never
+    satisfies that, even though ``len(data) > 64``; a 128-byte seed does on
+    the first call. Seed ≤ 64 bytes (including the 8-byte salt) never enters
+    ``_corrupt``. Ported from ``rarfile`` 4.3 ``Rar3Sha1``; there is no
+    non-buggy caller.
     """
 
     _BLK_BE = struct.Struct(b">16L")
@@ -805,9 +808,12 @@ class _Rar3Sha1:
         bufpos = self._nbytes & 63
         self._nbytes += len(data)
         if len(data) > 64:
-            # First complete SHA-1 block *boundary* in this chunk. The prefix
-            # that filled the previous partial block is already in hashlib and
-            # is not rewritten.
+            # Unrar's hash_process memcpy's the first ``64 - bufpos`` bytes
+            # into its own ``ctx->buffer`` and transforms *there*, so the
+            # caller's prefix is never rewritten. That includes ``bufpos ==
+            # 0``: a whole first block is copied internally, not "no prefix".
+            # Only later ``hash_transform(state, &data[i])`` calls mutate the
+            # caller's buffer in place. ``dpos`` is that first in-place block.
             dpos = self.block_size - bufpos
             while dpos + self.block_size <= len(data):
                 self._corrupt(data, dpos)
@@ -818,7 +824,11 @@ class _Rar3Sha1:
 
     def _corrupt(self, data: bytes | bytearray, dpos: int) -> None:
         if not isinstance(data, bytearray):
-            return
+            raise TypeError(
+                "_Rar3Sha1 needs a mutable seed: the WinRAR KDF mutates its "
+                "block buffer in place, and a bytes seed silently derives a "
+                "different key."
+            )
         ws = list(self._BLK_BE.unpack_from(data, dpos))
         for t in range(16, 80):
             tmp = (
