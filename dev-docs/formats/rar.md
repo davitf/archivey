@@ -282,6 +282,35 @@ password and `cryptography` installed, with no `unrar` involved. Without a passw
 `EncryptionError`; with a password and no crypto backend, `PackageNotInstalledError`. A
 password *list* is iterated correctly on both generations.
 
+Each encrypted header is its own AES-CBC message (RAR3: 8-byte salt; RAR5: 16-byte IV)
+padded to a 16-byte block. `_HeaderDecryptStream.tell()` is the **ciphertext** cursor,
+including that padding — that is the correct `data_offset`, because packed data and the
+next header's salt/IV start after the padded ciphertext, not after the logical
+`header_size`. Leftover bytes in `_buf` are the unread tail of the last decrypted block.
+Mid-header that tail is still-owed plaintext; after `header_size` it is AES padding.
+Either way, subtracting `len(_buf)` from `tell()` is wrong: on the committed
+`encrypted_header__.rar` / `encrypted_header__rar4.rar` fixtures every FILE
+`header_size % 16 != 0`, and that counterfactual fails the parse
+(`CorruptionError` / `EncryptionError`). The decrypt stream has no `seek`; packed-data
+skips go through the underlying `source` after the wrapper is discarded. CBC cannot
+reposition without resetting the IV chain, and the parser never asks it to.
+
+The decrypt *stage* (`open_aes_decrypt_stage`) is shared with 7z; the pull stream
+(`AesDecryptStream` in `streams/crypto.py`) is not a replacement. That class closes
+its source, has no `tell`, allows unbounded reads, and zero-pads a short last block
+on `finalize` (7z). Header parsing needs the opposite. Whether `AesDecryptStream`
+itself should be removed or fixed is #315 thread 3 — do not wire headers
+through it until that is decided.
+
+``_HeaderDecryptStream.read`` has no 8 KiB cap. Per-header size is the
+caller's: RAR5 refuses `hdrlen > _RAR5_MAX_HEADER` (2 MiB) before the body
+read; RAR3 `header_size` is a 16-bit field. A tighter cap here used to reject
+a well-formed encrypted header as `EncryptionError("…wrong password?")`.
+Unbounded `read(-1)` is still refused. The encrypted wrong-password path
+decrypts at most one garbage-sized header (then CRC fails and the walk
+rewrites that as `EncryptionError`); that is strictly less work than the
+unencrypted walk already allows.
+
 **`encoding=` is not applied.** RAR names are decoded by the parser, so the argument is
 dropped — but not silently: supplying it emits `ENCODING_ARGUMENT_UNUSED`, which is the
 interface-wide answer for an argument a format cannot honour, and a structured diagnostic
@@ -521,6 +550,12 @@ second engine would be an explicit opt-in, never a probe of `PATH` (threat-model
 downloads a checksum-pinned RAR 6.24 into the user cache purely to build the RAR4 fixtures.
 Any RAR4 archive in the wild today was written by something older than a current WinRAR.
 
+**RAR3 header/file encryption KDF is not stock SHA-1.** WinRAR mutates its SHA-1 block
+buffer in place after hashing it. `hashlib.sha1` does not, so `_Rar3Sha1` hashes
+correctly and then corrupts a reused `bytearray` seed so the next of the 0x4000×16
+rounds matches WinRAR. Seed ≤ 64 bytes (a password of 28 UTF-16 code units plus the
+8-byte salt) never hits it. [`known-issues.md`](../known-issues.md).
+
 **The writer being trialware is also why the corpus fixtures are committed.** The declarative corpus builds each entry
 in every format it declares, and eight entries declare `rar`. All eight ran **nowhere**:
 building them needs the trialware writer, which CI does not install, so `skip_unless_runnable`
@@ -667,6 +702,9 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Read QO, seek back, skip matching FILE headers on the walk | Same table extract uses. Consecutive cached spans chain in memory (one seek per run). AUTO omits small files from QO; those still list from their local headers. `CMT` after MAIN is a normal SERVICE on that walk. Packed QO / `-hp` fall back to a full FILE walk. Wrapping QO for `unrar` at list time would violate listing-without-unrar | Validating QO against a full FILE walk *at list time* (pays the seeks QO exists to avoid). Build-time `use_qo=False` comparison is the standing pin |
 | `CompressionAlgorithm.RAR` for M1–M5 (`level` 1–5); extract version in `extra["rar.extract_version"]` | The header identifies the algorithm, so `UNKNOWN` claimed we could not tell. `ContainerFormat.RAR` and `CompressionAlgorithm.RAR` are homonyms (container vs codec), not a reason to invent `RAR_COMPRESSION` / `RARLAB` | Putting 15/20/29/50 in `level`; dropping M1–M5 from `level` |
 | No `unrar x` tempdir cache for solid random `open()` | `AccessCost.SOLID` and per-open decode are the honest signals; a tempdir extraction amortizes work the caller cannot see or bound (**#8**) | `unrar x` into a managed temp directory to serve later random reads from disk |
+| Encrypted-header `tell()` is the ciphertext cursor; leftover `_buf` is AES padding | `data_offset` must skip the padded ciphertext so the next salt/IV is aligned. Subtracting leftover plaintext lands in padding — measured on both `encrypted_header__*.rar` fixtures, where every FILE `header_size % 16 != 0` | Reporting a logical plaintext offset from `tell()` |
+| No 8 KiB cap on `_HeaderDecryptStream.read`; callers use the format's own header limit | RAR5 already refuses `hdrlen > _RAR5_MAX_HEADER` (2 MiB) before the body read; RAR3 `header_size` is a uint16. The encrypted wrong-password path decrypts one garbage header then raises `EncryptionError` — strictly less than the unencrypted walk already allows. A tighter cap rejected a legitimate header as wrong-password. Unbounded `read(-1)` stays refused. Maintainer (2026-09-13): use each format's unencrypted limit; delete the 8 KiB branch | Keep 8 KiB and split the error (`CorruptionError` would abort password iteration); a second cap of 2 MiB inside `read` |
+| Keep `_HeaderDecryptStream`; share only the AES *stage* with `crypto.py` | Header walk needs a non-owning ciphertext `tell`, exact 16-byte CBC reads, and must not close the archive or 7z-pad a short final block. `AesDecryptStream` does the opposite. #315 thread 3 (parcel F) owns whether that class stays | Wrapping headers in `open_aes_decrypt_stream`; replacing `_Readable` with `BinaryIO` / a streamtools base |
 
 ## 7. Open questions
 

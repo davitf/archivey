@@ -62,9 +62,18 @@ from archivey.internal.timestamps import filetime_to_datetime
 
 
 class _Readable(Protocol):
+    """Header-walk surface: sequential ``read`` plus a ciphertext ``tell``.
+
+    Both the archive ``BinaryIO`` and :class:`_HeaderDecryptStream` provide this.
+    It is not ``BinaryIO``: the decrypt stream is not an ``IOBase`` (no
+    ``readinto`` / ``close`` / ``writable``), and the walk never seeks it —
+    packed-data skips go through the underlying ``source`` so AES-CBC state is
+    not asked to reposition. streamtools bases either close the inner stream
+    or have no ciphertext ``tell``.
+    """
+
     def read(self, n: int = -1, /) -> bytes: ...
     def tell(self) -> int: ...
-    def seek(self, offset: int, whence: int = 0, /) -> int: ...
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +316,7 @@ def parse_rar_archive(
     points at a usable QO. Tests compare the two listings; production always
     leaves the default.
     """
-    return _parse_rar_one(
+    return _parse_rar_volume(
         source,
         password=password,
         volume_index=0,
@@ -335,7 +344,7 @@ def parse_rar_volumes(
     merged: RarArchive | None = None
     base_offset = 0
     for index, volume in enumerate(volumes):
-        part = _parse_rar_one(
+        part = _parse_rar_volume(
             volume,
             password=password,
             volume_index=index,
@@ -408,7 +417,7 @@ def _append_member(members: list[RarMemberInfo], member: RarMemberInfo) -> None:
     members.append(member)
 
 
-def _parse_rar_one(
+def _parse_rar_volume(
     source: BinaryIO,
     *,
     password: str | bytes | None,
@@ -416,6 +425,16 @@ def _parse_rar_one(
     allow_continuation: bool,
     use_qo: bool = True,
 ) -> RarArchive:
+    """Parse one volume — one seekable source — into a :class:`RarArchive`.
+
+    ``parse_rar_archive`` calls this for a single-file archive (volume index 0).
+    ``parse_rar_volumes`` calls it once per volume and merges split members.
+    ``volume_index`` is the 0-based position in that set, not a RAR format
+    version: RAR3-on-disk is ``archive.version == 4``, RAR5 is ``5``.
+    ``allow_continuation`` is False on the first volume so a ``split_before``
+    member is refused there ("Need first volume") rather than listed as a
+    fragment.
+    """
     start = source.tell()
     version, sfx_offset = _find_sfx_header(source, start)
     source.seek(start + sfx_offset)
@@ -676,11 +695,38 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
 
 
 class _HeaderDecryptStream:
-    """Decrypt subsequent header bytes with AES-CBC; seek/tell pass through.
+    """Decrypt one encrypted RAR header with AES-CBC.
 
-    ``seek`` clears the decrypt buffer. Do not prefetch plaintext then rewind:
-    ``tell`` is the ciphertext cursor, so a plaintext over-read leaves the
-    underlying stream ahead of the logical header position.
+    Each encrypted header is its own CBC message: RAR3 prefixes an 8-byte salt,
+    RAR5 a 16-byte IV, then ciphertext padded to 16-byte blocks. ``read`` returns
+    plaintext; leftover bytes in ``_buf`` are the unread tail of the last
+    decrypted block. Mid-header, that tail is still-owed plaintext. After the
+    walk has consumed ``header_size``, it is AES padding — not bytes this header
+    still owes. Either way ``tell`` is the ciphertext cursor (see below).
+
+    ``tell`` is the underlying **ciphertext** cursor, including unread leftover.
+    After a full header read, ``data_offset`` needs that position so the next
+    salt/IV (or packed data) starts on a block boundary. Subtracting
+    ``len(_buf)`` would report the logical plaintext offset and land inside the
+    padding; the next header then decrypts as garbage.
+
+    There is no ``seek``. CBC state cannot reposition, and the parser never
+    asks: after the header is consumed this wrapper is discarded and packed-data
+    skips go through ``source``. Do not prefetch plaintext and rewind — that is
+    why :func:`_read_rar5_block` reads the size vint byte-at-a-time.
+
+    Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`. That wrapper
+    closes its source, has no ciphertext ``tell``, allows unbounded reads, and
+    ``finalize``-pads a short last block with zeros (the 7z convention). Header
+    parsing needs a non-owning cursor, ``read_exact`` of each AES block, and a
+    reject for ``read(-1)``. The decrypt *stage* is shared; the pull stream is
+    not.
+
+    ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the
+    caller already bounds the ask. RAR5 refuses ``hdrlen > _RAR5_MAX_HEADER``
+    (2 MiB) before the body ``read_exact``; RAR3 ``header_size`` is a 16-bit
+    field (max 65 535). A tighter 8 KiB cap here used to reject a well-formed
+    header as ``wrong password?``.
     """
 
     def __init__(self, source: BinaryIO, key: bytes, iv: bytes) -> None:
@@ -689,19 +735,17 @@ class _HeaderDecryptStream:
         self._buf = bytearray()
 
     def tell(self) -> int:
+        # Ciphertext position, not plaintext-consumed. Leftover ``_buf`` is the
+        # unread tail of the last decrypted block (still-owed mid-header; AES
+        # padding after ``header_size``). See the class docstring. Measured:
+        # every FILE header on ``encrypted_header__.rar`` /
+        # ``encrypted_header__rar4.rar`` has ``header_size % 16 != 0``, and
+        # ``tell() - len(_buf)`` fails the parse.
         return self._source.tell()
-
-    def seek(self, offset: int, whence: int = 0) -> int:
-        self._buf.clear()
-        return self._source.seek(offset, whence)
 
     def read(self, n: int = -1) -> bytes:
         if n is None or n < 0:
             raise CorruptionError("Unbounded read on encrypted RAR header stream")
-        if n > 8 * 1024:
-            raise CorruptionError(
-                "Encrypted RAR header read too large — wrong password?"
-            )
         if n <= len(self._buf):
             out = bytes(self._buf[:n])
             del self._buf[:n]
@@ -733,22 +777,45 @@ class _HeaderDecryptStream:
 
 
 class _Rar3Sha1:
-    """Emulate the buggy SHA-1 used by RAR3 key derivation."""
+    """SHA-1 plus the WinRAR 3.x KDF buffer-mutation bug.
+
+    WinRAR's SHA-1 runs the message schedule in place on its 64-byte block
+    buffer, then writes the expanded words back little-endian. ``hashlib.sha1``
+    does not mutate its input, so the digest of *this* ``update`` is correct —
+    and then, when ``data`` is a ``bytearray`` containing a complete SHA-1 block
+    at a block boundary (``dpos`` skips the already-absorbed prefix), this class
+    applies the same in-place corruption so the *next* ``update`` of a reused
+    seed matches WinRAR.
+
+    RAR3 string-to-key hashes the same ``password + salt`` seed 0x4000×16
+    times. Mutation is not "the first time the seed crosses 64 bytes": it
+    fires only when this ``update`` contains a complete SHA-1 block at a
+    hasher block boundary (``dpos + 64 <= len(data)``). A 65-byte seed never
+    satisfies that, even though ``len(data) > 64``; a 128-byte seed does on
+    the first call. Seed ≤ 64 bytes (including the 8-byte salt) never enters
+    ``_corrupt``. Ported from ``rarfile`` 4.3 ``Rar3Sha1``; there is no
+    non-buggy caller.
+    """
 
     _BLK_BE = struct.Struct(b">16L")
     _BLK_LE = struct.Struct(b"<16L")
     block_size = 64
 
-    def __init__(self, *, rarbug: bool = False) -> None:
+    def __init__(self) -> None:
         self._md = hashlib.sha1()
         self._nbytes = 0
-        self._rarbug = rarbug
 
     def update(self, data: bytes | bytearray) -> None:
         self._md.update(data)
         bufpos = self._nbytes & 63
         self._nbytes += len(data)
-        if self._rarbug and len(data) > 64:
+        if len(data) > 64:
+            # Unrar's hash_process memcpy's the first ``64 - bufpos`` bytes
+            # into its own ``ctx->buffer`` and transforms *there*, so the
+            # caller's prefix is never rewritten. That includes ``bufpos ==
+            # 0``: a whole first block is copied internally, not "no prefix".
+            # Only later ``hash_transform(state, &data[i])`` calls mutate the
+            # caller's buffer in place. ``dpos`` is that first in-place block.
             dpos = self.block_size - bufpos
             while dpos + self.block_size <= len(data):
                 self._corrupt(data, dpos)
@@ -759,7 +826,11 @@ class _Rar3Sha1:
 
     def _corrupt(self, data: bytes | bytearray, dpos: int) -> None:
         if not isinstance(data, bytearray):
-            return
+            raise TypeError(
+                "_Rar3Sha1 needs a mutable seed: the WinRAR KDF mutates its "
+                "block buffer in place, and a bytes seed silently derives a "
+                "different key."
+            )
         ws = list(self._BLK_BE.unpack_from(data, dpos))
         for t in range(16, 80):
             tmp = (
@@ -773,10 +844,14 @@ class _Rar3Sha1:
 
 
 def _rar3_s2k(password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
-    """Derive AES-128 key + IV for RAR3 header/file encryption."""
+    """Derive AES-128 key + IV for RAR3 header/file encryption.
+
+    Uses :class:`_Rar3Sha1` so a long ``password + salt`` seed is mutated between
+    rounds the way WinRAR's SHA-1 mutates its block buffer.
+    """
     wstr = _normalize_password_utf16le(password)
     seed = bytearray(wstr + salt)
-    h = _Rar3Sha1(rarbug=True)
+    h = _Rar3Sha1()
     iv = bytearray()
     for i in range(16):
         for j in range(0x4000):
@@ -924,15 +999,18 @@ def _decode_rar3_unicode_name(std_name: bytes, encdata: bytes) -> str | None:
 
 
 def _fix_rar3_astral_truncation(unicode_name: str, std_name: bytes) -> str:
-    """Recover non-BMP characters truncated by the RAR3 Unicode name compressor.
+    """Recover non-BMP (astral) characters truncated by the RAR3 Unicode name compressor.
 
-    RAR 2.9–4 encode filenames as compressed UTF-16, which cannot represent characters
-    outside the Basic Multilingual Plane: an emoji like ``😀`` (U+1F600) is stored as a
-    single truncated code unit (U+F600, in the Private Use Area) instead of a surrogate
-    pair. The legacy 8-bit name field carries the same name — commonly as UTF-8 — so where
-    the decompressed name shows a surrogate/PUA code unit exactly ``0x10000`` below the
-    8-bit name's character, prefer the 8-bit decoding. (Workaround ported from the v1
-    reader's ``get_non_corrupted_filename``.)
+    *Astral* is the usual Unicode term for a code point above the Basic
+    Multilingual Plane — U+10000 and up, stored as a UTF-16 surrogate pair.
+
+    RAR 2.9–4 encode filenames as compressed UTF-16, which cannot represent those
+    characters: an emoji like ``😀`` (U+1F600) is stored as a single truncated
+    code unit (U+F600, in the Private Use Area) instead of a surrogate pair. The
+    legacy 8-bit name field carries the same name — commonly as UTF-8 — so where
+    the decompressed name shows a surrogate/PUA code unit exactly ``0x10000``
+    below the 8-bit name's character, prefer the 8-bit decoding. (Workaround
+    ported from the v1 reader's ``get_non_corrupted_filename``.)
     """
     try:
         utf8_name = std_name.decode("utf-8")
@@ -1907,8 +1985,9 @@ def _read_rar5_block(
     data_offset, add_size, extra_size)`` or ``None`` at EOF.
 
     Reads the size vint byte-at-a-time rather than prefetching a large window and
-    seeking back: rewind is unsafe when ``fd`` is a :class:`_HeaderDecryptStream`
-    (ciphertext ``tell`` vs plaintext over-read).
+    seeking back: :class:`_HeaderDecryptStream` has no ``seek``, and its ``tell``
+    is the ciphertext cursor. Leftover ``_buf`` is not rewind room — mid-header
+    it is still-owed plaintext; after ``header_size`` it is AES padding.
     """
     header_offset = fd.tell()
     preload = 4 + 1
@@ -1939,6 +2018,8 @@ def _read_rar5_block(
     hdata = start_bytes + read_exact(fd, header_size - len(start_bytes))
     if len(hdata) != header_size:
         raise CorruptionError("Unexpected EOF while reading RAR5 header body")
+    # Ciphertext cursor, including AES block padding. Same invariant as the
+    # RAR3 walk: this is where packed data (or the next header's IV) starts.
     data_offset = fd.tell()
 
     if header_crc != _crc32(memoryview(hdata)[4:]):
