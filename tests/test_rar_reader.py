@@ -49,6 +49,7 @@ from archivey.types import (
     MemberType,
 )
 from tests.conftest import requires, requires_binary
+from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -373,6 +374,35 @@ def test_unrar_respawn_seek_end_does_not_drain_or_respawn() -> None:
     assert spawns == 1
     assert stream.read() == payload
     assert spawns == 1
+
+
+def test_bounded_member_pipe_drain_coalesces_short_reads() -> None:
+    """``read(-1)`` must gather the declared size, not stop on a short inner read.
+
+    ``_BoundedMemberPipe.read`` did one ``inner.read(remaining)``. A short-returning
+    pipe then left ``tell()`` mid-member and leaked the rest to the next ``read``.
+    ``SlicingStream.read(-1)`` with a declared length uses ``read_exact``.
+    """
+    payload = b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX"
+    assert len(payload) == 60
+    inner = ShortReadNonSeekable(payload, max_chunk=7)
+    pipe = rar_reader._bounded_member_pipe(inner, prefix=0, size=60)
+    assert pipe.read() == payload
+    assert pipe.tell() == 60
+    assert pipe.read() == b""
+    assert pipe.read(1) == b""
+
+
+def test_bounded_member_pipe_skips_prefix_and_translates_eof() -> None:
+    inner = NonSeekableBytesIO(b"PREFpayload-body")
+    pipe = rar_reader._bounded_member_pipe(inner, prefix=4, size=12)
+    assert pipe.read() == b"payload-body"
+    assert pipe.tell() == 12
+
+    short = NonSeekableBytesIO(b"xx")
+    with pytest.raises(TruncatedError, match="glob-matched member"):
+        rar_reader._bounded_member_pipe(short, prefix=10, size=4)
+    assert short.closed
 
 
 @requires_binary("unrar")

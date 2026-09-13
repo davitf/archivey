@@ -341,7 +341,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
-        rar_reader._BoundedMemberPipe,
         rar_reader._UnrarRespawnStream,
         iso_reader._PyCdlibStream,
         solid._MemberSlice,

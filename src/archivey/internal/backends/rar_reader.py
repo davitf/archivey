@@ -82,6 +82,7 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
     SharedSource,
+    SlicingStream,
     SolidBlockReader,
     is_seekable,
     is_stream,
@@ -431,7 +432,7 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     seek(0)`` before any read costs nothing.
 
     ``spawn`` must return a stream that owns the process (typically
-    ``_UnrarOwnedStream``, or ``_BoundedMemberPipe`` wrapping one), so
+    ``_UnrarOwnedStream``, or ``_bounded_member_pipe`` wrapping one), so
     close/respawn reaps it.
     """
 
@@ -543,7 +544,7 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
             raise close_error
 
 
-class _BoundedMemberPipe(DelegatingStream):
+def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO:
     """Own an ``unrar`` pipe, skip a glob-match prefix, then EOF at ``size``.
 
     ``unrar -n./name-with-wildcards`` concatenates every matching member with no
@@ -552,43 +553,26 @@ class _BoundedMemberPipe(DelegatingStream):
     next match as extra payload.
 
     The skip is eager at construction. A seekable wrapper respawns lazily on the
-    next ``read()``, so this constructor — and the skip — runs then, not inside
+    next ``read()``, so this factory — and the skip — runs then, not inside
     ``seek()``. ``seek(0, SEEK_END); seek(0)`` before any read still costs
     nothing: ``_pipe_pos`` stays 0 and no new pipe is built.
+
+    The bound itself is a non-seekable :class:`SlicingStream` (same shape as the
+    7z folder-pipe member slice). ``SharedView`` is the locked re-seek door and
+    requires a seekable source; the inner here is a subprocess pipe.
     """
-
-    def __init__(self, inner: BinaryIO, *, prefix: int, size: int) -> None:
-        super().__init__(inner, readinto_passthrough=False)
-        try:
-            if prefix:
-                skip_forward(inner, prefix)
-        except EOFError as exc:
-            inner.close()
-            raise TruncatedError(
-                "unrar pipe ended before the requested glob-matched member"
-            ) from exc
-        except BaseException:
-            inner.close()
-            raise
-        self._size = size
-        self._pos = 0
-
-    def tell(self) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        return self._pos
-
-    def read(self, n: int = -1, /) -> bytes:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        remaining = self._size - self._pos
-        if remaining <= 0:
-            return b""
-        if n < 0 or n > remaining:
-            n = remaining
-        data = super().read(n)
-        self._pos += len(data)
-        return data
+    try:
+        if prefix:
+            skip_forward(inner, prefix)
+    except EOFError as exc:
+        inner.close()
+        raise TruncatedError(
+            "unrar pipe ended before the requested glob-matched member"
+        ) from exc
+    except BaseException:
+        inner.close()
+        raise
+    return SlicingStream(inner, length=size, own_source=True)
 
 
 class RarReader(BaseArchiveReader):
@@ -1315,14 +1299,14 @@ class RarReader(BaseArchiveReader):
             try:
                 tracked = self._track_decompressed(owned)
                 if glob_mask:
-                    return _BoundedMemberPipe(
+                    return _bounded_member_pipe(
                         tracked,
                         prefix=glob_prefix,
                         size=_member_stream_size(member),
                     )
                 return tracked
             except BaseException:
-                # BoundedMemberPipe already closed ``tracked`` (and so ``owned``)
+                # _bounded_member_pipe already closed ``tracked`` (and so ``owned``)
                 # if the prefix skip failed; close is idempotent.
                 owned.close()
                 raise
