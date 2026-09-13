@@ -434,6 +434,12 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     ``spawn`` must return a stream that owns the process (typically
     ``_UnrarOwnedStream``, or ``_bounded_member_pipe`` wrapping one), so
     close/respawn reaps it.
+
+    Same restart-on-rewind shape as ``DecompressorStream`` /
+    ``Decoder.recreate`` with a one-point index at origin. It does not use
+    that engine: ``Decoder`` is a push interface fed compressed bytes, while
+    unrar produces plaintext on stdout from a path. A third pull-shaped
+    restartable producer would be the point to extract a shared base.
     """
 
     def __init__(
@@ -528,7 +534,10 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
             n = 1 if n < 0 else min(n, 1)
         data = inner.read(n)
         self._pos += len(data)
-        self._pipe_pos += len(data)
+        # Overrun probe at pos == size can return one extra byte. Count it in
+        # _pos (so pos > size reads are empty) but not as pipe progress past
+        # _size, or the next seek including SEEK_CUR would kill the process.
+        self._pipe_pos = min(self._pipe_pos + len(data), self._size)
         return data
 
     def close(self) -> None:

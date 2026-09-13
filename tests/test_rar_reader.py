@@ -335,6 +335,38 @@ def test_unrar_respawn_boundary_read_is_one_byte() -> None:
     assert stream.read(-1) == payload[declared : declared + 1]
 
 
+def test_unrar_respawn_overrun_probe_noop_seek_does_not_kill_pipe() -> None:
+    """After a probe byte past declared size, clamp ``_pipe_pos`` so SEEK_CUR is free.
+
+    The probe is the fused-verify one-byte read at ``pos == size``. Without the
+    clamp, ``_pipe_pos`` sits at ``_size + 1`` and the next seek — including a
+    no-op ``SEEK_CUR`` — kills the live process. That only happens when unrar
+    emitted extra bytes (already ``CorruptionError`` on the same call).
+    """
+    payload = b"hello world!!extra"
+    declared = 13
+    closed: list[bool] = []
+
+    class _TrackClose(io.BytesIO):
+        def close(self) -> None:
+            if not self.closed:
+                closed.append(True)
+            super().close()
+
+    def spawn() -> io.BytesIO:
+        return _TrackClose(payload)
+
+    inner = spawn()
+    stream = rar_reader._UnrarRespawnStream(spawn, inner, size=declared)
+    assert stream.read(declared) == payload[:declared]
+    assert stream.read(1) == payload[declared : declared + 1]
+    assert closed == []
+    assert stream.seek(0, io.SEEK_CUR) == declared + 1
+    assert closed == []
+    assert stream.seek(0) == 0
+    assert closed == [True]
+
+
 def test_unrar_respawn_failed_seek_leaves_position() -> None:
     """A raising ``seek()`` must not reset tell() to 0."""
 
