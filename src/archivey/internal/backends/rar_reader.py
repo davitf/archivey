@@ -1233,6 +1233,13 @@ class RarReader(BaseArchiveReader):
         the pipe only emits the requested member. Zero when the archive is not
         solid — then ``-n`` starts at this member and the member-stream
         ``tell()`` is the whole re-decode cost.
+
+        History rows are counted even without ``-ver``. That is not an oversight
+        relative to :meth:`_unrar_glob_prefix`, which skips them unless
+        ``version_control``: ``-ver`` controls what unrar *emits*, not what it
+        *decodes*, and a solid chain must decompress history to reach later
+        members. This value is a ``RewindWarning.min_redecode_bytes`` floor, not
+        a pipe offset.
         """
         if not self._archive.is_solid:
             return 0
