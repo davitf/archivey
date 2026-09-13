@@ -803,11 +803,12 @@ class RarReader(BaseArchiveReader):
                 # plain RAR is both smaller and one less thing to rely on.
                 view = self._shared.view(self._origin)
                 try:
-                    while True:
-                        chunk = view.read(1 << 20)
-                        if not chunk:
-                            break
-                        out.write(chunk)
+                    # Keep the 1 MiB chunk: each SharedView read takes the lock
+                    # and seek+reads, so copyfileobj's 64 KiB default is ~16×
+                    # the acquisitions. Do not reuse _copy_stream_to_path — it
+                    # opens dest itself, and this method already holds the
+                    # mkstemp fd.
+                    shutil.copyfileobj(view, out, length=1 << 20)
                 finally:
                     view.close()
         except BaseException:
@@ -1399,6 +1400,9 @@ class RarReader(BaseArchiveReader):
                 pass
             self._temp_path = None
         if self._temp_dir is not None:
+            # Single-stream copy (_ensure_archive_path) owns _temp_path;
+            # stream volumes (_materialize_stream_volumes) own _temp_dir.
+            # unlink vs rmtree, so _close_archive unwinds them separately.
             shutil.rmtree(self._temp_dir, ignore_errors=True)
             self._temp_dir = None
 
