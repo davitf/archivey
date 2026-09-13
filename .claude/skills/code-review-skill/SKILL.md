@@ -142,8 +142,8 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 
 1. Scope: `git diff main...HEAD` (or the paths / PR the author named); note size
    (>400 lines? Ask to split)
-2. CI / local gates (`ruff`, pyrefly/ty, pytest) — enough to know whether failures
-   are in-scope
+2. CI status if posted (`ruff`, pyrefly/ty, pytest) — glance only, do not re-run
+   (addendum §10); enough to know whether failures are in-scope
 3. Linked artifact **names** only (issue #, `openspec/changes/<name>/`, `review/`
    finding ID) so you know what to open in pass 2 — not the prose yet
 4. Skim **[Archivey Review Addendum](reference/archivey-review-addendum.md) §8**
