@@ -1,0 +1,93 @@
+"""Generic binary-stream plumbing — adapt, classify, and slice arbitrary ``BinaryIO``.
+
+This subpackage is the codec- and format-agnostic core of the stream layer: it knows
+nothing about archivey's error hierarchy or any codec, only about stdlib binary streams.
+That independence is deliberate — it could be lifted out as a standalone library — so
+nothing here may import from the rest of ``archivey``. The import rule is the half
+tooling enforces; concept leaks count too. Do not put archivey types, the error
+hierarchy, or codec internals in the *API* of this package (call-site examples in
+"when to use" comments can stay).
+
+Module map:
+
+- :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
+- :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
+- :mod:`.full_count` — ``FullCountStream`` / ``ensure_full_count_reads`` (source-boundary full-count)
+- :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
+- :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
+- :mod:`.locked` — ``LockedStream`` / ``CloseLockedStream`` (whole-op lock wrappers)
+- :mod:`.solid` — ``SolidBlockReader`` (forward-only solid demux)
+
+When to use which concurrency helper:
+
+- ``LockedStream`` — one shared handle; hold a lock across each seek+read (TAR/ISO).
+- ``SharedSource`` + ``SharedView`` — each consumer has its own logical
+  position; every read re-seeks under the lock (ZIP-style shared file).
+- ``SolidBlockReader`` — one forward decode; hand out consecutive member slices
+  (7z folder / RAR pipe). Not seekable.
+
+Import from this package root rather than the individual modules.
+"""
+
+from __future__ import annotations
+
+from archivey.internal.streams.streamtools.base import (
+    DelegatingStream,
+    ReadOnlyIOStream,
+)
+from archivey.internal.streams.streamtools.binaryio import (
+    BinaryIOWrapper,
+    ReadableStream,
+    ensure_binaryio,
+    ensure_bufferedio,
+    is_filename,
+    is_seekable,
+    is_stream,
+    raise_if_text_stream,
+    read_exact,
+    readinto_via_read,
+    source_byte_size,
+    source_name,
+)
+from archivey.internal.streams.streamtools.full_count import (
+    FullCountStream,
+    ensure_full_count_reads,
+)
+from archivey.internal.streams.streamtools.locked import CloseLockedStream, LockedStream
+from archivey.internal.streams.streamtools.shared import SharedSource
+from archivey.internal.streams.streamtools.slice import (
+    SharedView,
+    SlicingStream,
+    fix_stream_start_position,
+)
+from archivey.internal.streams.streamtools.solid import (
+    SolidBlockReader,
+    skip_forward,
+)
+
+__all__ = [
+    "BinaryIOWrapper",
+    "CloseLockedStream",
+    "DelegatingStream",
+    "FullCountStream",
+    "LockedStream",
+    "ReadOnlyIOStream",
+    "ReadableStream",
+    "SharedSource",
+    "SharedView",
+    "SlicingStream",
+    "SolidBlockReader",
+    "ensure_binaryio",
+    "ensure_bufferedio",
+    "ensure_full_count_reads",
+    "fix_stream_start_position",
+    "is_filename",
+    "is_seekable",
+    "is_stream",
+    "raise_if_text_stream",
+    "read_exact",
+    "readinto_via_read",
+    "skip_forward",
+    "source_byte_size",
+    "source_name",
+]

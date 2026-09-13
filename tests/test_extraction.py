@@ -1,0 +1,2634 @@
+"""Safe-extraction tests: universal filters, policy transforms, BombTracker, and the
+ExtractionCoordinator across ZIP / TAR / directory backends.
+
+Covers the ``safe-extraction`` capability and the ``testing-contract`` adversarial
+scenarios (path traversal, symlink escape, zip bomb, entry-count bomb).
+"""
+
+from __future__ import annotations
+
+import errno
+import gzip
+import io
+import os
+import tarfile
+import unicodedata
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from archivey import (
+    AbortOn,
+    ExtractionLimits,
+    ExtractionPolicy,
+    ExtractionStatus,
+    OnError,
+    OverwritePolicy,
+    extract,
+    open_archive,
+)
+from archivey.diagnostics import DiagnosticCode
+from archivey.exceptions import (
+    ExtractionError,
+    NameCollisionError,
+    NameRewrittenError,
+    PathTraversalError,
+    ResourceLimitError,
+    SpecialFileError,
+    SymlinkEscapeError,
+    UnportableNameError,
+)
+from archivey.internal.extraction import (
+    _CHUNK,
+    BombTracker,
+    ExtractionCoordinator,
+    _AlwaysStopExtractionError,
+    _AlwaysStopResourceLimitError,
+)
+from archivey.internal.filters import (
+    POLICY_TRANSFORMS,
+    apply_name_policy,
+    check_universal,
+    transform_standard,
+    transform_strict,
+)
+from archivey.types import ArchiveMember, MemberType
+
+# ---------------------------------------------------------------------------
+# Helpers / fixtures
+# ---------------------------------------------------------------------------
+
+
+def _member(
+    name: str,
+    *,
+    raw: bytes | None = None,
+    type: MemberType = MemberType.FILE,
+    mode: int | None = None,
+    link_target: str | None = None,
+    uid: int | None = None,
+    gid: int | None = None,
+) -> ArchiveMember:
+    return ArchiveMember(
+        type=type,
+        name=name,
+        raw_name=raw if raw is not None else name.encode(),
+        mode=mode,
+        link_target=link_target,
+        uid=uid,
+        gid=gid,
+    )
+
+
+def _tar_bytes(specs: list[tuple], *, mode: str = "w") -> bytes:
+    """Build a tar from (kind, name, payload) specs.
+
+    kind: "file" (payload=bytes), "sym"/"hard" (payload=linkname), "dir" (payload=None).
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode=mode) as t:
+        for kind, name, payload in specs:
+            if kind == "file":
+                info = tarfile.TarInfo(name)
+                info.size = len(payload)
+                info.mode = 0o644
+                t.addfile(info, io.BytesIO(payload))
+            elif kind == "dir":
+                info = tarfile.TarInfo(name)
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                t.addfile(info)
+            elif kind == "sym":
+                info = tarfile.TarInfo(name)
+                info.type = tarfile.SYMTYPE
+                info.linkname = payload
+                t.addfile(info)
+            elif kind == "hard":
+                info = tarfile.TarInfo(name)
+                info.type = tarfile.LNKTYPE
+                info.linkname = payload
+                t.addfile(info)
+    return buf.getvalue()
+
+
+def _write_zip(path: Path, entries: dict[str, bytes], mode: int | None = None) -> None:
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in entries.items():
+            if mode is not None:
+                info = zipfile.ZipInfo(name)
+                info.create_system = 3  # Unix
+                info.external_attr = mode << 16
+                z.writestr(info, data)
+            else:
+                z.writestr(name, data)
+
+
+# ---------------------------------------------------------------------------
+# check_universal — universal path-safety (task 1.4 / testing-contract)
+# ---------------------------------------------------------------------------
+
+
+# Names are faithful now (normalization keeps a leading "/" and every ".."), so the
+# check runs on member.name directly.
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../evil",  # escaping traversal
+        "../../etc/passwd",
+        "foo/../bar",  # internal traversal is also rejected under the default RAISE
+        "/etc/x",  # absolute
+    ],
+)
+def test_check_universal_rejects_traversal(tmp_path: Path, name: str) -> None:
+    with pytest.raises(PathTraversalError):
+        check_universal(_member(name), tmp_path)
+
+
+def test_check_universal_rejects_null_byte(tmp_path: Path) -> None:
+    with pytest.raises(PathTraversalError):
+        check_universal(_member("a\x00b"), tmp_path)
+
+
+def test_check_universal_rejects_root_named_file(tmp_path: Path) -> None:
+    with pytest.raises(PathTraversalError, match="extraction root"):
+        check_universal(_member("."), tmp_path)
+    with pytest.raises(PathTraversalError, match="extraction root"):
+        check_universal(_member(""), tmp_path)
+
+
+def test_check_universal_allows_root_directory(tmp_path: Path) -> None:
+    check_universal(_member(".", type=MemberType.DIRECTORY), tmp_path)
+
+
+def test_check_universal_rejects_special_file(tmp_path: Path) -> None:
+    with pytest.raises(SpecialFileError):
+        check_universal(_member("dev", type=MemberType.OTHER), tmp_path)
+
+
+def test_check_universal_rejects_symlink_escape(tmp_path: Path) -> None:
+    m = _member("link", type=MemberType.SYMLINK, link_target="../../etc/passwd")
+    with pytest.raises(SymlinkEscapeError):
+        check_universal(m, tmp_path)
+
+
+def test_check_universal_rejects_null_byte_in_symlink_target(tmp_path: Path) -> None:
+    m = _member("link", type=MemberType.SYMLINK, link_target="target\x00hidden")
+    with pytest.raises(SymlinkEscapeError, match="Null byte in link target"):
+        check_universal(m, tmp_path)
+
+
+def test_check_universal_allows_internal_symlink(tmp_path: Path) -> None:
+    m = _member("sub/link", type=MemberType.SYMLINK, link_target="../file.txt")
+    check_universal(m, tmp_path)  # resolves to <dest>/file.txt, inside root
+
+
+def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
+    # Universal checks are non-bypassable, even under TRUSTED.
+    with pytest.raises(PathTraversalError):
+        check_universal(_member("../evil"), tmp_path)
+    # ...and TRUSTED's transform itself is identity (path safety is separate).
+    m = _member("ok", mode=0o777)
+    assert POLICY_TRANSFORMS[ExtractionPolicy.TRUSTED](m).mode == 0o777
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="surrogateescape filename bytes are a POSIX concept"
+)
+@pytest.mark.parametrize(
+    "name_bytes",
+    [
+        b"caf\xe9.txt",  # Latin-1 'é' — undecodable as UTF-8, kept via surrogateescape
+        b"\xff\xfe.bin",  # arbitrary high bytes
+        b"dir\xe9/file\xff.txt",  # hostile bytes in a subdir component too
+    ],
+    ids=["latin1", "highbytes", "subdir"],
+)
+def test_surrogateescape_name_extracts_safely_or_is_cleanly_refused(
+    tmp_path: Path, name_bytes: bytes
+) -> None:
+    # The accept side of the encoding contract (companion to the check_universal
+    # totality/materializability property tests). A member name carrying non-UTF-8
+    # filename bytes is decoded with surrogateescape on read and PASSES the universal
+    # filter (the bytes are fsencodable, so representable *as bytes*). What happens at
+    # the write() syscall is then the *target filesystem's* call, and we only promise
+    # safety, not faithful round-trip:
+    #   * On a bytes-transparent FS (ext4/most Linux) the file lands under the exact
+    #     original filename bytes — no crash, no mojibake.
+    #   * On a UTF-8-enforcing FS (APFS/macOS raises OSError EILSEQ "Illegal byte
+    #     sequence") the OS refuses the name; extraction surfaces that as a normal
+    #     write failure — no traversal, nothing created outside dest, no process abort.
+    # Sanitizing such names into an always-writable "safe" form is a deliberate,
+    # policy-gated feature (threat-model O3/O7), intentionally NOT done here.
+    stored = name_bytes.decode("utf-8", errors="surrogateescape")
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", encoding="utf-8", errors="surrogateescape"
+    ) as tf:
+        info = tarfile.TarInfo(stored)
+        info.size = 3
+        tf.addfile(info, io.BytesIO(b"abc"))
+
+    dest = tmp_path / "out"
+    try:
+        extract(io.BytesIO(buf.getvalue()), dest, policy=ExtractionPolicy.TRUSTED)
+    except ExtractionError:
+        # The filesystem rejected the byte sequence at write time (e.g. APFS/macOS
+        # raises OSError EILSEQ); the coordinator translates that to a typed
+        # ExtractionError. That is the honest "the OS won't represent this name"
+        # outcome — safe. The only guarantee is that nothing escaped: whatever
+        # exists is under dest.
+        for p in dest.rglob("*"):
+            assert (
+                dest.resolve() in p.resolve().parents or p.resolve() == dest.resolve()
+            )
+        return
+
+    # The FS accepted the bytes: the file exists under the exact original filename bytes.
+    on_disk = {os.fsencode(p.name) for p in dest.rglob("*") if p.is_file()}
+    assert os.path.basename(name_bytes) in on_disk
+
+
+def test_unrepresentable_name_oserror_is_translated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A destination filesystem that refuses a filter-accepted name at write time
+    # (OSError EILSEQ, e.g. non-UTF-8 bytes on APFS/macOS) must surface as a typed
+    # ExtractionError naming the member, not a bare OSError. Simulated here (ext4
+    # accepts any bytes) by making the atomic file write raise EILSEQ.
+    import archivey.internal.extraction as extraction_mod
+
+    def fake_replace(src: object, dst: object, /) -> None:
+        raise OSError(errno.EILSEQ, "Illegal byte sequence")
+
+    monkeypatch.setattr(extraction_mod.os, "replace", fake_replace)
+
+    archive = _tar_bytes([("file", "member.txt", b"hi")])
+    dest = tmp_path / "out"
+    with pytest.raises(ExtractionError, match="member.txt"):
+        extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.TRUSTED)
+
+
+# ---------------------------------------------------------------------------
+# Policy transforms (task 1.4)
+# ---------------------------------------------------------------------------
+
+
+def test_strict_strips_execute_and_normalizes() -> None:
+    out = transform_strict(_member("f", mode=0o755))
+    assert out.mode == 0o644  # execute stripped, normalized
+    assert out.uid is None and out.gid is None
+
+
+def test_strict_dir_normalized_to_755() -> None:
+    out = transform_strict(_member("d/", type=MemberType.DIRECTORY, mode=0o777))
+    assert out.mode == 0o755
+
+
+def test_strict_strips_setuid() -> None:
+    out = transform_strict(_member("f", mode=0o4755))
+    assert out.mode & 0o7000 == 0
+    assert out.mode == 0o644
+
+
+def test_standard_preserves_execute() -> None:
+    out = transform_standard(_member("f", mode=0o755))
+    assert out.mode == 0o755  # execute kept
+    out2 = transform_standard(_member("f", mode=0o4755))
+    assert out2.mode == 0o755  # only setuid stripped
+
+
+def test_strict_mode_none_defaults() -> None:
+    assert transform_strict(_member("f")).mode == 0o644
+    assert transform_strict(_member("d/", type=MemberType.DIRECTORY)).mode == 0o755
+
+
+# ---------------------------------------------------------------------------
+# BombTracker (task 2.3)
+# ---------------------------------------------------------------------------
+
+
+def test_cumulative_byte_limit() -> None:
+    t = BombTracker(max_bytes=100, max_ratio=1e9)
+    t.start_member(_member("f"))
+    t.count(60)
+    with pytest.raises(_AlwaysStopResourceLimitError):
+        t.count(50)  # crosses 100
+
+
+def test_per_member_ratio() -> None:
+    t = BombTracker(max_bytes=10**12, max_ratio=2.0, ratio_activation_threshold=10)
+    t.start_member(_member("f").replace(compressed_size=1))
+    with pytest.raises(ResourceLimitError) as ei:
+        t.count(20)  # member_bytes 20 > floor 10, ratio 20:1 > 2
+    assert not isinstance(ei.value, _AlwaysStopResourceLimitError)  # skippable
+    assert not isinstance(ei.value, ExtractionError)
+
+
+def test_ratio_activation_threshold_false_positive_guard() -> None:
+    t = BombTracker(max_bytes=10**12, max_ratio=2.0, ratio_activation_threshold=100)
+    t.start_member(_member("f").replace(compressed_size=1))
+    t.count(50)  # below floor 100 -> no trip despite 50:1
+
+
+def test_archive_wide_ratio() -> None:
+    # Static denominator: the reader reports a cheaply-known outer compressed size.
+    t = BombTracker(
+        max_bytes=10**12,
+        max_ratio=2.0,
+        ratio_activation_threshold=10,
+        source=SimpleNamespace(
+            compressed_source_size=10, compressed_bytes_consumed=None
+        ),
+    )
+    t.start_member(_member("f"))  # no per-member compressed_size
+    with pytest.raises(_AlwaysStopResourceLimitError):
+        t.count(30)  # total 30 > floor 10, 30/10 = 3 > 2
+
+
+def test_archive_wide_ratio_live_denominator() -> None:
+    # No static size (e.g. a pipe): the tracker samples the reader's live count of
+    # compressed bytes consumed instead.
+    t = BombTracker(
+        max_bytes=10**12,
+        max_ratio=2.0,
+        ratio_activation_threshold=10,
+        source=SimpleNamespace(
+            compressed_source_size=None, compressed_bytes_consumed=10
+        ),
+    )
+    t.start_member(_member("f"))
+    with pytest.raises(_AlwaysStopResourceLimitError):
+        t.count(30)  # total 30 > floor 10, live 30/10 = 3 > 2
+
+
+def test_ratio_skipped_when_denominators_unknown() -> None:
+    t = BombTracker(max_bytes=10**12, max_ratio=2.0, ratio_activation_threshold=1)
+    t.start_member(_member("f"))  # compressed_size None, no source size
+    t.count(10_000)  # no ratio applies; cumulative under limit
+
+
+def test_max_entries_guard() -> None:
+    t = BombTracker(max_bytes=10**12, max_ratio=1e9, max_entries=2)
+    t.start_member(_member("a"))
+    t.start_member(_member("b"))
+    with pytest.raises(_AlwaysStopResourceLimitError):
+        t.start_member(_member("c"))
+
+
+def test_entry_count_independent_of_bytes() -> None:
+    t = BombTracker(max_bytes=10**12, max_ratio=1e9, max_entries=1)
+    t.start_member(_member("a"))
+    with pytest.raises(_AlwaysStopResourceLimitError):
+        t.start_member(_member("b"))  # trips on count, not bytes
+
+    # Alias still resolves for older imports.
+    assert _AlwaysStopExtractionError is _AlwaysStopResourceLimitError
+
+
+def test_bomb_tracker_member_bytes_mirrors_count() -> None:
+    t = BombTracker(max_bytes=10**12, max_ratio=1e9)
+    t.start_member(_member("f"))
+    assert t.member_bytes == 0
+    t.count(100)
+    assert t.member_bytes == 100
+    assert t.total_bytes == 100
+    t.start_member(_member("g"))
+    assert t.member_bytes == 0
+    assert t.total_bytes == 100
+
+
+def test_file_writer_rejects_missing_stream() -> None:
+    # A FILE reaching the writer with stream=None is a backend bug (a zero-byte FILE still
+    # yields a real, empty stream). The writer must raise rather than silently create an
+    # empty file and mask the bug (task 5a.5).
+    with pytest.raises(ExtractionError, match="no data stream"):
+        ExtractionCoordinator._copy_to_fileobj(None, io.BytesIO(), None)
+
+
+# ---------------------------------------------------------------------------
+# Coordinator — ZIP vertical slice (tasks 3.x, 5.x)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_zip_basic(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"hello.txt": b"hi", "dir/nested.txt": b"deep"})
+    dest = tmp_path / "out"
+    results = extract(src, dest).results
+    assert (dest / "hello.txt").read_bytes() == b"hi"
+    assert (dest / "dir" / "nested.txt").read_bytes() == b"deep"
+    assert {r.status for r in results} == {ExtractionStatus.EXTRACTED}
+
+
+# Windows has no Unix permission bits — os.chmod there can only toggle the read-only
+# flag, so a regular file always reads back ~0o666 with no execute/group/other bits. The
+# permission-normalization behavior is a POSIX concept, so assert it only on POSIX.
+_posix_perms = pytest.mark.skipif(
+    os.name != "posix", reason="Unix permission bits (chmod) are a no-op on Windows"
+)
+
+
+@_posix_perms
+def test_extract_zip_strict_normalizes_mode(tmp_path: Path) -> None:
+    src = tmp_path / "m.zip"
+    _write_zip(src, {"x.sh": b"#!/bin/sh"}, mode=0o777)
+    dest = tmp_path / "out"
+    extract(src, dest, policy=ExtractionPolicy.STRICT)
+    assert (dest / "x.sh").stat().st_mode & 0o777 == 0o644
+
+
+@_posix_perms
+def test_extract_zip_standard_keeps_execute(tmp_path: Path) -> None:
+    src = tmp_path / "m.zip"
+    _write_zip(src, {"x.sh": b"#!/bin/sh"}, mode=0o755)
+    dest = tmp_path / "out"
+    extract(src, dest, policy=ExtractionPolicy.STANDARD)
+    assert (dest / "x.sh").stat().st_mode & 0o111  # execute preserved
+
+
+def test_subset_selection(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"a", "b.txt": b"b", "c.txt": b"c"})
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        results = r.extract_all(dest, members=["a.txt", "c.txt"]).results
+    assert (dest / "a.txt").exists() and (dest / "c.txt").exists()
+    assert not (dest / "b.txt").exists()
+    assert len(results) == 2
+
+
+def test_user_filter_rename(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"a"})
+    dest = tmp_path / "out"
+
+    def rename(m: ArchiveMember) -> ArchiveMember:
+        return m.replace(name="renamed.txt")
+
+    with open_archive(src) as r:
+        r.extract_all(dest, filter=rename)
+    assert (dest / "renamed.txt").read_bytes() == b"a"
+
+
+def test_user_filter_skip(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"a", "b.txt": b"b"})
+    dest = tmp_path / "out"
+
+    def skip_b(m: ArchiveMember) -> ArchiveMember | None:
+        return None if m.name == "b.txt" else m
+
+    with open_archive(src) as r:
+        report = r.extract_all(dest, filter=skip_b)
+    assert (dest / "a.txt").exists()
+    assert not (dest / "b.txt").exists()
+    # Filter returning None is a caller-elected exclusion: no ExtractionResult (D1).
+    assert [r.member.name for r in report.results] == ["a.txt"]
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+
+
+# ---------------------------------------------------------------------------
+# Overwrite policy (task 3.x)
+# ---------------------------------------------------------------------------
+
+
+def test_overwrite_error(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.txt").write_bytes(b"old")
+    with pytest.raises(ExtractionError):
+        extract(src, dest, overwrite=OverwritePolicy.ERROR)
+    assert (dest / "a.txt").read_bytes() == b"old"  # untouched
+
+
+def test_overwrite_skip(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.txt").write_bytes(b"old")
+    results = extract(src, dest, overwrite=OverwritePolicy.SKIP).results
+    assert (dest / "a.txt").read_bytes() == b"old"
+    assert results[0].status is ExtractionStatus.NOT_OVERWRITTEN
+
+
+def test_overwrite_replace(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.txt").write_bytes(b"old")
+    extract(src, dest, overwrite=OverwritePolicy.REPLACE)
+    assert (dest / "a.txt").read_bytes() == b"new"
+
+
+@pytest.mark.parametrize(
+    "overwrite", [OverwritePolicy.REPLACE, OverwritePolicy.ERROR, OverwritePolicy.SKIP]
+)
+def test_error_when_dest_is_a_file_never_deletes_it(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """A file at the dest path is a hard error under every policy — never deleted.
+
+    Extracting must not remove a path the caller pointed at by mistake (e.g. a CLI given
+    a file where a directory was meant), and must not surface a raw ``FileExistsError``.
+    """
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    dest.write_bytes(b"important data")
+    with pytest.raises(ExtractionError, match="not a directory"):
+        extract(src, dest, overwrite=overwrite)
+    assert dest.is_file()
+    assert dest.read_bytes() == b"important data"  # untouched
+
+
+@pytest.mark.parametrize(
+    "overwrite", [OverwritePolicy.REPLACE, OverwritePolicy.ERROR, OverwritePolicy.SKIP]
+)
+def test_error_when_dest_is_a_dangling_symlink_never_deletes_it(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """A dangling symlink at the dest is a hard error — the link is preserved, not removed.
+
+    ``lexists`` (not ``exists``) sees the broken link; otherwise ``exists`` reports False
+    and ``mkdir`` raises a raw ``FileExistsError`` on the occupied path.
+    """
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    target = tmp_path / "nonexistent-target"
+    dest.symlink_to(target)  # dangling: target does not exist
+    assert dest.is_symlink() and not dest.exists()
+
+    with pytest.raises(ExtractionError, match="not a directory"):
+        extract(src, dest, overwrite=overwrite)
+
+    assert dest.is_symlink()  # preserved, not unlinked
+    assert not target.exists()  # never created behind the link
+
+
+def test_dest_symlink_to_dir_is_followed_into_target(tmp_path: Path) -> None:
+    """A dest symlink pointing at a real directory is followed (tar -C / unzip -d).
+
+    Members land in the pointed-to directory and the caller's symlink is left in place;
+    the dest root is trusted, unlike archive-internal symlinks.
+    """
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    target = tmp_path / "real_target"
+    target.mkdir()
+    dest = tmp_path / "out"
+    dest.symlink_to(target)
+
+    extract(src, dest, overwrite=OverwritePolicy.REPLACE)
+
+    assert dest.is_symlink()  # symlink preserved, not replaced with a real dir
+    assert (target / "a.txt").read_bytes() == b"new"  # extracted into the target
+
+
+def test_replace_symlink_no_write_through(tmp_path: Path) -> None:
+    # A planted symlink at the destination path must be unlinked, not written through.
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"secret")
+    os.symlink(outside, dest / "a.txt")
+    extract(src, dest, overwrite=OverwritePolicy.REPLACE)
+    assert (dest / "a.txt").read_bytes() == b"new"
+    assert not (dest / "a.txt").is_symlink()
+    assert outside.read_bytes() == b"secret"  # target never written through
+
+
+def test_dangling_symlink_counts_as_existing(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"new"})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    os.symlink(tmp_path / "does-not-exist", dest / "a.txt")  # dangling
+    with pytest.raises(ExtractionError):
+        extract(src, dest, overwrite=OverwritePolicy.ERROR)
+
+
+def test_replace_failure_preserves_existing_file(tmp_path: Path) -> None:
+    # A mid-extraction failure under REPLACE must not clobber the existing file: FILE writes
+    # land via a temp + os.replace, so the old data survives and no temp is left behind.
+    src = tmp_path / "big.zip"
+    _write_zip(src, {"a.txt": b"x" * 100_000})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.txt").write_bytes(b"OLD DATA")
+    with pytest.raises(ResourceLimitError):
+        extract(
+            src,
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            limits=ExtractionLimits(max_extracted_bytes=1000),
+        )
+    assert (dest / "a.txt").read_bytes() == b"OLD DATA"  # untouched
+    assert not list(dest.glob(".archivey-tmp-*"))  # temp cleaned up
+
+
+def test_no_temp_files_after_success(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"hi", "dir/b.txt": b"bye"})
+    dest = tmp_path / "out"
+    extract(src, dest)
+    assert not list(dest.rglob(".archivey-tmp-*"))
+
+
+# ---------------------------------------------------------------------------
+# OnError policy (failures-only; blocks always continue)
+# ---------------------------------------------------------------------------
+
+
+def test_on_error_continue_records_rejected(tmp_path: Path) -> None:
+    # A member with a hostile stored name is rejected; CONTINUE keeps going.
+    src = tmp_path / "a.zip"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("../evil.txt", b"bad")
+        z.writestr("good.txt", b"good")
+    dest = tmp_path / "out"
+    results = extract(src, dest, on_error=OnError.CONTINUE).results
+    statuses = {r.member.name: r.status for r in results}
+    assert ExtractionStatus.BLOCKED in statuses.values()
+    assert (dest / "good.txt").read_bytes() == b"good"
+
+
+def test_on_error_stop_continues_on_policy_block(tmp_path: Path) -> None:
+    # STOP governs failures only: a path-safety block is recorded and extraction
+    # continues to later members (does not raise FilterRejectionError).
+    src = tmp_path / "a.zip"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("../evil.txt", b"bad")
+        z.writestr("good.txt", b"good")
+    dest = tmp_path / "out"
+    report = extract(src, dest, on_error=OnError.STOP)
+    statuses = {r.member.name: r.status for r in report.results}
+    assert ExtractionStatus.BLOCKED in statuses.values()
+    assert statuses["good.txt"] is ExtractionStatus.EXTRACTED
+    assert (dest / "good.txt").read_bytes() == b"good"
+    assert not any(p.name == "evil.txt" for p in dest.rglob("*"))
+
+
+def test_on_error_stop_raises_on_member_failure(tmp_path: Path) -> None:
+    # Genuine member failure (CRC mismatch) still raises immediately under STOP.
+    from archivey.exceptions import CorruptionError
+    from tests.zip_corrupt import zip_with_flipped_cd_crc
+
+    src = zip_with_flipped_cd_crc(
+        tmp_path / "badcrc.zip",
+        {"a.txt": b"hello", "b.txt": b"world"},
+        corrupt_name="b.txt",
+    )
+    dest = tmp_path / "out"
+    with pytest.raises(CorruptionError):
+        extract(src, dest, on_error=OnError.STOP)
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert not (dest / "b.txt").exists()
+
+
+def test_on_error_stop_blocks_then_raises_on_failure(tmp_path: Path) -> None:
+    # Mixed archive under STOP: policy blocks continue; first real failure raises.
+    from archivey.exceptions import CorruptionError
+    from tests.zip_corrupt import zip_with_flipped_cd_crc
+
+    src = zip_with_flipped_cd_crc(
+        tmp_path / "mixed.zip",
+        {
+            "../evil.txt": b"bad",
+            "good.txt": b"good",
+            "corrupt.txt": b"payload",
+        },
+        corrupt_name="corrupt.txt",
+    )
+    dest = tmp_path / "out"
+    with pytest.raises(CorruptionError):
+        extract(src, dest, on_error=OnError.STOP)
+    assert (dest / "good.txt").read_bytes() == b"good"
+    assert not (dest / "corrupt.txt").exists()
+    assert not any(p.name == "evil.txt" for p in dest.rglob("*"))
+
+
+# ---------------------------------------------------------------------------
+# Bomb limits end-to-end (task 6.2)
+# ---------------------------------------------------------------------------
+
+
+def test_cumulative_bomb_halts_even_under_continue(tmp_path: Path) -> None:
+    src = tmp_path / "big.zip"
+    _write_zip(src, {"a.txt": b"x" * 5000, "b.txt": b"y" * 5000})
+    dest = tmp_path / "out"
+    with pytest.raises(ResourceLimitError):
+        extract(
+            src,
+            dest,
+            limits=ExtractionLimits(max_extracted_bytes=6000),
+            on_error=OnError.CONTINUE,
+        )
+
+
+def test_zip_bomb_per_member_ratio(tmp_path: Path) -> None:
+    # Highly compressible payload above the activation threshold trips the ratio.
+    src = tmp_path / "bomb.zip"
+    payload = b"\x00" * (8 * 1024 * 1024)  # 8 MiB of zeros -> tiny compressed
+    _write_zip(src, {"bomb.bin": payload})
+    dest = tmp_path / "out"
+    with pytest.raises(ResourceLimitError):
+        extract(
+            src,
+            dest,
+            limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
+        )
+
+
+def test_entry_count_bomb(tmp_path: Path) -> None:
+    src = tmp_path / "many.zip"
+    _write_zip(src, {f"f{i}.txt": b"" for i in range(50)})
+    dest = tmp_path / "out"
+    with pytest.raises(ResourceLimitError):
+        extract(
+            src,
+            dest,
+            limits=ExtractionLimits(max_entries=10),
+            on_error=OnError.CONTINUE,
+        )
+
+
+def test_selector_skips_do_not_count_toward_max_entries(tmp_path: Path) -> None:
+    # Only members actually written count toward max_entries (resolved 2026-07 decision):
+    # a member excluded by the selector creates nothing on disk, so a tiny cap survives a
+    # huge archive when only one member is selected.
+    src = tmp_path / "many.zip"
+    _write_zip(src, {f"f{i}.txt": b"x" for i in range(20)})
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, members=["f0.txt"], limits=ExtractionLimits(max_entries=1)
+        ).results
+    assert (dest / "f0.txt").read_bytes() == b"x"
+    assert len(results) == 1
+
+
+def test_filter_skips_do_not_count_toward_max_entries(tmp_path: Path) -> None:
+    # A member the user filter drops (returns None) likewise creates nothing on disk and
+    # must not consume the entry-count budget.
+    src = tmp_path / "many.zip"
+    _write_zip(src, {f"f{i}.txt": b"x" for i in range(20)})
+    dest = tmp_path / "out"
+
+    def keep_one(m: ArchiveMember) -> ArchiveMember | None:
+        return m if m.name == "f0.txt" else None
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, filter=keep_one, limits=ExtractionLimits(max_entries=1)
+        ).results
+    assert (dest / "f0.txt").read_bytes() == b"x"
+    assert [res.status for res in results] == [ExtractionStatus.EXTRACTED]
+
+
+def test_rejected_members_do_not_count_toward_max_entries(tmp_path: Path) -> None:
+    # A member rejected by the universal safety check writes nothing, so it must not
+    # consume the entry-count budget either: two good files + one hostile member with
+    # max_entries=2 completes under CONTINUE (before the fix the rejected member counted
+    # and tripped the guard on the second good file).
+    src = tmp_path / "a.zip"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("good1.txt", b"a")
+        z.writestr("../evil.txt", b"bad")
+        z.writestr("good2.txt", b"b")
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, limits=ExtractionLimits(max_entries=2), on_error=OnError.CONTINUE
+        ).results
+    statuses = {res.member.name: res.status for res in results}
+    assert statuses["good1.txt"] is ExtractionStatus.EXTRACTED
+    assert statuses["good2.txt"] is ExtractionStatus.EXTRACTED
+    assert ExtractionStatus.BLOCKED in statuses.values()
+
+
+# ---------------------------------------------------------------------------
+# Progress callback
+# ---------------------------------------------------------------------------
+
+
+def test_on_progress_called_per_member(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"a", "b.txt": b"b"})
+    dest = tmp_path / "out"
+    seen: list[str] = []
+    extract(src, dest, on_progress=lambda p: seen.append(p.member.name))
+    assert set(seen) == {"a.txt", "b.txt"}
+
+
+def test_progress_totals_respect_selector(tmp_path: Path) -> None:
+    # Totals cover what the call will actually attempt: with a selector, members_total
+    # and total_bytes_estimated count only the selected members, and members_done can
+    # reach members_total.
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"aaaa", "b.txt": b"b" * 100, "c.txt": b"cc"})
+    dest = tmp_path / "out"
+    progress = []
+    with open_archive(src) as r:
+        r.extract_all(dest, members=["a.txt", "c.txt"], on_progress=progress.append)
+    last = progress[-1]
+    assert last.members_total == 2
+    assert last.members_done == 2
+    assert last.total_bytes_estimated == 6  # a.txt (4) + c.txt (2); b.txt excluded
+
+
+def test_progress_counts_filter_skipped_members_as_done(tmp_path: Path) -> None:
+    # A user-filter skip is still a processed member: members_done must reach
+    # members_total at the end (the filter cannot be pre-applied to the totals).
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": b"a", "b.txt": b"b", "c.txt": b"c"})
+    dest = tmp_path / "out"
+    progress = []
+    with open_archive(src) as r:
+        r.extract_all(
+            dest,
+            filter=lambda m: None if m.name == "b.txt" else m,
+            on_progress=progress.append,
+        )
+    last = progress[-1]
+    assert last.members_total == 3
+    assert last.members_done == 3
+    assert not (dest / "b.txt").exists()
+
+
+def test_on_progress_large_file_emits_intra_member(tmp_path: Path) -> None:
+    # A FILE larger than one copy chunk must produce multiple callbacks with
+    # non-decreasing member_bytes_written, ending at the member size.
+    payload = b"x" * (2 * _CHUNK + 100)
+    src = tmp_path / "big.zip"
+    _write_zip(src, {"big.bin": payload})
+    dest = tmp_path / "out"
+    reports: list = []
+    extract(src, dest, on_progress=reports.append)
+
+    for_member = [p for p in reports if p.member.name == "big.bin"]
+    assert len(for_member) > 1
+    mbw = [p.member_bytes_written for p in for_member]
+    assert mbw == sorted(mbw)
+    assert mbw[-1] == len(payload)
+    # Intra-member reports keep members_done at the pre-completion count; the
+    # terminal report advances it.
+    assert for_member[0].members_done == 0
+    assert for_member[-1].members_done == 1
+    assert (dest / "big.bin").read_bytes() == payload
+
+
+def test_on_progress_sub_chunk_file_single_callback(tmp_path: Path) -> None:
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"small.txt": b"hello"})
+    dest = tmp_path / "out"
+    reports: list = []
+    extract(src, dest, on_progress=reports.append)
+    assert len(reports) == 1
+    assert reports[0].member_bytes_written == 5
+    assert reports[0].member.name == "small.txt"
+
+
+def test_on_progress_dir_symlink_hardlink_zero_member_bytes(tmp_path: Path) -> None:
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("dir", "d/", None),
+                ("file", "d/f.txt", b"data"),
+                ("sym", "link", "d/f.txt"),
+                ("hard", "hard.txt", "d/f.txt"),
+            ]
+        )
+    )
+    dest = tmp_path / "out"
+    reports: list = []
+    extract(src, dest, on_progress=reports.append)
+
+    dir_reports = [p for p in reports if p.member.type == MemberType.DIRECTORY]
+    assert len(dir_reports) == 1
+    assert dir_reports[0].member_bytes_written == 0
+
+    sym_reports = [p for p in reports if p.member.type == MemberType.SYMLINK]
+    assert len(sym_reports) == 1
+    assert sym_reports[0].member_bytes_written == 0
+
+    hard_reports = [p for p in reports if p.member.type == MemberType.HARDLINK]
+    assert len(hard_reports) == 1
+    assert hard_reports[0].member_bytes_written == 0
+
+    file_reports = [p for p in reports if p.member.is_file]
+    assert len(file_reports) == 1
+    assert file_reports[0].member_bytes_written == 4
+
+
+def test_on_progress_unknown_size_terminal_equals_observed(tmp_path: Path) -> None:
+    payload = b"z" * 12345
+    src = tmp_path / "blob.gz"
+    src.write_bytes(gzip.compress(payload))
+    dest = tmp_path / "out"
+    reports: list = []
+    with open_archive(src) as r:
+        assert r.members()[0].size is None
+        r.extract_all(dest, on_progress=reports.append)
+
+    assert len(reports) >= 1
+    terminal = reports[-1]
+    assert (
+        terminal.member.size is None
+        or terminal.member_bytes_written == terminal.member.size
+    )
+    assert terminal.member_bytes_written == len(payload)
+    assert (dest / "blob").read_bytes() == payload
+
+
+def test_on_progress_none_leaves_byte_totals_unchanged(tmp_path: Path) -> None:
+    # Zero-cost path: no callback must not change written bytes or bomb accounting.
+    payload = b"y" * (_CHUNK + 50)
+    src = tmp_path / "a.zip"
+    _write_zip(src, {"a.txt": payload, "b.txt": b"bb"})
+    dest = tmp_path / "out"
+    results = extract(src, dest).results
+    assert {r.status for r in results} == {ExtractionStatus.EXTRACTED}
+    assert (dest / "a.txt").read_bytes() == payload
+    assert (dest / "b.txt").read_bytes() == b"bb"
+    # Ratio/limits still enforced when on_progress is unset.
+    dest2 = tmp_path / "out2"
+    with pytest.raises(ResourceLimitError):
+        extract(
+            src,
+            dest2,
+            limits=ExtractionLimits(max_extracted_bytes=100),
+        )
+
+
+def test_extract_one_shot_from_non_seekable_pipe(tmp_path: Path) -> None:
+    # The one-shot extract() auto-selects streaming mode for a non-seekable source:
+    # extraction is a single forward pass, so it needs no random access.
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = _tar_bytes(
+        [("file", "a.txt", b"hello"), ("file", "b.txt", b"world")], mode="w:gz"
+    )
+    dest = tmp_path / "out"
+    results = extract(NonSeekableBytesIO(raw), dest).results
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert (dest / "b.txt").read_bytes() == b"world"
+    assert {r.status for r in results} == {ExtractionStatus.EXTRACTED}
+
+
+# ---------------------------------------------------------------------------
+# TAR symlinks (tasks 3.4, 4.5)
+# ---------------------------------------------------------------------------
+
+
+def test_tar_symlink_created(tmp_path: Path) -> None:
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes([("file", "file.txt", b"data"), ("sym", "link", "file.txt")])
+    )
+    dest = tmp_path / "out"
+    extract(src, dest)
+    link = dest / "link"
+    assert link.is_symlink()
+    assert os.readlink(link) == "file.txt"
+    assert link.read_bytes() == b"data"
+
+
+def test_tar_symlink_dangling_to_filtered_target(tmp_path: Path) -> None:
+    # A symlink is target-independent: it is created even when its target is excluded,
+    # and may dangle. No copy, no error.
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes([("file", "file.txt", b"data"), ("sym", "link", "file.txt")])
+    )
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        r.extract_all(dest, members=["link"])  # exclude file.txt
+    link = dest / "link"
+    assert link.is_symlink()
+    assert not (dest / "file.txt").exists()
+    assert not link.exists()  # dangles (target excluded)
+
+
+def test_tar_symlink_escape_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("sym", "evil", "../../etc/passwd")]))
+    dest = tmp_path / "out"
+    report = extract(src, dest)  # default STOP; blocks always continue
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert isinstance(report.results[0].error, SymlinkEscapeError)
+    assert not (dest / "evil").exists()
+
+
+def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes([("sym", "evil", "../../etc/passwd"), ("file", "ok.txt", b"ok")])
+    )
+    dest = tmp_path / "out"
+    results = extract(src, dest, on_error=OnError.CONTINUE).results
+    statuses = {r.member.name: r.status for r in results}
+    assert statuses["evil"] is ExtractionStatus.BLOCKED
+    assert (dest / "ok.txt").read_bytes() == b"ok"
+
+
+# ---------------------------------------------------------------------------
+# Chained-symlink attack (task 5a.4, ported from the DEV oracle suite)
+#
+# The classic escape: member 1 plants a directory symlink `sub` that points OUTSIDE the
+# destination, then member 2 is written "through" it as `sub/<payload>`, so a naive
+# extractor lands the payload outside dest. archivey blocks this on two layers, and both
+# the SYMLINK-payload and FILE-payload variants of member 2 must be neutralized:
+#   * the escaping parent symlink is rejected up front by the universal check
+#     (SymlinkEscapeError), so it is never planted, and
+#   * the universal check re-resolves each member's PARENT directory on the real
+#     filesystem, so a payload written through an already-planted hostile parent symlink
+#     is rejected (PathTraversalError) before any bytes are written outside dest.
+# ---------------------------------------------------------------------------
+
+
+def test_chained_symlink_attack_symlink_payload_rejected(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    src = tmp_path / "attack.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("sym", "sub", str(outside)),  # parent symlink escaping dest
+                ("sym", "sub/leak", "target"),  # SYMLINK payload written through it
+            ]
+        )
+    )
+    dest = tmp_path / "out"
+    report = extract(src, dest)  # default STOP; blocks always continue
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["sub"] is ExtractionStatus.BLOCKED
+    assert isinstance(
+        next(r.error for r in report.results if r.member.name == "sub"),
+        SymlinkEscapeError,
+    )
+    # Parent escape never planted, so the payload symlink resolves inside dest.
+    assert list(outside.iterdir()) == []  # nothing leaked outside the destination
+    assert not (dest / "sub").is_symlink()
+
+
+def test_chained_symlink_attack_file_payload_rejected(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    src = tmp_path / "attack.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("sym", "sub", str(outside)),  # parent symlink escaping dest
+                ("file", "sub/leak.txt", b"pwned"),  # FILE payload written through it
+            ]
+        )
+    )
+    dest = tmp_path / "out"
+    # Under CONTINUE the escaping parent symlink is rejected (never planted) while the run
+    # proceeds, proving the FILE payload cannot follow it out of dest.
+    results = extract(src, dest, on_error=OnError.CONTINUE).results
+    statuses = {r.member.name: r.status for r in results}
+    assert statuses["sub"] is ExtractionStatus.BLOCKED
+    assert not (outside / "leak.txt").exists()
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="directory symlinks / os.symlink semantics are POSIX here",
+)
+def test_file_payload_through_preexisting_parent_symlink_rejected(
+    tmp_path: Path,
+) -> None:
+    # The runtime layer: a hostile symlink already sits at the destination (e.g. planted by
+    # a prior partial run). The universal check resolves the member's parent on disk, so a
+    # FILE written through it is rejected before any bytes escape.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest = tmp_path / "out"
+    dest.mkdir()
+    os.symlink(outside, dest / "sub", target_is_directory=True)
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("file", "sub/leak.txt", b"pwned")]))
+    report = extract(src, dest)  # default STOP; blocks always continue
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert isinstance(report.results[0].error, PathTraversalError)
+    assert not (outside / "leak.txt").exists()
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="directory symlinks / os.symlink semantics are POSIX here",
+)
+def test_symlink_payload_through_preexisting_parent_symlink_rejected(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest = tmp_path / "out"
+    dest.mkdir()
+    os.symlink(outside, dest / "sub", target_is_directory=True)
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("sym", "sub/leak", "x")]))
+    report = extract(src, dest)  # default STOP; blocks always continue
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert isinstance(report.results[0].error, PathTraversalError)
+    assert not (outside / "leak").exists()
+
+
+# ---------------------------------------------------------------------------
+# TAR hardlinks (tasks 4.1, 4.3)
+# ---------------------------------------------------------------------------
+
+
+def test_tar_hardlink_shares_inode(tmp_path: Path) -> None:
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes([("file", "file.txt", b"data"), ("hard", "hard.txt", "file.txt")])
+    )
+    dest = tmp_path / "out"
+    extract(src, dest)
+    assert (dest / "file.txt").read_bytes() == b"data"
+    assert (dest / "hard.txt").read_bytes() == b"data"
+    assert os.path.samefile(dest / "file.txt", dest / "hard.txt")
+
+
+def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
+    # A filter excludes the source but keeps the link; a seekable source recovers the
+    # content in a second pass, writing it to the link path (source name never created).
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes([("file", "file.txt", b"data"), ("hard", "hard.txt", "file.txt")])
+    )
+    dest = tmp_path / "out"
+
+    def drop_source(m: ArchiveMember) -> ArchiveMember | None:
+        return None if m.name == "file.txt" else m
+
+    with open_archive(src) as r:
+        results = r.extract_all(dest, filter=drop_source).results
+    assert (dest / "hard.txt").read_bytes() == b"data"
+    assert not (dest / "file.txt").exists()
+    assert [r.status for r in results] == [ExtractionStatus.EXTRACTED]
+
+
+def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = _tar_bytes([("file", "file.txt", b"data"), ("hard", "hard.txt", "file.txt")])
+
+    def drop_source(m: ArchiveMember) -> ArchiveMember | None:
+        return None if m.name == "file.txt" else m
+
+    # STOP: raises on the unrecoverable orphan.
+    dest = tmp_path / "out_stop"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        with pytest.raises(ExtractionError):
+            r.extract_all(dest, filter=drop_source)
+
+    # CONTINUE: records FAILED, does not raise.
+    dest2 = tmp_path / "out_continue"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        results = r.extract_all(
+            dest2, filter=drop_source, on_error=OnError.CONTINUE
+        ).results
+    statuses = {r.member.name: r.status for r in results}
+    assert statuses["hard.txt"] is ExtractionStatus.FAILED
+    assert not (dest2 / "hard.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# Seekable + non-seekable compressed TAR (tasks 5.3, 6.3)
+# ---------------------------------------------------------------------------
+
+
+def test_seekable_targz_extract(tmp_path: Path) -> None:
+    src = tmp_path / "a.tar.gz"
+    src.write_bytes(
+        _tar_bytes([("file", "a.txt", b"hello"), ("dir", "d", None)], mode="w:gz")
+    )
+    dest = tmp_path / "out"
+    extract(src, dest)
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert (dest / "d").is_dir()
+
+
+def test_seekable_targz_archive_wide_ratio(tmp_path: Path) -> None:
+    # A small .tar.gz whose decompressed output far exceeds max_ratio * file_size trips
+    # the archive-wide ratio (member compressed_size is unknown for TAR).
+    src = tmp_path / "bomb.tar.gz"
+    payload = b"\x00" * (4 * 1024 * 1024)
+    src.write_bytes(_tar_bytes([("file", "z.bin", payload)], mode="w:gz"))
+    dest = tmp_path / "out"
+    with pytest.raises(ResourceLimitError):
+        extract(
+            src,
+            dest,
+            limits=ExtractionLimits(max_ratio=5.0, ratio_activation_threshold=1024),
+        )
+
+
+def test_non_seekable_targz_extract(tmp_path: Path) -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = _tar_bytes(
+        [("file", "a.txt", b"hello"), ("file", "b.txt", b"world")], mode="w:gz"
+    )
+    dest = tmp_path / "out"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        r.extract_all(dest)
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert (dest / "b.txt").read_bytes() == b"world"
+
+
+def test_cross_device_hardlink_reuses_sibling(tmp_path: Path, monkeypatch) -> None:
+    # B->A lands "cross-device" (os.link against A fails EXDEV -> copy). A later C->A on
+    # the same device as B is created with os.link(B, C), reusing the sibling copy.
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("file", "A.txt", b"payload"),
+                ("hard", "B.txt", "A.txt"),
+                ("hard", "C.txt", "A.txt"),
+            ]
+        )
+    )
+    dest = tmp_path / "out"
+    real_link = os.link
+
+    def fake_link(source, target, *a, **k):
+        # Every attempt against A's own copy is "cross-device"; links to B's copy work.
+        if os.fspath(source).endswith("A.txt"):
+            raise OSError(errno.EXDEV, "cross-device")
+        return real_link(source, target, *a, **k)
+
+    monkeypatch.setattr(os, "link", fake_link)
+    extract(src, dest)
+
+    assert (dest / "B.txt").read_bytes() == b"payload"
+    assert (dest / "C.txt").read_bytes() == b"payload"
+    assert os.path.samefile(dest / "B.txt", dest / "C.txt")  # C linked to B's copy
+    assert not os.path.samefile(dest / "A.txt", dest / "B.txt")  # B is a separate copy
+
+
+# ---------------------------------------------------------------------------
+# Live (streaming) decompression-ratio guard (live-decompression-ratio-guard)
+# ---------------------------------------------------------------------------
+
+
+def test_counting_reader_counts_bytes() -> None:
+    from archivey.internal.streams.counting import CountingReader
+
+    cr = CountingReader(io.BytesIO(b"abcdefghij"))
+    assert cr.bytes_read == 0
+    assert cr.read(4) == b"abcd"
+    assert cr.bytes_read == 4
+    assert cr.read() == b"efghij"
+    assert cr.bytes_read == 10
+
+
+def test_compressed_bytes_consumed_grows_on_piped_targz() -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = _tar_bytes([("file", "a.txt", b"x" * 200_000)], mode="w:gz")
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        # A compressed pipe has no cheaply-knowable total, but the live counter is present.
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is not None
+        for _member, stream in r.stream_members():
+            if stream is not None:
+                stream.read()
+        assert r.compressed_bytes_consumed > 0
+
+
+def test_streaming_targz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    # 8 MiB of zeros -> a tiny gz; from a pipe both static denominators are unknown, so
+    # only the live ratio (and the absolute cap, set high) can catch it.
+    raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
+    dest = tmp_path / "out"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        assert r.compressed_source_size is None  # no static archive-wide denominator
+        with pytest.raises(ResourceLimitError):
+            r.extract_all(
+                dest,
+                limits=ExtractionLimits(
+                    max_ratio=10.0,
+                    ratio_activation_threshold=1024,
+                    max_extracted_bytes=100
+                    * 2**20,  # high, so the cap is not what trips
+                ),
+            )
+
+
+def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
+    dest = tmp_path / "out"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        with pytest.raises(ResourceLimitError):
+            r.extract_all(
+                dest,
+                limits=ExtractionLimits(
+                    max_ratio=10.0,
+                    ratio_activation_threshold=1024,
+                    max_extracted_bytes=100 * 2**20,
+                ),
+                on_error=OnError.CONTINUE,  # global guard halts anyway
+            )
+
+
+def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
+    from tests.streams_util import NonSeekableBytesIO
+
+    payload = os.urandom(2 * 1024 * 1024)  # incompressible; plain (uncompressed) tar
+    raw = _tar_bytes([("file", "a.bin", payload)], mode="w")
+    dest = tmp_path / "out"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        assert r.compressed_bytes_consumed is None  # uncompressed: nothing counted
+        r.extract_all(
+            dest,
+            limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
+        )
+    assert (dest / "a.bin").read_bytes() == payload
+
+
+def test_seekable_targz_uses_static_not_live(tmp_path: Path) -> None:
+    # A path (seekable) .tar.gz has a knowable compressed_source_size, so the static
+    # archive-wide ratio applies and no live counter is created.
+    src = tmp_path / "a.tar.gz"
+    src.write_bytes(_tar_bytes([("file", "a.txt", b"hi")], mode="w:gz"))
+    with open_archive(src) as r:
+        assert r.compressed_source_size is not None
+        assert r.compressed_bytes_consumed is None
+
+
+def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
+    # A bare .gz single-file compressor from a pipe (SingleFileReader) is covered too.
+
+    from tests.streams_util import NonSeekableBytesIO
+
+    raw = gzip.compress(b"\x00" * (8 * 1024 * 1024))
+    dest = tmp_path / "out"
+    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+        assert r.compressed_source_size is None
+        assert (
+            r.compressed_bytes_consumed is not None
+        )  # counter wired for single-file too
+        with pytest.raises(ResourceLimitError):
+            r.extract_all(
+                dest,
+                limits=ExtractionLimits(
+                    max_ratio=10.0,
+                    ratio_activation_threshold=1024,
+                    max_extracted_bytes=100 * 2**20,
+                ),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Orphaned-hardlink second pass + selector semantics + live-guard coverage
+# (post-4b review regressions — each test pins a bug found reviewing #28/#31)
+# ---------------------------------------------------------------------------
+
+
+def _orphan_tar(tmp_path: Path, links: list[str]) -> Path:
+    """A tar with source ``A.txt`` followed by hardlinks to it (the orphan-recovery shape:
+    extracting only the links leaves the source excluded)."""
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [("file", "A.txt", b"hello world")]
+            + [("hard", ln, "A.txt") for ln in links]
+        )
+    )
+    return src
+
+
+def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
+    # Regression: with the excluded source's FIRST link skipped (OverwritePolicy.SKIP over
+    # an existing destination), the coordinator crashed with a raw KeyError when linking
+    # the second orphan (source_paths never got an entry). The content must instead be
+    # written to the first link whose destination is writable.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"pre-existing")
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt"],  # source A.txt excluded
+            overwrite=OverwritePolicy.SKIP,
+            on_error=OnError.CONTINUE,
+        ).results
+
+    statuses = {res.member.name: res.status for res in results}
+    assert statuses["L1.txt"] is ExtractionStatus.NOT_OVERWRITTEN
+    assert statuses["L2.txt"] is ExtractionStatus.EXTRACTED
+    assert (dest / "L1.txt").read_bytes() == b"pre-existing"  # untouched under SKIP
+    assert (
+        dest / "L2.txt"
+    ).read_bytes() == b"hello world"  # content moved to next link
+    assert not (dest / "A.txt").exists()  # excluded source never materialized by name
+
+
+def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
+    # Companion to the above: when EVERY selected link's destination already exists under
+    # SKIP, all links are recorded NOT_OVERWRITTEN, existing files stay untouched, and no stray
+    # content or temp file is written anywhere.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"keep-1")
+    (dest / "L2.txt").write_bytes(b"keep-2")
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt"],
+            overwrite=OverwritePolicy.SKIP,
+        ).results
+
+    assert [res.status for res in results] == [ExtractionStatus.NOT_OVERWRITTEN] * 2
+    assert (dest / "L1.txt").read_bytes() == b"keep-1"
+    assert (dest / "L2.txt").read_bytes() == b"keep-2"
+    assert sorted(p.name for p in dest.iterdir()) == ["L1.txt", "L2.txt"]  # no strays
+
+
+def test_orphan_materialized_source_carries_link_metadata(tmp_path: Path) -> None:
+    # Regression: the second-pass-materialized source was written with member=None, so no
+    # chmod/utime ever ran and the file kept mkstemp's 0600 forever. The link's transformed
+    # copy supplies the on-disk identity (spec: "the copy supplies ... mode, timestamps");
+    # hardlinks share one inode, so it must be applied to the file carrying the content.
+    import stat as stat_mod
+
+    link_mtime = 1_600_000_000
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("A.txt")
+        info.size = 11
+        info.mode = 0o644
+        info.mtime = (
+            1_500_000_000  # source's own mtime differs, proving we use the link's
+        )
+        t.addfile(info, io.BytesIO(b"hello world"))
+        info = tarfile.TarInfo("L1.txt")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "A.txt"
+        info.mode = 0o644
+        info.mtime = link_mtime
+        t.addfile(info)
+    src = tmp_path / "a.tar"
+    src.write_bytes(buf.getvalue())
+    dest = tmp_path / "out"
+
+    with open_archive(src) as r:
+        results = r.extract_all(dest, members=["L1.txt"]).results
+
+    assert [res.status for res in results] == [ExtractionStatus.EXTRACTED]
+    st = (dest / "L1.txt").lstat()
+    if os.name == "posix":  # Windows has no Unix permission bits (see _posix_perms)
+        assert stat_mod.S_IMODE(st.st_mode) == 0o644  # not mkstemp's 0600
+    assert int(st.st_mtime) == link_mtime  # the link member's mtime, not the source's
+
+
+def test_hardlink_duplicate_name_extraction_links_first_inode(tmp_path: Path) -> None:
+    src = tmp_path / "dup-hardlink.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("file", "A.txt", b"content1"),
+                ("hard", "L.txt", "A.txt"),
+                ("file", "A.txt", b"content2"),
+            ]
+        )
+    )
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        results = r.extract_all(dest, overwrite=OverwritePolicy.REPLACE).results
+    # First A.txt is superseded; hardlink still materializes its target bytes;
+    # the live A.txt is the last entry.
+    assert [res.status for res in results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (dest / "L.txt").read_bytes() == b"content1"
+    assert (dest / "A.txt").read_bytes() == b"content2"
+    # L was linked against the first A.txt inode; the second duplicate replaced the path.
+    if os.name == "posix":
+        assert not os.path.samefile(dest / "A.txt", dest / "L.txt")
+
+
+def test_hardlink_before_source_shares_inode_and_counts_once(tmp_path: Path) -> None:
+    # Regression: a hardlink PRECEDING its source in archive order (legal in crafted /
+    # non-GNU-ordered archives) was re-read in the second pass and written as an
+    # independent copy — content matched but the two paths did not share an inode, and the
+    # source's bytes were bomb-counted twice. It must be os.link'd to the extracted source.
+    payload = b"payload bytes"
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes([("hard", "L1.txt", "A.txt"), ("file", "A.txt", payload)])
+    )
+    dest = tmp_path / "out"
+    progress_bytes: list[int] = []
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, on_progress=lambda p: progress_bytes.append(p.bytes_written)
+        ).results
+
+    assert all(res.status is ExtractionStatus.EXTRACTED for res in results)
+    assert (dest / "L1.txt").read_bytes() == payload
+    assert os.path.samefile(dest / "A.txt", dest / "L1.txt")  # one inode, truly linked
+    assert progress_bytes[-1] == len(payload)  # bytes read/counted once, not twice
+
+
+def test_selector_archivemember_entry_matches_by_identity(tmp_path: Path) -> None:
+    # The collection selector's ArchiveMember entries match by object identity (the Phase 5
+    # semantics, now specced in safe-extraction): with duplicate names, passing one member
+    # object selects only that occurrence — while a str entry matches every duplicate.
+    # Non-current duplicates are reported as SUPERSEDED (no write).
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes([("file", "dup.txt", b"first"), ("file", "dup.txt", b"second")])
+    )
+
+    with open_archive(src) as r:
+        first, second = r.members()
+        assert first.name == second.name == "dup.txt"
+        assert first.is_current is False
+        assert second.is_current is True
+        results = r.extract_all(tmp_path / "by_member", members=[first]).results
+    assert len(results) == 1
+    assert results[0].status is ExtractionStatus.SUPERSEDED
+    assert not (tmp_path / "by_member" / "dup.txt").exists()
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            tmp_path / "by_name", members=["dup.txt"], overwrite=OverwritePolicy.REPLACE
+        ).results
+    assert len(results) == 2  # a str entry matches every same-named duplicate
+    assert [res.status for res in results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (tmp_path / "by_name" / "dup.txt").read_bytes() == b"second"
+
+
+def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> None:
+    # Regression: the live counter was only wired for NON-seekable streams, while the
+    # static denominator needs a cheaply-sizable source — so a compressed archive on a
+    # seekable-but-opaque stream (a custom stream type: not SEEK_END-whitelisted, no
+    # `.size`, no try_get_size()) had NO archive-wide ratio guard at all, leaving only the
+    # absolute byte cap. The counter must engage exactly when the static size is absent.
+    from tests.streams_util import (
+        CountingBytesIO,  # seekable, opaque to source_byte_size
+    )
+
+    raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
+    dest = tmp_path / "out"
+    with open_archive(CountingBytesIO(raw)) as r:
+        assert r.compressed_source_size is None  # opaque: no static denominator...
+        assert (
+            r.compressed_bytes_consumed is not None
+        )  # ...so the live counter is wired
+        with pytest.raises(ResourceLimitError):
+            r.extract_all(
+                dest,
+                limits=ExtractionLimits(
+                    max_ratio=10.0,
+                    ratio_activation_threshold=1024,
+                    max_extracted_bytes=100
+                    * 2**20,  # high, so the cap is not what trips
+                ),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform name safety (safe-extraction O2/O3/O4/O7) — asserted
+# deterministically on every platform, not gated on the runner OS.
+# See dev-docs/decisions/0013-cross-platform-name-safety-policies.md.
+# ---------------------------------------------------------------------------
+
+
+def _overwritten(report) -> list:
+    """Members a later REPLACE clobbered — the result-side record of a collision.
+
+    Collisions left the diagnostics channel: ``ExtractionResult`` is now the only
+    record, and a REPLACE merge shows up as the earlier member being revised to
+    ``OVERWRITTEN`` rather than as a diagnostic count."""
+    return [r for r in report.results if r.status is ExtractionStatus.OVERWRITTEN]
+
+
+def _surrogate_tar(stored_name: str, payload: bytes = b"abc") -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", encoding="utf-8", errors="surrogateescape"
+    ) as tf:
+        info = tarfile.TarInfo(stored_name)
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()
+
+
+# --- O2: casefold / normalization collisions -------------------------------
+
+
+def test_o2_casefold_collision_strict_error_is_deterministic(tmp_path: Path) -> None:
+    # README and readme are distinct in the archive but the same file on Windows/macOS.
+    # Under STRICT the second is a deterministic collision on EVERY platform (on
+    # case-sensitive Linux it would otherwise silently become a second file).
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=OverwritePolicy.ERROR,
+        on_error=OnError.CONTINUE,
+    )
+    statuses = [r.status for r in report.results]
+    assert statuses == [ExtractionStatus.EXTRACTED, ExtractionStatus.FAILED]
+    # The collision is recorded on the loser's own result: requested_path is the
+    # destination it intended *before* resolution (its own spelling), and the error says
+    # why it did not get it. path stays None — nothing of this member is on disk.
+    assert report.results[1].requested_path == dest / "readme"
+    assert report.results[1].path is None
+    assert report.results[1].error is not None
+    assert not _overwritten(report)  # ERROR never clobbers, so nothing is OVERWRITTEN
+
+
+def test_o2_casefold_collision_strict_replace_no_silent_merge(tmp_path: Path) -> None:
+    # REPLACE must not silently merge into two files on a case-sensitive FS: the second
+    # member deterministically overwrites the first at one path, and it is recorded.
+    # This is the case that was SILENT before extraction-results-authoritative — both
+    # members reported a plain EXTRACTED at the same path.
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    on_disk = sorted(p.name for p in dest.iterdir())
+    assert on_disk == ["README"]  # one file, not README + readme
+    assert (dest / "README").read_bytes() == b"B"  # second member won
+
+    first, second = report.results
+    assert first.status is ExtractionStatus.OVERWRITTEN
+    assert first.path is None  # nothing at that path is this member's content
+    assert first.requested_path == dest / "README"  # ...but it did write there
+    assert second.status is ExtractionStatus.EXTRACTED
+    assert second.path == first.requested_path  # the join between the pair
+
+
+def test_o2_collision_trusted_defers_to_local_os(tmp_path: Path) -> None:
+    # TRUSTED keys on the exact path and never raises a collision event (it defers to the
+    # OS). The deterministic, OS-independent assertion is "no member was clobbered".
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert not _overwritten(report)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+
+
+def test_o2_nfc_nfd_collision_strict(tmp_path: Path) -> None:
+    nfc = unicodedata.normalize("NFC", "café.txt")
+    nfd = unicodedata.normalize("NFD", "café.txt")
+    assert nfc != nfd
+    archive = _tar_bytes([("file", nfc, b"A"), ("file", nfd, b"B")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    assert len(_overwritten(report)) == 1
+    assert len(list(dest.iterdir())) == 1
+
+
+# --- O3/O4: reserved names, colon, trailing dot/space ----------------------
+
+
+@pytest.mark.parametrize(
+    "name", ["NUL", "nul", "COM1", "LPT9", "NUL.txt", "AUX.tar.gz"]
+)
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_o3_reserved_name_rejected(tmp_path: Path, name: str, policy) -> None:
+    archive = _tar_bytes([("file", name, b"x")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
+    )
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert isinstance(report.results[0].error, UnportableNameError)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows itself refuses the NUL device name at write time; TRUSTED defers to "
+    "the OS, so the 'written' outcome is a POSIX-only assertion (spec: 'written if the "
+    "OS allows').",
+)
+def test_o3_reserved_name_written_under_trusted(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "NUL", b"x")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.TRUSTED)
+    # TRUSTED does not apply the O3 name rejection — the member is not BLOCKED by policy.
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+    assert (dest / "NUL").read_bytes() == b"x"
+
+
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_o4_colon_rejected_strict_and_standard(tmp_path: Path, policy) -> None:
+    archive = _tar_bytes([("file", "file:hidden", b"x")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
+    )
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert isinstance(report.results[0].error, UnportableNameError)
+
+
+@pytest.mark.parametrize("name,portable", [("foo.", "foo"), ("bar ", "bar")])
+def test_o3_trailing_dot_space_stripped_strict_kept_standard(
+    tmp_path: Path, name: str, portable: str
+) -> None:
+    archive = _tar_bytes([("file", name, b"x")])
+    # STRICT rewrites the Windows-mangled shape to its portable spelling (a legitimate
+    # macOS/Linux name, not an attack), extracts it, and surfaces the rename.
+    strict = extract(
+        io.BytesIO(archive), tmp_path / "strict", policy=ExtractionPolicy.STRICT
+    )
+    assert strict.results[0].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in (tmp_path / "strict").iterdir()) == [portable]
+    # The rewrite is recorded on the result, not as a diagnostic: presented_name is the
+    # spelling before the rewrite, path.name is what landed.
+    assert strict.results[0].presented_name == name
+    assert strict.results[0].path is not None
+    assert strict.results[0].path.name == portable
+    # STANDARD does NOT rewrite the name (so no presented_name) — it keeps it faithful.
+    # The on-disk name is then the OS's call: POSIX writes it verbatim; Windows itself trims
+    # the trailing dot/space, so we only assert the faithful on-disk name off Windows.
+    standard = extract(
+        io.BytesIO(archive), tmp_path / "standard", policy=ExtractionPolicy.STANDARD
+    )
+    assert standard.results[0].status is ExtractionStatus.EXTRACTED
+    assert standard.results[0].presented_name is None
+    if os.name != "nt":
+        assert sorted(p.name for p in (tmp_path / "standard").iterdir()) == [name]
+
+
+def test_o3_trailing_dot_directory_tree_stays_connected(tmp_path: Path) -> None:
+    # The reported real-world case: a macOS folder named 'stuff_etc.' with a file inside.
+    # STRICT must strip the same segment identically in the dir entry and its children, so
+    # the tree stays connected (no orphaned files under a differently-named parent).
+    archive = _tar_bytes(
+        [
+            ("dir", "codex/", None),
+            ("dir", "codex/stuff_etc./", None),
+            ("file", "codex/stuff_etc./owl.jpg", b"img"),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert (dest / "codex" / "stuff_etc" / "owl.jpg").read_bytes() == b"img"
+
+
+def test_o3_all_dots_segment_rejected(tmp_path: Path) -> None:
+    # A segment that is ENTIRELY dots/spaces has no portable spelling (stripping would
+    # collapse the path), so it is still rejected rather than rewritten.
+    archive = _tar_bytes([("file", "a/.../b.txt", b"x")])
+    report = extract(
+        io.BytesIO(archive),
+        tmp_path / "out",
+        policy=ExtractionPolicy.STRICT,
+        on_error=OnError.CONTINUE,
+    )
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert isinstance(report.results[0].error, UnportableNameError)
+
+
+def test_o3_strip_passes_through_bare_dot_root(tmp_path: Path) -> None:
+    # A bare "." segment (the root dir; normalize_member_name maps a ZIP/TAR root "/" to
+    # ".") is a path spelling, not a trailing-dot hazard — the strip must NOT collapse it to
+    # empty and reject it. A "/"-rooted zip extracts cleanly under STRICT.
+    archive = tmp_path / "rooted.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("/"), b"")
+        zf.writestr("a.txt", b"hello")
+    report = extract(archive, tmp_path / "out", policy=ExtractionPolicy.STRICT)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
+
+
+def test_o3_bare_dot_root_not_trailing_dot_under_strict() -> None:
+    # normalize_member_name maps a bare ZIP/TAR root ("/") to "." — that is a path
+    # segment spelling, not a Win32 trailing-dot hazard like "foo.".
+    member = _member(".", type=MemberType.DIRECTORY)
+    assert apply_name_policy(member, ExtractionPolicy.STRICT) is member
+
+
+# --- O7: surrogateescape sanitize ------------------------------------------
+
+
+def test_o7_surrogateescape_sanitized_under_strict(tmp_path: Path) -> None:
+    # caf<0xe9>.txt carries a raw non-UTF-8 byte; STRICT rewrites it to a portable spelling
+    # deterministically on every OS (rather than depending on whether the FS accepts it).
+    stored = b"caf\xe9.txt".decode("utf-8", errors="surrogateescape")
+    archive = _surrogate_tar(stored)
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in dest.iterdir()) == ["caf%E9.txt"]
+
+
+def test_o7_percent_escaped_when_sanitizing(tmp_path: Path) -> None:
+    # A literal '%' in a name that also carries a non-UTF-8 byte is escaped as %25 so the
+    # spelling is unambiguously reversible.
+    stored = b"a%b\xe9".decode("utf-8", errors="surrogateescape")
+    archive = _surrogate_tar(stored)
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert sorted(p.name for p in dest.iterdir()) == ["a%25b%E9"]
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+
+
+def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
+    # A name with no non-UTF-8 bytes is never rewritten, even if it contains '%'.
+    archive = _tar_bytes([("file", "50%.txt", b"x")])
+    dest = tmp_path / "out"
+    extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert sorted(p.name for p in dest.iterdir()) == ["50%.txt"]
+
+
+# --- OverwritePolicy.RENAME ------------------------------------------------
+
+
+def test_rename_inserts_counter_before_suffix(tmp_path: Path) -> None:
+    # RENAME applies to destination collisions, not archive duplicate names
+    # (duplicates are SUPERSEDED / last-entry-wins instead).
+    archive = _tar_bytes([("file", "photo.jpg", b"from-archive")])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "photo.jpg").write_bytes(b"preexisting")
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+    assert len(report.results) == 1
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in dest.iterdir()) == [
+        "photo (1).jpg",
+        "photo.jpg",
+    ]
+    assert (dest / "photo.jpg").read_bytes() == b"preexisting"
+    assert (dest / "photo (1).jpg").read_bytes() == b"from-archive"
+    # The rename is observable via requested_path != path.
+    written = report.results[0]
+    assert written.path.name == "photo (1).jpg"
+    assert written.requested_path.name == "photo.jpg"
+    assert written.requested_path != written.path
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        (".bashrc", ".bashrc (1)"),  # leading-dot dotfile: no suffix split
+        ("archive.tar.gz", "archive.tar (1).gz"),  # single final suffix
+        ("noext", "noext (1)"),  # no suffix
+    ],
+)
+def test_rename_suffix_edge_cases(tmp_path: Path, name: str, expected: str) -> None:
+    archive = _tar_bytes([("file", name, b"from-archive")])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / name).write_bytes(b"preexisting")
+    extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+    assert expected in {p.name for p in dest.iterdir()}
+    assert (dest / name).read_bytes() == b"preexisting"
+
+
+def test_requested_path_equals_path_for_normal_write(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "a.txt", b"x")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest)
+    result = report.results[0]
+    assert result.requested_path == result.path == dest / "a.txt"
+
+
+# --- Additional O2 edge cases (review follow-up) ---------------------------
+
+
+def test_o2_casefold_collision_standard_replace_no_silent_merge(tmp_path: Path) -> None:
+    # STANDARD collision-tracks exactly like STRICT (only TRUSTED defers).
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert sorted(p.name for p in dest.iterdir()) == ["README"]
+    assert (dest / "README").read_bytes() == b"B"
+    assert len(_overwritten(report)) == 1
+
+
+def test_o7_sanitized_name_collides_with_literal_percent_name(tmp_path: Path) -> None:
+    # A surrogateescape name sanitizes to caf%E9.txt, which must collide with a member
+    # literally named caf%E9.txt (the sanitized spelling feeds the collision map).
+    literal = "caf%E9.txt"
+    surro = b"caf\xe9.txt".decode("utf-8", errors="surrogateescape")
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", encoding="utf-8", errors="surrogateescape"
+    ) as tf:
+        for nm, data in [(literal, b"A"), (surro, b"B")]:
+            info = tarfile.TarInfo(nm)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(buf.getvalue()), dest, overwrite=OverwritePolicy.REPLACE
+    )
+    assert sorted(p.name for p in dest.iterdir()) == ["caf%E9.txt"]
+    assert len(_overwritten(report)) == 1
+    # The member that won carries both signals: it was rewritten (presented_name is the
+    # surrogateescape spelling) and it clobbered the literal-percent member.
+    assert report.results[1].presented_name == surro
+    assert report.results[0].status is ExtractionStatus.OVERWRITTEN
+
+
+def test_o2_orphan_hardlink_honours_collision_map(tmp_path: Path) -> None:
+    # Deferred (orphaned) hardlink recovery must not bypass the collision map: a hardlink
+    # whose source is excluded is orphaned before its casefold-partner file is written, so
+    # the second pass has to re-check the (now-populated) map instead of silently writing a
+    # second casefold-equivalent file on a case-sensitive FS.
+    archive = _tar_bytes(
+        [
+            ("file", "src.bin", b"data"),
+            ("hard", "readme", "src.bin"),
+            ("file", "README", b"other"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            members=lambda m: (
+                m.name != "src.bin"
+            ),  # exclude the source -> readme orphans
+        )
+    # One casefold-equivalent file, not README + readme.
+    assert sorted(p.name for p in dest.iterdir()) == ["README"]
+    # The deferred link won the contested destination, so the first-pass writer is the
+    # one revised to OVERWRITTEN — the second pass revises results just like the first.
+    assert len(_overwritten(report)) == 1
+    assert _overwritten(report)[0].member.name == "README"
+
+
+def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> None:
+    # TRUSTED defers: readme and README are distinct on a case-sensitive FS, so the orphan
+    # recovery writes both (no collision event). Asserts the OS-independent invariant that
+    # TRUSTED raises no collision diagnostic.
+    archive = _tar_bytes(
+        [
+            ("file", "src.bin", b"data"),
+            ("hard", "readme", "src.bin"),
+            ("file", "README", b"other"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            overwrite=OverwritePolicy.REPLACE,
+            members=lambda m: m.name != "src.bin",
+        )
+    assert not _overwritten(report)
+
+
+# ---------------------------------------------------------------------------
+# Bidi override/isolate names are refused; directional marks are not
+# ---------------------------------------------------------------------------
+
+
+def _tar_with_member(path: Path, name: str, *, link_target: str | None = None) -> Path:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        if link_target is None:
+            info = tarfile.TarInfo(name)
+            info.size = 3
+            tar.addfile(info, io.BytesIO(b"abc"))
+        else:
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = link_target
+            tar.addfile(info)
+    path.write_bytes(buf.getvalue())
+    return path
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["invoice‮cod.exe", "a⁦b.txt", "x‪y", "z‬.bin"],
+    ids=["rlo", "lri", "lre", "pdf"],
+)
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_bidi_override_name_is_refused_by_default(
+    name: str, policy: ExtractionPolicy, tmp_path: Path
+) -> None:
+    """The reordering controls make a name display as something it is not.
+
+    Refused at the default policy and at `STANDARD`. Like every other name rejection it
+    surfaces as a `BLOCKED` result rather than a raised error at the `extract()` level —
+    `OnError` governs failures, not blocks.
+    """
+    src = _tar_with_member(tmp_path / "a.tar", name)
+    dest = tmp_path / "out"
+    report = extract(src, dest, policy=policy, on_error=OnError.STOP)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.BLOCKED
+    assert not list(dest.rglob("*"))
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["invoice\u202ecod.exe", "a\u2066b.txt", "x\u202ay", "z\u202c.bin"],
+    ids=["rlo", "lri", "lre", "pdf"],
+)
+def test_bidi_override_name_extracts_under_trusted(name: str, tmp_path: Path) -> None:
+    """`TRUSTED` lets a deceptive name through, deliberately (ADR 0017).
+
+    The rejection is **policy-keyed**, not universal, and this is the half that says so.
+    Unlike everything in `check_universal` — traversal, absolute paths, NUL, a device
+    node — the write itself is completely safe here: the file lands inside `dest` under
+    exactly its stored bytes, and only a human reading the directory afterwards is
+    misled. `ExtractionPolicy` is the axis that owns name rejection, and `TRUSTED`
+    already means "faithful bytes, no name rejection or rewrite".
+
+    Without this, a caller who genuinely wants the bytes — a mirroring tool, a format
+    converter, a forensic extract — has no route at any policy, which is what ADR 0013
+    rejected for unrepresentable names ("extracting beats refusing").
+    """
+    src = _tar_with_member(tmp_path / "a.tar", name)
+    dest = tmp_path / "out"
+    report = extract(src, dest, policy=ExtractionPolicy.TRUSTED, on_error=OnError.STOP)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.EXTRACTED
+    assert (dest / name).is_file()  # faithful bytes: stored name, unmodified
+
+
+@pytest.mark.parametrize("name", ["invoice‮cod.exe", "a⁦b.txt"], ids=["rlo", "lri"])
+def test_apply_name_policy_raises_deceptive_name_error(
+    name: str, tmp_path: Path
+) -> None:
+    """The typed error itself, at the boundary that produces it.
+
+    `apply_name_policy`, not `check_universal`: the check is policy-keyed (ADR 0017), so
+    it lives with the other name-safety rules rather than with the path-escape ones.
+    Pinned at this boundary so a move back to `check_universal` — which would silently
+    re-break `TRUSTED` — fails here.
+    """
+    from archivey.exceptions import DeceptiveNameError
+    from archivey.internal.filters import apply_name_policy
+
+    check_universal(_member(name), tmp_path)  # not a universal violation
+    with pytest.raises(DeceptiveNameError):
+        apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+    assert (
+        apply_name_policy(_member(name), ExtractionPolicy.TRUSTED).name == name
+    )  # unchanged
+
+
+def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
+    """The same disguise with an extra hop: a plausible-looking target on disk."""
+    from archivey.exceptions import DeceptiveNameError
+    from archivey.internal.filters import apply_name_policy
+
+    member = _member("link", type=MemberType.SYMLINK, link_target="rea‮dm.txt")
+    check_universal(member, tmp_path)  # not a universal violation
+    with pytest.raises(DeceptiveNameError):
+        apply_name_policy(member, ExtractionPolicy.STRICT)
+
+    src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea‮dm.txt")
+    dest = tmp_path / "out"
+    report = extract(src, dest, on_error=OnError.STOP)
+    assert report.results[0].status is ExtractionStatus.BLOCKED
+    assert not list(dest.rglob("*"))
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["‏doc.pdf", "‎total-2024.txt", "؜فهرس.txt"],
+    ids=["rlm", "lrm", "alm"],
+)
+def test_bidi_directional_marks_still_extract(name: str, tmp_path: Path) -> None:
+    """The regression this change is most at risk of causing.
+
+    The library's advisory set contains all twelve bidi codepoints, marks included.
+    Rejecting *that* set would break legitimate Arabic and Hebrew filenames, which is
+    why the reject set is the two override/isolate ranges written out explicitly.
+    Marks reorder nothing; they only set the direction of one neutral character.
+    """
+    src = _tar_with_member(tmp_path / "a.tar", name)
+    dest = tmp_path / "out"
+    extract(src, dest, on_error=OnError.STOP)
+    assert [p.name for p in dest.iterdir()] == [name]
+
+
+def test_rtl_script_without_controls_extracts_silently(tmp_path: Path) -> None:
+    """RTL *script* is not a bidi control: the direction comes from the letters."""
+    name = "فهرس.txt"  # فهرس.txt
+    src = _tar_with_member(tmp_path / "a.tar", name)
+    dest = tmp_path / "out"
+    with open_archive(src) as reader:
+        reader.members()
+        assert DiagnosticCode.MEMBER_NAME_BIDI_CONTROL not in reader.diagnostics.counts
+    extract(src, dest, on_error=OnError.STOP)
+    assert [p.name for p in dest.iterdir()] == [name]
+
+
+def test_bidi_override_is_a_blocked_result_under_continue(tmp_path: Path) -> None:
+    """It inherits the whole `FilterRejectionError` lifecycle, which is what a batch wants."""
+    src = _tar_with_member(tmp_path / "a.tar", "invoice‮cod.exe")
+    report = extract(src, tmp_path / "out", on_error=OnError.CONTINUE)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.BLOCKED
+    assert result.path is None
+
+
+# ---------------------------------------------------------------------------
+# extraction-results-authoritative: results are the sole record, and abort_on
+# is the named replacement for the escalation that left with the diagnostics.
+# ---------------------------------------------------------------------------
+
+
+def test_three_spellings_filter_rename_then_portable_rewrite(tmp_path: Path) -> None:
+    """A caller filter rename followed by a portable rewrite produces three names.
+
+    ``member.name`` is the archive's, ``presented_name`` is the filter's output, and
+    ``path.name`` is what landed. Only ``presented_name`` records the middle one, which
+    is why the rewrite could not be expressed as ``requested_path != path``.
+    """
+    archive = _tar_bytes([("file", "orig.txt", b"x")])
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.STRICT,
+            filter=lambda m: m.replace(name="renamed."),  # trailing dot -> rewritten
+        )
+    (result,) = report.results
+    assert result.member.name == "orig.txt"
+    assert result.presented_name == "renamed."
+    assert result.path is not None
+    assert result.path.name == "renamed"
+    # The rewrite is independent of the rename marker: this member was not renamed by a
+    # collision, so requested_path still equals path.
+    assert result.requested_path == result.path
+
+
+def test_abort_on_name_collision_replace(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    with pytest.raises(NameCollisionError):
+        extract(
+            io.BytesIO(archive),
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            abort_on={AbortOn.NAME_COLLISION},
+        )
+    # Abort stops the run, it does not roll it back: the first member's bytes remain.
+    assert (dest / "README").read_bytes() == b"A"
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.ERROR,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_abort_on_name_collision_fires_on_every_resolution(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """The trigger is the collision, not its outcome — parity with the escalation this
+    replaces, which fired on all four resolutions."""
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    with pytest.raises(NameCollisionError):
+        extract(
+            io.BytesIO(archive),
+            tmp_path / "out",
+            overwrite=overwrite,
+            on_error=OnError.CONTINUE,
+            abort_on={AbortOn.NAME_COLLISION},
+        )
+
+
+def test_abort_on_name_collision_not_triggered_under_trusted(tmp_path: Path) -> None:
+    """TRUSTED keys on the exact path, so there is no collision event to abort on."""
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=OverwritePolicy.REPLACE,
+        abort_on={AbortOn.NAME_COLLISION},
+    )
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+
+
+def test_abort_on_name_sanitized(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "foo.", b"x"), ("file", "later.txt", b"y")])
+    dest = tmp_path / "out"
+    with pytest.raises(NameRewrittenError):
+        extract(
+            io.BytesIO(archive),
+            dest,
+            policy=ExtractionPolicy.STRICT,
+            abort_on={AbortOn.NAME_SANITIZED},
+        )
+    assert not (dest / "later.txt").exists()  # no later member processed
+
+
+def test_name_sanitized_without_opt_in_is_a_success(tmp_path: Path) -> None:
+    archive = _tar_bytes([("file", "foo.", b"x")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, policy=ExtractionPolicy.STRICT)
+    assert report.results[0].status is ExtractionStatus.EXTRACTED
+    assert report.results[0].presented_name == "foo."
+
+
+def test_abort_on_is_independent_of_on_error(tmp_path: Path) -> None:
+    """A blocked member aborts under either OnError when BLOCKED_MEMBER is set, and
+    never aborts when it is not."""
+    archive = _tar_bytes([("file", "NUL", b"x"), ("file", "ok.txt", b"y")])
+    for on_error in (OnError.STOP, OnError.CONTINUE):
+        dest = tmp_path / f"abort-{on_error.value}"
+        with pytest.raises(UnportableNameError):
+            extract(
+                io.BytesIO(archive),
+                dest,
+                on_error=on_error,
+                abort_on={AbortOn.BLOCKED_MEMBER},
+            )
+        assert not (dest / "ok.txt").exists()
+    for on_error in (OnError.STOP, OnError.CONTINUE):
+        dest = tmp_path / f"noabort-{on_error.value}"
+        report = extract(io.BytesIO(archive), dest, on_error=on_error)
+        assert report.results[0].status is ExtractionStatus.BLOCKED
+        assert (dest / "ok.txt").read_bytes() == b"y"
+
+
+def test_hardlink_failure_group_is_recorded_on_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One failed source, N failed links: the fan-out correlation lives on the results.
+
+    Previously carried by ``ExtractionOutcomeContext``; after the move, results are the
+    only place a caller can tell "N separate failures" from "one failure seen N times".
+    ``requested_path`` must survive the second-pass rebuild too — the first pass set it.
+    """
+    archive = _tar_bytes(
+        [
+            ("file", "src.bin", b"data"),
+            ("hard", "link1", "src.bin"),
+            ("hard", "link2", "src.bin"),
+        ]
+    )
+    dest = tmp_path / "out"
+
+    def boom(self, *args: object, **kwargs: object) -> None:
+        raise ExtractionError("forced second-pass failure")
+
+    monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", boom)
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            on_error=OnError.CONTINUE,
+            members=lambda m: m.name != "src.bin",  # orphan both links
+        )
+    failed = [r for r in report.results if r.status is ExtractionStatus.FAILED]
+    assert len(failed) == 2
+    assert failed[0].failure_group_id is not None
+    assert failed[0].failure_group_id == failed[1].failure_group_id
+    assert [r.failure_group_size for r in failed] == [2, 2]
+    # The destination each link intended survives the rebuild.
+    assert [r.requested_path for r in failed] == [dest / "link1", dest / "link2"]
+
+
+def test_failure_group_fields_are_both_or_neither(tmp_path: Path) -> None:
+    """An ordinary failure is not a group of one."""
+    archive = _tar_bytes([("file", "a.txt", b"x")])
+    report = extract(io.BytesIO(archive), tmp_path / "out")
+    (result,) = report.results
+    assert result.failure_group_id is None
+    assert result.failure_group_size is None
+
+
+def test_failed_replace_does_not_mark_earlier_member_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OVERWRITTEN means "written, then lost to a later REPLACE that landed".
+
+    If the replacing write fails, the earlier member keeps its content and its
+    EXTRACTED result — the revision is gated on the new write succeeding.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+
+    original = ExtractionCoordinator._write_file_atomic
+    calls = {"n": 0}
+
+    def fail_second(self, *args: object, **kwargs: object) -> None:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise ExtractionError("forced failure on the replacing write")
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", fail_second)
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=OverwritePolicy.REPLACE,
+        on_error=OnError.CONTINUE,
+    )
+    first, second = report.results
+    assert first.status is ExtractionStatus.EXTRACTED  # not OVERWRITTEN
+    assert second.status is ExtractionStatus.FAILED
+    # The atomic write means the first member's bytes were never at risk.
+    assert (dest / "README").read_bytes() == b"A"
+
+
+def test_progress_extracted_tally_follows_a_retroactive_overwrite(
+    tmp_path: Path,
+) -> None:
+    """``members_extracted`` is a tally of EXTRACTED *results*, so it has to follow a
+    result that is revised to OVERWRITTEN — otherwise the final progress report claims
+    more extracted members than the report contains."""
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    seen: list[tuple[int, int]] = []
+    report = extract(
+        io.BytesIO(archive),
+        tmp_path / "out",
+        overwrite=OverwritePolicy.REPLACE,
+        on_progress=lambda p: seen.append((p.members_done, p.members_extracted)),
+    )
+    extracted_rows = sum(
+        1 for r in report.results if r.status is ExtractionStatus.EXTRACTED
+    )
+    assert extracted_rows == 1
+    assert seen[-1] == (2, 1)
+
+
+def test_failed_replace_that_destroyed_content_marks_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A REPLACE that cleared the destination and *then* failed still loses the earlier
+    member's content, so that member must stop advertising a live path.
+
+    Only reachable on the non-atomic write paths (symlink here): a FILE write lands via
+    os.replace and never destroys the destination up front.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("sym", "readme", "elsewhere.txt")])
+    dest = tmp_path / "out"
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("forced failure after the destination was cleared")
+
+    monkeypatch.setattr("archivey.internal.extraction.os.symlink", boom)
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=OverwritePolicy.REPLACE,
+        on_error=OnError.CONTINUE,
+    )
+    first, second = report.results
+    assert second.status is ExtractionStatus.FAILED
+    # The first member's bytes were unlinked to make room for a write that never landed.
+    assert not (dest / "README").exists()
+    assert first.status is ExtractionStatus.OVERWRITTEN
+    assert first.path is None
+    assert first.requested_path == dest / "README"
+
+
+def test_hardlink_write_is_atomic_over_an_existing_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed hardlink write must not have already destroyed the destination.
+
+    The link is built at a temp sibling and os.replace'd in, so a failure leaves the
+    previous entry intact — the same guarantee FILE writes have always had.
+    """
+    archive = _tar_bytes([("file", "src.bin", b"data"), ("hard", "README", "src.bin")])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "README").write_bytes(b"pre-existing")
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("forced failure while placing the link")
+
+    monkeypatch.setattr("archivey.internal.extraction.os.replace", boom)
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=OverwritePolicy.REPLACE,
+        on_error=OnError.CONTINUE,
+    )
+    assert report.results[-1].status is ExtractionStatus.FAILED
+    # The destination survived the failed replacement...
+    assert (dest / "README").read_bytes() == b"pre-existing"
+    # ...and no staging file was left behind.
+    assert not [p for p in dest.iterdir() if p.name.startswith(".archivey-tmp-")]
+
+
+def test_hardlink_replaces_a_destination_symlink_without_following_it(
+    tmp_path: Path,
+) -> None:
+    """os.replace moves the link itself, so the atomic swap keeps the never-write-through
+    guarantee that the previous unlink-then-link had."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"must not be touched")
+    (dest / "README").symlink_to(outside)
+
+    archive = _tar_bytes([("file", "src.bin", b"data"), ("hard", "README", "src.bin")])
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert not (dest / "README").is_symlink()
+    assert (dest / "README").read_bytes() == b"data"
+    assert outside.read_bytes() == b"must not be touched"
+
+
+def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
+    """An anti-item delete must clear the collision map, not just ``written_paths``.
+
+    Both track what this run put on disk. Leaving a claim behind means a later member
+    resolving to the same key collides against content that no longer exists — a
+    spurious ``NameCollisionError`` under ``abort_on``, or an ``OVERWRITTEN`` revision
+    of a member that was already deleted.
+
+    Exercised at the coordinator level: reaching it through a backend needs two members
+    with the same collision key both marked current, which last-entry-wins prevents.
+    """
+    from archivey.internal.extraction import _Claim
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    written = dest / "README"
+    written.write_bytes(b"A")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
+    written_paths = {written}
+    # The claim the earlier FILE member left behind, keyed casefold(NFC(...)).
+    collision_map = {"readme": _Claim(written, 0)}
+    anti = ArchiveMember(type=MemberType.ANTI, name="README")
+
+    result = coordinator._apply_anti_item(
+        anti, written, written_paths, collision_map, dest
+    )
+
+    assert result.status is ExtractionStatus.EXTRACTED
+    assert not written.exists()
+    assert written_paths == set()
+    assert collision_map == {}  # the claim went with the content
+
+
+def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
+    """A no-op anti (nothing written this run at that path) releases nothing."""
+    from archivey.internal.extraction import _Claim
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    pre_existing = dest / "README"
+    pre_existing.write_bytes(b"not ours")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
+    other = dest / "other.txt"
+    collision_map = {"other.txt": _Claim(other, 0)}
+    anti = ArchiveMember(type=MemberType.ANTI, name="README")
+
+    coordinator._apply_anti_item(anti, pre_existing, set(), collision_map, dest)
+
+    assert pre_existing.read_bytes() == b"not ours"  # never ours to delete
+    assert collision_map == {"other.txt": _Claim(other, 0)}
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.ERROR,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_collided_with_names_the_blocking_path_for_a_this_run_collision(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """Under every resolution, a member blocked by a member of THIS run says so.
+
+    This is the fact the removed EXTRACTION_NAME_COLLISION diagnostic carried
+    (``prior_path``). It is set for all four resolutions because the collision, not its
+    outcome, is what happened.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=overwrite,
+        on_error=OnError.CONTINUE,
+    )
+    blocked = report.results[-1]
+    assert blocked.collided_with == dest / "README"
+    # The member that got there first collided with nothing.
+    assert report.results[0].collided_with is None
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.ERROR,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_collided_with_is_none_for_a_pre_existing_destination(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """An obstacle that was on disk before extraction is not a collision event.
+
+    Same statuses as the this-run cases above under every policy, so without this field
+    the two are indistinguishable from a single result. The diagnostic was silent here
+    too, so ``None`` is parity rather than lost information.
+    """
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.txt").write_bytes(b"already here")
+    report = extract(
+        io.BytesIO(_tar_bytes([("file", "a.txt", b"X")])),
+        dest,
+        overwrite=overwrite,
+        on_error=OnError.CONTINUE,
+    )
+    assert report.results[-1].collided_with is None
+    assert report.results[-1].requested_path == dest / "a.txt"
+
+
+def test_collided_with_is_not_set_under_trusted(tmp_path: Path) -> None:
+    """TRUSTED defers to the local OS: no collision *event*, so nothing to record.
+
+    Mirrors the condition the removed diagnostic fired under, which excluded TRUSTED.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert all(r.collided_with is None for r in report.results)
+
+
+def test_collided_with_joins_to_the_blocking_member_by_path_equality(
+    tmp_path: Path,
+) -> None:
+    """The point of carrying a path: finding *who* blocked you needs no collision keys.
+
+    Under REPLACE the blocking member is revised to OVERWRITTEN and no longer holds a
+    live ``path``, so the join falls back to its ``requested_path`` — the one wrinkle,
+    and far smaller than re-deriving NFC+casefold collision keys across the report.
+    """
+    archive = _tar_bytes([("file", "README", b"A"), ("file", "readme", b"B")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    blocked = report.results[-1]
+    assert blocked.collided_with is not None
+
+    blocker = next(
+        r
+        for r in report.results
+        if r is not blocked and (r.path or r.requested_path) == blocked.collided_with
+    )
+    assert blocker.member.name == "README"
+    assert blocker.status is ExtractionStatus.OVERWRITTEN

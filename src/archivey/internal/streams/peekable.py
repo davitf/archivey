@@ -1,0 +1,118 @@
+"""``PeekableStream`` — buffer a non-seekable source's prefix so detection never
+consumes it.
+
+Format detection needs to inspect the leading bytes of a source, but a non-seekable
+stream (a socket or pipe) cannot be rewound after that inspection. ``open_archive`` /
+``open_stream`` wrap such a source in a :class:`PeekableStream` **once**, run
+detection through :meth:`PeekableStream.peek`, and hand the *same* wrapper to the
+backend; reads then replay the buffered prefix before falling through to the
+underlying stream (see ``format-detection``).
+
+Lives in this package (not under detection) because it is a stream adapter; the
+opener owns the "when to wrap" policy.
+"""
+
+from __future__ import annotations
+
+from typing import BinaryIO
+
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    ensure_full_count_reads,
+    source_name,
+)
+
+# Default amount buffered for detection (matches ``format-detection``'s DETECTION_LIMIT).
+# The buffer grows on demand up to whatever ``peek(n)`` asks for — e.g. 32 774 bytes when
+# the ISO probe is triggered — so this is only the typical case, not a hard cap.
+DETECTION_LIMIT = 4096
+
+
+class PeekableStream(ReadOnlyIOStream):
+    """A read-only ``BinaryIO`` over a non-seekable source with a peekable prefix.
+
+    ``peek(n)`` returns the first ``n`` unconsumed bytes without advancing the read
+    position, reading ahead from the underlying stream into an internal buffer as needed.
+    ``read`` drains that buffer first, then passes through to the underlying stream.
+
+    The wrapper never closes the underlying stream: like the rest of the stream layer it
+    adapts a source the caller owns, so closing this wrapper must not take the caller's
+    stream down with it.
+    """
+
+    def __init__(self, underlying: BinaryIO) -> None:
+        super().__init__()
+        # Own the full-count precondition: open_stream hands this class the raw
+        # caller stream, which never went through resolve_source. Both src/
+        # construction sites gate on ``not is_seekable``; a seekable raw would
+        # take the buffering branch (read-ahead this class never unwinds and
+        # never closes). An already full-count inner (``FullCountStream``, or
+        # the caller's ``BufferedReader``) is returned unchanged.
+        self._underlying = ensure_full_count_reads(underlying)
+        # Bytes read ahead from the underlying stream but not yet consumed by read().
+        self._buffer = bytearray()
+        # Total bytes consumed via read() (the logical position of this stream).
+        self._pos = 0
+
+    def _fill_to(self, n: int) -> None:
+        """Read ahead until the buffer holds ``n`` bytes or the underlying stream ends.
+
+        A single read: ``__init__`` applied ``ensure_full_count_reads``, so a short
+        return is EOF, not a legal mid-stream short. The gather loop this used to
+        be is redundant once that precondition holds — and is wrong to keep as the
+        thing that *supplies* the guarantee, because not every construction site
+        had it.
+        """
+        missing = n - len(self._buffer)
+        if missing <= 0:
+            return
+        chunk = self._underlying.read(missing)
+        if chunk:
+            self._buffer.extend(chunk)
+
+    def peek(self, n: int) -> bytes:
+        """Return up to the first ``n`` unconsumed bytes without consuming them.
+
+        Fewer than ``n`` bytes are returned only when the underlying stream ends first.
+        """
+        if n < 0:
+            raise ValueError("peek size must be non-negative")
+        self._fill_to(n)
+        return bytes(self._buffer[:n])
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        if size is None or size < 0:
+            data = bytes(self._buffer) + (self._underlying.read() or b"")
+            self._buffer.clear()
+            self._pos += len(data)
+            return data
+        self._fill_to(size)
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        self._pos += len(data)
+        return data
+
+    def seekable(self) -> bool:
+        # A peekable stream is forward-only by construction (it wraps a non-seekable
+        # source); the peeked prefix is replayed by read(), not by seek().
+        return False
+
+    def tell(self, /) -> int:
+        return self._pos
+
+    @property
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; this returns a path when the inner has one
+        """Path of the underlying stream, or raise :exc:`AttributeError` if it has none
+        (see :class:`ReadOnlyIOStream.name` — ``hasattr`` must stay false).
+        """
+        resolved = source_name(self._underlying)
+        if resolved is not None:
+            return resolved
+        raise AttributeError("name")
+
+    def close(self) -> None:
+        # Do NOT close the underlying stream — the caller owns it.
+        super().close()
+
+    def __repr__(self) -> str:
+        return f"PeekableStream({self._underlying!r})"

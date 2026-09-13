@@ -1,0 +1,370 @@
+"""Corrupt/truncated-input handling for the random-access accelerators.
+
+`test_codecs.py` only exercises the *stdlib* decompressor paths; these cover the optional
+`rapidgzip` accelerator, which backs both gzip (`RapidgzipFile`) and bzip2 (its bundled
+`IndexedBzip2File`) and whose exception taxonomy differs from the stdlib decoders'. The
+accelerators are forced ON (and skipped when `rapidgzip` is absent). Truncation: rapidgzip
+often soft-EOFs by design; Archivey backstops with empty→stdlib fallback and a single-member
+ISIZE compare on path sources (see OpenSpec `rapidgzip-truncation-investigation`).
+"""
+
+from __future__ import annotations
+
+import bz2
+import gzip
+import io
+from pathlib import Path
+
+import pytest
+
+from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.config import (
+    AcceleratorMode,
+    StreamConfig,
+)
+from archivey.internal.streams.codecs import Codec, open_codec_stream
+
+_GZ_ON = StreamConfig(use_rapidgzip=AcceleratorMode.ON)
+_BZ_ON = StreamConfig(use_indexed_bzip2=AcceleratorMode.ON)
+
+
+def _write(tmp_path: Path, name: str, data: bytes) -> str:
+    p = tmp_path / name
+    p.write_bytes(data)
+    return str(p)
+
+
+# --- rapidgzip -------------------------------------------------------------------------
+
+
+def test_rapidgzip_corrupt_translates_to_corruption() -> None:
+    pytest.importorskip("rapidgzip")
+    corrupt = bytearray(gzip.compress(b"payload " * 200))
+    corrupt[15:35] = b"\x00" * 20  # clobber the deflate body past the 10-byte header
+    # An in-memory source exercises the "Failed to parse gzip/zlib header" path that was
+    # previously left untranslated (leaking a raw RuntimeError).
+    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_GZ_ON) as s:
+        with pytest.raises(CorruptionError):
+            s.read()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Classic non-ISA-L (macOS) body-corruption wording.
+        (
+            "Failed to decode deflate block at 10 B 0 b because of: "
+            "The backreferenced distance lies outside the window buffer!"
+        ),
+        # Observed on macOS CI for a clobbered zlib body (Huffman tables invalid):
+        # "Failed to read deflate block header … The Huffman coding is not optimal!"
+        (
+            "Failed to read deflate block header at offset 2 B 0 b "
+            "(position after trying: 10 B 7 b: The Huffman coding is not optimal!"
+        ),
+        # Bare Huffman phrasing — keep covered even if the prefix changes.
+        "The Huffman coding is not optimal!",
+    ],
+    ids=["decode-block", "read-block-header-huffman", "huffman-only"],
+)
+def test_rapidgzip_macos_deflate_corruption_messages_are_translated(
+    message: str,
+) -> None:
+    # Non-ISA-L rapidgzip (macOS) reports corrupt deflate as ValueError with several
+    # message shapes; Linux ISA-L uses RuntimeError/IsalInflateWrapper instead. Assert
+    # every known shape maps to CorruptionError so a raw ValueError never leaks —
+    # platform-independently, without needing the macOS backend installed.
+    from archivey.internal.streams.codecs import DeflateCodec, GzipCodec, ZlibCodec
+
+    exc = ValueError(message)
+    assert isinstance(GzipCodec()._translate_accelerator(exc), CorruptionError)
+    assert isinstance(DeflateCodec()._translate_accelerator(exc), CorruptionError)
+    assert isinstance(ZlibCodec()._translate_accelerator(exc), CorruptionError)
+
+
+def test_rapidgzip_truncation_is_reported(tmp_path: Path) -> None:
+    pytest.importorskip("rapidgzip")
+    full = gzip.compress(b"the quick brown fox " * 5000)
+    path = _write(tmp_path, "truncated.gz", full[: len(full) // 2])
+    # Truncation must surface as a read/close error (testing-contract: "CorruptionError or
+    # TruncatedError"). Linux often soft-EOFs then empty→stdlib / ISIZE → TruncatedError;
+    # macOS often raises from rapidgzip itself (CorruptionError). Either satisfies.
+    with pytest.raises((TruncatedError, CorruptionError)):
+        with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+            s.read()
+
+
+def test_rapidgzip_header_only_truncation_raises(tmp_path: Path) -> None:
+    """Bare 10-byte gzip header: rapidgzip silent-empty; empty→stdlib must raise."""
+    pytest.importorskip("rapidgzip")
+    path = _write(tmp_path, "header.gz", bytes.fromhex("1f8b08000000000000ff"))
+    with pytest.raises((TruncatedError, CorruptionError)):
+        with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+            s.read()
+
+
+def test_rapidgzip_empty_payload_still_ok(tmp_path: Path) -> None:
+    pytest.importorskip("rapidgzip")
+    path = _write(tmp_path, "empty.gz", gzip.compress(b""))
+    with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+        assert s.read() == b""
+
+
+def test_rapidgzip_silent_empty_fallback_recovers_prefix(tmp_path: Path) -> None:
+    """When rapidgzip returns empty, stdlib fallback streams a correct prefix then errors.
+
+    Uses a large bounded ``read(n)`` (not ``read()`` / ``readall``): after #183 the
+    gzip-window engine recovers the prefix on sized reads and raises without returning
+    bytes on ``read(-1)``. The ``if recovered:`` soft-assert is intentionally gone — a
+    silent-empty Linux cut must deliver a non-empty correct prefix.
+    """
+    pytest.importorskip("rapidgzip")
+    payload = b"the quick brown fox jumps over the lazy dog.\n" * 800
+    full = gzip.compress(payload)
+    # Mid-body cut: Linux rapidgzip typically silent-empty; macOS may raise instead.
+    path = _write(tmp_path, "mid.gz", full[: max(18, len(full) // 2)])
+    recovered = bytearray()
+    raised: BaseException | None = None
+    with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+        try:
+            # Large chunk is safe on GzipDecompressorStream (#183); must not silently
+            # drop the recoverable prefix the way GzipFile.read(large) could.
+            while True:
+                chunk = s.read(65536)
+                if not chunk:
+                    break
+                recovered.extend(chunk)
+        except (TruncatedError, CorruptionError) as exc:
+            raised = exc
+    if raised is None:
+        pytest.fail("expected TruncatedError or CorruptionError on truncated gzip")
+    if isinstance(raised, CorruptionError):
+        # macOS / rapidgzip raised before empty→stdlib fallback — no prefix contract.
+        return
+    assert recovered
+    assert bytes(recovered) == payload[: len(recovered)]
+    assert len(recovered) < len(payload)
+
+
+def test_rapidgzip_silent_empty_fallback_tell_tracks_bytes(tmp_path: Path) -> None:
+    """After empty→stdlib switch, tell() must track delivered bytes (not stay at 0)."""
+    pytest.importorskip("rapidgzip")
+    payload = b"the quick brown fox jumps over the lazy dog.\n" * 800
+    full = gzip.compress(payload)
+    path = _write(tmp_path, "mid-tell.gz", full[: max(18, len(full) // 2)])
+    with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+        try:
+            chunk = s.read(1024)
+        except (TruncatedError, CorruptionError):
+            return  # rapidgzip raised before fallback; nothing to assert on tell
+        if not chunk:
+            return  # unexpected empty without raise — not the soft-empty path
+        assert s.tell() == len(chunk)
+
+
+def test_rapidgzip_truncation_close_is_teardown_only(tmp_path: Path) -> None:
+    """ADR 0014: TruncatedError / CorruptionError must raise from read, never close().
+
+    Covers (1) completing ``read()`` that raises, then ``close()`` during ``with`` exit;
+    (2) early-stop after a recovered prefix — ``close()`` stays quiet on content.
+    """
+    pytest.importorskip("rapidgzip")
+    payload = b"the quick brown fox jumps over the lazy dog.\n" * 800
+    full = gzip.compress(payload)
+    path = _write(tmp_path, "adr-close.gz", full[: max(18, len(full) // 2)])
+
+    read_err: BaseException | None = None
+    with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+        try:
+            s.read()
+        except (TruncatedError, CorruptionError) as exc:
+            read_err = exc
+        # __exit__ → close(); a content fault here would fail the test / leak past read.
+    assert read_err is not None, "completing read must surface truncation/corruption"
+
+    # Early stop: deliver a prefix via sized read, then close without draining.
+    with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+        try:
+            prefix = s.read(256)
+        except (TruncatedError, CorruptionError):
+            return  # accelerator raised before any prefix — close path still quiet above
+        if prefix:
+            assert s.tell() == len(prefix)
+        # close via __exit__ must not raise TruncatedError (early stop = no verdict)
+
+
+def test_rapidgzip_isize_soft_short_raises_on_readall(tmp_path: Path) -> None:
+    """Silent-short (non-empty soft EOF): read(-1) must raise, not return then close-quiet.
+
+    Concatenated gzip truncated mid-second-member often yields a non-empty soft EOF of
+    the first member on Linux; further-magic bailout may skip ISIZE — still must not
+    raise from close(). When ISIZE does fire (single-member soft-short), it raises here.
+    """
+    pytest.importorskip("rapidgzip")
+    # Single-member mid-body is soft-empty on Linux; build a cut that can soft-short by
+    # taking a valid small file and stripping the trailer only when rapidgzip returns
+    # non-empty without raising (platform-dependent). Fall back to asserting close-quiet.
+    payload = b"Z" * 50_000
+    full = gzip.compress(payload)
+    # Near-end cuts: may soft-short, raise, or soft-empty depending on rapidgzip build.
+    cut = full[: max(18, len(full) - 6)]
+    path = _write(tmp_path, "soft-short.gz", cut)
+    close_raised = False
+    read_outcome: str
+    s = open_codec_stream(Codec.GZIP, path, config=_GZ_ON)
+    try:
+        try:
+            data = s.read()
+            read_outcome = f"ok:{len(data)}"
+        except TruncatedError:
+            read_outcome = "TruncatedError"
+        except CorruptionError:
+            read_outcome = "CorruptionError"
+        try:
+            s.close()
+        except (TruncatedError, CorruptionError):
+            close_raised = True
+            raise
+    finally:
+        if not s.closed:
+            try:
+                s.close()
+            except Exception:  # noqa: BLE001 - test cleanup
+                pass
+    assert not close_raised
+    # Completing read must not silently accept a truncated single-member stream.
+    # Soft-empty → stdlib raises TruncatedError; accelerator may CorruptionError;
+    # a clean ok:N with N == len(payload) would mean the cut was not truncating enough.
+    if read_outcome.startswith("ok:"):
+        n = int(read_outcome.split(":")[1])
+        assert n < len(payload) or cut == full
+        # size-unknown: ok with short N without exception is only tolerable for
+        # multi-member bailout / incomplete characterization — single-member trailer
+        # strip should have raised. If we got a short silent success, ISIZE failed.
+        if n < len(payload) and n > 0:
+            # Soft-short without raise: deferred multi-member-style hole or missing
+            # EOS observe — treat as failure of the ADR completing-read guarantee.
+            pytest.fail(
+                f"read(-1) returned {n} of {len(payload)} without TruncatedError "
+                "(ADR 0014 completing-read must raise on truncation)"
+            )
+
+
+def test_rapidgzip_intact_single_member_reads_clean(tmp_path: Path) -> None:
+    pytest.importorskip("rapidgzip")
+    payload = b"the quick brown fox " * 5000
+    path = _write(tmp_path, "ok.gz", gzip.compress(payload))
+    with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+        assert s.read() == payload
+
+
+def test_rapidgzip_multimember_not_flagged(tmp_path: Path) -> None:
+    # The ISIZE backstop must not false-flag a valid concatenated gzip (its trailer is only
+    # the last member's size). Multi-member ISIZE summing is deferred — further-magic bailout.
+    pytest.importorskip("rapidgzip")
+    data = gzip.compress(b"A" * 4000) + gzip.compress(b"B" * 2500)
+    path = _write(tmp_path, "multi.gz", data)
+    with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
+        assert s.read() == b"A" * 4000 + b"B" * 2500
+
+
+# --- rapidgzip truncation backstop on non-path (caller-owned) seekable sources ---------
+# The backstop was path-only; these assert parity for a caller-owned BinaryIO (BytesIO or a
+# real file object), where the accelerator + multi-member scan coordinate through a
+# SharedSource view and the caller's source is never closed (see OpenSpec
+# `gzip-truncation-backstop-any-seekable`).
+
+
+def test_rapidgzip_stream_truncation_is_reported() -> None:
+    pytest.importorskip("rapidgzip")
+    full = gzip.compress(b"the quick brown fox\n" * 800)
+    src = io.BytesIO(full[: max(18, len(full) // 2)])  # mid-body cut
+    with pytest.raises((TruncatedError, CorruptionError)):
+        with open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s:
+            s.read()
+
+
+def test_rapidgzip_stream_header_only_truncation_raises() -> None:
+    # A source too short for a complete member (< 18 bytes) must still raise — the up-front
+    # ISIZE capture preserves the too-short tri-state that a path source raised on.
+    pytest.importorskip("rapidgzip")
+    src = io.BytesIO(bytes.fromhex("1f8b08000000000000ff"))  # 10-byte header only
+    with pytest.raises((TruncatedError, CorruptionError)):
+        with open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s:
+            s.read()
+
+
+def test_rapidgzip_stream_empty_payload_still_ok() -> None:
+    pytest.importorskip("rapidgzip")
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(gzip.compress(b"")), config=_GZ_ON
+    ) as s:
+        assert s.read() == b""
+
+
+def test_rapidgzip_stream_multimember_not_flagged() -> None:
+    # A valid concatenated multi-member gzip from a stream must not be false-flagged: the
+    # multi-member scan runs on an independent SharedSource view of the same source.
+    pytest.importorskip("rapidgzip")
+    data = gzip.compress(b"A" * 4000) + gzip.compress(b"B" * 2500)
+    with open_codec_stream(Codec.GZIP, io.BytesIO(data), config=_GZ_ON) as s:
+        assert s.read() == b"A" * 4000 + b"B" * 2500
+
+
+def test_rapidgzip_stream_intact_roundtrip() -> None:
+    pytest.importorskip("rapidgzip")
+    payload = b"the quick brown fox " * 5000
+    with open_codec_stream(
+        Codec.GZIP, io.BytesIO(gzip.compress(payload)), config=_GZ_ON
+    ) as s:
+        assert s.read() == payload
+
+
+def test_rapidgzip_stream_source_left_open_after_close() -> None:
+    # archivey must never close a caller-owned source. After the archivey stream closes, the
+    # caller's BytesIO stays open and re-readable (the SharedSource view is non-owning).
+    pytest.importorskip("rapidgzip")
+    payload = b"the quick brown fox " * 5000
+    src = io.BytesIO(gzip.compress(payload))
+    with open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s:
+        assert s.read() == payload
+    assert not src.closed
+    src.seek(0)
+    assert src.read(2) == b"\x1f\x8b"  # still a readable gzip source
+
+
+def test_rapidgzip_caller_file_object_truncation(tmp_path: Path) -> None:
+    # A real caller-opened file object (has a valid fileno) of a truncated gzip must raise,
+    # and archivey must leave the caller's file object open.
+    pytest.importorskip("rapidgzip")
+    full = gzip.compress(b"the quick brown fox\n" * 800)
+    p = _write(tmp_path, "trunc-fileobj.gz", full[: max(18, len(full) // 2)])
+    fh = open(p, "rb")
+    try:
+        with pytest.raises((TruncatedError, CorruptionError)):
+            with open_codec_stream(Codec.GZIP, fh, config=_GZ_ON) as s:
+                s.read()
+        assert not fh.closed  # caller still owns and can close it
+    finally:
+        fh.close()
+
+
+# --- bzip2 (via rapidgzip's bundled IndexedBzip2File) ----------------------------------
+
+
+def test_indexed_bzip2_corrupt_translates_to_corruption(tmp_path: Path) -> None:
+    pytest.importorskip("rapidgzip")
+    corrupt = bytearray(bz2.compress(b"payload " * 400))
+    corrupt[20:45] = b"\x00" * 25  # clobber block data/header
+    path = _write(tmp_path, "corrupt.bz2", bytes(corrupt))
+    with open_codec_stream(Codec.BZIP2, path, config=_BZ_ON) as s:
+        with pytest.raises(CorruptionError):
+            s.read()
+
+
+def test_indexed_bzip2_intact_reads_clean(tmp_path: Path) -> None:
+    pytest.importorskip("rapidgzip")
+    payload = b"payload " * 400
+    path = _write(tmp_path, "ok.bz2", bz2.compress(payload))
+    with open_codec_stream(Codec.BZIP2, path, config=_BZ_ON) as s:
+        assert s.read() == payload

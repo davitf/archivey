@@ -1,0 +1,698 @@
+#!/usr/bin/env python3
+"""Regenerate ``tests/fixtures/rar/`` archives with the RARLAB ``rar`` CLI.
+
+Usage (from the repo root)::
+
+    uv run python scripts/gen_rar_fixtures.py
+
+Requires the RARLAB ``rar`` binary on ``PATH``. RAR 7 dropped ``-ma4`` (RAR4
+writing); when the system ``rar`` cannot write RAR4, this script downloads a
+pinned RAR 6.24 linux-x64 binary into the user cache and uses that for RAR4
+(and, when selected, all) fixture builds.
+
+Legacy RAR 1.5 / 2.x archives (``rar15-comment.rar``, ``rar202-comment-nopsw.rar``)
+cannot be produced by modern ``rar`` and are left untouched — they were copied
+from markokr/rarfile's ``test/files`` (ISC).
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+OUT_DIR = REPO_ROOT / "tests" / "fixtures" / "rar"
+
+# Pinned RARLAB build that still supports ``-ma4``.
+_RAR624_URL = "https://www.rarlab.com/rar/rarlinux-x64-624.tar.gz"
+_RAR624_SHA256 = "88e22a8e84125c947637bbf28c746e338a0a63279d80f9f9d7373603875db1eb"
+_RAR624_MEMBER = "rar/rar"
+
+# Fixtures modern ``rar`` cannot recreate — do not delete/overwrite.
+_LEGACY_KEEP = frozenset(
+    {
+        "rar15-comment.rar",
+        "rar202-comment-nopsw.rar",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _File:
+    name: str  # archive-relative path; dirs end with /
+    data: bytes | None = None  # None => directory
+    link_target: str | None = None  # symlink target
+    hardlink_to: str | None = None  # path of existing file to link
+
+
+_BASIC: tuple[_File, ...] = (
+    _File("file1.txt", b"Hello, world!"),
+    _File("subdir/", None),
+    _File("empty_file.txt", b""),
+    _File("empty_subdir/", None),
+    _File("subdir/file2.txt", b"Hello, universe!"),
+    _File("implicit_subdir/file3.txt", b"Hello there!"),
+)
+
+_COMMENT: tuple[_File, ...] = (
+    _File("abc.txt", b"ABC"),
+    _File("subdir/", None),
+    _File("subdir/123.txt", b"1234567890"),
+)
+
+_ENCRYPTION: tuple[_File, ...] = (
+    _File("secret.txt", b"This is secret"),
+    _File("also_secret.txt", b"This is also secret"),
+)
+
+_SYMLINKS: tuple[_File, ...] = (
+    _File("file1.txt", b"Hello, world!"),
+    _File("symlink_to_file1.txt", link_target="file1.txt"),
+    _File("subdir/", None),
+    _File("subdir/link_to_file1.txt", link_target="../file1.txt"),
+    _File("subdir_link", link_target="subdir"),
+    _File("subdir_link_with_slash", link_target="subdir/"),
+)
+
+_HARDLINKS: tuple[_File, ...] = (
+    _File("file1.txt", b"Hello 1!"),
+    _File("subdir/file2.txt", b"Hello 2!"),
+    _File("subdir/hardlink_to_file1.txt", hardlink_to="file1.txt"),
+    _File("hardlink_to_file2.txt", hardlink_to="subdir/file2.txt"),
+)
+
+# Compressed on purpose: stored members never reach unrar, so a wildcard name on
+# the direct-slice route is not the bug. Tiny payloads store as M0 even with
+# ``-m3``; pad so packed < unpacked. ``subdir/aY.txt`` is a nested basename match
+# for ``a*.txt`` (unrar MATCH_WILDSUBPATH). Windows cannot create ``*``/``?`` on
+# disk at test time; the archives are committed.
+_WILDCARD_PAD = b"0123456789abcdef" * 512  # 8 KiB, compressible
+_WILDCARD_NAMES: tuple[_File, ...] = (
+    _File("subdir/aY.txt", b"nested-aY\n" + _WILDCARD_PAD),
+    _File("a*.txt", b"target-star\n" + _WILDCARD_PAD),
+    _File("aX.txt", b"other-aX\n" + _WILDCARD_PAD),
+    _File("b?.txt", b"target-q\n" + _WILDCARD_PAD),
+    _File("b1.txt", b"other-b1\n" + _WILDCARD_PAD),
+    _File("only*.dat", b"unique\n" + _WILDCARD_PAD),
+)
+
+# Directory-component glob: ``d*/x.txt`` is refused (matcher over-matches
+# ``aaa/x.txt``). Add-order puts the over-match first so an unfixed skip
+# truncates rather than accidentally succeeding.
+_WILDCARD_DIRGLOB: tuple[_File, ...] = (
+    _File("aaa/x.txt", b"aaa\n" + _WILDCARD_PAD),
+    _File("dX/x.txt", b"dX\n" + _WILDCARD_PAD),
+    _File("d*/x.txt", b"dstar\n" + _WILDCARD_PAD),
+)
+
+# Literal backslash vs separator: ``a\\b*.txt`` is refused. ``a/b1.txt`` is
+# first so an unfixed skip that folds ``\\`` to ``/`` truncates.
+_WILDCARD_BACKSLASH: tuple[_File, ...] = (
+    _File("a/b1.txt", b"slashdir\n" + _WILDCARD_PAD),
+    _File(r"a\b_TGT.txt", b"literal-bs-tgt\n" + _WILDCARD_PAD),
+    _File(r"a\b*.txt", b"literal-bs-glob\n" + _WILDCARD_PAD),
+)
+
+_WILDCARD_VER_V1 = b"data-v1\n" + _WILDCARD_PAD
+_WILDCARD_VER_V2 = b"data-v2!!\n" + _WILDCARD_PAD
+_WILDCARD_VER_TARGET = b"data-tgt\n" + _WILDCARD_PAD
+_WILDCARD_VER_GLOB = b"data-star\n" + _WILDCARD_PAD
+
+# WinRAR ``-ver`` revisions of a single path (oldest → newest / live).
+_FILE_VERSION_REVISIONS: tuple[bytes, ...] = (
+    b"version-one",
+    b"version-two!!",
+    b"version-three!!!",
+)
+
+# Pinned wall-clocks for the ``-tsmca`` fixtures. ctime is inode-change on
+# Unix and is whatever the writer saw; tests require it present, not equal.
+_XTIME_PAYLOAD = b"xtime-payload\n"
+_XTIME_MTIME = "2020-01-15 12:00:00"
+_XTIME_ATIME = "2021-06-20 18:30:00"
+
+_FILE_VERSION_SOLID_V1 = b"AAA-v1"
+_FILE_VERSION_SOLID_OTHER = b"BBB-payload"
+_FILE_VERSION_SOLID_V2 = b"AAA-v2-longer"
+
+# 1 MiB repeating pad: a solid later-member rewind crosses the diagnostic
+# threshold, and unrar is still writing when a test seeks mid-stream.
+_SEEK_RESPAWN_PAD = b"0123456789abcdef" * (1024 * 1024 // 16)
+_SEEK_RESPAWN: tuple[_File, ...] = (
+    _File("prefix.bin", _SEEK_RESPAWN_PAD),
+    _File("tail.txt", b"tail-member\n"),
+)
+
+
+def _touch_times(path: Path, *, mtime: str, atime: str) -> None:
+    env = os.environ.copy()
+    env["TZ"] = "UTC"
+    subprocess.run(["touch", "-d", mtime, str(path)], check=True, env=env)
+    subprocess.run(["touch", "-a", "-d", atime, str(path)], check=True, env=env)
+
+
+def _build_xtime(rar_bin: Path, out: Path, *, extra: Sequence[str] = ()) -> None:
+    """One stored ``file.txt`` with mtime+ctime+atime (``-tsmca``)."""
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        path = root / "file.txt"
+        path.write_bytes(_XTIME_PAYLOAD)
+        _touch_times(path, mtime=_XTIME_MTIME, atime=_XTIME_ATIME)
+        _rar_a(rar_bin, out, ["file.txt"], cwd=root, extra=(*extra, "-m0", "-tsmca"))
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
+def _run(cmd: Sequence[str], *, cwd: Path) -> None:
+    env = os.environ.copy()
+    env["TZ"] = "UTC"
+    subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, env=env)
+
+
+def _write_tree(root: Path, files: Iterable[_File]) -> list[str]:
+    """Materialize members under ``root``; return rar add names in order."""
+    names: list[str] = []
+    for item in files:
+        rel = item.name.rstrip("/")
+        path = root / rel
+        if item.data is None and item.link_target is None and item.hardlink_to is None:
+            path.mkdir(parents=True, exist_ok=True)
+            names.append(rel)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if item.link_target is not None:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+            path.symlink_to(item.link_target)
+        elif item.hardlink_to is not None:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+            os.link(root / item.hardlink_to, path)
+        else:
+            assert item.data is not None
+            path.write_bytes(item.data)
+        names.append(rel)
+    return names
+
+
+def _supports_ma4(rar_bin: Path) -> bool:
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        (tmp / "x.txt").write_bytes(b"x")
+        probe = tmp / "probe.rar"
+        try:
+            _run(
+                [str(rar_bin), "a", "-idq", "-ma4", "-m0", str(probe), "x.txt"], cwd=tmp
+            )
+        except subprocess.CalledProcessError:
+            return False
+        return probe.is_file()
+
+
+def _cache_dir() -> Path:
+    raw = os.environ.get("XDG_CACHE_HOME")
+    base = Path(raw) if raw else Path.home() / ".cache"
+    return base / "archivey" / "rar-gen"
+
+
+def _fetch_rar624() -> Path:
+    """Download pinned RAR 6.24 into the user cache; return path to ``rar``."""
+    dest_dir = _cache_dir() / "rarlinux-x64-624"
+    rar_bin = dest_dir / "rar"
+    if rar_bin.is_file() and os.access(rar_bin, os.X_OK) and _supports_ma4(rar_bin):
+        return rar_bin
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    tarball = dest_dir / "rarlinux-x64-624.tar.gz"
+    print(f"Downloading {_RAR624_URL} -> {tarball}", file=sys.stderr)
+    urllib.request.urlretrieve(_RAR624_URL, tarball)  # noqa: S310 - pinned vendor URL
+    if _RAR624_SHA256:
+        digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
+        if digest != _RAR624_SHA256:
+            raise RuntimeError(
+                f"SHA-256 mismatch for rar 6.24 tarball: {digest} != {_RAR624_SHA256}"
+            )
+    with tarfile.open(tarball, "r:gz") as tf:
+        # Extract only the rar binary (and keep it flat as dest_dir/rar).
+        member = tf.getmember(_RAR624_MEMBER)
+        member.name = "rar"
+        tf.extract(member, path=dest_dir, filter="data")
+    rar_bin.chmod(rar_bin.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    if not _supports_ma4(rar_bin):
+        raise RuntimeError(f"downloaded {rar_bin} still lacks -ma4")
+    return rar_bin
+
+
+def _resolve_rar(*, need_ma4: bool) -> Path:
+    override = os.environ.get("ARCHIVEY_RAR_BIN")
+    if override:
+        path = Path(override)
+        if not path.is_file():
+            raise SystemExit(f"ARCHIVEY_RAR_BIN={override!r} is not a file")
+        if need_ma4 and not _supports_ma4(path):
+            raise SystemExit(f"ARCHIVEY_RAR_BIN={override!r} does not support -ma4")
+        return path
+
+    which = shutil.which("rar")
+    if which is None:
+        print(
+            "No system rar; fetching RAR 6.24"
+            + (" for -ma4 support" if need_ma4 else ""),
+            file=sys.stderr,
+        )
+        return _fetch_rar624()
+
+    system = Path(which)
+    if need_ma4 and not _supports_ma4(system):
+        print(
+            f"System rar ({system}) lacks -ma4; fetching RAR 6.24 for RAR4 fixtures",
+            file=sys.stderr,
+        )
+        return _fetch_rar624()
+    return system
+
+
+def _rar_a(
+    rar_bin: Path,
+    archive: Path,
+    names: Sequence[str],
+    *,
+    cwd: Path,
+    extra: Sequence[str] = (),
+) -> None:
+    if archive.exists():
+        archive.unlink()
+    # Drop sibling volumes if regenerating a multi-volume stem.
+    stem = archive.name
+    if stem.endswith(".rar"):
+        base = stem[: -len(".rar")]
+        for sibling in archive.parent.glob(f"{base}.part*.rar"):
+            sibling.unlink()
+        for sibling in archive.parent.glob(f"{base}.r[0-9][0-9]"):
+            sibling.unlink()
+    cmd = [str(rar_bin), "a", "-idq", "-oh", "-ol", *extra, str(archive), *names]
+    _run(cmd, cwd=cwd)
+
+
+def _rar_a_update(
+    rar_bin: Path,
+    archive: Path,
+    names: Sequence[str],
+    *,
+    cwd: Path,
+    extra: Sequence[str] = (),
+) -> None:
+    """Append/update members into an existing archive (keeps ``-ver`` history)."""
+    cmd = [str(rar_bin), "a", "-idq", "-oh", "-ol", *extra, str(archive), *names]
+    _run(cmd, cwd=cwd)
+
+
+def _build_file_version(
+    rar_bin: Path,
+    out: Path,
+    revisions: Sequence[bytes],
+    *,
+    extra: Sequence[str] = (),
+    path_name: str = "file.txt",
+) -> None:
+    """Write ``path_name`` through ``revisions`` with ``-ver`` (last = live)."""
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        target = root / path_name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        extras = [*extra, "-ver"]
+        for i, payload in enumerate(revisions):
+            target.write_bytes(payload)
+            if i == 0:
+                _rar_a(rar_bin, out, [path_name], cwd=root, extra=extras)
+            else:
+                _rar_a_update(rar_bin, out, [path_name], cwd=root, extra=extras)
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
+def _build_file_version_solid(rar_bin: Path, out: Path) -> None:
+    """Solid RAR5 with ``a.txt`` history + a second payload for demux order checks."""
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "a.txt").write_bytes(_FILE_VERSION_SOLID_V1)
+        (root / "b.txt").write_bytes(_FILE_VERSION_SOLID_OTHER)
+        extras = ("-s", "-m3", "-ver")
+        _rar_a(rar_bin, out, ["a.txt", "b.txt"], cwd=root, extra=extras)
+        (root / "a.txt").write_bytes(_FILE_VERSION_SOLID_V2)
+        _rar_a_update(rar_bin, out, ["a.txt"], cwd=root, extra=extras)
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
+def _ci_listing_recipe() -> tuple[int, int, int]:
+    """``(solid members, nonsolid members, payload size)`` for the listing fixtures.
+
+    The committed ``many_list_store*`` archives stand in for the on-demand corpora
+    when the ``rar`` writer is absent (CI installs ``unrar`` only), so their member
+    counts and payload size must match ``benchmarks.fixtures`` exactly — import them
+    rather than restating the numbers here. Imported inside the function because this
+    file runs as a script: the repo root is not on ``sys.path`` at module load.
+    """
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from benchmarks.fixtures import LIST_MEMBER_SIZE, SCALES
+
+    ci = SCALES["ci"]
+    return ci.list_members, ci.nonsolid_list_members, LIST_MEMBER_SIZE
+
+
+def _build_store_listing_rar(
+    rar_bin: Path,
+    out: Path,
+    *,
+    count: int,
+    member_size: int,
+    solid: bool,
+) -> None:
+    """Store (``-m0``) RAR of ``count`` tiny members; mirrors ``_build_store_rar``."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        names: list[str] = []
+        for i in range(count):
+            name = f"f{i:05d}.txt"
+            (root / name).write_text(f"payload-{i}\n"[:member_size])
+            names.append(name)
+        _rar_a(
+            rar_bin,
+            out,
+            names,
+            cwd=root,
+            extra=("-m0", "-s" if solid else "-s-", "-ep1"),
+        )
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
+def _build_glob_named(
+    rar_bin: Path,
+    out: Path,
+    files: Sequence[_File],
+    *,
+    extra: Sequence[str] = (),
+) -> None:
+    """Add glob-named members one path at a time so ``rar a`` does not glob argv."""
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        extras = [*extra, "-r"]
+        first = True
+        for item in files:
+            _write_tree(root, (item,))
+            if first:
+                _rar_a(rar_bin, out, ["."], cwd=root, extra=extras)
+                first = False
+            else:
+                _rar_a_update(rar_bin, out, ["."], cwd=root, extra=extras)
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
+def _build_wildcard_ver(rar_bin: Path, out: Path) -> None:
+    """Live glob member plus ``-ver`` history that the mask would also match.
+
+    ``unrar p -n./data*`` without ``-ver`` omits ``data.bin;1``. The skip must
+    too, or the prefix overshoots and the live glob is reported truncated.
+    ``rar a data*`` globs argv, so the glob file is added from a one-file tree
+    with ``-ep``.
+    """
+    if out.exists():
+        out.unlink()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        extras = ("-m3", "-ver")
+        (root / "data.bin").write_bytes(_WILDCARD_VER_V1)
+        _rar_a(rar_bin, out, ["data.bin"], cwd=root, extra=extras)
+        (root / "data.bin").write_bytes(_WILDCARD_VER_V2)
+        _rar_a_update(rar_bin, out, ["data.bin"], cwd=root, extra=extras)
+        (root / "data_TARGET").write_bytes(_WILDCARD_VER_TARGET)
+        _rar_a_update(rar_bin, out, ["data_TARGET"], cwd=root, extra=extras)
+        star = root / "star_only"
+        star.mkdir()
+        (star / "data*").write_bytes(_WILDCARD_VER_GLOB)
+        _rar_a_update(rar_bin, out, ["."], cwd=star, extra=(*extras, "-r", "-ep"))
+    print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
+def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def build(
+        rar_bin: Path,
+        out_name: str,
+        files: Sequence[_File],
+        *,
+        extra: Sequence[str] = (),
+        comment: str | None = None,
+    ) -> None:
+        out = out_dir / out_name
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            extras = list(extra)
+            if comment is not None:
+                cpath = root / ".archive_comment.txt"
+                cpath.write_text(comment, encoding="utf-8")
+                extras.append(f"-z{cpath}")
+            has_glob = any("*" in f.name or "?" in f.name for f in files)
+            # ``rar a a*.txt`` globs. Add glob-named trees one path at a time so
+            # prefix-skip fixtures keep add order.
+            if has_glob:
+                extras.append("-r")
+                first = True
+                for item in files:
+                    _write_tree(root, (item,))
+                    if first:
+                        _rar_a(rar_bin, out, ["."], cwd=root, extra=extras)
+                        first = False
+                    else:
+                        _rar_a_update(rar_bin, out, ["."], cwd=root, extra=extras)
+            else:
+                names = _write_tree(root, files)
+                _rar_a(rar_bin, out, names, cwd=root, extra=extras)
+        print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+    # --- RAR5 ---
+    build(rar5_bin, "basic_nonsolid__.rar", _BASIC, extra=("-m0",))
+    build(rar5_bin, "basic_solid__.rar", _BASIC, extra=("-s", "-m3"))
+    build(
+        rar5_bin,
+        "seek_respawn_solid__.rar",
+        _SEEK_RESPAWN,
+        extra=("-s", "-m3", "-ds"),
+    )
+    build(
+        rar5_bin,
+        "comment__.rar",
+        _COMMENT,
+        extra=("-m0",),
+        comment="This is a\nmulti-line comment",
+    )
+    build(
+        rar5_bin,
+        "encryption__.rar",
+        _ENCRYPTION,
+        extra=("-m3", "-ppassword"),
+    )
+    build(
+        rar5_bin,
+        "encrypted_header__.rar",
+        _BASIC,
+        extra=("-m3", "-hpheader_password"),
+    )
+    build(
+        rar5_bin,
+        "symlinks_solid__.rar",
+        _SYMLINKS,
+        extra=("-s", "-m3"),
+    )
+    build(
+        rar5_bin,
+        "hardlinks_solid__.rar",
+        _HARDLINKS,
+        extra=("-s", "-m3"),
+    )
+    build(rar5_bin, "wildcard_names__.rar", _WILDCARD_NAMES, extra=("-m3",))
+    build(
+        rar5_bin,
+        "wildcard_names_solid__.rar",
+        _WILDCARD_NAMES,
+        extra=("-s", "-m3"),
+    )
+    _build_glob_named(
+        rar5_bin, out_dir / "wildcard_dirglob__.rar", _WILDCARD_DIRGLOB, extra=("-m3",)
+    )
+    _build_glob_named(
+        rar5_bin,
+        out_dir / "wildcard_backslash__.rar",
+        _WILDCARD_BACKSLASH,
+        extra=("-m3",),
+    )
+    _build_wildcard_ver(rar5_bin, out_dir / "wildcard_ver__.rar")
+    _build_xtime(rar5_bin, out_dir / "xtime__.rar")
+    build(
+        rar5_bin,
+        "stored_m0.rar",
+        (_File("store.txt", b"stored payload"),),
+        extra=("-m0",),
+    )
+    build(
+        rar5_bin,
+        "blake2sp.rar",
+        (_File("store.txt", b"stored payload"),),
+        extra=("-m0", "-htb"),
+    )
+    build(
+        rar5_bin,
+        "encryption_blake2sp.rar",
+        (_File("store.txt", b"stored payload"),),
+        extra=("-m0", "-htb", "-ppassword"),
+    )
+    _build_file_version(
+        rar5_bin,
+        out_dir / "file_version__.rar",
+        _FILE_VERSION_REVISIONS,
+        extra=("-m0",),
+    )
+    _build_file_version_solid(rar5_bin, out_dir / "file_version_solid__.rar")
+
+    # Many-member store listing fixtures (ci-scale structural gate; no ``rar`` in CI).
+    # ``-m0`` never sets the archive solid bit — ``-s`` / ``-s-`` still distinguish
+    # the regeneration commands.
+    many_members, nonsolid_members, member_size = _ci_listing_recipe()
+    _build_store_listing_rar(
+        rar5_bin,
+        out_dir / "many_list_store__.rar",
+        count=many_members,
+        member_size=member_size,
+        solid=True,
+    )
+    _build_store_listing_rar(
+        rar5_bin,
+        out_dir / "many_list_store_nonsolid__.rar",
+        count=nonsolid_members,
+        member_size=member_size,
+        solid=False,
+    )
+
+    # Multi-volume: 1600-byte payload, 900-byte volumes → two parts.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "payload.bin").write_bytes(b"ABCDEFGH" * 200)
+        out = out_dir / "tinyvol.rar"
+        _rar_a(
+            rar5_bin,
+            out,
+            ["payload.bin"],
+            cwd=root,
+            extra=("-m0", "-v900b"),
+        )
+        part1 = out_dir / "tinyvol.part1.rar"
+        part2 = out_dir / "tinyvol.part2.rar"
+        if not part1.is_file() or not part2.is_file():
+            raise RuntimeError(f"expected {part1.name} and {part2.name}")
+        if out.is_file():
+            out.unlink()
+        print(f"wrote {part1.relative_to(REPO_ROOT)}")
+        print(f"wrote {part2.relative_to(REPO_ROOT)}")
+
+    # --- RAR4 (needs -ma4) ---
+    # Classic extension volumes (name.rar + name.r00…): RAR4-only via -vn.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "payload.bin").write_bytes(b"ABCDEFGH" * 200)
+        out = out_dir / "tinyvol_rnn.rar"
+        _rar_a(
+            rar4_bin,
+            out,
+            ["payload.bin"],
+            cwd=root,
+            extra=("-ma4", "-m0", "-vn", "-v900b"),
+        )
+        vol0 = out_dir / "tinyvol_rnn.rar"
+        vol1 = out_dir / "tinyvol_rnn.r00"
+        if not vol0.is_file() or not vol1.is_file():
+            raise RuntimeError(f"expected {vol0.name} and {vol1.name}")
+        print(f"wrote {vol0.relative_to(REPO_ROOT)}")
+        print(f"wrote {vol1.relative_to(REPO_ROOT)}")
+
+    _build_xtime(rar4_bin, out_dir / "xtime__rar4.rar", extra=("-ma4",))
+    build(rar4_bin, "basic_nonsolid__rar4.rar", _BASIC, extra=("-ma4", "-m0"))
+    build(rar4_bin, "basic_solid__rar4.rar", _BASIC, extra=("-ma4", "-s", "-m3"))
+    build(
+        rar4_bin,
+        "encryption__rar4.rar",
+        _ENCRYPTION,
+        extra=("-ma4", "-m3", "-ppassword"),
+    )
+    build(
+        rar4_bin,
+        "encrypted_header__rar4.rar",
+        _BASIC,
+        extra=("-ma4", "-m3", "-hpheader_password"),
+    )
+    build(
+        rar4_bin,
+        "symlinks_solid__rar4.rar",
+        _SYMLINKS,
+        extra=("-ma4", "-s", "-m3"),
+    )
+    build(
+        rar4_bin,
+        "wildcard_names__rar4.rar",
+        _WILDCARD_NAMES,
+        extra=("-ma4", "-m3"),
+    )
+    _build_file_version(
+        rar4_bin,
+        out_dir / "file_version__rar4.rar",
+        _FILE_VERSION_REVISIONS,
+        extra=("-ma4", "-m0"),
+    )
+
+    kept = ", ".join(sorted(_LEGACY_KEEP))
+    print(f"left legacy fixtures untouched: {kept}")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=OUT_DIR,
+        help=f"output directory (default: {OUT_DIR})",
+    )
+    args = parser.parse_args(argv)
+    out_dir = args.out_dir.resolve()
+
+    rar5 = _resolve_rar(need_ma4=False)
+    if _supports_ma4(rar5):
+        rar4 = rar5
+    else:
+        rar4 = _resolve_rar(need_ma4=True)
+
+    print(f"rar5 binary: {rar5}", file=sys.stderr)
+    print(f"rar4 binary: {rar4}", file=sys.stderr)
+    generate_all(rar5_bin=rar5, rar4_bin=rar4, out_dir=out_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

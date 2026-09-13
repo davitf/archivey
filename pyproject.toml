@@ -1,0 +1,239 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "archivey"
+version = "0.2.0.dev0"
+description = "Python library for reading, streaming, and safely extracting archives"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Davi Figueiredo", email = "gh@davitf.com" }
+]
+keywords = [
+    "archive", "zip", "tar", "rar", "7z", "iso",
+    "compression", "decompression", "extract", "streaming",
+]
+# Development Status is a judgement call, not a fact: 4 = "the API is settling but not
+# frozen", which is what a pre-1.0 first public release is. Bump to 5 at 1.0.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: System :: Archiving",
+    "Topic :: System :: Archiving :: Compression",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+# Shown in the PyPI sidebar. Without these the project page links nowhere, which is
+# most of why relative README links were the only navigation.
+[project.urls]
+Homepage = "https://davitf.github.io/archivey/"
+Documentation = "https://davitf.github.io/archivey/"
+Source = "https://github.com/davitf/archivey"
+Changelog = "https://github.com/davitf/archivey/blob/main/CHANGELOG.md"
+Issues = "https://github.com/davitf/archivey/issues"
+
+[project.scripts]
+archivey = "archivey.cli.main:main"
+
+# Four extras, each answering a question a user asks about their own environment
+# ("will it just work?", "do I need fast seeking?", "am I on free-threaded Python?",
+# "give me everything") rather than naming an internal dependency group. The previous
+# format-named table ([7z], [rar], [crypto], [iso], [zstd], [lz4], [cli],
+# [recommended-lite]) was capability-scoped in fact — [7z] was a codec bundle shared with
+# ZIP and TAR, [rar] was byte-identical to [crypto] — so install hints named the wrong
+# thing. Removed names must NOT come back as aliases: an extra, once published, can never
+# be removed. See openspec/specs/packaging-and-extras/spec.md.
+[project.optional-dependencies]
+recommended = [
+    # >=1.3.1: 1.1.x/1.2.0 return silently wrong bytes on chunked bounded PPMd
+    # decodes (premature eof mid-stream); 1.3.1 fixes that but needs bounded
+    # max_length to avoid native heap corruption — archivey always bounds.
+    # See dev-docs/known-issues.md and dev-docs/investigations/pyppmd-upstream-report.md.
+    "pyppmd>=1.3.1",
+    "inflate64>=1.0.0",
+    "backports.zstd>=1.0.0; python_version < '3.14'",
+    # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
+    "brotli>=1.2.0",
+    "lz4>=4.4.5",
+    # AES block operations only (7z, RAR headers, WinZip AES ZIP); PBKDF2/SHA/HMAC are
+    # stdlib. RAR5 BLAKE2sp is native on hashlib (internal/hashing/blake2sp.py) and needs
+    # no package at all.
+    "cryptography>=45.0.0",
+    # LZMA1+BCJ: liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
+    # (common from the 7-Zip CLI). Stage BCJ via pybcj instead; LZMA2+BCJ stays stdlib.
+    "pybcj>=1.0.6",
+    "pycdlib>=1.16.0",
+    "tqdm>=4.67.0",
+]
+# rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
+# separate indexed_bzip2 package is deliberately NOT a dependency: loading both libraries into
+# one process corrupts the heap and aborts on macOS (overlapping statically-linked C++ symbols).
+# >=0.16.0 is the floor known to expose IndexedBzip2File. See dev-docs/known-issues.md.
+#
+# Kept OUT of [recommended] on purpose: it is a heavy native build that can fail to compile,
+# importing it re-enables the GIL on free-threaded builds, and it carries the accelerator
+# close-before-finalize hazard in known-issues.md.
+seekable = [
+    "rapidgzip>=0.16.0",
+]
+# The measured subset that leaves sys._is_gil_enabled() False after import on a
+# free-threaded build — NOT a claim that archivey is only free-thread-safe with it.
+# Membership is a property of the ecosystem, not of archivey, so it is expected to widen
+# and may eventually collapse into [recommended]. CI installs exactly this set on 3.13t
+# and asserts the GIL is still off, so it cannot rot silently.
+#
+# cryptography is version-conditional: its cffi dependency refuses to build on
+# free-threaded 3.13 ("Upgrade to free-threaded 3.14 or newer") and works on 3.14t with
+# the GIL still disabled. That gap is also why `pip install archivey[recommended]` fails
+# on 3.13t — documented in docs/support-matrix.md, not worked around.
+free-threaded = [
+    "pycdlib>=1.16.0",
+    "lz4>=4.4.5",
+    "tqdm>=4.67.0",
+    "backports.zstd>=1.0.0; python_version < '3.14'",
+    "cryptography>=45.0.0; python_version >= '3.14'",
+]
+# The conventional "everything" name. Unlike before, it is now a strict superset of
+# [recommended] rather than an alias for it. After the compression-library evaluation
+# (dev-docs/library-analysis.md) two dead backends were dropped from the extras —
+# python-xz (v2 reads XZ with its own native xz.py over stdlib lzma; archivey-dev#214 —
+# never imported) and pyzstd (the zstd decode decision is stdlib compression.zstd /
+# backports.zstd; it was only a test-fixture generator and is now in the dev group).
+# tests/test_extras_imported.py guards against a dead dependency slipping back in.
+all = [
+    "archivey[recommended,seekable]",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "pytest-timeout>=2.3.0",
+    # Lint and type checkers are pinned EXACTLY, not floored. Their version decides
+    # what the gates *report*, so a floor makes two developers — or the same developer
+    # across dependency configs — disagree about whether the tree is clean. Concretely:
+    # `uv sync --resolution lowest-direct` (the [all-lowest] CI leg, and step 2 of
+    # CONTRIBUTING's three-config rule) resolved `ruff>=0.11.0` to 0.11.0, which reported
+    # 367 "errors" the current version does not, on an unchanged tree. `ruff format` also
+    # changes output between versions, so a floor lets one contributor reformat the repo
+    # just by having a newer one. Bump these deliberately, together, in their own commit.
+    #
+    # Keep `ruff` in step with the `rev:` in .pre-commit-config.yaml — the framework hook
+    # path resolves its own copy. tests/test_tooling_pins.py enforces that.
+    "pyrefly==1.1.1",
+    "ty==0.0.60",
+    "ruff==0.15.22",
+    "pre-commit>=4.0.0",
+    "coverage[toml]>=7.6.0",
+    "py7zr>=1.0.0",
+    "rarfile>=4.2",
+    # libarchive-c is a dev-only cross-validation oracle for optional corpus tests
+    # (tests/test_libarchive_corpus.py); it is not a runtime backend.
+    "libarchive-c>=5.0.0",
+    # Stdlib compression.zstd on 3.14+; backports only needed below that.
+    "backports.zstd>=1.0.0; python_version < '3.14'",
+    "lz4>=4.4.5",
+    "brotli>=1.2.0",
+    # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so
+    # the ISO backend's tests run in the default dev env and the type checkers can resolve the
+    # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
+    # there and the zero-dep core / graceful-degradation paths are still exercised.
+    "pycdlib>=1.16.0",
+    # ncompress is a test-only LZW *compressor* used to generate .Z fixtures for the
+    # native unix-compress decoder (core; decode-only).
+    "ncompress>=1.0.0",
+    "cryptography>=45.0.0",
+    # Exercise real third-party stream objects in tests/test_stream_inputs.py: urllib3 is
+    # what requests' response.raw is (the canonical file-like network input); fsspec's file
+    # objects are ubiquitous in data pipelines (local/S3/GCS/HTTP behind one interface).
+    "urllib3>=2.0.0",
+    "fsspec>=2024.0.0",
+    # Property-based tests for the safety logic (tests/test_property_safety.py); mirrors
+    # the mutation harness as the second pre-Phase-6 fuzzing-scaffold gate.
+    "hypothesis>=6.100.0",
+    # tqdm ([cli] extra) — listed here like pycdlib so a local `uv sync --group dev`
+    # can type-check the CLI progress helper. CI lint uses `--extra all` (see
+    # .github/workflows/ci.yml) so every optional dep is resolved for pyrefly/ty.
+    # Runtime still degrades cleanly when tqdm is absent (ImportError → no bar).
+    "tqdm>=4.67.0",
+]
+# Documentation toolchain. Kept out of `dev` so the common lint/test loop stays light;
+# build the site with `uv run --group docs mkdocs build --strict`.
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocstrings[python]>=0.26.0",
+    "mkdocs-autorefs>=1.2.0",
+    "mkdocs-material>=9.6.0",
+    "griffe-fieldz>=0.2.1",
+]
+# Coverage-guided fuzz harness (Atheris / libFuzzer). CI-only: never a user-facing
+# runtime extra and never folded into `[all]` — see packaging-and-extras + threat-model O5.
+# Install with `uv sync --group fuzz` (plus `--group dev --extra all` for seed fixtures).
+fuzz = [
+    # 3.1+ drops cp311 wheels; keep 3.0.x on 3.11, allow latest on 3.12+.
+    "atheris>=3.0.0,<3.1; python_version < '3.12'",
+    "atheris>=3.0.0; python_version >= '3.12'",
+]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+extend-select = ["I", "F", "C4", "ISC", "RET", "BLE"]
+
+[tool.pyrefly]
+search-path = ["src"]
+project-includes = ["src"]
+python_version = "3.11"
+
+[tool.ty]
+# ty is Astral's own from-scratch type checker (not pyright/mypy-based). The library
+# is kept clean on both ty and Pyrefly.
+[tool.ty.environment]
+python-version = "3.11"
+root = ["src"]
+
+[tool.ty.src]
+# Type-check only the library, mirroring pyrefly's `project-includes = ["src"]`, so a
+# bare `uv run ty check` is clean — no `src/` path argument needed.
+include = ["src"]
+
+[tool.coverage.run]
+source = ["archivey"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "except ImportError:",
+    "@abstractmethod",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests", "."]
+testpaths = ["tests"]
+# --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
+# the whole job until the CI hard limit. pytest-timeout picks the platform default method
+# (SIGALRM on POSIX — suite continues; a process-killing thread dump on Windows). 60s is far
+# above any real test here (all run in milliseconds), so only a genuine hang trips it.
+addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
+
+markers = [
+    "sample_archives: declarative parametrization over sample archives and config variants",
+    "concurrent_reader: post-materialization MemberStreams.CONCURRENT seam (also run under free-threaded CI)",
+    "ppmd_native_stress: intermittent pyppmd native-abort stress (non-blocking PPMd native stress workflow only)",
+]

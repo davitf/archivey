@@ -1,0 +1,1463 @@
+"""ZIP backend tests — Stage 1 (member mapping, cost, O(1) lookup, non-seekable
+fail-fast, multi-volume rejection) and the ZIP slice of access-mode-and-cost."""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import struct
+import subprocess
+import zipfile
+import zlib
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from archivey import (
+    ArchiveFormat,
+    ArchiveyConfig,
+    CompressionAlgorithm,
+    DiagnosticCode,
+    MemberType,
+    open_archive,
+)
+from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.exceptions import (
+    ArchiveyError,
+    ArchiveyUsageError,
+    CorruptionError,
+    StreamNotSeekableError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
+from archivey.types import HashAlgorithm, crc32_digest
+from tests.conftest import requires_binary
+from tests.streams_util import NonSeekableBytesIO
+from tests.zipcrypto import zip_with_truncated_zipcrypto_header
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def simple_zip(tmp_path: Path) -> Path:
+    path = tmp_path / "simple.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("hello.txt", b"hello world")
+        z.writestr("dir/nested.txt", b"nested content")
+    return path
+
+
+def _zip_with_unix_mode(path: Path, name: str, data: bytes, mode: int) -> None:
+    info = zipfile.ZipInfo(name)
+    info.create_system = 3  # Unix
+    info.external_attr = mode << 16
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, data)
+
+
+# ---------------------------------------------------------------------------
+# Cost / format properties (also covers access-mode-and-cost for ZIP)
+# ---------------------------------------------------------------------------
+
+
+def test_cost_receipt(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        cost = ar.cost
+        assert cost.listing_cost == ListingCost.INDEXED
+        assert cost.access_cost == AccessCost.DIRECT
+        assert cost.stream_capability == StreamCapability.SEEKABLE
+
+
+def test_archive_info(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        info = ar.info
+        assert info.format == ArchiveFormat.ZIP
+        assert info.is_solid is False
+        assert info.is_encrypted is False
+        assert info.is_multivolume is False
+        assert info.member_count == 2
+
+
+def test_format_detected_as_zip(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        assert ar.format == ArchiveFormat.ZIP
+
+
+# ---------------------------------------------------------------------------
+# Indexed listing + random access (access-mode-and-cost, default streaming=False)
+# ---------------------------------------------------------------------------
+
+
+def test_members_listed(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        names = {m.name for m in ar.members()}
+        assert names == {"hello.txt", "dir/nested.txt"}
+
+
+def test_member_list_available_without_scan(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        # The central directory is an upfront index, so the list is available with no scan.
+        report = ar.members_report_if_available()
+        assert report is not None
+        assert report.error is None
+        assert {m.name for m in report} == {"hello.txt", "dir/nested.txt"}
+
+
+def test_random_access_read_by_name(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        assert ar.read("hello.txt") == b"hello world"
+        assert ar.read("dir/nested.txt") == b"nested content"
+        # Re-reading an earlier member out of order still works (random access).
+        assert ar.read("hello.txt") == b"hello world"
+
+
+def test_central_directory_lookup_no_io(simple_zip: Path) -> None:
+    # reader.get("name") is served from the in-memory name map with no extra archive reads.
+    with open_archive(simple_zip) as ar:
+        ar.members()  # materialize
+        archive = ar._archive  # type: ignore[attr-defined]
+        calls = {"open": 0}
+        original_open = archive.open
+
+        def counting_open(*args, **kwargs):  # type: ignore[no-untyped-def]
+            calls["open"] += 1
+            return original_open(*args, **kwargs)
+
+        archive.open = counting_open  # type: ignore[method-assign]
+        member = ar.get("hello.txt")
+        assert member.name == "hello.txt"
+        assert calls["open"] == 0  # lookup touched no archive data
+
+
+# ---------------------------------------------------------------------------
+# Member metadata mapping
+# ---------------------------------------------------------------------------
+
+
+def test_unix_mode_from_external_attr(tmp_path: Path) -> None:
+    path = tmp_path / "moded.zip"
+    _zip_with_unix_mode(path, "script.sh", b"#!/bin/sh\n", 0o755)
+    with open_archive(path) as ar:
+        member = ar.get("script.sh")
+        assert member.mode == 0o755
+
+
+def test_none_mode_when_external_attr_zero() -> None:
+    # zipfile.writestr always stamps a 0o600 external_attr, so zero it in the central
+    # directory (4-byte field at offset 38 of the PK\x01\x02 record) to exercise the
+    # "external_attr == 0 -> mode None" rule.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("plain.txt", b"x")
+    raw = bytearray(buf.getvalue())
+    cd = raw.index(b"PK\x01\x02")
+    raw[cd + 38 : cd + 42] = b"\x00\x00\x00\x00"
+    with open_archive(io.BytesIO(bytes(raw))) as ar:
+        assert ar.get("plain.txt").mode is None
+
+
+def test_directory_member_type(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        # zipfile stores explicit directory entries with a trailing slash.
+        assert by_name["hello.txt"].type == MemberType.FILE
+
+
+def test_file_member_exposes_stored_crc32(simple_zip: Path) -> None:
+    # archive-data-model: ZIP CRC32 under HashAlgorithm.CRC32 as 4 big-endian bytes.
+    with open_archive(simple_zip) as ar:
+        member = ar.get("hello.txt")
+        assert member is not None
+        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(
+            zlib.crc32(b"hello world")
+        )
+
+
+def test_directory_member_has_no_crc32(tmp_path: Path) -> None:
+    path = tmp_path / "withdir.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("adir/", b"")
+        z.writestr("adir/file.txt", b"data")
+    with open_archive(path) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        # A directory's stored CRC is a meaningless 0; do not present it as a digest.
+        assert HashAlgorithm.CRC32 not in by_name["adir/"].hashes
+        assert by_name["adir/file.txt"].hashes[HashAlgorithm.CRC32] == crc32_digest(
+            zlib.crc32(b"data")
+        )
+
+
+def test_explicit_directory_entry(tmp_path: Path) -> None:
+    path = tmp_path / "withdir.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("adir/", b"")
+        z.writestr("adir/file.txt", b"data")
+    with open_archive(path) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["adir/"].type == MemberType.DIRECTORY
+
+
+def test_symlink_member(tmp_path: Path) -> None:
+    import stat as stat_module
+
+    path = tmp_path / "link.zip"
+    info = zipfile.ZipInfo("link")
+    info.create_system = 3
+    info.external_attr = (stat_module.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("target.txt", b"payload")
+        z.writestr(info, b"target.txt")
+    with open_archive(path) as ar:
+        member = ar.get("link")
+        assert member.type == MemberType.SYMLINK
+        assert member.link_target == "target.txt"
+
+
+def test_truncated_symlink_target_is_typed_error(tmp_path: Path) -> None:
+    """stdlib zipfile raises EOFError on truncated symlink data; must be ArchiveyError.
+
+    Found by the Atheris zip_tar target: listing a corrupt ZIP with a symlink whose
+    local payload is truncated escaped as a raw ``EOFError``.
+    """
+    import stat as stat_module
+
+    path = tmp_path / "trunc-link.zip"
+    info = zipfile.ZipInfo("link")
+    info.create_system = 3
+    info.external_attr = (stat_module.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"/tmp/some/long/symlink/target/path")
+    data = bytearray(path.read_bytes())
+    # Chop the file mid-payload but leave enough of the structure for zipfile to open
+    # and classify the member as a symlink (then fail while reading the target).
+    assert len(data) > 40
+    truncated = bytes(data[: max(40, len(data) // 2)])
+    with pytest.raises((TruncatedError, CorruptionError)):
+        with open_archive(io.BytesIO(truncated), format=ArchiveFormat.ZIP) as ar:
+            list(ar)
+
+
+@pytest.mark.parametrize(
+    ("password", "expect_indexerror_cause"),
+    [
+        (b"secret", True),
+        ([b"secret", b"other"], False),
+    ],
+    ids=["single", "multi"],
+)
+def test_truncated_zipcrypto_header_is_typed_error(
+    password: bytes | list[bytes], expect_indexerror_cause: bool
+) -> None:
+    """A short ZipCrypto header is TruncatedError on both password dispatch paths.
+
+    Found by the Atheris zip target (nightly 2026-09-01, run 33505689273):
+    ``ZipExtFile._init_decrypter`` indexes ``[11]`` of whatever ``read(12)``
+    returned. Listing still succeeds; opening the encrypted member must raise
+    ``TruncatedError``, not a raw ``IndexError`` and not ``CorruptionError``.
+
+    A single static password goes through ``ZipFile.open(pwd=…)`` (IndexError
+    cause). Two-or-more candidates take the STORED confirm path through
+    ``_read_zipcrypto_header``.
+    """
+    blob = zip_with_truncated_zipcrypto_header(b"secret", b"x.txt", b"hello")
+    with open_archive(
+        io.BytesIO(blob), format=ArchiveFormat.ZIP, password=password
+    ) as ar:
+        encrypted = [m for m in ar if m.is_encrypted]
+        assert encrypted, (
+            "fixture must list the ZipCrypto member so the crash is on open"
+        )
+        with pytest.raises(TruncatedError) as excinfo:
+            ar.open(encrypted[0])
+        if expect_indexerror_cause:
+            assert isinstance(excinfo.value.__cause__, IndexError)
+        else:
+            assert not isinstance(excinfo.value.__cause__, IndexError)
+
+
+def test_truncated_zipcrypto_stamp_releases_handle_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CONCURRENT handle lock is released before TruncatedError is stamped.
+
+    ``_translated_errors`` takes the boundary outside ``_handle_guard()`` so
+    stamping never runs while the shared-handle lock is held. A diagnostics
+    handler that re-enters the reader would otherwise deadlock.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    held_during_stamp: list[bool] = []
+    orig = zip_reader.ZipReader._stamp_error_context
+
+    def _wrapped(
+        self: zip_reader.ZipReader,
+        exc: ArchiveyError,
+        member_name: str | None = None,
+    ) -> None:
+        lock = self._handle_lock
+        held_during_stamp.append(lock.locked() if lock is not None else False)
+        orig(self, exc, member_name)
+
+    monkeypatch.setattr(zip_reader.ZipReader, "_stamp_error_context", _wrapped)
+
+    blob = zip_with_truncated_zipcrypto_header(b"secret", b"x.txt", b"hello")
+    with open_archive(
+        io.BytesIO(blob),
+        format=ArchiveFormat.ZIP,
+        password=b"secret",
+        concurrent_members=True,
+    ) as ar:
+        encrypted = [m for m in ar if m.is_encrypted]
+        with pytest.raises(TruncatedError):
+            ar.open(encrypted[0])
+    assert held_during_stamp == [False]
+
+
+def test_unencrypted_codec_indexerror_is_not_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IndexError on the codec path is an archivey bug, not archive damage.
+
+    IndexError is translated only around ``ZipFile.open(pwd=…)`` in
+    ``_zip_open_raw``, so a latent off-by-one in ``open_codec_stream`` still
+    fails the Atheris zip target rather than being swallowed as TruncatedError.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("x.txt", b"hello world" * 10)
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise IndexError("index out of range")
+
+    monkeypatch.setattr(zip_reader, "open_codec_stream", _boom)
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
+        with pytest.raises(IndexError, match="index out of range"):
+            ar.open(next(iter(ar)))
+
+
+def test_unencrypted_member_read_indexerror_is_not_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IndexError during a ZIP member *read* is an archivey bug, not ZipCrypto truncation.
+
+    ``_translate_exception`` is ArchiveStream's translate hook. Mapping IndexError
+    there turns a codec/stream off-by-one into ``TruncatedError("Truncated ZipCrypto
+    header")`` on an unencrypted DEFLATE member. A bounded ``read(n)`` is the path
+    that reaches the translator; ``read()`` (n=-1) hits the fused size verifier's
+    opaque-accelerator catch first. The ZipCrypto mapping lives on ``_zip_open_raw``.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("x.txt", b"hello world" * 10)
+
+    class _Boom(io.BytesIO):
+        def read(self, *args: object, **kwargs: object) -> bytes:
+            raise IndexError("index out of range")
+
+    monkeypatch.setattr(zip_reader, "open_codec_stream", lambda *_a, **_k: _Boom())
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
+        stream = ar.open(next(iter(ar)))
+        with pytest.raises(IndexError, match="index out of range"):
+            stream.read(10)
+
+
+def _symlink_zip(tmp_path: Path) -> Path:
+    import stat as stat_module
+
+    path = tmp_path / "symlink.zip"
+    info = zipfile.ZipInfo("link")
+    info.create_system = 3
+    info.external_attr = (stat_module.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("target.txt", b"payload")
+        z.writestr(info, b"target.txt")
+    return path
+
+
+def test_zip_index_only_listing_leaves_symlink_unresolved(tmp_path: Path) -> None:
+    path = _symlink_zip(tmp_path)
+    with open_archive(path) as ar:
+        report = ar.members_report_if_available()
+        assert report is not None
+        assert report.error is None
+        link = next(m for m in report if m.name == "link")
+        assert link.link_target is None
+        assert link.link_target_member is None
+
+        resolved = ar.scan_members()
+        link_resolved = next(m for m in resolved if m.name == "link")
+        assert link_resolved.link_target == "target.txt"
+        assert link_resolved.link_target_member is not None
+        assert link_resolved.link_target_member.name == "target.txt"
+        assert ar.read("link") == b"payload"
+        ar.extract_all(tmp_path / "out")
+        assert (tmp_path / "out" / "target.txt").read_bytes() == b"payload"
+
+
+def test_compression_method_mapping(tmp_path: Path) -> None:
+    path = tmp_path / "methods.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("stored.txt", b"a" * 100, compress_type=zipfile.ZIP_STORED)
+        z.writestr("deflated.txt", b"a" * 100, compress_type=zipfile.ZIP_DEFLATED)
+    with open_archive(path) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["stored.txt"].compression[0].algo == CompressionAlgorithm.STORED
+        assert (
+            by_name["deflated.txt"].compression[0].algo == CompressionAlgorithm.DEFLATE
+        )
+
+
+def test_encrypted_flag() -> None:
+    # stdlib zipfile cannot write encrypted entries, so set the general-purpose
+    # encryption bit (0x1) directly in the central-directory record's flag field (at
+    # offset 8 of the PK\x01\x02 record) to exercise the is_encrypted mapping.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("e.txt", b"data")
+    raw = bytearray(buf.getvalue())
+    cd = raw.index(b"PK\x01\x02")
+    flags = int.from_bytes(raw[cd + 8 : cd + 10], "little") | 0x1
+    raw[cd + 8 : cd + 10] = flags.to_bytes(2, "little")
+    with open_archive(io.BytesIO(bytes(raw))) as ar:
+        assert ar.get("e.txt").is_encrypted is True
+
+
+def test_size_fields(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        member = ar.get("hello.txt")
+        assert member.size == len(b"hello world")
+        assert member.compressed_size is not None
+
+
+def test_raw_name_preserved(tmp_path: Path) -> None:
+    path = tmp_path / "utf8.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("café.txt", b"x")  # forces the UTF-8 flag
+    with open_archive(path) as ar:
+        member = ar.get("café.txt")
+        assert member.raw_name == "café.txt".encode("utf-8")
+
+
+def test_extended_timestamp_precedence(tmp_path: Path) -> None:
+    # An Extended Timestamp extra field (0x5455) carries a real Unix time and overrides the
+    # 2-second-granularity DOS date_time, yielding a tz-aware UTC datetime.
+    unix_time = 1_600_000_000  # 2020-09-13T12:26:40Z
+    extra = struct.pack("<HHB I", 0x5455, 5, 0x01, unix_time)
+    path = tmp_path / "ts.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert member.modified is not None
+        assert member.modified.tzinfo is not None
+        assert member.modified == datetime.fromtimestamp(unix_time, tz=timezone.utc)
+
+
+def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
+    # An unknown extra field (0x1234) preceding the Extended Timestamp (0x5455): the
+    # extra-field walk must skip the unknown field by its declared length and still reach
+    # and parse the timestamp (regression for the field-walking loop).
+    unix_time = 1_600_000_000
+    extra = struct.pack("<HH4s", 0x1234, 4, b"abcd") + struct.pack(
+        "<HHBI", 0x5455, 5, 0x01, unix_time
+    )
+    path = tmp_path / "extra.zip"
+    info = zipfile.ZipInfo("file.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        assert ar.get("file.txt").modified == datetime.fromtimestamp(
+            unix_time, tz=timezone.utc
+        )
+
+
+def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
+    # An Extended Timestamp (0x5455) with flags 0x07 carries modification, access and
+    # creation times (in that order); all three should populate the member.
+    mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
+    extra = struct.pack("<HHB iii", 0x5455, 13, 0x07, mtime, atime, ctime)
+    path = tmp_path / "ts3.zip"
+    info = zipfile.ZipInfo("t.txt")
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
+        assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
+        assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
+
+
+def test_duplicate_member_names_read_independently(tmp_path: Path) -> None:
+    # Two members stored under the same name: each must read its own data. The reader keys
+    # off the member's own ZipInfo handle (member._raw), not a name map, so there is no
+    # collision.
+    path = tmp_path / "dup.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("dup.txt", b"first")
+        z.writestr("dup.txt", b"second")
+    with open_archive(path) as ar:
+        members = ar.members()
+        assert len(members) == 2
+        assert ar.read(members[0]) == b"first"
+        assert ar.read(members[1]) == b"second"
+
+
+# ---------------------------------------------------------------------------
+# Non-seekable source fails fast
+# ---------------------------------------------------------------------------
+
+
+def test_non_seekable_zip_fails_fast(simple_zip: Path) -> None:
+    data = simple_zip.read_bytes()
+    with pytest.raises(StreamNotSeekableError):
+        open_archive(NonSeekableBytesIO(data), format=ArchiveFormat.ZIP)
+
+
+def test_non_seekable_zip_fails_fast_via_detection(simple_zip: Path) -> None:
+    # Even without an explicit format, a non-seekable ZIP is rejected at open time (the
+    # opener wraps it in a PeekableStream for detection, then enforces the seekable-source rule).
+    # The message is asserted here as well as in tests/test_non_seekable_refusal.py, which
+    # reaches the same branch with an explicit format= and no archive bytes: if a refactor
+    # ever moved the check after detection I/O, the two entry points could diverge and a
+    # type-only assertion would not notice.
+    data = simple_zip.read_bytes()
+    with pytest.raises(StreamNotSeekableError) as excinfo:
+        open_archive(NonSeekableBytesIO(data))
+    message = str(excinfo.value)
+    assert "streaming=True" not in message, message
+    assert "BytesIO" in message
+
+
+# ---------------------------------------------------------------------------
+# Multi-volume: 7-Zip .zip.NNN byte slices join; Info-ZIP .zNN spanned sets refuse
+# ---------------------------------------------------------------------------
+
+
+def _stdlib_zip_bytes(name: str = "big.bin", payload: bytes = b"x" * 64) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as z:
+        z.writestr(name, payload)
+    return buf.getvalue()
+
+
+def _patch_eocd_disk_fields(
+    data: bytes, *, this_disk: int, cd_start_disk: int
+) -> bytes:
+    """Patch classic EOCD uint16 disk fields (offsets +4 / +6 from PK\\x05\\x06)."""
+    raw = bytearray(data)
+    sig = raw.rfind(b"PK\x05\x06")
+    assert sig >= 0, "EOCD signature not found"
+    struct.pack_into("<HH", raw, sig + 4, this_disk, cd_start_disk)
+    return bytes(raw)
+
+
+def test_split_segment_name_rejected(tmp_path: Path) -> None:
+    # A .z01 segment of a split set is rejected by name as an unsupported multi-volume ZIP.
+    segment = tmp_path / "archive.z01"
+    segment.write_bytes(b"\x50\x4b\x03\x04" + b"\x00" * 64)
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(segment, format=ArchiveFormat.ZIP)
+    assert "multi-volume" in str(excinfo.value).lower()
+
+    # Middle Info-ZIP parts have no magic at offset 0; refuse by filename before detection.
+    middle = tmp_path / "archive.z02"
+    middle.write_bytes(b"\x00" * 64)
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(middle)
+    assert "multi-volume" in str(excinfo.value).lower()
+
+    # Info-ZIP continues past .z99 as .z100, .z101, … — still a split segment.
+    high = tmp_path / "archive.z100"
+    high.write_bytes(b"\x00" * 64)
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(high)
+    assert "multi-volume" in str(excinfo.value).lower()
+
+
+def test_sevenzip_split_segment_without_siblings_rejected(tmp_path: Path) -> None:
+    # A 7-Zip .zip.NNN part whose siblings are not on disk cannot be rejoined.
+    # Each file gets its own directory so no set can be discovered around it.
+    first = tmp_path / "alone" / "archive.zip.001"
+    first.parent.mkdir()
+    first.write_bytes(_stdlib_zip_bytes())
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set") as excinfo:
+        open_archive(first)
+    assert "found part 1 only" in str(excinfo.value)
+    assert "archive.zip.002" in str(excinfo.value)
+
+    later = tmp_path / "orphan" / "archive.zip.003"
+    later.parent.mkdir()
+    later.write_bytes(b"\x00" * 64)  # no magic at 0
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set") as excinfo:
+        open_archive(later)
+    assert "found part 3 only" in str(excinfo.value)
+    assert "archive.zip.001" in str(excinfo.value)
+    assert "archive.zip.002" in str(excinfo.value)
+
+
+def test_volume_shaped_name_honours_explicit_non_zip_format(tmp_path: Path) -> None:
+    # A volume-shaped suffix must not override an explicit non-ZIP format= (P8).
+    # Real tar.gz bytes under a .z01 / .zip.001 name still open when the caller asserts TAR_GZ.
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="hello.txt")
+        payload = b"hello"
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    raw = buf.getvalue()
+
+    z01 = tmp_path / "payload.z01"
+    z01.write_bytes(raw)
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(z01)
+    assert "multi-volume" in str(excinfo.value).lower()
+    with open_archive(z01, format=ArchiveFormat.TAR_GZ) as ar:
+        assert [m.name for m in ar.members()] == ["hello.txt"]
+        assert ar.read("hello.txt") == b"hello"
+
+    numbered = tmp_path / "payload.zip.001"
+    numbered.write_bytes(raw)
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set"):
+        open_archive(numbered)
+    with open_archive(numbered, format=ArchiveFormat.TAR_GZ) as ar:
+        assert [m.name for m in ar.members()] == ["hello.txt"]
+        assert ar.read("hello.txt") == b"hello"
+
+
+def _build_sevenzip_split_zip(tmp_path: Path) -> tuple[Path, bytes]:
+    """Build a real ``7z a -tzip -mx0 -v40k`` set; return part 1 and the big member.
+
+    ``-mx0`` stores, so ``big.bin`` is larger than one volume and its data necessarily
+    crosses part boundaries — the case a rejoin that read each part independently
+    would get wrong.
+    """
+    payload = bytes(range(256)) * 600  # 153_600 B across 40 KiB volumes -> 4 parts
+    (tmp_path / "big.bin").write_bytes(payload)
+    (tmp_path / "small.txt").write_bytes(b"tail\n")
+    subprocess.run(
+        ["7z", "a", "-tzip", "-mx0", "-v40k", "set.zip", "big.bin", "small.txt"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    return tmp_path / "set.zip.001", payload
+
+
+@requires_binary("7z")
+def test_sevenzip_split_zip_set_is_joined_and_read(tmp_path: Path) -> None:
+    # 7-Zip's -v is a raw byte split, not a spanned set: the parts concatenate back
+    # into an ordinary single-volume ZIP, exactly as they do for .7z.NNN.
+    first, payload = _build_sevenzip_split_zip(tmp_path)
+    assert (tmp_path / "set.zip.004").is_file(), "fixture must have several parts"
+
+    with open_archive(first) as archive:
+        assert {m.name for m in archive.members()} == {"big.bin", "small.txt"}
+        assert archive.read("big.bin") == payload
+        assert archive.read("small.txt") == b"tail\n"
+
+        info = archive.info
+        assert info.is_multivolume is True
+        assert info.extra.get("zip.volume_count") == 4
+        assert archive.cost.listing_cost == ListingCost.INDEXED
+        assert archive.cost.access_cost == AccessCost.DIRECT
+        assert archive.cost.stream_capability == StreamCapability.SEEKABLE
+
+
+@requires_binary("7z")
+def test_sevenzip_split_zip_set_opens_from_a_middle_part(tmp_path: Path) -> None:
+    # A middle part carries no ZIP magic at offset 0; the set is anchored by name,
+    # not by which part the caller happened to hand us.
+    _, payload = _build_sevenzip_split_zip(tmp_path)
+    with open_archive(tmp_path / "set.zip.002") as archive:
+        assert archive.read("big.bin") == payload
+
+
+@requires_binary("7z")
+def test_sevenzip_split_zip_set_with_missing_part_is_truncated(tmp_path: Path) -> None:
+    first, _ = _build_sevenzip_split_zip(tmp_path)
+    (tmp_path / "set.zip.002").unlink()
+    with pytest.raises(TruncatedError, match="Incomplete multi-volume set"):
+        open_archive(first)
+
+
+def test_infozip_spanned_set_still_refused(tmp_path: Path) -> None:
+    """Info-ZIP ``.z01 … .zip`` keeps refusing, siblings present or not.
+
+    ``zip -s`` writes a true spanned set: entries are addressed by (disk, offset), so a
+    linear join lists correctly and then reads only whichever members happen to sit on
+    the last disk. That makes it a different thing from 7-Zip's byte slices however alike
+    the two look from outside. Synthesised
+    rather than built with ``zip -s`` because Info-ZIP is not installed on CI, macOS
+    or Windows — a real fixture would skip everywhere and prove nothing.
+    """
+    # .z01 opens with the spanning marker; middle parts carry no signature at all;
+    # the final .zip holds the central directory and names a non-zero disk.
+    (tmp_path / "set.z01").write_bytes(b"PK\x07\x08" + b"\x00" * 64)
+    (tmp_path / "set.z02").write_bytes(b"\x00" * 64)
+    (tmp_path / "set.zip").write_bytes(
+        _patch_eocd_disk_fields(_stdlib_zip_bytes(), this_disk=2, cd_start_disk=2)
+    )
+    for name in ("set.z01", "set.z02", "set.zip"):
+        with pytest.raises(UnsupportedFeatureError) as excinfo:
+            open_archive(tmp_path / name)
+        assert "multi-volume" in str(excinfo.value).lower(), name
+
+
+@pytest.mark.parametrize(
+    ("this_disk", "cd_start_disk"),
+    [
+        (7, 0),
+        (0, 7),
+        (7, 7),
+    ],
+    ids=["this_disk", "cd_start_disk", "both"],
+)
+def test_eocd_nonzero_disk_fields_rejected(
+    tmp_path: Path, this_disk: int, cd_start_disk: int
+) -> None:
+    # Info-ZIP's final .zip part carries the CD + EOCD with this_disk / cd_start_disk
+    # equal to the last data volume index. Byte-equivalent: patch those EOCD fields.
+    path = tmp_path / "set.zip"
+    path.write_bytes(
+        _patch_eocd_disk_fields(
+            _stdlib_zip_bytes(), this_disk=this_disk, cd_start_disk=cd_start_disk
+        )
+    )
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        open_archive(path)
+    assert "multi-volume" in str(excinfo.value).lower()
+
+
+def _genuine_zip64_bytes(
+    *,
+    name: bytes = b"a.txt",
+    payload: bytes = b"hello",
+    classic_this_disk: int = 0xFFFF,
+    classic_cd_start_disk: int = 0xFFFF,
+    zip64_this_disk: int = 0,
+    zip64_cd_start_disk: int = 0,
+) -> bytes:
+    """Craft a ZIP with real ZIP64 EOCD + locator (not just force_zip64 LFH extras)."""
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+    lfh = (
+        struct.pack(
+            "<IHHHHHIIIHH",
+            0x04034B50,
+            45,
+            0,
+            0,
+            0,
+            0,
+            crc,
+            len(payload),
+            len(payload),
+            len(name),
+            0,
+        )
+        + name
+        + payload
+    )
+    cdh = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            0x2D00,
+            45,
+            0,
+            0,
+            0,
+            0,
+            crc,
+            len(payload),
+            len(payload),
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name
+    )
+    z64_body = struct.pack(
+        "<HHIIQQQQ",
+        45,
+        45,
+        zip64_this_disk,
+        zip64_cd_start_disk,
+        1,
+        1,
+        len(cdh),
+        len(lfh),
+    )
+    z64 = struct.pack("<IQ", 0x06064B50, len(z64_body)) + z64_body
+    locator = struct.pack("<IIQI", 0x07064B50, 0, len(lfh) + len(cdh), 1)
+    eocd = struct.pack(
+        "<IHHHHIIH",
+        0x06054B50,
+        classic_this_disk,
+        classic_cd_start_disk,
+        0xFFFF,
+        0xFFFF,
+        0xFFFFFFFF,
+        0xFFFFFFFF,
+        0,
+    )
+    return lfh + cdh + z64 + locator + eocd
+
+
+def test_eocd_zip64_disk_sentinel_still_opens(tmp_path: Path) -> None:
+    # 0xFFFF in classic EOCD disk fields is the ZIP64 sentinel. Prove it against an
+    # archive that actually has ZIP64 EOCD + locator (force_zip64 alone does not).
+    raw = _genuine_zip64_bytes()
+    assert b"PK\x06\x06" in raw and b"PK\x06\x07" in raw
+    path = tmp_path / "zip64_sentinel.zip"
+    path.write_bytes(raw)
+    with open_archive(path) as ar:
+        assert ar.read("a.txt") == b"hello"
+
+
+def test_plain_prefixed_and_empty_zip_still_open(tmp_path: Path) -> None:
+    plain = tmp_path / "plain.zip"
+    plain.write_bytes(_stdlib_zip_bytes("a.txt", b"hi"))
+    with open_archive(plain) as ar:
+        assert ar.read("a.txt") == b"hi"
+
+    prefixed = tmp_path / "prefixed.zip"
+    prefixed.write_bytes(b"#!/bin/sh\necho stub\n" + _stdlib_zip_bytes("a.txt", b"hi"))
+    with open_archive(prefixed) as ar:
+        assert ar.read("a.txt") == b"hi"
+
+    # Empty ZIP: EOCD present, nothing else — sharp false-positive for disk-field checks.
+    bare_eocd = tmp_path / "bare_eocd.zip"
+    bare_eocd.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    with open_archive(bare_eocd) as ar:
+        assert ar.members() == []
+
+    empty = tmp_path / "empty.zip"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w"):
+        pass
+    empty.write_bytes(buf.getvalue())
+    with open_archive(empty) as ar:
+        assert ar.members() == []
+
+
+# ---------------------------------------------------------------------------
+# Reading via open() and stream_members()
+# ---------------------------------------------------------------------------
+
+
+def test_open_returns_stream(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        with ar.open("hello.txt") as f:
+            assert f.read() == b"hello world"
+
+
+def test_stream_members(simple_zip: Path) -> None:
+    with open_archive(simple_zip) as ar:
+        collected = {}
+        for member, stream in ar.stream_members():
+            collected[member.name] = stream.read() if stream is not None else None
+        assert collected["hello.txt"] == b"hello world"
+        assert collected["dir/nested.txt"] == b"nested content"
+
+
+def test_read_roundtrip_from_stream_source(simple_zip: Path) -> None:
+    # Opening from an already-seekable in-memory stream (no path) works too.
+    data = simple_zip.read_bytes()
+    with open_archive(io.BytesIO(data)) as ar:
+        assert ar.read("hello.txt") == b"hello world"
+
+
+def test_concurrent_open_members_interleaved_path_source(simple_zip: Path) -> None:
+    # Path source: stdlib zipfile's _SharedFile already coordinates; lock the contract in.
+    with open_archive(simple_zip, concurrent_members=True) as ar:
+        s1 = ar.open("hello.txt")
+        s2 = ar.open("dir/nested.txt")
+        assert s1.read(5) == b"hello"
+        assert s2.read(6) == b"nested"
+        assert s1.read() == b" world"
+        assert s2.read() == b" content"
+        s1.close()
+        s2.close()
+
+
+def test_concurrent_open_members_interleaved_stream_source(simple_zip: Path) -> None:
+    # Stream source: stdlib zipfile coordinates a passed-in handle exactly like a path
+    # source (_SharedFile keeps a per-open position under ZipFile's lock), so archivey
+    # adds no wrap; this test locks the concurrent-open contract in for that leg too.
+    data = simple_zip.read_bytes()
+    with open_archive(io.BytesIO(data), concurrent_members=True) as ar:
+        s1 = ar.open("hello.txt")
+        s2 = ar.open("dir/nested.txt")
+        assert s1.read(5) == b"hello"
+        assert s2.read(6) == b"nested"
+        assert s1.read() == b" world"
+        assert s2.read() == b" content"
+        s1.close()
+        s2.close()
+
+
+def test_read_after_source_close_raises_typed_error() -> None:
+    # archive-reading "fail loudly" scenario: once the caller's source stream is closed,
+    # reading a still-open member stream surfaces a typed error at the reader boundary —
+    # not a raw ValueError, and not a misleading CorruptionError. The member must exceed
+    # ZipExtFile's read-ahead so the second read actually touches the closed source.
+    payload = bytes(range(256)) * 1024  # 256 KiB, incompressible-ish and > read-ahead
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("big.bin", payload)
+    source = io.BytesIO(buf.getvalue())
+    with open_archive(source) as ar:
+        stream = ar.open("big.bin")
+        assert stream.read(16) == payload[:16]
+        source.close()
+        with pytest.raises(ArchiveyUsageError):
+            while stream.read(65536):
+                pass
+        with contextlib.suppress(Exception):
+            stream.close()
+
+
+# ---------------------------------------------------------------------------
+# Corrupt / truncated input -> CorruptionError (with the original cause attached).
+# (Per-format slice of testing-contract's adversarial-corpus requirement, pulled
+# forward to lock down the backend's exception translation as it lands.)
+# ---------------------------------------------------------------------------
+
+
+def test_truncated_zip_raises_corruption() -> None:
+    # A ZIP whose central directory / EOCD has been cut off: the local-file-header magic
+    # still makes detection pick ZIP, but stdlib zipfile cannot parse it.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("hello.txt", b"hello world" * 100)
+    truncated = buf.getvalue()[: len(buf.getvalue()) // 2]
+
+    with pytest.raises(CorruptionError) as excinfo:
+        open_archive(io.BytesIO(truncated))
+    assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
+
+
+def test_corrupt_member_data_raises_corruption_on_read() -> None:
+    # A structurally valid ZIP whose stored member payload has been altered: listing
+    # succeeds, but reading the member trips the CRC check -> CorruptionError.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("data.txt", b"A" * 200)
+    raw = bytearray(buf.getvalue())
+    # STORED payload begins after the 30-byte local header + 8-byte name ("data.txt").
+    raw[50] ^= 0xFF
+
+    with open_archive(io.BytesIO(bytes(raw))) as ar:
+        assert ar.members()[0].name == "data.txt"  # listing is unaffected
+        with pytest.raises(CorruptionError):
+            ar.read("data.txt")
+
+
+def _overlapping_entries_zip() -> bytes:
+    """A Fifield-style overlap bomb: many central-directory entries whose data spans
+    overlap a single shared compressed kernel (https://www.bamsoftware.com/hacks/zipbomb/).
+
+    stdlib zipfile's "Overlapped entries (possible zip bomb)" guard fires when a member is
+    opened — before any byte flows through archivey's read-time translator — so this pins
+    that the *open-time* stdlib exception is translated to a CorruptionError like every
+    other backend error, rather than leaking as a raw zipfile.BadZipFile.
+    """
+    import zlib
+
+    n = 8
+    raw = b"\x00" * (1024 * 1024)
+    comp = zlib.compressobj(9, zlib.DEFLATED, -15)
+    blob = comp.compress(raw) + comp.flush()
+    crc, csize, usize = zlib.crc32(raw) & 0xFFFFFFFF, len(blob), len(raw)
+
+    buf = io.BytesIO()
+    names = [f"f{i}".encode() for i in range(n)]
+    offsets = []
+    for nm in names:  # adjacent local headers, each claiming the shared csize
+        offsets.append(buf.tell())
+        buf.write(
+            struct.pack(
+                "<IHHHHHIIIHH",
+                0x04034B50,
+                20,
+                0,
+                8,
+                0,
+                0,
+                crc,
+                csize,
+                usize,
+                len(nm),
+                0,
+            )
+        )
+        buf.write(nm)
+    buf.write(
+        blob
+    )  # one shared kernel; every entry's data span overruns the next header
+
+    cd_start = buf.tell()
+    for nm, off in zip(names, offsets):
+        buf.write(
+            struct.pack(
+                "<IHHHHHHIIIHHHHHII",
+                0x02014B50,
+                20,
+                20,
+                0,
+                8,
+                0,
+                0,
+                crc,
+                csize,
+                usize,
+                len(nm),
+                0,
+                0,
+                0,
+                0,
+                0,
+                off,
+            )
+        )
+        buf.write(nm)
+    cd_size = buf.tell() - cd_start
+    buf.write(struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, n, n, cd_size, cd_start, 0))
+    return buf.getvalue()
+
+
+def test_overlapping_entries_bomb_translated_to_corruption() -> None:
+    # The overlap guard is an open-time check, not a read-time one, so it exercises a path
+    # distinct from the CRC check above. Every overlapping member must surface as a
+    # translated CorruptionError carrying the stdlib BadZipFile as its cause.
+    data = _overlapping_entries_zip()
+    with open_archive(io.BytesIO(data)) as ar:
+        overlapping = [m for m in ar.members() if m.name != "f7"]  # last entry is valid
+        assert overlapping, "expected the crafted archive to list overlapping members"
+        for member in overlapping:
+            with pytest.raises(CorruptionError) as excinfo:
+                ar.read(member)
+            assert "Overlapped entries" in str(excinfo.value)
+            assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
+
+
+# ---------------------------------------------------------------------------
+# Encrypted symlink targets and explicit metadata encoding
+# ---------------------------------------------------------------------------
+
+
+def _flag_first_entry_encrypted(data: bytes) -> bytes:
+    """Set bit 0 (encryption) of the general-purpose flags in both headers."""
+    raw = bytearray(data)
+    raw[raw.find(b"PK\x03\x04") + 6] |= 1
+    raw[raw.find(b"PK\x01\x02") + 8] |= 1
+    return bytes(raw)
+
+
+def test_encrypted_symlink_listing_without_password() -> None:
+    # A symlink's target is its (encrypted) file data; listing must still succeed with
+    # link_target unset — not leak zipfile's raw RuntimeError("password required").
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        info = zipfile.ZipInfo("link")
+        info.create_system = 3  # Unix
+        info.external_attr = 0o120777 << 16  # symlink mode
+        z.writestr(info, b"target.txt")
+    data = _flag_first_entry_encrypted(buf.getvalue())
+
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
+        (member,) = reader.members()
+        assert member.type is MemberType.SYMLINK
+        assert member.is_encrypted
+        assert member.link_target is None
+
+
+def _zip_with_non_utf8_name(name_byte: bytes) -> bytes:
+    """A ZIP whose single member name contains ``name_byte``, stored without the UTF-8 flag."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("X.txt", b"data")  # ASCII name -> no UTF-8 flag
+    # Same length, so all header offsets stay valid; replaces the name in both the local
+    # header and the central directory.
+    return buf.getvalue().replace(b"X.txt", name_byte + b".txt")
+
+
+def test_explicit_encoding_overrides_cp437_default() -> None:
+    data = _zip_with_non_utf8_name(b"\xe9")
+
+    # Default: zipfile's cp437 fallback (0xE9 -> Greek Theta).
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
+        (member,) = reader.members()
+        assert member.name == "Θ.txt"
+
+    # Explicit caller encoding wins, and raw_name still round-trips the stored bytes.
+    with open_archive(
+        io.BytesIO(data), format=ArchiveFormat.ZIP, encoding="latin-1"
+    ) as reader:
+        (member,) = reader.members()
+        assert member.name == "é.txt"
+        assert member.raw_name == b"\xe9.txt"
+
+
+def _ntfs_extra(mtime_ft: int, atime_ft: int, ctime_ft: int) -> bytes:
+    """An NTFS extra field (0x000A): 4 reserved bytes, then tag 1 with three FILETIMEs."""
+    body = struct.pack("<I", 0) + struct.pack(
+        "<HHQQQ", 0x0001, 24, mtime_ft, atime_ft, ctime_ft
+    )
+    return struct.pack("<HH", 0x000A, len(body)) + body
+
+
+def _to_filetime(unix_time: int) -> int:
+    return (unix_time + 11_644_473_600) * 10_000_000
+
+
+def test_ntfs_timestamps_used_when_no_extended_timestamp(tmp_path: Path) -> None:
+    # An NTFS extra field (0x000A) carries FILETIME mtime/atime/ctime; with no 0x5455
+    # field they populate all three member times as tz-aware UTC datetimes.
+    mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
+    path = tmp_path / "ntfs.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = _ntfs_extra(
+        _to_filetime(mtime), _to_filetime(atime), _to_filetime(ctime)
+    )
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
+        assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
+        assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
+
+
+def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
+    # Precedence: 0x5455 (Unix) > 0x000A (NTFS) > DOS date_time — regardless of the
+    # fields' order in the extra blob. Here NTFS carries all three times but the UT
+    # field's mtime wins for `modified`; atime/ctime stay from NTFS (UT carries none).
+    ut_mtime, nt_mtime, nt_atime = 1_600_000_000, 1_500_000_000, 1_500_000_100
+    extra = _ntfs_extra(
+        _to_filetime(nt_mtime), _to_filetime(nt_atime), 0
+    ) + struct.pack("<HHBI", 0x5455, 5, 0x01, ut_mtime)
+    path = tmp_path / "both.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert member.modified == datetime.fromtimestamp(ut_mtime, tz=timezone.utc)
+        assert member.accessed == datetime.fromtimestamp(nt_atime, tz=timezone.utc)
+        assert member.created is None  # NTFS ctime was 0 = "not set"
+
+
+def test_compressed_source_size(simple_zip: Path) -> None:
+    # The archive-wide extraction ratio guard's denominator: for ZIP the source size is
+    # the compressed size; known for paths and seekable streams alike.
+    with open_archive(simple_zip) as ar:
+        assert ar.compressed_source_size == simple_zip.stat().st_size
+    data = simple_zip.read_bytes()
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as ar:
+        assert ar.compressed_source_size == len(data)
+
+
+def test_compressed_source_size_from_size_attribute(simple_zip: Path) -> None:
+    # An fsspec-style object advertising `.size` is trusted without a seek probe.
+    class _SizedBytesIO(io.BytesIO):
+        @property
+        def size(self) -> int:
+            return len(self.getvalue())
+
+    data = simple_zip.read_bytes()
+    with open_archive(_SizedBytesIO(data), format=ArchiveFormat.ZIP) as ar:
+        assert ar.compressed_source_size == len(data)
+
+
+def test_member_stream_advertises_size(simple_zip: Path) -> None:
+    # Member streams expose the fsspec-style `.size` from archive metadata, so a
+    # nested open_archive (or any consumer) can learn the payload size cheaply.
+    with open_archive(simple_zip) as ar:
+        member = ar.get("hello.txt")
+        assert member is not None
+        with ar.open(member) as stream:
+            assert stream.size == member.size == 11
+
+
+def test_nested_archive_source_size_is_cheap(tmp_path: Path) -> None:
+    # A zip inside a tar: opening the inner archive straight from the member stream
+    # gives the bomb tracker its source size from metadata — no end-seek needed.
+    import tarfile as tarfile_mod
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as z:
+        z.writestr("data.txt", b"nested payload")
+    inner_bytes = inner.getvalue()
+
+    outer = tmp_path / "outer.tar"
+    with tarfile_mod.open(outer, "w") as t:
+        info = tarfile_mod.TarInfo("inner.zip")
+        info.size = len(inner_bytes)
+        t.addfile(info, io.BytesIO(inner_bytes))
+
+    with open_archive(outer, seekable_members=True) as outer_ar:
+        inner_stream = outer_ar.open("inner.zip")
+        with open_archive(inner_stream, format=ArchiveFormat.ZIP) as inner_ar:
+            assert inner_ar.compressed_source_size == len(inner_bytes)
+            assert inner_ar.read("data.txt") == b"nested payload"
+
+
+# Committed fixtures (tests/fixtures/zip_backslash/, generated by its generate.py) carry
+# backslashes in the stored names. They run identically on every OS because archivey reads
+# the raw name from ZipInfo.orig_filename, which zipfile preserves cross-platform (unlike
+# .filename, which it rewrites on Windows). Building these at runtime instead would be
+# impossible on Windows, where zipfile rewrites backslashes on both write and read.
+_ZIP_BACKSLASH_DIR = Path(__file__).parent / "fixtures" / "zip_backslash"
+
+
+def test_backslash_converted_for_dos_windows_entry() -> None:
+    # A DOS/Windows-origin entry (create_system=FAT) uses "\" as a separator: converted.
+    with open_archive(_ZIP_BACKSLASH_DIR / "dos_backslash.zip") as ar:
+        names = [m.name for m in ar.members()]
+    assert names == ["dir/sub/file.txt"]
+
+
+def test_backslash_kept_literal_for_unix_entry() -> None:
+    # A Unix-origin entry (create_system=3) keeps a backslash as a literal filename char.
+    with open_archive(_ZIP_BACKSLASH_DIR / "unix_backslash.zip") as ar:
+        names = [m.name for m in ar.members()]
+    assert names == ["weird\\name.txt"]
+
+
+# ---------------------------------------------------------------------------
+# Unflagged member-name encoding (UTF-8 sniff + configurable legacy fallback)
+# ---------------------------------------------------------------------------
+
+_EXTERNAL_DIR = Path(__file__).parent / "fixtures" / "external"
+
+
+def _stored_zip(name_bytes: bytes, *, utf8_flag: bool) -> bytes:
+    """A minimal single-entry (stored, empty) ZIP with a raw name and chosen UTF-8 flag."""
+    flags = 0x800 if utf8_flag else 0
+    n = len(name_bytes)
+    lfh = (
+        struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, flags, 0, 0, 0, 0, 0, 0, n, 0)
+        + name_bytes
+    )
+    cdh = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            20,
+            20,
+            flags,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            n,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name_bytes
+    )
+    eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(cdh), len(lfh), 0)
+    return lfh + cdh + eocd
+
+
+def test_unflagged_utf8_name_is_sniffed() -> None:
+    # Info-ZIP fixture: names are valid UTF-8 bytes with the UTF-8 flag NOT set. Decoding
+    # them as cp437 (the APPNOTE default) would mojibake; the sniff recovers UTF-8.
+    with open_archive(_EXTERNAL_DIR / "encoding_infozip_jules.zip") as ar:
+        names = {m.name for m in ar.members()}
+        counts = ar.diagnostics.counts
+    assert names == {"Español.txt", "Català.txt", "Português.txt", "emoji_😀.txt"}
+    # One inference diagnostic per unflagged name that was decoded as UTF-8.
+    assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] == 4
+
+
+def test_unflagged_ascii_name_is_not_an_encoding_override(tmp_path: Path) -> None:
+    # Pure ASCII is valid UTF-8 *and* identical under cp437 — the sniff "selecting" UTF-8
+    # is not an observable override, so no MEMBER_NAME_ENCODING_INFERRED spam.
+    path = tmp_path / "ascii.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("digital_codex/readme.txt", b"x")
+        z.writestr("digital_codex/.DS_Store", b"y")
+        z.writestr("__MACOSX/digital_codex/._.DS_Store", b"z")
+    with open_archive(path) as ar:
+        names = {m.name for m in ar.members()}
+        counts = ar.diagnostics.counts
+        for info in zipfile.ZipFile(path).infolist():
+            assert info.flag_bits & 0x800 == 0  # unflagged (stdlib leaves ASCII clear)
+    assert names == {
+        "digital_codex/readme.txt",
+        "digital_codex/.DS_Store",
+        "__MACOSX/digital_codex/._.DS_Store",
+    }
+    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
+def test_explicit_encoding_disables_sniff() -> None:
+    # An explicit encoding= is authoritative: it is used verbatim and the sniff never runs.
+    with open_archive(
+        _EXTERNAL_DIR / "encoding_infozip_jules.zip", encoding="cp437"
+    ) as ar:
+        names = {m.name for m in ar.members()}
+        counts = ar.diagnostics.counts
+    assert (
+        "Español.txt" not in names
+    )  # decoded as cp437 as asked (mojibake), not sniffed
+    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
+def test_flag_set_name_is_not_sniffed(tmp_path: Path) -> None:
+    # A set UTF-8 flag is authoritative; zipfile flags non-ASCII names, so no sniff fires.
+    path = tmp_path / "flagged.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("café.txt", b"x")
+    with open_archive(path) as ar:
+        member = ar.members()[0]
+        counts = ar.diagnostics.counts
+    assert member.name == "café.txt"
+    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
+def test_invalid_utf8_uses_configurable_legacy_fallback() -> None:
+    # 0xE9 alone is invalid UTF-8; as cp1252 it is "é". A caller with a known-legacy corpus
+    # sets the fallback so unflagged non-UTF-8 names decode deterministically.
+    data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
+    assert zipfile.ZipFile(io.BytesIO(data)).infolist()[0].flag_bits & 0x800 == 0
+    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1252")
+    with open_archive(io.BytesIO(data), config=cfg) as ar:
+        member = ar.members()[0]
+        counts = ar.diagnostics.counts
+    assert member.name == "café.txt"
+    assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] == 1
+
+
+def test_invalid_utf8_default_fallback_is_cp437_without_diagnostic() -> None:
+    # With the default cp437 fallback, an unflagged non-UTF-8 name decodes as cp437 and
+    # emits no inference diagnostic (cp437 is the APPNOTE default, not an override).
+    data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
+    with open_archive(io.BytesIO(data)) as ar:
+        member = ar.members()[0]
+        counts = ar.diagnostics.counts
+    assert member.name == b"caf\xe9.txt".decode("cp437")
+    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
+def test_encoding_inference_is_escalatable() -> None:
+    # The inference diagnostic flows through DiagnosticPolicy like any other: a caller who
+    # refuses to trust the guess can escalate it to an error.
+    from archivey import DiagnosticDisposition, DiagnosticPolicy
+    from archivey.exceptions import DiagnosticRaisedError
+
+    policy = DiagnosticPolicy(
+        overrides={
+            DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: DiagnosticDisposition.RAISE
+        }
+    )
+    cfg = ArchiveyConfig(diagnostic_policy=policy)
+    with pytest.raises(DiagnosticRaisedError):
+        with open_archive(
+            _EXTERNAL_DIR / "encoding_infozip_jules.zip", config=cfg
+        ) as ar:
+            ar.members()
+
+
+# ---------------------------------------------------------------------------
+# Extended Timestamp out-of-range guard (deep W2)
+# ---------------------------------------------------------------------------
+
+
+def test_extended_timestamp_pre_epoch(tmp_path: Path) -> None:
+    # A signed pre-1970 Extended Timestamp is legitimate data. On POSIX it converts
+    # cleanly; on Windows the conversion raises OSError and must degrade to an issue
+    # (covered by the forced test below) — never crash the listing either way.
+    extra = struct.pack("<HHBi", 0x5455, 5, 0x01, -1)
+    path = tmp_path / "pre-epoch.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert member is not None
+        expected = datetime.fromtimestamp(-1, tz=timezone.utc)
+        assert member.modified in (expected, None)  # None only where the OS rejects it
+
+
+def test_extended_timestamp_out_of_range_degrades_to_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Simulate Windows, where even tz-aware fromtimestamp routes through gmtime() and
+    # raises OSError for pre-1970 values: the member must list with modified=None and a
+    # MEMBER_TIMESTAMP_INVALID diagnostic, not crash with a raw OSError.
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.internal.backends import zip_reader as zip_reader_module
+
+    class _WindowsLikeDatetime(datetime):
+        @classmethod
+        def fromtimestamp(cls, ts: float, tz: object = None) -> datetime:
+            if ts < 0:
+                raise OSError(22, "Invalid argument (simulated Windows gmtime)")
+            return datetime.fromtimestamp(ts, tz)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(zip_reader_module, "datetime", _WindowsLikeDatetime)
+
+    extra = struct.pack("<HHBi", 0x5455, 5, 0x01, -(2**31))
+    path = tmp_path / "neg-ts.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert member is not None
+        # DOS date survives; the bad extended field only loses its own override.
+        assert member.modified == datetime(1990, 1, 1, 0, 0, 0)
+        assert (
+            ar.diagnostics.counts.get(DiagnosticCode.MEMBER_TIMESTAMP_INVALID, 0) >= 1
+        )
+
+
+# ---------------------------------------------------------------------------
+# ZipInfo._raw_time must fail loud if stdlib drops it (deep W3)
+# ---------------------------------------------------------------------------
+
+
+def test_zipcrypto_check_byte_fails_loud_without_raw_time(tmp_path: Path) -> None:
+    # A silent 0 fallback would make every candidate fail the ZipCrypto 1-byte check
+    # and misreport correct passwords as wrong for data-descriptor members.
+    path = tmp_path / "plain.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("a.txt", b"data")
+    with open_archive(path) as ar:
+        info = zipfile.ZipInfo("x")
+        info.flag_bits = 0x8  # data descriptor: check byte comes from _raw_time
+        assert not hasattr(info, "_raw_time")
+        with pytest.raises(RuntimeError, match="_raw_time"):
+            ar._zipcrypto_check_byte(info)  # type: ignore[attr-defined]
+        info._raw_time = 0xABCD
+        assert ar._zipcrypto_check_byte(info) == 0xAB  # type: ignore[attr-defined]

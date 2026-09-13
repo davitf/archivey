@@ -1,0 +1,569 @@
+"""``ArchiveStream`` — wraps a member/codec stream and translates raw exceptions.
+
+This is the carrier for the exception-translation contract (see ``error-handling`` and
+CONTRIBUTING). Any exception raised while opening or reading the wrapped stream is routed
+through a per-library *translator* (raw third-party exception → ``ArchiveyError`` subclass
+or ``None`` to let it propagate), then *stamped* with format/archive/member context.
+
+Member digest/length verification (formerly a separate ``VerifyingStream`` layer) is
+optional state on this handle — see ``expected_hashes`` / ``expected_size`` — so a
+member is served by one public stream that collapses nested codec ``ArchiveStream``s
+and hashes/bounds in the same ``read()``.
+"""
+
+from __future__ import annotations
+
+import io
+import sys
+import threading
+import weakref
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, NoReturn
+
+from archivey.config import REWIND_REDECODE_WARN_BYTES
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticSummary,
+    StreamRewindContext,
+)
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.internal.diagnostics_collector import resolve_collector
+from archivey.internal.logs import streams as logger
+from archivey.internal.streams.resume import ask_resume_offset
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    is_seekable,
+    readinto_via_read,
+)
+from archivey.internal.streams.verify import MemberVerifier, build_member_verifier
+from archivey.types import HashAlgorithm
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
+
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.types import ArchiveMember
+
+# A translator maps a raw exception to an ArchiveyError, or returns None to signal "not
+# mine — let it propagate unchanged" (the catch-all-free rule in CONTRIBUTING).
+ExceptionTranslator = Callable[[Exception], ArchiveyError | None]
+# A stamp attaches context (format/archive/member) to an already-translated error.
+ErrorStamp = Callable[[ArchiveyError], None]
+# Optional close hook (e.g. reader live-stream / lease release).
+CloseHook = Callable[[], None]
+
+
+@dataclass(frozen=True)
+class RewindWarning:
+    """Signals that this codec services a backward seek by re-decompressing from the start.
+
+    Carried by :class:`ArchiveStream` so the public stream handle can warn once, on the first
+    rewinding seek, that random access is O(n) here. ``codec_name`` names the format; when an
+    ``accelerator`` package (the ``[seekable]`` extra) would provide indexed random access, the
+    warning names it. ``suggest_install`` is True when that package is absent (tell the user to
+    install it) and False when it is present but was not engaged for this stream. Codecs with a
+    native random-access index (or an active accelerator) carry no ``RewindWarning``.
+
+    ``min_redecode_bytes`` is a cost floor the predicate maxes against. Use it when the
+    carrier re-decodes bytes the member stream's own ``tell()`` does not contain (a
+    subprocess that restarts a solid archive from member zero). Leave it 0 when the
+    discarded member-stream progress is the whole cost.
+    """
+
+    codec_name: str
+    accelerator: str | None = None
+    suggest_install: bool = True
+    min_redecode_bytes: int = 0
+
+
+def _noop_stamp(_exc: ArchiveyError) -> None:
+    return None
+
+
+class ArchiveStream(ReadOnlyIOStream):
+    """Public member/codec stream handle (exception translation + optional verify).
+
+    Responsibilities (one class, several optional knobs):
+
+    1. **Translate + stamp** — raw codec/OS errors → ``ArchiveyError`` with archive
+       context (``translate`` / ``stamp``).
+    2. **Lazy open** — ``open_fn`` may run on first read; ``seekable`` is answered from
+       the hint until then.
+    3. **Collapse nested ``ArchiveStream``s** — ``stream_members`` / codec opens often
+       return another ``ArchiveStream``; ``_collapse_nested`` flattens to one wrapper
+       while composing translators and adopting fused verification.
+    4. **Fused verify** — optional ``MemberVerifier`` (digests / ``expected_size``) runs
+       in ``read`` / ``close``. Distinct from bare ``size=`` (fsspec attribute only —
+       does **not** enable length checks).
+    5. **Lease / finalizer** — ``on_close`` releases reader live-stream state; a
+       weakref finalizer is a safety net if the caller never ``close()``s.
+
+    Prefer constructing via backends / ``open_codec_stream`` rather than by hand.
+    """
+
+    def __init__(
+        self,
+        open_fn: Callable[[], BinaryIO],
+        *,
+        translate: ExceptionTranslator,
+        stamp: ErrorStamp | None = None,
+        lazy: bool = False,
+        seekable: bool = True,
+        rewind_warning: RewindWarning | None = None,
+        size: int | None = None,
+        collector: DiagnosticCollector | None = None,
+        on_close: CloseHook | None = None,
+        expected_hashes: Mapping[HashAlgorithm, bytes] | None = None,
+        expected_size: int | None = None,
+        digest_transforms: Mapping[HashAlgorithm, Callable[[bytes], bytes]]
+        | None = None,
+        verify_member: ArchiveMember | None = None,
+        archive_name: str | None = None,
+        verifier: MemberVerifier | None = None,
+    ) -> None:
+        super().__init__()
+        self._open_fn: Callable[[], BinaryIO] | None = open_fn
+        self._translate = translate
+        self._stamp = stamp if stamp is not None else _noop_stamp
+        self._inner: BinaryIO | None = None
+        self._open_lock = threading.Lock()
+        self._seekable_hint = seekable
+        self._rewind_warning = rewind_warning
+        self._rewind_warned = False
+        self._size = size
+        self._diagnostics_collector = collector
+        self._on_close = on_close
+        # A stream's diagnostics are everything emitted from its open onward: capture the
+        # collector position here and difference against "now" on each query. No per-stream
+        # bookkeeping is retained collector-side.
+        self._diagnostics_watermark = (
+            collector.watermark() if collector is not None else None
+        )
+        # Fused member verification (None when there is nothing to check). Prefer an
+        # already-built ``verifier`` (collapse adoption); otherwise build from knobs.
+        # ``expected_size`` here is the verify bound only — bare ``size=`` (fsspec
+        # attribute) must not enable length checks on TAR/ISO/directory handles.
+        if verifier is not None:
+            self._verifier: MemberVerifier | None = verifier
+        else:
+            self._verifier = build_member_verifier(
+                expected_hashes,
+                expected_size=expected_size,
+                collector=collector,
+                member=verify_member,
+                archive_name=archive_name,
+                digest_transforms=digest_transforms,
+            )
+        self._finalizer: weakref.finalize | None = None
+        if not lazy:
+            self._ensure_open()
+
+    def _attach_finalizer(self) -> None:
+        """Safety-net finalizer: release the lease if the caller never closed us.
+
+        Never raises; reports via ``sys.unraisablehook`` if release fails.
+
+        Shutdown caveat: the release path takes ``ReaderState``'s lock. At interpreter
+        exit, ``weakref.finalize``'s atexit hook runs while daemon threads are frozen —
+        a daemon thread that died *inside* a reader-state critical section leaves the
+        lock held forever and this finalizer would then hang shutdown. The window is a
+        few bytecodes wide and requires daemon threads driving a reader at exit; noted
+        so a future refactor doesn't widen it (e.g. by making the finalizer wait on a
+        condition).
+
+        Ordering note: this must be called AFTER ``_on_close`` is assigned — the
+        callback captures ``self._on_close`` at attach time, not at fire time.
+        """
+        if self._finalizer is not None:
+            return
+        on_close = self._on_close
+
+        def _finalize() -> None:
+            try:
+                if on_close is not None:
+                    on_close()
+            except Exception as exc:  # noqa: BLE001 - finalizers must not raise
+                from types import SimpleNamespace
+                from typing import cast
+
+                try:
+                    # ``sys.unraisablehook`` expects UnraisableHookArgs; SimpleNamespace
+                    # matches the runtime shape (exc_type/value/traceback/err_msg/object).
+                    hook_args = cast(
+                        sys.UnraisableHookArgs,
+                        SimpleNamespace(
+                            exc_type=type(exc),
+                            exc_value=exc,
+                            exc_traceback=exc.__traceback__,
+                            err_msg="ArchiveStream finalizer failed",
+                            object=None,
+                        ),
+                    )
+                    sys.unraisablehook(hook_args)
+                except Exception:  # noqa: BLE001 - never raise from a finalizer
+                    pass
+
+        # Hold only the close hook; do not keep the stream alive.
+        self._finalizer = weakref.finalize(self, _finalize)
+
+    def _detach_finalizer(self) -> None:
+        finalizer = self._finalizer
+        self._finalizer = None
+        if finalizer is not None:
+            finalizer.detach()
+
+    @property
+    def diagnostics(self) -> DiagnosticSummary:
+        """Diagnostic snapshot for events emitted since this stream opened, or empty."""
+        collector = self._diagnostics_collector
+        watermark = self._diagnostics_watermark
+        if collector is None or watermark is None:
+            return DiagnosticSummary.empty()
+        return collector.snapshot(since=watermark)
+
+    @property
+    def size(self) -> int | None:
+        """Total decompressed byte length when cheaply known, else ``None``.
+
+        The fsspec-style ``size`` convention (see ``source_byte_size``): the creator may
+        supply it up front (a member stream knows ``member.size`` from the archive
+        metadata), else an opened inner decompressor with a cheap ``try_get_size()``
+        (index/trailer scan, no decompression) is consulted. Lets a nested
+        ``open_archive(reader.open("inner.zip"))`` learn its source size — e.g. for the
+        extraction bomb tracker — without an expensive end-seek. A lazy, still-unopened
+        stream reports ``None`` rather than opening itself just to answer.
+        """
+        if self._size is not None:
+            return self._size
+        inner = self._inner
+        if inner is None:
+            return None
+        try_get_size = getattr(inner, "try_get_size", None)
+        if callable(try_get_size):
+            result = try_get_size()
+            return result if isinstance(result, int) else None
+        inner_size = getattr(inner, "size", None)
+        if isinstance(inner_size, int) and not isinstance(inner_size, bool):
+            return inner_size
+        return None
+
+    def _ensure_open(self) -> BinaryIO:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if self._inner is not None:
+            return self._inner
+        # Claim the right to call open_fn under the lock, then invoke open_fn
+        # *outside* it so a backend lock acquired inside open_fn (TAR/ISO shared
+        # handle) never nests under stream-state. Publish the result under the lock.
+        open_fn: Callable[[], BinaryIO] | None
+        with self._open_lock:
+            if self._inner is not None:
+                return self._inner
+            if self._open_fn is None:
+                # Another caller claimed open and failed, or close raced us.
+                if self.closed:
+                    raise ValueError("I/O operation on closed file.")
+                raise ArchiveyUsageError(
+                    "Cannot open this member stream: it is already being opened by "
+                    "another caller, or a previous open attempt failed. Concurrent "
+                    "operations on a single stream object require caller synchronization."
+                )
+            open_fn = self._open_fn
+            self._open_fn = None  # claim: only one caller proceeds to open_fn
+        try:
+            opened: BinaryIO = open_fn()
+            # Lazy ``stream_members`` open_fn often returns another ``ArchiveStream``
+            # (from ``_open_member`` → ``_wrap_member_stream``, or a codec stream under
+            # that). Collapse here so the public handle is a single wrapper — but adopt
+            # the nested translator/stamp/rewind_warning so codec errors stay typed.
+            while isinstance(opened, ArchiveStream):
+                opened = self._collapse_nested(opened)
+        except Exception as e:  # noqa: BLE001 - re-raised via the translator
+            # _open_fn stays None (claimed above) so a retry raises rather than
+            # re-entering a half-open backend.
+            self._fail(e)
+        with self._open_lock:
+            if self.closed:
+                try:
+                    opened.close()
+                except Exception:  # noqa: BLE001 - best-effort; stream already closing
+                    pass
+                raise ValueError("I/O operation on closed file.")
+            self._inner = opened
+            return self._inner
+
+    def _collapse_nested(self, nested: ArchiveStream) -> BinaryIO:
+        """Reduce a nested ``ArchiveStream`` to a bytes stream for this handle.
+
+        If ``nested`` is still lazy, its opener is taken and invoked (this handle is
+        opening *now*, so deferral transfers rather than being forced early). If it is
+        already open, its inner is stolen. Either way the nested wrapper is neutralized
+        and will not close the result.
+
+        Codec streams (``open_codec_stream``) carry a library-specific translator;
+        member wrappers often wrap those again. Adopting nested ``translate`` /
+        ``stamp`` / ``rewind_warning`` keeps BadGzipFile / zlib.error / etc. typed
+        after the collapse.
+        """
+        if nested.closed:
+            raise ValueError("I/O operation on closed file.")
+
+        nested_translate = nested._translate
+        nested_stamp = nested._stamp
+        outer_translate = self._translate
+        outer_stamp = self._stamp
+
+        def composed_translate(exc: Exception) -> ArchiveyError | None:
+            translated = nested_translate(exc)
+            if translated is not None:
+                return translated
+            return outer_translate(exc)
+
+        def composed_stamp(err: ArchiveyError) -> None:
+            nested_stamp(err)
+            outer_stamp(err)
+
+        self._translate = composed_translate
+        self._stamp = composed_stamp
+        if self._rewind_warning is None and nested._rewind_warning is not None:
+            self._rewind_warning = nested._rewind_warning
+        # Adopt fused verification from the nested member wrap (lazy stream_members
+        # outer has none; the inner ``_open_member`` wrap carries the knobs).
+        if self._verifier is None and nested._verifier is not None:
+            self._verifier = nested._verifier
+            nested._verifier = None
+
+        with nested._open_lock:
+            open_fn = nested._open_fn
+            inner = nested._inner
+            nested._open_fn = None
+            nested._inner = None
+        nested._detach_finalizer()
+        nested._on_close = None
+        # Mark closed without touching stolen opener/inner.
+        super(ArchiveStream, nested).close()
+
+        if inner is not None:
+            return inner
+        if open_fn is not None:
+            opened = open_fn()
+            while isinstance(opened, ArchiveStream):
+                opened = self._collapse_nested(opened)
+            return opened
+        raise ArchiveyUsageError(
+            "Cannot collapse nested ArchiveStream: it has no opener and no inner stream."
+        )
+
+    def _fail(self, e: Exception) -> NoReturn:
+        """Translate + stamp ``e`` and raise, or re-raise it unchanged."""
+        if isinstance(e, ArchiveyError):
+            self._stamp(e)
+            raise e
+        if isinstance(e, ValueError) and "closed file" in str(e):
+            # The *inner* stream hit a closed handle underneath it — typically the
+            # caller closed their supplied BinaryIO early. Mapped here, before the
+            # per-library translator, so a backend's generic ValueError mapping cannot
+            # claim it. The wrapper's own read-after-close never reaches _fail (plain
+            # ValueError from _ensure_open).
+            translated_closed = ArchiveyUsageError(
+                "Cannot read this member stream: its underlying caller-owned source "
+                "has been closed."
+            )
+            logger.debug("Translated exception: %r -> %r", e, translated_closed)
+            raise translated_closed from e
+        translated = self._translate(e)
+        if translated is not None:
+            self._stamp(translated)
+            logger.debug("Translated exception: %r -> %r", e, translated)
+            raise translated from e
+        raise e
+
+    def read(self, n: int = -1, /) -> bytes:
+        # _ensure_open is outside the try: its read-after-close ValueError is the
+        # wrapper's own (plain file semantics, not translated), and a lazy open failure
+        # is already routed through _fail inside it.
+        # Full-count ``read(n)`` (ADR 0014): one ``inner.read(n)``, so
+        # ``read(member.size)`` is a real verifying event when a verifier is fused. The
+        # ``n``-or-terminal guarantee is the inner's (fill-or-EOF); a short non-empty
+        # return is a terminal signal to forward, not "ask again" — retrying it would
+        # pull a decoder's deferred truncation into this call. An inner that shorts
+        # mid-stream needs a full-count wrapper in front (``ensure_full_count_reads``),
+        # not a loop here.
+        inner = self._ensure_open()
+        verifier = self._verifier
+        try:
+            if verifier is not None:
+                return verifier.read(inner, n)
+            if n == 0:
+                return b""
+            return inner.read(n)
+        except Exception as e:  # noqa: BLE001 - re-raised via the translator
+            self._fail(e)
+
+    def readinto(self, b: "WriteableBuffer", /) -> int:
+        # Always route through read() so the one-read / stop-on-short policy above
+        # (and fused verify) stay consistent — inner.readinto may be up-to-n.
+        return readinto_via_read(self, b)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if not self._seekable_hint:
+            raise io.UnsupportedOperation("seek")
+        inner = self._ensure_open()  # outside the try, same as read()
+        try:
+            before = inner.tell()
+            result = inner.seek(offset, whence)
+        except Exception as e:  # noqa: BLE001 - re-raised via the translator
+            self._fail(e)
+        verifier = self._verifier
+        if verifier is not None:
+            verifier.note_seek(result)
+        self._maybe_warn_rewind(before, result)
+        return result
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """Delegate the cost question inward; ``ArchiveStream``s nest over each other."""
+        return ask_resume_offset(self._inner, target)
+
+    def _maybe_warn_rewind(self, before: int, after: int) -> None:
+        """Report a backward seek that discards an expensive amount of decoded progress.
+
+        The predicate is the seek's actual cost, not the codec's identity. A format that
+        *can* carry an index does not always *have* a useful one: a single-block ``.xz``
+        has one seek point (the origin) and restarts from byte zero exactly like a codec
+        with no index, and an engaged ``rapidgzip`` can hold an index sparse enough for
+        the same thing. Keying on codec identity was silent on both.
+
+        **The cost is what the rewind throws away**, not what the seek call itself
+        decodes: ``before - nearest_resume_offset(after)`` — the bytes that must be
+        decoded again to get back to where the caller was. The seek call alone is a poor
+        proxy; ``seek(10)`` after reading a gigabyte decodes ten bytes and destroys a
+        gigabyte of progress, and it is the gigabyte that makes a seek loop quadratic.
+
+        **Recorded once per stream, escalated every time.** Deduplication keeps the report
+        bounded and readable; the policy is control flow for a caller who asked to be
+        stopped, and a guard that disarms after firing once is not a guard.
+        """
+        warning = self._rewind_warning
+        if warning is None or after >= before:
+            return
+        # A stream that cannot answer has no seek-point table to answer *from*, which for
+        # a decompressing stream (the only kind that carries a RewindWarning at all — see
+        # StoredCodec) means the decoder restarts at the origin. Falling back to 0 keeps
+        # the index-less codecs — stdlib LZMA Alone, brotli, lz4 — reporting, which is
+        # the behaviour this change must not lose while replacing the codec-name rule.
+        resume = self.nearest_resume_offset(after) or 0
+        distance = max(before - resume, warning.min_redecode_bytes)
+        if distance < REWIND_REDECODE_WARN_BYTES:
+            return
+        context = StreamRewindContext(
+            codec=warning.codec_name,
+            from_offset=before,
+            to_offset=after,
+            accelerator=warning.accelerator,
+        )
+        message = self._rewind_message(warning, distance)
+        collector = resolve_collector(self._diagnostics_collector)
+        if self._rewind_warned:
+            collector.escalate_only(
+                code=DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+                message=message,
+                context=context,
+            )
+            return
+        self._rewind_warned = True
+        collector.emit(
+            code=DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+            message=message,
+            context=context,
+            logger=logger,
+        )
+
+    @staticmethod
+    def _rewind_message(warning: RewindWarning, distance: int) -> str:
+        cost = (
+            f"Backward seek in a {warning.codec_name} stream discards {distance} "
+            f"decompressed bytes; returning to the previous position re-decompresses "
+            f"them"
+        )
+        if warning.accelerator is None:
+            return f"{cost}, because this codec has no random-access index."
+        if warning.suggest_install:
+            return (
+                f"{cost}. Install the 'seekable' extra ({warning.accelerator}) for "
+                f"indexed random access."
+            )
+        return (
+            f"{cost}. The '{warning.accelerator}' accelerator has no closer resume point "
+            f"in its index (or was not engaged for this stream)."
+        )
+
+    def tell(self, /) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if self._inner is None:
+            return 0
+        return self._inner.tell()
+
+    def seekable(self) -> bool:
+        # readable()/writable()/write() come from ReadOnlyIOStream.
+        # Undeclared SEEKABLE forces forward-only even when the inner handle could seek
+        # (directory uniformity / declared-capabilities contract).
+        if not self._seekable_hint:
+            return False
+        if self._inner is not None:
+            return is_seekable(self._inner)
+        return True
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        # The finally ensures the wrapper is marked closed even when the inner close
+        # raises (which is re-raised translated): a half-open wrapper would hand out
+        # further reads on a dead stream, and a retried close() would fail again
+        # instead of no-opping (the guard above makes it a no-op instead).
+        # Catch ``Exception`` (not ``BaseException``): KeyboardInterrupt/SystemExit must
+        # still propagate; dual-failure grouping is for ordinary close/teardown errors.
+        close_exc: Exception | None = None
+        try:
+            inner = self._inner
+            verifier = self._verifier
+            if inner is not None:
+                try:
+                    if verifier is not None:
+                        # Teardown only: finish_on_close just closes the inner — every
+                        # content verdict fires from a read (ADR 0014). A teardown error
+                        # from inner.close() (e.g. a subprocess exit code) still
+                        # propagates via the translator below.
+                        verifier.finish_on_close(inner)
+                    else:
+                        inner.close()
+                except Exception as e:  # noqa: BLE001 - re-raised via the translator
+                    try:
+                        self._fail(e)
+                    except Exception as translated:  # noqa: BLE001 - may be ArchiveyError
+                        close_exc = translated
+            # Never-opened lazy handle: skip verify (solid unread members must not
+            # probe / force positioning).
+        finally:
+            super().close()
+            self._detach_finalizer()
+            on_close = self._on_close
+            self._on_close = None
+            teardown_exc: Exception | None = None
+            if on_close is not None:
+                try:
+                    on_close()
+                except Exception as e:  # noqa: BLE001 - combine with close failure below
+                    teardown_exc = e
+            if close_exc is not None and teardown_exc is not None:
+                raise ExceptionGroup(
+                    "member-stream close and archive teardown both failed",
+                    [close_exc, teardown_exc],
+                )
+            if close_exc is not None:
+                raise close_exc
+            if teardown_exc is not None:
+                raise teardown_exc
+
+    def __repr__(self) -> str:
+        return f"<ArchiveStream inner={self._inner!r}>"

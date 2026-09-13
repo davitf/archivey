@@ -1,0 +1,288 @@
+# Formats and extras
+
+What each format can do, what optional packages or tools it needs, and the quirks that
+most often surprise callers. Authoritative detail lives in `openspec/specs/format-*`.
+
+## Quick matrix
+
+| Format | Core? | Extra / tool | Listing | Random member access | Notes |
+| --- | --- | --- | --- | --- | --- |
+| ZIP | yes | — | indexed (central directory) | direct | Seekable source required |
+| TAR | yes | — | scan headers | direct on uncompressed seekable TAR | Compressed TAR is solid for random opens |
+| `.tar.gz` / `.bz2` / `.xz` | yes | — | needs decompression | solid | Prefer `stream_members()` |
+| Directory | yes | — | indexed | direct | Same stream-capability defaults as archives |
+| Single-file gz/bz2/xz | yes | — | one member | seek with `SEEKABLE` | See single-file section |
+| 7z | yes (common codecs) | `[recommended]` for PPMd/Deflate64/zstd/brotli/AES | indexed | solid folders | Native reader; BCJ2 unsupported |
+| RAR | yes (metadata) | **`unrar` or `rar` binary for data**; `[recommended]` for header crypto | native metadata | solid when solid | No write |
+| ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
+| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | — | rewind seek unless indexed later | |
+| `.lz4` / `.tar.lz4` | no | `[recommended]` | — | rewind seek | |
+| `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
+
+**RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`.** No pip extra
+can supply it — listing and metadata work without it, reading bytes does not.
+`rarfile` will use `unar` or `7z` if that is what is on `PATH`; archivey will not.
+How to get the binary: [Install and extras](install.md#getting-rarlab-unrar-or-rar).
+
+Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
+rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
+Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledgements.md).
+
+## ZIP
+
+- Stdlib ``zipfile`` for **central-directory parsing / listing**; member **data** decodes
+  through archivey's shared codec layer (seekable source only, even with
+  ``streaming=True``).
+- Extended ZIP codecs with ``[recommended]`` installed: Deflate64 and PPMd
+  (``inflate64`` / ``pyppmd`` — the same packages the 7z reader uses, which is why no
+  extra is named after a format) and Zstd (``backports.zstd``, or stdlib on 3.14+). A
+  missing backend raises ``PackageNotInstalledError``.
+- Split sets made by 7-Zip's ``-v`` (``name.zip.001``…``name.zip.00N``) open from any
+  part, as long as every part is in the same directory: those files are byte slices of
+  one ordinary ZIP, and Archivey rejoins them for you. A missing part raises
+  ``TruncatedError``.
+- Spanned ZIP written by ``zip -s`` (``.z01``…``.zip``) is a different thing — its
+  entries are addressed by disk number — and is rejected with
+  ``UnsupportedFeatureError``; rejoin it with the tool that made it.
+- Unsupported compression methods: listing succeeds; reading raises
+  ``UnsupportedFeatureError``.
+- Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
+- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
+  (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
+  Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise falls back
+  to a configurable legacy encoding (`ArchiveyConfig.zip_unflagged_fallback_encoding`,
+  default `cp437`). When UTF-8 is inferred for an unflagged name, a
+  `member_name_encoding_inferred` diagnostic records it. Passing `encoding=` to
+  `open_archive` is authoritative — it is used verbatim and disables the sniff.
+- **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
+  bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
+  parsing the central directory, so the failure is archive-wide rather than confined to
+  the one bad name. A native ZIP reader could recover the other entries; today it
+  cannot. Rare, and it fails loudly.
+- ZipCrypto multi-password confirmation can be expensive on **STORED** members — see
+  [access costs](access-and-cost.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
+  `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
+  (integrity is the HMAC). Without it, an AES member raises
+  `PackageNotInstalledError` but is still listed as encrypted.
+
+## TAR (and compressed TAR)
+
+- Uncompressed seekable TAR: random access via `tarfile`.
+- Compressed variants (`.tar.gz` etc.) behave as **solid** for random member opens —
+  prefer a single forward pass.
+- Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
+  pass.
+- `concurrent_members=True` uses a per-reader shared-handle lock (same shape as ISO).
+- **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
+  corrupt member header *after the first* as a clean end of archive — no exception is
+  raised; iteration just stops early. Archivey backstops this with its end-of-archive
+  marker check:
+    - When the shortened scan stops on a **rejected (non-null) header block**, archivey
+      raises `CorruptionError` **by default** — a well-formed tar never ends that way. In
+      random-access reads this holds even when the bad header is the archive's *final*
+      block.
+    - A tar that merely **ends cleanly on a member boundary without the two-block null
+      trailer** (a trailer-less or `cat`-joined tar, or a truncation exactly at a member
+      boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,
+      not raised. When a provably complete listing matters (inventory/dedupe sweeps), set
+      `ArchiveyConfig(strict_archive_eof=True)` to escalate that warning to `TruncatedError`.
+    - `strict_archive_eof=True` additionally requires **every byte after the trailer to be
+      zero**, so trailing junk and concatenated archives raise `CorruptionError` instead
+      of passing silently. Zero padding still passes — `tar` writes 10 KiB records, so
+      "nothing but zeros" is the strongest rule that does not reject what `tar` itself
+      produces. The check reads to EOF, which is why it is opt-in: the flag costs
+      O(tail length), and on a compressed tar the tail is decompressed to inspect it.
+    - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
+      regardless of the flag.
+  - **Streaming caveat:** a corrupt header as the *final* block is caught in random-access
+    reads but not in forward-only streaming, where it surfaces as the missing-trailer
+    warning instead. A future native TAR reader may close this gap.
+
+## 7z
+
+- **Native** header parse + stdlib codecs for the common set (LZMA/LZMA2/BCJ/Delta/
+  Deflate/BZip2/stored). No `py7zr` on the read path.
+- `[recommended]` adds PPMd, Deflate64, Zstd, Brotli, and AES.
+- **BCJ2** is detected and rejected (`UnsupportedFeatureError`) — never garbage output.
+- Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
+  folder member may re-decode from the folder start.
+- **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
+  value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
+  `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the payload as unverified.
+- **Encrypted-folder password confirmation** streams the CRC check in 64 KiB chunks.
+  Peak memory is not proportional to folder size. Wall time is, once per candidate, but
+  only for **store/copy+AES** — nothing there rejects a wrong key before the CRC. A
+  compressed folder's codec rejects one within a few bytes, and confirmation stops at
+  the first member CRC that fails, so a wrong candidate mostly costs key derivation.
+  Prefer a single known password on huge encrypted store/copy folders.
+  `ExtractionLimits` do not apply here.
+- **Header-encrypted wrong password:** a decoded header with zero file records is
+  rejected as `EncryptionError` (never a silent empty listing).
+- `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
+  values 25–62 raise `UnsupportedFeatureError`.
+- Writing is not shipped in the current release (`py7zr` is a **dev oracle** only).
+
+## RAR
+
+- Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
+- Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`,
+  `unar`, or `7z` — `rarfile` accepts those last two; archivey does not). `unrar` is
+  preferred when both exist. Passwords are passed as bare `-p` with the secret on stdin
+  (not in argv). Install: [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
+- `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —
+  it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
+  verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;
+  tweaked values are not exposed as plain `member.hashes`.
+- **File-version history (`-ver`):** revision rows appear in `members()` as names like
+  `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
+  `is_current=True`. Default extract **skips** non-current rows.
+- **Compression:** M0 is `STORED`. M1–M5 is `CompressionAlgorithm.RAR` with `level` 1–5.
+  Any other method byte stays `UNKNOWN` (`level` omitted). Unpack version is
+  `extra["rar.extract_version"]` on every member whose FILE header recorded one,
+  stored included: RAR3 copies the `UNP_VER` byte as stored; RAR5 reports `50`.
+- Solid archives: one `unrar p` pipe for the whole of `stream_members()`. A random
+  `open()` out of order is a separate `unrar` run that decodes from the start of the
+  archive each time, so reading *n* members that way costs *n* full decodes — stream them
+  in order when you can. With `seekable_members=True`, a backward `seek()` on a compressed
+  member is the same cost: a new `unrar` run from the start. `CostReceipt.access_cost` is
+  `SOLID` to say so.
+- Read-only — no RAR writer.
+
+## ISO 9660
+
+- Needs `[recommended]` (`pycdlib`) and a seekable source.
+- Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
+  `ArchiveInfo.extra["iso.namespace"]`.
+- Raw `.bin` Mode 1 sector images may be stripped to 2048-byte payloads; unsupported
+  layouts raise rather than mis-read.
+
+## Directory
+
+- A filesystem tree as a pseudo-archive (uniform API for tests and dir↔archive flows).
+- Same default stream contract as archives: forward-only, one live stream, until you
+  declare `SEEKABLE` / `CONCURRENT`.
+
+## Single-file compressors
+
+- One synthetic member (name from the source path, or `data` for anonymous streams).
+- `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
+- `.gz` surfaces the trailer CRC-32 as `member.hashes["crc32"]` for a **single-member**
+  file on a seekable/path source (omit for multi-member gzip — the trailer covers only
+  the last member — and for non-seekable sources).
+- With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, truncation detection is
+  **best-effort** (empty→stdlib fallback + single-member ISIZE) — stronger than naked
+  rapidgzip, weaker than stdlib alone. Do **not** rely on it when you need certainty;
+  set `use_rapidgzip=OFF`. This caveat applies to **bare** `.gz` / `open_stream` (and
+  bare zlib/raw deflate), not to ZIP/7z/… **members**: those already carry CRC/size and
+  fail via `VerifyingStream` when the decoded payload is short or wrong.
+- `.lz` surfaces a whole-member CRC-32 the same way **size** is exposed: whenever the
+  source can be seeked — a file path and an in-memory stream both qualify, a pipe does
+  not. Declaring `seekable_members=True` is not required and makes no difference:
+  `seekable_members` is about `seek()` on a *member stream*, and the lzip trailer is a
+  bounded backward peek. Same for the `.xz` size, read from the stream index. For
+  multi-member lzip the value is derived by combining per-trailer CRCs with each
+  member's uncompressed size so it equals `crc32` of the concatenated payloads.
+- `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
+  (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
+  surfaced on `member.hashes` because the wrapper has no size fields for a reliable
+  single-stream trailer peek when concat/trailing junk is possible).
+- `.Z` (unix-compress) is core (native LZW). Truncation is best-effort: nonzero leftover
+  bits after the last complete code raise `TruncatedError` on the next `read()` after
+  delivering available bytes; zero-leftover cuts remain silent. Forward decode works on
+  non-seekable sources; CLEAR boundaries provide seek points when seekability is declared.
+- `archivey.open_stream(...)` matches the archive rule: non-seekable unless
+  `seekable=True`.
+
+## Stored digests (cheap dedupe)
+
+`member.hashes` holds digests the archive **already stores** (or, for multi-member
+lzip, derives via CRC combine from per-member stored CRCs), keyed by
+:class:`~archivey.HashAlgorithm` (values always ``bytes`` — CRC-32 is four
+big-endian bytes via :func:`~archivey.crc32_digest`). They are readable without
+decompressing when the backend documents them. They are **not** computed digests —
+a full `read()` still verifies through the normal path.
+
+| Format | When present | Keys |
+| --- | --- | --- |
+| ZIP | FILE / SYMLINK (central directory) | `crc32` |
+| 7z | FILE | `crc32` |
+| RAR5 | FILE with CRC32 and/or Blake2sp | `crc32` and/or `blake2sp` |
+| single-file `.gz` | single member, seekable/path | `crc32` |
+| single-file `.lz` | seekable source (one or many members; multi-member value is combined) | `crc32` |
+| `.bz2` / `.xz` / zlib / brotli / `.Z`, TAR, directory | — | none |
+
+### Cheap dedupe with stored hashes
+
+Prefer digests the archive already stores — the matrix above says which formats
+have one — and fall back to computing a digest while reading when they do not:
+
+```python
+import hashlib
+import archivey
+from archivey import HashAlgorithm
+
+def content_key(reader, member):
+    """Best available digest for a first-pass dedupe index."""
+    if HashAlgorithm.BLAKE2SP in member.hashes:
+        return ("stored", "blake2sp", member.hashes[HashAlgorithm.BLAKE2SP])
+    if HashAlgorithm.CRC32 in member.hashes:
+        return ("stored", "crc32", member.hashes[HashAlgorithm.CRC32])
+    # No cheap stored digest (e.g. tar, bzip2): compute while reading.
+    h = hashlib.sha256()
+    with reader.open(member) as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            h.update(chunk)
+    return ("computed", "sha256", h.digest())
+
+with archivey.open_archive("backups.zip") as reader:
+    for member in reader:
+        if member.is_file and member.is_current:
+            print(member.name, content_key(reader, member))
+```
+
+Stored digests are weaker or format-specific; computed digests are stronger but cost a
+full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
+
+## Detection
+
+- **Strongest signal first**, and the filename is the last of them; wrong extensions are
+  expected. In order: exact magic in the first 4 KiB → an SFX scan behind an executable
+  stub → exact magic further in (ISO 9660's `CD001` at 32 769, on one extended peek that
+  a source too small for it never pays) → content probes for the formats with no magic →
+  the extension. A step that matches nothing falls through to the next; nothing is ever
+  rejected for failing an earlier one.
+- **zstd skippable frames** — a magic in `0x184D2A50`–`0x184D2A5F` plus a declared payload
+  size — may precede the first real frame, so detection walks past them by their declared
+  sizes within the peeked bytes and matches the regular frame behind. Skippable frames
+  alone are not a zstd claim: there is nothing to open.
+- **zlib** is gated on the RFC 1950 header grammar (`CM == 8`, `CINFO <= 7`, and the
+  mod-31 check, `FDICT` included) rather than a list of common headers, so all seven
+  legal window sizes are recognised. A preset dictionary archivey does not hold fails the
+  decode and the candidate falls through.
+- **LZMA Alone** accepts any 32-bit dictionary-size field, zero included — the format
+  allows every value and decoders round below 4 KiB up to 4 KiB. It does *not* claim a
+  header declaring an uncompressed size of exactly zero: that stream carries no payload,
+  and 18 zero bytes are a valid empty one, so zero-filled padding would otherwise be
+  detected as `.lzma`. A real size and the all-ones "unknown" sentinel are both accepted,
+  and an empty `.lzma` still opens through its extension.
+- Self-extracting (SFX) stubs are detected when the archive payload sits behind an
+  executable header — today a Windows (`MZ`/PE) or Linux (ELF) one. A macOS
+  Mach-O stub is **not** recognised yet, so a `.7z`/`.rar`/`.zip` appended to one is
+  still misidentified; pass `format=` explicitly for those until that gap closes.
+- **Brotli** has no magic, so detection uses a content probe plus framing checks
+  **when the source length is known** (paths, `BytesIO`, and short non-seekable
+  peeks): a first meta-block that *declares* more bytes than the source holds is
+  rejected; when the whole source fits in the peeked prefix, a bounded completeness
+  check rejects a decode that still wants more input after a declared output drain; and
+  a bounded walk of self-describing meta-blocks
+  rejects a later link that overruns or a declared end with trailing bytes. On a
+  non-seekable stream of unknown length those checks are skipped and today's
+  probe behaviour remains. Probe-only confidence is `PROBABLE` when the first meta-block
+  is compressed (or when the name ends in `.br`), and `GUESS` for uncompressed/metadata-first
+  without that extension. A later decode failure on a **probe-only** result (no matching
+  extension and no inner-TAR upgrade), at any confidence, sets
+  `ArchiveyError.format_unconfirmed` and emits `PROBE_FORMAT_UNCONFIRMED` — the bytes
+  may never have been Brotli, and a prefix of fabricated output may already have been
+  delivered before the error.
+- Confidence and evidence are part of `detect_format` / `FormatInfo` — see
+  `format-detection` spec.

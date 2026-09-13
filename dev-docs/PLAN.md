@@ -1,0 +1,680 @@
+# Archivey — Implementation Plan (v2 Clean-Slate Rewrite)
+
+> **Approach:** clean-slate rewrite. New code is written fresh against the
+> authoritative `openspec/specs/` capability specs (historical prose lives under
+> `dev-docs/history/SPEC.md` and `dev-docs/history/ARCHITECTURE.md`). The
+> existing `archivey-dev` codebase is **reference-only** — we read it and port
+> specific, well-isolated parts (leaf format/codec logic), but we do **not** copy
+> it wholesale as a baseline.
+> **No backwards-compatibility requirement** with DEV's public API.
+>
+> Each phase ends mergeable, `pyrefly`- and `ty`-clean (strict), `ruff`-clean, with the named
+> new tests green. **"Done" for a phase = the listed spec scenarios are covered by
+> passing tests in the new suite** — not "the diff looks finished."
+
+### Phase ↔ specs ↔ OpenSpec changes
+
+The authoritative capability list lives in `openspec/project.md` (capability map +
+implementation-order table). This table ties each **PLAN** phase to the specs it must
+cover and the matching **OpenSpec change** (under `openspec/changes/`; completed phases
+are archived to `openspec/changes/archive/`). Phases without a change yet need a proposal
+(`openspec-propose` skill) before implementation (`openspec-apply-change` skill).
+
+| Phase | Theme | Primary specs (`openspec/specs/`) | OpenSpec change |
+|-------|-------|-----------------------------------|-----------------|
+| 1 | Scaffold + spine + test harness + directory | `packaging-and-extras`, `backend-registry`, `archive-data-model`, `error-handling`, `access-mode-and-cost` (types), `format-directory`, `logging`, `testing-contract` (foundations) | `archive/2026-06-19-phase-1-scaffold-and-spine` ✓ |
+| 2 | Stream layer (compressed + seekable) | `compressed-streams`, `seekable-decompressor-streams` | `archive/2026-06-21-phase-2-stream-layer` ✓ |
+| 3 | Indexed leaf formats + detection | `format-zip`, `format-tar` (random-access read), `format-single-file-compressors`, `format-iso`, `format-detection`, `backend-registry`, `access-mode-and-cost` | `archive/2026-06-30-phase-3-indexed-leaf-formats` ✓ |
+| 4 | TAR streaming + safe extraction | `format-tar` (forward-only `stream_members`, hardlinks, truncation), `safe-extraction`, `archive-reading` (sequential + `stream_members`), `format-detection` (gzip-wrapped tar regression), `testing-contract` (adversarial + non-seekable `tar.gz`) | `archive/2026-06-30-package-layout-restructure` ✓ → `phase-4-tar-streaming` + `phase-4-safe-extraction` |
+| 5 | Public API finalization, cost & diagnostics | `archive-reading`, `archive-data-model`, `access-mode-and-cost`, `error-handling`, `diagnostics`, `logging`, `format-detection`, `safe-extraction`, `compressed-streams`, `seekable-decompressor-streams`, `format-directory`, `format-tar`, `format-zip` | `phase-5-public-api` → `diagnostics-warnings-as-data` (specs first; implementation follow-on before Phase 6) |
+| 6 | Native 7z + RAR read (was Phase 7; **fuzzing is an entry gate** — see cross-cutting) | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | — |
+| 7 | CLI (was Phase 9; pulled forward as dev tool + the safe-extraction demo, per `VISION.md`) | `cli` | — |
+| 8 | Seekable zstd + blocked gzip (rescoped; original zst/lz4 read goals landed in Phases 2–3, `w:zst` moved to the writing phase) | `seekable-decompressor-streams`, `format-single-file-compressors` | `seekable-gzip-and-block-writing` (partial) |
+| 9 | Writing support (was Phase 6; **not a 1.0 requirement** — may land after; spec must design in reproducible output + the metadata-fidelity decision, see `IDEAS.md`) | No capability yet — the `archive-writing` spec and the ZIP/TAR write requirements were retired in 2026-09 and preserved as [`investigations/archive-writing-design.md`](investigations/archive-writing-design.md) | — |
+| 10 | Polish + release readiness (test-strategy revision per the `retire-dev-oracle` change) | `packaging-and-extras` (finalize), `cli`, `testing-contract` (full corpus) | — |
+
+> **Resequenced (2026-07, per `VISION.md`):** native 7z/RAR reading moved **before**
+> writing — "reads everything" is the reason to adopt, and writing is explicitly not a
+> 1.0 requirement. The CLI moved up next-after (dev tool + demo). The phase sections
+> below are renumbered accordingly; archived changes keep their historical numbering.
+
+**In-flight changes unrelated to a PLAN phase** (do not block Phase 4, but may land
+alongside): `seekable-gzip-and-block-writing`, `rapidgzip-truncation-investigation`.
+
+**The detection round** (from the #263 analysis) is five changes with a fixed order; each
+states its own position and reasoning in task `0.0`, following the convention #264 set:
+
+| # | change | depends on |
+| --- | --- | --- |
+| 1 | `detection-format-gaps` — three false negatives + the far-magic reorder that unblocks one | — |
+| 2 | `single-file-open-time-validation` — P15 and P16; not a detection change, can run in parallel with 1 | — (before 4) |
+| 3 | `detection-prefix-workspace` — one monotone prefix buffer, access-shape rule, budget/capability/receipt | after 1 (avoids colliding in `_detect_format_body`) |
+| 4 | `detection-evidence-ledger` — ranked evidence classes, validators, scheduler, ambiguity | **3** |
+| 5 | `detection-result-surface` — the ledger becomes public; `detection=` handoff | **4** |
+
+`prefixed-archive-detection` is **revised**, not implemented as written: it rebases onto 3 and
+4, adding its tiers as declarations on the scheduler, and drops the far-magic move (which
+ships in 1) and its provisional first-match-wins note (which 4 replaces).
+`diagnostics-warnings-as-data` is explicitly a **Phase 5 public-API follow-on** rather
+than an unsequenced cross-cutting change; its implementation must land before Phase 6
+native readers add more diagnostic-producing paths.
+Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor`,
+`compression-library-evaluation`, `zstd-stdlib-backend-migration`.
+
+---
+
+## Release-readiness sequencing (2026-07, toward the first public `0.2.0`)
+
+> Reading is effectively complete (ZIP/TAR/single-file/ISO/directory + native 7z/RAR),
+> which is `VISION.md`'s release bar. What stands between here and a credible **first
+> public release** is not more formats — it is (a) making the remaining load-bearing
+> claims *earned in public* (the perf budget is now gated via `benchmark-gate`; the
+> security disclosure process is still missing) and (b) closing the cross-platform sharp
+> corners that surprise day-one users. The **flagship of the first release is consistency
+> + safety**, not a new capability. Salvage/best-effort read mode and a fully-native ZIP
+> parser are explicitly **later** (post-`0.2.0`). Sequenced below; each concrete
+> engineering item has an OpenSpec change.
+
+**Recommended order** (do earlier items first — they unblock later ones):
+
+1. **`benchmark-gate`** (✓ archived 2026-07-15) — stand up the perf budget as a CI gate (wall time + **bytes
+   decompressed + seek counts**) *before the CLI*, because the CLI's `test`/`extract` on
+   real solid archives is where the documented 7z solid-block O(n²) trap bites. Turns
+   `VISION.md`'s central perf promise from prose into enforcement; prerequisite for any
+   public perf claim.
+2. **`stored-digest-dedupe-parity`** and **`rar-blake2sp-verification`** (✓ archived
+   2026-07-14; parallelizable, both small) — the founding "hashes without decompression"
+   story + a real integrity gap:
+   - `stored-digest-dedupe-parity`: surface the gzip/lzip trailer CRC-32 without
+     decompressing; document the cross-backend stored-digest matrix; assert parity in the
+     conformance sweep.
+   - `rar-blake2sp-verification`: RAR5 BLAKE2sp-only members are *surfaced but never
+     verified* today (`hashlib` has no `blake2sp`, so verification silently degrades to a
+     `DIGEST_UNVERIFIABLE` diagnostic — a corrupt member reads back clean). Implement
+     BLAKE2sp on stdlib `hashlib.blake2s` tree params (zero-dep) and wire verification;
+     reconciles the `format-rar` ↔ `compressed-streams` spec disagreement.
+3. **`cross-platform-name-safety`** (spike) — deterministic, cross-platform extraction
+   name handling keyed off `ExtractionPolicy`: casefold/NFC collision determinism (O2),
+   Windows-reserved / trailing-dot-space / `:` rejection under STRICT (O3/O4), and the
+   **open decision** of how to handle unrepresentable names (O7: reject vs reversible
+   portable-escape). O2/O3/O4 can land before the O7 scheme is settled. Coordinates with
+   the archived `adversarial-string-corpus-contract` (bidi/NUL) — no overlap. **Includes
+   `OverwritePolicy.RENAME`** (`name (1)`), which reuses the O2 collision map — sequence
+   this **before the CLI** so `extract` can offer rename-on-collision (parity with `unzip`).
+4. **`zip-native-codec-streams`** → then **`zip-aes-decryption`** (✓ archived 2026-07-15) —
+   route ZIP member decompression through archivey's shared codec layer (keeping stdlib
+   `zipfile` for central-directory parsing for now). Unlocks DEFLATE64/ZSTD/PPMD ZIP
+   members (the codec backends + registry entries already exist; only the wiring is
+   missing), unifies verification/error-translation, and is the stepping-stone toward a
+   native ZIP parser. `zip-native-codec-streams` deliberately kept **encrypted** members
+   on the `zipfile` path; **`zip-aes-decryption`** then closed the real compat gap —
+   WinZip AES (method 99 / `0x9901`) via AE-1/AE-2 decryption (`[recommended]` AES-CTR +
+   PBKDF2 + HMAC-SHA1) on the raw-data path. Both **in `0.2.0`** (widen ZIP compatibility
+   beyond stdlib).
+5. **`rar-file-version-members`** (✓ archived 2026-07-15) — landed **in `0.2.0` because it
+   is BREAKING to the listing contract** (WinRAR `-ver` history rows appear in
+   `members()`). Pre-release that break is free; post-release it costs users. Niche and
+   small, so low priority *within* 0.2.0 — but it should not slip past the tag for the
+   breaking reason.
+6. **Release bundle** (existing Phase 7 + Phase 10 work, plus threat-model O5 follow-ups) —
+   what makes it a *public* release: the **CLI** (`archivey list|test|extract`, the
+   "unzip that can't be zip-slipped" demo — after the benchmark gate *and* after
+   `cross-platform-name-safety` so `RENAME` exists); **packaging finalize**
+   (extras→capability, PyPI metadata, drop `0.2.0.dev0`); **doc sweep + migration guide**
+   (`zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` → archivey); **`SECURITY.md`**
+   (landed — disclosure via GitHub Advisories; see root `SECURITY.md`) **and** an
+   **explicit free-threading support statement** (the `3.13t`
+   job runs core-only — document the matrix rather than leaving it implicit). Recurring
+   cut steps (CHANGELOG, perf vs previous tag, tests, tag, publish):
+   `dev-docs/release-checklist.md`. Tag `0.2.0` after this.
+
+**Deferred to a later version (not `0.2.0`):**
+- **Salvage / best-effort read mode** — the founding use case (index truncated/corrupt
+  backups) and the highest-value *feature*, but the largest item (its own spec; ZIP
+  local-header walk, TAR resync, single-file decodable-prefix). First fast-follow after
+  `0.2.0`; ranks above `ArchivePath`/fsspec-write. (Backlog: `IDEAS.md`.)
+- **Fully-native ZIP parser** — VISION's "eventually ZIP" memory-safety differentiator +
+  salvage-via-local-headers. `zip-native-codec-streams` (item 4) captures most of the
+  near-term compat value incrementally; the full central-directory/EOCD parser is a
+  post-`0.2.0` change.
+- Per the deep review: keep the **libarchive backend cut** (contradicts the memory-safety
+  differentiator; only ever an off-by-default third-party plugin once the backend API is
+  public), and defer `ArchivePath` and the fsspec **write** direction past 1.0.
+
+OpenSpec changes for this sequencing (active vs archived):
+`cross-platform-name-safety` remains active (lands `OverwritePolicy.RENAME`). Archived:
+`benchmark-gate`, `zip-native-codec-streams`, `zip-aes-decryption`,
+`rapidgzip-deflate-zlib-acceleration` (2026-07-15); `stored-digest-dedupe-parity`,
+`rar-blake2sp-verification`, `adversarial-string-corpus-contract` (2026-07-14);
+`rar-file-version-members` (2026-07-15). (Provenance: the `review/` deep-review set —
+`roadmap.md`, `SUMMARY.md`, `QUESTIONS.md` — and `dev-docs/threat-model.md` O1–O7.)
+
+---
+
+## Clean-slate, but layered
+
+Port-vs-rewrite is decided by **layer**, not file-by-file:
+
+- **Port as whole units** (clean port, interface-only edits) — the *leaf* logic
+  that is correct and hard to re-derive: format backends' decode/parse (ZIP, TAR
+  + all variants, single-file compressors, ISO, directory), format-detection
+  heuristics, and the stream primitives (`ArchiveStream`, `SlicingStream`,
+  `DecompressorStream`, `XzStream`, `LzipStream`). Pull these from DEV as units and
+  adapt only their interface to the new ABC. Rewriting them from memory is pure downside
+  risk — lost edge cases. (DEV's `RewindableStreamWrapper`/`RecordableStream` are *not*
+  ported as-is — they are folded into the new `PeekableStream`; see the detection phase.)
+- **Write fresh against SPEC/ARCHITECTURE** (never copy-then-delete) — the
+  *spine*: the public API, the `BaseArchiveReader` ABC, the backend registry,
+  `ExtractionCoordinator`, and the `internal/streams/` package layout. These are
+  the parts the rewrite exists to fix; copying DEV's versions only to dismantle
+  them imports the very complexity we're removing. We build the target shape
+  **once, correctly** — there is no later "interface cleanup" phase.
+
+| DEV area | Disposition |
+|----------|-------------|
+| ZIP / TAR / single-file / ISO / directory decode logic | **Port as unit** (interface adapted to new ABC) |
+| Format detection logic + magic table | **Port as unit** |
+| `ArchiveStream`, `Rewindable`/`Recordable`, `DecompressorStream`/XZ/lzip | **Port as unit** (relocated into `internal/streams/`) |
+| Declarative test corpus (`sample_archives.py`, `ArchiveContents`, `FileInfo`) | **Port as unit** (cleaned; see test strategy) |
+| Public API surface (`open_archive`, reader methods, types) | **Write fresh** to `dev-docs/history/SPEC.md` |
+| `BaseArchiveReader` ABC + registration/iteration/link logic | **Write fresh** to `dev-docs/history/ARCHITECTURE.md` |
+| Backend registry + `Backend` ABC | **Write fresh** |
+| `ExtractionHelper` (pending/deferred state machine) | **Write fresh** as `ExtractionCoordinator` |
+| `io_helpers.py` god-module, `BinaryIOWrapper` method-swap trick | **Write fresh** as the `internal/streams/` package |
+| 7z `py7zr` reader, RAR `rarfile` reader | **Reference only** — not ported (native-first, the native-reader phase) |
+| DEV `test_*.py` drivers | **Reference only** — not ported (the in-repo frozen-oracle clone was retired 2026-07; see the test strategy below) |
+
+---
+
+## Test strategy: declarative corpus + conformance sweep (oracle retired 2026-07)
+
+> **Revised by the `retire-dev-oracle` change.** The original plan cloned DEV's suite
+> into `tests/_dev_oracle/` as a running regression gate to be deleted in Phase 10. In
+> practice the gate never ran (its drivers import v1 APIs; pytest excluded the tree),
+> so the durable assets were extracted and the clone deleted early.
+
+1. **Durable assets kept from DEV:** (a) the *declarative archive corpus* — the
+   archive shapes with expected contents, ported into `tests/sample_archives.py`
+   (provenance: DEV @ `730275b7`), format-independent; and (b) the cross-check
+   *oracle libraries* (`py7zr`, `rarfile`, `7z`/`unrar` CLIs) per `testing-contract`,
+   which remain dev-group cross-validation oracles for the native readers. The DEV
+   `test_*.py` drivers were bound to the old API and were not ported.
+2. **The corpus conformance sweep** (`tests/test_corpus_sweep.py`) is the cross-format
+   regression net: every corpus entry × every implemented format must open, list to
+   its declared expectations, read back (following links), and extract safely — or
+   raise its documented error. Formats gate on registry availability, so the 7z/RAR
+   corpus entries activate automatically when the Phase 6 native readers register.
+3. **Per-phase scenario tests** continue as before: each phase covers *its* spec
+   scenarios; the sweep covers the cross-format parity no single-phase test sees.
+4. **Fuzzing** layers on top (see cross-cutting concerns): the corpus doubles as the
+   seed corpus for the mutation harness and the Phase-6 Atheris harnesses.
+
+Foundations (declarative corpus, on-demand generation + content-keyed cache under
+`ARCHIVEY_TEST_CACHE`, no committed binaries, flat `tests/`) are in place;
+`testing-contract` remains a through-line, finalized in Phase 10.
+
+---
+
+## 7z / RAR in the baseline (resolved)
+
+The 7z/RAR **read** path is native-first, and DEV's `py7zr`/`rarfile` read
+backends are explicitly interim. The clean-slate answer to the open sequencing
+question in `openspec/project.md` is therefore: **do not port them.** 7z and RAR
+reads are marked `xfail`/`skip` until the native readers land in **Phase 6**;
+`py7zr`/`rarfile` enter earlier only as `dev`-group oracles. Those formats are
+simply absent from the equivalence matrix until Phase 6.
+
+---
+
+## Phase 1 — Scaffold, spine, new test harness, and the directory backend
+
+**Goal:** a correct skeleton with the spine validated against one real backend —
+the target package shape, the spine contracts (written fresh), the logging
+hierarchy, the new declarative test framework, and the **directory pseudo-backend**
+(the one leaf format needing no codec layer or magic detection), so the ABC is
+exercised end-to-end (iterate → read/open → link resolution → cost) from day one.
+All codec/detection-dependent formats stay unwired until Phases 2–3.
+
+**Entry criteria:** fresh repo; `archivey-dev` cloned per `CLAUDE.md`.
+
+### Tasks
+1. **`pyproject.toml`** (clean slate): `hatchling`; `[project]` `archivey`,
+   `0.2.0.dev0`, Python `>=3.11`; extras exactly per `packaging-and-extras/spec.md`
+   (`[recommended]`, `[seekable]`, `[free-threaded]`, `[all]` — the format-named
+   extras were consolidated into these four before `0.2.0`; no 7z-writing extra until
+   writing ships); `dev`
+   `[dependency-groups]` for tooling + oracles (`py7zr`, `rarfile`); `pyrefly` + `ty`
+   (strict, both kept clean — no mypy), `ruff`, `coverage` (report only, no gate).
+2. **Package layout:** `src/archivey/` with `internal/`, `formats/`, the public
+   `__init__.py`. Establish the `archivey` **logger hierarchy** (no handlers).
+3. **Spine, written fresh to the target contract** (types/ABCs in place even with
+   no backends): the `BaseArchiveReader` ABC (ARCHITECTURE naming — `_iter_members`,
+   `_iter_with_data`, `_open_member` with **no** `for_iteration`, **no**
+   `_prepare_member_for_open`; `_SUPPORTS_RANDOM_ACCESS`/`_MEMBER_LIST_UPFRONT`
+   class attributes); the backend registry + `Backend` ABC; the public-API
+   skeleton (`open_archive` with the `streaming: bool` access mode, `ArchiveReader`
+   surface, `Member`/`ArchiveInfo`/`ArchiveFormat`/`MemberType`, the `ArchiveyError`
+   hierarchy, `CostReceipt` types).
+4. **New declarative test framework:** port the corpus (`sample_archives.py`,
+   `ArchiveContents`, `FileInfo`, `ArchiveCreationInfo`) cleaned; `conftest.py`
+   parametrization; **generate-on-demand + cache** to a **project-local** dir
+   (`.pytest_cache/archivey-archives/`, overridable via an `ARCHIVEY_TEST_CACHE` env var),
+   written atomically (temp file + `os.replace`) so parallel tox / CI-matrix runs don't
+   collide and so it cleans up with standard test workflows — **not** `$XDG_CACHE_HOME`,
+   which is unset on Windows runners. Entries keyed by
+   `hash(spec + creation_params + lib versions + generator-code version)` — the last
+   term (the archivey version, or a hash of the generation modules) so that fixing a
+   generator bug locally always invalidates stale cached archives instead of silently
+   reusing them; `tests/fixtures/` with a
+   JSON sidecar per committed archive; **no generated binaries committed**; flat
+   `tests/` layout. (The frozen-oracle clone this task originally created was retired
+   2026-07 by the `retire-dev-oracle` change.)
+5. **Directory backend** (`formats/directory_reader.py`): the spine's first real
+   consumer — walks a filesystem directory, yields members with filesystem metadata,
+   serves data via `read`/`open`, follows in-directory symlinks, reports
+   `INDEXED`/`DIRECT`/`SEEKABLE` cost. Needs no codec layer (Phase 2) or magic
+   detection (Phase 3), so it validates the ABC end-to-end now.
+6. **CI workflow** (`.github/workflows/ci.yml`), stood up now and grown each phase — a
+   **reduced ~12-job matrix** (vs DEV's ~18): Linux × `{3.11,3.12,3.13,3.14}` ×
+   `{core-only, [all]}` (8), plus macOS + Windows on min/max Python with `[all]` (4);
+   each job runs ruff + Pyrefly + ty + pytest (coverage report only). uv-cached on
+   `uv.lock`; 7z/RAR read tests `xfail` until Phase 6.
+
+### Tests added
+Harness self-tests (corpus round-trips through generation+cache); `__version__`
+exposure; logging emits nothing by default; **`format-directory` end-to-end**
+(members, read/open, symlink follow, cost).
+
+### Acceptance — spec scenarios covered
+- `packaging-and-extras`: *core install pulls no third-party packages*, *install
+  rejected on unsupported Python*, *supported on all three operating systems*,
+  *`__version__` reflects the installed distribution*.
+- `backend-registry`: *core backend available without extras*, *optional backend
+  absent at import* (registry exists; directory backend wired).
+- `format-directory`: all scenarios (directory backend validates the spine).
+- `logging`: *library emits no output by default*.
+- `testing-contract`: framework stands up (matrix harness importable; oracle hooks
+  wired but skipped when libs absent).
+
+**Gates:** `pyrefly` + `ty` clean (strict); `ruff` clean; `pytest` green (mostly skips);
+the CI matrix green on all jobs (coverage reported, not gated); `git status` clean after
+a test run (no new binaries).
+
+---
+
+## Phase 2 — Stream layer (compressed + seekable)
+
+**Goal:** the `internal/streams/` package and the shared codec layer exist, built
+fresh with the good DEV primitives ported in.
+
+**Entry criteria:** Phase 1 green.
+
+### Tasks
+1. **`internal/streams/`**: `slice.py` (`SlicingStream`), `compat.py`
+   (`is_seekable`/`ensure_binaryio`/…
+   plus a **simplified `BinaryIOWrapper`** — straightforward delegation, **no**
+   `self.read = self._raw.read` method-swap), and ported `decompress.py`/`xz.py`/
+   `lzip.py`. Keep `archive_stream.py`. (The detection peek/rewind primitive —
+   DEV's `RecordableStream`/`RewindableStreamWrapper` — is **not** built here; it becomes
+   `PeekableStream` in Phase 3 with `format-detection`.)
+2. **`compressed-streams`**: the uniform pull-based codec layer — one default
+   backend per codec, a single wrapped crypto (AES) stage, missing-backend →
+   `PackageNotInstalledError`, decompression-error translation, optional
+   digest-verification on full reads, and backend dispatch separable from opening.
+3. **`seekable-decompressor-streams`**: XZ block-index and lzip trailer-scan random
+   access; `rapidgzip`/`indexed_bzip2` accelerators behind `[seekable]` with clean
+   absence behavior.
+
+### Tests added
+`compressed-streams` scenarios (default backends, raw LZMA2, crypto wrapper
+reachability, missing-backend errors, corrupt/truncated translation, digest
+mismatch/partial/unverifiable, resolve-without-open); `seekable-decompressor-streams`
+scenarios (XZ/lzip seeking, accelerator present/absent).
+
+### Acceptance — spec scenarios covered
+All of `compressed-streams` and `seekable-decompressor-streams`.
+**Gates:** Pyrefly + ty + ruff clean; new stream tests green; frozen oracle no worse.
+
+---
+
+## Phase 3 — Indexed leaf formats: ZIP, TAR (read), directory, single-file, ISO
+
+**Goal:** the seekable/indexed leaf backends run on the spine ABC; format
+detection covers them.
+
+**Entry criteria:** Phase 2 green.
+
+### Tasks
+1. Port **ZIP**, **single-file compressors**, and **ISO** backends onto the new ABC
+   (interface-only changes; the **directory** backend already landed in Phase 1).
+   ISO namespace auto-selection (Rock Ridge → Joliet → plain) and optional `pycdlib`
+   graceful degradation. Seek-heavy containers are **not** mounted over a compressor
+   (`.iso.xz`/`.zip.xz` are single-file-wrapped) — only TAR composes with compressors.
+2. Port the **TAR reader** (PAX/GNU/ustar) in **random-access mode** + compressed-TAR
+   detection/opening (`tar.gz`/`tar.bz2`/`tar.xz`/…). TAR's forward-only
+   `stream_members()` and the `ExtractionCoordinator`/safe-extraction stay in Phase 4;
+   only the reader lands here so the two stdlib formats and the inner-TAR detection
+   result cohere in one phase.
+3. Port **format detection** magic table + extension fallback + conflict warning +
+   inner-TAR probe for these formats; the new `PeekableStream` peek/replay shared by
+   the opener.
+4. Wire **CostReceipt** values for these formats; `archive-reading` random/by-name
+   access on indexed sources. Backend registry: always-register + tri-state
+   (FULL/PARTIAL/NONE) compositional availability (`list_supported_formats()` /
+   `list_known_formats()` / `format_availability()`).
+
+### Tests added
+`format-zip`, `format-single-file-compressors`, `format-iso`
+scenarios; `format-detection` scenarios for these formats; `backend-registry`
+selection + *ISO without pycdlib* + *list_formats() excludes unavailable*;
+`access-mode-and-cost` indexed-listing / random-access (default `streaming=False`)
+scenarios for ZIP; equivalence matrix seeded; non-seekable ZIP fail-fast. Retire
+matching frozen-oracle coverage.
+
+### Acceptance — spec scenarios covered
+`format-zip` (all), `format-single-file-compressors`
+(all read), `format-iso` (all), `format-detection` (ZIP/TAR magic, gzip-wrapping,
+SFX, ISO extended peek, never-consumes-bytes), `backend-registry` (selection +
+degradation).
+**Gates:** Pyrefly + ty + ruff clean; named tests green.
+
+---
+
+## Phase 4 — TAR streaming, sequential access, and safe extraction
+
+**Specs:** `format-tar` (streaming + extraction semantics), `safe-extraction` (all),
+`archive-reading` (forward iteration, `stream_members`, streaming-mode enforcement),
+`format-detection` (gzip-wrapped tar — regression), `testing-contract` (adversarial corpus,
+non-seekable `tar.gz`). **OpenSpec changes:** `archive/2026-06-30-package-layout-restructure` ✓ →
+`phase-4-tar-streaming` (read/stream path, `strict_eof`, `compressed_source_size`) →
+`phase-4-safe-extraction` (`ExtractionCoordinator`, bomb limits). Ordered: `phase-4-tar-streaming`
+lands first; `phase-4-safe-extraction` consumes its `_iter_with_data()` override and
+`compressed_source_size` hook (the latter feeds the archive-wide bomb ratio, so safe extraction
+depends on it even for seekable `.tar.gz`).
+
+**Goal:** `stream_members()` bounded-memory streaming works on a non-seekable
+source (exercised on TAR); `ExtractionCoordinator` replaces the deferred state
+machine. (The TAR **reader** and compressed-TAR detection already landed in Phase 3;
+this phase adds TAR's forward-only streaming and the extraction machinery.)
+
+**Entry criteria:** Phase 3 green.
+
+### Tasks
+1. **TAR forward-only streaming** — the non-seekable `tar.gz` path: override
+   `_iter_with_data()` for true sequential `stream_members()` (the random-access TAR
+   reader + variants + compressed-TAR detection are already in Phase 3).
+2. **`ExtractionCoordinator`** (written fresh as a **pull-based sink** that drives the
+   `ArchiveReader` — `get_members_if_available()` and `_iter_with_data()` — and selects a
+   hardlink algorithm; **not** DEV's push-model helper, so **no** `can_move_file` /
+   `process_file_extracted` / general deferred-state machine):
+   - Hardlinks (source precedes link in TAR order): one **core** algorithm — sequential pass +
+     conditional second pass (no filter → no orphans → one pass; a filter that orphans a link →
+     one second pass on a re-readable source, or `OnError` on a forward-only one; never scan
+     speculatively) — plus an **optional** planned single pass when filtering and a free member
+     list exists (`get_members_if_available()` ≠ None). Cross-device links try `os.link` against
+     the source's recorded paths, reusing a sibling copy before copying again.
+   - FILE/DIR handling; SYMLINK escape **re-validated at extraction time**; symlinks are
+     target-independent (may dangle within `dest`, no copy) and fail via `OnError` on
+     filesystems without symlink support (no copy-the-target fallback).
+   - Decompression-bomb limits (cumulative max bytes; per-member ratio; archive-wide ratio via
+     `compressed_source_size`; `max_entries` count guard; scoped to extraction paths only) and
+     `on_progress` / per-member `ExtractionResult`.
+3. Wire `extract()`/`extractall()` and the one-shot extraction API to the
+   coordinator.
+
+### Tests added
+`format-tar` scenarios; `safe-extraction` scenarios (path-safety, symlink/hardlink,
+policies, overwrite, bomb limits, progress/result); `archive-reading` sequential
++ `stream_members`; `testing-contract` non-seekable `tar.gz` + adversarial
+(traversal, bomb). Retire matching frozen-oracle coverage.
+
+### Acceptance — spec scenarios covered
+`format-tar` (all), `safe-extraction` (all), `archive-reading` (*forward iteration*,
+*materialization rejected under streaming*, *streaming a solid archive*, *stream invalid
+after advance*), `format-detection` (*gzip wrapping a tar/single file*),
+`testing-contract` (*path traversal member*, *zip bomb extraction*, *non-seekable
+TAR.GZ source*).
+**Gates:** Pyrefly + ty + ruff clean; streaming extraction verified on a non-seekable TAR;
+coordinator is a pull-based sink (no push-model `ExtractionHelper`; a `pending_*` grep stays
+as a light tripwire, not a hard ban).
+
+---
+
+## Phase 5 — Public API finalization, cost surface, and diagnostics
+
+**Goal:** the public surface matches `dev-docs/history/SPEC.md` across every format built so far, and
+warning-producing paths use the lifecycle-aware diagnostics contract before native
+7z/RAR readers expand that surface.
+
+**Entry criteria:** Phase 4 green.
+
+### Tasks
+1. Finalize `archive-reading` (metadata access, name lookup / identity membership,
+   `read`/`open`, transparent **link following** with cycle detection (no fixed depth
+   limit, per the spec), context-manager lifecycle).
+2. Finalize `archive-data-model` (`ArchiveFormat`/`MemberType` taxonomy,
+   compression-method model, the full `Member` record — deliberately **unhashable**
+   (mutable; callers key by `name`/`member_id`, per the spec), `extra`, digests
+   under algorithm keys, name normalization — and `ArchiveInfo`).
+3. Finalize `access-mode-and-cost` — streaming-mode enforcement and **CostReceipt
+   values verified per format**; `error-handling` translation contract (cause/
+   traceback preserved; genuine I/O not reclassified; context filled by base reader).
+4. **Finalize the public config surface** — **decided** (see the `phase-5-public-api`
+   change): a frozen `ArchiveyConfig` object passed explicitly (`config=`), carrying the
+   accelerator modes, `strict_archive_eof` (the renamed Phase 4 `strict_eof` stopgap,
+   default False), and `ExtractionLimits` (the bomb knobs). Extraction policies
+   (`ExtractionPolicy` / `OverwritePolicy` / `OnError`) stay per-call keyword args. No
+   ambient (contextvars/global) configuration. Also decided there: the password
+   candidate-sequence + provider model, multi-source acceptance + path volume-set
+   discovery, and the MemberSelector collection semantics.
+5. **Diagnostics follow-on** (specified by `diagnostics-warnings-as-data`) — add the
+   bounded lifecycle collector and exact counts; reader/stream/format/member/result
+   projections; first-class `ExtractionReport`; per-code policy/callback/escalation;
+   typed `DiagnosticRaisedError`; and migrate all 17 current warning calls. Runtime
+   rewind/index/EOF events stay off frozen `CostReceipt` / `ArchiveInfo`. This task is
+   ordered after `phase-5-public-api` and before Phase 6.
+
+### Tests added
+`archive-data-model`, `access-mode-and-cost`, `error-handling`, `diagnostics`, and the
+remaining `archive-reading` scenarios; per-format CostReceipt assertions; policy,
+retention, lifecycle, callback, escalation, and extraction-report coverage for every
+migrated warning path.
+
+### Acceptance — spec scenarios covered
+All of `archive-reading`, `archive-data-model`, `access-mode-and-cost`,
+`error-handling`, and `diagnostics`, including affected deltas for detection,
+extraction, streams, formats, and logging.
+**Gates:** `pyrefly` + `ty` clean (strict); public API matches `dev-docs/history/SPEC.md §2–§7`; CostReceipt
+correct for every format implemented so far.
+
+---
+
+## Phase 6 — Native 7z reader + native RAR metadata parser (was Phase 7)
+
+**Goal:** make the 7z and RAR **read** paths native; flip them from `xfail` to
+passing; wire the oracles. See `format-7z/spec.md`, `format-rar/spec.md`,
+`testing-contract/spec.md`.
+
+**Entry criteria:** Phase 5 green; **the fuzzing scaffold is stood up** (property
+tests + the corpus mutation harness running; Atheris harnesses for the new parsers
+land with them — see cross-cutting concerns and `dev-docs/threat-model.md` O5);
+`py7zr`/`rarfile`/`unrar` available as
+dev-group oracles; the **shared-source stream plumbing** decided/landed — a
+`streamtools` shared-source view (the shape of stdlib `zipfile._SharedFile`: one
+handle + a lock + per-view positions) so the native readers support multiple
+concurrently-open member streams by construction, and a decided concurrency
+contract via `MemberStreams.CONCURRENT` (post-materialization fan-out; free-threaded
+correctness covered by the Linux `3.13t` CI job) — what is
+supported vs. what fails loudly as `ArchiveyUsageError` / `ConcurrentAccessError`,
+never silent interleaving; see `dev-docs/investigations/parallel-reader.md` and
+the parallel-extraction entry in `IDEAS.md`.
+
+### Tasks
+1. **Native 7z** header parse (packed streams, folders/coder chains, substreams,
+   files info) + decode via stdlib `lzma`(raw)/`bz2`/`zlib` + STORED; true pull
+   streaming for `stream_members()`, decode-from-folder-start for random `open()`;
+   PPMd/Deflate64 and AES via `[recommended]`; **BCJ2 and unknown method IDs
+   rejected explicitly** (never silent fallback). 7z **writing** is deferred (no
+   7z-writing extra in the current release); `py7zr` remains a **dev oracle** only;
+   reads import no third-party lib.
+2. **Native RAR** RAR4/RAR5 metadata parse (listing without `unrar`); member data
+   via a single `unrar p -inul` pipe demultiplexed by header sizes with incremental
+   CRC32; header-encrypted RAR5 decrypted via `[recommended]`; multi-volume joining.
+
+### Tests added
+`format-7z` + `format-rar` scenarios; `testing-contract` oracle cross-validation
+(*native 7z matches py7zr*, *native RAR matches rarfile/unrar*, *unsupported 7z
+codec rejected not guessed*) — skip when oracle absent. Retire the frozen-oracle
+7z/RAR coverage.
+
+### Acceptance — spec scenarios covered
+All of `format-7z` and `format-rar`; the three cross-validation scenarios.
+**Gates:** 7z/RAR reads import no third-party lib (stdlib + `unrar` only); native
+output matches oracles across the corpus; solid `stream_members()` uses one
+`unrar p` process; unsupported codecs raise the documented error.
+
+---
+
+## Phase 7 — CLI (was Phase 9)
+
+**Goal:** the `archivey` command (`list`/`test`/`extract`, pattern filtering)
+behind `[recommended]` (tqdm; the command itself is stdlib-only).
+
+**Entry criteria:** Phase 6 green. Pulled forward deliberately: the CLI doubles as
+the maintainer's inspection tool against real-world archives (it served that role in
+DEV) and is the ten-second demo of safe extraction (`VISION.md`).
+
+### Tests added & acceptance
+All of `cli` (incl. *CLI installed without the `[recommended]` extra* — no tqdm).
+**Gates:** Pyrefly + ty + ruff clean.
+
+---
+
+## Phase 8 — Seekable zstd & blocked-gzip native readers
+
+> **Rescoped (2026-07):** the original Phase 8 goal — `.zst`/`.tar.zst`/`.tar.lz4`
+> *reading* and `.zst` magic detection — landed early with the Phase 2/3 codec layer
+> (round-trip tests pass today). The remaining write-side piece (`w:zst`) moves to
+> the writing phase (now Phase 9) with the other writers. This phase is repurposed for the seekable-stream
+> follow-ons that reuse the segmented-decompressor infrastructure.
+
+**Goal:** frame/block-granular random access for zstd (native, no new dependency) and
+blocked gzip (BGZF/mgzip), per the `seekable-gzip-and-block-writing` change and the
+seekable-zstd analysis in `IDEAS.md` (now scheduled).
+
+### Tasks
+1. **Native zstd frame-index reader** on `SegmentedDecompressorStream`: build the frame
+   index from frame headers (`Frame_Content_Size`) and/or the *Seekable Zstd* seek
+   table; fall back to the sequential/rewind path when sizes are absent. Benchmark
+   against stdlib `compression.zstd` and `indexed_zstd` first (per IDEAS: decide with
+   numbers; a `benchmarks/` script).
+2. **Native blocked-gzip (BGZF/mgzip) reader**: member walk via the `BC`/`MZ` extra
+   subfields, per the `seekable-gzip-and-block-writing` proposal (stdlib `zlib` only).
+
+### Tests added
+Seek-pattern coverage for multi-frame `.zst` (cold sequential, `SEEK_END`, scattered
+seeks, rewind) and BGZF fixtures; plain single-frame `.zst` / non-blocked gzip fall
+back unchanged.
+
+### Acceptance — spec scenarios covered
+The added `seekable-decompressor-streams` requirements (blocked gzip; zstd frame index
+once specced via its own change).
+**Gates:** Pyrefly + ty + ruff clean; no new runtime dependency.
+
+---
+
+## Phase 9 — Writing support (was Phase 6; possibly post-1.0)
+
+**Goal:** `ArchiveWriter` ABC, ZIP + TAR writers, streaming conversion.
+
+**Entry criteria:** decided explicitly **not a 1.0 requirement** (`VISION.md`):
+reading-complete releases first. Before implementation, the writing spec needs a
+thorough exploration pass covering **reproducible output** (`SOURCE_DATE_EPOCH`,
+stable ordering, normalized metadata) and the **metadata-fidelity boundary**
+(xattrs/ACLs round-trip — see `IDEAS.md`), both of which shape the writer API and
+are costly to retrofit. Start from
+[`investigations/archive-writing-design.md`](investigations/archive-writing-design.md) —
+the retired `archive-writing` capability, kept because its analysis is real, but written
+before either exploration.
+
+### Tasks
+`ArchiveWriter` ABC (`add`/`add_bytes`/`add_stream`/`add_member`/`add_members`/
+`close`); `ZipWriter` (`ZipFile.open(name,'w')`, data descriptor for unknown
+size); `TarWriter` (incl. compressed-tar output — `w:zst` and friends, moved here
+from the original Phase 8); `create_archive()`; `CompressionSpec` model.
+
+> **Pending decisions (resolve in this phase's change proposal):**
+> - *Per-entry `compression` on stream-compressed containers* (`tar.gz`/`tar.zst`):
+>   the codec is stream-level, so a per-entry override is meaningless — error, or
+>   warn-and-ignore? (Leaning: `ValueError` on an explicit per-entry algo; the
+>   writer-level `CompressionSpec` selects the outer codec.)
+> - *`password=` on formats whose writer can't encrypt* (stdlib zipfile cannot write
+>   encryption): must fail fast at `create()` — decide the error type
+>   (`UnsupportedFeatureError` vs `UnsupportedOperationError`) and add a
+>   SUPPORTS_PASSWORD-style WriteBackend field to enforce it centrally.
+
+### Tests added
+The writing capability's scenarios; a `testing-contract` ZIP/TAR round-trip; conversion
+(`tar.gz`→`zip`, `zip`→`tar`) with bounded memory verified via `tracemalloc`.
+
+### Acceptance — spec scenarios covered
+The requirements this phase re-specifies, starting from
+[`investigations/archive-writing-design.md`](investigations/archive-writing-design.md):
+the writer surface, the ZIP/TAR round-trips, and ZIP streaming write via data descriptor.
+**Gates:** Pyrefly + ty + ruff clean; no full-archive buffering during stream conversion.
+
+---
+
+## Phase 10 — Polish, packaging, and DEV-oracle retirement
+
+**Goal:** `0.2.0` release-ready; the new test suite is the **sole** suite.
+
+### Tasks
+1. README, Google-style docstrings (`mkdocstrings`), `list_formats()`, CHANGELOG.
+2. **Final CI tuning** — the matrix was stood up in Phase 1 (reduced ~12-job: Linux ×
+   `{3.11,3.12,3.13,3.14}` × `{core-only, [all]}`; macOS + Windows on min/max Python with
+   `[all]`); here, confirm the generated-archive cache works per Python version and the
+   full corpus generates from scratch. Coverage stays **report-only — no `fail_under`
+   gate** (decided).
+3. **Complete the adversarial corpus** and confirm **every spec scenario across
+   all capabilities is covered** by the new suite. (The frozen DEV-oracle clone was
+   already retired by the `retire-dev-oracle` change; DEV is reference-only.)
+
+### Acceptance — spec scenarios covered
+`packaging-and-extras` (finalized — extras→capability, env matrix, version),
+`cli`, and the full `testing-contract` (equivalence matrix across all formats,
+adversarial corpus, round-trip, non-seekable coverage, oracle cross-validation).
+**Gates:** CI matrix green on a fresh checkout (all archives generated from scratch;
+coverage **reported, not gated**); no committed generated binaries.
+
+---
+
+## Cross-cutting concerns
+
+### Fuzzing & benchmarks (cross-cutting scaffold)
+
+- **Fuzzing** (see `dev-docs/threat-model.md` O5), staged: (a) now — Hypothesis property
+  tests for the pure safety logic (naming, `check_universal`, link resolution,
+  detection) and a corpus **mutation harness** (bit-flips/truncations over generated
+  archives asserting never-crash / never-hang / always a typed `ArchiveyError`);
+  (b) Phase 6 entry gate — Atheris coverage-guided fuzzing of the native 7z/RAR
+  header parsers, corpus-seeded, short nightly CI runs; (c) public release —
+  OSS-Fuzz onboarding (`SECURITY.md` disclosure docs already landed).
+- **Benchmarks as a gate** (see `VISION.md` budget): open/list/read/extract vs stdlib,
+  tracking **bytes-decompressed and seek counts** as well as wall time; stood up
+  before any performance claim, gating like the type checkers thereafter.
+
+### Risk areas
+- **Spine-first ordering:** leaf backends in Phase 3+ attach to the Phase-1 ABC,
+  so the ABC must be right the first time (it is written to `dev-docs/history/ARCHITECTURE.md`, not
+  evolved from DEV). Mitigation: vertical slices — bring one backend fully green
+  before the next, so ABC gaps surface early.
+- **Hardlink edge cases in streaming mode:** TAR guarantees target-precedes-link;
+  7z does not. `ExtractionCoordinator` is explicit per mode.
+- **`BinaryIOWrapper` simplification:** benchmark the removed method-swap on a
+  large-member read before committing to plain delegation.
+- **Generated-archive cache invalidation:** key on archivey + library versions **and
+  the generator-code version** (not just the spec hash), so neither a dependency upgrade
+  nor a local fix to the generation code can serve a stale cached archive.
+- **Oracle availability:** every oracle-backed test must *skip* (not fail) when the
+  oracle lib/tool is absent, so CI without `unrar`/`7z` stays green.

@@ -1,0 +1,360 @@
+# 7-Zip Archive Support
+
+## Purpose
+
+Archivey reads 7-Zip archives with a native, zero-dependency reader. The reader
+parses headers itself and uses shared `compressed-streams` decoders backed by the
+standard library for the common methods (`lzma` `FORMAT_RAW`, `bz2`, `zlib`).
+`py7zr` is not a read dependency; it is used only for optional 7z writing and as
+a test oracle.
+
+The native-first strategy preserves true pull-based streaming and avoids
+background thread/queue or per-folder spooling behavior from push-based library
+readers. It follows the `archivey-dev` `sevenzip-native-reader` exploration.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-reading` | `open_archive`, multi-source input, passwords, bounded storage, `stream_members` |
+| `access-mode-and-cost` | Seek requirement, cost receipt, solid access semantics |
+| `compressed-streams` | Decoder composition, CRC verification, optional codec backends |
+| `packaging-and-extras` | `[recommended]` extra |
+| `testing-contract` | Native parser coverage and `py7zr` oracle checks |
+## Requirements
+### Requirement: Declare 7-Zip format properties
+
+The 7-Zip backend SHALL expose these properties:
+
+| Property | Value |
+| --- | --- |
+| Read dependency | None; native parser + shared stdlib-backed decoders |
+| Write dependency | Not shipped in the current release (writing deferred; no 7z-writing extra) |
+| Listing cost | O(1); native header parse, no file-data decompression |
+| Access cost | `SOLID` when any folder packs multiple files; `DIRECT` for single-file folders |
+| Supports write | No (read-only until the writing phase) |
+| Requires seek | Yes |
+
+#### Scenario: format property matrix
+
+| Case | Expected |
+| --- | --- |
+| Open a seekable 7z for listing | Header is parsed natively; full member list is available; no third-party reader imports |
+| Open from a non-seekable source | Open fails because 7z requires seek |
+| Attempt 7z write | `UnsupportedOperationError` (writing not implemented) |
+
+### Requirement: Parse 7-Zip headers natively
+
+The system SHALL parse the signature header, packed-streams info, folders/coder
+chains, substreams info, files info, archive comment, and anti-items without any
+third-party reader. The parsed header produces every member, each member's folder
+mapping, each folder's file count, contiguous file layout inside decompressed
+folder output, and `ArchiveInfo.comment` when present. Anti-items SHALL not
+corrupt the member list.
+
+#### Scenario: native header matrix
+
+| Case | Expected |
+| --- | --- |
+| Open any supported 7z | Members and folder mapping come from the header without decompressing folders |
+| Archive stores a comment | `ArchiveInfo.comment` contains the comment |
+| Archive contains anti-items | Member list remains correct |
+
+### Requirement: Accept a non-zero archive start offset (SFX)
+
+The 7z reader SHALL accept an archive whose signature header (`7z\xBC\xAF'\x1C`)
+begins at a non-zero byte offset — whether supplied as an explicit start offset
+from detection (`payload_offset`) or discovered by a bounded forward scan when
+magic is absent at the open position (forced `format=SEVEN_Z` on an SFX stub).
+
+All absolute seeks derived from the signature header SHALL be relative to that
+signature origin. The system SHALL read in place and SHALL NOT copy the archive
+to a temporary file solely to strip a stub. The forced-format scan bound SHALL be
+the shared `SFX_MAX` constant (same binding as the RAR parser and
+`detect_format`; today 2 MiB).
+
+#### Scenario: 7z SFX / start-offset matrix
+
+| Case | Expected |
+| --- | --- |
+| Magic at open origin (offset 0) | Unchanged success path |
+| Explicit start offset N with magic at N | Signature parsed at N; members listed |
+| Forced `format=SEVEN_Z`, `MZ` stub, magic at N within `SFX_MAX` | Scan finds magic; open succeeds |
+| Forced `format=SEVEN_Z`, no magic within `SFX_MAX` | `CorruptionError` (not a silent empty archive) |
+| Packed streams after an SFX signature | Pack/header seeks use signature origin; members readable |
+
+### Requirement: Bound 7z header count fields before allocation
+
+The system SHALL bound count fields read from the 7z header (including
+`num_files` and other pre-allocated tables) against the already size-bounded,
+CRC-checked header buffer before allocating per-entry structures. A count that
+cannot fit in the remaining header semantics SHALL raise `CorruptionError`
+(hostile/nonsensical header), independent of `ListingLimits`.
+
+The header buffer is fully resident in memory before parsing, and bounds
+enforcement SHALL be independent of how that buffer is walked (byte-cursor or
+stream): any field or property read whose length exceeds the bytes remaining in
+the header SHALL raise `CorruptionError` at parse, never read past the buffer or
+return a short value.
+
+Spine `ListingLimits` (`archive-reading`) still apply when members are
+registered into a materialized list and raise `ResourceLimitError` when
+configured caps are exceeded. Parser bounds are defense-in-depth against
+allocation before Python `ArchiveMember` objects exist; they MUST NOT be
+implemented by reusing `ExtractionLimits.max_entries`.
+
+#### Scenario: 7z header bound matrix
+
+| Case | Expected |
+| --- | --- |
+| `num_files` greater than header buffer size | `CorruptionError` at parse; no giant pre-allocation |
+| Legitimate archive whose header is large enough for its file count | Parse succeeds; listing still subject to `ListingLimits` |
+| Archive within parser bounds but over `listing_limits.max_members` | Parse may succeed; `members()` / materialization raises `ResourceLimitError` |
+
+#### Scenario: in-header read stays within the buffer
+
+| Case | Expected |
+| --- | --- |
+| Property payload claims more bytes than remain in the header | `CorruptionError`; no read past the buffer |
+| A fixed-width field (uint32 / real-uint64 / byte) read at end-of-buffer | `CorruptionError`; never a short/zero-padded value |
+| Well-formed header exactly consumed to its end | Parse succeeds; no residual-bytes error |
+
+### Requirement: 7z anti-items are MemberType.ANTI
+
+7z `FILES_INFO` ANTI-bit entries SHALL be exposed as `MemberType.ANTI`
+(`is_anti`, not `is_file`). `open`/`read` SHALL raise `ArchiveyUsageError`;
+`stream_members` SHALL yield `None`. Extraction follows `safe-extraction` anti
+rules. This replaces empty-payload `FILE` anti opens.
+
+#### Scenario: 7z anti matrix
+
+| Case | Expected |
+| --- | --- |
+| ANTI-bit entry in member list | `type == MemberType.ANTI`; `is_anti`; not `is_file` |
+| `open`/`read` anti member | `ArchiveyUsageError` |
+| `stream_members` anti member | Stream `None` |
+| Content then later anti same path | Content `is_current` false; anti `is_anti` and `is_current` true |
+
+### Requirement: Decode folder coder chains through compressed-streams
+
+The system SHALL decode each folder by composing shared `compressed-streams`
+backends in decoding order. A coder list such as `AES -> LZMA2` decrypts, then
+decompresses. Files in a folder are yielded by reading exactly `member.size`
+bytes in archive order from the decompressed folder stream. Per-member CRC32
+values SHALL appear in `hashes["crc32"]` and SHALL be verified by the shared
+verification stage as data is read.
+
+| 7z codec | Method ID | Backend | Availability |
+| --- | --- | --- | --- |
+| STORED | `0x00` | pass-through | core |
+| LZMA1 / LZMA2 | `0x030101` / `0x21` | `lzma` `FORMAT_RAW` | core |
+| Delta | `0x03` | `lzma.FILTER_DELTA` | core |
+| BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`-`0x09`, `0x03030103`... | `lzma` BCJ filters (LZMA2+BCJ); `pybcj` for LZMA1+BCJ | core for LZMA2+BCJ; `[recommended]` for LZMA1+BCJ |
+| Deflate | `0x040108` | raw `zlib` | core |
+| BZip2 | `0x040202` | `bz2` | core |
+| Zstd | `0x04f71101` | stdlib `compression.zstd` / `backports.zstd` | core on 3.14+; otherwise `[recommended]` |
+| Brotli | `0x04f71102` | `brotli` | `[recommended]` |
+| LZ4 | `0x04f71104` | `lz4` frame decoder (same backend as standalone / `.tar.lz4`) | `[recommended]` |
+| PPMd (var.H) | `0x030401` | `pyppmd` | `[recommended]` |
+| Deflate64 | `0x040109` | `inflate64` | `[recommended]` |
+| AES-256 / SHA-256 | `0x06f10701` | crypto backend | `[recommended]` |
+| BCJ2 | `0x0303011B` | none | unsupported |
+
+The `[recommended]` extra SHALL provide PPMd, Deflate64, Zstd on Python versions without
+stdlib zstd, Brotli, LZ4, AES, and LZMA1+BCJ (`pybcj`) support in one install.
+
+LZMA1+BCJ folders SHALL NOT be decoded via a single combined `lzma` `FORMAT_RAW`
+filter chain: liblzma can silently truncate the final BCJ look-ahead bytes when
+LZMA1 lacks an end-of-stream marker. The reader MUST stage LZMA1 (and any non-BCJ
+`lzma` filters such as Delta) through stdlib `lzma`, then apply each BCJ stage
+through `pybcj`. LZMA2+BCJ remains a single stdlib filter chain in core.
+
+#### Scenario: coder-chain matrix
+
+| Case | Expected |
+| --- | --- |
+| BCJ + LZMA2 folder | Shared `lzma` raw filter chain returns original bytes |
+| BCJ + LZMA1 folder with `pybcj` (`[recommended]`) | Staged LZMA1 then `pybcj` returns original bytes |
+| BCJ + LZMA1 folder without `pybcj` | `PackageNotInstalledError` names `pybcj` and the `[recommended]` extra |
+| Member with stored CRC32 | Terminal verification raises `CorruptionError` on mismatch |
+| PPMd without `pyppmd` | `PackageNotInstalledError` names `pyppmd` and the `[recommended]` extra |
+| AES + LZMA2 folder | Crypto stage decrypts before LZMA2 decompression |
+| LZ4 folder (`0x04f71104`) with `lz4` installed | Shared `Codec.LZ4` returns original bytes |
+| LZ4 folder without `lz4` | `PackageNotInstalledError` names `lz4` and the `[recommended]` extra |
+
+### Requirement: Reject unsupported codecs without fallback
+
+The system SHALL raise `UnsupportedFeatureError` naming the codec or method ID
+when a folder uses a coder with no available backend. This includes BCJ2, newer
+branch filters absent from installed liblzma, and unrecognized method IDs. The
+reader MUST NOT return garbage and MUST NOT fall back to `py7zr` or another
+third-party reader. PPMd, Deflate64, and LZMA1+BCJ are optional-supported via
+`[recommended]`, and multi-volume 7z is supported by volume joining.
+
+#### Scenario: unsupported-codec matrix
+
+| Case | Expected |
+| --- | --- |
+| Folder uses BCJ2 | `UnsupportedFeatureError` names BCJ2; no output bytes |
+| Folder uses unknown method ID | `UnsupportedFeatureError` names the method ID |
+| Folder uses PPMd with `pyppmd` installed | Member is decoded, not rejected |
+| Folder uses LZMA1+BCJ with `pybcj` installed | Member is decoded via staged `pybcj`, not rejected |
+
+### Requirement: Support multi-volume 7z by ordered concatenation
+
+The system SHALL support split 7z sets (`name.7z.001`, `name.7z.002`, ..., and
+SFX numbered parts `name.exe.001`, `name.exe.002`, ...) by
+joining volumes in order into one logical byte stream and parsing that stream as
+ordinary 7z. The SFX stub `name.exe` (no `.NNN` suffix) is not a volume sibling;
+when it has no archive magic, `open_archive` SHALL follow it to the split first
+volume beside it (`name.exe.001` or `name.7z.001`).
+`open_archive()` SHALL accept either a path inside the set, with
+sibling discovery in numeric order, or an explicit ordered source sequence. If a
+volume is missing or the stream cannot be reconstructed, the system SHALL raise
+`UnsupportedFeatureError` or a truncated/corrupt error, never a partial result.
+A lone numbered part (`name.7z.001` / `name.exe.001` with no siblings) SHALL
+raise `TruncatedError` naming the missing parts.
+
+#### Scenario: volume matrix
+
+| Case | Expected |
+| --- | --- |
+| Open `name.7z.001` with complete siblings | Volumes join in numeric order; listing and reads match a single-file archive |
+| Open `name.exe.001` with complete `name.exe.00N` siblings | Same join; the stub `name.exe` is not a sibling |
+| Open `name.7z.001` or `name.exe.001` with no siblings | `TruncatedError` names the missing parts |
+| Open stub-only `name.exe` beside `name.exe.001` or `name.7z.001` | Same join as opening the first volume |
+| Open stub-only `name.exe` with `format=SEVEN_Z` beside `name.7z.001` | Same join |
+| Open stub-only `name.exe` with `format=SEVEN_Z` beside `name.zip.001` | `ArchiveyUsageError` |
+| Open an explicit ordered volume list | Sources concatenate and read as one archive |
+| Missing or out-of-order volume | Error instead of partial or garbage output |
+
+### Requirement: Decrypt AES-encrypted 7z with archive-reading passwords
+
+The system SHALL read AES-256-encrypted 7z folders and header-encrypted archives
+when a valid password and crypto backend are available. Header encryption SHALL
+decrypt the end header before listing; without a password the system raises
+`EncryptionError`, and with no crypto backend it raises `PackageNotInstalledError`.
+Any archive or folder encryption SHALL set `ArchiveInfo.is_encrypted` to `True`.
+
+Passwords SHALL use the `archive-reading` candidate model: known-good successes
+for this reader, remaining static candidates, then provider requests. Header
+requests use `member is None`; folder/member requests identify the member being
+decrypted where possible. Members in different encrypted folders MAY use different
+passwords in one open or one `stream_members()` pass. Key derivation SHALL use the
+7z SHA-256 scheme (UTF-16LE password, salt, `1 << NumCyclesPower` rounds with the
+documented `0x3F` no-hash sentinel) via a 7z-local helper that feeds `AesParams` into
+the shared crypto stage — not a generic crypto-surface KDF. `NumCyclesPower` values
+other than `0x3F` SHALL be accepted only when `≤ 24`; values 25–62 SHALL raise
+`UnsupportedFeatureError` (matching 7-Zip’s decoder clamp), not
+`EncryptionError`.
+
+Because 7zAES has no password check value, wrong-password detection relies on
+integrity anchors and codec rejection. The reader SHALL cache derived keys by
+`(password, salt, cycles)` and try known-good passwords first. When a folder digest
+and/or member CRC is present, or when a compressed codec rejects garbage, a wrong
+password SHALL surface as `EncryptionError`/`CorruptionError`. When an encrypted
+folder has **no** folder digest and a member has **no** CRC (format-legal for
+store/copy), the system SHALL still return decoded bytes (best-effort, matching
+7-Zip) and SHALL emit `DIGEST_UNVERIFIABLE` with
+`DigestContext.reason="no_integrity_anchor"` — it MUST NOT imply the decryption was
+authenticated. After decoding a header-encrypted `kEncodedHeader`, a parsed result
+with zero file records SHALL raise `EncryptionError` (legitimate writers never
+encrypt an empty header) so a wrong password cannot open as a silent empty listing.
+
+#### Scenario: encryption matrix
+
+| Case | Expected |
+| --- | --- |
+| Header-encrypted archive, no password/provider result | `EncryptionError` before listing |
+| Header-encrypted archive, valid password + crypto | Header is decrypted natively; members list; `is_encrypted` true |
+| Encrypted folders with different passwords | Each folder uses its matching candidate in random access or one streaming pass |
+| Sole wrong password, integrity anchor present (folder digest and/or member CRC) or compressed codec rejects garbage | `EncryptionError`/`CorruptionError`; no incorrect data handed to the caller as success |
+| Header-encrypted archive, wrong password decodes to zero file records | `EncryptionError` (never a silent empty listing) |
+| Encrypted store/copy member, no folder digest, no member CRC, any password | Bytes returned; `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) emitted |
+| `NumCyclesPower` 25–62 | `UnsupportedFeatureError` (not remapped to wrong-password) |
+| Repeated salt/cycles/password | Derived key cache avoids repeated key derivation |
+
+### Requirement: Stream solid folders with bounded memory
+
+The system SHALL implement `stream_members()` as a pull stream: each folder is
+decoded once, members are yielded in archive order as bytes become available, and
+peak memory is bounded by decoder working set plus in-flight output. The reader
+MUST NOT buffer an entire solid folder in memory or keep a growing decompressed
+cache until close. Random `open()` for a member inside a solid folder MAY
+re-decode from the folder start or use explicitly bounded/disk-backed retention.
+
+#### Scenario: streaming and random access matrix
+
+| Case | Expected |
+| --- | --- |
+| `stream_members()` over a solid 7z | Each folder decodes once; peak memory is not proportional to folder size |
+| Random `open()` inside a multi-file folder | Backend decodes from folder start or uses bounded/disk-backed retention |
+| Repeated random opens in one folder | Any acceleration obeys `archive-reading` bounded-storage rules |
+
+### Requirement: Report 7z cost and member metadata
+
+The system SHALL populate 7z metadata from the native header. `ArchiveInfo.is_solid`
+is `True` when any folder packs more than one file, `CostReceipt.solid_block_count`
+is the folder count, and non-solid archives report `AccessCost.DIRECT`. Each
+member's parsed coder chain SHALL map to `tuple[CompressionMethod, ...]` in filter
+order. If a POSIX attribute block is absent, `mode`, `uid`, and `gid` SHALL be
+`None`, never guessed defaults.
+
+#### Scenario: metadata matrix
+
+| Case | Expected |
+| --- | --- |
+| Folder packs multiple files | `ArchiveInfo.is_solid` true; `solid_block_count` equals folder count |
+| Every folder packs one file | `ArchiveInfo.is_solid` false; access cost is `DIRECT` |
+| BCJ pre-filter followed by LZMA2 | `member.compression` records the full chain in order |
+| No POSIX attribute block | `member.mode`, `member.uid`, and `member.gid` are all `None` |
+
+### Requirement: Infer presented names for nameless 7z members
+
+When the 7z `FILES_INFO` block omits the `NAME` property (every member's stored
+filename is empty), the reader SHALL infer a presented `ArchiveMember.name` from
+the archive source filename before `normalize_member_name`. `raw_name` SHALL
+remain empty so the missing NAME channel is preserved.
+
+Inference (aligned with single-file compressors via shared
+`infer_member_name_from_archive`):
+
+| Archive source | Presented name |
+| --- | --- |
+| Basename ends with `.7z` (case-insensitive), optionally followed by a numeric volume suffix such as `.001` | Strip `.7z` / `.7z.NNN`; use the remaining stem |
+| Other non-empty basename | Append `.uncompressed` (do not strip an arbitrary final suffix) |
+| Anonymous stream (no archive filename) | `data` |
+
+Every nameless member in the same archive SHALL receive the same inferred name
+(duplicate names are allowed). The reader MUST NOT invent `_1` / `(1)` suffixes
+at list time; destination collisions are an extraction/`OverwritePolicy` concern.
+
+#### Scenario: nameless-member naming matrix
+
+| Case | Expected |
+| --- | --- |
+| Open `github_14.7z` (no NAME property, one file) | One `FILE` member named `github_14`; `raw_name` empty |
+| Open `github_14_multi.7z` (no NAME, two files) | Two `FILE` members both named `github_14_multi`; `raw_name` empty |
+| Open `archive.7z.001` with no NAME | Stem is `archive` (volume suffix stripped with `.7z`) |
+| Open `foo.bin` (no NAME, not a `.7z` name) | Member name `foo.bin.uncompressed` |
+| Open nameless 7z from an anonymous stream | Member name `data` |
+| Open a 7z that stores NAME normally | Stored names unchanged; no stem synthesis |
+
+### Requirement: Stage LZMA1+BCJ through pybcj under `[recommended]`
+
+The system SHALL decode linear folders whose coder chain includes both LZMA1 and
+at least one BCJ branch filter (x86/ARM/ARMT/PPC/SPARC/IA64) by composing
+stdlib LZMA1 decompression with `pybcj` BCJ filters. The reader MUST NOT feed
+LZMA1 and BCJ into one `lzma.LZMADecompressor` `FORMAT_RAW` filter list. When
+`pybcj` is absent, opening such a member SHALL raise `PackageNotInstalledError`
+naming `pybcj` and `pip install archivey[recommended]`. BCJ2 remains unsupported.
+
+#### Scenario: LZMA1+BCJ matrix
+
+| Case | Expected |
+| --- | --- |
+| 7-Zip CLI `-m0=BCJ -m1=LZMA` fixture + `pybcj` | Round-trip bytes match; no silent truncation |
+| py7zr `FILTER_X86`+`FILTER_LZMA` fixture + `pybcj` | Round-trip bytes match |
+| Same fixtures without `pybcj` | `PackageNotInstalledError` for `pybcj` / `[recommended]` |
+| LZMA2+BCJ without `pybcj` | Still works in core via stdlib filters |
+

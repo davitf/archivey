@@ -1,0 +1,875 @@
+"""Native 7z reader backend (``BaseArchiveReader`` wiring).
+
+Module split:
+
+- :mod:`.sevenzip_methods` — method-id registry / :class:`MethodKind`
+- :mod:`.sevenzip_parser` — signature + header property tree → :class:`SevenZipArchive`
+- :mod:`.sevenzip_pipeline` — folder coder plan/execute + encoded-header decode
+- this module — passwords, member list, solid-folder demux, CRC/encryption mapping
+
+Open path: signature → ``parse_header_block`` → (decode ``EncodedHeader`` loop) →
+``materialize_archive`` → list members. Member open folds the folder's packed
+slice through :func:`open_folder_pipeline`; solid folders use
+:class:`~archivey.internal.streams.streamtools.solid.SolidBlockReader` so one
+decode serves consecutive files.
+
+Password bytes for the 7z KDF are UTF-16LE (:func:`_password_to_kdf_bytes`). An
+empty header after decrypt is treated as a wrong password (never a silent empty
+listing) — threat-model O8. Separately, store/AES members with no folder digest
+and no member CRC emit ``DIGEST_UNVERIFIABLE`` (decryption cannot be authenticated).
+"""
+
+from __future__ import annotations
+
+import io
+import re
+import stat
+import zlib
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO
+
+from archivey.config import ArchiveyConfig
+from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
+from archivey.diagnostics import DiagnosticCode, DigestContext, MemberTimestampContext
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    EncryptionError,
+    PackageNotInstalledError,
+    StreamNotSeekableError,
+    TruncatedError,
+    UnsupportedFeatureError,
+    raw_message_of,
+)
+from archivey.internal.backends.sevenzip_methods import is_aes
+from archivey.internal.backends.sevenzip_parser import (
+    EncodedHeader,
+    PlainHeader,
+    SevenZipArchive,
+    SevenZipFileRecord,
+    SevenZipFolder,
+    compression_method_for_coder,
+    empty_archive,
+    find_signature_offset,
+    folder_is_encrypted,
+    materialize_archive,
+    parse_header_block,
+    read_signature_and_next_header,
+)
+from archivey.internal.backends.sevenzip_pipeline import (
+    decode_encoded_header,
+    decode_folder_to_bytes,
+    encoded_header_needs_password,
+    open_folder_pipeline,
+)
+from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.logs import backends as logger
+from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.naming import (
+    emit_member_name_normalized,
+    infer_member_name_from_archive,
+    normalize_member_name,
+)
+from archivey.internal.open_site import OpenSite
+from archivey.internal.password import (
+    _PasswordCandidates,
+    _PasswordCandidatesExhausted,
+)
+from archivey.internal.registry import register_reader
+from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
+from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.crypto import SevenZipKeyCache
+from archivey.internal.streams.streamtools import (
+    ReadableStream,
+    SharedSource,
+    SlicingStream,
+    SolidBlockReader,
+    is_seekable,
+    is_stream,
+    skip_forward,
+)
+from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.types import (
+    ArchiveFormat,
+    ArchiveInfo,
+    ArchiveMember,
+    CompressionAlgorithm,
+    CompressionMethod,
+    CreateSystem,
+    HashAlgorithm,
+    MagicSignature,
+    MemberStreams,
+    MemberType,
+    crc32_digest,
+)
+
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
+# Drain/CRC step for encrypted-folder password confirm. 7z AES has no check
+# value, so a candidate is judged by decoding and CRCing; this keeps peak
+# memory at one chunk instead of the whole folder (same size as the sized
+# drain in ``verify.py`` and ZipCrypto's parallel CRC).
+_PASSWORD_CONFIRM_CHUNK = 65536
+
+# Local aliases keep test imports of these private names working.
+_TimestampIssue = TimestampIssue
+_filetime_to_datetime = filetime_to_datetime
+
+
+@dataclass(frozen=True)
+class _MemberRaw:
+    record: SevenZipFileRecord
+    folder_index: int | None
+    file_in_folder: int | None
+
+
+def _password_to_kdf_bytes(password: bytes) -> bytes:
+    try:
+        return password.decode("utf-8").encode("utf-16le")
+    except UnicodeDecodeError:
+        return password
+
+
+def _infer_nameless_member_name(archive_name: str | None) -> str:
+    return infer_member_name_from_archive(
+        archive_name, strip_suffix_re=_SEVENZIP_STEM_SUFFIX_RE
+    )
+
+
+def _member_stream_size(member: ArchiveMember) -> int:
+    return member.size if member.size is not None else 0
+
+
+def _crc_exactly(
+    stream: ReadableStream,
+    nbytes: int,
+    *,
+    chunk_size: int = _PASSWORD_CONFIRM_CHUNK,
+) -> int:
+    """Read ``nbytes`` from ``stream``, folding CRC32.
+
+    Raise ``EncryptionError`` on a short read. Peak extra memory is one chunk.
+    """
+    remaining = nbytes
+    crc = 0
+    # `> 0`, not truthiness: a stream that over-returns would drive `remaining`
+    # negative, and `read(negative)` is read-everything — the whole-folder gather
+    # this function exists to avoid.
+    while remaining > 0:
+        chunk = stream.read(min(chunk_size, remaining))
+        if not chunk:
+            raise EncryptionError("Wrong password or corrupt 7z folder")
+        crc = zlib.crc32(chunk, crc)
+        remaining -= len(chunk)
+    return crc
+
+
+def _verify_decoded_folder(
+    folder: SevenZipFolder,
+    stream: ReadableStream,
+    *,
+    expected_size: int,
+    member_digests: list[tuple[int, int | None]] | None = None,
+) -> None:
+    """Raise ``EncryptionError`` when decoded folder bytes fail CRC checks.
+
+    Reads incrementally so peak memory is O(chunk), not O(folder). A stream
+    that ends early still fails, including the no-anchor case (no folder
+    digest and CRC-less members): that case accepts only after a full-length
+    drain, matching 7-Zip's best-effort decrypt.
+    """
+    if folder.digest_defined:
+        actual = _crc_exactly(stream, expected_size)
+        expected = (folder.crc if folder.crc is not None else 0) & 0xFFFFFFFF
+        if actual & 0xFFFFFFFF != expected:
+            raise EncryptionError("Wrong password or corrupt 7z folder")
+        return
+    if not member_digests:
+        _crc_exactly(stream, expected_size)
+        return
+    # The per-member walk covers `expected_size` by construction: the caller derives
+    # it from these same member sizes (`_folder_unpack_size`). Pinned here because
+    # nothing else records the coupling now the whole-folder length check is gone.
+    assert expected_size == sum(size for size, _ in member_digests), (
+        "member digest sizes must sum to the folder unpack size"
+    )
+    for size, raw_expected in member_digests:
+        actual = _crc_exactly(stream, size)
+        if raw_expected is None:
+            continue
+        if actual & 0xFFFFFFFF != raw_expected & 0xFFFFFFFF:
+            raise EncryptionError("Wrong password or corrupt 7z folder")
+
+
+class SevenZipReader(BaseArchiveReader):
+    """Reads 7z archives using the native parser and shared codec streams."""
+
+    _SUPPORTS_RANDOM_ACCESS = True
+    _MEMBER_LIST_UPFRONT = True
+
+    def __init__(
+        self,
+        source: Path | BinaryIO,
+        streaming: bool,
+        passwords: _PasswordCandidates | None,
+        encoding: str | None,
+        archive_name: str | None,
+        config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
+        start_offset: int = 0,
+    ) -> None:
+        super().__init__(
+            ArchiveFormat.SEVEN_Z,
+            streaming,
+            archive_name,
+            config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
+        )
+        del encoding  # 7z stores names as UTF-16LE.
+        self._source = source
+        self._passwords = passwords or _PasswordCandidates()
+        self._key_cache = SevenZipKeyCache()
+        self._folder_passwords: dict[int, bytes | None] = {}
+        self._stream_config = stream_config_from_archivey(
+            self._config,
+            streaming=streaming,
+            seekable=MemberStreams.SEEKABLE in member_streams,
+        )
+        if is_stream(source) and not is_seekable(source):
+            raise StreamNotSeekableError(
+                "7z archives require a seekable source: the header and packed streams "
+                "are addressed by offsets.",
+                archive_name=archive_name,
+                source_format=ArchiveFormat.SEVEN_Z,
+            )
+        self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
+        # Every offset a 7z archive records is relative to its signature header, so the
+        # whole file geometry is rebased once here instead of each seek learning about
+        # stubs: ``_view`` is the only thing that knows byte 0 of the archive is not
+        # byte 0 of the source. ``start_offset`` is detection's ``payload_offset``; the
+        # scan on top of it is what makes forced ``format=SEVEN_Z`` work on an SFX file
+        # with no detection involved.
+        probe = self._shared.view(start_offset)
+        try:
+            self._origin = start_offset + find_signature_offset(probe)
+        finally:
+            probe.close()
+        self._volume_count = getattr(source, "volume_count", 1)
+        self._archive = self._load_archive()
+        self._init_folder_caches(self._archive)
+        self._members = self._build_members()
+        self._folder_members = self._members_by_folder()
+
+    def _view(self, start: int, length: int | None = None) -> BinaryIO:
+        """A source view whose ``start`` is measured from the signature header.
+
+        The single place the self-extracting stub is subtracted: pack offsets, the
+        next-header seek and the encoded-header slices are all signature-relative
+        already, so they keep working unchanged for an archive that begins mid-file.
+        """
+        return self._shared.view(self._origin + start, length)
+
+    def _load_archive(self) -> SevenZipArchive:
+        """Two-phase header load: parse → decode encoded → re-parse → materialize."""
+        fp = self._view(0)
+        signature = read_signature_and_next_header(fp)
+        if not signature.header_data:
+            return empty_archive(signature)
+
+        block = parse_header_block(signature.header_data)
+        header_encrypted = False
+        while isinstance(block, EncodedHeader):
+            header_encrypted = header_encrypted or encoded_header_needs_password(block)
+            try:
+                decoded = self._decode_encoded_header_block(fp, block)
+                block = parse_header_block(decoded)
+            except (UnsupportedFeatureError, CorruptionError) as exc:
+                # AES header decrypt has no MAC: a wrong password yields garbage that
+                # fails property parsing rather than raising EncryptionError in decrypt.
+                if header_encrypted and self._passwords.has_static_candidates():
+                    raise EncryptionError(
+                        "Password(s) rejected for the 7z header"
+                    ) from exc
+                raise
+        assert isinstance(block, PlainHeader)
+        # O8: 7zAES has no password check value. Wrong-key garbage occasionally
+        # LZMA-decodes into a header that parses with zero file records (py7zr
+        # omits the encoded-header folder CRC). Legitimate writers never encrypt
+        # an empty header — treat that as a rejected password.
+        if header_encrypted and not block.files:
+            raise EncryptionError("Password(s) rejected for the 7z header")
+        return materialize_archive(
+            signature, block, is_header_encrypted=header_encrypted
+        )
+
+    def _decode_encoded_header_block(
+        self, fp: BinaryIO, encoded: EncodedHeader
+    ) -> bytes:
+        needs_password = encoded_header_needs_password(encoded)
+
+        def decode(password: bytes | None) -> bytes:
+            return decode_encoded_header(
+                fp,
+                encoded,
+                password=password,
+                key_cache=self._key_cache,
+                stream_config=self._stream_config,
+                collector=self._diagnostics_collector,
+            )
+
+        try:
+            if needs_password:
+                return self._passwords.attempt(
+                    None, lambda password: decode(_password_to_kdf_bytes(password))
+                )
+            return decode(None)
+        except _PasswordCandidatesExhausted as exc:
+            # Keep required-vs-rejected (D8) but restore the header surface (R1): listing
+            # needs a password is different UX from a wrong password on the header.
+            if exc.message.startswith("Password required"):
+                raise EncryptionError(
+                    "Password required to decrypt the 7z header"
+                ) from exc
+            raise EncryptionError("Password(s) rejected for the 7z header") from exc
+
+    def _init_folder_caches(self, archive: SevenZipArchive) -> None:
+        """Derive per-folder indexes used by listing and open.
+
+        Kept as one helper so unit tests that construct a reader via
+        ``object.__new__`` can populate the same derived state ``__init__`` does
+        without hand-maintaining each cache field.
+        """
+        self._folder_pack_starts = self._folder_pack_start_indices(archive)
+        # Public CompressionMethod tuples are identical for every member in a
+        # folder — build once (solid many-member listing hot path).
+        self._folder_compression = self._build_folder_compression(archive)
+
+    @staticmethod
+    def _folder_pack_start_indices(archive: SevenZipArchive) -> list[int]:
+        starts: list[int] = []
+        index = 0
+        for folder in archive.folders:
+            starts.append(index)
+            index += len(folder.packed_indices)
+        return starts
+
+    @staticmethod
+    def _build_folder_compression(
+        archive: SevenZipArchive,
+    ) -> list[tuple[CompressionMethod, ...]]:
+        """One public compression-chain tuple per folder (shared by its members)."""
+        out: list[tuple[CompressionMethod, ...]] = []
+        for folder in archive.folders:
+            methods: list[CompressionMethod] = []
+            for coder in folder.coders:
+                # Skip AES before lookup: METHOD_AES.algorithm is UNKNOWN, so the
+                # filter below would drop it too, but only after a registry hit.
+                if is_aes(coder.method):
+                    continue
+                method = compression_method_for_coder(coder)
+                if method.algo is not CompressionAlgorithm.UNKNOWN:
+                    methods.append(method)
+            out.append(tuple(methods))
+        return out
+
+    def _build_members(self) -> list[ArchiveMember]:
+        # is_current is stamped by BaseArchiveReader's shared last-entry-wins pass.
+        return [self._to_member(record) for record in self._archive.files]
+
+    def _members_by_folder(self) -> dict[int, list[ArchiveMember]]:
+        grouped: dict[int, list[ArchiveMember]] = {}
+        for member in self._members:
+            raw = member._raw
+            assert isinstance(raw, _MemberRaw)
+            if raw.folder_index is not None:
+                grouped.setdefault(raw.folder_index, []).append(member)
+        return grouped
+
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        yield from self._members
+
+    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+        current_folder: int | None = None
+        solid: SolidBlockReader | None = None
+
+        def _folder_reader(
+            folder_index: int, member: ArchiveMember
+        ) -> SolidBlockReader:
+            """Open the folder's decode pipeline, once, on the first read into it."""
+            nonlocal solid
+            if solid is None:
+                # Count at the folder decode layer (solid invariant); member wraps
+                # pass track_output=False so sequential reads are not double-counted.
+                solid = SolidBlockReader(
+                    self._track_decompressed(
+                        self._open_folder_stream(folder_index, member)
+                    )
+                )
+            return solid
+
+        def _open(member: ArchiveMember) -> ArchiveStream | None:
+            nonlocal current_folder, solid
+            if not member.is_file:
+                return None
+            raw = member._raw
+            assert isinstance(raw, _MemberRaw)
+            if raw.folder_index is None:
+                return self._wrap_member_stream(
+                    io.BytesIO(b""), member.name, size=member.size
+                )
+            if raw.folder_index != current_folder:
+                if solid is not None:
+                    solid.close()
+                    solid = None
+                current_folder = raw.folder_index
+            folder_index = raw.folder_index
+            return self._member_stream_from_solid(
+                lambda: _folder_reader(folder_index, member), member
+            )
+
+        def _cleanup() -> None:
+            if solid is not None:
+                solid.close()
+
+        yield from self._drive_pass_streams(
+            iter(self._members),
+            open_member=_open,
+            close_previous=True,
+            cleanup=_cleanup,
+        )
+
+    def _to_member(self, record: SevenZipFileRecord) -> ArchiveMember:
+        member_type = self._member_type(record)
+        presented_name = record.filename
+        if presented_name == "":
+            presented_name = _infer_nameless_member_name(self._archive_name)
+        name = normalize_member_name(
+            presented_name,
+            member_type,
+            backslash_is_separator=True,
+        )
+        raw_name = record.filename.encode("utf-16le", errors="surrogateescape")
+        folder_index = record.folder_index
+        compression = (
+            self._folder_compression[folder_index] if folder_index is not None else ()
+        )
+        hashes: dict[HashAlgorithm, bytes] = {}
+        if record.crc32 is not None:
+            hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
+        attrs = record.attributes
+        unix_mode = (attrs >> 16) if attrs is not None and attrs >> 16 else None
+        mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
+        # Folder/substream indices live on ``_raw``; skip the unused public extra
+        # bag so listing-limit accounting does not walk a per-member dict.
+        ts_issues: list[_TimestampIssue] = []
+        modified = accessed = created = None
+        # Hot-path shortcut only: filetime_to_datetime also treats 0/None as unset.
+        # Keep these guards equivalent to that helper so ZIP (unconditional call)
+        # and 7z cannot diverge if the shared 0-handling rule ever changes.
+        if record.last_write_time:
+            modified, issue = _filetime_to_datetime(
+                record.last_write_time, presented_name, field="modified"
+            )
+            if issue is not None:
+                ts_issues.append(issue)
+        if record.last_access_time:
+            accessed, issue = _filetime_to_datetime(
+                record.last_access_time, presented_name, field="accessed"
+            )
+            if issue is not None:
+                ts_issues.append(issue)
+        if record.creation_time:
+            created, issue = _filetime_to_datetime(
+                record.creation_time, presented_name, field="created"
+            )
+            if issue is not None:
+                ts_issues.append(issue)
+        member = ArchiveMember(
+            type=member_type,
+            name=name,
+            raw_name=raw_name,
+            size=record.uncompressed_size,
+            compressed_size=record.compressed_size,
+            modified=modified,
+            accessed=accessed,
+            created=created,
+            mode=mode,
+            compression=compression,
+            is_encrypted=record.is_encrypted,
+            create_system=CreateSystem.UNIX
+            if unix_mode is not None
+            else CreateSystem.WINDOWS_NTFS,
+            windows_attrs=attrs & 0xFFFF if attrs is not None else None,
+            hashes=hashes,
+            _raw=_MemberRaw(record, folder_index, record.file_in_folder),
+        )
+        emit_member_name_normalized(
+            self._diagnostics_collector,
+            member=member,
+            presented_name=presented_name,
+            archive_name=self._archive_name,
+        )
+        for issue in ts_issues:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+                message=issue.message,
+                context=MemberTimestampContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    field=issue.field,
+                    source="ntfs",
+                    value_repr=issue.value_repr,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
+        # Encrypted folder with no folder digest and no per-member CRC: 7zAES has no
+        # password check of its own, so a wrong password cannot be detected (matches
+        # 7-Zip). Surface that as DIGEST_UNVERIFIABLE rather than silently implying
+        # the decryption was authenticated.
+        if (
+            record.is_encrypted
+            and record.crc32 is None
+            and folder_index is not None
+            and not self._archive.folders[folder_index].digest_defined
+        ):
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                message=(
+                    "Encrypted 7z member has no folder digest and no member CRC; "
+                    "decryption cannot be authenticated (wrong passwords may go "
+                    "undetected on store/copy streams)."
+                ),
+                context=DigestContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    algorithm="",
+                    reason="no_integrity_anchor",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
+        return member
+
+    def _member_type(self, record: SevenZipFileRecord) -> MemberType:
+        if record.is_anti:
+            return MemberType.ANTI
+        attrs = record.attributes
+        if attrs is not None:
+            unix_mode = attrs >> 16
+            if unix_mode:
+                if stat.S_ISLNK(unix_mode):
+                    return MemberType.SYMLINK
+                if stat.S_ISDIR(unix_mode):
+                    return MemberType.DIRECTORY
+            if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+                return MemberType.SYMLINK
+        if record.is_directory:
+            return MemberType.DIRECTORY
+        return MemberType.FILE
+
+    def _folder_pack_view(self, folder_index: int) -> BinaryIO:
+        folder = self._archive.folders[folder_index]
+        pack_count = len(folder.packed_indices)
+        if pack_count != 1:
+            raise UnsupportedFeatureError(
+                "7z folders with multiple packed streams are not supported"
+            )
+        pack_index = self._folder_pack_starts[folder_index]
+        if pack_index >= len(self._archive.pack_sizes):
+            raise CorruptionError("7z folder references a missing packed stream")
+        pack_offset = self._archive.pack_pos + self._archive.pack_positions[pack_index]
+        pack_size = self._archive.pack_sizes[pack_index]
+        return self._view(pack_offset, pack_size)
+
+    def _folder_unpack_size(self, folder_index: int) -> int:
+        members = self._folder_members.get(folder_index, [])
+        return sum(_member_stream_size(member) for member in members)
+
+    def _open_folder_stream(
+        self,
+        folder_index: int,
+        member: ArchiveMember | None,
+        *,
+        seekable: bool = False,
+        track_output: bool = False,
+    ) -> BinaryIO:
+        folder = self._archive.folders[folder_index]
+        password = self._password_for_folder(folder_index, member)
+        stream = open_folder_pipeline(
+            self._folder_pack_view(folder_index),
+            folder,
+            password=password,
+            key_cache=self._key_cache,
+            stream_config=self._stream_config,
+            collector=self._diagnostics_collector,
+            seekable=seekable,
+        )
+        # Random ``open()`` passes track_output=True so each from-start folder decode
+        # counts; sequential ``_iter_with_data`` already wraps once around SolidBlockReader.
+        if track_output:
+            return self._track_decompressed(stream)
+        return stream
+
+    def _password_for_folder(
+        self, folder_index: int, member: ArchiveMember | None
+    ) -> bytes | None:
+        folder = self._archive.folders[folder_index]
+        if not folder_is_encrypted(folder):
+            return None
+        if folder_index in self._folder_passwords:
+            return self._folder_passwords[folder_index]
+
+        member_digests: list[tuple[int, int | None]] = []
+        for folder_member in self._folder_members.get(folder_index, []):
+            size = _member_stream_size(folder_member)
+            raw_expected = (
+                folder_member.hashes.get(HashAlgorithm.CRC32)
+                if folder_member.hashes
+                else None
+            )
+            if isinstance(raw_expected, bytes):
+                expected: int | None = int.from_bytes(raw_expected, "big") & 0xFFFFFFFF
+            else:
+                expected = None
+            member_digests.append((size, expected))
+
+        def confirm(password: bytes) -> bytes:
+            kdf_password = _password_to_kdf_bytes(password)
+            stream = open_folder_pipeline(
+                self._folder_pack_view(folder_index),
+                folder,
+                password=kdf_password,
+                key_cache=self._key_cache,
+                stream_config=self._stream_config,
+                collector=self._diagnostics_collector,
+            )
+            try:
+                # AES has no check value. Confirm by decoding and CRCing, in
+                # chunks: materialising the folder peaked at ~3× unpack size.
+                _verify_decoded_folder(
+                    folder,
+                    stream,
+                    expected_size=self._folder_unpack_size(folder_index),
+                    member_digests=member_digests,
+                )
+                return kdf_password
+            except (UnsupportedFeatureError, PackageNotInstalledError):
+                # Hostile NumCyclesPower / missing cryptography must not look like a wrong password.
+                raise
+            except ArchiveyError as exc:
+                raise EncryptionError("Wrong password or corrupt 7z folder") from exc
+            finally:
+                stream.close()
+
+        try:
+            password = self._passwords.attempt(member, confirm)
+        except _PasswordCandidatesExhausted as exc:
+            raise EncryptionError(raw_message_of(exc)) from exc
+        self._folder_passwords[folder_index] = password
+        return password
+
+    def _member_prefix(self, member: ArchiveMember) -> int:
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        if raw.folder_index is None or raw.file_in_folder is None:
+            return 0
+        prior = self._folder_members.get(raw.folder_index, [])[: raw.file_in_folder]
+        return sum(_member_stream_size(p) for p in prior)
+
+    def _wrap_folder_member(
+        self, inner: BinaryIO, member: ArchiveMember
+    ) -> ArchiveStream:
+        verify = member.size is not None or bool(member.hashes)
+        return self._wrap_member_stream(
+            inner,
+            member.name,
+            size=member.size,
+            track_output=False,
+            expected_hashes=member.hashes if verify else None,
+            expected_size=member.size if verify else None,
+            verify_member=member if verify else None,
+        )
+
+    def _member_stream_from_solid(
+        self, open_solid: Callable[[], SolidBlockReader], member: ArchiveMember
+    ) -> ArchiveStream:
+        """Hand out a stream whose folder decode and positioning run on first read.
+
+        ``open_solid`` opens the member's 7z folder — decompressor setup, and the
+        password confirmation for an encrypted folder — the first time any member of
+        that folder is actually read. A folder whose members are all skipped is never
+        decoded and never asks for a password. Within an opened folder,
+        ``open_member(..., lazy=True)`` defers the skip past unread earlier members in
+        the same way. Verification is fused into the outer ``ArchiveStream``: a
+        never-opened handle skips verify on close, so unread members do not force
+        either step.
+        """
+        prefix = self._member_prefix(member)
+        size = _member_stream_size(member)
+        verify = member.size is not None or bool(member.hashes)
+
+        return self._wrap_member_stream(
+            None,
+            member.name,
+            open_fn=lambda: open_solid().open_member(prefix, size, lazy=True),
+            size=member.size,
+            track_output=False,
+            seekable=False,
+            expected_hashes=member.hashes if verify else None,
+            expected_size=member.size if verify else None,
+            verify_member=member if verify else None,
+        )
+
+    def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, EOFError):
+            return TruncatedError("7z folder ended before the requested member")
+        return None
+
+    def _ensure_link_target(self, member: ArchiveMember) -> None:
+        if member.type != MemberType.SYMLINK or member.link_target is not None:
+            return
+        try:
+            with self._open_member(member) as stream:
+                member.link_target = stream.read().decode(
+                    "utf-8", errors="surrogateescape"
+                )
+        except EncryptionError:
+            return
+
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        if raw.folder_index is None:
+            return self._wrap_member_stream(
+                io.BytesIO(b""), member.name, size=member.size
+            )
+        want_seekable = self._stream_config.seekable
+        prefix = self._member_prefix(member)
+        size = _member_stream_size(member)
+        folder_stream = self._open_folder_stream(
+            raw.folder_index,
+            member,
+            seekable=want_seekable,
+            track_output=True,
+        )
+        try:
+            if want_seekable and is_seekable(folder_stream):
+                inner: BinaryIO = SlicingStream(
+                    folder_stream, start=prefix, length=size, own_source=True
+                )
+            else:
+                skip_forward(folder_stream, prefix)
+                inner = SlicingStream(folder_stream, length=size, own_source=True)
+        except EOFError as exc:
+            # Construction no longer seeks, so a truncated folder raises from the
+            # first read (or from skip_forward), not from SlicingStream.__init__.
+            # EOFError is still translated by _translate_exception; this handler
+            # covers skip_forward and keeps the close-on-failure pairing.
+            folder_stream.close()
+            raise TruncatedError("7z folder ended before the requested member") from exc
+        except BaseException:
+            folder_stream.close()
+            raise
+        try:
+            return self._wrap_folder_member(inner, member)
+        except BaseException:
+            inner.close()
+            raise
+
+    def _get_archive_info(self) -> ArchiveInfo:
+        solid_blocks = sum(
+            1 for members in self._folder_members.values() if len(members) > 1
+        )
+        cost = CostReceipt(
+            listing_cost=ListingCost.INDEXED,
+            access_cost=AccessCost.SOLID
+            if self._archive.is_solid
+            else AccessCost.DIRECT,
+            stream_capability=StreamCapability.SEEKABLE,
+            solid_block_count=solid_blocks if self._archive.is_solid else None,
+        )
+        return ArchiveInfo(
+            format=ArchiveFormat.SEVEN_Z,
+            format_version=f"{self._archive.major_version}.{self._archive.minor_version}",
+            is_solid=self._archive.is_solid,
+            member_count=len(self._members),
+            comment=self._archive.comment,
+            is_encrypted=self._archive.is_header_encrypted
+            or self._archive.has_encrypted_folders,
+            is_multivolume=self._volume_count > 1,
+            cost=cost,
+            extra={"7z.volume_count": self._volume_count},
+        )
+
+    def _close_archive(self) -> None:
+        self._shared.close()
+
+
+class SevenZipReadBackend(ReadBackend):
+    """Backend factory for 7z archives."""
+
+    FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.SEVEN_Z,)
+    EXTENSIONS: Mapping[str, ArchiveFormat] = {
+        ".7z": ArchiveFormat.SEVEN_Z,
+        ".cb7": ArchiveFormat.SEVEN_Z,
+    }
+    MAGIC: tuple[MagicSignature, ...] = (
+        MagicSignature(0, b"7z\xbc\xaf'\x1c", ArchiveFormat.SEVEN_Z),
+    )
+    SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
+    SFX_HIT_VALIDATOR = staticmethod(validate_sevenzip_signature_header)
+    SUPPORTS_PASSWORD = True
+    SUPPORTS_STREAMING_NON_SEEKABLE = False
+    OPTIONAL_DEPENDENCY = None
+
+    def open_read(
+        self,
+        source: Path | BinaryIO,
+        format: ArchiveFormat,
+        streaming: bool,
+        passwords: _PasswordCandidates | None,
+        encoding: str | None,
+        archive_name: str | None,
+        config: ArchiveyConfig,
+        collector: DiagnosticCollector | None = None,
+        member_streams: MemberStreams = MemberStreams(0),
+        open_site: OpenSite | None = None,
+        start_offset: int = 0,
+    ) -> SevenZipReader:
+        del format
+        return SevenZipReader(
+            source,
+            streaming,
+            passwords,
+            encoding,
+            archive_name,
+            config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
+            start_offset=start_offset,
+        )
+
+
+register_reader(SevenZipReadBackend)
+
+# Re-exports used by fuzz harnesses / older imports.
+__all__ = [
+    "SevenZipReadBackend",
+    "SevenZipReader",
+    "decode_folder_to_bytes",
+    "open_folder_pipeline",
+]
