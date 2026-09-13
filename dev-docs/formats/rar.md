@@ -302,6 +302,15 @@ on `finalize` (7z). Header parsing needs the opposite. Whether `AesDecryptStream
 itself should be removed or fixed is #315 thread 3 — do not wire headers
 through it until that is decided.
 
+``_HeaderDecryptStream.read`` has no 8 KiB cap. Per-header size is the
+caller's: RAR5 refuses `hdrlen > _RAR5_MAX_HEADER` (2 MiB) before the body
+read; RAR3 `header_size` is a 16-bit field. A tighter cap here used to reject
+a well-formed encrypted header as `EncryptionError("…wrong password?")`.
+Unbounded `read(-1)` is still refused. The encrypted wrong-password path
+decrypts at most one garbage-sized header (then CRC fails and the walk
+rewrites that as `EncryptionError`); that is strictly less work than the
+unencrypted walk already allows.
+
 **`encoding=` is not applied.** RAR names are decoded by the parser, so the argument is
 dropped — but not silently: supplying it emits `ENCODING_ARGUMENT_UNUSED`, which is the
 interface-wide answer for an argument a format cannot honour, and a structured diagnostic
@@ -694,6 +703,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | `CompressionAlgorithm.RAR` for M1–M5 (`level` 1–5); extract version in `extra["rar.extract_version"]` | The header identifies the algorithm, so `UNKNOWN` claimed we could not tell. `ContainerFormat.RAR` and `CompressionAlgorithm.RAR` are homonyms (container vs codec), not a reason to invent `RAR_COMPRESSION` / `RARLAB` | Putting 15/20/29/50 in `level`; dropping M1–M5 from `level` |
 | No `unrar x` tempdir cache for solid random `open()` | `AccessCost.SOLID` and per-open decode are the honest signals; a tempdir extraction amortizes work the caller cannot see or bound (**#8**) | `unrar x` into a managed temp directory to serve later random reads from disk |
 | Encrypted-header `tell()` is the ciphertext cursor; leftover `_buf` is AES padding | `data_offset` must skip the padded ciphertext so the next salt/IV is aligned. Subtracting leftover plaintext lands in padding — measured on both `encrypted_header__*.rar` fixtures, where every FILE `header_size % 16 != 0` | Reporting a logical plaintext offset from `tell()` |
+| No 8 KiB cap on `_HeaderDecryptStream.read`; callers use the format's own header limit | RAR5 already refuses `hdrlen > _RAR5_MAX_HEADER` (2 MiB) before the body read; RAR3 `header_size` is a uint16. The encrypted wrong-password path decrypts one garbage header then raises `EncryptionError` — strictly less than the unencrypted walk already allows. A tighter cap rejected a legitimate header as wrong-password. Unbounded `read(-1)` stays refused. Maintainer (2026-09-13): use each format's unencrypted limit; delete the 8 KiB branch | Keep 8 KiB and split the error (`CorruptionError` would abort password iteration); a second cap of 2 MiB inside `read` |
 | Keep `_HeaderDecryptStream`; share only the AES *stage* with `crypto.py` | Header walk needs a non-owning ciphertext `tell`, exact 16-byte CBC reads, and must not close the archive or 7z-pad a short final block. `AesDecryptStream` does the opposite. #315 thread 3 (parcel F) owns whether that class stays | Wrapping headers in `open_aes_decrypt_stream`; replacing `_Readable` with `BinaryIO` / a streamtools base |
 
 ## 7. Open questions

@@ -721,6 +721,12 @@ class _HeaderDecryptStream:
     parsing needs a non-owning cursor, ``read_exact`` of each AES block, and a
     reject for ``read(-1)``. The decrypt *stage* is shared; the pull stream is
     not.
+
+    ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the
+    caller already bounds the ask. RAR5 refuses ``hdrlen > _RAR5_MAX_HEADER``
+    (2 MiB) before the body ``read_exact``; RAR3 ``header_size`` is a 16-bit
+    field (max 65 535). A tighter 8 KiB cap here used to reject a well-formed
+    header as ``wrong password?``.
     """
 
     def __init__(self, source: BinaryIO, key: bytes, iv: bytes) -> None:
@@ -740,10 +746,6 @@ class _HeaderDecryptStream:
     def read(self, n: int = -1) -> bytes:
         if n is None or n < 0:
             raise CorruptionError("Unbounded read on encrypted RAR header stream")
-        if n > 8 * 1024:
-            raise CorruptionError(
-                "Encrypted RAR header read too large — wrong password?"
-            )
         if n <= len(self._buf):
             out = bytes(self._buf[:n])
             del self._buf[:n]

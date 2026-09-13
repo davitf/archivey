@@ -61,6 +61,37 @@ def test_header_decrypt_tell_is_ciphertext_cursor_not_plaintext() -> None:
 
 
 @requires("cryptography")
+def test_header_decrypt_read_is_bounded_by_caller_not_8kib() -> None:
+    """#332 CR1 / CR-P1: ``read`` does not impose an 8 KiB cap. Callers already
+    bound the ask (RAR5 ``_RAR5_MAX_HEADER``, RAR3 ``uint16`` header_size).
+    Unbounded ``read(-1)`` stays rejected.
+    """
+    key = b"\x00" * 16
+    iv = b"\x01" * 16
+    plaintext = b"0123456789abcdef" * ((9 * 1024) // 16)  # 9 KiB, 16-aligned
+    ciphertext = _aes_cbc_encrypt(key, iv, plaintext)
+    stream = _HeaderDecryptStream(io.BytesIO(ciphertext), key, iv)
+    got = stream.read(len(plaintext))
+    assert got == plaintext
+
+    with pytest.raises(CorruptionError, match="Unbounded read"):
+        stream.read(-1)
+
+
+@requires("cryptography")
+def test_rar3_wrong_header_password_is_encryption_error() -> None:
+    """Raising the per-read cap must not turn a RAR3 wrong password into
+    ``CorruptionError`` — candidate iteration only retries ``EncryptionError``.
+    """
+    path = _fixture("encrypted_header__rar4.rar")
+    with (
+        path.open("rb") as handle,
+        pytest.raises(EncryptionError, match="wrong password"),
+    ):
+        parse_rar_archive(handle, password="not-the-password")
+
+
+@requires("cryptography")
 @pytest.mark.parametrize(
     "name",
     ["encrypted_header__.rar", "encrypted_header__rar4.rar"],
