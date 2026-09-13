@@ -603,6 +603,7 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
     try:
         if prefix:
             skip_forward(inner, prefix)
+        return SlicingStream(inner, length=size, own_source=True)
     except EOFError as exc:
         inner.close()
         raise TruncatedError(
@@ -611,7 +612,6 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
     except BaseException:
         inner.close()
         raise
-    return SlicingStream(inner, length=size, own_source=True)
 
 
 class RarReader(BaseArchiveReader):
@@ -930,11 +930,11 @@ class RarReader(BaseArchiveReader):
             _raw=info,
         )
         # Attaches onto the member and can raise under a strict collector.
-        self._emit_member_diagnostics(info, member)
+        self._emit_member_diagnostics(info, member, presented)
         return member
 
     def _emit_member_diagnostics(
-        self, info: RarMemberInfo, member: ArchiveMember
+        self, info: RarMemberInfo, member: ArchiveMember, presented: str
     ) -> None:
         """Name-normalization and tweaked-digest diagnostics.
 
@@ -944,7 +944,7 @@ class RarReader(BaseArchiveReader):
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
-            presented_name=_presented_filename(info),
+            presented_name=presented,
             archive_name=self._archive_name,
         )
         if not _crc_is_tweaked(info) or self._unrar_password is not None:
