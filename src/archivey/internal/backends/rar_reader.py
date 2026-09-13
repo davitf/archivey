@@ -751,31 +751,24 @@ class RarReader(BaseArchiveReader):
         try:
             try:
                 archive = parse(None)
-                # Incomplete set opened as a lone volume-1 path with no siblings.
-                if archive.needs_next_volume and len(self._volume_paths) <= 1:
-                    raise TruncatedError(
-                        "Incomplete RAR multi-volume set: end of archive expects "
-                        "another volume"
-                    )
-                # Data-only encryption (no header encrypt): parse succeeds without a
-                # password, so this is the unconfirmed first candidate. Safe for unrar
-                # and ConvertHashToMAC — a wrong candidate is rejected by the per-file
-                # PswCheck (0x01, when present) or by unrar exit 11.
-                return archive, self._first_candidate_str()
             except EncryptionError:
                 if not self._passwords.has_passwords():
                     raise
-
-                def confirm(password: bytes) -> RarArchive:
-                    return parse(password)
-
-                archive = self._passwords.attempt(None, confirm)
-                if archive.needs_next_volume and len(self._volume_paths) <= 1:
-                    raise TruncatedError(
-                        "Incomplete RAR multi-volume set: end of archive expects "
-                        "another volume"
-                    )
-                return archive, self._first_candidate_str()
+                archive = self._passwords.attempt(None, parse)
+            # Incomplete set opened as a lone volume-1 path with no siblings.
+            if archive.needs_next_volume and len(self._volume_paths) <= 1:
+                raise TruncatedError(
+                    "Incomplete RAR multi-volume set: end of archive expects "
+                    "another volume"
+                )
+            # _first_candidate_str is the first configured candidate when
+            # headers parsed without a password (data-only encryption; a wrong
+            # guess is rejected by PswCheck or unrar exit 11). After
+            # attempt(), record_success has moved the working password to
+            # the front of _known_good, so the same call is the password that
+            # worked. core.py mints a fresh _PasswordCandidates per
+            # open_archive, so _known_good is not shared across archives.
+            return archive, self._first_candidate_str()
         except _PasswordCandidatesExhausted as exc:
             message = (
                 exc.last_error.message
@@ -785,6 +778,12 @@ class RarReader(BaseArchiveReader):
             raise EncryptionError(message) from exc
 
     def _first_candidate_str(self) -> str | None:
+        """Password to hand unrar / ConvertHashToMAC, or ``None``.
+
+        Relies on ``_PasswordCandidates.iter_candidates`` yielding
+        ``_known_good`` first. After a successful ``attempt()``, that front
+        item is the password that worked, not the originally first candidate.
+        """
         for password in self._passwords.iter_candidates():
             return _password_as_str(password)
         return None
