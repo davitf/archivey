@@ -129,6 +129,7 @@ Three things about this path are worth knowing before you debug it:
 | Adding a backend | `internal/registry.py` + a self-registering module in `backends/` |
 | The CLI | `cli/main.py` dispatches; one module per subcommand |
 | Terminal-safe output of hostile text | `escaping.py`; threat-model O9 |
+| Test-suite leak oracle (live children, owning streams, pipe fds) | `tests/leak_oracle.py` (autouse plugin); `tests/test_leak_oracle.py`; the shutdown-only accelerator diagnostic is still `scripts/accel_leak_trace.py` |
 
 ---
 

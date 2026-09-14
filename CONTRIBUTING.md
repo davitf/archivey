@@ -239,6 +239,15 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   low-level building blocks — stream primitives/helpers, format parsers, the codec
   layer — should also get focused **unit** tests of their internals, because they're
   shared foundations and their corner cases are exactly what break formats downstream.
+- **Leaked OS resources fail the test.** `tests/leak_oracle.py` is an autouse oracle
+  (disable with `ARCHIVEY_LEAK_ORACLE=0`) that fails a test which leaves a child
+  process running, an owning stream unclosed (`own_source=True` /
+  `manual_inner_close=True`), or an extra pipe/socket fd. It pins those objects so
+  `IOBase.__del__` cannot reap them between the test return and teardown — that is
+  the gap that let a missing `own_source=True` on a RAR glob-mask pipe ship with a
+  green suite. `unrar`/`7z` leaks are invisible under `[core-only]` (those tests
+  skip); the oracle still runs, and `tests/test_leak_oracle.py` spawns
+  `sys.executable` so the gate is exercised in every config.
 - **Hit the corner cases.** Especially corrupt, truncated, and encrypted archives;
   wrong passwords; empty/zero-length members; unusual names and metadata; non-seekable
   sources. When porting or writing a reader, deliberately trigger each error path so the

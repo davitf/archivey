@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Find which accelerator streams reach interpreter shutdown un-closed on macOS.
 
+This is a **manual** diagnostic, not a CI gate. Per-test leaks (a live ``unrar`` child, an
+unclosed ``own_source=True`` / ``manual_inner_close=True`` stream, an extra pipe fd) are
+caught by ``tests/leak_oracle.py`` on every suite run. This script is the leftover that
+oracle cannot see: accelerator streams still alive at *interpreter shutdown*.
+
 This is the diagnostic for the *residual* macOS abort: the full pytest suite exits 134 at
 shutdown even though every isolated reproduction is clean. It instruments archivey's
 ``_AcceleratorStream`` to record the creation stack of every accelerator stream, then prints —
