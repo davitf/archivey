@@ -33,6 +33,8 @@ What it deliberately does not:
 
 Cost: one ``Popen.__init__`` append, a flag check on two constructors, and two
 small ``/proc`` snapshots. Disable with ``ARCHIVEY_LEAK_ORACLE=0``.
+Teardown reaps leaked children via ``Popen.terminate``; ``os.WNOHANG`` is
+Unix-only and must not be used on the portable path.
 
 Owning streams and ``Popen`` objects are *pinned* until they are explicitly
 closed (or until teardown). That is load-bearing: CPython refcounting would
@@ -271,6 +273,9 @@ def _pipe_fds() -> dict[int, str]:
 
 
 def _pid_alive(pid: int) -> bool:
+    # Windows: os.kill(pid, 0) is TerminateProcess, not a liveness probe.
+    if os.name == "nt":
+        return True
     try:
         os.kill(pid, 0)
     except OSError:
@@ -278,14 +283,36 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _reap_pid(pid: int) -> None:
-    """Best-effort: reap a zombie, else SIGTERM then SIGKILL.
-
-    One leaked ``unrar`` must not sit around for the rest of the suite. Never
-    ``pkill`` — only this pid.
-    """
+def _reap_proc(proc: subprocess.Popen[bytes]) -> None:
+    """Reap via ``Popen`` so Windows (no ``os.WNOHANG``) can still kill the child."""
+    if proc.poll() is not None:
+        return
     try:
-        waited, _ = os.waitpid(pid, os.WNOHANG)
+        proc.terminate()
+        proc.wait(timeout=1.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except OSError:
+        return
+    try:
+        proc.kill()
+        proc.wait(timeout=1.0)
+    except (subprocess.TimeoutExpired, OSError):
+        return
+
+
+def _reap_pid(pid: int) -> None:
+    """POSIX backstop for children not spawned via ``Popen``.
+
+    ``os.WNOHANG`` is Unix-only. On Windows this is a no-op; the Popen hook
+    plus ``_reap_proc`` is the portable path.
+    """
+    wnohang = getattr(os, "WNOHANG", None)
+    if wnohang is None:
+        return
+    try:
+        waited, _ = os.waitpid(pid, wnohang)
     except (ChildProcessError, OSError):
         waited = 0
     if waited:
@@ -297,14 +324,15 @@ def _reap_pid(pid: int) -> None:
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
         try:
-            waited, _ = os.waitpid(pid, os.WNOHANG)
+            waited, _ = os.waitpid(pid, wnohang)
         except (ChildProcessError, OSError):
             return
         if waited:
             return
         time.sleep(0.02)
+    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
     try:
-        os.kill(pid, signal.SIGKILL)
+        os.kill(pid, sigkill)
     except OSError:
         return
     try:
@@ -328,8 +356,7 @@ def _leaked_procs() -> list[_ProcRec]:
     with _lock:
         recs = list(_pinned_procs.values())
     for rec in recs:
-        poll = rec.proc.poll()
-        if poll is None and _pid_alive(rec.pid):
+        if rec.proc.poll() is None:
             leaked.append(rec)
     return leaked
 
@@ -345,12 +372,20 @@ def _reset_pins() -> None:
         _pinned_streams.clear()
 
 
-def _cleanup_leaks(procs: list[_ProcRec], streams: list[_StreamRec]) -> None:
+def _cleanup_leaks(
+    procs: list[_ProcRec],
+    streams: list[_StreamRec],
+    extra_children: set[int] | None = None,
+) -> None:
     for rec in streams:
         _close_quietly(rec.stream)
+    reaped: set[int] = set()
     for rec in procs:
-        if rec.proc.poll() is None:
-            _reap_pid(rec.pid)
+        _reap_proc(rec.proc)
+        reaped.add(rec.pid)
+    for pid in extra_children or ():
+        if pid not in reaped:
+            _reap_pid(pid)
     _reset_pins()
 
 
@@ -424,5 +459,8 @@ def _archivey_leak_oracle(request: pytest.FixtureRequest) -> Iterator[None]:
         return
 
     message = _report(procs, streams, extra_fds, extra_children)
-    _cleanup_leaks(procs, streams)
+    try:
+        _cleanup_leaks(procs, streams, extra_children)
+    except Exception:  # noqa: BLE001 - never hide the leak report behind cleanup
+        pass
     pytest.fail(message)

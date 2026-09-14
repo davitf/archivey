@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 
 _ISOLATED_HEADER = """\
@@ -234,3 +236,55 @@ def test_closed_manual() -> None:
 """,
     )
     assert proc.returncode == 0, _output(proc)
+
+
+def test_cleanup_reaps_via_popen() -> None:
+    """Teardown reaps with ``Popen.terminate``, not POSIX ``waitpid``/``WNOHANG``.
+
+    Windows has no ``os.WNOHANG``; using it hid the leak report on CI
+    (``windows-latest / py3.11|3.14 / all``).
+    """
+    import leak_oracle as lo
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    try:
+        rec = lo._ProcRec(pid=child.pid, argv="sleep", proc=child)
+        lo._cleanup_leaks([rec], [])
+        assert child.poll() is not None
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+
+
+def test_reap_pid_is_noop_without_wnohang(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_reap_pid`` is the Linux /proc backstop; skip it when WNOHANG is absent."""
+    import leak_oracle as lo
+
+    class _OsWithoutWnohang:
+        name = "nt"
+
+        def waitpid(self, pid: int, flags: int) -> tuple[int, int]:
+            raise AssertionError("waitpid must not run without WNOHANG")
+
+        def kill(self, pid: int, sig: int) -> None:
+            raise AssertionError("kill must not run without WNOHANG")
+
+    monkeypatch.setattr(lo, "os", _OsWithoutWnohang())
+    lo._reap_pid(12345)
+
+
+def test_pid_alive_does_not_terminate_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``os.kill(pid, 0)`` is TerminateProcess on Windows, not a liveness probe."""
+    import leak_oracle as lo
+
+    def _kill(pid: int, sig: int) -> None:
+        raise AssertionError(f"os.kill({pid}, {sig}) must not run on Windows")
+
+    monkeypatch.setattr(lo.os, "name", "nt")
+    monkeypatch.setattr(lo.os, "kill", _kill)
+    assert lo._pid_alive(1) is True

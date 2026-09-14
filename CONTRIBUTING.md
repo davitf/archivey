@@ -248,7 +248,9 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   the gap that let a missing `own_source=True` on a RAR glob-mask pipe ship with a
   green suite. `unrar`/`7z` leaks are invisible under `[core-only]` (those tests
   skip); the oracle still runs, and `tests/test_leak_oracle.py` spawns
-  `sys.executable` so the gate is exercised in every config.
+  `sys.executable` so the gate is exercised in every config. Teardown reaps
+  leaked children via `Popen.terminate` — `os.WNOHANG` does not exist on
+  Windows, and using it hid the leak report behind an `AttributeError`.
 - **Hit the corner cases.** Especially corrupt, truncated, and encrypted archives;
   wrong passwords; empty/zero-length members; unusual names and metadata; non-seekable
   sources. When porting or writing a reader, deliberately trigger each error path so the
