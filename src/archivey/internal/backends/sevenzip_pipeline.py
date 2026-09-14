@@ -124,6 +124,8 @@ class _LzmaChainStage:
     ``cap_size`` bounds the decoded output with a ``SlicingStream``; it is set only
     for the stdlib LZMA1 runs inside an LZMA1+BCJ chain, where LZMA1-without-EOS can
     otherwise over-read on a trailing BCJ look-ahead (BPO-21872). ``None`` means no cap.
+    The following ``_BcjStage`` must ``close_inner`` that slice — DecompressorStream
+    does not close a passed-in stream by default.
     """
 
     codec: Codec
@@ -377,6 +379,11 @@ def _execute_stage(
         decoder_attr=stage.pybcj_attr,
         unpack_size=stage.unpack_size,
         seekable=seekable,
+        # Previous stage is a private chain — often the LZMA1 cap
+        # ``SlicingStream(own_source=True)``. DecompressorStream borrows a
+        # passed-in stream by default, so without this the cap slice (and the
+        # LZMA decoder it owns) survived member close.
+        close_inner=True,
     )
 
 

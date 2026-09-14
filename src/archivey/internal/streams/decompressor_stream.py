@@ -250,6 +250,13 @@ class DecompressorStream(ReadOnlyIOStream):
 
     ``seekable=False`` skips index/seek-point work (forward-only cheap path).
     ``readable``/``writable``/``write``/``readinto`` come from :class:`ReadOnlyIOStream`.
+
+    A stream ``path`` is borrowed by default (``close_inner=False``): the archive
+    handle / ``SharedView`` stays with the caller. Pipeline stages that wrap a
+    *private* inner (the 7z LZMA1+BCJ cap ``SlicingStream(own_source=True)``)
+    pass ``close_inner=True`` so that inner is closed with this stream.
+    ``ensure_bufferedio`` is non-closing, so ``_inner.close()`` would not reach
+    that source — we keep it separately and close it here.
     """
 
     def __init__(
@@ -260,14 +267,18 @@ class DecompressorStream(ReadOnlyIOStream):
         collector: DiagnosticCollector | None = None,
         codec_name: str = "",
         seekable: bool = True,
+        close_inner: bool = False,
     ) -> None:
         super().__init__()
+        self._owned_inner: BinaryIO | None = None
         if isinstance(path, (str, os.PathLike)):
             self._inner: BinaryIO = open(os.fspath(path), "rb")
             self._should_close = True
         else:
             self._inner = cast("BinaryIO", ensure_bufferedio(path))
             self._should_close = False
+            if close_inner:
+                self._owned_inner = path
         self._diagnostics_collector = collector
         self._codec_name = codec_name
         # Declared seek demand: without it, skip seek-point tables / index scans, but
@@ -483,6 +494,10 @@ class DecompressorStream(ReadOnlyIOStream):
         self._decoder.close()
         if self._should_close:
             self._inner.close()
+        owned = self._owned_inner
+        self._owned_inner = None
+        if owned is not None:
+            owned.close()
         super().close()
 
     def _ensure_index_built(self) -> None:
