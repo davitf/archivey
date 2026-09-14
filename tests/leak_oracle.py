@@ -54,7 +54,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterator
+from typing import Callable, Iterator
 
 import pytest
 
@@ -159,21 +159,10 @@ def _install_stream_hooks() -> None:
         _orig_delegating_init = DelegatingStream.__init__
         _orig_delegating_close = DelegatingStream.close
 
-        def _d_init(
-            self: DelegatingStream,
-            inner: BinaryIO,
-            *,
-            readinto_passthrough: bool = True,
-            manual_inner_close: bool = False,
-        ) -> None:
+        def _d_init(self: DelegatingStream, *args: object, **kwargs: object) -> None:
             assert _orig_delegating_init is not None
-            _orig_delegating_init(
-                self,
-                inner,
-                readinto_passthrough=readinto_passthrough,
-                manual_inner_close=manual_inner_close,
-            )
-            if manual_inner_close:
+            _orig_delegating_init(self, *args, **kwargs)
+            if kwargs.get("manual_inner_close"):
                 _pin_stream(self, "manual_inner_close")
 
         def _d_close(self: DelegatingStream) -> None:
@@ -188,33 +177,10 @@ def _install_stream_hooks() -> None:
         _orig_slice_init_from_source = SlicingStream._init_from_source
         _orig_slice_close = SlicingStream.close
 
-        def _s_init(
-            self: SlicingStream,
-            stream: BinaryIO,
-            start: int | None,
-            length: int | None,
-            *,
-            io_guard: object,
-            seek_before_read: bool,
-            check_open: object,
-            own_source: bool,
-            source_size: int | None = None,
-            probe_source_size: bool = True,
-        ) -> None:
+        def _s_init(self: SlicingStream, *args: object, **kwargs: object) -> None:
             assert _orig_slice_init_from_source is not None
-            _orig_slice_init_from_source(
-                self,
-                stream,
-                start,
-                length,
-                io_guard=io_guard,
-                seek_before_read=seek_before_read,
-                check_open=check_open,
-                own_source=own_source,
-                source_size=source_size,
-                probe_source_size=probe_source_size,
-            )
-            if own_source:
+            _orig_slice_init_from_source(self, *args, **kwargs)
+            if kwargs.get("own_source"):
                 _pin_stream(self, "own_source")
 
         def _s_close(self: SlicingStream) -> None:
@@ -419,7 +385,7 @@ def _report(
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
-        "allow_resource_leaks: skip the OS-resource leak oracle for this test",
+        "allow_resource_leaks: skip the leak-oracle fail for this test (still reaps)",
     )
     if not _enabled():
         return
@@ -439,6 +405,12 @@ def _archivey_leak_oracle(request: pytest.FixtureRequest) -> Iterator[None]:
         return
     if request.node.get_closest_marker("allow_resource_leaks") is not None:
         yield
+        # Skip the fail, not the reap — leftover children would outlive the
+        # session (the next test's snapshot hides them).
+        try:
+            _cleanup_leaks(_leaked_procs(), _leaked_streams())
+        except Exception:  # noqa: BLE001 - marker path must not raise
+            pass
         return
 
     _reset_pins()

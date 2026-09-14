@@ -56,6 +56,7 @@ def _run_isolated(tmp_path: Path, body: str) -> subprocess.CompletedProcess[str]
         text=True,
         encoding="utf-8",
         check=False,
+        timeout=30,
     )
 
 
@@ -274,6 +275,39 @@ def test_reap_pid_is_noop_without_wnohang(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(lo, "os", _OsWithoutWnohang())
     lo._reap_pid(12345)
+
+
+def test_allow_resource_leaks_reaps_without_failing(tmp_path: Path) -> None:
+    """The marker skips the fail, not the reap (F1)."""
+    pidfile = tmp_path / "leaked.pid"
+    proc = _run_isolated(
+        tmp_path,
+        f"""
+import os
+from pathlib import Path
+
+import pytest
+
+_PIDFILE = Path({str(pidfile)!r})
+
+@pytest.mark.allow_resource_leaks
+def test_marked_leak() -> None:
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    _PIDFILE.write_text(str(child.pid), encoding="utf-8")
+
+def test_following_sees_child_reaped() -> None:
+    pid = int(_PIDFILE.read_text(encoding="utf-8"))
+    try:
+        os.kill(pid, 0)
+        alive = True
+    except OSError:
+        alive = False
+    assert not alive, f"pid {{pid}} still alive after marked test"
+""",
+    )
+    assert proc.returncode == 0, _output(proc)
 
 
 def test_pid_alive_does_not_terminate_on_windows(

@@ -404,6 +404,7 @@ def test_decompressor_close_inner_closes_private_source() -> None:
     """
     from archivey.internal.streams.decompress import ZlibDecoder
     from archivey.internal.streams.decompressor_stream import DecompressorStream
+    from archivey.internal.streams.streamtools.slice import SlicingStream
 
     class _Tracked(io.BytesIO):
         closed_flag = False
@@ -417,10 +418,15 @@ def test_decompressor_close_inner_closes_private_source() -> None:
     DecompressorStream(borrowed, make_decoder=lambda _p, _i: ZlibDecoder()).close()
     assert borrowed.closed_flag is False
 
+    # Production wrap: SlicingStream is RawIOBase, so ensure_bufferedio
+    # returns _NonClosingBufferedReader. close_inner must close the slice
+    # (and the slice owns the source).
     owned = _Tracked(payload)
+    cap = SlicingStream(owned, length=len(payload), own_source=True)
     DecompressorStream(
-        owned, make_decoder=lambda _p, _i: ZlibDecoder(), close_inner=True
+        cap, make_decoder=lambda _p, _i: ZlibDecoder(), close_inner=True
     ).close()
+    assert cap.closed
     assert owned.closed_flag is True
 
 
