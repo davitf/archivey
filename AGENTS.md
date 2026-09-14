@@ -121,9 +121,10 @@ re-resolve):
 - Type-check: `uv run --no-sync pyrefly check` and `uv run --no-sync ty check`
   (both must stay clean; mypy/pyright are intentionally not used)
 
-### Gates from a `git worktree` (review checkouts)
+### Gates from a `git worktree`
 
-Reviewing a PR in a `git worktree` is fine, and **both scripts work there unchanged** —
+For implementers and `review/` briefs — ordinary PR review doesn't run the gates
+(`code-review-skill` addendum §10). Working from a `git worktree` is fine, and **both scripts work there unchanged** —
 `./scripts/check.sh` and `./scripts/test.sh`, exactly as in the primary checkout. A
 worktree starts without a `.venv`, so they create one for it (`check.sh` announces
 `=== no .venv in this tree — creating one`). That takes about a second and ~11 MiB: uv
