@@ -4,8 +4,8 @@
 > Use the skill’s process, severity labels, and Python/quality guides as the base;
 > use **this file** for what archivey uniquely cares about.
 >
-> **Review order:** archivey PRs use **code first, then context** (§8). That overrides
-> the skill’s Phase 1 “read the design narrative before the diff.”
+> **Review order:** archivey PRs use **code first, then context** (§8) — not the generic
+> “read the design narrative before the diff” order.
 >
 > Do not merge these rules into the upstream-derived guides — keep the delta visible.
 
@@ -25,97 +25,69 @@
 ## 0. Finding discipline (how to report)
 
 Archivey reviews optimize for **maximum code quality with a human maintainer as the
-filter** — not for an automated gate that must minimize false positives. So
-**over-report on existence, be rigorous on labeling.** Raise the concern; never suppress
-a real one because you're unsure. The discipline is *honest labeling*, not silence.
+filter** — not for an automated gate minimizing false positives. So **over-report on
+existence, be rigorous on labeling.** Raise the concern; never suppress a real one
+because you're unsure. The discipline is honest labeling, not silence.
 
-Output stays **markdown prose** (portable across Cursor / Claude Code / others). Do not
-route findings through a host-specific findings tool — the two-axis + reclassification
-model below is richer than those schemas, and prose is the source of truth.
-
-**Posting this review to a PR? Read §10 as well** — stable finding IDs, inline anchoring,
-re-review status tables, and the attribution footer. The implementing agent picks the
-review up from there (`.claude/skills/address-review-findings/`), and those rules are what
-make finding-by-finding disposition possible.
+Output is markdown prose, never a host-specific findings tool (`SKILL.md`) — the two-axis
++ reclassification model below is richer than those schemas. Posting to a PR → §10.
 
 ### Output shape — three blocks (required)
 
-Write the review as **exactly three top-level sections**, in this order. The maintainer
-often has **not** read the diff; design for that reader first, then the implementor.
+Exactly three top-level sections, in this order. The maintainer often has **not** read the
+diff: design for that reader first, the implementor second. Do not lead with a findings
+dump — dense detail belongs in block 2. [`assets/pr-review-template.md`](../assets/pr-review-template.md)
+is the fill-in form.
 
-Do **not** lead with a long findings dump. Put dense detail only in block 2.
-
-**Brevity fence (do not let skim-friendly layout shrink the review):** short form
-applies **only** to how blocks 1 and 3 are *presented*. It must **not** reduce:
-
-- review depth (still run full pass 1 + pass 2 / §8–§9; same tracing and checklists),
-- finding discipline (still over-report on existence; still severity × confidence),
-- **block 2** length or specificity (full locations, why, fix direction, triggers /
-  repro notes — never collapse a real finding into a briefing one-liner and stop),
-- real pause-and-ask items in block 3 (omit filler questions, not genuine decisions;
-  when unsure whether something needs a human call, **include it** and label
-  confidence).
-
-If block 1 is short because the analysis was thin, that is a failed review — not
-compliance with this shape.
+**Brevity fence.** Short form applies only to how blocks 1 and 3 are *presented*. It must
+not reduce review depth (full §8–§9 passes, same tracing and checklists), finding
+discipline (over-report on existence; severity × confidence), **block 2** specificity, or
+real pause-and-ask items in block 3 — when unsure whether something needs a human call,
+include it and label confidence. If block 1 is short because the analysis was thin, that
+is a failed review, not compliance with this shape.
 
 #### 1. Maintainer briefing (read this first)
 
-Audience: you, the maintainer, skimming without the code open.
+For the maintainer skimming without the code open. Half a screen unless the change is huge.
 
-Keep this short and scannable (aim for roughly half a screen unless the change is huge):
+- **What this change is** — 2–4 sentences: intent, main files/areas touched, behaviour
+  delta, in plain language. Assume no familiarity with the PR or the OpenSpec change name.
+- **Snapshot** — size (approx. lines / small|medium|large), gates (CI status, §10), and
+  **Verdict**: ✅ Approve / 💬 Comment / 🔄 Request Changes.
+- **Main points** — ranked one-liners, 🔴/🟡 only: severity + gist. No `file:line` essays.
+- **What's fine** (optional, 1–3 bullets) — load-bearing things that looked correct, so the
+  briefing isn't only negatives.
 
-- **What this change is** — 2–4 sentences: intent, main files/areas touched, and the
-  behaviour delta in plain language. Assume no prior familiarity with the PR or the
-  OpenSpec change name.
-- **Snapshot** — size (approx. lines / “small|medium|large”), gates if known
-  (ruff / pyrefly / ty / pytest), and **Verdict**: ✅ Approve / 💬 Comment /
-  🔄 Request Changes.
-- **Main points** — a short ranked bullet list of the things that actually matter
-  (blockers and important items only; fold nits out). One line each: severity +
-  one-sentence gist. No `file:line` essays here.
-- **What’s fine** (optional, 1–3 bullets) — load-bearing things that looked correct, so
-  the briefing isn’t only negatives.
-
-If there are **zero** findings worth action, say so here and keep blocks 2–3 minimal
-(“none” / empty decision list).
+Zero findings worth action? Say so here and keep blocks 2–3 minimal (`None.`).
 
 #### 2. Implementor handoff (copy-paste ready)
 
-Audience: the person who will fix or reply. This block must be **safe to paste** into a
-PR comment, chat, or issue with little or no editing.
+For whoever fixes or replies. Must be safe to paste into a PR comment, chat, or issue with
+little or no editing: a one-line context header (PR / branch / scope), the full findings,
+then the Verdict line again so the paste doesn't depend on block 1. No "as above" / "see
+briefing" — those break when pasted alone.
 
-This is where review quality lives in the write-up. Prefer being thorough here over
-keeping the whole reply short. A long block 2 with traced findings is correct; a short
-block 2 that drops evidence to match the briefing is not.
+**Evidence, not prose.** Each finding carries severity, confidence, location (`file:line`),
+what's wrong, why it matters, fix direction, and a trigger / repro note where possible
+(`CONFIRMED` + trigger ⇒ red–green candidate, §4). Don't restate the diff, narrate your
+process, or pad with transitions. Terse is not thin: cutting evidence to look brief
+violates the brevity fence, cutting prose does not.
 
-- Start with a one-line context header (PR / branch / scope) so the paste stands alone.
-- Then the **full findings**, ranked by severity then confidence (§0 axes below).
-- Each finding is self-contained: severity, confidence, location (`file:line`), what’s
-  wrong, why it matters, concrete fix direction, and a trigger / repro note when
-  possible (`CONFIRMED` + trigger ⇒ red–green candidate, §4).
-- Include 🟢 nits / 💡 suggestions here (not in the briefing), still ranked.
-- End with the same **Verdict** line so a pasted comment doesn’t depend on block 1.
-
-No “as above” / “see briefing” cross-references that break when pasted alone.
+Rank by severity, then confidence. Include 🟢 nits and 💡 suggestions here, not in the
+briefing.
 
 #### 3. Maintainer decisions (your attention)
 
-Audience: the maintainer — **only** items that need a human call. This block is the
-maintainer UI; block 2 is worker mail for whoever addresses the PR.
-
-For each item, use the **canonical decision packet** in
+**Only** items that need a human call — this block is the maintainer UI; block 2 is worker
+mail for whoever addresses the PR. Use the canonical decision packet in
 [`dev-docs/pair-workflow.md`](../../../../dev-docs/pair-workflow.md) §Decision packet —
-same six fields, same cold-start test. Do not invent a shorter parallel list.
+same six fields, same cold-start test. Do not invent a shorter parallel list. Routine
+"please add a test for X" fixes belong in block 2. Nothing to decide → `None.` Do not
+invent filler questions, and do not drop a real decision gap to keep the section empty.
 
-Skip routine “please add a test for X” fixes — those belong in block 2. If nothing needs
-a decision, write `None.` Do not invent soft filler questions — but **do not drop** a
-real decision gap to keep this section empty; when unsure, include it (see brevity
-fence above).
-
-When posting to a PR for a split implementor/maintainer workflow: put blocks 1–2 on the
-PR; if you also chat with the maintainer, **send only block 3 packets** unless they ask
-for the full handoff.
+Posting for a split implementor/maintainer workflow: blocks 1–2 go on the PR; if you also
+chat with the maintainer, send **block 3 packets only** unless they ask for the full
+handoff.
 
 **A decision the maintainer already settled is no longer a block 3 item.** Move it into
 block 2 where the implementor works, marked as theirs and not yours:
@@ -123,68 +95,62 @@ block 2 where the implementor works, marked as theirs and not yours:
 > **Maintainer decision (davitf): fix, do not defer.** Nits on this PR are to be closed,
 > not carried.
 
-Re-raising a settled call as an open question sends the implementor back to the maintainer
-for an answer that exists; leaving it unmarked lets it read as reviewer preference, which
-gets argued with or skipped. Name the decider and link the comment or packet it came from
-where there is one. A recommendation the maintainer has **not** ruled on stays yours,
-however confident — do not promote your own preference to "decided" because nobody
-objected.
+Re-raising a settled call sends the implementor back to the maintainer for an answer that
+exists; leaving it unmarked lets it read as reviewer preference, which gets argued with or
+skipped. Name the decider and link the comment or packet where there is one. A
+recommendation the maintainer has **not** ruled on stays yours, however confident — do not
+promote your own preference to "decided" because nobody objected.
 
 **Do not hold the review waiting on a decision that has already been made.** Once every
 block 3 packet is settled, the review goes on the PR. The counterpart rule for the
 responding agent is in
-[`address-review-findings`](../../address-review-findings/SKILL.md) §6; this is the same
-discipline on the reviewer's side, and both exist because a settled decision that lives
-only in a chat transcript is lost — a fresh container has no memory of earlier sessions
-(`CLAUDE.md`).
+[`address-review-findings`](../../address-review-findings/SKILL.md) §6; both exist because
+a settled decision that lives only in a chat transcript is lost — a fresh container has no
+memory of earlier sessions (`CLAUDE.md`).
 
-Same three blocks apply when reviewing an OpenSpec proposal (§9); “what this change is”
-summarizes the proposal’s intent, and block 2 is the handoff for whoever will revise the
-proposal / implement later.
+Reviewing an OpenSpec proposal (§9) uses the same three blocks: "what this change is"
+summarizes the proposal's intent, and block 2 is the handoff for whoever revises the
+proposal or implements it later.
 
 ### Two axes: severity ≠ confidence
 
-Rate every finding on two independent axes so the maintainer can read
-**severity × confidence** and decide:
+Rate every finding on both axes so the maintainer reads **severity × confidence** and
+decides:
 
 - **Severity** — impact *if the finding is real*: 🔴 `[blocking]` / 🟡 `[important]` /
-  🟢 `[nit]` (plus 💡 / 📚 / 🎉 non-blocking). See §7.
-- **Confidence** — how well you traced it:
-  - `CONFIRMED` — you traced the actual failing path (definitions, callers, guards).
-  - `PLAUSIBLE` — real risk, not fully traced or no repro built.
-  - `DISPROVEN` — you traced it and the code is actually correct. **Do not delete it** —
-    route it (below).
+  🟢 `[nit]` (plus 💡 / 📚 / 🎉 non-blocking). Mapping for this repo: §7.
+- **Confidence** — `CONFIRMED` (you traced the actual failing path: definitions, callers,
+  guards) / `PLAUSIBLE` (real risk, not fully traced or no repro built) / `DISPROVEN` (you
+  traced it and the code is correct — **route it, don't delete it**).
 
-Low confidence lowers the *confidence tag*, never the decision to report. A
-🔴 / `PLAUSIBLE` finding is still reported.
+Low confidence lowers the *confidence tag*, never the decision to report: a
+🔴 `PLAUSIBLE` finding is still reported.
 
 ### Verification routes findings; it never silently culls them
 
 After the code + context passes, re-trace each candidate (§8 "trace, don't
 pattern-match"). Tracing changes the tag and may *reclassify* — it does not delete real
-concerns. When a finding comes back `DISPROVEN`, ask *"why did I, reading carefully,
-think this was broken?"*:
+concerns. When a finding comes back `DISPROVEN`, ask *"why did I, reading carefully, think
+this was broken?"*:
 
 - A careful reader could reasonably have misread it → the code isn't self-documenting.
-  Re-file as 🟡 **clarity / doc-debt** (§8's documentation-debt rule) — a comment,
-  clearer name, or an `assert` that encodes the invariant.
+  Re-file as 🟡 **clarity / doc-debt** (§8's documentation-debt rule) — a comment, clearer
+  name, or an `assert` that encodes the invariant.
 - Tracing revealed a genuine but non-obvious invariant → 💡 / 📚: suggest the comment or
   assertion that would have made it obvious.
-- It was a careless misread ordinary attention would have avoided → drop it; if it still
-  cost real review effort, a 🟢 nit is fair.
+- A careless misread ordinary attention would have avoided → drop it; a 🟢 nit is fair if
+  it still cost real review effort.
 
-Only a careless self-misread is ever dropped. Everything else becomes a (possibly
-smaller) finding.
+Only a careless self-misread is ever dropped. Everything else becomes a (possibly smaller)
+finding.
 
 ### Failure scenario: requested, not gating
 
-Try to name a concrete trigger for every finding — input / archive / state → wrong
-result, crash, or contract violation:
-
-- `CONFIRMED` + repro → flag it as a **red–green regression-test candidate**
-  (CONTRIBUTING wants red–green for bug fixes, §4).
-- Can't build one → the finding still stands, tagged `PLAUSIBLE` / needs-repro. A missing
-  repro lowers confidence, never existence.
+Name a concrete trigger where you can — input / archive / state → wrong result, crash, or
+contract violation. `CONFIRMED` + repro ⇒ flag it as a **red–green regression-test
+candidate** (CONTRIBUTING wants red–green for bug fixes, §4). Can't build one → the finding
+still stands, tagged `PLAUSIBLE` / needs-repro. A missing repro lowers confidence, never
+existence.
 
 ### Keep findings disciplined (inside block 2)
 
@@ -193,10 +159,8 @@ suppression:
 
 - **Dedupe by root cause** — one finding per cause; cite one site, list the rest.
 - **Rank** by severity, then confidence within a tier.
-- Every finding carries: severity, confidence tag, location (`file:line`), why it
-  matters, a fix direction, and (where possible) a trigger.
-- Briefing (block 1) stays thin; detail lives in the handoff (block 2); decisions
-  (block 3) stay only what needs you.
+- Briefing (block 1) stays thin; detail lives in the handoff (block 2); decisions (block 3)
+  stay only what needs you.
 
 ---
 
@@ -328,9 +292,7 @@ when reality or a better design wins.
 
 ## 4. Testing expectations
 
-Review whether the change *has* the right tests. Do **not** re-run the suite as
-part of the review unless you are reproducing a finding or checking a runtime
-claim (§10). Implementer + CI already ran the gates.
+Review whether the change *has* the right tests; don't re-run the suite (§10).
 
 - [ ] Prefer **behavior** assertions on the public API; unit-test stream/parser/codec
   internals when they are shared foundations
@@ -445,9 +407,9 @@ error/safety contract?** If yes → 🔴.
 
 ## 8. Suggested review order (PR) — code first, then context
 
-This **overrides** the skill’s Phase 1 “absorb the design narrative before the
-diff.” For archivey PRs, use two passes with different jobs. Context is still
-**required** — it comes second, not never.
+This replaces the generic “absorb the design narrative before the diff” order. For
+archivey PRs, use two passes with different jobs. Context is still **required** — it
+comes second, not never.
 
 > **Scope:** this order is for **code / PR reviews**. Reviewing an OpenSpec proposal,
 > delta spec, or `design.md` instead? There is no resulting code tree to read cold —
@@ -455,15 +417,9 @@ diff.” For archivey PRs, use two passes with different jobs. Context is still
 
 ### Before either pass (logistics only — ≤1 minute)
 
-Do **not** read the OpenSpec change, design notes, or long PR rationale yet.
-
-- [ ] Scope: `git diff main...HEAD` (or the paths / PR the author named); note size
-  (>400 lines? ask to split)
-- [ ] CI status if posted (`ruff`, pyrefly/ty, pytest) — glance only, do **not**
-  re-run; enough to know whether failures are in-scope. Not posted → say so, don't
-  infer (§10)
-- [ ] Linked artifact **names** only (issue #, `openspec/changes/<name>/`,
-  `review/` finding ID) so you know what to open in pass 2 — not the prose yet
+The four-item list lives in `SKILL.md` → Logistics (scope, CI status, artifact names,
+this section). Do **not** read the OpenSpec change, design notes, or long PR rationale
+yet — names only.
 
 ### Pass 1 — code alone
 
@@ -479,9 +435,8 @@ Read the changed code (diff + nearby context) **cold**. Ask:
 - [ ] Tests: behavior coverage, red–green for fixes (§4); domain checklist rows that
   are visible from the change (§5)
 
-Use the skill’s high-level + line-by-line techniques here
-(correctness / security / performance / maintainability / reuse). Skim this
-addendum’s §1–§5 only as a **mental checklist**, not by loading linked designs.
+Per-area list: `SKILL.md` → Pass 1. Skim §1–§5 as a **mental checklist**, not by
+loading linked designs.
 
 **Documentation debt rule:** if a pass-1 concern only dissolves after reading
 external prose (OpenSpec `design.md`, long PR body, `dev-docs/decisions/`, …), that is
