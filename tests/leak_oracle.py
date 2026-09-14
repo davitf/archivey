@@ -12,14 +12,17 @@ What it detects, at *teardown* of each test:
   and ``DelegatingStream(..., manual_inner_close=True)`` (and subclasses). Those
   two flags are the population that wraps a subprocess, a finalize-guarded
   accelerator, or some other inner the wrapper is responsible for reaping.
-- Extra pipe/socket file descriptors on Linux (``/proc/self/fd``). Regular files
-  are ignored — pytest-cov opens those constantly and they are not this bug.
+- Extra pipe/socket file descriptors on Linux (``/proc/self/fd``), reported as
+  context on a process/stream leak. Not a standalone fail: ``os.pipe()`` test
+  helpers and pytest-cov change when GC closes those fds. Regular files are
+  ignored.
 
 What it deliberately does not:
 
 - Unclosed ``BytesIO`` / default ``DelegatingStream`` wrappers. They hold no OS
   resource, and tests construct them by the thousand.
-- Regular-file descriptors, for the coverage-tracer reason above.
+- A leftover pipe fd with no leaked child and no unclosed owning stream.
+  ``tests/test_stream_inputs.py``'s ``os_pipe_reader`` is the specimen.
 - ``unrar`` / ``7z`` leaks under ``[core-only]``. Those binaries are absent, the
   tests that spawn them skip, and there is nothing to observe. The oracle still
   runs; it just has no subprocesses to catch. Isolated tests in
@@ -414,7 +417,9 @@ def _archivey_leak_oracle(request: pytest.FixtureRequest) -> Iterator[None]:
         fd: target for fd, target in _pipe_fds().items() if fd not in fds_before
     }
     extra_children = {pid for pid in _child_pids() - children_before if _pid_alive(pid)}
-    if not (procs or streams or extra_fds or extra_children):
+    # Pipe fds alone are not a fail: os.pipe() test helpers close them via GC
+    # on a schedule coverage changes. They still annotate a process/stream leak.
+    if not (procs or streams or extra_children):
         _reset_pins()
         return
 
