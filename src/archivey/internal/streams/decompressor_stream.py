@@ -491,14 +491,16 @@ class DecompressorStream(ReadOnlyIOStream):
     def close(self) -> None:
         # Quiesce any decoder-owned native worker before dropping references, so a
         # blocked PPMd worker cannot be resumed into freed memory at GC.
-        self._decoder.close()
-        if self._should_close:
-            self._inner.close()
-        owned = self._owned_inner
-        self._owned_inner = None
-        if owned is not None:
-            owned.close()
-        super().close()
+        try:
+            self._decoder.close()
+            if self._should_close:
+                self._inner.close()
+        finally:
+            owned = self._owned_inner
+            self._owned_inner = None
+            if owned is not None:
+                owned.close()
+            super().close()
 
     def _ensure_index_built(self) -> None:
         if not self._index_enabled or self._index_built or self._index_build_attempted:

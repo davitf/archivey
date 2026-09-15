@@ -246,7 +246,10 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   a standalone fail (`os.pipe()` helpers close by GC). It pins those objects so
   `IOBase.__del__` cannot reap them between the test return and teardown — that is
   the gap that let a missing `own_source=True` on a RAR glob-mask pipe ship with a
-  green suite. `unrar`/`7z` leaks are invisible under `[core-only]` (those tests
+  green suite. An owning stream must be closed in the test that constructed
+  it — a later test's close still fails the constructor. Module-scoped owning
+  streams are invisible (pins reset at each test). `unrar`/`7z` leaks are
+  invisible under `[core-only]` (those tests
   skip); the oracle still runs, and `tests/test_leak_oracle.py` spawns
   `sys.executable` so the gate is exercised in every config. Teardown reaps
   leaked children via `Popen.terminate` — `os.WNOHANG` does not exist on

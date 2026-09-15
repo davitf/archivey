@@ -94,6 +94,26 @@ def test_reaped_child() -> None:
     assert proc.returncode == 0, _output(proc)
 
 
+def test_oracle_passes_when_child_exited_unwaited(tmp_path: Path) -> None:
+    """A waited-but-unclosed stdout pipe is fd-alone, not a fail (F8).
+
+    ``poll()`` reaps an exited child, so a zombie never appears in the leak
+    list. Closing the ``Popen`` object's pipe is not required.
+    """
+    proc = _run_isolated(
+        tmp_path,
+        """
+def test_exited_pipe_left_open() -> None:
+    child = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        stdout=subprocess.PIPE,
+    )
+    assert child.wait(timeout=10) == 0
+""",
+    )
+    assert proc.returncode == 0, _output(proc)
+
+
 def test_oracle_fails_on_non_owning_slice_over_owned_pipe(tmp_path: Path) -> None:
     """The #336 shape: close a non-owning ``SlicingStream``, leave the process alive."""
     proc = _run_isolated(

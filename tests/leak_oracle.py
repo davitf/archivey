@@ -7,11 +7,13 @@ is the gate that makes that a red test.
 
 What it detects, at *teardown* of each test:
 
-- Child processes spawned during the test that are still alive (or zombie).
+- Child processes spawned during the test that are still alive (``Popen.poll()``
+  is ``None``). A zombie is not this: ``poll()`` reaps it, so it never appears.
 - Unclosed streams that own a private inner: ``SlicingStream(..., own_source=True)``
   and ``DelegatingStream(..., manual_inner_close=True)`` (and subclasses). Those
   two flags are the population that wraps a subprocess, a finalize-guarded
   accelerator, or some other inner the wrapper is responsible for reaping.
+  The constructing test must close them before it returns.
 - Extra pipe/socket file descriptors on Linux (``/proc/self/fd``), reported as
   context on a process/stream leak. Not a standalone fail: ``os.pipe()`` test
   helpers and pytest-cov change when GC closes those fds. Regular files are
@@ -22,7 +24,13 @@ What it deliberately does not:
 - Unclosed ``BytesIO`` / default ``DelegatingStream`` wrappers. They hold no OS
   resource, and tests construct them by the thousand.
 - A leftover pipe fd with no leaked child and no unclosed owning stream.
-  ``tests/test_stream_inputs.py``'s ``os_pipe_reader`` is the specimen.
+  ``tests/test_stream_inputs.py``'s ``os_pipe_reader`` is the specimen. Same
+  for a ``Popen`` that already exited and was never ``wait``-ed: ``poll()``
+  reaps the zombie; the leftover stdout pipe is fd-alone.
+- Owning streams handed to a later test. Closing them in test B still fails
+  test A — the pin is per-test. Close in the test that constructed the object.
+- Module/session-scoped owning streams. Higher-scoped setup runs before this
+  function fixture, and ``_reset_pins()`` at test start drops those pins.
 - ``unrar`` / ``7z`` leaks under ``[core-only]``. Those binaries are absent, the
   tests that spawn them skip, and there is nothing to observe. The oracle still
   runs; it just has no subprocesses to catch. Isolated tests in
@@ -32,9 +40,11 @@ What it deliberately does not:
   ``scripts/accel_leak_trace.py``: a manual diagnostic, not a per-test gate.
 
 Cost: one ``Popen.__init__`` append, a flag check on two constructors, and two
-small ``/proc`` snapshots. Disable with ``ARCHIVEY_LEAK_ORACLE=0``.
-Teardown reaps leaked children via ``Popen.terminate``; ``os.WNOHANG`` is
-Unix-only and must not be used on the portable path.
+small ``/proc`` snapshots. Disable with ``ARCHIVEY_LEAK_ORACLE=0``. A single
+test opts out of the *fail* (not the reap) with
+``@pytest.mark.allow_resource_leaks``. Teardown reaps leaked children via
+``Popen.terminate``; ``os.WNOHANG`` is Unix-only and must not be used on the
+portable path.
 
 Owning streams and ``Popen`` objects are *pinned* until they are explicitly
 closed (or until teardown). That is load-bearing: CPython refcounting would
@@ -377,16 +387,17 @@ def _report(
     lines.append(
         "These are pinned until explicit close so GC/__del__ cannot hide them. "
         "Close the owning wrapper (own_source=True / the stream that reaps the "
-        "subprocess), or reap the child, in the test (or the code under test)."
+        "subprocess), or reap the child, in the same test that constructed it. "
+        "Legitimate exception: @pytest.mark.allow_resource_leaks (still reaps) "
+        "or ARCHIVEY_LEAK_ORACLE=0 (disables the plugin)."
     )
     return "\n".join(lines)
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line(
-        "markers",
-        "allow_resource_leaks: skip the leak-oracle fail for this test (still reaps)",
-    )
+    # Marker text lives in pyproject.toml so it is registered even when the
+    # plugin is off (ARCHIVEY_LEAK_ORACLE=0) or loads after conftest.
+    del config
     if not _enabled():
         return
     global _installed
@@ -404,11 +415,16 @@ def _archivey_leak_oracle(request: pytest.FixtureRequest) -> Iterator[None]:
         yield
         return
     if request.node.get_closest_marker("allow_resource_leaks") is not None:
+        children_before = _child_pids()
         yield
         # Skip the fail, not the reap — leftover children would outlive the
-        # session (the next test's snapshot hides them).
+        # session (the next test's snapshot hides them). extra_children is the
+        # Linux /proc backstop for spawns that skipped subprocess.Popen.
+        extra_children = {
+            pid for pid in _child_pids() - children_before if _pid_alive(pid)
+        }
         try:
-            _cleanup_leaks(_leaked_procs(), _leaked_streams())
+            _cleanup_leaks(_leaked_procs(), _leaked_streams(), extra_children)
         except Exception:  # noqa: BLE001 - marker path must not raise
             pass
         return
