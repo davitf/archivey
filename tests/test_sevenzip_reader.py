@@ -783,6 +783,33 @@ def _folder(method: bytes, properties: bytes | None = None) -> SevenZipFolder:
     )
 
 
+@requires("bcj")
+def test_first_stage_bcj_does_not_close_pack_source() -> None:
+    """A first-stage pybcj BCJ borrows the pack view (Copy+BCJ / BCJ-alone).
+
+    Later BCJ stages wrap a private previous output and pass ``owns_inner=True``.
+    Hardcoding True on every ``_BcjStage`` closed a raw ``BytesIO`` here;
+    production pack views are ``SharedView``, so the over-close was absorbed.
+    """
+
+    class _Tracked(io.BytesIO):
+        def __init__(self, initial: bytes) -> None:
+            super().__init__(initial)
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+
+    reader = _reader_for_unit_tests()
+    source = _Tracked(b"\x00" * 16)
+    stream = _open_pipeline(reader, source, _folder(b"\x03\x03\x01\x03"), password=None)
+    assert isinstance(stream, io.IOBase)
+    stream.close()
+    assert source.close_calls == 0
+    assert not source.closed
+
+
 def test_bcj2_folder_is_rejected() -> None:
     reader = _reader_for_unit_tests()
 

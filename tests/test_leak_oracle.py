@@ -260,6 +260,46 @@ def test_closed_manual() -> None:
     assert proc.returncode == 0, _output(proc)
 
 
+def test_oracle_fails_on_unclosed_subclass_closes_inner_class_flag(
+    tmp_path: Path,
+) -> None:
+    """Pin via ``_SUBCLASS_CLOSES_INNER`` even when the kwarg is omitted."""
+    proc = _run_isolated(
+        tmp_path,
+        """
+import io
+from archivey.internal.streams.streamtools.base import DelegatingStream
+
+class _Manual(DelegatingStream):
+    _SUBCLASS_CLOSES_INNER = True
+
+def test_unclosed_class_flag() -> None:
+    _Manual(io.BytesIO(b"x"))
+""",
+    )
+    assert proc.returncode != 0, _output(proc)
+    assert "unclosed subclass_closes_inner stream" in _output(proc)
+
+
+def test_oracle_passes_when_subclass_closes_inner_class_flag_is_closed(
+    tmp_path: Path,
+) -> None:
+    proc = _run_isolated(
+        tmp_path,
+        """
+import io
+from archivey.internal.streams.streamtools.base import DelegatingStream
+
+class _Manual(DelegatingStream):
+    _SUBCLASS_CLOSES_INNER = True
+
+def test_closed_class_flag() -> None:
+    _Manual(io.BytesIO(b"x")).close()
+""",
+    )
+    assert proc.returncode == 0, _output(proc)
+
+
 def test_cleanup_reaps_via_popen() -> None:
     """Teardown reaps with ``Popen.terminate``, not POSIX ``waitpid``/``WNOHANG``.
 

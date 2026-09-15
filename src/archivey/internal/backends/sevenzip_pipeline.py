@@ -343,8 +343,14 @@ def _execute_stage(
     stream_config: StreamConfig,
     collector: DiagnosticCollector | None,
     seekable: bool,
+    owns_inner: bool,
 ) -> BinaryIO:
-    """Open one planned stage on top of ``stream``. The only stream-opening code."""
+    """Open one planned stage on top of ``stream``. The only stream-opening code.
+
+    ``owns_inner`` is consumed only by ``_BcjStage``: True when this stage wraps
+    a previous stage's private output, False when it is first and ``stream`` is
+    the borrowed pack view.
+    """
     if isinstance(stage, _AesStage):
         return _open_aes_stage(
             stream, stage.coder, password=password, key_cache=key_cache
@@ -379,9 +385,7 @@ def _execute_stage(
         decoder_attr=stage.pybcj_attr,
         unpack_size=stage.unpack_size,
         seekable=seekable,
-        # Closes ``stream``, which may be a private LZMA1 cap slice or the
-        # borrowed pack view (first-stage BCJ). See open_folder_pipeline.
-        owns_inner=True,
+        owns_inner=owns_inner,
     )
 
 
@@ -398,11 +402,9 @@ def open_folder_pipeline(
     """Compose a folder's coder chain into a single pull stream (plan, then fold).
 
     ``source`` is a borrowed pack view. Each stage wraps the previous output.
-    ``BcjFilterStream(..., owns_inner=True)`` closes that input: when BCJ is
-    not first, the input is a private LZMA1 cap slice; when BCJ is first
-    (Copy+BCJ, BCJ-alone) the input is the pack view, and the non-closing
-    wrappers above absorb the close. ``owns_inner`` here means "this stage
-    closes what it was handed", not "the inner is private".
+    A pybcj ``_BcjStage`` passes ``owns_inner=(i > 0)``: a later BCJ closes the
+    private previous output (LZMA1 cap slice, AES decrypt stream, …); a
+    first-stage BCJ (Copy+BCJ, BCJ-alone) borrows ``source``.
     """
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
     stages = plan_folder(folder)
@@ -411,7 +413,7 @@ def open_folder_pipeline(
     if any(isinstance(stage, _BcjStage) for stage in stages):
         _require_pybcj()
     stream: BinaryIO = source
-    for stage in stages:
+    for i, stage in enumerate(stages):
         stream = _execute_stage(
             stream,
             stage,
@@ -420,6 +422,7 @@ def open_folder_pipeline(
             stream_config=config,
             collector=collector,
             seekable=seekable,
+            owns_inner=(i > 0),
         )
     return stream
 

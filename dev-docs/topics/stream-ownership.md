@@ -13,7 +13,7 @@ decoder means "do not close the inner." Silence on a `DelegatingStream` means
 | --- | --- | --- |
 | `SlicingStream` | borrow | `owns_inner=True` (4 production sites) |
 | `SharedView` | borrow, hardcoded | none — Parcel B split this class so `lock=` could not switch modes |
-| `DecompressorStream` | borrow | `owns_inner=True` (the 7z LZMA1+BCJ cap) |
+| `DecompressorStream` | borrow | `owns_inner=True` on later pybcj BCJ stages (first-stage Copy+BCJ / BCJ-alone borrows the pack view) |
 | `DelegatingStream` | **own** | `subclass_closes_inner=True` is *who* closes, not *whether* |
 | `SharedSource` | Path → own; `BinaryIO` → borrow | encoded in the constructor argument type |
 | ZIP/ISO `_owned_fp`, TAR `_owned_stream` | Path the reader opened | not a wrapper flag; leave the names |
@@ -30,7 +30,13 @@ Flipping it to borrow was the tempting unification: then swapping
 catches that swap (`tests/leak_oracle.py` pins `owns_inner=True` slices and
 live children). The remaining risk is the other direction.
 
-Nine production subclasses. Seven ride the owning default with no keyword:
+Nine production subclasses. Seven ride the owning default with no keyword.
+Counting wrappers (`CountingReader`, `OutputCountingStream`,
+`SeekCountingStream`) are spliced mid-chain: their inner is always an
+already-normalised non-closing wrapper (`_NonClosingBufferedReader` /
+`SharedView` / `PeekableStream` / `ArchiveStream`), because `open_archive`
+wraps a caller `BinaryIO` before any backend sees it. The owning default
+never reaches a caller-supplied object.
 
 | Class | Close must reach |
 | --- | --- |
@@ -38,13 +44,13 @@ Nine production subclasses. Seven ride the owning default with no keyword:
 | `CloseLockedStream` | `ZipExtFile` |
 | `_PyCdlibStream` | `PyCdlibIO.__exit__` via `inner.close()` |
 | `_GzipTruncationCheckStream` | the rapidgzip accelerator |
-| `OutputCountingStream` | the decompressor it wraps |
-| `SeekCountingStream` | the handle `SharedSource.wrap_handle` installed it on |
-| `CountingReader` | unused in practice (the codec borrows it); owns because the type does |
+| `OutputCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
+| `SeekCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
+| `CountingReader` | mid-chain; inner is already a non-closing wrapper (see above) |
 
 Two more own, but close themselves and tell the base to skip the second call:
 
-| Class | Why `subclass_closes_inner=True` |
+| Class | Why `_SUBCLASS_CLOSES_INNER = True` |
 | --- | --- |
 | `_UnrarOwnedStream` | close the pipe, then reap the process, then mark closed |
 | `_AcceleratorStream` | `weakref.finalize` closes the raw object once |
@@ -61,15 +67,17 @@ accelerator / unrar pipe, or force a new oracle key that is easy to forget.
 ## 3. What is left of mandatory-explicit keywords
 
 Not much. The unusual direction is already spelled at the call site
-(`owns_inner=True` on the four owning slices and the one BCJ stage). Making
-`owns_inner` required on every `SlicingStream` would add `False` noise to the
-borrow sites the type already describes. pyrefly/ty catching a missing kwarg
-converts "forgot to think" into "typed `False` without thinking"; the oracle
-now fails the leak instead.
+(`owns_inner=True` on the four owning slices; later pybcj BCJ stages derive
+`owns_inner=(i > 0)` in `open_folder_pipeline`). Making `owns_inner` required
+on every `SlicingStream` would add `False` noise to the borrow sites the type
+already describes. pyrefly/ty catching a missing kwarg converts "forgot to
+think" into "typed `False` without thinking"; the oracle now fails the leak
+instead.
 
 A new `DelegatingStream` subclass is forced to pick a close contract by
-`test_delegating_stream_close_inventory` (same idiom as the resume-offset
-inventory). That is per-class, which is the right grain for this type.
+`test_delegating_stream_close_inventory`, which asserts the class-level
+`_SUBCLASS_CLOSES_INNER` flag (same idiom as the resume-offset inventory).
+That is per-class, which is the right grain for this type.
 
 Named constructors (`SlicingStream.owning()`) were the Parcel B analogue.
 Rejected: `owns_inner` only changes `close()`, it does not switch I/O contracts
@@ -86,10 +94,11 @@ would collide with the wrapper vocabulary for no call-site gain.
 
 ## 5. Leak oracle
 
-The plugin keys on the **kwarg names** `owns_inner` and `subclass_closes_inner`.
-Renaming those without updating `tests/leak_oracle.py` returns `None` from
-`kwargs.get`, pins nothing, and the tests being edited are the ones that would
-have caught it.
+`SlicingStream` is keyed on the **kwarg** `owns_inner`. `DelegatingStream` is
+keyed on the resolved `_subclass_closes_inner` instance flag — the class-level
+`_SUBCLASS_CLOSES_INNER` default, or a constructor kwarg that overrides it.
+Renaming those without updating `tests/leak_oracle.py` pins nothing, and the
+tests being edited are the ones that would have caught it.
 
 Confirm the gate still fires: delete `owns_inner=True` at
 `src/archivey/internal/backends/rar_reader.py` (`_bounded_member_pipe`) and run
@@ -101,5 +110,7 @@ before committing.
 
 ```bash
 uv run --no-sync pytest tests/test_stream_bases.py tests/test_slice.py \
-    tests/test_leak_oracle.py tests/test_codecs.py tests/test_rar_reader.py -q --no-cov
+    tests/test_leak_oracle.py tests/test_codecs.py tests/test_rar_reader.py \
+    tests/test_sevenzip_reader.py::test_first_stage_bcj_does_not_close_pack_source \
+    tests/test_sevenzip_reader.py::test_copy_bcj_folder_roundtrip -q --no-cov
 ```

@@ -167,8 +167,10 @@ class _AcceleratorStream(DelegatingStream):
     around it — the guard must attach where the object is born.
     """
 
+    _SUBCLASS_CLOSES_INNER = True
+
     def __init__(self, inner: object, *, trap: "_TrappingSource | None" = None) -> None:
-        super().__init__(ensure_binaryio(inner), subclass_closes_inner=True)
+        super().__init__(ensure_binaryio(inner))
         # The finalize callback must NOT reference self — a bound method would pin the wrapper
         # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
         self._finalize = weakref.finalize(self, self._close_inner, self._inner)

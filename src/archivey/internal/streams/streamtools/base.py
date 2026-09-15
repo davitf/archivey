@@ -161,22 +161,27 @@ class DelegatingStream(ReadOnlyIOStream):
     ``dev-docs/topics/stream-ownership.md``.
 
     A subclass that must close ``inner`` itself (a finalize guard, reaping a
-    subprocess) passes ``subclass_closes_inner=True`` and calls ``super().close()``
-    afterwards to mark the wrapper closed without closing ``inner`` a second time.
-    That flag is *who performs the close*, not whether the wrapper owns — both
-    values own. Subclasses that only need to hold a lock around close wrap
-    ``super().close()`` in the lock instead.
+    subprocess) sets ``_SUBCLASS_CLOSES_INNER = True`` and calls
+    ``super().close()`` afterwards to mark the wrapper closed without closing
+    ``inner`` a second time. That flag is *who performs the close*, not whether
+    the wrapper owns — both values own. Ad-hoc construction may pass
+    ``subclass_closes_inner=True`` to override the class default. Subclasses
+    that only need to hold a lock around close wrap ``super().close()`` in the
+    lock instead.
     """
 
     # Opt-in class flag; :func:`source_byte_size` peels only when this is True.
     peel_for_source_size: bool = False
+    # Class-level close contract. True: the subclass closes ``_inner`` itself.
+    # Inventory test reads this; ``__init__`` uses it when the kwarg is omitted.
+    _SUBCLASS_CLOSES_INNER: bool = False
 
     def __init__(
         self,
         inner: BinaryIO,
         *,
         readinto_passthrough: bool = True,
-        subclass_closes_inner: bool = False,
+        subclass_closes_inner: bool | None = None,
     ) -> None:
         super().__init__()
         self._inner = inner
@@ -184,6 +189,8 @@ class DelegatingStream(ReadOnlyIOStream):
         # True when the subclass closes ``_inner`` itself (finalize guard, reap a
         # subprocess) and then calls ``super().close()`` only to mark this wrapper closed.
         # Not an ownership flag: the wrapper owns in both cases.
+        if subclass_closes_inner is None:
+            subclass_closes_inner = type(self)._SUBCLASS_CLOSES_INNER
         self._subclass_closes_inner = subclass_closes_inner
         # Cached at construction; a subclass that swaps ``_inner`` must go through
         # ``_replace_inner`` so seekable() tracks the new engine.

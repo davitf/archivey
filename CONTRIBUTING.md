@@ -241,8 +241,9 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   shared foundations and their corner cases are exactly what break formats downstream.
 - **Leaked OS resources fail the test.** `tests/leak_oracle.py` is an autouse oracle
   (disable with `ARCHIVEY_LEAK_ORACLE=0`) that fails a test which leaves a child
-  process running or an owning stream unclosed (`owns_inner=True` /
-  `subclass_closes_inner=True`). Extra pipe fds are annotated on those failures, not
+  process running or an owning stream unclosed (`owns_inner=True` / a
+  `DelegatingStream` whose `_subclass_closes_inner` resolved True via the
+  class flag or the kwarg). Extra pipe fds are annotated on those failures, not
   a standalone fail (`os.pipe()` helpers close by GC). It pins those objects so
   `IOBase.__del__` cannot reap them between the test return and teardown — that is
   the gap that let a missing `owns_inner=True` on a RAR glob-mask pipe ship with a

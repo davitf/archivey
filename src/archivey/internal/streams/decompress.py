@@ -920,8 +920,9 @@ def BcjFilterStream(
 ) -> DecompressorStream:
     """Apply a ``pybcj`` BCJ branch filter (forward-only).
 
-    ``owns_inner`` is for a private previous stage (the 7z LZMA1 cap slice),
-    not a shared archive view.
+    ``owns_inner`` is True when this filter wraps a private previous stage
+    (later 7z pybcj BCJ stages, including the LZMA1 cap slice). First-stage
+    BCJ (Copy+BCJ, BCJ-alone) leaves the default so the pack view is borrowed.
     """
     del collector  # accepted for call-site uniformity; BCJ emits no diagnostics today
     return DecompressorStream(

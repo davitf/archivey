@@ -392,12 +392,13 @@ def _delegating_stream_subclasses() -> set[type]:
 def test_delegating_stream_close_inventory() -> None:
     """Every DelegatingStream subclass has a recorded close contract.
 
-    DelegatingStream owns its inner. A new subclass that needs to close the
-    inner itself (reap a subprocess, a finalize guard) must pass
-    ``subclass_closes_inner=True``; every other subclass rides the owning
-    default. Walking ``__subclasses__`` after importing the package is the
-    same grain as ``test_readonly_stream_resume_offset_inventory``: per-class,
-    zero call-site churn. See ``dev-docs/topics/stream-ownership.md``.
+    DelegatingStream owns its inner. A subclass that closes inner itself
+    (reap a subprocess, a finalize guard) sets ``_SUBCLASS_CLOSES_INNER = True``
+    on the class; every other subclass rides the owning default. The walk
+    asserts that class flag, not a constructor kwarg — a subclass that still
+    passed ``subclass_closes_inner=True`` while leaving the flag False used
+    to pass a name-only check. Same grain as
+    ``test_readonly_stream_resume_offset_inventory``.
     """
     _import_all_archivey_modules()
 
@@ -425,11 +426,20 @@ def test_delegating_stream_close_inventory() -> None:
     leftover = found - owns_via_base - subclass_closes_inner
     assert leftover == set(), (
         "new DelegatingStream subclass needs a close-ownership decision "
-        "(rides the owning default, or subclass_closes_inner=True): "
+        "(rides the owning default, or _SUBCLASS_CLOSES_INNER = True): "
         f"{leftover}"
     )
     extra_classified = (owns_via_base | subclass_closes_inner) - found
     assert extra_classified == set(), (
         "classified a class the walk did not find (typo or it is no longer "
         f"a DelegatingStream): {extra_classified}"
+    )
+    wrong_flag = {
+        cls
+        for cls in found
+        if cls._SUBCLASS_CLOSES_INNER is not (cls in subclass_closes_inner)
+    }
+    assert wrong_flag == set(), (
+        "DelegatingStream subclass _SUBCLASS_CLOSES_INNER does not match "
+        f"its inventory group: {wrong_flag}"
     )

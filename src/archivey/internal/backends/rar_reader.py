@@ -349,6 +349,8 @@ class _UnrarOwnedStream(DelegatingStream):
     ``close()``. ``close()`` still maps if the empty-read path never ran (early stop).
     """
 
+    _SUBCLASS_CLOSES_INNER = True
+
     def __init__(
         self,
         stdout: BinaryIO,
@@ -359,7 +361,7 @@ class _UnrarOwnedStream(DelegatingStream):
         encrypted: bool = False,
     ) -> None:
         # Track bytes via read(); disable readinto passthrough so counting is not skipped.
-        super().__init__(stdout, readinto_passthrough=False, subclass_closes_inner=True)
+        super().__init__(stdout, readinto_passthrough=False)
         self._proc = proc
         self._named_member = named_member
         self._has_verifiable_hash = has_verifiable_hash
