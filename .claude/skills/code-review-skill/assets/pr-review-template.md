@@ -17,7 +17,7 @@ block 2. Do not drop real pause-and-ask items to leave section 3 empty.
 **Snapshot**
 
 - **PR size:** [Small/Medium/Large] (~X lines)
-- **Gates:** [ruff / pyrefly / ty / pytest — if known]
+- **Gates (CI status, not re-run):** [ruff / pyrefly / ty / pytest — or `CI pending`]
 - **Verdict:** [✅ Approve / 💬 Comment / 🔄 Request Changes]
 
 **Main points**

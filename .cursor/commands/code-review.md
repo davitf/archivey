@@ -25,8 +25,8 @@ Combine the priorities above with that skill’s process:
    absorb OpenSpec / design / long PR rationale before the cold code pass.
 2. **Pass 1 — code alone:** changed code (+ nearby context) for self-explanatory
    sense in the resulting tree, local docs for non-obvious choices, bugs/safety/tests.
-   Use `.claude/skills/code-review-skill/SKILL.md` techniques and severity labels;
-   open deeper guides under `reference/` only as needed.
+   Use `.claude/skills/code-review-skill/SKILL.md` — logistics, per-area pass-1 list,
+   severity labels; open deeper guides under `reference/` only as needed.
 3. **Pass 2 — context (required):** PR narrative / thin brief, living handbook pages
    under `dev-docs/formats/` and `dev-docs/topics/` when present, OpenSpec **main**
    specs only if this change touches that contract, VISION / threat model / addendum
@@ -53,50 +53,18 @@ block 3) unless they ask for the full handoff.
 
 ## Output format
 
-Emit **exactly three sections**, in order — addendum **§0 (Output shape)**. The
-maintainer often has not read the diff; do not dump a long findings list first.
+Emit **exactly three sections** in the addendum's **§0** shape — maintainer briefing,
+paste-ready implementor handoff, maintainer decisions — with §0's brevity fence, two-axis
+labelling (severity × confidence) and reclassification rules. Read §0 rather than working
+from a summary here; `assets/pr-review-template.md` is the fill-in form.
 
-**Brevity fence:** short form applies only to blocks 1 and 3 *presentation*. Do not
-shrink review depth (full §8/§9 passes), finding discipline, block 2 specificity, or
-real pause-and-ask items. A thin block 2 that matches a short briefing is a failed
-review, not compliance.
+Two things worth repeating at the point of writing:
 
-### 1. Maintainer briefing (read this first)
+- The maintainer often has not read the diff. Do not dump a long findings list first.
+- Rank archivey blockers with the addendum (VISION claims, exception contract, path/bomb
+  safety, silent solid re-decode, unjustified debt) — §7 has the mapping.
 
-Short and scannable (about half a screen unless the change is huge):
-
-- **What this change is** — 2–4 plain-language sentences (intent, areas touched,
-  behaviour delta); no assumed PR/OpenSpec familiarity
-- **Snapshot** — size, gates if known, **Verdict** (✅ Approve / 💬 Comment /
-  🔄 Request Changes)
-- **Main points** — ranked one-liners for 🔴/🟡 only (severity + gist; no essays)
-- **What’s fine** (optional, 1–3 bullets)
-
-### 2. Implementor handoff (copy-paste ready)
-
-Paste-safe block for the implementor. Self-contained (no “see above”). Prefer
-thoroughness here over keeping the whole reply short:
-
-- One-line context header, then **full findings** ranked by severity × confidence
-  (`CONFIRMED` / `PLAUSIBLE` / `DISPROVEN→reclassified`)
-- Each finding: severity, confidence, `file:line`, what’s wrong, why it matters, fix
-  direction, trigger/repro when possible (`CONFIRMED` + trigger = red–green candidate)
-- Include 🟢/💡 here; end with the Verdict line again
-
-Follow **addendum §0 (finding discipline)**: over-report on existence, label honestly;
-verification *reclassifies* (a disproven bug often becomes clarity/doc-debt) — it never
-silently culls. Rank archivey blockers using the addendum (VISION claims, exception
-contract, path/bomb safety, silent solid re-decode, unjustified debt, etc.).
-
-### 3. Maintainer decisions (your attention)
-
-Numbered list of items that need a **human call** only. Each item must be decidable
-without reading blocks 1–2 or the diff: the decision, why it needs you, options +
-consequences when useful, optional recommendation. Routine fixes stay in block 2. If
-nothing needs a decision: `None.` Do not invent filler questions; when unsure whether
-something needs a human call, include it.
-
-Skip formatting/lint nits that `ruff` / type-checkers already own.
+Skip formatting/lint nits that `ruff` / the type-checkers already own.
 
 ## Posting to a PR
 
@@ -104,9 +72,10 @@ If the review is being posted to a pull request rather than printed here, follow
 **§10**: give every block-2 finding a **stable ID** (`F1`, `F2`, … — kept across
 re-reviews), post located findings as **inline comments** so they can be replied to and
 resolved individually, put blocks 1 and 3 in the review body, open a re-review with a
-**status table over the previous IDs**, say which gates you re-ran yourself, and make every
-comment identifiable as agent-authored — a distinct bot identity if your host posts under
-one, otherwise an attribution footer naming the tool that wrote it.
+**status table over the previous IDs**, and make every comment identifiable as
+agent-authored — a distinct bot identity if your host posts under one, otherwise an
+attribution footer naming the tool that wrote it. Do **not** re-run the gates unless
+you are actually testing a claim (addendum §10).
 
 The implementing agent then works through it with `/address-review`
 ([`.claude/skills/address-review-findings/`](../../.claude/skills/address-review-findings/SKILL.md)).

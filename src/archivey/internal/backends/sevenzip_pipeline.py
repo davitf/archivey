@@ -124,6 +124,8 @@ class _LzmaChainStage:
     ``cap_size`` bounds the decoded output with a ``SlicingStream``; it is set only
     for the stdlib LZMA1 runs inside an LZMA1+BCJ chain, where LZMA1-without-EOS can
     otherwise over-read on a trailing BCJ look-ahead (BPO-21872). ``None`` means no cap.
+    The following ``_BcjStage`` must ``close_inner`` that slice — DecompressorStream
+    does not close a passed-in stream by default.
     """
 
     codec: Codec
@@ -377,6 +379,9 @@ def _execute_stage(
         decoder_attr=stage.pybcj_attr,
         unpack_size=stage.unpack_size,
         seekable=seekable,
+        # Closes ``stream``, which may be a private LZMA1 cap slice or the
+        # borrowed pack view (first-stage BCJ). See open_folder_pipeline.
+        close_inner=True,
     )
 
 
@@ -390,7 +395,15 @@ def open_folder_pipeline(
     collector: DiagnosticCollector | None = None,
     seekable: bool = False,
 ) -> BinaryIO:
-    """Compose a folder's coder chain into a single pull stream (plan, then fold)."""
+    """Compose a folder's coder chain into a single pull stream (plan, then fold).
+
+    ``source`` is a borrowed pack view. Each stage wraps the previous output.
+    ``BcjFilterStream(..., close_inner=True)`` closes that input: when BCJ is
+    not first, the input is a private LZMA1 cap slice; when BCJ is first
+    (Copy+BCJ, BCJ-alone) the input is the pack view, and the non-closing
+    wrappers above absorb the close. ``close_inner`` means "this stage closes
+    what it was handed", not "the inner is private".
+    """
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
     stages = plan_folder(folder)
     # Fail fast before opening any stream if a pybcj-staged BCJ filter is needed but

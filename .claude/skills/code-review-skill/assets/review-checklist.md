@@ -7,69 +7,27 @@ design / long PR rationale before the cold code pass.
 
 ## Logistics (≤1 min) — before either pass
 
-- [ ] Scope: diff vs `main` (or named paths); size (<400 lines ideal, else ask to split)
-- [ ] CI / local gates (`ruff`, pyrefly/ty, pytest)
-- [ ] Linked artifact **names** only (issue #, `openspec/changes/<name>/`, `review/` ID)
-  — not the prose yet
+- [ ] The four-item list in `SKILL.md` → Logistics (scope, CI status, artifact names,
+  §8). Not restated here.
 
 ## Pass 1 — code alone
 
 Read the changed code (+ nearby context) cold. Self-explanatory resulting tree;
 local *why* for non-obvious choices; bugs / safety / tests.
 
-### Architecture & Design (5 min)
+`SKILL.md` → Pass 1 has the per-area list (logic, security, performance, architecture,
+reuse, tests, maintainability) and addendum §5 the archivey-specific rows. Tick these,
+which are the ones reviews here actually miss:
 
-- [ ] Solution fits the problem
-- [ ] Consistent with existing backends / patterns
-- [ ] No simpler approach exists
-- [ ] Public API impact is intentional and documented
-- [ ] Changes land in the right module layer
-
-### Logic & Correctness (10 min)
-
-- [ ] Edge cases / truncated / hostile input handled
-- [ ] `None` / optional metadata handled
-- [ ] Off-by-one / length-field checks
-- [ ] Error handling uses the library exception contract
-- [ ] Format parity preserved (or differences are explicit data)
-
-### Security (5 min)
-
-- [ ] No hardcoded secrets
-- [ ] Path traversal / symlink escape considered on extract paths
-- [ ] Resource limits / bomb risks considered
-- [ ] Subprocess args are lists (no `shell=True` footguns)
-- [ ] Passwords / key material not logged
-
-### Performance (3 min)
-
-- [ ] No silent re-decompression / O(n²) member loops
-- [ ] Streaming preferred over full buffering where appropriate
-- [ ] Handles closed; no unbounded buffers
-- [ ] Hot-path copies justified
-
-### Testing (5 min)
-
-- [ ] Tests exist for new behavior
-- [ ] Edge / error / hostile cases covered
-- [ ] Tests are readable and deterministic
-- [ ] Fixtures reused when possible
-
-### Code Quality (3 min)
-
-- [ ] Clear names
-- [ ] No unnecessary duplication
-- [ ] Functions do one thing
-- [ ] Complex parser logic explained where needed
-- [ ] No magic numbers (use named constants)
-
-### Documentation (2 min)
-
-- [ ] Public APIs documented
-- [ ] Specs / ADRs updated if behavior contracts change
-- [ ] Breaking changes called out
-- [ ] Resulting code is self-explanatory; non-obvious *why* is near the code (not only
-  in OpenSpec / PR prose)
+- [ ] Edge cases: truncated / hostile input, `None` metadata, off-by-one on length fields
+- [ ] Error handling uses the library exception contract (addendum §3)
+- [ ] Format parity preserved, or the difference is explicit data
+- [ ] Extract-path safety and bomb/resource limits considered (addendum §5)
+- [ ] No silent re-decompression; cost signals still honest (addendum §5)
+- [ ] Changes land in the right module layer; public API impact intentional
+- [ ] An existing helper wasn't reinvented — checked adjacent modules
+- [ ] Red–green test for a bugfix; edge / error / hostile cases covered
+- [ ] Complex parser logic explained *near the code*, not only in PR prose
 
 ## Pass 2 — context (required)
 
@@ -81,27 +39,11 @@ local *why* for non-obvious choices; bugs / safety / tests.
 
 ---
 
-## Output shape (addendum §0)
+## Output shape (addendum §0 — rules and brevity fence live there)
 
 1. **Maintainer briefing** — what the change is, snapshot + verdict, main 🔴/🟡 points
 2. **Implementor handoff** — paste-ready full findings (severity × confidence, `file:line`)
 3. **Maintainer decisions** — only human calls; each decidable without the diff; or `None.`
-
-Brevity fence: short form is blocks 1/3 presentation only — do not shrink pass depth or
-block 2 specificity; keep real pause-and-ask items.
-
----
-
-## Severity Labels
-
-| Label | Meaning | Action |
-|-------|---------|--------|
-| 🔴 `[blocking]` | Must fix | Block merge |
-| 🟡 `[important]` | Should fix | Discuss if disagree |
-| 🟢 `[nit]` | Nice to have | Non-blocking |
-| 💡 `[suggestion]` | Alternative | Consider |
-| 📚 `[learning]` | Educational | No action needed |
-| 🎉 `[praise]` | Good work | Celebrate |
 
 ---
 

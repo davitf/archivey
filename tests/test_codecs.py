@@ -395,6 +395,41 @@ def test_decompressor_read_one_bounds_internal_buffer() -> None:
         assert len(stream._buffer) < 64_000
 
 
+def test_decompressor_close_inner_closes_private_source() -> None:
+    """Pipeline stages own the previous stream; a borrowed archive view does not.
+
+    7z LZMA1+BCJ puts a ``SlicingStream(own_source=True)`` under pybcj. The
+    default DecompressorStream close left that slice open (the leak oracle's
+    first finding). ``close_inner=True`` closes it; the default still borrows.
+    """
+    from archivey.internal.streams.decompress import ZlibDecoder
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+    from archivey.internal.streams.streamtools.slice import SlicingStream
+
+    class _Tracked(io.BytesIO):
+        closed_flag = False
+
+        def close(self) -> None:
+            self.closed_flag = True
+            super().close()
+
+    payload = b"not decoded; this test only closes"
+    borrowed = _Tracked(payload)
+    DecompressorStream(borrowed, make_decoder=lambda _p, _i: ZlibDecoder()).close()
+    assert borrowed.closed_flag is False
+
+    # Production wrap: SlicingStream is RawIOBase, so ensure_bufferedio
+    # returns _NonClosingBufferedReader. close_inner must close the slice
+    # (and the slice owns the source).
+    owned = _Tracked(payload)
+    cap = SlicingStream(owned, length=len(payload), own_source=True)
+    DecompressorStream(
+        cap, make_decoder=lambda _p, _i: ZlibDecoder(), close_inner=True
+    ).close()
+    assert cap.closed
+    assert owned.closed_flag is True
+
+
 @requires("ncompress")
 def test_unix_compress_read_one_bounds_internal_buffer() -> None:
     payload = b"A" * 2_000_000

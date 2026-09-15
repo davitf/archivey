@@ -265,6 +265,7 @@ longer load-bearing and the wrapper could be simplified.
   that routing both codecs through rapidgzip alone is safe.
 - `scripts/accel_leak_trace.py` — runs the test suite with the accelerators force-enabled,
   records each accelerator stream's creation stack, and reports any left un-closed at shutdown.
+  Per-test process / owning-stream leaks are a different gate: `tests/leak_oracle.py`.
 - `scripts/macos_accelerator_debug.py` — characterises the finalization behaviour (Bug 1) across
   raw vs. guarded × cleanup strategies, each in its own subprocess.
 
