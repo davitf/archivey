@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 
+# Per-test OS-resource leak oracle (child processes, owning streams, pipe fds).
+pytest_plugins = ("leak_oracle",)
+
 # Test archive cache dir (configurable via env var)
 ARCHIVEY_TEST_CACHE = os.environ.get(
     "ARCHIVEY_TEST_CACHE",

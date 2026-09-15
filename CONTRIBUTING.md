@@ -239,6 +239,22 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   low-level building blocks — stream primitives/helpers, format parsers, the codec
   layer — should also get focused **unit** tests of their internals, because they're
   shared foundations and their corner cases are exactly what break formats downstream.
+- **Leaked OS resources fail the test.** `tests/leak_oracle.py` is an autouse oracle
+  (disable with `ARCHIVEY_LEAK_ORACLE=0`) that fails a test which leaves a child
+  process running or an owning stream unclosed (`own_source=True` /
+  `manual_inner_close=True`). Extra pipe fds are annotated on those failures, not
+  a standalone fail (`os.pipe()` helpers close by GC). It pins those objects so
+  `IOBase.__del__` cannot reap them between the test return and teardown — that is
+  the gap that let a missing `own_source=True` on a RAR glob-mask pipe ship with a
+  green suite. An owning stream must be closed in the test that constructed
+  it — a later test's close still fails the constructor. Module-scoped owning
+  streams are invisible (pins reset at each test). `unrar`/`7z` leaks are
+  invisible under `[core-only]` (those tests
+  skip); the oracle still runs, and `tests/test_leak_oracle.py` spawns
+  `sys.executable` so the gate is exercised in every config. Teardown reaps
+  leaked children via `Popen.terminate` — `os.WNOHANG` does not exist on
+  Windows, and using it hid the leak report behind an `AttributeError`.
+  `@pytest.mark.allow_resource_leaks` skips the fail, not the reap.
 - **Hit the corner cases.** Especially corrupt, truncated, and encrypted archives;
   wrong passwords; empty/zero-length members; unusual names and metadata; non-seekable
   sources. When porting or writing a reader, deliberately trigger each error path so the

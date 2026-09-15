@@ -236,4 +236,5 @@ markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",
     "concurrent_reader: post-materialization MemberStreams.CONCURRENT seam (also run under free-threaded CI)",
     "ppmd_native_stress: intermittent pyppmd native-abort stress (non-blocking PPMd native stress workflow only)",
+    "allow_resource_leaks: skip the leak-oracle fail for this test (still reaps)",
 ]

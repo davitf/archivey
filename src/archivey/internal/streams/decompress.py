@@ -916,8 +916,13 @@ def BcjFilterStream(
     unpack_size: int,
     seekable: bool = False,
     collector: DiagnosticCollector | None = None,
+    close_inner: bool = False,
 ) -> DecompressorStream:
-    """Apply a ``pybcj`` BCJ branch filter (forward-only)."""
+    """Apply a ``pybcj`` BCJ branch filter (forward-only).
+
+    ``close_inner`` is for a private previous stage (the 7z LZMA1 cap slice),
+    not a shared archive view.
+    """
     del collector  # accepted for call-site uniformity; BCJ emits no diagnostics today
     return DecompressorStream(
         path,
@@ -926,6 +931,7 @@ def BcjFilterStream(
         ),
         codec_name="bcj",
         seekable=seekable,
+        close_inner=close_inner,
     )
 
 
