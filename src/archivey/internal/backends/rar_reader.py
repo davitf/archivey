@@ -259,7 +259,9 @@ def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
     return hashes
 
 
-def _rar_member_extra(info: RarMemberInfo) -> tuple[dict[str, object], str | None]:
+def _rar_member_extra_and_link(
+    info: RarMemberInfo,
+) -> tuple[dict[str, object], str | None]:
     """Build ``ArchiveMember.extra`` and the symlink/junction target."""
     extra: dict[str, object] = {}
     link_target: str | None = None
@@ -267,6 +269,9 @@ def _rar_member_extra(info: RarMemberInfo) -> tuple[dict[str, object], str | Non
         link_target = info.file_redir[2]
         if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
             extra[EXTRA_IS_JUNCTION] = True
+    # Pure; re-derived here rather than threaded through the ``_to_member`` split
+    # (``is_current`` and the tweaked-digest diagnostic each call the same
+    # predicates independently).
     if info.is_file_version_history():
         assert info.file_version is not None
         extra["rar.file_version"] = info.file_version
@@ -457,9 +462,14 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     reaches the pipe so fused verify's one-byte overrun probe can see trailing
     output — that boundary read is clamped to one byte.
 
-    ``_pos`` is the logical offset; ``_pipe_pos`` is how far the live process
-    has actually been read. Respawn is keyed on the pipe, so ``seek(0, SEEK_END);
-    seek(0)`` before any read costs nothing.
+    ``_pos`` is the logical offset. ``_pipe_pos`` is pipe progress clamped to
+    ``_size``: the fused-verify overrun probe's extra byte advances ``_pos``
+    but not ``_pipe_pos``, so a no-op ``SEEK_CUR`` after it does not kill the
+    process. Re-probing after seeking back to ``_size`` is then not
+    byte-exact; that path is unreachable while the first probe raises
+    ``CorruptionError`` on any trailing byte (``verify.py`` ``_finish`` /
+    ``_verify_reaches_declared``). Respawn is keyed on the pipe, so
+    ``seek(0, SEEK_END); seek(0)`` before any read costs nothing.
 
     ``spawn`` must return a stream that owns the process (typically
     ``_UnrarOwnedStream``, or ``_bounded_member_pipe`` wrapping one), so
@@ -601,6 +611,9 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
     requires a seekable source; the inner here is a subprocess pipe.
     """
     try:
+        assert not is_seekable(inner), (
+            "bounded member pipe requires a non-seekable unrar stdout"
+        )
         if prefix:
             skip_forward(inner, prefix)
         return SlicingStream(inner, length=size, own_source=True)
@@ -889,7 +902,7 @@ class RarReader(BaseArchiveReader):
             if info.orig_filename is not None
             else info.filename.encode("utf-8", errors="surrogateescape")
         )
-        extra, link_target = _rar_member_extra(info)
+        extra, link_target = _rar_member_extra_and_link(info)
         host_os = info.host_os
         create_system = (
             _RAR_HOST_OS_TO_CREATE_SYSTEM.get(host_os, CreateSystem.UNKNOWN)
@@ -929,7 +942,6 @@ class RarReader(BaseArchiveReader):
             extra=extra,
             _raw=info,
         )
-        # Attaches onto the member and can raise under a strict collector.
         self._emit_member_diagnostics(info, member, presented)
         return member
 
@@ -947,6 +959,7 @@ class RarReader(BaseArchiveReader):
             presented_name=presented,
             archive_name=self._archive_name,
         )
+        # Pure; same predicate ``_rar_member_extra_and_link`` uses for extra keys.
         if not _crc_is_tweaked(info) or self._unrar_password is not None:
             return
         # No password → cannot forward-transform; surface as unverifiable digests.
