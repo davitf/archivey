@@ -424,7 +424,7 @@ def test_bounded_member_pipe_drain_coalesces_short_reads() -> None:
     assert pipe.read() == b""
     assert pipe.read(1) == b""
     pipe.close()
-    assert inner.closed  # own_source=True: the factory owns the unrar pipe
+    assert inner.closed  # owns_inner=True: the factory owns the unrar pipe
 
 
 def test_bounded_member_pipe_skips_prefix_and_translates_eof() -> None:
@@ -433,7 +433,7 @@ def test_bounded_member_pipe_skips_prefix_and_translates_eof() -> None:
     assert pipe.read() == b"payload-body"
     assert pipe.tell() == 12
     pipe.close()
-    assert inner.closed  # own_source=True: the factory owns the unrar pipe
+    assert inner.closed  # owns_inner=True: the factory owns the unrar pipe
 
     short = NonSeekableBytesIO(b"xx")
     with pytest.raises(TruncatedError, match="glob-matched member"):

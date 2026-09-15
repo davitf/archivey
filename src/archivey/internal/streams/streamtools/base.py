@@ -149,11 +149,23 @@ class DelegatingStream(ReadOnlyIOStream):
     pass-through override of ``read`` should keep the zero-copy path, and silent auto-detection
     would make that choice invisible and bug-prone.)
 
-    **Close ownership.** ``close`` closes ``inner`` and then marks this wrapper closed.
-    A subclass that must close ``inner`` itself (a finalize guard, reaping a subprocess)
-    passes ``manual_inner_close=True`` and calls ``super().close()`` afterwards to mark
-    the wrapper closed without closing ``inner`` a second time. Subclasses that only
-    need to hold a lock around close wrap ``super().close()`` in the lock instead.
+    **Close ownership.** A :class:`DelegatingStream` *owns* its inner: ``close``
+    closes ``inner`` and then marks this wrapper closed. That is the opposite of
+    :class:`~archivey.internal.streams.streamtools.slice.SlicingStream` /
+    :class:`~archivey.internal.streams.streamtools.slice.SharedView`, which borrow
+    unless told otherwise. The owning default is load-bearing — every production
+    subclass sits in a close chain that must reach the inner (a tar ``extractfile``
+    handle, a ``PyCdlibIO``, a measured source, an accelerator). Flipping it to
+    borrow would make a forgotten keyword a leak the leak oracle does not pin
+    (it ignores default DelegatingStream constructors). See
+    ``dev-docs/topics/stream-ownership.md``.
+
+    A subclass that must close ``inner`` itself (a finalize guard, reaping a
+    subprocess) passes ``subclass_closes_inner=True`` and calls ``super().close()``
+    afterwards to mark the wrapper closed without closing ``inner`` a second time.
+    That flag is *who performs the close*, not whether the wrapper owns — both
+    values own. Subclasses that only need to hold a lock around close wrap
+    ``super().close()`` in the lock instead.
     """
 
     # Opt-in class flag; :func:`source_byte_size` peels only when this is True.
@@ -164,14 +176,15 @@ class DelegatingStream(ReadOnlyIOStream):
         inner: BinaryIO,
         *,
         readinto_passthrough: bool = True,
-        manual_inner_close: bool = False,
+        subclass_closes_inner: bool = False,
     ) -> None:
         super().__init__()
         self._inner = inner
         self._readinto_passthrough = readinto_passthrough
         # True when the subclass closes ``_inner`` itself (finalize guard, reap a
         # subprocess) and then calls ``super().close()`` only to mark this wrapper closed.
-        self._manual_inner_close = manual_inner_close
+        # Not an ownership flag: the wrapper owns in both cases.
+        self._subclass_closes_inner = subclass_closes_inner
         # Cached at construction; a subclass that swaps ``_inner`` must go through
         # ``_replace_inner`` so seekable() tracks the new engine.
         self._seekable = is_seekable(inner)
@@ -212,7 +225,7 @@ class DelegatingStream(ReadOnlyIOStream):
         if self.closed:
             return
         try:
-            if not self._manual_inner_close:
+            if not self._subclass_closes_inner:
                 self._inner.close()
         finally:
             super().close()

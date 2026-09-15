@@ -124,7 +124,7 @@ from archivey.internal.streams.streamtools.slice import SlicingStream
 
 class _OwnedPipe(DelegatingStream):
     def __init__(self, stdout, proc) -> None:
-        super().__init__(stdout, readinto_passthrough=False, manual_inner_close=True)
+        super().__init__(stdout, readinto_passthrough=False, subclass_closes_inner=True)
         self._proc = proc
 
     def close(self) -> None:
@@ -136,7 +136,7 @@ class _OwnedPipe(DelegatingStream):
             self._proc.wait()
         super().close()
 
-def test_forget_own_source() -> None:
+def test_forget_owns_inner() -> None:
     child = subprocess.Popen(
         [
             sys.executable,
@@ -147,7 +147,7 @@ def test_forget_own_source() -> None:
         stdout=subprocess.PIPE,
     )
     inner = _OwnedPipe(child.stdout, child)
-    view = SlicingStream(inner, length=5, own_source=False)
+    view = SlicingStream(inner, length=5, owns_inner=False)
     assert view.read() == b"hello"
     view.close()
 """,
@@ -156,7 +156,8 @@ def test_forget_own_source() -> None:
     text = _output(proc)
     assert "test leaked OS resources" in text
     assert (
-        "child process still running" in text or "unclosed manual_inner_close" in text
+        "child process still running" in text
+        or "unclosed subclass_closes_inner" in text
     )
 
 
@@ -169,7 +170,7 @@ from archivey.internal.streams.streamtools.slice import SlicingStream
 
 class _OwnedPipe(DelegatingStream):
     def __init__(self, stdout, proc) -> None:
-        super().__init__(stdout, readinto_passthrough=False, manual_inner_close=True)
+        super().__init__(stdout, readinto_passthrough=False, subclass_closes_inner=True)
         self._proc = proc
 
     def close(self) -> None:
@@ -181,7 +182,7 @@ class _OwnedPipe(DelegatingStream):
             self._proc.wait()
         super().close()
 
-def test_own_source_reaps() -> None:
+def test_owns_inner_reaps() -> None:
     child = subprocess.Popen(
         [
             sys.executable,
@@ -192,7 +193,7 @@ def test_own_source_reaps() -> None:
         stdout=subprocess.PIPE,
     )
     inner = _OwnedPipe(child.stdout, child)
-    view = SlicingStream(inner, length=5, own_source=True)
+    view = SlicingStream(inner, length=5, owns_inner=True)
     assert view.read() == b"hello"
     view.close()
 """,
@@ -207,13 +208,13 @@ def test_oracle_fails_on_unclosed_owning_slice(tmp_path: Path) -> None:
 import io
 from archivey.internal.streams.streamtools.slice import SlicingStream
 
-def test_unclosed_own_source() -> None:
-    SlicingStream(io.BytesIO(b"hello"), length=5, own_source=True)
+def test_unclosed_owns_inner() -> None:
+    SlicingStream(io.BytesIO(b"hello"), length=5, owns_inner=True)
 """,
     )
     assert proc.returncode != 0, _output(proc)
     text = _output(proc)
-    assert "unclosed own_source stream: SlicingStream" in text
+    assert "unclosed owns_inner stream: SlicingStream" in text
 
 
 def test_oracle_passes_when_owning_slice_is_closed(tmp_path: Path) -> None:
@@ -223,14 +224,14 @@ def test_oracle_passes_when_owning_slice_is_closed(tmp_path: Path) -> None:
 import io
 from archivey.internal.streams.streamtools.slice import SlicingStream
 
-def test_closed_own_source() -> None:
-    SlicingStream(io.BytesIO(b"hello"), length=5, own_source=True).close()
+def test_closed_owns_inner() -> None:
+    SlicingStream(io.BytesIO(b"hello"), length=5, owns_inner=True).close()
 """,
     )
     assert proc.returncode == 0, _output(proc)
 
 
-def test_oracle_fails_on_unclosed_manual_inner_close(tmp_path: Path) -> None:
+def test_oracle_fails_on_unclosed_subclass_closes_inner(tmp_path: Path) -> None:
     proc = _run_isolated(
         tmp_path,
         """
@@ -238,14 +239,14 @@ import io
 from archivey.internal.streams.streamtools.base import DelegatingStream
 
 def test_unclosed_manual() -> None:
-    DelegatingStream(io.BytesIO(b"x"), manual_inner_close=True)
+    DelegatingStream(io.BytesIO(b"x"), subclass_closes_inner=True)
 """,
     )
     assert proc.returncode != 0, _output(proc)
-    assert "unclosed manual_inner_close stream" in _output(proc)
+    assert "unclosed subclass_closes_inner stream" in _output(proc)
 
 
-def test_oracle_passes_when_manual_inner_close_is_closed(tmp_path: Path) -> None:
+def test_oracle_passes_when_subclass_closes_inner_is_closed(tmp_path: Path) -> None:
     proc = _run_isolated(
         tmp_path,
         """
@@ -253,7 +254,7 @@ import io
 from archivey.internal.streams.streamtools.base import DelegatingStream
 
 def test_closed_manual() -> None:
-    DelegatingStream(io.BytesIO(b"x"), manual_inner_close=True).close()
+    DelegatingStream(io.BytesIO(b"x"), subclass_closes_inner=True).close()
 """,
     )
     assert proc.returncode == 0, _output(proc)

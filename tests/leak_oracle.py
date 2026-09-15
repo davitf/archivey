@@ -9,8 +9,8 @@ What it detects, at *teardown* of each test:
 
 - Child processes spawned during the test that are still alive (``Popen.poll()``
   is ``None``). A zombie is not this: ``poll()`` reaps it, so it never appears.
-- Unclosed streams that own a private inner: ``SlicingStream(..., own_source=True)``
-  and ``DelegatingStream(..., manual_inner_close=True)`` (and subclasses). Those
+- Unclosed streams that own a private inner: ``SlicingStream(..., owns_inner=True)``
+  and ``DelegatingStream(..., subclass_closes_inner=True)`` (and subclasses). Those
   two flags are the population that wraps a subprocess, a finalize-guarded
   accelerator, or some other inner the wrapper is responsible for reaping.
   The constructing test must close them before it returns.
@@ -50,8 +50,10 @@ Owning streams and ``Popen`` objects are *pinned* until they are explicitly
 closed (or until teardown). That is load-bearing: CPython refcounting would
 otherwise run ``IOBase.__del__`` → ``close()`` when the test function returns,
 reaping the child before this fixture sees it, and the leak would stay silent.
-Pinning is why deleting ``own_source=True`` on the glob-mask RAR pipe fails a
-test instead of looking fine.
+Pinning is why deleting ``owns_inner=True`` on the glob-mask RAR pipe fails a
+test instead of looking fine. The kwargs this plugin keys on are the ownership
+spellings after the stream-ownership unification; a rename that does not update
+this file disarms the gate (``kwargs.get`` returns ``None``, nothing is pinned).
 """
 
 from __future__ import annotations
@@ -172,8 +174,8 @@ def _install_stream_hooks() -> None:
         def _d_init(self: DelegatingStream, *args: object, **kwargs: object) -> None:
             assert _orig_delegating_init is not None
             _orig_delegating_init(self, *args, **kwargs)
-            if kwargs.get("manual_inner_close"):
-                _pin_stream(self, "manual_inner_close")
+            if kwargs.get("subclass_closes_inner"):
+                _pin_stream(self, "subclass_closes_inner")
 
         def _d_close(self: DelegatingStream) -> None:
             _unpin_stream(self)
@@ -190,8 +192,8 @@ def _install_stream_hooks() -> None:
         def _s_init(self: SlicingStream, *args: object, **kwargs: object) -> None:
             assert _orig_slice_init_from_source is not None
             _orig_slice_init_from_source(self, *args, **kwargs)
-            if kwargs.get("own_source"):
-                _pin_stream(self, "own_source")
+            if kwargs.get("owns_inner"):
+                _pin_stream(self, "owns_inner")
 
         def _s_close(self: SlicingStream) -> None:
             _unpin_stream(self)
@@ -386,7 +388,7 @@ def _report(
         lines.append(f"  leaked pipe/socket fd {fd} -> {target}")
     lines.append(
         "These are pinned until explicit close so GC/__del__ cannot hide them. "
-        "Close the owning wrapper (own_source=True / the stream that reaps the "
+        "Close the owning wrapper (owns_inner=True / the stream that reaps the "
         "subprocess), or reap the child, in the same test that constructed it. "
         "Legitimate exception: @pytest.mark.allow_resource_leaks (still reaps) "
         "or ARCHIVEY_LEAK_ORACLE=0 (disables the plugin)."

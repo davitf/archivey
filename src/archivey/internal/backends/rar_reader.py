@@ -359,7 +359,7 @@ class _UnrarOwnedStream(DelegatingStream):
         encrypted: bool = False,
     ) -> None:
         # Track bytes via read(); disable readinto passthrough so counting is not skipped.
-        super().__init__(stdout, readinto_passthrough=False, manual_inner_close=True)
+        super().__init__(stdout, readinto_passthrough=False, subclass_closes_inner=True)
         self._proc = proc
         self._named_member = named_member
         self._has_verifiable_hash = has_verifiable_hash
@@ -616,7 +616,7 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
         )
         if prefix:
             skip_forward(inner, prefix)
-        return SlicingStream(inner, length=size, own_source=True)
+        return SlicingStream(inner, length=size, owns_inner=True)
     except EOFError as exc:
         inner.close()
         raise TruncatedError(

@@ -427,7 +427,7 @@ class TestSlicingStreamConstruction:
         assert sliced.read() == DATA[2:6]
 
 
-class TestSlicingStreamOwnSource:
+class TestSlicingStreamOwnsInner:
     class _Tracked(io.BytesIO):
         closed_flag = False
 
@@ -440,9 +440,9 @@ class TestSlicingStreamOwnSource:
         SlicingStream(underlying, start=0, length=5).close()
         assert underlying.closed_flag is False
 
-    def test_own_source_closes_underlying(self) -> None:
+    def test_owns_inner_closes_underlying(self) -> None:
         underlying = self._Tracked(DATA)
-        SlicingStream(underlying, start=0, length=5, own_source=True).close()
+        SlicingStream(underlying, start=0, length=5, owns_inner=True).close()
         assert underlying.closed_flag is True
 
 
@@ -489,7 +489,7 @@ class TestSharedViewConstruction:
             SharedView(NonSeekableBytesIO(b"x"), lock=threading.Lock())
 
     def test_non_seekable_rejected_init_does_not_trip_del(self) -> None:
-        # F2 raised before ``_own_source`` was set; ``IOBase.__del__`` then hit
+        # F2 raised before ``_owns_inner`` was set; ``IOBase.__del__`` then hit
         # ``AttributeError`` inside ``close``. CPython only reports that under
         # ``-X dev`` (3.11+: otherwise destructor close() errors are swallowed),
         # so the pin runs in a child with that flag.
