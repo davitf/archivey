@@ -343,13 +343,12 @@ def _execute_stage(
     stream_config: StreamConfig,
     collector: DiagnosticCollector | None,
     seekable: bool,
-    owns_inner: bool,
+    stage_index: int,
 ) -> BinaryIO:
     """Open one planned stage on top of ``stream``. The only stream-opening code.
 
-    ``owns_inner`` is consumed only by ``_BcjStage``: True when this stage wraps
-    a previous stage's private output, False when it is first and ``stream`` is
-    the borrowed pack view.
+    ``stage_index`` is consumed only by ``_BcjStage`` (``owns_inner=(stage_index > 0)``).
+    Other stages ignore it: ``[AES, LZMA]`` does not close the AES decrypt stream.
     """
     if isinstance(stage, _AesStage):
         return _open_aes_stage(
@@ -385,7 +384,7 @@ def _execute_stage(
         decoder_attr=stage.pybcj_attr,
         unpack_size=stage.unpack_size,
         seekable=seekable,
-        owns_inner=owns_inner,
+        owns_inner=(stage_index > 0),
     )
 
 
@@ -402,9 +401,12 @@ def open_folder_pipeline(
     """Compose a folder's coder chain into a single pull stream (plan, then fold).
 
     ``source`` is a borrowed pack view. Each stage wraps the previous output.
-    A pybcj ``_BcjStage`` passes ``owns_inner=(i > 0)``: a later BCJ closes the
-    private previous output (LZMA1 cap slice, AES decrypt stream, …); a
-    first-stage BCJ (Copy+BCJ, BCJ-alone) borrows ``source``.
+    Only a pybcj ``_BcjStage`` takes ``owns_inner``: True when it is not first
+    (``stage_index > 0``), so it closes the previous stage's output — the LZMA1
+    cap slice, or an ``AesDecryptStream`` on ``[AES, BCJ]``. Other follow-on
+    stages do not close their input: ``[AES, LZMA]`` (the common encrypted
+    shape) leaves the AES stream unclosed. That stream is a cipher over the
+    borrowed pack view and holds no OS handle.
     """
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
     stages = plan_folder(folder)
@@ -422,7 +424,7 @@ def open_folder_pipeline(
             stream_config=config,
             collector=collector,
             seekable=seekable,
-            owns_inner=(i > 0),
+            stage_index=i,
         )
     return stream
 

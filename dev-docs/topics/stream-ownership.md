@@ -15,6 +15,7 @@ decoder means "do not close the inner." Silence on a `DelegatingStream` means
 | `SharedView` | borrow, hardcoded | none — Parcel B split this class so `lock=` could not switch modes |
 | `DecompressorStream` | borrow | `owns_inner=True` on later pybcj BCJ stages (first-stage Copy+BCJ / BCJ-alone borrows the pack view) |
 | `DelegatingStream` | **own** | `subclass_closes_inner=True` is *who* closes, not *whether* |
+| `AesDecryptStream` | **own**, hardcoded | none — 7z AES pull stream; `close()` always closes `_source` |
 | `SharedSource` | Path → own; `BinaryIO` → borrow | encoded in the constructor argument type |
 | ZIP/ISO `_owned_fp`, TAR `_owned_stream` | Path the reader opened | not a wrapper flag; leave the names |
 
@@ -22,6 +23,17 @@ The public contract is the borrow default: archivey never closes a
 caller-supplied `BinaryIO` (`openspec/specs/archive-reading/spec.md`). Views and
 decoders sit on those handles, so they borrow. `DelegatingStream` is a 1:1
 stand-in in a close chain, so it owns.
+
+`AesDecryptStream` is a `ReadOnlyIOStream`, so it is absent from the
+`DelegatingStream` inventory and from the leak oracle's pinned population.
+`close()` always closes `_source`; there is no opt-out. Nothing in the 7z
+pipeline closes it today except a later pybcj BCJ stage (`[AES, BCJ]`);
+`[AES, LZMA]` leaves it for GC. The pack view underneath is a `SharedView`
+that absorbs the close. RAR headers use `_Rar5HeaderDecryptStream` (non-owning,
+ciphertext `tell`) and ZIP uses `WinZipAesDecryptStream` (also an owning
+close) over the same `DecryptStage` — `rar_parser.py` records why the 7z
+wrapper could not be reused. Whether `AesDecryptStream` grows `owns_inner` is
+that convergence, not this page.
 
 ## 2. Why `DelegatingStream` still owns
 
@@ -68,16 +80,19 @@ accelerator / unrar pipe, or force a new oracle key that is easy to forget.
 
 Not much. The unusual direction is already spelled at the call site
 (`owns_inner=True` on the four owning slices; later pybcj BCJ stages derive
-`owns_inner=(i > 0)` in `open_folder_pipeline`). Making `owns_inner` required
-on every `SlicingStream` would add `False` noise to the borrow sites the type
+`owns_inner=(stage_index > 0)` in `open_folder_pipeline`, and only that
+branch reads the flag). Making `owns_inner` required on every
+`SlicingStream` would add `False` noise to the borrow sites the type
 already describes. pyrefly/ty catching a missing kwarg converts "forgot to
 think" into "typed `False` without thinking"; the oracle now fails the leak
 instead.
 
 A new `DelegatingStream` subclass is forced to pick a close contract by
 `test_delegating_stream_close_inventory`, which asserts the class-level
-`_SUBCLASS_CLOSES_INNER` flag (same idiom as the resume-offset inventory).
-That is per-class, which is the right grain for this type.
+`_SUBCLASS_CLOSES_INNER` flag (same idiom as the resume-offset inventory)
+and rejects a production `__init__` that still passes the kwarg. That is
+per-class, which is the right grain for this type. The constructor kwarg
+remains for ad-hoc construction in tests; that path is not inventory-checked.
 
 Named constructors (`SlicingStream.owning()`) were the Parcel B analogue.
 Rejected: `owns_inner` only changes `close()`, it does not switch I/O contracts

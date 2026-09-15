@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 from typing import Never, get_type_hints
 
@@ -394,10 +395,12 @@ def test_delegating_stream_close_inventory() -> None:
 
     DelegatingStream owns its inner. A subclass that closes inner itself
     (reap a subprocess, a finalize guard) sets ``_SUBCLASS_CLOSES_INNER = True``
-    on the class; every other subclass rides the owning default. The walk
-    asserts that class flag, not a constructor kwarg — a subclass that still
-    passed ``subclass_closes_inner=True`` while leaving the flag False used
-    to pass a name-only check. Same grain as
+    on the class and omits the constructor kwarg; every other subclass rides
+    the owning default. The walk asserts the class flag. A production
+    ``__init__`` that still passes ``subclass_closes_inner=True`` while leaving
+    the flag False used to evade that check (the kwarg overrides the flag at
+    runtime). The constructor kwarg stays for ad-hoc construction in tests;
+    that path is not inventory-checked. Same grain as
     ``test_readonly_stream_resume_offset_inventory``.
     """
     _import_all_archivey_modules()
@@ -442,4 +445,15 @@ def test_delegating_stream_close_inventory() -> None:
     assert wrong_flag == set(), (
         "DelegatingStream subclass _SUBCLASS_CLOSES_INNER does not match "
         f"its inventory group: {wrong_flag}"
+    )
+    passed_kwarg = {
+        cls
+        for cls in found
+        if cls.__init__ is not DelegatingStream.__init__
+        and "subclass_closes_inner=" in inspect.getsource(cls.__init__)
+    }
+    assert passed_kwarg == set(), (
+        "production DelegatingStream subclass __init__ must set "
+        "_SUBCLASS_CLOSES_INNER on the class and omit the constructor kwarg "
+        f"(kwarg is for ad-hoc tests): {passed_kwarg}"
     )
