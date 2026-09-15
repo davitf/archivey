@@ -123,9 +123,9 @@ class _LzmaChainStage:
 
     ``cap_size`` bounds the decoded output with a ``SlicingStream``; it is set only
     for the stdlib LZMA1 runs inside an LZMA1+BCJ chain, where LZMA1-without-EOS can
-    otherwise over-read on a trailing BCJ look-ahead (BPO-21872). ``None`` means no cap.
-    The following ``_BcjStage`` must ``close_inner`` that slice — DecompressorStream
-    does not close a passed-in stream by default.
+    otherwise over-read on a trailing BCJ look-ahead (BPO-21872). ``None`` means no
+    cap. The following ``_BcjStage`` must close that slice (``owns_inner=True``) —
+    DecompressorStream does not close a passed-in stream by default.
     """
 
     codec: Codec
@@ -343,8 +343,13 @@ def _execute_stage(
     stream_config: StreamConfig,
     collector: DiagnosticCollector | None,
     seekable: bool,
+    stage_index: int,
 ) -> BinaryIO:
-    """Open one planned stage on top of ``stream``. The only stream-opening code."""
+    """Open one planned stage on top of ``stream``. The only stream-opening code.
+
+    ``stage_index`` is consumed only by ``_BcjStage`` (``owns_inner=(stage_index > 0)``).
+    Other stages ignore it: ``[AES, LZMA]`` does not close the AES decrypt stream.
+    """
     if isinstance(stage, _AesStage):
         return _open_aes_stage(
             stream, stage.coder, password=password, key_cache=key_cache
@@ -372,16 +377,14 @@ def _execute_stage(
             seekable=seekable,
         )
         if stage.cap_size is not None:
-            out = SlicingStream(out, length=stage.cap_size, own_source=True)
+            out = SlicingStream(out, length=stage.cap_size, owns_inner=True)
         return out
     return BcjFilterStream(
         stream,
         decoder_attr=stage.pybcj_attr,
         unpack_size=stage.unpack_size,
         seekable=seekable,
-        # Closes ``stream``, which may be a private LZMA1 cap slice or the
-        # borrowed pack view (first-stage BCJ). See open_folder_pipeline.
-        close_inner=True,
+        owns_inner=(stage_index > 0),
     )
 
 
@@ -398,11 +401,12 @@ def open_folder_pipeline(
     """Compose a folder's coder chain into a single pull stream (plan, then fold).
 
     ``source`` is a borrowed pack view. Each stage wraps the previous output.
-    ``BcjFilterStream(..., close_inner=True)`` closes that input: when BCJ is
-    not first, the input is a private LZMA1 cap slice; when BCJ is first
-    (Copy+BCJ, BCJ-alone) the input is the pack view, and the non-closing
-    wrappers above absorb the close. ``close_inner`` means "this stage closes
-    what it was handed", not "the inner is private".
+    Only a pybcj ``_BcjStage`` takes ``owns_inner``: True when it is not first
+    (``stage_index > 0``), so it closes the previous stage's output — the LZMA1
+    cap slice, or an ``AesDecryptStream`` on ``[AES, BCJ]``. Other follow-on
+    stages do not close their input: ``[AES, LZMA]`` (the common encrypted
+    shape) leaves the AES stream unclosed. That stream is a cipher over the
+    borrowed pack view and holds no OS handle.
     """
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
     stages = plan_folder(folder)
@@ -411,7 +415,7 @@ def open_folder_pipeline(
     if any(isinstance(stage, _BcjStage) for stage in stages):
         _require_pybcj()
     stream: BinaryIO = source
-    for stage in stages:
+    for i, stage in enumerate(stages):
         stream = _execute_stage(
             stream,
             stage,
@@ -420,6 +424,7 @@ def open_folder_pipeline(
             stream_config=config,
             collector=collector,
             seekable=seekable,
+            stage_index=i,
         )
     return stream
 

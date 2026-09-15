@@ -9,11 +9,13 @@ What it detects, at *teardown* of each test:
 
 - Child processes spawned during the test that are still alive (``Popen.poll()``
   is ``None``). A zombie is not this: ``poll()`` reaps it, so it never appears.
-- Unclosed streams that own a private inner: ``SlicingStream(..., own_source=True)``
-  and ``DelegatingStream(..., manual_inner_close=True)`` (and subclasses). Those
-  two flags are the population that wraps a subprocess, a finalize-guarded
-  accelerator, or some other inner the wrapper is responsible for reaping.
-  The constructing test must close them before it returns.
+- Unclosed streams that own a private inner: ``SlicingStream(..., owns_inner=True)``
+  and a ``DelegatingStream`` whose resolved ``_subclass_closes_inner`` is True
+  (the ``subclass_closes_inner=True`` kwarg, or a subclass that sets
+  ``_SUBCLASS_CLOSES_INNER = True`` and omits the kwarg). Those are the
+  population that wraps a subprocess, a finalize-guarded accelerator, or some
+  other inner the wrapper is responsible for reaping. The constructing test
+  must close them before it returns.
 - Extra pipe/socket file descriptors on Linux (``/proc/self/fd``), reported as
   context on a process/stream leak. Not a standalone fail: ``os.pipe()`` test
   helpers and pytest-cov change when GC closes those fds. Regular files are
@@ -50,8 +52,11 @@ Owning streams and ``Popen`` objects are *pinned* until they are explicitly
 closed (or until teardown). That is load-bearing: CPython refcounting would
 otherwise run ``IOBase.__del__`` → ``close()`` when the test function returns,
 reaping the child before this fixture sees it, and the leak would stay silent.
-Pinning is why deleting ``own_source=True`` on the glob-mask RAR pipe fails a
-test instead of looking fine.
+Pinning is why deleting ``owns_inner=True`` on the glob-mask RAR pipe fails a
+test instead of looking fine. ``SlicingStream`` is keyed on the ``owns_inner``
+kwarg; ``DelegatingStream`` is keyed on the resolved ``_subclass_closes_inner``
+instance flag (class default or kwarg). A rename that does not update this
+file disarms the gate.
 """
 
 from __future__ import annotations
@@ -172,8 +177,11 @@ def _install_stream_hooks() -> None:
         def _d_init(self: DelegatingStream, *args: object, **kwargs: object) -> None:
             assert _orig_delegating_init is not None
             _orig_delegating_init(self, *args, **kwargs)
-            if kwargs.get("manual_inner_close"):
-                _pin_stream(self, "manual_inner_close")
+            # Resolved close contract: the class flag, or a kwarg that overrides it.
+            # Keying only on ``kwargs.get("subclass_closes_inner")`` missed subclasses
+            # that set ``_SUBCLASS_CLOSES_INNER`` and omit the kwarg.
+            if getattr(self, "_subclass_closes_inner", False):
+                _pin_stream(self, "subclass_closes_inner")
 
         def _d_close(self: DelegatingStream) -> None:
             _unpin_stream(self)
@@ -190,8 +198,8 @@ def _install_stream_hooks() -> None:
         def _s_init(self: SlicingStream, *args: object, **kwargs: object) -> None:
             assert _orig_slice_init_from_source is not None
             _orig_slice_init_from_source(self, *args, **kwargs)
-            if kwargs.get("own_source"):
-                _pin_stream(self, "own_source")
+            if kwargs.get("owns_inner"):
+                _pin_stream(self, "owns_inner")
 
         def _s_close(self: SlicingStream) -> None:
             _unpin_stream(self)
@@ -386,7 +394,7 @@ def _report(
         lines.append(f"  leaked pipe/socket fd {fd} -> {target}")
     lines.append(
         "These are pinned until explicit close so GC/__del__ cannot hide them. "
-        "Close the owning wrapper (own_source=True / the stream that reaps the "
+        "Close the owning wrapper (owns_inner=True / the stream that reaps the "
         "subprocess), or reap the child, in the same test that constructed it. "
         "Legitimate exception: @pytest.mark.allow_resource_leaks (still reaps) "
         "or ARCHIVEY_LEAK_ORACLE=0 (disables the plugin)."

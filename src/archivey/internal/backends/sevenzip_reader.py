@@ -768,11 +768,11 @@ class SevenZipReader(BaseArchiveReader):
         try:
             if want_seekable and is_seekable(folder_stream):
                 inner: BinaryIO = SlicingStream(
-                    folder_stream, start=prefix, length=size, own_source=True
+                    folder_stream, start=prefix, length=size, owns_inner=True
                 )
             else:
                 skip_forward(folder_stream, prefix)
-                inner = SlicingStream(folder_stream, length=size, own_source=True)
+                inner = SlicingStream(folder_stream, length=size, owns_inner=True)
         except EOFError as exc:
             # Construction no longer seeks, so a truncated folder raises from the
             # first read (or from skip_forward), not from SlicingStream.__init__.

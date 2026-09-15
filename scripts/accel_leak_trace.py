@@ -2,7 +2,7 @@
 """Find which accelerator streams reach interpreter shutdown un-closed on macOS.
 
 This is a **manual** diagnostic, not a CI gate. Per-test leaks (a live ``unrar`` child, an
-unclosed ``own_source=True`` / ``manual_inner_close=True`` stream) are
+unclosed ``owns_inner=True`` / ``subclass_closes_inner=True`` stream) are
 caught by ``tests/leak_oracle.py`` on every suite run. Extra pipe fds annotate those
 failures; they are not a standalone fail. This script is the leftover that
 oracle cannot see: accelerator streams still alive at *interpreter shutdown*.

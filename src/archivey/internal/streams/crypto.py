@@ -171,6 +171,9 @@ class AesDecryptStream(ReadOnlyIOStream):
         return out
 
     def close(self) -> None:
+        # Hardcoded own: no ``owns_inner``. The 7z pack view underneath is a
+        # ``SharedView`` that absorbs the close. ZIP/RAR use sibling wrappers
+        # over the same ``DecryptStage``; see ``dev-docs/topics/stream-ownership.md``.
         if not self.closed:
             self._source.close()
         super().close()

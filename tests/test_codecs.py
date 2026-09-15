@@ -395,12 +395,13 @@ def test_decompressor_read_one_bounds_internal_buffer() -> None:
         assert len(stream._buffer) < 64_000
 
 
-def test_decompressor_close_inner_closes_private_source() -> None:
+def test_decompressor_owns_inner_closes_private_source(tmp_path: Path) -> None:
     """Pipeline stages own the previous stream; a borrowed archive view does not.
 
-    7z LZMA1+BCJ puts a ``SlicingStream(own_source=True)`` under pybcj. The
-    default DecompressorStream close left that slice open (the leak oracle's
-    first finding). ``close_inner=True`` closes it; the default still borrows.
+    7z later pybcj BCJ stages wrap a private previous output (the LZMA1 cap
+    ``SlicingStream(owns_inner=True)``). The default DecompressorStream close
+    left that slice open (the leak oracle's first finding). ``owns_inner=True``
+    closes it; the default still borrows.
     """
     from archivey.internal.streams.decompress import ZlibDecoder
     from archivey.internal.streams.decompressor_stream import DecompressorStream
@@ -419,15 +420,22 @@ def test_decompressor_close_inner_closes_private_source() -> None:
     assert borrowed.closed_flag is False
 
     # Production wrap: SlicingStream is RawIOBase, so ensure_bufferedio
-    # returns _NonClosingBufferedReader. close_inner must close the slice
+    # returns _NonClosingBufferedReader. owns_inner must close the slice
     # (and the slice owns the source).
     owned = _Tracked(payload)
-    cap = SlicingStream(owned, length=len(payload), own_source=True)
+    cap = SlicingStream(owned, length=len(payload), owns_inner=True)
     DecompressorStream(
-        cap, make_decoder=lambda _p, _i: ZlibDecoder(), close_inner=True
+        cap, make_decoder=lambda _p, _i: ZlibDecoder(), owns_inner=True
     ).close()
     assert cap.closed
     assert owned.closed_flag is True
+
+    path = tmp_path / "owned.bin"
+    path.write_bytes(payload)
+    opened = DecompressorStream(path, make_decoder=lambda _p, _i: ZlibDecoder())
+    handle = opened._inner
+    opened.close()
+    assert handle.closed
 
 
 @requires("ncompress")

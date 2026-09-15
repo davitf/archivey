@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 from typing import Never, get_type_hints
 
@@ -144,9 +145,9 @@ def test_delegating_close_marks_closed_when_inner_close_fails() -> None:
     s.close()  # idempotent after the failed inner close
 
 
-def test_delegating_manual_inner_close_skips_inner() -> None:
+def test_delegating_subclass_closes_inner_skips_inner() -> None:
     inner = io.BytesIO(b"data")
-    s = DelegatingStream(inner, manual_inner_close=True)
+    s = DelegatingStream(inner, subclass_closes_inner=True)
     s.close()
     assert s.closed
     assert not inner.closed
@@ -372,4 +373,87 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     assert missing_method == [], (
         "classified as forwards/owns but does not define nearest_resume_offset: "
         f"{missing_method}"
+    )
+
+
+def _delegating_stream_subclasses() -> set[type]:
+    found: set[type] = set()
+    stack = [DelegatingStream]
+    while stack:
+        cls = stack.pop()
+        for sub in cls.__subclasses__():
+            if sub not in found:
+                found.add(sub)
+                stack.append(sub)
+    return {
+        cls for cls in found if getattr(cls, "__module__", "").startswith("archivey.")
+    }
+
+
+def test_delegating_stream_close_inventory() -> None:
+    """Every DelegatingStream subclass has a recorded close contract.
+
+    DelegatingStream owns its inner. A subclass that closes inner itself
+    (reap a subprocess, a finalize guard) sets ``_SUBCLASS_CLOSES_INNER = True``
+    on the class and omits the constructor kwarg; every other subclass rides
+    the owning default. The walk asserts the class flag. A production
+    ``__init__`` that still passes ``subclass_closes_inner=True`` while leaving
+    the flag False used to evade that check (the kwarg overrides the flag at
+    runtime). The constructor kwarg stays for ad-hoc construction in tests;
+    that path is not inventory-checked. Same grain as
+    ``test_readonly_stream_resume_offset_inventory``.
+    """
+    _import_all_archivey_modules()
+
+    import archivey.internal.backends.iso_reader as iso_reader
+    import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.streams.codecs as codecs
+    import archivey.internal.streams.counting as counting
+    import archivey.internal.streams.streamtools.locked as locked
+
+    owns_via_base = {
+        locked.LockedStream,
+        locked.CloseLockedStream,
+        counting.CountingReader,
+        counting.OutputCountingStream,
+        counting.SeekCountingStream,
+        iso_reader._PyCdlibStream,
+        codecs._GzipTruncationCheckStream,
+    }
+    subclass_closes_inner = {
+        rar_reader._UnrarOwnedStream,
+        codecs._AcceleratorStream,
+    }
+
+    found = _delegating_stream_subclasses()
+    leftover = found - owns_via_base - subclass_closes_inner
+    assert leftover == set(), (
+        "new DelegatingStream subclass needs a close-ownership decision "
+        "(rides the owning default, or _SUBCLASS_CLOSES_INNER = True): "
+        f"{leftover}"
+    )
+    extra_classified = (owns_via_base | subclass_closes_inner) - found
+    assert extra_classified == set(), (
+        "classified a class the walk did not find (typo or it is no longer "
+        f"a DelegatingStream): {extra_classified}"
+    )
+    wrong_flag = {
+        cls
+        for cls in found
+        if cls._SUBCLASS_CLOSES_INNER is not (cls in subclass_closes_inner)
+    }
+    assert wrong_flag == set(), (
+        "DelegatingStream subclass _SUBCLASS_CLOSES_INNER does not match "
+        f"its inventory group: {wrong_flag}"
+    )
+    passed_kwarg = {
+        cls
+        for cls in found
+        if cls.__init__ is not DelegatingStream.__init__
+        and "subclass_closes_inner=" in inspect.getsource(cls.__init__)
+    }
+    assert passed_kwarg == set(), (
+        "production DelegatingStream subclass __init__ must set "
+        "_SUBCLASS_CLOSES_INNER on the class and omit the constructor kwarg "
+        f"(kwarg is for ad-hoc tests): {passed_kwarg}"
     )
