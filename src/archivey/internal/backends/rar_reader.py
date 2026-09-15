@@ -82,6 +82,7 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
     SharedSource,
+    SlicingStream,
     SolidBlockReader,
     is_seekable,
     is_stream,
@@ -258,6 +259,41 @@ def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
     return hashes
 
 
+def _rar_member_extra_and_link(
+    info: RarMemberInfo,
+) -> tuple[dict[str, object], str | None]:
+    """Build ``ArchiveMember.extra`` and the symlink/junction target."""
+    extra: dict[str, object] = {}
+    link_target: str | None = None
+    if info.file_redir is not None:
+        link_target = info.file_redir[2]
+        if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
+            extra[EXTRA_IS_JUNCTION] = True
+    # Pure; re-derived here rather than threaded through the ``_to_member`` split
+    # (``is_current`` and the tweaked-digest diagnostic each call the same
+    # predicates independently).
+    if info.is_file_version_history():
+        assert info.file_version is not None
+        extra["rar.file_version"] = info.file_version
+    if info.extract_version is not None:
+        extra[EXTRA_RAR_EXTRACT_VERSION] = info.extract_version
+    if _crc_is_tweaked(info):
+        # Stored digests are key-tweaked; keep them out of ``hashes`` (see
+        # ``_member_hashes``) but expose the raw values for callers / forward-verify.
+        if info.crc32 is not None:
+            extra["rar.tweaked_crc32"] = info.crc32
+        if info.blake2sp_hash is not None:
+            extra["rar.tweaked_blake2sp"] = info.blake2sp_hash
+    host_os = info.host_os
+    # Unix (_RAR_HOST_OS_UNIX): RAR3 Unix, and the parser maps RAR5 Unix→3.
+    # That writer's creation slot is st_ctime, not birth; Win32
+    # (_RAR_HOST_OS_WIN32) and the other RAR3 hosts store a creation time.
+    # Omit the key when there is no created value or host_os is unknown.
+    if info.ctime is not None and host_os is not None:
+        extra[EXTRA_RAR_CREATED_IS_CTIME] = host_os == _RAR_HOST_OS_UNIX
+    return extra, link_target
+
+
 def _tweaked_hash_key(enc: RarEncryptionInfo, password: str) -> bytes | None:
     """Return HashKey for ``password``, or ``None`` when the password is provably wrong.
 
@@ -426,13 +462,24 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     reaches the pipe so fused verify's one-byte overrun probe can see trailing
     output — that boundary read is clamped to one byte.
 
-    ``_pos`` is the logical offset; ``_pipe_pos`` is how far the live process
-    has actually been read. Respawn is keyed on the pipe, so ``seek(0, SEEK_END);
-    seek(0)`` before any read costs nothing.
+    ``_pos`` is the logical offset. ``_pipe_pos`` is pipe progress clamped to
+    ``_size``: the fused-verify overrun probe's extra byte advances ``_pos``
+    but not ``_pipe_pos``, so a no-op ``SEEK_CUR`` after it does not kill the
+    process. Re-probing after seeking back to ``_size`` is then not
+    byte-exact; that path is unreachable while the first probe raises
+    ``CorruptionError`` on any trailing byte (``verify.py`` ``_finish`` /
+    ``_verify_reaches_declared``). Respawn is keyed on the pipe, so
+    ``seek(0, SEEK_END); seek(0)`` before any read costs nothing.
 
     ``spawn`` must return a stream that owns the process (typically
-    ``_UnrarOwnedStream``, or ``_BoundedMemberPipe`` wrapping one), so
+    ``_UnrarOwnedStream``, or ``_bounded_member_pipe`` wrapping one), so
     close/respawn reaps it.
+
+    Same restart-on-rewind shape as ``DecompressorStream`` /
+    ``Decoder.recreate`` with a one-point index at origin. It does not use
+    that engine: ``Decoder`` is a push interface fed compressed bytes, while
+    unrar produces plaintext on stdout from a path. A third pull-shaped
+    restartable producer would be the point to extract a shared base.
     """
 
     def __init__(
@@ -527,7 +574,10 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
             n = 1 if n < 0 else min(n, 1)
         data = inner.read(n)
         self._pos += len(data)
-        self._pipe_pos += len(data)
+        # Overrun probe at pos == size can return one extra byte. Count it in
+        # _pos (so pos > size reads are empty) but not as pipe progress past
+        # _size, or the next seek including SEEK_CUR would kill the process.
+        self._pipe_pos = min(self._pipe_pos + len(data), self._size)
         return data
 
     def close(self) -> None:
@@ -543,7 +593,7 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
             raise close_error
 
 
-class _BoundedMemberPipe(DelegatingStream):
+def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO:
     """Own an ``unrar`` pipe, skip a glob-match prefix, then EOF at ``size``.
 
     ``unrar -n./name-with-wildcards`` concatenates every matching member with no
@@ -552,43 +602,29 @@ class _BoundedMemberPipe(DelegatingStream):
     next match as extra payload.
 
     The skip is eager at construction. A seekable wrapper respawns lazily on the
-    next ``read()``, so this constructor — and the skip — runs then, not inside
+    next ``read()``, so this factory — and the skip — runs then, not inside
     ``seek()``. ``seek(0, SEEK_END); seek(0)`` before any read still costs
     nothing: ``_pipe_pos`` stays 0 and no new pipe is built.
+
+    The bound itself is a non-seekable :class:`SlicingStream` (same shape as the
+    7z folder-pipe member slice). ``SharedView`` is the locked re-seek door and
+    requires a seekable source; the inner here is a subprocess pipe.
     """
-
-    def __init__(self, inner: BinaryIO, *, prefix: int, size: int) -> None:
-        super().__init__(inner, readinto_passthrough=False)
-        try:
-            if prefix:
-                skip_forward(inner, prefix)
-        except EOFError as exc:
-            inner.close()
-            raise TruncatedError(
-                "unrar pipe ended before the requested glob-matched member"
-            ) from exc
-        except BaseException:
-            inner.close()
-            raise
-        self._size = size
-        self._pos = 0
-
-    def tell(self) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        return self._pos
-
-    def read(self, n: int = -1, /) -> bytes:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        remaining = self._size - self._pos
-        if remaining <= 0:
-            return b""
-        if n < 0 or n > remaining:
-            n = remaining
-        data = super().read(n)
-        self._pos += len(data)
-        return data
+    try:
+        assert not is_seekable(inner), (
+            "bounded member pipe requires a non-seekable unrar stdout"
+        )
+        if prefix:
+            skip_forward(inner, prefix)
+        return SlicingStream(inner, length=size, own_source=True)
+    except EOFError as exc:
+        inner.close()
+        raise TruncatedError(
+            "unrar pipe ended before the requested glob-matched member"
+        ) from exc
+    except BaseException:
+        inner.close()
+        raise
 
 
 class RarReader(BaseArchiveReader):
@@ -758,31 +794,24 @@ class RarReader(BaseArchiveReader):
         try:
             try:
                 archive = parse(None)
-                # Incomplete set opened as a lone volume-1 path with no siblings.
-                if archive.needs_next_volume and len(self._volume_paths) <= 1:
-                    raise TruncatedError(
-                        "Incomplete RAR multi-volume set: end of archive expects "
-                        "another volume"
-                    )
-                # Data-only encryption (no header encrypt): parse succeeds without a
-                # password, so this is the unconfirmed first candidate. Safe for unrar
-                # and ConvertHashToMAC — a wrong candidate is rejected by the per-file
-                # PswCheck (0x01, when present) or by unrar exit 11.
-                return archive, self._first_candidate_str()
             except EncryptionError:
                 if not self._passwords.has_passwords():
                     raise
-
-                def confirm(password: bytes) -> RarArchive:
-                    return parse(password)
-
-                archive = self._passwords.attempt(None, confirm)
-                if archive.needs_next_volume and len(self._volume_paths) <= 1:
-                    raise TruncatedError(
-                        "Incomplete RAR multi-volume set: end of archive expects "
-                        "another volume"
-                    )
-                return archive, self._first_candidate_str()
+                archive = self._passwords.attempt(None, parse)
+            # Incomplete set opened as a lone volume-1 path with no siblings.
+            if archive.needs_next_volume and len(self._volume_paths) <= 1:
+                raise TruncatedError(
+                    "Incomplete RAR multi-volume set: end of archive expects "
+                    "another volume"
+                )
+            # _first_candidate_str is the first configured candidate when
+            # headers parsed without a password (data-only encryption; a wrong
+            # guess is rejected by PswCheck or unrar exit 11). After
+            # attempt(), record_success has moved the working password to
+            # the front of _known_good, so the same call is the password that
+            # worked. core.py mints a fresh _PasswordCandidates per
+            # open_archive, so _known_good is not shared across archives.
+            return archive, self._first_candidate_str()
         except _PasswordCandidatesExhausted as exc:
             message = (
                 exc.last_error.message
@@ -792,6 +821,12 @@ class RarReader(BaseArchiveReader):
             raise EncryptionError(message) from exc
 
     def _first_candidate_str(self) -> str | None:
+        """Password to hand unrar / ConvertHashToMAC, or ``None``.
+
+        Relies on ``_PasswordCandidates.iter_candidates`` yielding
+        ``_known_good`` first. After a successful ``attempt()``, that front
+        item is the password that worked, not the originally first candidate.
+        """
         for password in self._passwords.iter_candidates():
             return _password_as_str(password)
         return None
@@ -811,11 +846,12 @@ class RarReader(BaseArchiveReader):
                 # plain RAR is both smaller and one less thing to rely on.
                 view = self._shared.view(self._origin)
                 try:
-                    while True:
-                        chunk = view.read(1 << 20)
-                        if not chunk:
-                            break
-                        out.write(chunk)
+                    # Keep the 1 MiB chunk: each SharedView read takes the lock
+                    # and seek+reads, so copyfileobj's 64 KiB default is ~16×
+                    # the acquisitions. Do not reuse _copy_stream_to_path — it
+                    # opens dest itself, and this method already holds the
+                    # mkstemp fd.
+                    shutil.copyfileobj(view, out, length=1 << 20)
                 finally:
                     view.close()
         except BaseException:
@@ -866,39 +902,13 @@ class RarReader(BaseArchiveReader):
             if info.orig_filename is not None
             else info.filename.encode("utf-8", errors="surrogateescape")
         )
-        link_target: str | None = None
-        extra: dict[str, object] = {}
-        tweaked = _crc_is_tweaked(info)
-        if info.file_redir is not None:
-            link_target = info.file_redir[2]
-            if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
-                extra[EXTRA_IS_JUNCTION] = True
-        if version_history:
-            assert info.file_version is not None
-            extra["rar.file_version"] = info.file_version
-        if info.extract_version is not None:
-            extra[EXTRA_RAR_EXTRACT_VERSION] = info.extract_version
-        if tweaked:
-            # Stored digests are key-tweaked; keep them out of ``hashes`` (see
-            # ``_member_hashes``) but expose the raw values for callers / forward-verify.
-            if info.crc32 is not None:
-                extra["rar.tweaked_crc32"] = info.crc32
-            if info.blake2sp_hash is not None:
-                extra["rar.tweaked_blake2sp"] = info.blake2sp_hash
-
+        extra, link_target = _rar_member_extra_and_link(info)
         host_os = info.host_os
         create_system = (
             _RAR_HOST_OS_TO_CREATE_SYSTEM.get(host_os, CreateSystem.UNKNOWN)
             if host_os is not None
             else CreateSystem.UNKNOWN
         )
-        # Unix (_RAR_HOST_OS_UNIX): RAR3 Unix, and the parser maps RAR5 Unix→3.
-        # That writer's creation slot is st_ctime, not birth; Win32
-        # (_RAR_HOST_OS_WIN32) and the other RAR3 hosts store a creation time.
-        # Omit the key when there is no created value or host_os is unknown.
-        if info.ctime is not None and host_os is not None:
-            extra[EXTRA_RAR_CREATED_IS_CTIME] = host_os == _RAR_HOST_OS_UNIX
-
         mode: int | None = None
         windows_attrs: int | None = None
         if info.mode is not None:
@@ -932,38 +942,50 @@ class RarReader(BaseArchiveReader):
             extra=extra,
             _raw=info,
         )
+        self._emit_member_diagnostics(info, member, presented)
+        return member
+
+    def _emit_member_diagnostics(
+        self, info: RarMemberInfo, member: ArchiveMember, presented: str
+    ) -> None:
+        """Name-normalization and tweaked-digest diagnostics.
+
+        Both attach onto ``member`` (``attach_to_member=True``) and can raise
+        under a strict collector, so this must run before ``_to_member`` returns.
+        """
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
             presented_name=presented,
             archive_name=self._archive_name,
         )
-        if tweaked and self._unrar_password is None:
-            # No password → cannot forward-transform; surface as unverifiable digests.
-            for algo, present in (
-                (HashAlgorithm.CRC32, info.crc32 is not None),
-                (HashAlgorithm.BLAKE2SP, info.blake2sp_hash is not None),
-            ):
-                if not present:
-                    continue
-                self._diagnostics_collector.emit(
-                    code=DiagnosticCode.DIGEST_UNVERIFIABLE,
-                    message=(
-                        f"Cannot verify tweaked RAR5 {algo} without a password "
-                        f"(ConvertHashToMAC); skipping integrity check for it."
-                    ),
-                    context=DigestContext(
-                        archive_name=self._archive_name,
-                        member_name=member.name,
-                        member_id=member._member_id,
-                        algorithm=algo.value,
-                        reason="tweaked_checksum",
-                    ),
-                    member=member,
-                    attach_to_member=True,
-                    logger=integrity_logger,
-                )
-        return member
+        # Pure; same predicate ``_rar_member_extra_and_link`` uses for extra keys.
+        if not _crc_is_tweaked(info) or self._unrar_password is not None:
+            return
+        # No password → cannot forward-transform; surface as unverifiable digests.
+        for algo, present in (
+            (HashAlgorithm.CRC32, info.crc32 is not None),
+            (HashAlgorithm.BLAKE2SP, info.blake2sp_hash is not None),
+        ):
+            if not present:
+                continue
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                message=(
+                    f"Cannot verify tweaked RAR5 {algo} without a password "
+                    f"(ConvertHashToMAC); skipping integrity check for it."
+                ),
+                context=DigestContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    algorithm=algo.value,
+                    reason="tweaked_checksum",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
 
     @staticmethod
     def _member_type(info: RarMemberInfo) -> MemberType:
@@ -1240,6 +1262,13 @@ class RarReader(BaseArchiveReader):
         the pipe only emits the requested member. Zero when the archive is not
         solid — then ``-n`` starts at this member and the member-stream
         ``tell()`` is the whole re-decode cost.
+
+        History rows are counted even without ``-ver``. That is not an oversight
+        relative to :meth:`_unrar_glob_prefix`, which skips them unless
+        ``version_control``: ``-ver`` controls what unrar *emits*, not what it
+        *decodes*, and a solid chain must decompress history to reach later
+        members. This value is a ``RewindWarning.min_redecode_bytes`` floor, not
+        a pipe offset.
         """
         if not self._archive.is_solid:
             return 0
@@ -1315,14 +1344,14 @@ class RarReader(BaseArchiveReader):
             try:
                 tracked = self._track_decompressed(owned)
                 if glob_mask:
-                    return _BoundedMemberPipe(
+                    return _bounded_member_pipe(
                         tracked,
                         prefix=glob_prefix,
                         size=_member_stream_size(member),
                     )
                 return tracked
             except BaseException:
-                # BoundedMemberPipe already closed ``tracked`` (and so ``owned``)
+                # _bounded_member_pipe already closed ``tracked`` (and so ``owned``)
                 # if the prefix skip failed; close is idempotent.
                 owned.close()
                 raise
@@ -1400,6 +1429,9 @@ class RarReader(BaseArchiveReader):
                 pass
             self._temp_path = None
         if self._temp_dir is not None:
+            # Single-stream copy (_ensure_archive_path) owns _temp_path;
+            # stream volumes (_materialize_stream_volumes) own _temp_dir.
+            # unlink vs rmtree, so _close_archive unwinds them separately.
             shutil.rmtree(self._temp_dir, ignore_errors=True)
             self._temp_dir = None
 

@@ -49,6 +49,7 @@ from archivey.types import (
     MemberType,
 )
 from tests.conftest import requires, requires_binary
+from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -334,6 +335,38 @@ def test_unrar_respawn_boundary_read_is_one_byte() -> None:
     assert stream.read(-1) == payload[declared : declared + 1]
 
 
+def test_unrar_respawn_overrun_probe_noop_seek_does_not_kill_pipe() -> None:
+    """After a probe byte past declared size, clamp ``_pipe_pos`` so SEEK_CUR is free.
+
+    The probe is the fused-verify one-byte read at ``pos == size``. Without the
+    clamp, ``_pipe_pos`` sits at ``_size + 1`` and the next seek — including a
+    no-op ``SEEK_CUR`` — kills the live process. That only happens when unrar
+    emitted extra bytes (already ``CorruptionError`` on the same call).
+    """
+    payload = b"hello world!!extra"
+    declared = 13
+    closed: list[bool] = []
+
+    class _TrackClose(io.BytesIO):
+        def close(self) -> None:
+            if not self.closed:
+                closed.append(True)
+            super().close()
+
+    def spawn() -> io.BytesIO:
+        return _TrackClose(payload)
+
+    inner = spawn()
+    stream = rar_reader._UnrarRespawnStream(spawn, inner, size=declared)
+    assert stream.read(declared) == payload[:declared]
+    assert stream.read(1) == payload[declared : declared + 1]
+    assert closed == []
+    assert stream.seek(0, io.SEEK_CUR) == declared + 1
+    assert closed == []
+    assert stream.seek(0) == 0
+    assert closed == [True]
+
+
 def test_unrar_respawn_failed_seek_leaves_position() -> None:
     """A raising ``seek()`` must not reset tell() to 0."""
 
@@ -373,6 +406,39 @@ def test_unrar_respawn_seek_end_does_not_drain_or_respawn() -> None:
     assert spawns == 1
     assert stream.read() == payload
     assert spawns == 1
+
+
+def test_bounded_member_pipe_drain_coalesces_short_reads() -> None:
+    """``read(-1)`` must gather the declared size, not stop on a short inner read.
+
+    ``_BoundedMemberPipe.read`` did one ``inner.read(remaining)``. A short-returning
+    pipe then left ``tell()`` mid-member and leaked the rest to the next ``read``.
+    ``SlicingStream.read(-1)`` with a declared length uses ``read_exact``.
+    """
+    payload = b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX"
+    assert len(payload) == 60
+    inner = ShortReadNonSeekable(payload, max_chunk=7)
+    pipe = rar_reader._bounded_member_pipe(inner, prefix=0, size=60)
+    assert pipe.read() == payload
+    assert pipe.tell() == 60
+    assert pipe.read() == b""
+    assert pipe.read(1) == b""
+    pipe.close()
+    assert inner.closed  # own_source=True: the factory owns the unrar pipe
+
+
+def test_bounded_member_pipe_skips_prefix_and_translates_eof() -> None:
+    inner = NonSeekableBytesIO(b"PREFpayload-body")
+    pipe = rar_reader._bounded_member_pipe(inner, prefix=4, size=12)
+    assert pipe.read() == b"payload-body"
+    assert pipe.tell() == 12
+    pipe.close()
+    assert inner.closed  # own_source=True: the factory owns the unrar pipe
+
+    short = NonSeekableBytesIO(b"xx")
+    with pytest.raises(TruncatedError, match="glob-matched member"):
+        rar_reader._bounded_member_pipe(short, prefix=10, size=4)
+    assert short.closed
 
 
 @requires_binary("unrar")
