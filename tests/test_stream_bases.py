@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import io
+import textwrap
 from typing import Never, get_type_hints
 
 import pytest
@@ -457,3 +459,99 @@ def test_delegating_stream_close_inventory() -> None:
         "_SUBCLASS_CLOSES_INNER on the class and omit the constructor kwarg "
         f"(kwarg is for ad-hoc tests): {passed_kwarg}"
     )
+
+
+_INIT_KWARG_MISSING = object()
+
+
+def _init_keyword(cls: type, name: str) -> object:
+    """Literal value of ``name=`` in ``cls.__init__`` source, or ``_INIT_KWARG_MISSING``.
+
+    Walks AST of the constructor, not a substring: a comment can mention the
+    keyword (``_GzipTruncationCheckStream`` does).
+    """
+    if cls.__init__ is DelegatingStream.__init__:
+        return _INIT_KWARG_MISSING
+    tree = ast.parse(textwrap.dedent(inspect.getsource(cls.__init__)))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "__init__"):
+            continue
+        for kw in node.keywords:
+            if kw.arg != name:
+                continue
+            if isinstance(kw.value, ast.Constant):
+                return kw.value.value
+            return ast.dump(kw.value)
+    return _INIT_KWARG_MISSING
+
+
+def test_delegating_stream_readinto_passthrough_inventory() -> None:
+    """A read override without a readinto override must disable passthrough.
+
+    ``DelegatingStream.readinto`` zero-copies to ``inner.readinto`` by default,
+    which bypasses this class's ``read``. The two production cases that
+    override ``read`` only (``_GzipTruncationCheckStream``,
+    ``_UnrarOwnedStream``) pass ``readinto_passthrough=False`` so the side
+    effect still runs. Deleting those two kwargs leaves the rest of the suite
+    green (3279 passed / 35 skipped / 12 xfailed on ``bd647df``). This test
+    is the gate that does not.
+
+    The dangerous set is computed from ``cls.__dict__``, not a hand-maintained
+    list: overrides ``read``, does not override ``readinto``. Runtime
+    auto-detection of an overridden ``read`` is still rejected (base
+    docstring) — a plain forward of ``read`` should keep the zero-copy path,
+    and silent auto-detection would hide that choice. No such forward exists
+    today (the four classes that override ``read`` also override
+    ``readinto``). A later one needs a declared exemption here, not a silent
+    ``True``.
+
+    Mandatory-explicit ``True`` on the other seven would record a decision
+    that was never made: three never override ``read``, four already
+    implement ``readinto``. Those must omit the kwarg.
+
+    Reuses ``_delegating_stream_subclasses`` (archivey modules only); test-file
+    subclasses do not trip it.
+    """
+    _import_all_archivey_modules()
+    found = _delegating_stream_subclasses()
+
+    needs_via_read = {
+        cls
+        for cls in found
+        if "read" in cls.__dict__ and "readinto" not in cls.__dict__
+    }
+    missing = {
+        cls
+        for cls in needs_via_read
+        if _init_keyword(cls, "readinto_passthrough") is not False
+    }
+    assert missing == set(), (
+        "DelegatingStream subclass overrides read but not readinto; "
+        "must pass readinto_passthrough=False so readinto does not skip "
+        f"the read side effect: {missing}"
+    )
+    extra = {
+        cls
+        for cls in found
+        if cls not in needs_via_read
+        and _init_keyword(cls, "readinto_passthrough") is not _INIT_KWARG_MISSING
+    }
+    assert extra == set(), (
+        "readinto_passthrough is irrelevant when the class does not override "
+        "read, or already implements readinto. Omit the kwarg: "
+        f"{extra}"
+    )
+
+
+def test_init_keyword_ignores_comments() -> None:
+    """AST lookup must not treat a comment mentioning the flag as passing it."""
+
+    class _Commented(DelegatingStream):
+        def __init__(self, inner: io.BytesIO) -> None:
+            # readinto_passthrough=False in a comment must not count
+            super().__init__(inner)
+
+    assert _init_keyword(_Commented, "readinto_passthrough") is _INIT_KWARG_MISSING
