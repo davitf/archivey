@@ -410,6 +410,52 @@ def test_aes_encrypted_member_seeks_when_requested(tmp_path: Path) -> None:
             assert stream.read() == payload[10:]
 
 
+@requires_binary("7z")
+@requires("cryptography")
+def test_stored_encrypted_solid_member_seeks_mid_stream(tmp_path: Path) -> None:
+    """Solid COPY+AES puts AesDecryptStream under a prefix slice; mid-seek
+    must restart at a block other than 0 (the py7zr LZMA2 fixtures never do).
+    """
+    payloads = {
+        "a.bin": bytes(range(256)) * 8,  # 2 KiB
+        "b.bin": bytes(range(256))[::-1] * 8,
+    }
+    for name, data in payloads.items():
+        (tmp_path / name).write_bytes(data)
+    archive = tmp_path / "store-aes-solid.7z"
+    result = subprocess.run(
+        [
+            "7z",
+            "a",
+            "-t7z",
+            "-psecret",
+            "-mhe=off",
+            "-mx0",
+            "-ms=on",
+            str(archive),
+            *payloads,
+            "-y",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build store+AES solid fixture: {result.stderr}")
+
+    offsets = (0, 7, 1000, 1023, 2047)
+    with open_archive(archive, password="secret", seekable_members=True) as reader:
+        members = {m.name: m for m in reader.members() if m.is_file}
+        assert set(members) == set(payloads)
+        for name, expected in payloads.items():
+            with reader.open(members[name]) as stream:
+                assert stream.seekable() is True
+                for off in offsets:
+                    assert stream.seek(off) == off
+                    assert stream.read() == expected[off:]
+
+
 @requires("pyppmd")
 @requires("cryptography")
 def test_encrypted_ppmd_chunked_reads_roundtrip(tmp_path: Path) -> None:

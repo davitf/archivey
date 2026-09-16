@@ -32,10 +32,12 @@ stand-in in a close chain, so it owns.
 `DecompressorStream`. Nothing in the 7z pipeline closes it on the common
 `[AES, LZMA]` shape except GC: stdlib `LZMAFile` does not close a passed-in
 fileobj, and `_execute_stage` forwards `owns_inner` only to `_BcjStage`
-(`[AES, BCJ]`). RAR headers use `_HeaderDecryptStream` (non-owning,
-ciphertext `tell`) and ZIP uses `WinZipAesDecryptStream` (hardcoded own)
-over the same `DecryptStage`. The four RAR/ZIP divergences are recorded on
-those classes; they stay three pull streams.
+(`[AES, BCJ]`). RAR headers use `_HeaderDecryptStream` (borrow, ciphertext
+`tell` as archive offset) and ZIP uses `WinZipAesDecryptStream` (hardcoded
+own, CTR). Two CBC streams share `DecryptStage`; WinZip AES shares only the
+availability check. What still blocks folding the RAR header stream in is
+the walk's `tell()` polymorphism and an unbounded mid-file handle, not a
+flag `AesDecryptStream` is missing.
 
 ## 2. Why `DelegatingStream` still owns
 

@@ -214,6 +214,38 @@
   archives with at least 4 padding bytes, leaving `Copy` + short-or-nonstandard padding +
   a multi-member solid folder. Promote with the seekable-stream change rather than alone.
 
+- **Read a stored encrypted RAR5 member without `unrar`** — `_can_direct_read`
+  (`rar_reader.py`) already serves stored, non-solid, unsplit members from a direct
+  `SharedView` slice; `not info.is_encrypted` is the only thing excluding the encrypted
+  ones. Everything needed is parsed already: `_parse_rar5_file_encryption` captures
+  per-file salt + IV + check value, and `_rar5_s2k(password, salt, 1 << kdf_count)` *is*
+  the AES key derivation (`rar5_hash_key`'s docstring records the offset scheme; the
+  header path already calls it). Verified on #342: key + IV + `AesDecryptStream` over
+  the slice reproduces `unrar`'s output byte-for-byte at 7 / 3000 / 3001 bytes, and
+  seeks. Wins a dropped subprocess, no `PackageNotInstalledError` for that shape, no
+  temp-file copy for a non-path source, and O(1) seek from the CBC restart. Needs: an
+  ADR [0002](decisions/0002-native-rar-metadata-unrar-data.md) amendment (it scopes
+  native decryption to headers), a wrong-password path from the FILE record's 12-byte
+  PswCheck (`_check_rar5_password` is written for the header block and is untested
+  against a FILE record), and RAR5-only scoping — `rar_parser.py` sets
+  `file_encryption=None` on the RAR3 path, so RAR4's 8-byte `LHD` salt is not parsed.
+  Split/volume-spanning stay excluded by the existing `_can_direct_read` guards.
+  Maintainer decision (davitf, 2026-09-16): yes, follow-up PR.
+
+- **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** — of the
+  divergences `crypto.py` used to list, ownership is `owns_inner`, `read` already gathers
+  short source reads, and the 7z zero-pad disappears once a short last block raises
+  `TruncatedError`. The ciphertext cursor is derivable as `_cipher_start + _pos +
+  len(_buf)` once source asks are rounded to a block. What actually blocks it: (a) the
+  header walk binds `header_fd` to *either* the raw archive handle or the decrypt stream
+  and calls `.tell()` on both for `header_offset` / `data_offset`, so `tell()` means
+  *archive offset* — a second method doesn't help while the raw handle is the other arm;
+  (b) the header stream sits on the archive handle mid-file and unbounded, so
+  `AesDecryptStream` would compute `_cipher_len` as "rest of the file" and advertise
+  `seekable()`. Converging means an explicit `archive_offset()` with a thin adapter over
+  the raw handle plus a `length=` bound on the wrapper. Revisit after the truncation
+  change and the stored-encrypted-RAR5 work land; both shrink the gap.
+
 - **`stream_members()` seekability leak** — the intended rule is that a sequential pass
   is never seekable (`seekable_members=True` only changes random `open()`). Enforced
   today only where seeking is physically impossible (solid RAR ALL-pipe, solid 7z).

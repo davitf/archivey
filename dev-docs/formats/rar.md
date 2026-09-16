@@ -292,15 +292,18 @@ Either way, subtracting `len(_buf)` from `tell()` is wrong: on the committed
 `encrypted_header__.rar` / `encrypted_header__rar4.rar` fixtures every FILE
 `header_size % 16 != 0`, and that counterfactual fails the parse
 (`CorruptionError` / `EncryptionError`). The decrypt stream has no `seek`; packed-data
-skips go through the underlying `source` after the wrapper is discarded. CBC cannot
-reposition without resetting the IV chain, and the parser never asks it to.
+skips go through the underlying `source` after the wrapper is discarded. CBC *can*
+reposition by taking the preceding ciphertext block as the IV — `AesDecryptStream`
+does — but the parser never needs it, and this wrapper's `tell` is the ciphertext
+cursor rather than a plaintext offset.
 
 The decrypt *stage* (`open_aes_decrypt_stage`) is shared with 7z; the pull stream
 (`AesDecryptStream` in `streams/crypto.py`) is not a replacement. That class is
 the 7z member-data wrapper: `owns_inner` (default borrow), plaintext `tell`/`seek`,
-unbounded `read(-1)`, 7z zero-pad of a short last block. Header parsing needs
-the opposite: non-owning ciphertext `tell`, `read_exact` of each AES block, and
-no 7z pad. The four divergences stay load-bearing; keep the header stream.
+unbounded `read(-1)`. Header parsing still needs a `tell()` that is archive offset
+for both arms of the walk (`header_fd` is either the raw handle or the decrypt
+stream) and a wrapper that must not report seekable on an unbounded mid-file
+handle. Ownership is no longer a divergence — both borrow. Keep the header stream.
 
 ``_HeaderDecryptStream.read`` has no 8 KiB cap. Per-header size is the
 caller's: RAR5 refuses `hdrlen > _RAR5_MAX_HEADER` (2 MiB) before the body
@@ -704,7 +707,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | No `unrar x` tempdir cache for solid random `open()` | `AccessCost.SOLID` and per-open decode are the honest signals; a tempdir extraction amortizes work the caller cannot see or bound (**#8**) | `unrar x` into a managed temp directory to serve later random reads from disk |
 | Encrypted-header `tell()` is the ciphertext cursor; leftover `_buf` is AES padding | `data_offset` must skip the padded ciphertext so the next salt/IV is aligned. Subtracting leftover plaintext lands in padding — measured on both `encrypted_header__*.rar` fixtures, where every FILE `header_size % 16 != 0` | Reporting a logical plaintext offset from `tell()` |
 | No 8 KiB cap on `_HeaderDecryptStream.read`; callers use the format's own header limit | RAR5 already refuses `hdrlen > _RAR5_MAX_HEADER` (2 MiB) before the body read; RAR3 `header_size` is a uint16. The encrypted wrong-password path decrypts one garbage header then raises `EncryptionError` — strictly less than the unencrypted walk already allows. A tighter cap rejected a legitimate header as wrong-password. Unbounded `read(-1)` stays refused. Maintainer (2026-09-13): use each format's unencrypted limit; delete the 8 KiB branch | Keep 8 KiB and split the error (`CorruptionError` would abort password iteration); a second cap of 2 MiB inside `read` |
-| Keep `_HeaderDecryptStream`; share only the AES *stage* with `crypto.py` | Header walk needs a non-owning ciphertext `tell`, exact 16-byte CBC reads, and must not close the archive or 7z-pad a short final block. `AesDecryptStream` is now the 7z member-data wrapper (plaintext `tell`/`seek`, `owns_inner`, unbounded `read(-1)`, 7z pad) — still the opposite of a header cursor | Wrapping headers in `open_aes_decrypt_stream`; replacing `_Readable` with `BinaryIO` / a streamtools base |
+| Keep `_HeaderDecryptStream`; share only the AES *stage* with `crypto.py` | The header walk binds `header_fd` to either the raw archive handle or the decrypt stream and calls `.tell()` for `header_offset` / `data_offset` — archive offset, not a ciphertext cursor vs plaintext. The wrapper also sits mid-file unbounded, so `AesDecryptStream` would advertise seekable over the rest of the archive. Both streams borrow (`owns_inner`). A short last block still drains on the 7z side until the follow-up `TruncatedError`. | Wrapping headers in `open_aes_decrypt_stream`; replacing `_Readable` with `BinaryIO` / a streamtools base |
 
 ## 7. Open questions
 

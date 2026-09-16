@@ -164,6 +164,12 @@ def test_owns_inner_false_borrows_source() -> None:
     stream = AesDecryptStream(source, AesParams(key=_KEY, iv=_IV), owns_inner=False)
     stream.close()
     assert not source.closed
+    with pytest.raises(ValueError, match="closed file"):
+        stream.read()
+    with pytest.raises(ValueError, match="closed file"):
+        stream.tell()
+    with pytest.raises(ValueError, match="closed file"):
+        stream.seek(0)
 
 
 def test_owns_inner_true_closes_source() -> None:
@@ -178,3 +184,63 @@ def test_unbounded_read_still_allowed() -> None:
     plaintext = _PLAIN[:32]
     with _open(_encrypt(plaintext)) as stream:
         assert stream.read(-1) == plaintext
+
+
+def test_relative_underflow_clamps_like_bytesio() -> None:
+    plaintext = _PLAIN[:32]
+    with _open(_encrypt(plaintext)) as stream:
+        assert stream.seek(-5, io.SEEK_CUR) == 0
+        assert stream.seek(-99, io.SEEK_END) == 0
+        with pytest.raises(ValueError, match="Negative seek"):
+            stream.seek(-1, io.SEEK_SET)
+
+
+class _UnknownSizeSeekable(io.RawIOBase):
+    """Seekable, but not a type ``source_byte_size`` will measure."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1) -> bytes:
+        return self._inner.read(n)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        return self._inner.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._inner.tell()
+
+
+def test_seek_end_refused_when_ciphertext_length_unknown() -> None:
+    cipher = _encrypt(_PLAIN[:32])
+    stream = AesDecryptStream(_UnknownSizeSeekable(cipher), AesParams(key=_KEY, iv=_IV))
+    try:
+        with pytest.raises(io.UnsupportedOperation, match="SEEK_END"):
+            stream.seek(0, io.SEEK_END)
+        assert stream.read() == _PLAIN[:32]
+    finally:
+        stream.close()
+
+
+def test_read_asks_source_in_block_multiples() -> None:
+    cipher = _encrypt(_PLAIN[:48])
+    source = io.BytesIO(cipher)
+    with AesDecryptStream(source, AesParams(key=_KEY, iv=_IV)) as stream:
+        assert stream.read(5) == _PLAIN[:5]
+        assert source.tell() == AES_BLOCK_SIZE
+        assert stream.nearest_resume_offset(17) == AES_BLOCK_SIZE
+
+
+def test_aes_params_repr_hides_key() -> None:
+    params = AesParams(key=_KEY, iv=_IV)
+    text = repr(params)
+    assert "key=" not in text
+    assert str(_KEY) not in text
+    assert "iv=" in text

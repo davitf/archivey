@@ -24,7 +24,7 @@ import hashlib
 import importlib.util
 import io
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import BinaryIO, Protocol
 
 from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
@@ -57,7 +57,7 @@ AES_BLOCK_SIZE = 16
 class AesParams:
     """Inputs to an AES-CBC decrypt stage: the derived key and the initialization vector."""
 
-    key: bytes
+    key: bytes = field(repr=False)
     iv: bytes
 
 
@@ -167,16 +167,23 @@ class AesDecryptStream(ReadOnlyIOStream):
     seekable this stream is too — that is what keeps ``seekable_members=True``
     on an encrypted 7z folder. ``tell`` is the **plaintext** offset.
 
-    Three AES pull streams share :class:`DecryptStage` and stay separate:
+    Two AES-CBC pull streams share :class:`DecryptStage`.
+    ``WinZipAesDecryptStream`` is CTR and builds its own cipher; it shares
+    only the availability check.
 
-    | Wrapper | Mode | Why it is not this class |
-    | --- | --- | --- |
-    | This class | CBC | 7z member data: unbounded ``read(-1)``, drain a short last ciphertext block, plaintext ``tell``/``seek``, ``owns_inner`` (default borrow) |
-    | ``_HeaderDecryptStream`` | CBC | RAR headers: non-owning **ciphertext** ``tell``, ``read_exact`` of each AES block, reject ``read(-1)``, no short-block drain |
-    | ``WinZipAesDecryptStream`` | CTR | ZIP AE-x: HMAC over the whole ciphertext, so a random seek would skip MAC updates (or force a full ciphertext pass) |
+    Folding ``_HeaderDecryptStream`` in is blocked by the header walk, not by
+    flags this class is missing:
 
-    A flag for each of those four RAR divergences would make this class wrong
-    for 7z or wrong for headers. The stage is shared; the pull stream is not.
+    - ``tell()`` is archive offset for both arms. ``header_fd`` is either the
+      raw handle or the decrypt stream; a second method does not help while
+      the raw handle is the other arm.
+    - The stream sits mid-file on the shared archive handle, unbounded.
+      Without a ``length=`` bound it would treat the rest of the file as
+      ciphertext and report seekable; seeking would reposition the archive.
+
+    Ownership is ``owns_inner`` (both borrow). ``read`` already gathers short
+    source reads. A short last ciphertext block still drains here (follow-up:
+    ``TruncatedError`` on both streams).
     """
 
     def __init__(
@@ -200,11 +207,25 @@ class AesDecryptStream(ReadOnlyIOStream):
         self._eof = False
         self._pos = 0
 
+    def _raise_if_closed(self) -> None:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+
     def read(self, n: int = -1, /) -> bytes:
+        self._raise_if_closed()
         if n == 0:
             return b""
         while not self._eof and (n < 0 or len(self._buf) < n):
-            chunk = self._source.read(65536 if n < 0 else max(n - len(self._buf), 1))
+            # Round the source ask up to a block so CBC does not withhold a
+            # partial block (and so the ciphertext cursor is derivable as
+            # ``_cipher_start + _pos + len(_buf)``).
+            if n < 0:
+                ask = 65536
+            else:
+                want = max(n - len(self._buf), 1)
+                extra = want % AES_BLOCK_SIZE
+                ask = want if extra == 0 else want + (AES_BLOCK_SIZE - extra)
+            chunk = self._source.read(ask)
             if not chunk:
                 self._buf.extend(self._stage.finalize())
                 self._eof = True
@@ -220,12 +241,18 @@ class AesDecryptStream(ReadOnlyIOStream):
         return out
 
     def tell(self, /) -> int:
+        self._raise_if_closed()
         return self._pos
 
     def seekable(self) -> bool:
         return self._seekable
 
+    def nearest_resume_offset(self, target: int) -> int:
+        # Dense implicit index: a CBC restart point every block, zero replay.
+        return target - (target % AES_BLOCK_SIZE)
+
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        self._raise_if_closed()
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
 
@@ -246,6 +273,8 @@ class AesDecryptStream(ReadOnlyIOStream):
         if size is not None and new_pos >= size:
             cipher_len = self._cipher_len()
             if cipher_len is not None:
+                # Source at EOF so a caller inspecting it agrees; this stream
+                # will not read it again (_eof, and restart re-seeks).
                 self._source.seek(self._cipher_start + cipher_len)
             self._buf.clear()
             self._eof = True
@@ -274,13 +303,21 @@ class AesDecryptStream(ReadOnlyIOStream):
         elif whence == io.SEEK_END:
             size = self._plaintext_size()
             if size is None:
-                self.read(-1)
-                size = self._pos
+                # Production sources are SharedView / SlicingStream, which
+                # expose .size, so this branch is cold. Unsized SEEK_END would
+                # read(-1) the whole plaintext into _buf and throw it away.
+                raise io.UnsupportedOperation(
+                    "SEEK_END requires a known ciphertext length"
+                )
             new_pos = size + offset
         else:
             raise ValueError(f"Invalid whence: {whence}")
         if new_pos < 0:
-            raise ValueError(f"Negative seek position {new_pos}")
+            # Match BytesIO / SlicingStream: relative underflow clamps to the
+            # origin; only an explicitly negative SEEK_SET raises.
+            if whence == io.SEEK_SET:
+                raise ValueError(f"Negative seek position {new_pos}")
+            new_pos = 0
         return new_pos
 
     def _cipher_len(self) -> int | None:
@@ -290,6 +327,16 @@ class AesDecryptStream(ReadOnlyIOStream):
         return max(0, total - self._cipher_start)
 
     def _plaintext_size(self) -> int | None:
+        """Plaintext length: ciphertext length, rounded **up** to a whole block.
+
+        The round-up is the truncation policy's, not this method's: a short last
+        ciphertext block still decrypts to 16 garbage bytes in ``finalize``, so
+        SEEK_END has to agree with read-to-EOF. Maintainer decision (davitf,
+        2026-09-16): that policy becomes ``TruncatedError`` — a short last block
+        is corruption, not payload. **Move both sites together, soon**; changing
+        ``finalize`` alone leaves SEEK_END reporting 16 bytes that no longer
+        exist.
+        """
         cipher_len = self._cipher_len()
         if cipher_len is None:
             return None
@@ -297,9 +344,6 @@ class AesDecryptStream(ReadOnlyIOStream):
         if remainder == 0:
             # Writer convention: pack_size is already a full number of blocks.
             return cipher_len
-        # Truncated last ciphertext block. ``finalize`` still emits one 16-byte
-        # decrypt of (remainder || zeros) — garbage, not payload — so SEEK_END
-        # matches read-to-EOF rather than dropping those bytes.
         return cipher_len + (AES_BLOCK_SIZE - remainder)
 
     def _restart_at_block(self, block: int) -> bool:
@@ -320,7 +364,7 @@ class AesDecryptStream(ReadOnlyIOStream):
                 self._eof = True
                 return False
             # ``read_exact`` left the source at the start of ``block``.
-        self._stage = open_aes_decrypt_stage(AesParams(key=self._params.key, iv=iv))
+        self._stage = open_aes_decrypt_stage(replace(self._params, iv=iv))
         self._buf.clear()
         self._eof = False
         return True
