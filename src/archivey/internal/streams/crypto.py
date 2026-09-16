@@ -9,9 +9,9 @@ Layers here:
 - :class:`DecryptStage` / :func:`open_aes_decrypt_stage` — feed ciphertext chunks,
   get plaintext (used when composing inside a larger open).
 - :class:`AesDecryptStream` / :func:`open_aes_decrypt_stream` — pull ``BinaryIO``
-  wrapper over a ciphertext source (7z member data: CBC, 7z zero-pad, optional
-  seek). RAR headers and WinZip AES keep their own pull streams; see the
-  class docstring.
+  wrapper over a ciphertext source (7z member data: CBC, optional seek).
+  RAR headers and WinZip AES keep their own pull streams; see the class
+  docstring.
 - :func:`derive_sevenzip_aes_key` / :func:`parse_sevenzip_aes_properties` —
   **7z-local** KDF helpers. RAR and WinZip-AES derive keys differently, so these
   are not on the generic :class:`CryptoBackend` surface; they live beside it for
@@ -47,6 +47,10 @@ CRYPTO_REQUIREMENT = MissingComponent(
 # ``NumCyclesPower <= 24`` or the ``0x3F`` no-hash sentinel; reject 25–62.
 _SEVENZIP_MAX_CYCLES_POWER = 24
 _SEVENZIP_NO_HASH_SENTINEL = 0x3F
+
+# AES block size (also the CBC IV length). 7z writers pad *plaintext* to this
+# and store a full ciphertext block, so a well-formed pack stream is aligned.
+AES_BLOCK_SIZE = 16
 
 
 @dataclass(frozen=True)
@@ -86,8 +90,10 @@ class _CryptographyDecryptStage:
             raise ValueError(
                 f"AES key must be 16, 24, or 32 bytes, got {len(params.key)}"
             )
-        if len(params.iv) != 16:
-            raise ValueError(f"AES-CBC IV must be 16 bytes, got {len(params.iv)}")
+        if len(params.iv) != AES_BLOCK_SIZE:
+            raise ValueError(
+                f"AES-CBC IV must be {AES_BLOCK_SIZE} bytes, got {len(params.iv)}"
+            )
         cipher = Cipher(algorithms.AES(params.key), modes.CBC(params.iv))
         self._decryptor = cipher.decryptor()
         self._buf = bytearray()
@@ -96,8 +102,8 @@ class _CryptographyDecryptStage:
         if not data:
             return b""
         self._buf.extend(data)
-        # CBC requires 16-byte blocks; hold a partial trailing block until finalize.
-        n = len(self._buf) & ~0x0F
+        # Hold a partial trailing block until finalize; CBC cannot decrypt it alone.
+        n = len(self._buf) - (len(self._buf) % AES_BLOCK_SIZE)
         if n == 0:
             return b""
         block = bytes(self._buf[:n])
@@ -106,8 +112,13 @@ class _CryptographyDecryptStage:
 
     def finalize(self) -> bytes:
         if self._buf:
-            # Pad remaining ciphertext to a full block with zeros (7z AES convention).
-            padlen = (-len(self._buf)) & 15
+            # Drain path for a short last *ciphertext* chunk. AES cannot recover a
+            # truncated block: the 16 output bytes are not payload. Well-formed 7z
+            # never hits this — the encoder zero-pads *plaintext* (FilterCoder.cpp /
+            # py7zr ``AESCompressor.flush``) and stores a full ciphertext block;
+            # pack_size is a multiple of AES_BLOCK_SIZE. The extra plaintext zeros
+            # are discarded by the AES coder's unpack_size, not here.
+            padlen = (-len(self._buf)) % AES_BLOCK_SIZE
             self._buf.extend(bytes(padlen))
             out = self._decryptor.update(bytes(self._buf))
             self._buf.clear()
@@ -160,8 +171,8 @@ class AesDecryptStream(ReadOnlyIOStream):
 
     | Wrapper | Mode | Why it is not this class |
     | --- | --- | --- |
-    | This class | CBC | 7z member data: unbounded ``read(-1)``, 7z zero-pad of a short last block, plaintext ``tell``/``seek``, ``owns_inner`` (default borrow) |
-    | ``_HeaderDecryptStream`` | CBC | RAR headers: non-owning **ciphertext** ``tell``, ``read_exact`` of each AES block, reject ``read(-1)``, no 7z zero-pad |
+    | This class | CBC | 7z member data: unbounded ``read(-1)``, drain a short last ciphertext block, plaintext ``tell``/``seek``, ``owns_inner`` (default borrow) |
+    | ``_HeaderDecryptStream`` | CBC | RAR headers: non-owning **ciphertext** ``tell``, ``read_exact`` of each AES block, reject ``read(-1)``, no short-block drain |
     | ``WinZipAesDecryptStream`` | CTR | ZIP AE-x: HMAC over the whole ciphertext, so a random seek would skip MAC updates (or force a full ciphertext pass) |
 
     A flag for each of those four RAR divergences would make this class wrong
@@ -217,6 +228,45 @@ class AesDecryptStream(ReadOnlyIOStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
+
+        new_pos = self._absolute_plaintext_pos(offset, whence)
+        if new_pos == self._pos:
+            return self._pos
+
+        # Already decrypted into the buffer: consume from there.
+        buf_end = self._pos + len(self._buf)
+        if self._pos < new_pos <= buf_end:
+            del self._buf[: new_pos - self._pos]
+            self._pos = new_pos
+            return self._pos
+
+        # Past known plaintext end. Python files allow tell() past EOF;
+        # the next read is empty.
+        size = self._plaintext_size()
+        if size is not None and new_pos >= size:
+            cipher_len = self._cipher_len()
+            if cipher_len is not None:
+                self._source.seek(self._cipher_start + cipher_len)
+            self._buf.clear()
+            self._eof = True
+            self._pos = new_pos
+            return self._pos
+
+        # CBC restart: ciphertext block ``block - 1`` is the IV for ``block``.
+        block, intra = divmod(new_pos, AES_BLOCK_SIZE)
+        if not self._restart_at_block(block):
+            # Size unknown, and the previous ciphertext block is past EOF —
+            # same as seek-past-end. ``_restart_at_block`` already marked EOF.
+            self._pos = new_pos
+            return self._pos
+        self._pos = block * AES_BLOCK_SIZE
+        if intra:
+            skipped = self.read(intra)
+            if len(skipped) < intra:
+                self._pos = new_pos
+        return self._pos
+
+    def _absolute_plaintext_pos(self, offset: int, whence: int) -> int:
         if whence == io.SEEK_SET:
             new_pos = offset
         elif whence == io.SEEK_CUR:
@@ -231,32 +281,7 @@ class AesDecryptStream(ReadOnlyIOStream):
             raise ValueError(f"Invalid whence: {whence}")
         if new_pos < 0:
             raise ValueError(f"Negative seek position {new_pos}")
-        if new_pos == self._pos:
-            return self._pos
-        buf_end = self._pos + len(self._buf)
-        if self._pos < new_pos <= buf_end:
-            del self._buf[: new_pos - self._pos]
-            self._pos = new_pos
-            return self._pos
-        size = self._plaintext_size()
-        if size is not None and new_pos >= size:
-            cipher_len = self._cipher_len()
-            if cipher_len is not None:
-                self._source.seek(self._cipher_start + cipher_len)
-            self._buf.clear()
-            self._eof = True
-            self._pos = new_pos
-            return self._pos
-        block, intra = divmod(new_pos, 16)
-        if not self._restart_at_block(block):
-            self._pos = new_pos
-            return self._pos
-        self._pos = block * 16
-        if intra:
-            skipped = self.read(intra)
-            if len(skipped) < intra:
-                self._pos = new_pos
-        return self._pos
+        return new_pos
 
     def _cipher_len(self) -> int | None:
         total = source_byte_size(self._source)
@@ -268,12 +293,14 @@ class AesDecryptStream(ReadOnlyIOStream):
         cipher_len = self._cipher_len()
         if cipher_len is None:
             return None
-        remainder = cipher_len & 15
+        remainder = cipher_len % AES_BLOCK_SIZE
         if remainder == 0:
+            # Writer convention: pack_size is already a full number of blocks.
             return cipher_len
-        # Short last ciphertext block is zero-padded then decrypted: 16 plaintext
-        # bytes for that block (the 7z convention in ``DecryptStage.finalize``).
-        return cipher_len + (16 - remainder)
+        # Truncated last ciphertext block. ``finalize`` still emits one 16-byte
+        # decrypt of (remainder || zeros) — garbage, not payload — so SEEK_END
+        # matches read-to-EOF rather than dropping those bytes.
+        return cipher_len + (AES_BLOCK_SIZE - remainder)
 
     def _restart_at_block(self, block: int) -> bool:
         """Recreate the CBC decryptor so plaintext block ``block`` is next.
@@ -284,14 +311,15 @@ class AesDecryptStream(ReadOnlyIOStream):
         """
         if block == 0:
             iv = self._params.iv
+            self._source.seek(self._cipher_start)
         else:
-            self._source.seek(self._cipher_start + (block - 1) * 16)
-            iv = read_exact(self._source, 16)
-            if len(iv) < 16:
+            self._source.seek(self._cipher_start + (block - 1) * AES_BLOCK_SIZE)
+            iv = read_exact(self._source, AES_BLOCK_SIZE)
+            if len(iv) < AES_BLOCK_SIZE:
                 self._buf.clear()
                 self._eof = True
                 return False
-        self._source.seek(self._cipher_start + block * 16)
+            # ``read_exact`` left the source at the start of ``block``.
         self._stage = open_aes_decrypt_stage(AesParams(key=self._params.key, iv=iv))
         self._buf.clear()
         self._eof = False
@@ -400,8 +428,8 @@ def parse_sevenzip_aes_properties(properties: bytes) -> tuple[int, bytes, bytes]
         )
     salt = properties[2 : 2 + salt_size]
     iv = properties[2 + salt_size : 2 + salt_size + iv_size]
-    if len(iv) < 16:
-        iv = iv + bytes(16 - len(iv))
+    if len(iv) < AES_BLOCK_SIZE:
+        iv = iv + bytes(AES_BLOCK_SIZE - len(iv))
     return cycles, salt, iv
 
 

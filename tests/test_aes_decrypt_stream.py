@@ -11,22 +11,22 @@ import io
 import pytest
 
 from archivey.internal.streams import crypto
-from archivey.internal.streams.crypto import AesDecryptStream, AesParams
+from archivey.internal.streams.crypto import AES_BLOCK_SIZE, AesDecryptStream, AesParams
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 
 pytestmark = requires("cryptography")
 
 _KEY = b"\x11" * 32
-_IV = b"\x22" * 16
-# Three AES blocks plus five extra bytes so the 7z short-last-block pad is hit.
+_IV = b"\x22" * AES_BLOCK_SIZE
+# 53 bytes so tests hit both writer-style plaintext pad and truncated ciphertext.
 _PLAIN = bytes(range(53))
 
 
 def _encrypt(plaintext: bytes) -> bytes:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-    if len(plaintext) % 16:
+    if len(plaintext) % AES_BLOCK_SIZE:
         raise ValueError("test helper encrypts whole AES blocks only")
     encryptor = Cipher(algorithms.AES(_KEY), modes.CBC(_IV)).encryptor()
     return encryptor.update(plaintext) + encryptor.finalize()
@@ -55,14 +55,33 @@ def test_aligned_roundtrip_via_open_helper() -> None:
         assert stream.read() == plaintext
 
 
-def test_short_last_block_zero_pads_like_7z() -> None:
-    # 53 ciphertext bytes: three full blocks plus five, then 7z-pad on finalize.
+def test_writer_pads_plaintext_so_ciphertext_is_block_aligned() -> None:
+    """7z AES encoder zero-pads plaintext, then stores a full ciphertext block.
+
+    Pack size is therefore a multiple of AES_BLOCK_SIZE. A short last ciphertext
+    block is truncated input, not the writer convention.
+    """
+    payload = _PLAIN  # 53 bytes
+    padded = payload + bytes(AES_BLOCK_SIZE - (len(payload) % AES_BLOCK_SIZE))
+    cipher = _encrypt(padded)
+    assert len(cipher) % AES_BLOCK_SIZE == 0
+    with _open(cipher) as stream:
+        assert stream.read() == padded
+        assert stream.seek(0, io.SEEK_END) == len(padded)
+
+
+def test_short_ciphertext_finalize_emits_garbage_last_block() -> None:
+    # Truncate a 64-byte ciphertext to 53: three full blocks plus five. Finalize
+    # zero-pads those five and decrypts — the last 16 plaintext bytes are not
+    # the original payload (AES cannot recover a truncated block).
     cipher = _encrypt(bytes(range(64)))[:53]
     expected = _stage_decrypt(cipher)
     assert len(expected) == 64
     assert expected[:48] == bytes(range(48))
+    assert expected[48:] != bytes(range(48, 64))
     with _open(cipher) as stream:
         assert stream.read() == expected
+        assert stream.seek(0, io.SEEK_END) == len(expected)
 
 
 def test_seekable_follows_source() -> None:
