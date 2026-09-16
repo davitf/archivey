@@ -528,13 +528,11 @@ def test_encrypted_deflate_family_seeks_with_accelerator(
             seekable_members=True,
             config=config,
         ) as reader:
-            parsed = getattr(reader, "_archive", None)
-            if parsed is not None and parsed.folders:
-                aes_unpack = parsed.folders[0].unpack_sizes[0]
-                assert aes_unpack % 16, (
-                    "fixture AES unpack_size must include pad so trailing "
-                    "garbage is observable"
-                )
+            aes_unpack = reader._archive.folders[0].unpack_sizes[0]
+            assert aes_unpack % 16, (
+                "fixture AES unpack_size must include pad so trailing "
+                "garbage is observable"
+            )
             member = next(m for m in reader.members() if m.is_file)
             assert any(c.algo is algo for c in member.compression)
             with reader.open(member) as stream:

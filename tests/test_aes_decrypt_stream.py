@@ -262,9 +262,11 @@ class _ResumeSource(io.BytesIO):
         # Single-block xz: inner always resumes at origin.
         (0, 400_000, lambda t: 0, 16),
         (0, 400_000, lambda t: 200_000, 200_016),
-        # Inner codec block not AES-aligned: round the composed candidate down.
-        (0, 400_000, lambda t: 200_005, 200_016),
-        (0, 400_000, lambda t: 199_999, 200_000),
+        # Inner codec block not AES-aligned: round UP so the IV block
+        # does not precede the inner's seek point.
+        (0, 400_000, lambda t: 200_005, 200_032),
+        (0, 400_000, lambda t: 199_999, 200_016),
+        (0, 400_000, lambda t: 200_001, 200_032),
         (0, 7, lambda t: t, 0),
         (100, 400_000, lambda t: t, 400_000),
         # Production SharedView declines; composition is a no-op.
@@ -276,6 +278,7 @@ class _ResumeSource(io.BytesIO):
         "inner_midway",
         "inner_unaligned",
         "inner_unaligned_below",
+        "inner_unaligned_plus_one",
         "block_zero",
         "nonzero_cipher_start",
         "inner_declines",

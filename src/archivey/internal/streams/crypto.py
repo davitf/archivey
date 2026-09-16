@@ -255,28 +255,24 @@ class AesDecryptStream(ReadOnlyIOStream):
         return self._seekable
 
     def nearest_resume_offset(self, target: int) -> int:
-        # Dense implicit index: a CBC restart point every block. Compose
-        # with the inner so a compressed source's replay is not reported
-        # as free.
-        #
-        # An inner seek point at ciphertext r lets this stream restart at
-        # plaintext r + AES_BLOCK_SIZE: that block is spent as the IV, so
-        # the first plaintext produced starts one block later. Plaintext r
-        # itself is not reachable from that seek point — it needs the
-        # inner one block earlier, before the point. (A free inner then
-        # stays a no-op: r = iv_off yields block_start.)
-        #
-        # Inner codec blocks need not be AES-aligned. Round the composed
-        # candidate down so the answer is a CBC restart this stream can
-        # actually produce.
+        """Earliest plaintext offset this stream can genuinely restart at.
+
+        Block-aligned, and reachable from the inner's nearest resume point
+        without seeking behind it. Callers may **act** on this — "to reach X,
+        resume from Y, so read forward from Y" — so an answer earlier than the
+        true restart point costs them replay. Never round it down.
+        """
         block_start = target - (target % AES_BLOCK_SIZE)
         iv_off = self._cipher_start + max(block_start - AES_BLOCK_SIZE, 0)
         resume = ask_resume_offset(self._source, iv_off)
         if resume is None:
             return block_start
-        composed = resume - self._cipher_start + AES_BLOCK_SIZE
-        aligned = composed - (composed % AES_BLOCK_SIZE)
-        return max(0, min(block_start, aligned))
+        # Restart at plaintext block k iff the IV block at cs + 16(k-1) is
+        # at or after the inner's resume. Smallest such k:
+        # P = ceil(q / 16) * 16 + 16, q = resume - cipher_start.
+        q = max(0, resume - self._cipher_start)
+        composed = -(-q // AES_BLOCK_SIZE) * AES_BLOCK_SIZE + AES_BLOCK_SIZE
+        return max(0, min(block_start, composed))
 
     @property
     def size(self) -> int | None:
