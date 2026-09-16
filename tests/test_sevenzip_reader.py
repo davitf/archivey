@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import random
 import struct
 import subprocess
 import sys
@@ -499,16 +500,25 @@ def _encrypted_codec_archive(tmp_path: Path, *, method: str, payload: bytes) -> 
     ],
 )
 def test_encrypted_deflate_family_seeks_with_accelerator(
-    tmp_path: Path, method: str, config_field: str, algo: CompressionAlgorithm
+    tmp_path: Path,
+    method: str,
+    config_field: str,
+    algo: CompressionAlgorithm,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     """Encrypted Deflate/BZip2 with seekable_members=True, AUTO and ON.
 
-    AUTO on Deflate was broken on main (non-seekable AES). ON was an honest
-    refusal and became a wrong-password misdiagnosis once AES grew seek.
-    Payload is incompressible and above RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE so
-    AUTO actually engages the accelerator.
+    Deflate AUTO is blocked by the truncation-verifiability gate
+    (``expected_decompressed_size is None`` on a 7z coder stage), so that
+    leg pins the stdlib path over an AES source. Deflate ON pins the
+    accelerator — the wrong-password lie. BZip2 AUTO and ON both
+    engage rapidgzip's bundled indexed bzip2 (no verifiability gate).
+    ``capfd`` catches the C-level ``Trailing garbage after EOF ignored!``
+    that an unbounded AES pad used to print on the bzip2 accelerator.
+    Seed 1 is load-bearing: AES unpack_size is not a multiple of 16, so
+    the pad exists and the warning is observable (urandom is often aligned).
     """
-    payload = os.urandom(1_600_000)
+    payload = random.Random(1).randbytes(1_600_000)
     archive = _encrypted_codec_archive(tmp_path, method=method, payload=payload)
     for mode in (AcceleratorMode.AUTO, AcceleratorMode.ON):
         config = ArchiveyConfig(**{config_field: mode})
@@ -518,6 +528,13 @@ def test_encrypted_deflate_family_seeks_with_accelerator(
             seekable_members=True,
             config=config,
         ) as reader:
+            parsed = getattr(reader, "_archive", None)
+            if parsed is not None and parsed.folders:
+                aes_unpack = parsed.folders[0].unpack_sizes[0]
+                assert aes_unpack % 16, (
+                    "fixture AES unpack_size must include pad so trailing "
+                    "garbage is observable"
+                )
             member = next(m for m in reader.members() if m.is_file)
             assert any(c.algo is algo for c in member.compression)
             with reader.open(member) as stream:
@@ -527,6 +544,8 @@ def test_encrypted_deflate_family_seeks_with_accelerator(
                 assert stream.read() == payload
                 stream.seek(1000)
                 assert stream.read() == payload[1000:]
+        captured = capfd.readouterr()
+        assert "Trailing garbage" not in captured.err
 
 
 @requires("pyppmd")

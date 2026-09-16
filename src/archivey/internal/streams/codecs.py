@@ -538,9 +538,12 @@ def _bound_rapidgzip_source(
 ) -> CodecSource:
     """Clip a stream source to the known compressed length before rapidgzip.
 
-    rapidgzip over-reads past raw-deflate EOS looking for a concatenated member.
-    A 7z AES stage decrypts a padded block, so the next coder's ``pack_size``
-    (AES unpack_size) is the bound that drops those pad bytes. Paths stay
+    rapidgzip over-reads past EOS looking for a concatenated member (raw
+    deflate) or prints trailing-garbage to stderr (bzip2). A 7z AES stage
+    decrypts a padded block, so the next coder's ``pack_size`` (AES
+    unpack_size) is the bound that drops those pad bytes. Only
+    ``pack_size`` is pad-free; the two fallbacks assume a non-AES source
+    (an AES stream's ``.size`` is the padded plaintext length). Paths stay
     paths: rapidgzip opens its own fd.
     """
     if isinstance(source, (str, os.PathLike)):
@@ -1254,7 +1257,14 @@ class Bzip2Codec(StreamCodec):
                 )
             # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
-            return _AcceleratorStream(_rapidgzip_bzip2(source, parallelization=0))
+            # Bound the input: AES pad after EOS is trailing garbage that rapidgzip
+            # prints to stderr outside DiagnosticCollector.
+            return _AcceleratorStream(
+                _rapidgzip_bzip2(
+                    _bound_rapidgzip_source(source, params, config),
+                    parallelization=0,
+                )
+            )
         # stdlib bz2 can seek, but a rewind re-decompresses from the start; the outer
         # ArchiveStream warns about that (see rewind_warning). The [seekable] accelerator
         # (above) gives real random access.

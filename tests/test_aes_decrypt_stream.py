@@ -81,6 +81,7 @@ def test_short_ciphertext_finalize_emits_garbage_last_block() -> None:
     assert expected[:48] == bytes(range(48))
     assert expected[48:] != bytes(range(48, 64))
     with _open(cipher) as stream:
+        assert stream.size == 64
         assert stream.read() == expected
         assert stream.seek(0, io.SEEK_END) == len(expected)
 
@@ -261,6 +262,9 @@ class _ResumeSource(io.BytesIO):
         # Single-block xz: inner always resumes at origin.
         (0, 400_000, lambda t: 0, 16),
         (0, 400_000, lambda t: 200_000, 200_016),
+        # Inner codec block not AES-aligned: round the composed candidate down.
+        (0, 400_000, lambda t: 200_005, 200_016),
+        (0, 400_000, lambda t: 199_999, 200_000),
         (0, 7, lambda t: t, 0),
         (100, 400_000, lambda t: t, 400_000),
         # Production SharedView declines; composition is a no-op.
@@ -270,6 +274,8 @@ class _ResumeSource(io.BytesIO):
         "inner_free",
         "inner_origin",
         "inner_midway",
+        "inner_unaligned",
+        "inner_unaligned_below",
         "block_zero",
         "nonzero_cipher_start",
         "inner_declines",

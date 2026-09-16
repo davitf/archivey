@@ -255,26 +255,39 @@ class AesDecryptStream(ReadOnlyIOStream):
         return self._seekable
 
     def nearest_resume_offset(self, target: int) -> int:
-        # Dense implicit index: a CBC restart point every block. The restart
-        # reads block-1 as the IV, so that is the earliest byte it touches;
-        # compose with the inner so a compressed source's replay is not
-        # reported as free. ``+ AES_BLOCK_SIZE`` un-shifts the IV block.
-        # Maintainer (davitf, 2026-09-16): the +16 is required so a free
-        # inner stays a no-op.
+        # Dense implicit index: a CBC restart point every block. Compose
+        # with the inner so a compressed source's replay is not reported
+        # as free.
+        #
+        # An inner seek point at ciphertext r lets this stream restart at
+        # plaintext r + AES_BLOCK_SIZE: that block is spent as the IV, so
+        # the first plaintext produced starts one block later. Plaintext r
+        # itself is not reachable from that seek point — it needs the
+        # inner one block earlier, before the point. (A free inner then
+        # stays a no-op: r = iv_off yields block_start.)
+        #
+        # Inner codec blocks need not be AES-aligned. Round the composed
+        # candidate down so the answer is a CBC restart this stream can
+        # actually produce.
         block_start = target - (target % AES_BLOCK_SIZE)
         iv_off = self._cipher_start + max(block_start - AES_BLOCK_SIZE, 0)
         resume = ask_resume_offset(self._source, iv_off)
         if resume is None:
             return block_start
-        return max(0, min(block_start, resume - self._cipher_start + AES_BLOCK_SIZE))
+        composed = resume - self._cipher_start + AES_BLOCK_SIZE
+        aligned = composed - (composed % AES_BLOCK_SIZE)
+        return max(0, min(block_start, aligned))
 
     @property
     def size(self) -> int | None:
-        """Plaintext length when the ciphertext length is cheaply knowable.
+        """Padded plaintext length when the ciphertext length is cheaply knowable.
 
-        The fsspec-style ``size`` convention. Rapidgzip wraps this stream in a
-        ``SharedSource`` view; without a bound, worker threads read past the
-        decrypted folder.
+        fsspec-style ``size``. This is the CBC-block-aligned length, not the
+        payload length: a truncated 53-byte ciphertext reports 64, and
+        well-formed 7z still includes up to 15 bytes of writer pad. The AES
+        coder's ``unpack_size`` (next coder's ``pack_size``) trims the pad
+        one layer up — which is why ``_bound_rapidgzip_source`` prefers
+        ``params.pack_size`` over this.
         """
         return self._plaintext_size()
 
@@ -360,9 +373,10 @@ class AesDecryptStream(ReadOnlyIOStream):
         ciphertext block still decrypts to 16 garbage bytes in ``finalize``, so
         SEEK_END has to agree with read-to-EOF. Maintainer decision (davitf,
         2026-09-16): that policy becomes ``TruncatedError`` — a short last block
-        is corruption, not payload. **Move both sites together, soon**; changing
-        ``finalize`` alone leaves SEEK_END reporting 16 bytes that no longer
-        exist.
+        is corruption, not payload. **Move all three sites together, soon**
+        (``finalize``, this method, and the ``size`` property); changing
+        ``finalize`` alone leaves SEEK_END and ``size`` reporting 16 bytes
+        that no longer exist.
         """
         cipher_len = self._cipher_len()
         if cipher_len is None:
