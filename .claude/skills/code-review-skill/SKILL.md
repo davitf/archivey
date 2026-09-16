@@ -86,9 +86,15 @@ checklist. Then write the §0 three-block report.
 ## Severity labels
 
 🔴 `[blocking]` must fix · 🟡 `[important]` should fix, discuss if you disagree ·
-🟢 `[nit]` optional. Non-blocking annotations: 💡 `[suggestion]` · 📚 `[learning]` ·
-🎉 `[praise]`. Those three tiers are the standard across every guide here. Pair each
+🟢 `[nit]` small, but still fixed on this PR — *small*, not *optional*.
+Non-blocking annotations: 💡 `[suggestion]` · 📚 `[learning]` · 🎉 `[praise]`.
+Those three tiers are the standard across every guide here. Pair each
 finding with a confidence tag — `CONFIRMED` / `PLAUSIBLE` / `DISPROVEN` (addendum §0).
+
+**Verdict.** “Only nits left” is not an approval here: nits get fixed before merge, or the
+verdict is *approve conditional on the listed fixes* (addendum §0 Verdicts). A review posted
+through the maintainer's own account cannot carry a GitHub `APPROVE` event at all — expected,
+not a problem to report: the verdict lives in the text (addendum §10).
 
 ## Guides — open as needed
 
