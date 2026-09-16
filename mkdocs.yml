@@ -1,0 +1,58 @@
+site_name: Archivey
+site_description: Read, stream, and safely extract archives behind one uniform interface.
+site_url: https://davitf.github.io/archivey/
+
+nav:
+  - Home: index.md
+  - Install and extras: install.md
+  - Opening and listing: opening-and-listing.md
+  - Reading members: reading-members.md
+  - Gotchas: gotchas.md
+  - Extracting: extracting.md
+  - Access costs and pitfalls: access-and-cost.md
+  - Formats and extras: formats.md
+  - Errors and diagnostics: errors-and-diagnostics.md
+  - Command line: cli.md
+  - Migrating from zipfile/tarfile: migrating.md
+  - Platforms and threading: support-matrix.md
+  - Philosophy: philosophy.md
+  - API reference: api.md
+  - Acknowledgements: acknowledgements.md
+
+# Everything under `docs/` is published and is for users; nothing else lives there.
+# Maintainer material (decision log, threat model, codec analysis, known issues,
+# investigations, superseded prose) is in `dev-docs/`, outside the site — not under
+# `docs/` behind an exclusion list, which would need a second list to keep in sync.
+# `scripts/check_docs_nav.py` enforces both halves of that invariant.
+
+plugins:
+  - search
+  - mkdocstrings:
+      custom_templates: docs_templates
+      handlers:
+        python:
+          paths: [src]
+          options:
+            heading_level: 2
+            show_source: false
+            show_root_heading: true
+            docstring_section_style: table
+            extensions:
+              - griffe_fieldz
+              - scripts/griffe_extensions.py
+  - autorefs
+
+theme:
+  name: material
+  navigation_depth: 2
+
+markdown_extensions:
+  - toc:
+      toc_depth: 3
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences

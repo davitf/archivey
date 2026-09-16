@@ -1,0 +1,869 @@
+# Archive Reading
+
+## Purpose
+
+Uniform interface for opening and reading archives. `ArchiveReader` presents ZIP,
+TAR, RAR, 7z, ISO, directories, and single-file compressed streams with consistent
+metadata, iteration, and data-access semantics.
+
+This spec is the **caller-facing** `ArchiveReader` surface. Cross-cutting
+machinery lives elsewhere:
+
+| Concern | Spec |
+| --- | --- |
+| `streaming` legality × method table, cost receipts | `access-mode-and-cost` |
+| Diagnostic values, retention budget, watermarks | `diagnostics` |
+| Detection → reader diagnostic handoff | `format-detection` |
+| `MemberStreams.CONCURRENT`, ownership, free-threaded opens | `reader-concurrency` |
+| Extraction filters / bomb limits | `safe-extraction` |
+## Requirements
+### Requirement: Opening an archive for reading
+
+The system SHALL expose:
+
+```python
+archivey.open_archive(
+    source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
+    *,
+    format: ArchiveFormat | None = None,
+    streaming: bool = False,
+    seekable_members: bool = False,
+    concurrent_members: bool = False,
+    password: PasswordInput = None,
+    encoding: str | None = None,
+    config: ArchiveyConfig | None = None,
+) -> ArchiveReader
+```
+
+`source`, multi-volume ordering, `streaming`, password candidates/providers,
+encoding, configuration precedence, and backend selection retain their existing
+contracts. `format=None` auto-detects; an explicit format bypasses detection.
+
+**An explicit argument the resolved backend cannot act on is handled by its
+*intent*, and the rule SHALL be applied to every such argument:**
+
+> **Refuse** when the argument is an **assertion about this archive**. **Permit, and
+> record a diagnostic**, when it is a **resource offered for use if needed.**
+
+| Argument | Intent | Behaviour when the backend cannot act on it |
+| --- | --- | --- |
+| `format=` | assertion — "I claim this is a ZIP" | refuse when it cannot hold (see the directory rule below) |
+| `password=` | resource — a keyring | permit in **every** form; `PASSWORD_ARGUMENT_UNUSED` |
+| `encoding=` | resource — a hint for name decoding | permit; `ENCODING_ARGUMENT_UNUSED` |
+
+`password=` on a format with no encryption SHALL NOT raise, in any of its forms — a
+single value, an ordered sequence, and a provider callable SHALL behave identically
+(accepted, never consulted, one diagnostic). A *wrong* password on an *encrypted*
+archive is unaffected and still raises. Each backend SHALL declare whether it consumes
+`encoding` (`ReadBackend.USES_ENCODING`) the same way it declares
+`ReadBackend.SUPPORTS_PASSWORD`, so the check is central rather than per-backend
+silence.
+
+A **directory path** resolves to `ArchiveFormat.DIRECTORY`. An explicit `format=`
+naming anything else SHALL raise `ArchiveyUsageError` rather than being discarded:
+silently overruling it returns a reader over the directory tree to a caller who
+asserted a different format, so every read downstream succeeds on the wrong data.
+`format=ArchiveFormat.DIRECTORY` and `format=None` both remain valid. This is the
+assertion half of the rule above, not a special case.
+
+**Diagnostics at open (observable):** On success, advisory events from automatic
+detection (if any) appear in this reader's cumulative `diagnostics` for its
+lifetime and are not duplicated. Explicit `format=` skips detection, so open
+adds no detection diagnostics. Unused-argument diagnostics are emitted before the
+reader is returned, so they are readable without listing anything. If open raises,
+no reader is returned.
+
+Handoff mechanics (one shared collector/budget, no copy/re-seed): see
+`format-detection` and `diagnostics`.
+
+#### Scenario: open matrix
+
+| Case | Expected |
+| --- | --- |
+| Auto-detect succeeds | Detection events visible on `reader.diagnostics`; not duplicated |
+| `format=ArchiveFormat.ZIP` succeeds | No detection diagnostics from open |
+| Open raises | No reader returned |
+| `password="secret"` | Returned reader uses that password for encrypted members |
+| `password=` any form, format with no encryption | Opens; `PASSWORD_ARGUMENT_UNUSED`; no raise |
+| `encoding=` on a backend that decodes names another way | Opens; `ENCODING_ARGUMENT_UNUSED`; names unchanged |
+| Directory path, no `format=` | Opens as `DIRECTORY` |
+| Directory path, `format=ArchiveFormat.DIRECTORY` | Opens as `DIRECTORY` |
+| Directory path, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError`, naming the path and the requested format |
+
+### Requirement: Declared member-stream capabilities
+
+`open_archive()` SHALL accept two keyword-only booleans, both defaulting to `False`:
+
+- `concurrent_members=True` — any number of member streams may be open simultaneously
+  (full contract: `reader-concurrency`)
+- `seekable_members=True` — every member stream from random `open()` is seekable
+
+The system SHALL NOT expose a flag-enum parameter for this purpose. `open_stream` SHALL
+keep its `seekable: bool` parameter, and both entry points SHALL use the same `seekable`
+vocabulary for the same concept; concurrency has no meaning for a single standalone
+stream, so `open_stream` MUST NOT gain a concurrency parameter.
+
+The `MemberStreams` flag type SHALL remain publicly exported as the internal
+representation the booleans map to at the entry point. It is no longer an input to
+`open_archive`. It is NOT required to appear on `CostReceipt` or in diagnostics —
+neither carries it, and no requirement SHALL claim otherwise. Whether the declared
+capabilities become a typed part of the `ArchiveReader` contract (today
+`member_streams` exists only on the concrete base class) is deliberately left open.
+
+**Default (neither declared), every format including directory:** at most one live member
+data stream per reader; streams are forward-only. "Live" spans `open()` →
+stream `close()`/context exit (not EOF, not GC). A second overlapping `open()`
+SHALL raise `ConcurrentAccessError` at the later call and leave the first stream
+untouched/readable — the gate never resolves contention by closing a held stream.
+The refusal SHALL happen before the member is opened: a refused `open()` SHALL NOT
+construct a member data stream, spawn a helper process, or read member data.
+(This is a rule about *contention*, not lifetime: `reader.close()` does close
+member streams — see "Context-manager and close lifecycle".) Every member
+stream (random `open()` and `stream_members()` yields) SHALL report
+`seekable() is False`; `seek()` SHALL raise `io.UnsupportedOperation`; `tell()`
+SHALL work. Sequential `open → read → close → open next` is unaffected.
+
+With `seekable_members=True`, every file member stream from random `open()` SHALL
+report `seekable() is True` and `seek()` SHALL work, including a backward seek
+that returns the same bytes. The cost MAY be a full re-decode from the member
+start (loud-slow-rewind). `stream_members()` yields are a single-pass decode;
+SEEKABLE does not require those handles to seek.
+
+`ConcurrentAccessError`'s message SHALL name the parameter a caller would pass to
+allow the operation (`concurrent_members=True`), not an internal type.
+
+`open_archive()` SHALL capture the caller stack once; `ConcurrentAccessError`
+SHALL include that `file:line`. Full stack is retained on the reader for
+diagnostics (no config knob). Capabilities are per-archive intent only — no
+`ArchiveyConfig` equivalent, no per-`open()` flag. Access cost never determines
+legality; the cost receipt describes expense.
+
+**Internal ops exempt:** `extract_all()` (incl. hardlink recovery), symlink-target
+reads, password confirmation, and other library-internal opens run under internal
+scopes and need no declared capability.
+
+**Out of gate scope:** non-overlapping open *order* on solid archives (each
+re-decode from block start) stays under `AccessCost` / `solid_block_count` /
+`stream_members()` steer. Docs for the capability booleans SHALL state this.
+
+#### Scenario: capability gate matrix
+
+| Case | Expected |
+| --- | --- |
+| Overlapping second `open()` without `concurrent_members` (ZIP/TAR/ISO/single-file/dir) | `ConcurrentAccessError` at later `open()` with open_archive `file:line`; first stream remains readable |
+| Refused second `open()` without `concurrent_members` | Raises before the member is opened — no member stream constructed, no helper process spawned, no member data read |
+| Non-overlapping open/read/close loop, no capabilities declared | All opens succeed |
+| Stream without `seekable_members` (incl. real directory file) | `seekable()` false; `seek()` → `io.UnsupportedOperation`; `tell()` + forward reads OK |
+| Same member via random `open()` with `seekable_members=True` | `seekable()` true; backward seek rereads; loud-slow-rewind when there is no index/accelerator |
+| `extract_all()` with nothing declared | Completes; internal opens ungated |
+| `open_archive(p, member_streams=...)` | `TypeError` — the parameter no longer exists |
+
+### Requirement: Multi-volume and multi-source input
+
+`open_archive()` SHALL accept a multi-volume archive either way and present one
+logical `ArchiveReader`:
+
+- **Single path in a volume set** (e.g. `name.7z.001`, `name.exe.001`,
+  `name.part1.rar`, `name.part1.sfx`, `name.rar` + `name.r00`…, or an old-scheme
+  SFX first volume `name.exe` / `name.sfx` + `name.r00`): discover
+  siblings in natural order
+- **Stub-only SFX** (`name.exe` / `name.sfx` with no archive magic) beside
+  exactly one of `name.exe.001`, `name.7z.001`, `name.zip.001`: open that
+  first volume's set, including when `format=` is set. Two of those names
+  SHALL raise `UnsupportedFeatureError`. A stub that itself contains archive
+  magic SHALL open as that archive (no redirect). If `format=` names a
+  different container than the sibling, raise `ArchiveyUsageError`.
+- **Explicit ordered `source` sequence**: use that order as volumes
+
+Joining is format-specific (`format-7z` / `format-rar`): 7z concatenates a split
+byte stream; RAR parses self-describing volumes in order and stitches
+boundary-spanning members. Incomplete/out-of-order sets SHALL raise
+`UnsupportedFeatureError` or a truncated/corrupt error — never a partial result.
+
+#### Scenario: volume input matrix
+
+| Case | Expected |
+| --- | --- |
+| `open_archive("disc.7z.001")` with siblings present | One reader for the whole set |
+| `open_archive("vol.exe.001")` (or `.7z.001` / `.zip.001`) with no siblings | `TruncatedError` names the missing parts |
+| `open_archive("archive.exe")` with `archive.r00` siblings | One logical RAR archive; `.exe` / `.sfx` is volume 1 |
+| `open_archive("vol.exe")` with a stub-only exe and `vol.exe.001` / `vol.7z.001` / `vol.zip.001` | One reader for that set |
+| `open_archive("vol.exe", format=ZIP)` with a stub-only exe and a zip first volume | One reader for that set |
+| `open_archive("vol.exe", format=SEVEN_Z)` beside a zip first volume | `ArchiveyUsageError` |
+| `open_archive("vol.exe", format=ZIP)` with embedded ZIP SFX and a sibling volume | Opens the stub; no redirect |
+| `open_archive("vol.exe")` with two of those first-volume names | `UnsupportedFeatureError` |
+| `open_archive([vol1, vol2, vol3])` in order | One archive in that order |
+| Missing volume | Raise at open or first dependent read; no partial member list |
+
+### Requirement: Archive metadata access
+
+The system SHALL expose read-only:
+
+```python
+@property
+def info(self) -> ArchiveInfo: ...
+
+@property
+def cost(self) -> CostReceipt: ...
+
+@property
+def format(self) -> ArchiveFormat: ...
+```
+
+`info` is format/version/solid/member count/comment/encryption/multivolume/cost.
+`cost` is listing/access/stream capability/solid block count. `format` is the
+`(container, stream)` pair.
+
+#### Scenario: metadata after open
+
+| Case | Expected |
+| --- | --- |
+| Successful open | `ar.info`, `ar.cost`, `ar.format` available immediately without extra I/O |
+
+### Requirement: MemberListReport surfaces partial listings with terminal errors
+
+The system SHALL expose an immutable listing report and a materializing accessor
+that always returns both recovered members and any terminal archive-level error:
+
+```python
+@dataclass(frozen=True)
+class MemberListReport:
+    members: tuple[ArchiveMember, ...]
+    error: ArchiveyError | None
+    diagnostics: DiagnosticSummary
+
+def members_report(self) -> MemberListReport: ...
+```
+
+`members_report()` SHALL recover every member the backend can list before a
+terminal archive-level failure, put them in `members` (archive order), set
+`error` to that failure or `None` when the listing is complete, and attach a
+point-in-time `diagnostics` snapshot for the operation. It MUST NOT raise for
+terminal archive-level listing errors covered by this requirement (those belong
+on `error`). Open-time failures and `ResourceLimitError` from `ListingLimits`
+SHALL still raise (limits are not the damage story).
+
+`error is None` SHALL mean the listing is complete. Callers MUST treat a
+non-`None` `error` as an incomplete listing even when `members` is non-empty.
+The report SHALL iterate, index, and size as its `members` sequence (same
+ergonomics as `ExtractionReport` vs its results).
+
+Members in the report SHALL be identity-stamped for this reader (`member in
+reader`) so `open(member)` works for recovered `FILE` members. An incomplete
+report (`error` set) MUST NOT be treated as a successful complete materialization:
+subsequent `members()` / `scan_members()` / `get(name)` MUST still raise the
+terminal error rather than return a silent partial list.
+`members_report_if_available()` SHALL return a `MemberListReport | None`: the stored
+report when one exists without scanning — complete (`error is None`) **or**
+incomplete (`error` set) from a prior pass — or the upfront index as a complete
+report for backends that carry one; `None` only when nothing is materialized and a
+scan would be required. Returning an incomplete report to a caller MUST NOT change
+the complete-or-raise behaviour of `members()` / `scan_members()` / `get(name)`;
+the report self-labels via `error` and those methods still raise.
+
+On `streaming=True`, `members_report()` MAY start or finish the single forward
+pass (like `scan_members`) and thereby consume it; it still returns a report
+instead of raising on terminal archive-level listing errors.
+
+#### Scenario: members_report / MemberListReport matrix
+
+| Case | Expected |
+| --- | --- |
+| Clean archive | `error is None`; `members` is the full fully-resolved list |
+| TAR rejected mid/final header after prefix (Option F) | `members` = recoverable prefix; `error` is `CorruptionError`; report stored incomplete |
+| Strict absent/short trailer after prefix | `members` = prefix; `error` is `TruncatedError`; report stored incomplete |
+| `members_report()` then `members()` on same RA reader after incomplete | `members()` raises the terminal error (not a partial list) |
+| `open(report.members[i])` for a recovered FILE after incomplete | Succeeds by identity |
+| `get(name)` after incomplete | Raises terminal error / does not pretend completeness |
+| `members_report_if_available()` after incomplete pass already ran | Returns the incomplete report (prefix + `error`); count is a floor |
+| `members_report_if_available()` with no materialization and no upfront index | `None` |
+| `ListingLimits.max_members` exceeded during `members_report` | `ResourceLimitError` raised (not soft-returned on `error`) |
+| Streaming `members_report` after recoverable prefix + terminal error | Report with prefix + error; pass consumed |
+
+### Requirement: Sequential in-order iteration
+
+```python
+def __iter__(self) -> Iterator[ArchiveMember]: ...     # sequential, in-order
+def members(self) -> list[ArchiveMember]: ...          # materialize (RA only)
+def scan_members(self) -> list[ArchiveMember]: ...      # fully-resolved, either mode
+def members_report(self) -> MemberListReport: ...         # prefix + error report
+def members_report_if_available(self) -> MemberListReport | None: ...  # report peek
+```
+
+`__iter__` MUST yield in archive order without loading all members into a
+*caller-visible* complete cache before the first yield when a terminal
+archive-level error will follow a recoverable prefix. In **random-access** and
+**streaming**, after yielding every recovered member, a terminal archive-level
+listing error SHALL propagate (yield-then-raise). In **random-access**,
+`members()` MAY scan formats without a central directory; after **successful
+complete** materialization, later `__iter__` calls MUST use the cache. In
+**streaming**, no cache-replay: `__iter__` is part of the single forward pass (see
+`access-mode-and-cost`).
+
+`members()` and `scan_members()` SHALL remain **complete-or-raise**: they return
+a fully-resolved `list[ArchiveMember]` only when the listing completes; on a
+terminal archive-level listing error they SHALL raise that error and MUST NOT
+return a partial list. Prefer `members_report()` when both the prefix and the
+error are required.
+
+`scan_members()` SHALL return the fully-resolved list (`link_target_member` filled
+where the target exists, incl. forward-pointing and last-wins symlinks)
+when complete. In RA it equals `members()`. On `streaming=True` it returns the
+cache if the pass completed successfully, else **finishes that pass** (from
+start or draining an interrupted one), resolves links, and returns the list —
+or raises on terminal archive-level listing error. It is the only
+complete-or-raise method permitted after an iteration method has started;
+running it consumes/finishes the pass.
+
+A live forward pass leaves forward-pointing symlinks unresolved at yield time.
+Completing a pass **successfully** via `__iter__`, `stream_members`,
+`extract_all`, or `scan_members` SHALL store a complete `MemberListReport`
+(`error is None`) finalized in place on already-yielded objects so
+`members_report_if_available()` returns it. An abandoned pass (early `break`, no
+`scan_members()`) SHALL NOT finalize. A pass that ends in a terminal
+archive-level listing error after a prefix SHALL store an incomplete report
+(`error` set) — never a complete one (see `MemberListReport` requirement).
+
+No `__len__` / `__getitem__` (not a collection; protocols are probed implicitly —
+`list(reader)` probes `__len__` for preallocation). `len(ar)` → Python `TypeError`
+in every mode; use `len(ar.members())`, `ar.info.member_count`, or count while
+iterating. `list(ar)` just iterates (and may raise after yielding a prefix).
+
+`members_report_if_available()` is a report peek: it returns the stored
+`MemberListReport` (complete or incomplete) when one exists without scanning, or
+the upfront index as a complete report for backends that carry one, else `None`.
+It never scans, reads member data, or starts/consumes the forward pass — an
+incomplete report is only returned when a prior pass already stored it, so the
+never-scan promise holds. Report members may have unresolved links when targets
+live in member data (see `access-mode-and-cost`); link resolution is independent
+of `error` (completeness).
+
+With `streaming=True`, `members()` / `get()` / `open()` / `read()` SHALL raise
+`UnsupportedOperationError` uniformly. Only one forward pass
+(`__iter__`/`stream_members` or one `extract_all`) is allowed, with
+`scan_members()` / `members_report()` to finish/return it and
+`members_report_if_available()` anytime.
+Canonical access-mode × method table: `access-mode-and-cost`.
+
+#### Scenario: iteration / access-mode matrix
+
+| Method / action | `streaming=False` | `streaming=True` |
+| --- | --- | --- |
+| `__iter__` | Yields in order; after successful complete materialization, from cache; terminal archive error → yield prefix then raise | Single-use forward pass; terminal archive error → yield prefix then raise; second `__iter__`/`stream_members`/`extract_all` → `UnsupportedOperationError` |
+| `members()` | Full scan if needed; complete list or raise (no partial return) | `UnsupportedOperationError` |
+| `scan_members()` | Same fully-resolved list as `members()` when complete; raise on terminal archive error | Finishes/drains pass; complete list or raise; pass consumed |
+| `members_report()` | Always returns `MemberListReport` (prefix + `error`) | Always returns report; may consume the pass |
+| `scan_members()` after early `break` | n/a | Drains remainder; complete list or raise on terminal error |
+| `members_report_if_available()` after completed **successful** pass | Complete report (`error is None`) if indexed/cached | Complete report (not `None`); forward-link finalization visible on yielded objects |
+| `members_report_if_available()` after incomplete (error) pass already ran | Incomplete report (prefix + `error`) | Incomplete report (prefix + `error`) |
+| `members_report_if_available()` after abandoned pass / before any materialization | `None` (unless upfront index) | `None` |
+| `len(ar)` | `TypeError` | `TypeError` |
+| `list(ar)` | Iterates (may raise after prefix) | Iterates (consumes the single pass; may raise after prefix) |
+
+### Requirement: Listing resource limits
+
+The system SHALL define frozen `ListingLimits` and apply them from the reader's
+open `ArchiveyConfig.listing_limits` when registering members into a
+materialized or resolved member list (`members()`, `scan_members()`, and any
+path that materializes via `_get_members_registered` / equivalent). There is no
+per-call listing-limits override.
+
+```python
+@dataclass(frozen=True)
+class ListingLimits:
+    max_members: int | None = 1_048_576
+    max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
+    UNLIMITED: ClassVar["ListingLimits"]
+```
+
+`None` on a field disables that guard. `ListingLimits.UNLIMITED` disables both.
+Crossing either guard SHALL raise `ResourceLimitError` naming the knob and
+limit. Format-local parser bounds (e.g. 7z header-size checks, RAR member-count
+ceilings) MAY still raise at parse/open for nonsensical or hostile headers and
+are complementary, not a substitute. Indexed formats that build a member table
+during `open_archive()` MAY allocate up to those parser ceilings before spine
+`ListingLimits` are evaluated on materialization (`members()` / extract-prep).
+
+**Unguarded by design:** `stream_members()` / forward-only iteration MUST NOT
+enforce `ListingLimits` (O(1) escape hatch). Callers that need a full resolved
+list use `members()` / `scan_members()` and accept the caps.
+
+#### Scenario: listing-limits matrix
+
+| Case | Expected |
+| --- | --- |
+| Default config, archive with ≤1_048_576 members and metadata under 64 MiB | `members()` / `scan_members()` succeed |
+| Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration; no full cache published |
+| Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
+| `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
+| `stream_members()` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors |
+| `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
+
+### Requirement: Listing metadata-byte accounting
+
+The system SHALL measure `max_metadata_bytes` as a **safety-oriented weight** of
+retained string/bytes fields accumulated as members are registered, plus
+archive-level `ArchiveInfo.comment` once when known. Exact UTF-8 encoding of
+every field is not required — the cap exists to bound metadata bombs, not to
+mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
+
+- `str` fields `name`, `comment`, `link_target`, `uname`, `gname`: a cheap
+  upper bound on UTF-8 length — `len(s)` when `s` is ASCII, otherwise
+  `4 * len(s)` (UTF-8 is at most 4 bytes per code point). Implementations MAY
+  use a stricter exact encode; they MUST NOT use a measure that can be smaller
+  than UTF-8 (plain `len(s)` on non-ASCII would under-count a Unicode name bomb).
+- `raw_name`: `len(raw_name)` when not `None` (stored archive bytes; already exact)
+- `extra`: lengths of `str` / `bytes` values under the same rules; for a one-level
+  `dict` value, nested `str` / `bytes` values only
+- Exclude: `_raw`, `hashes`, diagnostics, Python object overhead
+
+#### Scenario: metadata accounting matrix
+
+| Case | Expected |
+| --- | --- |
+| Member with long `name` + `raw_name` | Both weights count |
+| Huge `ArchiveInfo.comment` alone | Counts toward the budget once |
+| `extra` holds opaque non-str/bytes object | Not counted |
+| ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
+| Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
+
+### Requirement: Name lookup and member identity
+
+No `__getitem__` (duplicates break mapping; dunders are probed implicitly).
+`open()`/`read()` accept a name and raise `KeyError` when absent.
+
+```python
+def get(self, name: str, default=None) -> ArchiveMember | None: ...
+def __contains__(self, member: ArchiveMember) -> bool: ...  # identity, O(1), any mode
+```
+
+`get()` looks up by normalized name; duplicates → **last** (sequential extraction
+winner). On `streaming=True` SHALL raise `UnsupportedOperationError` regardless of
+loaded index. For a no-scan peek use `members_report_if_available()`.
+
+`member in reader` is identity membership (yielded by this reader), O(1), any mode.
+Non-`ArchiveMember` (notably a name string) SHALL raise `TypeError` pointing to
+`get()`. `__contains__` MUST exist — without it, `in` falls back to `__iter__` and
+would consume a streaming pass.
+
+#### Scenario: lookup / membership matrix
+
+| Case | Expected |
+| --- | --- |
+| `get` existing name | That `ArchiveMember` |
+| `get` missing | `default` / `None`; `open`/`read` of missing name → `KeyError` |
+| `get` on `streaming=True` | `UnsupportedOperationError` |
+| `member in ar` (yielded by `ar`) | `True`; foreign member → `False`; no scan |
+| `"file.txt" in ar` | `TypeError` → use `get()`; never iterate |
+
+### Requirement: Reading member data
+
+`ArchiveStream` SHALL implement `BinaryIO`, remain caller-closed, and expose an
+immutable operation-filtered diagnostic snapshot:
+
+```python
+class ArchiveStream(BinaryIO):
+    @property
+    def diagnostics(self) -> DiagnosticSummary: ...
+
+def read(self, member: str | ArchiveMember) -> bytes: ...
+def open(self, member: str | ArchiveMember) -> ArchiveStream: ...
+```
+
+Unknown name → `KeyError`; foreign `ArchiveMember` → `ValueError`. `read()`
+materializes the full payload without extraction bomb checks (small trusted
+members). `open()` streams in bounded chunks. Full reads verify supported digests;
+streaming verification raises `CorruptionError` only on the terminal read after
+valid chunks; `read()` raises without returning bytes.
+
+After symlink/hardlink following, if the **resolved** member is
+`DIRECTORY`, `ANTI`, or `OTHER`, `open()` / `read()` SHALL raise
+`ArchiveyUsageError`. They MUST NOT return empty bytes, and MUST NOT leak raw
+`IsADirectoryError` or format `CorruptionError` for directory paths. A link whose
+target is missing SHALL still raise `LinkTargetNotFoundError` (`ArchiveyError`).
+
+**Diagnostics (observable):** A reader-owned stream's `diagnostics` shows only
+that open operation's events; the same events also appear on the reader's
+cumulative snapshot without being retained twice. A standalone `ArchiveStream`
+(not owned by a reader) has its own lifetime summary. Retention/budget rules:
+`diagnostics`.
+
+#### Scenario: read / open matrix
+
+| Case | Expected |
+| --- | --- |
+| `open("data.bin")` succeeds | `ArchiveStream` as `BinaryIO`; `stream.diagnostics` = that operation only |
+| Reader-owned stream emits rewind diagnostic | Visible on stream and reader snapshots; retained once |
+| `read("readme.txt")` | Full uncompressed `bytes` |
+| `open(member)` from a different reader | `ValueError` |
+| `open`/`read` directory (ZIP/TAR/ISO/directory/7z) | `ArchiveyUsageError` |
+| `open`/`read` `MemberType.ANTI` or `OTHER` | `ArchiveyUsageError` |
+| Symlink resolves to a file | Follow succeeds; returns file stream/bytes |
+| Symlink target missing in archive | `LinkTargetNotFoundError` |
+
+### Requirement: Non-file stream_members yield None
+
+`stream_members` SHALL pair every non-file member (`DIRECTORY`, `SYMLINK`,
+`HARDLINK`, `OTHER`, `ANTI`) with `stream is None` (no empty `ArchiveStream`).
+
+#### Scenario: non-file stream matrix
+
+| Case | Expected |
+| --- | --- |
+| Directory member | Stream `None` |
+| `MemberType.ANTI` | Stream `None` |
+
+### Requirement: Bounded-memory sequential streaming via stream_members
+
+```python
+def stream_members(
+    self,
+    members: MemberSelector | None = None,
+) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]: ...
+```
+
+Yields `(member, stream)` in archive order with bounded memory. Solid blocks
+decompress progressively (never buffered whole); peak = decoder working set + one
+in-flight chunk. Non-file members yield `None`.
+
+`members` is a selector (names/identities or predicate), not a transform. Streams
+are lazy: unselected/unread members are not opened/decompressed and do not request
+passwords. Yields the original mutable `ArchiveMember` so late-bound fields stay
+visible.
+
+Yielded streams are iterator-owned and valid only until advance: the iterator SHALL
+close/invalidate the previous stream before the next yield. MUST NOT retain a
+growing decompressed-block cache until reader close. On solid archives, random
+`open()` may re-decode from block start; the cost is silent, and callers are
+directed to `stream_members()` by `reader.cost.access_cost` and by the `open()` /
+`read()` docstrings rather than by a runtime warning.
+
+A `stream_members()` invocation is an exclusive one-pass/data-path operation in
+both modes. It SHALL NOT overlap random `open()`, materialization, another
+iteration/data pass, unrelated extraction, or reader close. An `extract_all()`
+owner MAY invoke it as a child pass and MAY read/close the yielded child stream.
+Unrelated overlap SHALL raise `ArchiveyUsageError` at the later op and leave the
+active pass/stream valid. (Unlike random `open()`, whose independently owned
+streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
+
+#### Scenario: stream_members matrix
+
+| Case | Expected |
+| --- | --- |
+| Yielded file stream emits diagnostic before advance | Stream + reader snapshots share one retained occurrence |
+| Selector excludes member / stream unread | No open/decompress; no data-path diagnostic |
+| Solid archive | Progressive decode; peak = decompressor state + one chunk |
+| `stream_members(lambda m: m.name.endswith(".txt"))` | Only `.txt`; unselected never opened; original mutable members |
+| Fully read stream, then inspect member | Late-bound fields (e.g. size/CRC) visible on same object |
+| Advance after one yield | Prior stream closed/invalidated first |
+| Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable |
+| Close/abandon partial generator | Current stream closed; pass ownership released once |
+| Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
+
+### Requirement: Transparent link following
+
+`open()` / `read()` SHALL follow symlinks and hardlinks through shared reader
+logic; `open()` SHALL keep returning `ArchiveStream` after following.
+
+**Hardlinks (positional):** most recent matching target **strictly before** the
+link (TAR/RAR5 model). Malformed later-only source: RA falls back to the later
+member (extraction recovers — see `format-tar`); streaming cannot resolve forward
+and fails per `OnError`. Modes SHALL agree on hardlink resolution for the same
+archive.
+
+**Symlinks:** RA → last matching target overall; streaming → latest seen so far
+(forward stays `link_target_member is None`). Forward-visibility difference is
+inherent to a single pass.
+
+**Target-name resolution:** hardlink targets are archive-root relative
+(normalized as-is); symlink targets join to the link's directory first.
+Absolute/`..`-escaping symlink targets stay unresolved (`None`; open →
+`LinkTargetNotFoundError`). Directory lookup tries bare and `/`-suffixed forms.
+
+Follow chains recursively; detect cycles by **member id** (not name); no arbitrary
+depth limit. Missing target → `LinkTargetNotFoundError`; cycle → `ReadError`.
+Terminal fully-dereferenced target (when known) is `member.link_target_member`
+(see `archive-data-model`). Diagnostics for a linked open cover follow + read of
+that one `open()` operation.
+
+#### Scenario: link resolution matrix
+
+| Case | Expected |
+| --- | --- |
+| Valid chain to file data | One `ArchiveStream`; diagnostics cover follow + read of that open |
+| Hardlink → earlier file | Stream yields that file's data |
+| Missing target | `LinkTargetNotFoundError` |
+| Chain revisits member id | `ReadError` (cycle); no infinite recursion |
+| Symlink → file in archive | Stream yields target file data |
+| Symlink `dir/link` → `file` / `./file` | Lookup `dir/file`, not root-relative `file` |
+| Absolute / `..`-escaping symlink | `link_target_member is None`; open → `LinkTargetNotFoundError` |
+| Duplicate names, hardlink | Most recent occurrence strictly before the link |
+| Duplicate names, symlink (RA) | Last occurrence overall |
+| Hardlink source only later | RA falls back to later member; streaming cannot resolve |
+| Two distinct same-named members on one chain | Not a cycle (id-based tracking) |
+
+### Requirement: Context-manager and close lifecycle
+
+The reader SHALL implement `__enter__` / `__exit__` / `close()`. `close()` SHALL
+be idempotent.
+
+**Caller observables:**
+
+- Exiting `with open_archive(...)` closes the reader.
+- After reader close, every new reader operation or property (including
+  `__enter__`, iteration/listing/lookup, metadata/cost, `open`/`read`,
+  `stream_members`, extraction) SHALL raise `ArchiveyUsageError`. Repeated
+  `close()` / `__exit__` are no-ops.
+- `close()` SHALL close every member stream still open on that reader, in the
+  order they were opened, and SHALL do so only after the reader has actually
+  transitioned to closed (so a `close()` that raises leaves streams untouched).
+  A member stream SHALL NOT outlive its reader — reading one afterwards raises
+  as it would for any closed stream. This matches `zipfile.ZipFile.close()` and
+  `tarfile.TarFile.close()`.
+- Each stream close releases that stream's lease, so backend teardown still runs
+  once, after the last stream closes — the source is never torn down underneath
+  a stream still reading through it.
+- A member-stream close failure SHALL NOT prevent the remaining streams from
+  being closed; a single failure propagates, several surface as a
+  `BaseExceptionGroup`.
+- Archivey SHALL never close a caller-supplied `BinaryIO`. If the caller closes
+  it early, a later operation raises `ArchiveyUsageError` for the closed source;
+  concurrent external close with I/O is unsupported.
+- `__exit__` always calls `close()`. Close failure propagates on normal exit;
+  during body-exception unwind the body exception remains via normal chaining.
+
+**Under `MemberStreams.CONCURRENT`:** `reader.close()` drains in-flight worker
+`open()`/`read()` before transitioning to closed (see `reader-concurrency`).
+Without `CONCURRENT`, concurrent close with an actively executing worker call is
+rejected.
+
+Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
+`reader-concurrency`.
+
+#### Scenario: lifecycle matrix
+
+| Case | Expected |
+| --- | --- |
+| Open stream, then close reader (no concurrent I/O) | New reader ops → `ArchiveyUsageError`; the stream is closed by that `close()`; backend released after it |
+| Idle open stream + `reader.close()` | Close succeeds and closes the stream; a later read raises; `stream.close()` is a no-op |
+| Several open streams + `reader.close()` | All are closed; teardown runs once, after the last |
+| `close()` raises (active pass/worker) | Reader stays open; member streams untouched |
+| Stream dropped without close | Finalizer reclaims it; the stream must not be kept alive by its own finalizer |
+| Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
+| `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |
+| Op after reader close | `ArchiveyUsageError` |
+
+### Requirement: Password candidates and provider
+
+`password` SHALL accept a single `str | bytes`, an **ordered sequence**, and/or a
+**provider** `PasswordProvider = Callable[[PasswordRequest], str | bytes | None]`:
+
+```python
+@dataclass(frozen=True)
+class PasswordRequest:
+    member: ArchiveMember | None  # None for archive-level (header) decryption
+    attempt: int                  # 1 on first ask for this unit; increments on failure
+```
+
+Per encrypted unit (member / 7z folder / archive header), try in order: per-archive
+**known-good** list (successes this open, most recent first), then remaining sequence
+candidates, then provider repeatedly until `None`. Successful passwords SHALL join
+known-good for the rest of the operation so a provider is consulted once per *new*
+password rather than once per member. Exhaustion (or provider `None`) →
+`EncryptionError`. No per-call password on `open()`/`read()`.
+
+**Concurrent use (observable):** After materialization, workers MAY open
+differently encrypted members concurrently; known-good promotions are shared;
+provider callbacks are serialized; same-reader reentry from a provider raises
+`ArchiveyUsageError`. Protocol/lock details: `reader-concurrency`.
+
+#### Scenario: password matrix
+
+| Case | Expected |
+| --- | --- |
+| `password=[pw_a, pw_b]`, members use different passwords, one streaming pass | Each unit matches; pass completes without RA |
+| Provider + unknown password needed | Called with that member's `PasswordRequest`; success → known-good; later same-pw members skip provider |
+| Provider password fails, consulted again | New request has incremented `attempt` |
+| Provider returns `None` | `EncryptionError` for that unit |
+| Header-encrypted archive, provider only | Request with `member is None` |
+| Concurrent opens of different encrypted units (post-materialization) | Each decrypts correctly; promotions shared without races |
+| Provider starts another password op on same reader | Nested op → `ArchiveyUsageError` |
+
+### Requirement: Confirm candidates when a weak check permits retries
+
+When a format's password check can admit wrong values, a candidate SHALL NOT be
+accepted or added to known-good on that weak check alone if another distinct
+candidate may be tried. Confirm with the strongest available bounded signal
+(bounded decompression prefix, shared-pass per-candidate checksum, or full
+validation when small). Confirmation SHALL obey "Bounded implicit temporary
+storage" — no plaintext buffering proportional to unit size.
+
+After confirmation, backend MAY re-open/re-decode the accepted candidate for the
+caller's stream. Returned stream SHALL keep ordinary read-time integrity checking.
+
+"Another candidate may be tried" includes ≥2 distinct known-good/static values and
+a provider that can return another answer. Provider stays lazy (no advance
+enumeration). Duplicates are not distinct. Provider-raised `EncryptionError` is
+provider failure — propagate unchanged, not as candidate exhaustion.
+
+If confirmation fails and candidates are exhausted, report the irreducible
+ambiguity (wrong password **or** corrupt unit). MAY use `EncryptionError`. SHALL
+NOT return an unvalidated candidate. A single distinct static candidate MAY keep
+the format's normal lazy streaming path.
+
+#### Scenario: weak-check confirmation matrix
+
+| Case | Expected |
+| --- | --- |
+| Wrong candidate passes weak check first of two | Reject via confirmation; stream from correct candidate |
+| Large member, many candidates | Confirmation bounded — not proportional to member size |
+| Provider answer fails confirmation | Request next answer without pre-enumerating; accept only after confirm |
+| Confirmation fails, then provider raises `EncryptionError` | Provider exception propagates unchanged |
+| All candidates fail confirmation | Ambiguity message; no candidate bytes returned |
+| One distinct static value (incl. duplicates) | No eager consume for disambiguation; ordinary read-time errors |
+
+### Requirement: Bounded implicit temporary storage
+
+Reader ops SHALL NOT consume memory or temp storage proportional to member/archive
+size as an implicit side effect of open/read/validate/password-confirm. Silently
+spooling plaintext to a temp file is forbidden. A per-format strategy that
+inherently needs proportional temp storage (e.g. `format-rar`'s documented
+`unrar x`-to-tempdir) is allowed only when declared in that format's capability
+spec. Caller's own buffering of a returned stream is unrestricted.
+
+#### Scenario: bounded storage matrix
+
+| Case | Expected |
+| --- | --- |
+| Encrypted member, many candidates | Confirmation temp use bounded by a constant |
+| Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
+
+### Requirement: Explicit configuration object
+
+The system SHALL define these complete frozen schemas:
+
+```python
+@dataclass(frozen=True)
+class ExtractionLimits:
+    max_extracted_bytes: int | None = 2 * 2**30
+    max_ratio: float | None = 1000.0
+    ratio_activation_threshold: int = 5 * 2**20
+    max_entries: int | None = 1_048_576
+    UNLIMITED: ClassVar["ExtractionLimits"]
+
+@dataclass(frozen=True)
+class ListingLimits:
+    max_members: int | None = 1_048_576
+    max_metadata_bytes: int | None = 64 * 2**20
+    UNLIMITED: ClassVar["ListingLimits"]
+
+@dataclass(frozen=True)
+class ArchiveyConfig:
+    use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
+    use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    strict_archive_eof: bool = False
+    extraction_limits: ExtractionLimits = ExtractionLimits()
+    listing_limits: ListingLimits = ListingLimits()
+    diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
+    max_retained_diagnostic_references: int = 256
+    on_diagnostic: Callable[[Diagnostic], None] | None = None
+```
+
+`max_retained_diagnostic_references` SHALL be non-negative. Policy/default/override
+mappings and the dataclasses SHALL be defensively immutable. `config=None` →
+immutable library default. No mutable global/context-local diagnostic policy or
+callback.
+
+A reader carries its open config, including `listing_limits` for its lifetime.
+Later `extract_all(config=...)` MAY override policy/callback/strictness/
+accelerators/`extraction_limits` for new work, but SHALL NOT change the
+reader's effective `listing_limits` or
+`max_retained_diagnostic_references` (see `diagnostics`). Per-call `limits`
+still beat `config.extraction_limits`, then reader/library default. Other
+per-call operational args stay outside `ArchiveyConfig`.
+
+`strict_archive_eof=False` follows ordinary diagnostic policy for failed EOF check;
+`True` forces `TruncatedError` after ordered diagnostic rules in `error-handling`.
+
+`on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
+reads from a callback are allowed. Starting another operation on the same
+emitting reader/stream SHALL raise `UnsupportedOperationError`; other readers OK.
+Callbacks hold no Archivey collector/reader/stream/backend/registry lock
+(`diagnostics` / `reader-concurrency`).
+
+#### Scenario: config matrix
+
+| Case | Expected |
+| --- | --- |
+| `ArchiveyConfig()` | AUTO accelerators; EOF strictness false; documented extraction and listing defaults; COLLECT; budget 256; no callback |
+| Reader budget 10, then `extract_all(config=…budget=1000)` | New policy/callback may apply; diagnostics still under budget 10 |
+| `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
+| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime even if later `extract_all(config=...)` omits listing_limits |
+
+### Requirement: Reader-lifetime cumulative diagnostic snapshots
+
+Every successfully created `ArchiveReader` SHALL expose:
+
+```python
+@property
+def diagnostics(self) -> DiagnosticSummary: ...
+```
+
+Each access SHALL return a fresh immutable cumulative snapshot. Counts SHALL
+include automatic-detection events that led to this reader (if any) plus every
+subsequent open/list/read/stream/extract event it owns. Previously returned
+snapshots SHALL not change. A stream returned by the reader SHALL expose an
+operation-filtered `diagnostics` view of the same lifetime — not a separately
+retained copy of the aggregate.
+
+Value shape, retention budget, watermarks, and attachment rules: `diagnostics`.
+
+#### Scenario: diagnostics matrix
+
+| Case | Expected |
+| --- | --- |
+| Detection conflict + scan + rewind diagnostics | Later `reader.diagnostics` has exact cumulative counts in emission order; earlier snapshot unchanged |
+| Two streams emit different diagnostics | Each stream sees only its op; reader sees both |
+| Callback reads `diagnostics` then `reader.read(...)` | Snapshot OK (incl. current event); reentry → `UnsupportedOperationError` |
+
+### Requirement: Collection form of MemberSelector
+
+`MemberSelector` SHALL accept a predicate or `Collection[str | ArchiveMember]`,
+normalized to a predicate at the API boundary:
+
+- `str` matches **every** member with that normalized name (duplicates all match;
+  extraction keeps sequential last-wins-on-disk)
+- `ArchiveMember` matches by **identity** (`archive_id` + `member_id`; members are
+  unhashable → id set, never member set)
+- String and member entries MAY mix
+
+#### Scenario: selector matrix
+
+| Case | Expected |
+| --- | --- |
+| `stream_members(members=["a.txt"])` with two `a.txt` | Both yielded, archive order |
+| Specific `ArchiveMember` among duplicates | Only that identity |
+
+### Requirement: Honour detection payload_offset at open
+
+When `detect_format` returns `payload_offset > 0`, `open_archive` (auto-detect
+path) SHALL open the archive at that byte offset by either (a) passing an
+explicit start-offset argument into `backend.open_read`, or (b) handing the
+backend a bounded offset view / slice whose byte 0 *is* the payload. A bare
+`seek` on a shared handle is **not** sufficient: backends that perform absolute
+seeks (notably 7z’s `read_signature_and_next_header`, which `seek(0)`s then
+seeks to `_SIGNATURE_HEADER_SIZE + next_header_offset`) discard caller
+positioning. The system SHALL NOT copy the remainder of the source to a
+temporary file solely to strip an SFX stub.
+
+An explicit `format=` that bypasses detection retains each backend’s own
+start-offset / SFX rules (`format-rar`, `format-7z`).
+
+#### Scenario: payload_offset hand-off
+
+| Case | Expected |
+| --- | --- |
+| Auto-detect SFX RAR/7z/ZIP with `payload_offset == N` | Backend opens via start-offset arg or offset view; real members listed |
+| `payload_offset == 0` | Unchanged open-at-current-position behaviour |
+| Explicit `format=` | Detection skipped; backend SFX/start-offset rules apply |
+| Bare seek only (no start-offset / no offset view) | Insufficient for 7z; MUST NOT be the sole hand-off mechanism |

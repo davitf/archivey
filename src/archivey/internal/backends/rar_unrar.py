@@ -1,0 +1,532 @@
+"""CLI wrapper around RARLAB ``unrar`` / ``rar`` for member **payload** bytes.
+
+No RAR structure knowledge beyond argv safety — metadata/listing is
+:mod:`.rar_parser`. Locates a RARLAB decompressor on ``PATH`` (``unrar`` first,
+then the trialware writer ``rar``; not ``unrar-free`` / ``unar`` / ``7z``) and
+spawns ``<binary> p`` with the password on stdin (bare ``-p``, secret not in
+argv) and optional ``-n./member`` include masks. Never ``x`` / extract-to-disk.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import zlib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO, cast
+
+from archivey.escaping import display_path
+from archivey.exceptions import (
+    PackageNotInstalledError,
+    ReadError,
+)
+
+# Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
+# against RARLAB unrar 6.02, 6.12, 6.24, and 7.00 (RAR data tests plus
+# ``scripts/exploration/rar_unrar_input_matrix.py``). On 7.00, ``rar p``
+# matched ``unrar p`` on the argv archivey actually spawns. 5.91 passed those
+# tests too, but hangs on an anonymous-fd multi-volume probe that 6.12+
+# exits 3 on — a path archivey does not use. Floor is 6.0 so Debian 12 /
+# Ubuntu 22.04 apt packages work; 5.x is still refused. Parsed from the
+# identification banner, not from a second spawn.
+_UNRAR_VERSION_FLOOR: tuple[int, int] = (6, 0)
+# Prefer the freeware reader. The writer is the same vendor's decompressor
+# under a different PATH name (Ubuntu ``apt install rar`` Suggests ``unrar``
+# and does not put ``unrar`` on PATH).
+_RARLAB_BINARY_NAMES: tuple[str, ...] = ("unrar", "rar")
+# Bound the digit runs: unbounded ``\d+`` then ``int()`` raises ``ValueError``
+# past CPython's 4300-digit limit, and that must not cross ``open_archive``.
+# ``(?<![A-Za-z])`` so ``RAR`` does not match inside ``UNRAR``.
+_UNRAR_VERSION_RE = re.compile(r"(?<![A-Za-z])UNRAR\s+(\d{1,4})\.(\d{1,4})")
+_RAR_VERSION_RE = re.compile(r"(?<![A-Za-z])RAR\s+(\d{1,4})\.(\d{1,4})")
+_UNRAR_TOKEN_RE = re.compile(r"(?<![A-Za-z])UNRAR(?![A-Za-z])")
+_RAR_TOKEN_RE = re.compile(r"(?<![A-Za-z])RAR(?![A-Za-z])")
+
+
+@dataclass(frozen=True, slots=True)
+class _UnrarBanner:
+    """RARLAB verdict and major.minor from one identification banner."""
+
+    is_rarlab: bool
+    version: tuple[int, int] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _UnrarProbe:
+    """Banner verdict for one resolved decompressor path, plus the stat identity
+    that lets a later call skip the subprocess.
+
+    Keyed on the absolute candidate, not on ``PATH``. ``shutil.which`` re-runs
+    every call, so a newly installed binary is visible without editing ``PATH``.
+    The finder walks ``unrar`` then ``rar``; one cache entry per resolved
+    absolute path it has probed (on a stable ``PATH``, at most one per name).
+    Entries persist for the process lifetime so a lookalike ``unrar`` plus a
+    usable ``rar`` does not re-probe both on every member read.
+    The lookup does not key cwd or ``PATHEXT`` (Windows ``which`` consults both).
+    ``version`` is parsed from the same banner as ``is_rarlab`` — a genuine
+    RARLAB binary that is too old (or unparseable) stays ``is_rarlab=True``.
+    """
+
+    unrar_path: str
+    is_rarlab: bool
+    version: tuple[int, int] | None
+    st_dev: int
+    st_ino: int
+    st_mtime_ns: int
+    st_size: int
+
+
+# Keyed by absolute path. A durable "not RARLAB" answer stores
+# ``is_rarlab=False`` so a lookalike costs one process, not one per attempted
+# read. A too-old (or unparseable) RARLAB banner stores ``is_rarlab=True`` and
+# is still refused. A ``which`` miss and a probe that could not *run* the
+# binary are not stored.
+_cached_unrar: dict[str, _UnrarProbe] = {}
+
+# ``rar`` / ``unrar`` prepend ``switches=`` from ``~/.rarrc`` / ``~/.unrarrc``.
+# Archivey builds a complete argv; ``-cfg-`` keeps those files from injecting
+# ``-idq`` (empty identification banner) or ``-x`` (empty ``p`` pipe).
+_RAR_DISABLE_CONFIG = "-cfg-"
+
+_NOT_INSTALLED_MSG = (
+    "RARLAB unrar or rar is required to read RAR member data, but neither was found "
+    "on PATH (or the unrar/rar on PATH is not a RARLAB binary). Install RARLAB unrar "
+    "or rar — unrar-free / unar / 7z / 7zz are not supported as substitutes."
+)
+
+_RAR3_ID = b"Rar!\x1a\x07\x00"
+_RAR3_MAIN = 0x73
+_RAR3_FILE = 0x74
+_RAR3_FILE_PASSWORD = 0x0004
+_RAR3_FILE_SALT = 0x0400
+_RAR3_FILE_DICTMASK = 0x00E0
+_RAR3_LONG_BLOCK = 0x8000
+_RAR3_M0 = 0x30
+_RAR3_BLOCK_HEADER = struct.Struct("<HBHH")
+_RAR3_FILE_HEADER = struct.Struct("<LLBLLBBHL")
+
+
+def _parse_unrar_banner(text: str) -> _UnrarBanner:
+    """Classify a banner already captured by the identification probe.
+
+    RARLAB ``unrar`` prints ``UNRAR x.yy … Alexander Roshal``. The trialware
+    writer prints ``RAR x.yy … Alexander Roshal`` (often with ``Trial version``).
+    A ``RAR`` token must not match inside ``UNRAR``.
+    """
+    if "Alexander Roshal" not in text and "RARLAB" not in text:
+        return _UnrarBanner(is_rarlab=False, version=None)
+    if _UNRAR_TOKEN_RE.search(text) is None and _RAR_TOKEN_RE.search(text) is None:
+        return _UnrarBanner(is_rarlab=False, version=None)
+    match = _UNRAR_VERSION_RE.search(text) or _RAR_VERSION_RE.search(text)
+    if match is None:
+        return _UnrarBanner(is_rarlab=True, version=None)
+    return _UnrarBanner(
+        is_rarlab=True,
+        version=(int(match.group(1)), int(match.group(2))),
+    )
+
+
+def _is_rarlab_unrar(path: str) -> _UnrarBanner:
+    """Spawn ``path`` once and parse the RARLAB banner plus major.minor.
+
+    ``OSError`` / ``SubprocessError`` (could not run it) propagate so the
+    caller can avoid caching a transient failure as "not RARLAB".
+    """
+    completed = subprocess.run(
+        [path, _RAR_DISABLE_CONFIG],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    banner = (completed.stdout or b"") + (completed.stderr or b"")
+    text = banner.decode("utf-8", errors="replace")
+    return _parse_unrar_banner(text)
+
+
+def _describe_floor_refusal(path: str, version: tuple[int, int] | None) -> str:
+    shown = display_path(path)
+    if version is None:
+        return f"the version of {shown} could not be parsed from its banner"
+    return f"{shown} reports version {version[0]}.{version[1]}"
+
+
+def _unrar_floor_message(
+    refusals: list[tuple[str, tuple[int, int] | None]],
+) -> str:
+    floor = f"{_UNRAR_VERSION_FLOOR[0]}.{_UNRAR_VERSION_FLOOR[1]}"
+    found = "; ".join(
+        _describe_floor_refusal(path, version) for path, version in refusals
+    )
+    return (
+        f"RARLAB unrar or rar {floor} or later is required to read RAR member data, "
+        f"but {found}. Install RARLAB unrar or rar {floor} or later."
+    )
+
+
+def _stat_identity(path: str) -> tuple[int, int, int, int]:
+    """``(st_dev, st_ino, st_mtime_ns, st_size)``, or ``PackageNotInstalledError``.
+
+    Same syscall ``Path.is_file()`` would make; wrapping keeps the finder's
+    contract (never a raw ``OSError``) and is the identity a swapped binary
+    cannot keep.
+    """
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _banner_meets_floor(banner: _UnrarBanner) -> bool:
+    return (
+        banner.is_rarlab
+        and banner.version is not None
+        and banner.version >= _UNRAR_VERSION_FLOOR
+    )
+
+
+def find_rarlab_unrar() -> str:
+    """Return path to RARLAB ``unrar`` or ``rar`` 6.0+, or raise PackageNotInstalledError.
+
+    ``unrar`` wins when both names resolve to a usable binary. A lookalike or
+    too-old ``unrar`` does not hide a usable ``rar``. A ``which`` miss is never
+    cached. Spawn sites still only run ``p`` (see :func:`open_unrar_p`).
+    """
+    path_env = os.environ.get("PATH", "")
+    # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``
+    # rewrite cannot stamp a new lookup with the old key.
+    floor_refusals: list[tuple[str, tuple[int, int] | None]] = []
+    run_cause: BaseException | None = None
+
+    def _note_floor(path: str, version: tuple[int, int] | None) -> None:
+        if any(existing == path for existing, _ in floor_refusals):
+            return
+        floor_refusals.append((path, version))
+
+    for name in _RARLAB_BINARY_NAMES:
+        candidate = shutil.which(name, path=path_env)
+        if candidate is None:
+            continue
+        candidate = os.path.abspath(candidate)
+
+        try:
+            identity = _stat_identity(candidate)
+        except PackageNotInstalledError as exc:
+            run_cause = exc.__cause__ if exc.__cause__ is not None else exc
+            continue
+
+        cached = _cached_unrar.get(candidate)
+        if (
+            cached is not None
+            and (cached.st_dev, cached.st_ino, cached.st_mtime_ns, cached.st_size)
+            == identity
+        ):
+            if _banner_meets_floor(
+                _UnrarBanner(is_rarlab=cached.is_rarlab, version=cached.version)
+            ):
+                return candidate
+            if cached.is_rarlab:
+                _note_floor(candidate, cached.version)
+            continue
+
+        try:
+            banner = _is_rarlab_unrar(candidate)
+        except (OSError, subprocess.SubprocessError) as exc:
+            run_cause = exc
+            continue
+
+        st_dev, st_ino, st_mtime_ns, st_size = identity
+        _cached_unrar[candidate] = _UnrarProbe(
+            unrar_path=candidate,
+            is_rarlab=banner.is_rarlab,
+            version=banner.version,
+            st_dev=st_dev,
+            st_ino=st_ino,
+            st_mtime_ns=st_mtime_ns,
+            st_size=st_size,
+        )
+        if _banner_meets_floor(banner):
+            return candidate
+        if banner.is_rarlab:
+            _note_floor(candidate, banner.version)
+
+    if floor_refusals:
+        raise PackageNotInstalledError(_unrar_floor_message(floor_refusals))
+    if run_cause is not None:
+        raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from run_cause
+    raise PackageNotInstalledError(_NOT_INSTALLED_MSG)
+
+
+def _password_arg(password: str | bytes | None) -> str:
+    """Return the ``unrar`` password switch.
+
+    Empty/absent → ``-p-`` (no password). Otherwise bare ``-p``; the password itself
+    is written to the child's stdin (see :func:`open_unrar_p`) so it never appears in
+    ``argv`` / ``/proc/<pid>/cmdline``.
+    """
+    if password is None or password == b"" or password == "":
+        return "-p-"
+    return "-p"
+
+
+def _password_stdin_bytes(password: str | bytes) -> bytes:
+    if isinstance(password, bytes):
+        return password
+    return password.encode("utf-8", errors="surrogateescape")
+
+
+def _member_include_switch(member: str) -> str:
+    """Build a safe ``unrar`` include-mask switch for one member name.
+
+    A hostile archive can name a member like a switch (``-inul``) or an ``@listfile``
+    argument; passed positionally those are mis-parsed by ``unrar`` (a switch, or a
+    read of an attacker-chosen local file). Passing the name as the value of the ``-n``
+    include-mask switch, prefixed with ``./``, neutralizes both: the leading ``-`` is
+    not a switch (it is inside ``-n``) and the leading ``@`` is not a listfile (the
+    value starts with ``.``). For a name **without** wildcards, ``./`` also anchors
+    the mask to the exact archive path rather than matching the basename at any
+    depth.
+
+    ``unrar`` masks treat ``*`` and ``?`` as wildcards with no escape (``[]`` are
+    literal, ``\\`` does not escape). A name whose globs are confined to the
+    basename and that contains no backslash is still passed as the mask;
+    ``RarReader._open_member`` skips other matching members using the parsed
+    member list and :func:`_unrar_mask_match`. A glob in a directory component,
+    or a backslash in the presented name, raises ``UnsupportedFeatureError``
+    instead — :func:`_unrar_mask_match` is not faithful there, and Windows
+    ``unrar`` treats ``\\`` as a separator (see :func:`_unrar_glob_demux_ok`).
+    """
+    return "-n./" + member
+
+
+def _unrar_glob_demux_ok(presented: str) -> bool:
+    """True when archivey will demux this glob name from an ``unrar -n`` pipe.
+
+    Only a glob confined to the basename, with no backslash. A glob in a
+    directory component, or a ``\\`` anywhere, makes :func:`_unrar_mask_match`
+    over-match unrar 7.00, so the skip would land inside the target and a valid
+    archive would be reported truncated. Those names stay
+    ``UnsupportedFeatureError`` until the matcher is a source-faithful port.
+    """
+    if "\\" in presented:
+        return False
+    parent, sep, _base = presented.rpartition("/")
+    if not sep:
+        return True
+    return "*" not in parent and "?" not in parent
+
+
+def _unrar_component_match(name: str, mask: str) -> bool:
+    """Glob-match one path component: ``*``/``?`` wildcards, ``[]`` literal."""
+    parts: list[str] = []
+    for ch in mask:
+        if ch == "*":
+            parts.append(".*")
+        elif ch == "?":
+            parts.append(".")
+        else:
+            parts.append(re.escape(ch))
+    return re.fullmatch("".join(parts), name, flags=re.DOTALL) is not None
+
+
+def _unrar_mask_match(name: str, mask: str) -> bool:
+    """Match ``name`` the way ``unrar -n`` does.
+
+    No wildcards: exact path (``./`` already stripped by the caller of ``-n./``).
+    With ``*``/``?``: ``MATCH_WILDSUBPATH`` — the last mask component matches the
+    basename at any depth, and a non-wildcard directory prefix constrains which
+    subtrees. ``[]`` are literal (unlike Python ``fnmatch``). On Windows, ``unrar``
+    folds case; we do too so the skip stays aligned with the pipe.
+
+    Not a source-faithful port: a glob in a directory component over-matches
+    (``d*/x.txt`` vs ``aaa/x.txt``), and folding ``\\`` to ``/`` collides a
+    Linux literal backslash with a separator. Callers must refuse those names
+    via :func:`_unrar_glob_demux_ok` before using this to size a skip.
+    """
+    if mask.startswith("./"):
+        mask = mask[2:]
+    name = name.replace("\\", "/")
+    mask = mask.replace("\\", "/")
+    if sys.platform == "win32":
+        name = name.casefold()
+        mask = mask.casefold()
+    if "*" not in mask and "?" not in mask:
+        return name == mask
+    mask_dir, mask_base = mask.rsplit("/", 1) if "/" in mask else ("", mask)
+    name_base = name.rsplit("/", 1)[-1]
+    if not _unrar_component_match(name_base, mask_base):
+        return False
+    if not mask_dir:
+        return True
+    if "*" not in mask_dir and "?" not in mask_dir:
+        name_dir = name.rsplit("/", 1)[0] if "/" in name else ""
+        return name_dir == mask_dir or name_dir.startswith(mask_dir + "/")
+    return True
+
+
+def decompress_rar3_blob(
+    *,
+    extract_version: int,
+    compress_type: int,
+    packed: bytes,
+    unpacked_size: int,
+    flags: int,
+    crc16: int,
+    password: str | bytes | None = None,
+) -> bytes | None:
+    """Decode a non-file RAR3 payload by wrapping it in a temporary RAR.
+
+    RAR3 old-style comments hold compressed bytes inside a header, without a
+    FILE block that ``unrar`` can address. A minimal one-file archive lets the
+    existing RARLAB process decode that one blob. This is deliberately limited
+    to metadata blobs; it does not change stream-source member reads.
+
+    ``unrar`` can report a CRC error for the synthetic FILE because old comment
+    blocks retain only a CRC16. The caller validates that CRC16 against the
+    returned bytes, which is the integrity check the on-disk comment provides.
+    """
+    if unpacked_size < 0 or unpacked_size > 0xFFFF:
+        return None
+    if compress_type == _RAR3_M0 and not flags & _RAR3_FILE_PASSWORD:
+        return packed if len(packed) == unpacked_size else None
+
+    file_flags = flags & (_RAR3_FILE_PASSWORD | _RAR3_FILE_SALT | _RAR3_FILE_DICTMASK)
+    file_flags |= _RAR3_LONG_BLOCK
+    filename = b"data"
+    file_body = (
+        _RAR3_FILE_HEADER.pack(
+            len(packed),
+            unpacked_size,
+            0,  # MS-DOS
+            crc16,
+            0,
+            extract_version,
+            compress_type,
+            len(filename),
+            0x20,  # DOS archive attribute
+        )
+        + filename
+    )
+    file_without_crc = (
+        struct.pack(
+            "<BHH", _RAR3_FILE, file_flags, _RAR3_BLOCK_HEADER.size + len(file_body)
+        )
+        + file_body
+    )
+    file_header = (
+        struct.pack("<H", zlib.crc32(file_without_crc) & 0xFFFF) + file_without_crc
+    )
+
+    main_body = b"\0" * 6
+    main_without_crc = (
+        struct.pack("<BHH", _RAR3_MAIN, 0, _RAR3_BLOCK_HEADER.size + len(main_body))
+        + main_body
+    )
+    main_header = (
+        struct.pack("<H", zlib.crc32(main_without_crc) & 0xFFFF) + main_without_crc
+    )
+
+    fd, name = tempfile.mkstemp(suffix=".rar")
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as archive:
+            archive.write(_RAR3_ID + main_header + file_header + packed)
+        proc, stdout = open_unrar_p(path, password=password)
+        try:
+            # A comment's declared unpacked length is a uint16. Bound the
+            # process output so a malformed blob cannot turn archive listing
+            # into an unbounded metadata read.
+            data = stdout.read(unpacked_size + 1)
+            if len(data) != unpacked_size:
+                return None
+            return data
+        finally:
+            try:
+                stdout.close()
+            finally:
+                if proc.poll() is None:
+                    terminate_unrar(proc)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def open_unrar_p(
+    archive_path: str | Path,
+    *,
+    password: str | bytes | None = None,
+    member: str | None = None,
+    version_control: bool = False,
+) -> tuple[subprocess.Popen[bytes], BinaryIO]:
+    """Spawn ``<unrar|rar> p -inul -cfg- [-ver] [-p|-p-] [-n./member] archive``.
+
+    ``version_control`` adds ``-ver`` so the pipe includes WinRAR file-version history
+    payloads (needed for solid demux when versioned FILE rows are present, and for a
+    named open of a ``path;n`` history member — the ``-n`` mask excludes history rows
+    unless ``-ver`` is set).
+
+    A named ``member`` is passed as a ``-n./`` include mask, never positionally, so a
+    hostile member name cannot inject an ``unrar`` switch or ``@listfile`` argument
+    (see :func:`_member_include_switch`).
+
+    When a non-empty ``password`` is given, the switch is bare ``-p`` and the password
+    (plus a trailing newline) is written to the child's stdin — ``unrar`` reads it from
+    stdin when redirected, keeping the secret out of ``argv``.
+
+    Returns ``(proc, stdout)``. Caller must terminate/wait/close.
+    """
+    unrar = find_rarlab_unrar()
+    cmd = [unrar, "p", "-inul", _RAR_DISABLE_CONFIG]
+    if version_control:
+        cmd.append("-ver")
+    pass_arg = _password_arg(password)
+    cmd.append(pass_arg)
+    if member is not None:
+        cmd.append(_member_include_switch(member))
+    cmd.append(str(archive_path))
+    feed_password = pass_arg == "-p"
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE if feed_password else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=1024 * 1024,
+        )
+    except OSError as exc:
+        raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
+    if feed_password:
+        assert password is not None and password != b"" and password != ""
+        assert proc.stdin is not None
+        try:
+            proc.stdin.write(_password_stdin_bytes(password) + b"\n")
+            proc.stdin.close()
+        except BrokenPipeError:
+            # unrar exited before consuming the password; surface via exit-code mapping.
+            pass
+    if proc.stdout is None:
+        proc.kill()
+        # Defensive: Popen was asked for stdout=PIPE, so this should be unreachable. Typed
+        # anyway — every archive-read failure surfaces as an ArchiveyError, and a raw
+        # RuntimeError here would cross open_archive untranslated.
+        raise ReadError("unrar produced no stdout pipe")
+    return proc, cast(BinaryIO, proc.stdout)
+
+
+def terminate_unrar(proc: subprocess.Popen[bytes] | None) -> None:
+    """Terminate an ``unrar`` process if it is still running."""
+    if proc is None:
+        return
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()

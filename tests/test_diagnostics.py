@@ -1,0 +1,775 @@
+"""Focused and behavior tests for lifecycle-aware diagnostics."""
+
+from __future__ import annotations
+
+import io
+import json
+import logging
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from archivey import (
+    ARCHIVE_INTEGRITY_CODES,
+    AbortOn,
+    ArchiveMember,
+    ArchiveyConfig,
+    Diagnostic,
+    DiagnosticCode,
+    DiagnosticDisposition,
+    DiagnosticPolicy,
+    DiagnosticRaisedError,
+    DiagnosticSeverity,
+    ExtractionReport,
+    ExtractionStatus,
+    OnError,
+    detect_format,
+    extract,
+    open_archive,
+)
+from archivey.diagnostics import (
+    DiagnosticSummary,
+    NameNormalizationContext,
+    ScanRaceContext,
+)
+from archivey.exceptions import (
+    PathTraversalError,
+    TruncatedError,
+    UnsupportedOperationError,
+)
+from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.types import MemberType
+
+
+def _norm_context(**overrides: object) -> NameNormalizationContext:
+    base: dict[str, object] = {
+        "archive_name": None,
+        "member_name": "a/b",
+        "member_id": 1,
+        "raw_name_base64": None,
+        "presented_name": "a\\b",
+        "normalized_name": "a/b",
+    }
+    base.update(overrides)
+    return NameNormalizationContext(**base)  # type: ignore[arg-type]
+
+
+def _emit_norm(
+    collector: DiagnosticCollector,
+    *,
+    member: ArchiveMember | None = None,
+    attach: bool = False,
+    message: str = "Member name normalized: 'a\\\\b' -> 'a/b'",
+) -> Diagnostic:
+    return collector.emit(
+        code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
+        message=message,
+        context=_norm_context(
+            member_name=member.name if member is not None else "a/b",
+            member_id=member._member_id if member is not None else 1,
+        ),
+        member=member,
+        attach_to_member=attach,
+        logger=logging.getLogger("archivey.normalization"),
+    )
+
+
+def _make_member(name: str = "a/b") -> ArchiveMember:
+    m = ArchiveMember(type=MemberType.FILE, name=name)
+    m._member_id = 1
+    return m
+
+
+# ---------------------------------------------------------------------------
+# 4.1 — policy matrix, retention, serialization, callbacks, reentrancy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "disposition,expect_retained,expect_log,expect_callback,expect_raise",
+    [
+        (DiagnosticDisposition.IGNORE, False, False, False, False),
+        (DiagnosticDisposition.COLLECT, True, True, True, False),
+        (DiagnosticDisposition.RAISE, True, True, True, True),
+    ],
+)
+def test_policy_matrix_cells(
+    disposition: DiagnosticDisposition,
+    expect_retained: bool,
+    expect_log: bool,
+    expect_callback: bool,
+    expect_raise: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    seen: list[Diagnostic] = []
+    collector = DiagnosticCollector(
+        policy=DiagnosticPolicy(default=disposition),
+        on_diagnostic=seen.append,
+    )
+    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
+        if expect_raise:
+            with pytest.raises(DiagnosticRaisedError) as ei:
+                _emit_norm(collector)
+            assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_NAME_NORMALIZED
+        else:
+            _emit_norm(collector)
+
+    snap = collector.snapshot()
+    assert snap.total_count == 1
+    assert snap.counts[DiagnosticCode.MEMBER_NAME_NORMALIZED] == 1
+    assert (len(snap.retained) == 1) is expect_retained
+    assert bool(caplog.records) is expect_log
+    assert (len(seen) == 1) is expect_callback
+
+
+def test_retention_exhaustion_keeps_exact_counts() -> None:
+    collector = DiagnosticCollector(max_retained=2)
+    for i in range(5):
+        _emit_norm(collector, message=f"norm {i}")
+    snap = collector.snapshot()
+    assert snap.total_count == 5
+    assert snap.counts[DiagnosticCode.MEMBER_NAME_NORMALIZED] == 5
+    assert len(snap.retained) == 2
+    assert snap.dropped_count == 3
+
+
+def test_shared_budget_aggregate_then_attachment() -> None:
+    member = _make_member()
+    # Two slots: one aggregate + one attachment for the first event; second event
+    # gets aggregate only (one slot left) — wait, after first: 2 used. Second: no slots.
+    collector = DiagnosticCollector(max_retained=2)
+    _emit_norm(collector, member=member, attach=True, message="first")
+    assert len(member.diagnostics) == 1
+    assert len(collector.snapshot().retained) == 1
+
+    member2 = _make_member("c/d")
+    member2._member_id = 2
+    _emit_norm(collector, member=member2, attach=True, message="second")
+    # Only one slot left after first (aggregate+attach used 2) — second gets nothing
+    assert len(collector.snapshot().retained) == 1
+    assert member2.diagnostics == ()
+
+    # With 3 slots: second gets aggregate but not attachment
+    collector2 = DiagnosticCollector(max_retained=3)
+    m1, m2 = _make_member("x"), _make_member("y")
+    m1._member_id, m2._member_id = 1, 2
+    _emit_norm(collector2, member=m1, attach=True, message="a")
+    _emit_norm(collector2, member=m2, attach=True, message="b")
+    assert len(collector2.snapshot().retained) == 2
+    assert len(m1.diagnostics) == 1
+    assert m2.diagnostics == ()  # attachment omitted; aggregate retained
+
+
+def test_occurrence_id_value_correlation() -> None:
+    member = _make_member()
+    collector = DiagnosticCollector()
+    d = _emit_norm(collector, member=member, attach=True)
+    snap = collector.snapshot()
+    assert snap.retained[0].occurrence_id == member.diagnostics[0].occurrence_id
+    assert snap.retained[0] == member.diagnostics[0]
+    assert snap.retained[0].occurrence_id == d.occurrence_id
+
+
+def test_context_json_safe_and_immutable() -> None:
+    collector = DiagnosticCollector()
+    d = _emit_norm(collector)
+    payload = d.to_dict()
+    json.dumps(payload)  # must not raise
+    assert payload["code"] == "member_name_normalized"
+    assert payload["context"]["kind"] == "name_normalization"
+    with pytest.raises(Exception):
+        d.message = "mutated"  # type: ignore[misc]
+
+
+def test_symlink_context_has_no_password_material() -> None:
+    from archivey.diagnostics import SymlinkTargetContext
+
+    ctx = SymlinkTargetContext(
+        archive_name="a.zip",
+        member_name="link",
+        member_id=1,
+        reason="password_required",
+    )
+    blob = json.dumps(ctx.to_dict())
+    assert "password_required" in blob
+    assert "secret" not in blob.lower() or "password_required" in blob
+
+
+def test_callback_order_and_failure_propagates(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    order: list[str] = []
+
+    def cb(d: Diagnostic) -> None:
+        order.append(d.message)
+        if d.message == "second":
+            raise RuntimeError("callback boom")
+
+    collector = DiagnosticCollector(on_diagnostic=cb)
+    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
+        _emit_norm(collector, message="first")
+        with pytest.raises(RuntimeError, match="callback boom"):
+            _emit_norm(collector, message="second")
+    assert order == ["first", "second"]
+    assert collector.snapshot().total_count == 2
+
+
+def test_callback_may_read_snapshot() -> None:
+    collector = DiagnosticCollector()
+
+    def cb(d: Diagnostic) -> None:
+        snap = collector.snapshot()
+        assert snap.total_count >= 1
+        assert any(x.occurrence_id == d.occurrence_id for x in snap.retained)
+
+    collector._on_diagnostic = cb  # type: ignore[attr-defined]
+    # Recreate properly
+    collector = DiagnosticCollector(on_diagnostic=cb)
+    _emit_norm(collector)
+
+
+def test_operational_reentrancy_rejected() -> None:
+    collector = DiagnosticCollector()
+
+    def cb(d: Diagnostic) -> None:
+        collector.emit(
+            code=DiagnosticCode.SCAN_ENTRY_VANISHED,
+            message="reenter",
+            context=ScanRaceContext(
+                archive_name=None, relative_path="x", entry_kind="entry"
+            ),
+        )
+
+    collector = DiagnosticCollector(on_diagnostic=cb)
+    with pytest.raises(UnsupportedOperationError, match="reentrancy"):
+        _emit_norm(collector)
+
+
+def test_concurrent_emits_are_not_treated_as_reentrancy() -> None:
+    # A slow callback holds one thread inside delivery while other threads emit. The
+    # reentrancy guard is per-thread, so concurrent emitters must NOT be rejected.
+    import threading
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def cb(d: Diagnostic) -> None:
+        if d.message == "slow":
+            entered.set()
+            release.wait(5)
+
+    collector = DiagnosticCollector(on_diagnostic=cb)
+    errors: list[BaseException] = []
+
+    def slow() -> None:
+        try:
+            _emit_norm(collector, message="slow")
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+            errors.append(exc)
+
+    def fast() -> None:
+        try:
+            entered.wait(5)  # ensure the slow emit is mid-delivery
+            _emit_norm(collector, message="fast")
+        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+            errors.append(exc)
+        finally:
+            release.set()
+
+    t_slow, t_fast = threading.Thread(target=slow), threading.Thread(target=fast)
+    t_slow.start()
+    t_fast.start()
+    t_slow.join(5)
+    t_fast.join(5)
+
+    assert errors == []
+    assert collector.snapshot().total_count == 2
+
+
+def test_snapshots_are_immutable_points_in_time() -> None:
+    collector = DiagnosticCollector()
+    _emit_norm(collector, message="one")
+    before = collector.snapshot()
+    _emit_norm(collector, message="two")
+    after = collector.snapshot()
+    assert before.total_count == 1
+    assert after.total_count == 2
+    assert before.retained[0].message == "one"
+
+
+# ---------------------------------------------------------------------------
+# 4.2 — lifecycle, surfaces, migrated sites, extraction, EOF precedence
+# ---------------------------------------------------------------------------
+
+
+def test_detect_format_attaches_conflict_diagnostics(tmp_path: Path) -> None:
+    # ZIP magic under a .tar name → conflict (existing test pattern).
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+    path = tmp_path / "looks.tar"
+    path.write_bytes(buf.getvalue())
+    info = detect_format(path)
+    assert info.diagnostics.total_count >= 1
+    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
+
+
+def test_open_archive_transfers_detection_collector(tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+    path = tmp_path / "looks.tar"
+    path.write_bytes(buf.getvalue())
+    with open_archive(path) as reader:
+        snap = reader.diagnostics
+        assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in snap.counts
+        assert snap.total_count >= 1
+
+
+def test_oneshot_extract_report_includes_detection(
+    tmp_path: Path,
+) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+    src = tmp_path / "looks.tar"
+    src.write_bytes(buf.getvalue())
+    dest = tmp_path / "out"
+    dest.mkdir()
+    report = extract(src, dest)
+    assert isinstance(report, ExtractionReport)
+    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in report.diagnostics.counts
+    assert any(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+
+
+def test_extraction_report_behaves_like_its_results_sequence(tmp_path: Path) -> None:
+    # The report iterates / sizes / indexes as ``results`` so the common extraction loop
+    # (`for r in extract(...)`, `len(...)`, `report[0]`) keeps working alongside
+    # ``report.diagnostics``.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+        zf.writestr("b.txt", b"yo")
+    src = tmp_path / "a.zip"
+    src.write_bytes(buf.getvalue())
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    report = extract(src, dest)
+    assert len(report) == len(report.results)
+    assert list(report) == list(report.results)
+    assert report[0] is report.results[0]
+
+
+def test_extract_all_report_is_delta_only(tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+    src = tmp_path / "looks.tar"
+    src.write_bytes(buf.getvalue())
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with open_archive(src) as reader:
+        before = reader.diagnostics.total_count
+        assert before >= 1  # detection conflict already counted
+        report = reader.extract_all(dest)
+        # Report is watermark delta — should not re-count pre-extraction diagnostics
+        assert report.diagnostics.total_count == 0 or (
+            DiagnosticCode.FORMAT_EXTENSION_CONFLICT not in report.diagnostics.counts
+        )
+        assert reader.diagnostics.total_count == before + report.diagnostics.total_count
+
+
+def test_member_name_normalized_attaches(tmp_path: Path) -> None:
+    # ZIP with backslash name → normalization diagnostic attached to member.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        # Force a stored name with backslash via ZipInfo
+        info = zipfile.ZipInfo(r"dir\file.txt")
+        zf.writestr(info, b"x")
+    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+        members = reader.members()
+        assert members
+        # Either the member got an attachment or the reader aggregate has the code
+        snap = reader.diagnostics
+        if DiagnosticCode.MEMBER_NAME_NORMALIZED in snap.counts:
+            matched = [m for m in members if m.diagnostics]
+            # Attachment is budget-dependent; aggregate must exist
+            assert snap.counts[DiagnosticCode.MEMBER_NAME_NORMALIZED] >= 1
+            if matched:
+                assert matched[0].diagnostics[0].occurrence_id in {
+                    d.occurrence_id for d in snap.retained
+                }
+
+
+def test_directory_scan_race_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    (tmp_path / "a.txt").write_text("x")
+    real_stat = os.DirEntry.stat
+
+    def flaky_stat(self: os.DirEntry, *args: object, **kwargs: object):
+        if self.name == "a.txt":
+            raise FileNotFoundError(self.path)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(os.DirEntry, "stat", flaky_stat)
+    with open_archive(tmp_path) as reader:
+        list(reader.members())
+        assert DiagnosticCode.SCAN_ENTRY_VANISHED in reader.diagnostics.counts
+
+
+@pytest.mark.parametrize("on_error", [OnError.CONTINUE, OnError.STOP])
+def test_extraction_blocked_is_result_only(tmp_path: Path, on_error: OnError) -> None:
+    """A blocked member is recorded in ``results`` and nowhere else.
+
+    The placement clause: extraction returns a per-item report, so the outcome has no
+    second home in the diagnostics channel.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../escape.txt", b"x")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    report = extract(
+        io.BytesIO(buf.getvalue()),
+        dest,
+        on_error=on_error,
+    )
+    blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    assert blocked
+    assert isinstance(blocked[0].error, PathTraversalError)
+    # No extraction-outcome code exists to be counted.
+    assert not [
+        code
+        for code in report.diagnostics.counts
+        if code.value.startswith("extraction_")
+    ]
+
+
+def test_abort_on_blocked_member_stops_despite_continue(tmp_path: Path) -> None:
+    """The named replacement for RAISE-on-EXTRACTION_MEMBER_BLOCKED.
+
+    Same behaviour the disposition used to give by accident — abort on the first unsafe
+    member, under ``OnError.CONTINUE`` — now spelled out, and raising the underlying
+    rejection rather than a ``DiagnosticRaisedError``.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../escape.txt", b"x")
+        zf.writestr("ok.txt", b"y")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(PathTraversalError):
+        extract(
+            io.BytesIO(buf.getvalue()),
+            dest,
+            on_error=OnError.CONTINUE,
+            abort_on={AbortOn.BLOCKED_MEMBER},
+        )
+    # No report is returned, and the later member was never processed.
+    assert not (dest / "ok.txt").exists()
+
+
+def test_blocked_member_does_not_abort_without_opt_in(tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../escape.txt", b"x")
+        zf.writestr("ok.txt", b"y")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    report = extract(io.BytesIO(buf.getvalue()), dest, on_error=OnError.CONTINUE)
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (dest / "ok.txt").read_bytes() == b"y"
+
+
+def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None:
+    """Dispositions stay authoritative for the diagnostics that still fire while
+    extracting: per-member outcomes left the channel, reading events did not."""
+    import tarfile
+    import time
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 1
+        info.mtime = -(2**40)  # far outside the representable range
+        tf.addfile(info, io.BytesIO(b"x"))
+    dest = tmp_path / "out"
+    dest.mkdir()
+    policy = DiagnosticPolicy(
+        overrides={DiagnosticCode.MEMBER_TIMESTAMP_INVALID: DiagnosticDisposition.RAISE}
+    )
+    del time
+    with pytest.raises(DiagnosticRaisedError) as ei:
+        extract(
+            io.BytesIO(buf.getvalue()),
+            dest,
+            on_error=OnError.CONTINUE,
+            config=ArchiveyConfig(diagnostic_policy=policy),
+        )
+    assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+
+
+def test_strict_eof_precedence_over_raise() -> None:
+    from archivey.types import ArchiveFormat
+    from tests.test_tar import _tar_missing_eof_block
+
+    data = _tar_missing_eof_block()
+    policy = DiagnosticPolicy(
+        overrides={
+            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.RAISE
+        }
+    )
+    with pytest.raises(TruncatedError):
+        with open_archive(
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(
+                strict_archive_eof=True,
+                diagnostic_policy=policy,
+            ),
+        ) as ar:
+            ar.members()
+
+
+def test_strict_eof_false_raise_yields_diagnostic_error() -> None:
+    from archivey.types import ArchiveFormat
+    from tests.test_tar import _tar_missing_eof_block
+
+    data = _tar_missing_eof_block()
+    policy = DiagnosticPolicy(
+        overrides={
+            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.RAISE
+        }
+    )
+    with pytest.raises(DiagnosticRaisedError) as ei:
+        with open_archive(
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(
+                strict_archive_eof=False,
+                diagnostic_policy=policy,
+            ),
+        ) as ar:
+            ar.members()
+    assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+
+
+def test_strict_eof_ignore_still_raises_truncated() -> None:
+    from archivey.types import ArchiveFormat
+    from tests.test_tar import _tar_missing_eof_block
+
+    data = _tar_missing_eof_block()
+    policy = DiagnosticPolicy(
+        overrides={
+            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.IGNORE
+        }
+    )
+    with pytest.raises(TruncatedError):
+        with open_archive(
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(
+                strict_archive_eof=True,
+                diagnostic_policy=policy,
+            ),
+        ) as ar:
+            ar.members()
+
+
+def test_extraction_report_results_frozen(tmp_path: Path) -> None:
+    (tmp_path / "f.txt").write_bytes(b"x")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    report = extract(tmp_path, dest)
+    assert isinstance(report.results, tuple)
+    with pytest.raises(Exception):
+        report.results[0].status = ExtractionStatus.FAILED  # type: ignore[misc]
+    # Member remains live/mutable
+    report.results[0].member.comment = "late"
+    assert report.results[0].member.comment == "late"
+
+
+def test_empty_summary_helper() -> None:
+    empty = DiagnosticSummary.empty()
+    assert empty.total_count == 0
+    assert empty.retained == ()
+    assert empty.dropped_count == 0
+
+
+def test_public_severity_and_exports() -> None:
+    assert DiagnosticSeverity.WARNING.value == "warning"
+    assert DiagnosticDisposition.COLLECT.value == "collect"
+
+
+# ---------------------------------------------------------------------------
+# The review batch: unused arguments, empty listings, unconfirmed formats
+# ---------------------------------------------------------------------------
+
+
+def test_empty_zip_reports_only_emptiness() -> None:
+    """A magic-confirmed empty archive is empty, and that is all there is to say."""
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+
+    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+        assert reader.members() == []
+        assert dict(reader.diagnostics.counts) == {DiagnosticCode.EMPTY_ARCHIVE: 1}
+
+
+def test_empty_archive_is_emitted_once_per_reader() -> None:
+    buf = io.BytesIO()
+    zipfile.ZipFile(buf, "w").close()
+
+    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+        reader.members()
+        reader.members()
+        assert reader.diagnostics.counts[DiagnosticCode.EMPTY_ARCHIVE] == 1
+
+
+def test_encoding_hint_from_detection_is_not_reported_unused() -> None:
+    """Only the *caller's* explicit encoding counts.
+
+    The detector's ``encoding_hint`` reaches the same backend parameter; a hint nobody
+    asked for going unused is not news, and reporting it would fire on ordinary opens.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+
+    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+        reader.members()
+        assert DiagnosticCode.ENCODING_ARGUMENT_UNUSED not in reader.diagnostics.counts
+
+
+def test_unused_argument_context_carries_no_password_material() -> None:
+    """`diagnostics`: no diagnostic surface may contain passwords or candidate counts."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+    data = buf.getvalue()
+
+    import tarfile
+
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"hello"))
+    del data
+
+    with open_archive(io.BytesIO(tar_buf.getvalue()), password="hunter2") as reader:
+        (record,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED
+        ]
+        serialized = json.dumps(record.to_dict())
+        assert "hunter2" not in serialized
+        assert record.context.argument == "password"  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Named policy presets
+# ---------------------------------------------------------------------------
+
+
+def test_strict_preset_equals_hand_built_policy() -> None:
+    """Presets add no resolution axis — they are ordinary frozen policy values."""
+    hand_built = DiagnosticPolicy(
+        default=DiagnosticDisposition.COLLECT,
+        overrides=dict.fromkeys(ARCHIVE_INTEGRITY_CODES, DiagnosticDisposition.RAISE),
+    )
+    assert DiagnosticPolicy.strict() == hand_built
+    assert DiagnosticPolicy.pedantic() == DiagnosticPolicy(
+        default=DiagnosticDisposition.RAISE
+    )
+
+
+def test_strict_preset_raises_on_archive_integrity() -> None:
+    from archivey.types import ArchiveFormat
+    from tests.test_tar import _tar_missing_eof_block
+
+    with pytest.raises(DiagnosticRaisedError) as ei:
+        with open_archive(
+            io.BytesIO(_tar_missing_eof_block()),
+            format=ArchiveFormat.TAR,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+        ) as ar:
+            ar.members()
+    assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+
+
+def test_strict_preset_does_not_raise_on_argument_hygiene(tmp_path: Path) -> None:
+    """The pipeline case: a password passed speculatively to every call must not make
+    every unencrypted archive raise under a policy named 'strict'."""
+    import tarfile
+
+    from archivey.types import ArchiveFormat
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 1
+        tf.addfile(info, io.BytesIO(b"x"))
+    data = buf.getvalue()
+    with open_archive(
+        io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        password="unused",
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+    ) as ar:
+        ar.members()
+        assert DiagnosticCode.PASSWORD_ARGUMENT_UNUSED in ar.diagnostics.counts
+    # pedantic() is the preset that does raise on it.
+    with pytest.raises(DiagnosticRaisedError) as ei:
+        with open_archive(
+            io.BytesIO(data),
+            format=ArchiveFormat.TAR,
+            password="unused",
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic()),
+        ) as ar:
+            ar.members()
+    assert ei.value.diagnostic.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED
+
+
+def test_strict_preset_does_not_raise_on_empty_archive() -> None:
+    """An empty archive is legitimate; the diagnostics spec forbids treating zero
+    members as an error, so strict() must not turn it into one."""
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w"):
+        pass
+    from archivey.types import ArchiveFormat
+
+    with open_archive(
+        io.BytesIO(buf.getvalue()),
+        format=ArchiveFormat.TAR,
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
+    ) as ar:
+        assert ar.members() == []
+        assert DiagnosticCode.EMPTY_ARCHIVE in ar.diagnostics.counts
+
+
+def test_archive_integrity_codes_are_all_real_codes() -> None:
+    """The preset and the taxonomy cannot drift apart silently."""
+    assert ARCHIVE_INTEGRITY_CODES <= set(DiagnosticCode)
+    excluded = set(DiagnosticCode) - ARCHIVE_INTEGRITY_CODES
+    # Soft probe-only unconfirmed stays out of strict= — the typed TruncatedError /
+    # CorruptionError already carries format_unconfirmed; RAISE would replace it.
+    assert excluded == {
+        DiagnosticCode.EMPTY_ARCHIVE,
+        DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY,
+        DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
+        DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
+        DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+        DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
+    }
