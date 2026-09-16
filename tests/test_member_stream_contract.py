@@ -265,7 +265,7 @@ _SEEK_ARCHIVES: tuple[_SeekSpec, ...] = (
     # plaintext member is per-file and must still seek)
     _SeekSpec("encrypted", "zip-aes"),
     _SeekSpec("encrypted-mixed", "zip-aes"),
-    # 7z solid LZMA2 (`basic`), stored COPY, encrypted (wrapper xfail).
+    # 7z solid LZMA2 (`basic`), stored COPY, encrypted (now seeks).
     # Mixed 7z is archive-wide encryption: the corpus-plain file is encrypted too.
     _SeekSpec("basic", "7z"),
     _SeekSpec("sevenzip-stored", "7z", packing="stored"),
@@ -312,17 +312,13 @@ def _is_only_stored(member) -> bool:
 
 
 def _decrypt_wrapper_member(key: str, spec: _SeekSpec, corpus_member) -> bool:
-    """ZIP AES and 7z encrypted members share the non-seeking decrypt wrapper.
+    """WinZip AES members still use a non-seeking decrypt wrapper.
 
     ZIP AES is per-member: only a corpus file with a password is wrapped.
-    7z encryption is archive-wide in the py7zr builder — a mixed row's
-    corpus-plain file is still encrypted on disk — so any 7z entry that
-    has passwords xfails every file member.
+    Encrypted 7z members seek (CBC restart); they are not in this xfail.
     """
     if key == "zip-aes":
         return corpus_member.password is not None
-    if key == "7z":
-        return bool(_BY_ID[spec.entry_id].passwords)
     return False
 
 

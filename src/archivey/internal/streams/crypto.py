@@ -9,7 +9,9 @@ Layers here:
 - :class:`DecryptStage` / :func:`open_aes_decrypt_stage` — feed ciphertext chunks,
   get plaintext (used when composing inside a larger open).
 - :class:`AesDecryptStream` / :func:`open_aes_decrypt_stream` — pull ``BinaryIO``
-  wrapper over a ciphertext source.
+  wrapper over a ciphertext source (7z member data: CBC, 7z zero-pad, optional
+  seek). RAR headers and WinZip AES keep their own pull streams; see the
+  class docstring.
 - :func:`derive_sevenzip_aes_key` / :func:`parse_sevenzip_aes_properties` —
   **7z-local** KDF helpers. RAR and WinZip-AES derive keys differently, so these
   are not on the generic :class:`CryptoBackend` surface; they live beside it for
@@ -20,12 +22,18 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import BinaryIO, Protocol
 
 from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
-from archivey.internal.streams.streamtools import ReadOnlyIOStream
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    is_seekable,
+    read_exact,
+    source_byte_size,
+)
 from archivey.types import MissingComponent
 
 # The package name surfaced to users, and the single install hint every AES raise site
@@ -141,47 +149,176 @@ def open_aes_decrypt_stage(params: AesParams) -> DecryptStage:
 
 
 class AesDecryptStream(ReadOnlyIOStream):
-    """Pull ``BinaryIO`` that decrypts an underlying ciphertext stream via AES-CBC."""
+    """Pull ``BinaryIO`` that decrypts an underlying ciphertext stream via AES-CBC.
 
-    def __init__(self, source: BinaryIO, stage: DecryptStage) -> None:
+    This is the 7z member-data wrapper. CBC can restart at any block using the
+    preceding ciphertext block as the IV, so when the ciphertext source is
+    seekable this stream is too — that is what keeps ``seekable_members=True``
+    on an encrypted 7z folder. ``tell`` is the **plaintext** offset.
+
+    Three AES pull streams share :class:`DecryptStage` and stay separate:
+
+    | Wrapper | Mode | Why it is not this class |
+    | --- | --- | --- |
+    | This class | CBC | 7z member data: unbounded ``read(-1)``, 7z zero-pad of a short last block, plaintext ``tell``/``seek``, ``owns_inner`` (default borrow) |
+    | ``_HeaderDecryptStream`` | CBC | RAR headers: non-owning **ciphertext** ``tell``, ``read_exact`` of each AES block, reject ``read(-1)``, no 7z zero-pad |
+    | ``WinZipAesDecryptStream`` | CTR | ZIP AE-x: HMAC over the whole ciphertext, so a random seek would skip MAC updates (or force a full ciphertext pass) |
+
+    A flag for each of those four RAR divergences would make this class wrong
+    for 7z or wrong for headers. The stage is shared; the pull stream is not.
+    """
+
+    def __init__(
+        self,
+        source: BinaryIO,
+        params: AesParams,
+        *,
+        owns_inner: bool = False,
+    ) -> None:
         super().__init__()
         self._source = source
-        self._stage = stage
+        self._params = params
+        self._owns_inner = owns_inner
+        self._seekable = is_seekable(source)
+        # Ciphertext origin of this wrapper. Seekable sources are positioned at
+        # the first ciphertext byte (a 7z pack ``SharedView`` starts at 0 of the
+        # view). Non-seekable sources have no origin to restore; seek is refused.
+        self._cipher_start = source.tell() if self._seekable else 0
+        self._stage: DecryptStage = open_aes_decrypt_stage(params)
         self._buf = bytearray()
         self._eof = False
+        self._pos = 0
 
-    def read(self, size: int = -1) -> bytes:
-        if size == 0:
+    def read(self, n: int = -1, /) -> bytes:
+        if n == 0:
             return b""
-        while not self._eof and (size < 0 or len(self._buf) < size):
-            chunk = self._source.read(
-                65536 if size < 0 else max(size - len(self._buf), 1)
-            )
+        while not self._eof and (n < 0 or len(self._buf) < n):
+            chunk = self._source.read(65536 if n < 0 else max(n - len(self._buf), 1))
             if not chunk:
                 self._buf.extend(self._stage.finalize())
                 self._eof = True
                 break
             self._buf.extend(self._stage.update(chunk))
-        if size < 0:
+        if n < 0:
             out = bytes(self._buf)
             self._buf.clear()
-            return out
-        out = bytes(self._buf[:size])
-        del self._buf[:size]
+        else:
+            out = bytes(self._buf[:n])
+            del self._buf[:n]
+        self._pos += len(out)
         return out
 
+    def tell(self, /) -> int:
+        return self._pos
+
+    def seekable(self) -> bool:
+        return self._seekable
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if not self._seekable:
+            raise io.UnsupportedOperation("seek")
+        if whence == io.SEEK_SET:
+            new_pos = offset
+        elif whence == io.SEEK_CUR:
+            new_pos = self._pos + offset
+        elif whence == io.SEEK_END:
+            size = self._plaintext_size()
+            if size is None:
+                self.read(-1)
+                size = self._pos
+            new_pos = size + offset
+        else:
+            raise ValueError(f"Invalid whence: {whence}")
+        if new_pos < 0:
+            raise ValueError(f"Negative seek position {new_pos}")
+        if new_pos == self._pos:
+            return self._pos
+        buf_end = self._pos + len(self._buf)
+        if self._pos < new_pos <= buf_end:
+            del self._buf[: new_pos - self._pos]
+            self._pos = new_pos
+            return self._pos
+        size = self._plaintext_size()
+        if size is not None and new_pos >= size:
+            cipher_len = self._cipher_len()
+            if cipher_len is not None:
+                self._source.seek(self._cipher_start + cipher_len)
+            self._buf.clear()
+            self._eof = True
+            self._pos = new_pos
+            return self._pos
+        block, intra = divmod(new_pos, 16)
+        if not self._restart_at_block(block):
+            self._pos = new_pos
+            return self._pos
+        self._pos = block * 16
+        if intra:
+            skipped = self.read(intra)
+            if len(skipped) < intra:
+                self._pos = new_pos
+        return self._pos
+
+    def _cipher_len(self) -> int | None:
+        total = source_byte_size(self._source)
+        if total is None:
+            return None
+        return max(0, total - self._cipher_start)
+
+    def _plaintext_size(self) -> int | None:
+        cipher_len = self._cipher_len()
+        if cipher_len is None:
+            return None
+        remainder = cipher_len & 15
+        if remainder == 0:
+            return cipher_len
+        # Short last ciphertext block is zero-padded then decrypted: 16 plaintext
+        # bytes for that block (the 7z convention in ``DecryptStage.finalize``).
+        return cipher_len + (16 - remainder)
+
+    def _restart_at_block(self, block: int) -> bool:
+        """Recreate the CBC decryptor so plaintext block ``block`` is next.
+
+        Returns False when the preceding ciphertext block is not there (past
+        EOF). A spent ``DecryptStage`` cannot be reused after ``finalize``;
+        every reposition builds a fresh one.
+        """
+        if block == 0:
+            iv = self._params.iv
+        else:
+            self._source.seek(self._cipher_start + (block - 1) * 16)
+            iv = read_exact(self._source, 16)
+            if len(iv) < 16:
+                self._buf.clear()
+                self._eof = True
+                return False
+        self._source.seek(self._cipher_start + block * 16)
+        self._stage = open_aes_decrypt_stage(AesParams(key=self._params.key, iv=iv))
+        self._buf.clear()
+        self._eof = False
+        return True
+
     def close(self) -> None:
-        # Hardcoded own: no ``owns_inner``. The 7z pack view underneath is a
-        # ``SharedView`` that absorbs the close. ZIP/RAR use sibling wrappers
-        # over the same ``DecryptStage``; see ``dev-docs/topics/stream-ownership.md``.
         if not self.closed:
-            self._source.close()
-        super().close()
+            try:
+                if self._owns_inner:
+                    self._source.close()
+            finally:
+                super().close()
 
 
-def open_aes_decrypt_stream(source: BinaryIO, params: AesParams) -> BinaryIO:
-    """Wrap ``source`` in an AES-CBC decrypt stream using the shared crypto backend."""
-    return AesDecryptStream(source, open_aes_decrypt_stage(params))
+def open_aes_decrypt_stream(
+    source: BinaryIO,
+    params: AesParams,
+    *,
+    owns_inner: bool = False,
+) -> BinaryIO:
+    """Wrap ``source`` in an AES-CBC decrypt stream using the shared crypto backend.
+
+    ``owns_inner`` defaults to borrow, matching :class:`DecompressorStream` /
+    :class:`~archivey.internal.streams.streamtools.slice.SlicingStream`. The 7z
+    pack view underneath is a :class:`~archivey.internal.streams.streamtools.slice.SharedView`.
+    """
+    return AesDecryptStream(source, params, owns_inner=owns_inner)
 
 
 # --- 7z-local KDF (not on the generic CryptoBackend surface) ---------------------------

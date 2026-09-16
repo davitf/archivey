@@ -715,12 +715,12 @@ class _HeaderDecryptStream:
     skips go through ``source``. Do not prefetch plaintext and rewind — that is
     why :func:`_read_rar5_block` reads the size vint byte-at-a-time.
 
-    Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`. That wrapper
-    closes its source, has no ciphertext ``tell``, allows unbounded reads, and
-    ``finalize``-pads a short last block with zeros (the 7z convention). Header
-    parsing needs a non-owning cursor, ``read_exact`` of each AES block, and a
-    reject for ``read(-1)``. The decrypt *stage* is shared; the pull stream is
-    not.
+    Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`. That 7z
+    wrapper now has ``owns_inner`` and a plaintext ``tell``/``seek``, but header
+    parsing still needs the other three: a non-owning **ciphertext** ``tell``,
+    ``read_exact`` of each AES block (and a reject for ``read(-1)``), and no
+    7z zero-pad of a short last block. The decrypt *stage* is shared; the pull
+    stream is not.
 
     ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the
     caller already bounds the ask. RAR5 refuses ``hdrlen > _RAR5_MAX_HEADER``

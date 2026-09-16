@@ -207,8 +207,8 @@
   anchored member is under 4 bytes are rare enough not to pay for the extra rule, and
   combining non-contiguous members trades one seek for several.
 
-  Needs the seekable AES-CBC stream (`AesDecryptStream`, `crypto.py`, has no `seek`) and
-  applies to `Copy` chains only — with anything compressing between the cipher and the
+  Needs the seekable AES-CBC stream (`AesDecryptStream`, `crypto.py` — now seeks)
+  and applies to `Copy` chains only — with anything compressing between the cipher and the
   payload, a plaintext offset is not a ciphertext offset. Narrower than it first looks:
   once `sevenzip-aes-tail-key-check` lands, the `Copy` case is O(1) for the ~75% of
   archives with at least 4 padding bytes, leaving `Copy` + short-or-nonstandard padding +
