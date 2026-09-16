@@ -18,7 +18,11 @@ block 2. Do not drop real pause-and-ask items to leave section 3 empty.
 
 - **PR size:** [Small/Medium/Large] (~X lines)
 - **Gates (CI status, not re-run):** [ruff / pyrefly / ty / pytest — or `CI pending`]
-- **Verdict:** [✅ Approve / 💬 Comment / 🔄 Request Changes]
+- **Verdict:** [✅ Approve / ✅ Approve conditional on F<n>, F<n> / 💬 Comment / 🔄 Request Changes]
+  - “Only nits left” is not an approval — addendum §0 Verdicts. Nits get fixed on this PR,
+    or the verdict is the conditional approval, naming the IDs it is conditioned on.
+  - Posting through the maintainer's account? Submit as `COMMENT`; GitHub blocks
+    self-approval (addendum §10). The verdict line *is* the verdict.
 
 **Main points**
 
@@ -61,7 +65,9 @@ block 2. Do not drop real pause-and-ask items to leave section 3 empty.
 
 ### Minor / suggestions
 
-🟢 **[nit]** [Suggestion — not blocking]
+Nits are small, not optional: they are fixed on this PR (addendum §0 Verdicts).
+
+🟢 **[nit]** [Suggestion — small, fix before merge]
 
 💡 **[suggestion]** [Alternative approach]
 
@@ -69,7 +75,7 @@ block 2. Do not drop real pause-and-ask items to leave section 3 empty.
 
 🎉 **[praise]** [Specific strength worth keeping]
 
-**Verdict:** [✅ Approve / 💬 Comment / 🔄 Request Changes]
+**Verdict:** [✅ Approve / ✅ Approve conditional on F<n>, F<n> / 💬 Comment / 🔄 Request Changes]
 
 ---
 
@@ -120,7 +126,7 @@ the briefing, handoff, or diff. If none: `None.`
 ```
 🟢 **[nit]** [Suggestion]
 
-Not blocking, but consider [improvement].
+Small, but please fix on this PR: [improvement].
 ```
 
 ### Praise

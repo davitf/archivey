@@ -53,7 +53,8 @@ For the maintainer skimming without the code open. Half a screen unless the chan
 - **What this change is** — 2–4 sentences: intent, main files/areas touched, behaviour
   delta, in plain language. Assume no familiarity with the PR or the OpenSpec change name.
 - **Snapshot** — size (approx. lines / small|medium|large), gates (CI status, §10), and
-  **Verdict**: ✅ Approve / 💬 Comment / 🔄 Request Changes.
+  **Verdict**: ✅ Approve / ✅ Approve conditional on the listed fixes / 💬 Comment /
+  🔄 Request Changes — meanings below, and “only nits left” is not an approval.
 - **Main points** — ranked one-liners, 🔴/🟡 only: severity + gist. No `file:line` essays.
 - **What's fine** (optional, 1–3 bullets) — load-bearing things that looked correct, so the
   briefing isn't only negatives.
@@ -111,6 +112,33 @@ memory of earlier sessions (`CLAUDE.md`).
 Reviewing an OpenSpec proposal (§9) uses the same three blocks: "what this change is"
 summarizes the proposal's intent, and block 2 is the handoff for whoever revises the
 proposal or implements it later.
+
+### Verdicts — what each one commits to
+
+The Snapshot verdict is a claim about whether the PR is ready to merge **as it stands**,
+so use these meanings and no others:
+
+- **✅ Approve** — nothing left to change. Every finding is `DISPROVEN`, already fixed in a
+  later commit, or a 💡 / 📚 / 🎉 annotation that carries no action.
+- **✅ Approve, conditional on the listed fixes** — the only remaining findings are 🟢 nits
+  (or a 🟡 that small) whose fix is *obvious*, and you would not need to see the result. Say
+  which IDs the approval is conditioned on, in the verdict line itself. This is the one
+  verdict that approves with work outstanding; the conditioned findings are still posted in
+  full (block 2, inline threads, IDs) — approving is not shorthand for dropping them.
+- **💬 Comment** — findings the implementor should act on, but nothing the maintainer must
+  decide and nothing you need to re-review.
+- **🔄 Request Changes** — a 🔴 stands, or a fix needs a look once it lands.
+
+**"Only nits left" is not a reason to merge.** In this repo a 🟢 nit is *small*, not
+*optional*: it gets fixed before merge, on this PR. "Leave it for a follow-up" is not an
+available disposition — nobody comes back for it, and the next agent has no memory of this
+round (`CLAUDE.md`). So never write "good to merge, only nits remain": either the nits are
+fixed, or the verdict is the conditional approval above, which keeps them on the
+implementor's list. Only the maintainer waives a nit, explicitly; when they do, record it
+per the settled-decision rule in block 3.
+
+The 💡 / 📚 / 🎉 tiers are the genuinely optional ones — they propose or teach, they do not
+ask for a change, and they never hold a merge.
 
 ### Two axes: severity ≠ confidence
 
@@ -397,7 +425,7 @@ settled ground (`review/backlog.md` carries the deferred topics and their reason
 |-------|-------------------|
 | 🔴 `[blocking]` | Path escape on default extract; catch-all exception translation; core grows a hard dep; unjustified type suppressions; silent solid O(n²) on a common API; deliberate new debt with no recorded decision; public contract change left undocumented *and* undiscussed |
 | 🟡 `[important]` | Dishonest cost signal; format parity hole without docs; missing red-green test for a bugfix; threat-model gap touched but unaddressed; CLI forced to import `internal/`; code contorted to match a questionable spec without raising a revision; non-obvious logic that only makes sense after reading OpenSpec/`design.md`/long PR prose (pass-1 doc debt, §8) |
-| 🟢 `[nit]` | Naming, comment polish, non-user-facing refactor suggestions |
+| 🟢 `[nit]` | Naming, comment polish, non-user-facing refactor suggestions — *small*, not *optional*: still fixed on this PR (§0 Verdicts) |
 | 💡 / 📚 / 🎉 | Alternatives, teaching notes, praise — non-blocking |
 
 When unsure whether something is 🔴 vs 🟡: **does it undercut a VISION claim or the
@@ -602,6 +630,33 @@ to push.
 
 **Exception — commissioned `review/` briefs** (§6): baseline first still holds.
 No CI run to inherit, and the skip count is itself evidence.
+
+### You cannot post a GitHub approval — expected, not news
+
+Agents here post through the maintainer's own account (the same fact §Attribution is
+about), and GitHub refuses `event: APPROVE` on your own pull request:
+
+```
+422 Unprocessable Entity — Can not approve your own pull request
+```
+
+This is the normal, permanent state of this repo's review loop, not a failure to report.
+So:
+
+- **Submit the review with `event: COMMENT`** (`pull_request_review_write`, method
+  `submit_pending`). `REQUEST_CHANGES` is rejected on your own PR for the same reason —
+  `COMMENT` is the only event that goes through.
+- **Carry the verdict in the text**, where the §0 Verdict line already puts it. The
+  briefing's `✅ Approve` / `✅ Approve conditional on F4, F5` / `🔄 Request Changes` is the
+  review's actual conclusion; the green check in GitHub's UI is not available to say it.
+- **Do not narrate the limitation** to the maintainer as a discovery each round, and do not
+  retry `APPROVE` to see if it works this time. If it is worth a line at all, it is one
+  clause in the handoff ("verdict in text; GitHub blocks self-approval"), not a paragraph.
+- A human approval, where the repo's checks require one, is still the maintainer's to give.
+  Nothing you post substitutes for it.
+
+Hosts that post as their own bot identity (`cursor[bot]`, …) are not their own PR author
+and are not covered by this — they may post the real event.
 
 ### Attribution — make it obvious an agent wrote this
 
