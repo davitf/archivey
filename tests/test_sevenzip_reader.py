@@ -423,23 +423,35 @@ def test_truncated_error_during_confirm_is_not_wrong_password(
     ``TruncatedError`` rides with ``UnsupportedFeatureError`` /
     ``PackageNotInstalledError`` so a short last CBC block is not diagnosed
     as a bad key (the same class as #342 F21).
+
+    Raise from ``read()``, not from ``open_folder_pipeline`` construction:
+    confirm calls the pipeline *before* its ``try``, so a construction-time
+    raise never enters the remapping ``except``.
     """
     import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
 
     archive = tmp_path / "aes.7z"
     _write_py7zr_archive(archive, {"a.txt": b"hello"}, password="secret")
 
-    def raise_truncated(*_args: object, **_kwargs: object) -> object:
-        raise TruncatedError(
-            "AES-CBC ciphertext ended mid-block (5 leftover byte(s); "
-            "a truncated block cannot be decrypted)"
-        )
+    class _RaiseOnRead:
+        def read(self, _n: int = -1) -> bytes:
+            raise TruncatedError(
+                "AES-CBC ciphertext ended mid-block (5 leftover byte(s); "
+                "a truncated block cannot be decrypted)"
+            )
 
-    monkeypatch.setattr(sevenzip_reader_mod, "open_folder_pipeline", raise_truncated)
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        sevenzip_reader_mod, "open_folder_pipeline", lambda *_a, **_k: _RaiseOnRead()
+    )
 
     with pytest.raises(TruncatedError, match="mid-block"):
         with open_archive(archive, password="secret") as reader:
             member = next(m for m in reader.members() if m.is_file)
+            # Mutation C: drop TruncatedError from the confirm passthrough —
+            # EncryptionError ("Wrong password or corrupt 7z folder").
             reader.read(member)
 
 
@@ -489,6 +501,9 @@ def test_truncated_encrypted_folder_is_not_wrong_password(
 
     with open_archive(archive, password="secret") as reader:
         member = next(m for m in reader.members() if m.is_file)
+        # Mutation A: restore zero-pad drain — CRC mismatch, EncryptionError.
+        # Mutation C: drop TruncatedError from the confirm passthrough —
+        # same EncryptionError wrapping.
         with pytest.raises(TruncatedError, match="mid-block"):
             reader.read(member)
 
@@ -1106,6 +1121,8 @@ def test_truncated_aes_pack_raises_truncated_error() -> None:
         password=password,
     )
     try:
+        # Mutation A: restore zero-pad drain in finalize — 64 garbage-tailed
+        # bytes, no raise.
         with pytest.raises(TruncatedError, match="mid-block"):
             stream.read()
     finally:

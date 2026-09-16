@@ -77,9 +77,11 @@ def test_short_ciphertext_finalize_raises_truncated() -> None:
     # cannot recover the last block, so finalize raises rather than emitting
     # 16 garbage plaintext bytes. size / SEEK_END report the intact 48.
     cipher = _encrypt(bytes(range(64)))[:53]
+    # Mutation A: restore zero-pad drain in finalize — DID NOT RAISE.
     with pytest.raises(TruncatedError, match="mid-block"):
         _stage_decrypt(cipher)
     with _open(cipher) as stream:
+        # Mutation B: round _plaintext_size up to a whole block — reports 64.
         assert stream.size == 48
         assert stream.seek(0, io.SEEK_END) == 48
         # SEEK_END describes the recoverable payload; it does not itself raise.
@@ -165,6 +167,8 @@ def test_short_last_block_mid_seek() -> None:
     cipher = _encrypt(bytes(range(64)))[:53]
     with _open(cipher) as stream:
         stream.seek(40)
+        # Mutation A: restore zero-pad drain in finalize — returns leftover
+        # intact bytes plus 16 garbage instead of raising.
         with pytest.raises(TruncatedError, match="mid-block"):
             stream.read()
 
