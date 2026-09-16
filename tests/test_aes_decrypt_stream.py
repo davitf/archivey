@@ -78,8 +78,11 @@ def test_short_ciphertext_finalize_raises_truncated() -> None:
     # 16 garbage plaintext bytes. size / SEEK_END report the intact 48.
     cipher = _encrypt(bytes(range(64)))[:53]
     # Mutation A: restore zero-pad drain in finalize — DID NOT RAISE.
-    with pytest.raises(TruncatedError, match="mid-block"):
+    # Mutation E: raise base TruncatedError instead of the origin-tagged
+    # subclass — type(exc) is TruncatedError.
+    with pytest.raises(TruncatedError, match="mid-block") as info:
         _stage_decrypt(cipher)
+    assert type(info.value) is crypto._AesCbcTruncatedError
     with _open(cipher) as stream:
         # Mutation B: round _plaintext_size up to a whole block — reports 64.
         assert stream.size == 48
@@ -91,6 +94,41 @@ def test_short_ciphertext_finalize_raises_truncated() -> None:
         with pytest.raises(TruncatedError, match="mid-block"):
             stream.read()
     with _open(cipher) as stream:
+        assert stream.read(48) == bytes(range(48))
+        with pytest.raises(TruncatedError, match="mid-block"):
+            stream.read(1)
+
+
+def test_seek_end_on_sub_block_truncation_still_raises() -> None:
+    """5 ciphertext bytes: size=0, SEEK_END at origin is a no-op, read raises.
+
+    The 53-byte case above lands SEEK_END at 48 and the next read is empty.
+    Identical damage, two answers — both are the recoverable-payload policy,
+    not a side effect of the ``new_pos == _pos`` short-circuit. Marking eof
+    whenever ``new_pos >= size`` (before that short-circuit) would make
+    ``seek(0)`` on this stream silent-empty.
+    """
+    cipher = _encrypt(bytes(range(16)))[:5]
+    with _open(cipher) as stream:
+        assert stream.size == 0
+        assert stream.seek(0, io.SEEK_END) == 0
+        assert stream.tell() == 0
+        with pytest.raises(TruncatedError, match="mid-block"):
+            stream.read()
+
+
+def test_intact_prefix_readable_after_truncated_raise() -> None:
+    """A completing read that raises leaves the intact prefix drainable.
+
+    ``finalize`` raises before ``read`` sets ``_eof`` or clears ``_buf``.
+    Catch and read the buffered blocks; only a read that reaches the
+    truncated tail raises again.
+    """
+    cipher = _encrypt(bytes(range(64)))[:53]
+    with _open(cipher) as stream:
+        with pytest.raises(TruncatedError, match="mid-block"):
+            stream.read()
+        assert stream.tell() == 0
         assert stream.read(48) == bytes(range(48))
         with pytest.raises(TruncatedError, match="mid-block"):
             stream.read(1)

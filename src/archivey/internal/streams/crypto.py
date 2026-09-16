@@ -58,6 +58,18 @@ _SEVENZIP_NO_HASH_SENTINEL = 0x3F
 AES_BLOCK_SIZE = 16
 
 
+class _AesCbcTruncatedError(TruncatedError):
+    """Short last AES-CBC ciphertext block; private origin tag for confirm.
+
+    ``_password_for_folder`` remaps a decoder ``TruncatedError`` (PPMd
+    "File is truncated" on wrong-key garbage) to ``EncryptionError`` so
+    ``PasswordManager.attempt`` can try the next candidate. This subclass
+    is the AES ``finalize`` site, and must *not* remap: a truncated pack
+    with the correct password is not a wrong key. Callers catching
+    ``TruncatedError`` are unaffected.
+    """
+
+
 @dataclass(frozen=True)
 class AesParams:
     """Inputs to an AES-CBC decrypt stage: the derived key and the initialization vector."""
@@ -127,7 +139,10 @@ class _CryptographyDecryptStage:
             # AES_BLOCK_SIZE. Writer pad is discarded by the AES coder's
             # unpack_size, not here.
             leftover = len(self._buf)
-            raise TruncatedError(
+            # Leftover is a cut-short pack *or* a header-declared pack_size
+            # that is not a multiple of AES_BLOCK_SIZE. This raise does not
+            # tell those apart; sevenzip-aes-tail-key-check task 1.1 will.
+            raise _AesCbcTruncatedError(
                 f"AES-CBC ciphertext ended mid-block ({leftover} leftover "
                 "byte(s); a truncated block cannot be decrypted)"
             )
@@ -193,9 +208,22 @@ class AesDecryptStream(ReadOnlyIOStream):
       ciphertext and report seekable; seeking would reposition the archive.
 
     Ownership is ``owns_inner`` (both borrow). ``read`` already gathers short
-    source reads. A short last ciphertext block raises ``TruncatedError``;
-    ``size`` / ``SEEK_END`` report the intact full-block length. This is this
-    class's policy: ``_HeaderDecryptStream`` never calls ``finalize``, and
+    source reads. A short last ciphertext block raises ``TruncatedError``
+    (the private ``_AesCbcTruncatedError`` subclass). ``size`` / ``SEEK_END``
+    report the intact full-block length, so the two truncated lengths
+    answer differently after ``SEEK_END``:
+
+    - 53 ciphertext bytes: ``size`` is 48, ``SEEK_END`` lands at 48, a
+      subsequent read is empty (cursor already at recoverable EOF).
+    - 5 ciphertext bytes: ``size`` is 0, ``SEEK_END`` at origin is a
+      no-op (``new_pos == _pos`` before the past-end branch), and the
+      next read raises. Marking eof whenever ``new_pos >= size`` would
+      silence that sub-block case.
+
+    After a completing read raises, the intact prefix stays in ``_buf``
+    and ``_eof`` stays false: catch and drain the buffered blocks. Only
+    a read that reaches the truncated tail raises. This is this class's
+    policy: ``_HeaderDecryptStream`` never calls ``finalize``, and
     WinZip AES does not use ``DecryptStage``.
     """
 

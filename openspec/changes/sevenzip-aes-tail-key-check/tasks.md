@@ -5,6 +5,8 @@
 - [ ] 1.1 Compute the padding length from the AES coder: `pack_size` minus the coder's
       declared output size in `UNPACK_INFO`. Guard a `pack_size` that is not a multiple of
       16 (malformed) and the multi-packed-stream case the reader already refuses.
+      `AesDecryptStream.finalize` currently raises `_AesCbcTruncatedError` for both a
+      cut-short pack and a non-aligned `pack_size`; this guard is what tells them apart.
 - [ ] 1.2 Read the last two ciphertext blocks from the pack view — the coder's IV
       stands in when the stream is one block — and decrypt **one block** with the
       crypto backend's one-shot CBC. Do not wrap the pack view in `AesDecryptStream`
