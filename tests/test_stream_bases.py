@@ -392,6 +392,37 @@ def _delegating_stream_subclasses() -> set[type]:
     }
 
 
+_INIT_KWARG_MISSING = object()
+
+
+def _init_keyword(cls: type, name: str) -> object:
+    """Literal value of ``name=`` in *this class's* ``__init__`` source, or missing.
+
+    Walks AST of the constructor, not a substring: a comment can mention the
+    keyword (``_GzipTruncationCheckStream`` does). Only ``cls.__dict__`` counts
+    — a subclass that inherits ``__init__`` is not charged with the parent's
+    kwarg. The mirror case is uncheckable this way: a class that overrides
+    ``read`` and inherits an ``__init__`` that already passes
+    ``readinto_passthrough=False`` would look like the flag is missing.
+    """
+    if "__init__" not in cls.__dict__:
+        return _INIT_KWARG_MISSING
+    tree = ast.parse(textwrap.dedent(inspect.getsource(cls.__init__)))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "__init__"):
+            continue
+        for kw in node.keywords:
+            if kw.arg != name:
+                continue
+            if isinstance(kw.value, ast.Constant):
+                return kw.value.value
+            return ast.dump(kw.value)
+    return _INIT_KWARG_MISSING
+
+
 def test_delegating_stream_close_inventory() -> None:
     """Every DelegatingStream subclass has a recorded close contract.
 
@@ -402,7 +433,9 @@ def test_delegating_stream_close_inventory() -> None:
     ``__init__`` that still passes ``subclass_closes_inner=True`` while leaving
     the flag False used to evade that check (the kwarg overrides the flag at
     runtime). The constructor kwarg stays for ad-hoc construction in tests;
-    that path is not inventory-checked. Same grain as
+    that path is not inventory-checked. The "no production kwarg" check uses
+    ``_init_keyword`` (AST, not a substring) so a comment mentioning the
+    flag cannot trip it. Same grain as
     ``test_readonly_stream_resume_offset_inventory``.
     """
     _import_all_archivey_modules()
@@ -451,41 +484,13 @@ def test_delegating_stream_close_inventory() -> None:
     passed_kwarg = {
         cls
         for cls in found
-        if cls.__init__ is not DelegatingStream.__init__
-        and "subclass_closes_inner=" in inspect.getsource(cls.__init__)
+        if _init_keyword(cls, "subclass_closes_inner") is not _INIT_KWARG_MISSING
     }
     assert passed_kwarg == set(), (
         "production DelegatingStream subclass __init__ must set "
         "_SUBCLASS_CLOSES_INNER on the class and omit the constructor kwarg "
         f"(kwarg is for ad-hoc tests): {passed_kwarg}"
     )
-
-
-_INIT_KWARG_MISSING = object()
-
-
-def _init_keyword(cls: type, name: str) -> object:
-    """Literal value of ``name=`` in ``cls.__init__`` source, or ``_INIT_KWARG_MISSING``.
-
-    Walks AST of the constructor, not a substring: a comment can mention the
-    keyword (``_GzipTruncationCheckStream`` does).
-    """
-    if cls.__init__ is DelegatingStream.__init__:
-        return _INIT_KWARG_MISSING
-    tree = ast.parse(textwrap.dedent(inspect.getsource(cls.__init__)))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not (isinstance(func, ast.Attribute) and func.attr == "__init__"):
-            continue
-        for kw in node.keywords:
-            if kw.arg != name:
-                continue
-            if isinstance(kw.value, ast.Constant):
-                return kw.value.value
-            return ast.dump(kw.value)
-    return _INIT_KWARG_MISSING
 
 
 def test_delegating_stream_readinto_passthrough_inventory() -> None:
@@ -511,6 +516,13 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     Mandatory-explicit ``True`` on the other seven would record a decision
     that was never made: three never override ``read``, four already
     implement ``readinto``. Those must omit the kwarg.
+
+    ``_init_keyword`` only inspects ``cls.__dict__["__init__"]``. A subclass
+    that inherits ``__init__`` is not charged with the parent's kwarg. The
+    mirror — override ``read``, inherit an ``__init__`` that already passes
+    ``False`` — then looks like the flag is missing. A per-class syntactic
+    check cannot get both; a class flag would, at the cost of duplicating
+    the two call sites.
 
     Reuses ``_delegating_stream_subclasses`` (archivey modules only); test-file
     subclasses do not trip it.
@@ -551,7 +563,26 @@ def test_init_keyword_ignores_comments() -> None:
 
     class _Commented(DelegatingStream):
         def __init__(self, inner: io.BytesIO) -> None:
-            # readinto_passthrough=False in a comment must not count
+            # readinto_passthrough=False and subclass_closes_inner=True in a
+            # comment must not count
             super().__init__(inner)
 
     assert _init_keyword(_Commented, "readinto_passthrough") is _INIT_KWARG_MISSING
+    assert _init_keyword(_Commented, "subclass_closes_inner") is _INIT_KWARG_MISSING
+
+
+def test_init_keyword_does_not_attribute_parent_kwarg() -> None:
+    """A subclass that writes no __init__ is not charged with the parent's kwarg."""
+
+    class _Parent(DelegatingStream):
+        def __init__(self, inner: io.BytesIO) -> None:
+            super().__init__(inner, readinto_passthrough=False)
+
+        def read(self, n: int = -1, /) -> bytes:
+            return self._inner.read(n)
+
+    class _Child(_Parent):
+        pass
+
+    assert _init_keyword(_Parent, "readinto_passthrough") is False
+    assert _init_keyword(_Child, "readinto_passthrough") is _INIT_KWARG_MISSING
