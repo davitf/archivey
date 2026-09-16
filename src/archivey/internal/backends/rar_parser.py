@@ -710,16 +710,20 @@ class _HeaderDecryptStream:
     ``len(_buf)`` would report the logical plaintext offset and land inside the
     padding; the next header then decrypts as garbage.
 
-    There is no ``seek``. CBC state cannot reposition, and the parser never
-    asks: after the header is consumed this wrapper is discarded and packed-data
-    skips go through ``source``. Do not prefetch plaintext and rewind — that is
-    why :func:`_read_rar5_block` reads the size vint byte-at-a-time.
+    There is no ``seek``. CBC *can* reposition (``AesDecryptStream`` restarts
+    from the preceding ciphertext block as IV), but the parser never needs it:
+    after the header is consumed this wrapper is discarded and packed-data
+    skips go through ``source``. ``tell`` is the ciphertext cursor rather than
+    a plaintext offset. Do not prefetch plaintext and rewind — that is why
+    :func:`_read_rar5_block` reads the size vint byte-at-a-time.
 
-    Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`. That wrapper
-    closes its source, has no ciphertext ``tell``, allows unbounded reads, and
-    ``finalize``-pads a short last block with zeros (the 7z convention). Header
-    parsing needs a non-owning cursor, ``read_exact`` of each AES block, and a
-    reject for ``read(-1)``. The decrypt *stage* is shared; the pull stream is
+    Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`. That 7z
+    wrapper has ``owns_inner`` (both streams borrow) and a plaintext
+    ``tell``/``seek``. What still blocks folding this class in is the header
+    walk: ``header_fd`` is either the raw handle or this stream, and
+    ``tell()`` means archive offset for both arms; and this wrapper sits
+    mid-file unbounded, so a seeking decrypt stream would reposition the
+    shared archive handle. The decrypt *stage* is shared; the pull stream is
     not.
 
     ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the

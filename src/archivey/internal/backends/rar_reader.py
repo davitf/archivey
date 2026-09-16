@@ -480,8 +480,10 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     Same restart-on-rewind shape as ``DecompressorStream`` /
     ``Decoder.recreate`` with a one-point index at origin. It does not use
     that engine: ``Decoder`` is a push interface fed compressed bytes, while
-    unrar produces plaintext on stdout from a path. A third pull-shaped
-    restartable producer would be the point to extract a shared base.
+    unrar produces plaintext on stdout from a path. ``AesDecryptStream`` is
+    a different shape — O(1) CBC restart, no replay — and does not count
+    toward extracting a shared restart-and-replay base. A third pull-shaped
+    replay producer would be that point.
     """
 
     def __init__(

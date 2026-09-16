@@ -105,10 +105,10 @@ class _CodecStage:
 
     ``pack_size`` is the coder's *input* length — the output of the preceding coder in
     the linear chain (or ``None`` when this coder consumes the packed slice directly,
-    whose length ``open_codec_stream`` recovers from the sized source). Only PPMd reads
-    it, to gate post-eof recovery on full pack delivery; it is load-bearing when the
-    upstream stage is unsized (e.g. an AES decrypt stream over an encrypted PPMd folder),
-    where the source length is otherwise unknowable.
+    whose length ``open_codec_stream`` recovers from the sized source). PPMd uses it
+    to gate post-eof recovery on full pack delivery. Deflate/zlib/bzip2 rapidgzip
+    uses it to bound the input so AES pad bytes are not a concatenated member or
+    trailing-garbage stderr.
     """
 
     codec: Codec
@@ -348,7 +348,9 @@ def _execute_stage(
     """Open one planned stage on top of ``stream``. The only stream-opening code.
 
     ``stage_index`` is consumed only by ``_BcjStage`` (``owns_inner=(stage_index > 0)``).
-    Other stages ignore it: ``[AES, LZMA]`` does not close the AES decrypt stream.
+    Other stages ignore it: stdlib ``LZMAFile`` does not close a passed-in
+    fileobj, so ``[AES, LZMA]`` still leaves the AES decrypt stream to GC.
+    ``AesDecryptStream`` borrows the pack view (``owns_inner`` default).
     """
     if isinstance(stage, _AesStage):
         return _open_aes_stage(
@@ -405,8 +407,10 @@ def open_folder_pipeline(
     (``stage_index > 0``), so it closes the previous stage's output — the LZMA1
     cap slice, or an ``AesDecryptStream`` on ``[AES, BCJ]``. Other follow-on
     stages do not close their input: ``[AES, LZMA]`` (the common encrypted
-    shape) leaves the AES stream unclosed. That stream is a cipher over the
-    borrowed pack view and holds no OS handle.
+    shape) still leaves the AES stream unclosed, because stdlib ``LZMAFile``
+    does not close a passed-in fileobj. The AES stream borrows the pack view
+    (``owns_inner`` default) and holds no OS handle. Wiring codec stages to
+    close it is a follow-up; seek does not depend on it.
     """
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
     stages = plan_folder(folder)

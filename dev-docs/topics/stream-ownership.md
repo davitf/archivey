@@ -15,7 +15,9 @@ decoder means "do not close the inner." Silence on a `DelegatingStream` means
 | `SharedView` | borrow, hardcoded | none — Parcel B split this class so `lock=` could not switch modes |
 | `DecompressorStream` | borrow | `owns_inner=True` on later pybcj BCJ stages (first-stage Copy+BCJ / BCJ-alone borrows the pack view) |
 | `DelegatingStream` | **own** | `subclass_closes_inner=True` is *who* closes, not *whether* |
-| `AesDecryptStream` | **own**, hardcoded | none — 7z AES pull stream; `close()` always closes `_source` |
+| `AesDecryptStream` | borrow | `owns_inner=True` — 7z AES-CBC pull stream; default matches other transform wrappers. Production 7z borrows the pack `SharedView`. |
+| `_HeaderDecryptStream` | borrow, hardcoded | none — RAR header cursor must not close the archive; ciphertext `tell`, not a member stream |
+| `WinZipAesDecryptStream` | **own**, hardcoded | none — ZIP AE-x payload slice has no borrow caller; CTR+HMAC, not CBC |
 | `SharedSource` | Path → own; `BinaryIO` → borrow | encoded in the constructor argument type |
 | ZIP/ISO `_owned_fp`, TAR `_owned_stream` | Path the reader opened | not a wrapper flag; leave the names |
 
@@ -25,15 +27,17 @@ decoders sit on those handles, so they borrow. `DelegatingStream` is a 1:1
 stand-in in a close chain, so it owns.
 
 `AesDecryptStream` is a `ReadOnlyIOStream`, so it is absent from the
-`DelegatingStream` inventory and from the leak oracle's pinned population.
-`close()` always closes `_source`; there is no opt-out. Nothing in the 7z
-pipeline closes it today except a later pybcj BCJ stage (`[AES, BCJ]`);
-`[AES, LZMA]` leaves it for GC. The pack view underneath is a `SharedView`
-that absorbs the close. RAR headers use `_Rar5HeaderDecryptStream` (non-owning,
-ciphertext `tell`) and ZIP uses `WinZipAesDecryptStream` (also an owning
-close) over the same `DecryptStage` — `rar_parser.py` records why the 7z
-wrapper could not be reused. Whether `AesDecryptStream` grows `owns_inner` is
-that convergence, not this page.
+`DelegatingStream` inventory and from the leak oracle's pinned population
+(it holds no OS handle). `owns_inner` defaults to borrow, matching
+`DecompressorStream`. Nothing in the 7z pipeline closes it on the common
+`[AES, LZMA]` shape except GC: stdlib `LZMAFile` does not close a passed-in
+fileobj, and `_execute_stage` forwards `owns_inner` only to `_BcjStage`
+(`[AES, BCJ]`). RAR headers use `_HeaderDecryptStream` (borrow, ciphertext
+`tell` as archive offset) and ZIP uses `WinZipAesDecryptStream` (hardcoded
+own, CTR). Two CBC streams share `DecryptStage`; WinZip AES shares only the
+availability check. What still blocks folding the RAR header stream in is
+the walk's `tell()` polymorphism and an unbounded mid-file handle, not a
+flag `AesDecryptStream` is missing.
 
 ## 2. Why `DelegatingStream` still owns
 

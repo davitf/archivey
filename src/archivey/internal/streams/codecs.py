@@ -76,7 +76,7 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.shared import SharedSource
-from archivey.internal.streams.streamtools.slice import SharedView
+from archivey.internal.streams.streamtools.slice import SharedView, SlicingStream
 from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.internal.streams.zstd_framing import (
@@ -531,6 +531,31 @@ def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
     return _rapidgzip_bzip2 is not None and config.use_indexed_bzip2.enabled_for(
         seekable=config.seekable, available=True
     )
+
+
+def _bound_rapidgzip_source(
+    source: CodecSource, params: CodecParams, config: StreamConfig
+) -> CodecSource:
+    """Clip a stream source to the known compressed length before rapidgzip.
+
+    rapidgzip over-reads past EOS looking for a concatenated member (raw
+    deflate) or prints trailing-garbage to stderr (bzip2). A 7z AES stage
+    decrypts a padded block, so the next coder's ``pack_size`` (AES
+    unpack_size) is the bound that drops those pad bytes. Only
+    ``pack_size`` is pad-free; the two fallbacks assume a non-AES source
+    (an AES stream's ``.size`` is the padded plaintext length). Paths stay
+    paths: rapidgzip opens its own fd.
+    """
+    if isinstance(source, (str, os.PathLike)):
+        return source
+    bound = params.pack_size
+    if bound is None:
+        bound = config.compressed_input_size
+    if bound is None:
+        bound = source_byte_size(source)
+    if bound is None:
+        return source
+    return SlicingStream(source, start=0, length=bound, owns_inner=False)
 
 
 def _open_rapidgzip(source: CodecSource) -> BinaryIO:
@@ -1232,7 +1257,14 @@ class Bzip2Codec(StreamCodec):
                 )
             # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
-            return _AcceleratorStream(_rapidgzip_bzip2(source, parallelization=0))
+            # Bound the input: AES pad after EOS is trailing garbage that rapidgzip
+            # prints to stderr outside DiagnosticCollector.
+            return _AcceleratorStream(
+                _rapidgzip_bzip2(
+                    _bound_rapidgzip_source(source, params, config),
+                    parallelization=0,
+                )
+            )
         # stdlib bz2 can seek, but a rewind re-decompresses from the start; the outer
         # ArchiveStream warns about that (see rewind_warning). The [seekable] accelerator
         # (above) gives real random access.
@@ -1504,10 +1536,13 @@ class DeflateCodec(_ZlibErrorCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("deflate random access")
                 )
-            # rapidgzip auto-detects raw DEFLATE; pass the source unwrapped. Callers MUST
-            # bound the input (container SlicingStream / exact file) — rapidgzip over-reads
-            # past EOS looking for a concatenated member.
-            return _wrap_accelerated_length(_open_rapidgzip(source), config)
+            # rapidgzip auto-detects raw DEFLATE. Bound the input: it over-reads
+            # past EOS looking for a concatenated member (AES pad would look
+            # like a second member).
+            return _wrap_accelerated_length(
+                _open_rapidgzip(_bound_rapidgzip_source(source, params, config)),
+                config,
+            )
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
 
@@ -1565,7 +1600,10 @@ class ZlibCodec(_ZlibErrorCodec):
                     _RAPIDGZIP_REQUIREMENT.message("zlib random access")
                 )
             # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
-            return _wrap_accelerated_length(_open_rapidgzip(source), config)
+            return _wrap_accelerated_length(
+                _open_rapidgzip(_bound_rapidgzip_source(source, params, config)),
+                config,
+            )
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=zlib.MAX_WBITS)
 

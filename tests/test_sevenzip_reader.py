@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import random
 import struct
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
+from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import (
     ArchiveyUsageError,
     EncryptionError,
@@ -390,6 +392,158 @@ def test_aes_encrypted_archive_roundtrip(tmp_path: Path) -> None:
         encrypted = next(member for member in reader.members() if member.is_file)
         with pytest.raises(EncryptionError):
             reader.read(encrypted)
+
+
+@requires("cryptography")
+def test_aes_encrypted_member_seeks_when_requested(tmp_path: Path) -> None:
+    """Encrypted 7z members used to lose seek because AesDecryptStream had none."""
+    archive = tmp_path / "aes-seek.7z"
+    _write_py7zr_archive(archive, _FILES, password="secret")
+    payload = _FILES["alpha.txt"]
+    with open_archive(archive, password="secret", seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.name == "alpha.txt")
+        with reader.open(member) as stream:
+            assert stream.seekable() is True
+            head = stream.read(5)
+            assert head == payload[:5]
+            stream.seek(0)
+            assert stream.read() == payload
+            stream.seek(10)
+            assert stream.read() == payload[10:]
+
+
+@requires_binary("7z")
+@requires("cryptography")
+def test_stored_encrypted_member_seeks_past_first_block(tmp_path: Path) -> None:
+    """The py7zr LZMA2 fixtures only ever restart at block 0 because the
+    decompressor rewinds to origin; a stored member seeks the AES stream
+    directly, so an offset past block 0 exercises the CBC restart.
+
+    7-Zip gives every COPY member its own folder regardless of ``-ms``, so
+    this is not a prefix-over-AES case — that shape is not constructible
+    with the CLI.
+    """
+    payloads = {
+        "a.bin": bytes(range(256)) * 8,  # 2 KiB
+        "b.bin": bytes(range(256))[::-1] * 8,
+    }
+    for name, data in payloads.items():
+        (tmp_path / name).write_bytes(data)
+    archive = tmp_path / "store-aes.7z"
+    result = subprocess.run(
+        [
+            "7z",
+            "a",
+            "-t7z",
+            "-psecret",
+            "-mhe=off",
+            "-mx0",
+            str(archive),
+            *payloads,
+            "-y",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build store+AES fixture: {result.stderr}")
+
+    offsets = (0, 7, 1000, 1023, 2047)
+    with open_archive(archive, password="secret", seekable_members=True) as reader:
+        members = {m.name: m for m in reader.members() if m.is_file}
+        assert set(members) == set(payloads)
+        for name, expected in payloads.items():
+            chain = members[name].compression
+            assert chain and all(c.algo is CompressionAlgorithm.STORED for c in chain)
+            with reader.open(members[name]) as stream:
+                assert stream.seekable() is True
+                for off in offsets:
+                    assert stream.seek(off) == off
+                    assert stream.read() == expected[off:]
+
+
+def _encrypted_codec_archive(tmp_path: Path, *, method: str, payload: bytes) -> Path:
+    (tmp_path / "blob.bin").write_bytes(payload)
+    archive = tmp_path / f"enc-{method.lower()}.7z"
+    result = subprocess.run(
+        [
+            "7z",
+            "a",
+            "-t7z",
+            f"-m0={method}",
+            "-psecret",
+            "-mhe=off",
+            str(archive),
+            "blob.bin",
+            "-y",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build encrypted {method} fixture: {result.stderr}")
+    return archive
+
+
+@requires_binary("7z")
+@requires("cryptography")
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    ("method", "config_field", "algo"),
+    [
+        ("Deflate", "use_rapidgzip", CompressionAlgorithm.DEFLATE),
+        ("BZip2", "use_indexed_bzip2", CompressionAlgorithm.BZIP2),
+    ],
+)
+def test_encrypted_deflate_family_seeks_with_accelerator(
+    tmp_path: Path,
+    method: str,
+    config_field: str,
+    algo: CompressionAlgorithm,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Encrypted Deflate/BZip2 with seekable_members=True, AUTO and ON.
+
+    Deflate AUTO is blocked by the truncation-verifiability gate
+    (``expected_decompressed_size is None`` on a 7z coder stage), so that
+    leg pins the stdlib path over an AES source. Deflate ON pins the
+    accelerator — the wrong-password lie. BZip2 AUTO and ON both
+    engage rapidgzip's bundled indexed bzip2 (no verifiability gate).
+    ``capfd`` catches the C-level ``Trailing garbage after EOF ignored!``
+    that an unbounded AES pad used to print on the bzip2 accelerator.
+    Seed 1 is load-bearing: AES unpack_size is not a multiple of 16, so
+    the pad exists and the warning is observable (urandom is often aligned).
+    """
+    payload = random.Random(1).randbytes(1_600_000)
+    archive = _encrypted_codec_archive(tmp_path, method=method, payload=payload)
+    for mode in (AcceleratorMode.AUTO, AcceleratorMode.ON):
+        config = ArchiveyConfig(**{config_field: mode})
+        with open_archive(
+            archive,
+            password="secret",
+            seekable_members=True,
+            config=config,
+        ) as reader:
+            aes_unpack = reader._archive.folders[0].unpack_sizes[0]
+            assert aes_unpack % 16, (
+                "fixture AES unpack_size must include pad so trailing "
+                "garbage is observable"
+            )
+            member = next(m for m in reader.members() if m.is_file)
+            assert any(c.algo is algo for c in member.compression)
+            with reader.open(member) as stream:
+                assert stream.seekable() is True
+                assert stream.read(16) == payload[:16]
+                stream.seek(0)
+                assert stream.read() == payload
+                stream.seek(1000)
+                assert stream.read() == payload[1000:]
+        captured = capfd.readouterr()
+        assert "Trailing garbage" not in captured.err
 
 
 @requires("pyppmd")
