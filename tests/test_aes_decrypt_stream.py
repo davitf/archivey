@@ -1,7 +1,8 @@
 """Seek, tell, and ownership for the 7z AES-CBC pull stream.
 
 Needs ``cryptography`` (``[all]`` / ``[all-lowest]``). The ``[core-only]`` leg
-skips the whole module: there is no decryptor to wrap.
+skips the whole module: there is no decryptor to wrap. The Hypothesis property
+on ``nearest_resume_offset`` skips itself when that import is missing.
 """
 
 from __future__ import annotations
@@ -295,6 +296,92 @@ def test_nearest_resume_offset_composes_with_inner(
     source.seek(cipher_start)
     with AesDecryptStream(source, AesParams(key=_KEY, iv=_IV)) as stream:
         assert stream.nearest_resume_offset(target) == expected
+
+
+def test_nearest_resume_offset_invariant() -> None:
+    """Docstring contract for ``nearest_resume_offset``, over random inners.
+
+    For any target and any inner resume point, the returned ``P`` is a CBC
+    restart (``P % 16 == 0``) in ``[0, block_start]``. When the inner
+    answers, a ``P > 0`` never needs an IV block behind that resume — callers
+    may act on this value, so rounding down costs them replay. When the inner
+    declines (no method, or ``None``), ``P == block_start``.
+
+    Resume is generated as a lag behind the asked offset so the fake satisfies
+    ``nearest_resume_offset(t) <= t``, like a real resumable stream.
+
+    CI budget is the shared ``archivey`` Hypothesis profile in ``conftest.py``
+    (``max_examples=100``, ``deadline=None``, ``derandomize=True``). Deepen
+    locally with ``ARCHIVEY_FUZZ_EXAMPLES=2000``. Hypothesis is a ``dev``-group
+    dependency; this test skips when it is missing so the rest of the module
+    still runs.
+    """
+    pytest.importorskip("hypothesis")
+    from hypothesis import example, given
+    from hypothesis import strategies as st
+
+    @example(cipher_start=0, target=400_000, spec="none")
+    @example(cipher_start=0, target=400_000, spec="absent")
+    @example(cipher_start=0, target=400_000, spec=0)
+    @example(cipher_start=0, target=400_000, spec=1)
+    @example(cipher_start=0, target=7, spec=0)
+    @example(cipher_start=100, target=400_000, spec=0)
+    @given(
+        cipher_start=st.one_of(
+            st.sampled_from([0, 1, 7, 16, 100]),
+            st.integers(min_value=0, max_value=1024),
+        ),
+        target=st.one_of(
+            st.sampled_from([0, 1, 7, 15, 16, 17, 31, 32, 400_000]),
+            st.integers(min_value=0, max_value=500_000),
+        ),
+        spec=st.one_of(
+            st.just("none"),
+            st.just("absent"),
+            st.integers(min_value=0, max_value=500_000),
+        ),
+    )
+    def property_body(cipher_start: int, target: int, spec: int | str) -> None:
+        cipher = _encrypt(_PLAIN[:16])
+        payload = b"\x00" * cipher_start + cipher
+        recorded: list[int] = []
+        if spec == "absent":
+            source: io.BytesIO = io.BytesIO(payload)
+        elif spec == "none":
+            source = _ResumeSource(payload, None)
+        else:
+            behind = int(spec)
+
+            def recording_resume(t: int, lag: int = behind) -> int:
+                r = max(0, t - lag)
+                recorded.append(r)
+                return r
+
+            source = _ResumeSource(payload, recording_resume)
+        source.seek(cipher_start)
+        with AesDecryptStream(source, AesParams(key=_KEY, iv=_IV)) as stream:
+            result = stream.nearest_resume_offset(target)
+
+        block_start = target - (target % AES_BLOCK_SIZE)
+        assert result % AES_BLOCK_SIZE == 0, f"P={result} is not a CBC block boundary"
+        assert 0 <= result <= block_start, (
+            f"P={result} not in [0, block_start={block_start}] for target={target}"
+        )
+        if spec in ("absent", "none"):
+            assert result == block_start, (
+                f"declining inner must yield block_start={block_start}, got P={result}"
+            )
+            return
+        assert recorded, "lag inner was never asked for nearest_resume_offset"
+        inner_resume = recorded[0]
+        if result > 0:
+            iv_block = cipher_start + result - AES_BLOCK_SIZE
+            assert iv_block >= inner_resume, (
+                f"IV block at {iv_block} is behind inner resume {inner_resume} "
+                f"(P={result}, cipher_start={cipher_start}, target={target})"
+            )
+
+    property_body()
 
 
 def test_aes_params_repr_hides_key() -> None:
