@@ -331,11 +331,10 @@ class AesDecryptStream(ReadOnlyIOStream):
 
         The round-up is the truncation policy's, not this method's: a short last
         ciphertext block still decrypts to 16 garbage bytes in ``finalize``, so
-        SEEK_END has to agree with read-to-EOF. Maintainer decision (davitf,
-        2026-09-16): that policy becomes ``TruncatedError`` — a short last block
-        is corruption, not payload. **Move both sites together, soon**; changing
-        ``finalize`` alone leaves SEEK_END reporting 16 bytes that no longer
-        exist.
+        SEEK_END has to agree with read-to-EOF. Follow-up (#342 F14): that
+        policy becomes ``TruncatedError`` — a short last block is corruption,
+        not payload. **Move both sites together**; changing ``finalize`` alone
+        leaves SEEK_END reporting 16 bytes that no longer exist.
         """
         cipher_len = self._cipher_len()
         if cipher_len is None:

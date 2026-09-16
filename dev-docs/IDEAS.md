@@ -230,7 +230,7 @@
   against a FILE record), and RAR5-only scoping — `rar_parser.py` sets
   `file_encryption=None` on the RAR3 path, so RAR4's 8-byte `LHD` salt is not parsed.
   Split/volume-spanning stay excluded by the existing `_can_direct_read` guards.
-  Maintainer decision (davitf, 2026-09-16): yes, follow-up PR.
+  Follow-up recorded on #342 (review D4), not this PR.
 
 - **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** — of the
   divergences `crypto.py` used to list, ownership is `owns_inner`, `read` already gathers
