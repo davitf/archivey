@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 import pytest
 
+from archivey.exceptions import TruncatedError
 from archivey.internal.streams import crypto
 from archivey.internal.streams.crypto import AES_BLOCK_SIZE, AesDecryptStream, AesParams
 from tests.conftest import requires
@@ -34,7 +35,7 @@ def _encrypt(plaintext: bytes) -> bytes:
 
 
 def _stage_decrypt(cipher: bytes) -> bytes:
-    """Oracle: the same 7z zero-pad finalize the pull stream uses."""
+    """Same stage the pull stream uses. A short last block raises TruncatedError."""
     stage = crypto.open_aes_decrypt_stage(AesParams(key=_KEY, iv=_IV))
     return stage.update(cipher) + stage.finalize()
 
@@ -71,19 +72,26 @@ def test_writer_pads_plaintext_so_ciphertext_is_block_aligned() -> None:
         assert stream.seek(0, io.SEEK_END) == len(padded)
 
 
-def test_short_ciphertext_finalize_emits_garbage_last_block() -> None:
-    # Truncate a 64-byte ciphertext to 53: three full blocks plus five. Finalize
-    # zero-pads those five and decrypts — the last 16 plaintext bytes are not
-    # the original payload (AES cannot recover a truncated block).
+def test_short_ciphertext_finalize_raises_truncated() -> None:
+    # Truncate a 64-byte ciphertext to 53: three full blocks plus five. AES
+    # cannot recover the last block, so finalize raises rather than emitting
+    # 16 garbage plaintext bytes. size / SEEK_END report the intact 48.
     cipher = _encrypt(bytes(range(64)))[:53]
-    expected = _stage_decrypt(cipher)
-    assert len(expected) == 64
-    assert expected[:48] == bytes(range(48))
-    assert expected[48:] != bytes(range(48, 64))
+    with pytest.raises(TruncatedError, match="mid-block"):
+        _stage_decrypt(cipher)
     with _open(cipher) as stream:
-        assert stream.size == 64
-        assert stream.read() == expected
-        assert stream.seek(0, io.SEEK_END) == len(expected)
+        assert stream.size == 48
+        assert stream.seek(0, io.SEEK_END) == 48
+        # SEEK_END describes the recoverable payload; it does not itself raise.
+        # The next read is empty because the cursor is already at that end.
+        assert stream.read() == b""
+    with _open(cipher) as stream:
+        with pytest.raises(TruncatedError, match="mid-block"):
+            stream.read()
+    with _open(cipher) as stream:
+        assert stream.read(48) == bytes(range(48))
+        with pytest.raises(TruncatedError, match="mid-block"):
+            stream.read(1)
 
 
 def test_seekable_follows_source() -> None:
@@ -155,10 +163,10 @@ def test_read_all_then_rewind() -> None:
 
 def test_short_last_block_mid_seek() -> None:
     cipher = _encrypt(bytes(range(64)))[:53]
-    expected = _stage_decrypt(cipher)
     with _open(cipher) as stream:
-        stream.seek(50)
-        assert stream.read() == expected[50:]
+        stream.seek(40)
+        with pytest.raises(TruncatedError, match="mid-block"):
+            stream.read()
 
 
 def test_owns_inner_false_borrows_source() -> None:

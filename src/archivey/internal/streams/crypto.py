@@ -27,7 +27,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import BinaryIO, Protocol
 
-from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
+from archivey.exceptions import (
+    PackageNotInstalledError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -113,18 +117,20 @@ class _CryptographyDecryptStage:
 
     def finalize(self) -> bytes:
         if self._buf:
-            # Drain path for a short last *ciphertext* chunk. AES cannot recover a
-            # truncated block: the 16 output bytes are not payload. Well-formed 7z
-            # never hits this — the encoder zero-pads *plaintext* (FilterCoder.cpp /
-            # py7zr ``AESCompressor.flush``) and stores a full ciphertext block;
-            # pack_size is a multiple of AES_BLOCK_SIZE. The extra plaintext zeros
-            # are discarded by the AES coder's unpack_size, not here.
-            padlen = (-len(self._buf)) % AES_BLOCK_SIZE
-            self._buf.extend(bytes(padlen))
-            out = self._decryptor.update(bytes(self._buf))
-            self._buf.clear()
-            out += self._decryptor.finalize()
-            return out
+            # AES-CBC cannot recover a truncated block: P_n = D_K(C_n) XOR C_{n-1},
+            # so a mangled C_n makes all 16 output bytes pseudorandom. Zero-padding
+            # and decrypting anyway produced a *longer* plaintext (53 ciphertext
+            # bytes → 64 garbage-tailed plaintext) — backwards for truncation
+            # detection. Well-formed 7z never hits this: the encoder zero-pads
+            # *plaintext* (FilterCoder.cpp / py7zr ``AESCompressor.flush``) and
+            # stores a full ciphertext block; pack_size is a multiple of
+            # AES_BLOCK_SIZE. Writer pad is discarded by the AES coder's
+            # unpack_size, not here.
+            leftover = len(self._buf)
+            raise TruncatedError(
+                f"AES-CBC ciphertext ended mid-block ({leftover} leftover "
+                "byte(s); a truncated block cannot be decrypted)"
+            )
         return self._decryptor.finalize()
 
 
@@ -187,8 +193,10 @@ class AesDecryptStream(ReadOnlyIOStream):
       ciphertext and report seekable; seeking would reposition the archive.
 
     Ownership is ``owns_inner`` (both borrow). ``read`` already gathers short
-    source reads. A short last ciphertext block still drains here (follow-up:
-    ``TruncatedError`` on both streams).
+    source reads. A short last ciphertext block raises ``TruncatedError``;
+    ``size`` / ``SEEK_END`` report the intact full-block length. This is this
+    class's policy: ``_HeaderDecryptStream`` never calls ``finalize``, and
+    WinZip AES does not use ``DecryptStage``.
     """
 
     def __init__(
@@ -279,11 +287,11 @@ class AesDecryptStream(ReadOnlyIOStream):
         """Padded plaintext length when the ciphertext length is cheaply knowable.
 
         fsspec-style ``size``. This is the CBC-block-aligned length, not the
-        payload length: a truncated 53-byte ciphertext reports 64, and
-        well-formed 7z still includes up to 15 bytes of writer pad. The AES
-        coder's ``unpack_size`` (next coder's ``pack_size``) trims the pad
-        one layer up — which is why ``_bound_rapidgzip_source`` prefers
-        ``params.pack_size`` over this.
+        payload length: a truncated 53-byte ciphertext reports 48 (intact
+        blocks only), and well-formed 7z still includes up to 15 bytes of
+        writer pad. The AES coder's ``unpack_size`` (next coder's
+        ``pack_size``) trims the pad one layer up — which is why
+        ``_bound_rapidgzip_source`` prefers ``params.pack_size`` over this.
         """
         return self._plaintext_size()
 
@@ -363,25 +371,21 @@ class AesDecryptStream(ReadOnlyIOStream):
         return max(0, total - self._cipher_start)
 
     def _plaintext_size(self) -> int | None:
-        """Plaintext length: ciphertext length, rounded **up** to a whole block.
+        """Recoverable plaintext length: intact full ciphertext blocks only.
 
-        The round-up is the truncation policy's, not this method's: a short last
-        ciphertext block still decrypts to 16 garbage bytes in ``finalize``, so
-        SEEK_END has to agree with read-to-EOF. Maintainer decision (davitf,
-        2026-09-16): that policy becomes ``TruncatedError`` — a short last block
-        is corruption, not payload. **Move all three sites together, soon**
-        (``finalize``, this method, and the ``size`` property); changing
-        ``finalize`` alone leaves SEEK_END and ``size`` reporting 16 bytes
-        that no longer exist.
+        A short last ciphertext block is not payload: ``finalize`` raises
+        ``TruncatedError`` rather than decrypting it, so this is
+        ``cipher_len - remainder``, not a round-up. ``size`` / ``SEEK_END``
+        therefore describe the recoverable payload; reading into the truncated
+        tail is what raises. This method does not raise: ``size`` is the
+        accelerator bound ``_bound_rapidgzip_source`` falls back to when
+        ``pack_size`` is unknown, and a raising ``size`` would make that
+        unusable. Maintainer decision (davitf, 2026-09-16).
         """
         cipher_len = self._cipher_len()
         if cipher_len is None:
             return None
-        remainder = cipher_len % AES_BLOCK_SIZE
-        if remainder == 0:
-            # Writer convention: pack_size is already a full number of blocks.
-            return cipher_len
-        return cipher_len + (AES_BLOCK_SIZE - remainder)
+        return cipher_len - (cipher_len % AES_BLOCK_SIZE)
 
     def _restart_at_block(self, block: int) -> bool:
         """Recreate the CBC decryptor so plaintext block ``block`` is next.

@@ -666,8 +666,13 @@ class SevenZipReader(BaseArchiveReader):
                     member_digests=member_digests,
                 )
                 return kdf_password
-            except (UnsupportedFeatureError, PackageNotInstalledError):
-                # Hostile NumCyclesPower / missing cryptography must not look like a wrong password.
+            except (
+                UnsupportedFeatureError,
+                PackageNotInstalledError,
+                TruncatedError,
+            ):
+                # Hostile NumCyclesPower / missing cryptography / a truncated
+                # pack stream must not look like a wrong password.
                 raise
             except ArchiveyError as exc:
                 raise EncryptionError("Wrong password or corrupt 7z folder") from exc

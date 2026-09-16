@@ -234,8 +234,8 @@
 
 - **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** — of the
   divergences `crypto.py` used to list, ownership is `owns_inner`, `read` already gathers
-  short source reads, and the 7z zero-pad disappears once a short last block raises
-  `TruncatedError`. The ciphertext cursor is derivable as `_cipher_start + _pos +
+  short source reads, and a short last block now raises `TruncatedError` instead of
+  the 7z zero-pad drain. The ciphertext cursor is derivable as `_cipher_start + _pos +
   len(_buf)` for a full-count source (ADR 0014) once source asks are rounded to a
   block. What actually blocks it: (a) the
   header walk binds `header_fd` to *either* the raw archive handle or the decrypt stream
@@ -244,8 +244,9 @@
   (b) the header stream sits on the archive handle mid-file and unbounded, so
   `AesDecryptStream` would compute `_cipher_len` as "rest of the file" and advertise
   `seekable()`. Converging means an explicit `archive_offset()` with a thin adapter over
-  the raw handle plus a `length=` bound on the wrapper. Revisit after the truncation
-  change and the stored-encrypted-RAR5 work land; both shrink the gap. A multi-member
+  the raw handle plus a `length=` bound on the wrapper. The truncation change removed
+  one divergence; the two blockers above are unaffected. Revisit after the
+  stored-encrypted-RAR5 work lands. A multi-member
   COPY folder is not constructible with the 7z CLI (every COPY member gets its own
   folder regardless of `-ms`), so a prefix-over-AES path is uncovered by construction.
 

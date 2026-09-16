@@ -19,6 +19,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     EncryptionError,
     PackageNotInstalledError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFolder
@@ -410,6 +411,86 @@ def test_aes_encrypted_member_seeks_when_requested(tmp_path: Path) -> None:
             assert stream.read() == payload
             stream.seek(10)
             assert stream.read() == payload[10:]
+
+
+@requires("cryptography")
+def test_truncated_error_during_confirm_is_not_wrong_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated AES pack with the correct password must not look like a wrong password.
+
+    ``_password_for_folder`` wraps ``ArchiveyError`` as ``EncryptionError``.
+    ``TruncatedError`` rides with ``UnsupportedFeatureError`` /
+    ``PackageNotInstalledError`` so a short last CBC block is not diagnosed
+    as a bad key (the same class as #342 F21).
+    """
+    import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
+
+    archive = tmp_path / "aes.7z"
+    _write_py7zr_archive(archive, {"a.txt": b"hello"}, password="secret")
+
+    def raise_truncated(*_args: object, **_kwargs: object) -> object:
+        raise TruncatedError(
+            "AES-CBC ciphertext ended mid-block (5 leftover byte(s); "
+            "a truncated block cannot be decrypted)"
+        )
+
+    monkeypatch.setattr(sevenzip_reader_mod, "open_folder_pipeline", raise_truncated)
+
+    with pytest.raises(TruncatedError, match="mid-block"):
+        with open_archive(archive, password="secret") as reader:
+            member = next(m for m in reader.members() if m.is_file)
+            reader.read(member)
+
+
+@requires_binary("7z")
+@requires("cryptography")
+def test_truncated_encrypted_folder_is_not_wrong_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Store+AES, correct password, pack view short of a last CBC block.
+
+    Confirm used to drain the short block as garbage and, if that raised at
+    all, remap it to ``EncryptionError``. Finalize now raises
+    ``TruncatedError``; the confirm ladder must let that through.
+    """
+    payload = tmp_path / "blob.bin"
+    payload.write_bytes(bytes(range(256)) * 8)
+    archive = tmp_path / "store-aes-trunc.7z"
+    result = subprocess.run(
+        [
+            "7z",
+            "a",
+            "-t7z",
+            "-psecret",
+            "-mhe=off",
+            "-mx0",
+            str(archive),
+            payload.name,
+            "-y",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build store+AES fixture: {result.stderr}")
+
+    original = SevenZipReader._folder_pack_view
+
+    def short_view(self: SevenZipReader, folder_index: int) -> io.BytesIO:
+        view = original(self, folder_index)
+        data = view.read()
+        assert len(data) >= 16
+        return io.BytesIO(data[:-5])
+
+    monkeypatch.setattr(SevenZipReader, "_folder_pack_view", short_view)
+
+    with open_archive(archive, password="secret") as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with pytest.raises(TruncatedError, match="mid-block"):
+            reader.read(member)
 
 
 @requires_binary("7z")
@@ -1003,6 +1084,32 @@ def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
             _folder(b"\x06\xf1\x07\x01", properties),
             password=b"pw",
         )
+
+
+@requires("cryptography")
+def test_truncated_aes_pack_raises_truncated_error() -> None:
+    """AES-only folder: a short last ciphertext block is TruncatedError, not garbage."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    password = b"pw"
+    properties = b"\xc0\x00\x00\x00"
+    cache = crypto.SevenZipKeyCache()
+    params = cache.aes_params_from_properties(password, properties)
+    plaintext = bytes(range(64))
+    encryptor = Cipher(algorithms.AES(params.key), modes.CBC(params.iv)).encryptor()
+    cipher = encryptor.update(plaintext) + encryptor.finalize()
+    reader = _reader_for_unit_tests()
+    stream = _open_pipeline(
+        reader,
+        io.BytesIO(cipher[:53]),
+        _folder(b"\x06\xf1\x07\x01", properties),
+        password=password,
+    )
+    try:
+        with pytest.raises(TruncatedError, match="mid-block"):
+            stream.read()
+    finally:
+        stream.close()
 
 
 def _u64(value: int) -> bytes:
