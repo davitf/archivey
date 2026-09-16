@@ -128,6 +128,11 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
     ``source`` must be positioned at the start of the ciphertext (after salt +
     pw_verify) and bounded to ``cipher_len + 10`` (ciphertext + MAC). The HMAC is
     checked when the stream is fully consumed or closed after a clean EOF.
+
+    Not :class:`~archivey.internal.streams.crypto.AesDecryptStream` (7z CBC).
+    This is CTR, and HMAC covers the whole ciphertext: a random seek would skip
+    MAC updates or force a second full pass. Close always owns ``source`` — the
+    ZIP member payload slice has no borrow caller, so there is no ``owns_inner``.
     """
 
     def __init__(

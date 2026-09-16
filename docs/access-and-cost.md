@@ -107,8 +107,12 @@ With `seekable_members=True`, every member stream from random `open()` reports
   re-decodes from the start, including members before the one you opened
 - otherwise a backward seek may **re-decompress from the start**
 
-WinZip AES members and encrypted 7z members do not seek yet: `seekable()` stays
-false and `seek()` raises. That is a bug, not an exception to the contract.
+WinZip AES members do not seek yet: `seekable()` stays false and `seek()`
+raises. HMAC covers the whole ciphertext, so a random seek would skip MAC
+updates or force a second full pass. Encrypted 7z members seek when
+`seekable_members=True` — CBC restarts at a block using the previous
+ciphertext as the IV. That used to fail because the decrypt wrapper had no
+`seek`; it was a bug, not an exception to the contract.
 
 Whether that gets a diagnostic is decided by **what the seek actually costs**, not by the
 codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the rewind discards more than

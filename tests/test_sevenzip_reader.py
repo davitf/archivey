@@ -392,6 +392,24 @@ def test_aes_encrypted_archive_roundtrip(tmp_path: Path) -> None:
             reader.read(encrypted)
 
 
+@requires("cryptography")
+def test_aes_encrypted_member_seeks_when_requested(tmp_path: Path) -> None:
+    """Encrypted 7z members used to lose seek because AesDecryptStream had none."""
+    archive = tmp_path / "aes-seek.7z"
+    _write_py7zr_archive(archive, _FILES, password="secret")
+    payload = _FILES["alpha.txt"]
+    with open_archive(archive, password="secret", seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.name == "alpha.txt")
+        with reader.open(member) as stream:
+            assert stream.seekable() is True
+            head = stream.read(5)
+            assert head == payload[:5]
+            stream.seek(0)
+            assert stream.read() == payload
+            stream.seek(10)
+            assert stream.read() == payload[10:]
+
+
 @requires("pyppmd")
 @requires("cryptography")
 def test_encrypted_ppmd_chunked_reads_roundtrip(tmp_path: Path) -> None:
