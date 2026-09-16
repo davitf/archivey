@@ -336,7 +336,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs._GzipTruncationCheckStream,
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
-        crypto.AesDecryptStream,  # dense CBC restart points; O(1), not replay
+        crypto.AesDecryptStream,  # dense CBC restart; compose with inner
         verify.VerifyingStream,
     }
     remaps_or_not_on_chain = {

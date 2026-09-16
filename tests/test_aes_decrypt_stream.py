@@ -7,6 +7,7 @@ skips the whole module: there is no decryptor to wrap.
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 
 import pytest
 
@@ -236,6 +237,55 @@ def test_read_asks_source_in_block_multiples() -> None:
         assert stream.read(5) == _PLAIN[:5]
         assert source.tell() == AES_BLOCK_SIZE
         assert stream.nearest_resume_offset(17) == AES_BLOCK_SIZE
+
+
+class _ResumeSource(io.BytesIO):
+    """Seekable ciphertext whose resume offset is injected, not derived."""
+
+    def __init__(self, data: bytes, resume: Callable[[int], int | None] | None) -> None:
+        super().__init__(data)
+        self._resume = resume
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        if self._resume is None:
+            return None
+        return self._resume(target)
+
+
+@pytest.mark.parametrize(
+    ("cipher_start", "target", "inner_resume", "expected"),
+    [
+        # Inner can resume at the IV block we ask for: composed answer equals
+        # block_start (the + AES_BLOCK_SIZE un-shift). Without it: 399_984.
+        (0, 400_000, lambda t: t, 400_000),
+        # Single-block xz: inner always resumes at origin.
+        (0, 400_000, lambda t: 0, 16),
+        (0, 400_000, lambda t: 200_000, 200_016),
+        (0, 7, lambda t: t, 0),
+        (100, 400_000, lambda t: t, 400_000),
+        # Production SharedView declines; composition is a no-op.
+        (0, 400_000, None, 400_000),
+    ],
+    ids=(
+        "inner_free",
+        "inner_origin",
+        "inner_midway",
+        "block_zero",
+        "nonzero_cipher_start",
+        "inner_declines",
+    ),
+)
+def test_nearest_resume_offset_composes_with_inner(
+    cipher_start: int,
+    target: int,
+    inner_resume: Callable[[int], int | None] | None,
+    expected: int,
+) -> None:
+    cipher = _encrypt(_PLAIN[:16])
+    source = _ResumeSource(b"\x00" * cipher_start + cipher, inner_resume)
+    source.seek(cipher_start)
+    with AesDecryptStream(source, AesParams(key=_KEY, iv=_IV)) as stream:
+        assert stream.nearest_resume_offset(target) == expected
 
 
 def test_aes_params_repr_hides_key() -> None:

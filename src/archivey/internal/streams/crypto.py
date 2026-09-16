@@ -28,6 +28,7 @@ from dataclasses import dataclass, field, replace
 from typing import BinaryIO, Protocol
 
 from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
+from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
@@ -166,6 +167,10 @@ class AesDecryptStream(ReadOnlyIOStream):
     preceding ciphertext block as the IV, so when the ciphertext source is
     seekable this stream is too — that is what keeps ``seekable_members=True``
     on an encrypted 7z folder. ``tell`` is the **plaintext** offset.
+    ``seekable()`` follows the ciphertext source. ``SEEK_END`` still needs a
+    known ciphertext length (production ``SharedView`` / ``SlicingStream``
+    expose ``.size``); an unsized seekable source raises
+    ``io.UnsupportedOperation``. Mid-stream ``seek`` still works.
 
     Two AES-CBC pull streams share :class:`DecryptStage`.
     ``WinZipAesDecryptStream`` is CTR and builds its own cipher; it shares
@@ -218,7 +223,9 @@ class AesDecryptStream(ReadOnlyIOStream):
         while not self._eof and (n < 0 or len(self._buf) < n):
             # Round the source ask up to a block so CBC does not withhold a
             # partial block (and so the ciphertext cursor is derivable as
-            # ``_cipher_start + _pos + len(_buf)``).
+            # ``_cipher_start + _pos + len(_buf)`` for a full-count source —
+            # ADR 0014). A short non-empty source read leaves bytes in the
+            # stage buffer and the identity does not hold.
             if n < 0:
                 ask = 65536
             else:
@@ -248,8 +255,28 @@ class AesDecryptStream(ReadOnlyIOStream):
         return self._seekable
 
     def nearest_resume_offset(self, target: int) -> int:
-        # Dense implicit index: a CBC restart point every block, zero replay.
-        return target - (target % AES_BLOCK_SIZE)
+        # Dense implicit index: a CBC restart point every block. The restart
+        # reads block-1 as the IV, so that is the earliest byte it touches;
+        # compose with the inner so a compressed source's replay is not
+        # reported as free. ``+ AES_BLOCK_SIZE`` un-shifts the IV block.
+        # Maintainer (davitf, 2026-09-16): the +16 is required so a free
+        # inner stays a no-op.
+        block_start = target - (target % AES_BLOCK_SIZE)
+        iv_off = self._cipher_start + max(block_start - AES_BLOCK_SIZE, 0)
+        resume = ask_resume_offset(self._source, iv_off)
+        if resume is None:
+            return block_start
+        return max(0, min(block_start, resume - self._cipher_start + AES_BLOCK_SIZE))
+
+    @property
+    def size(self) -> int | None:
+        """Plaintext length when the ciphertext length is cheaply knowable.
+
+        The fsspec-style ``size`` convention. Rapidgzip wraps this stream in a
+        ``SharedSource`` view; without a bound, worker threads read past the
+        decrypted folder.
+        """
+        return self._plaintext_size()
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_closed()
@@ -331,10 +358,11 @@ class AesDecryptStream(ReadOnlyIOStream):
 
         The round-up is the truncation policy's, not this method's: a short last
         ciphertext block still decrypts to 16 garbage bytes in ``finalize``, so
-        SEEK_END has to agree with read-to-EOF. Follow-up (#342 F14): that
-        policy becomes ``TruncatedError`` — a short last block is corruption,
-        not payload. **Move both sites together**; changing ``finalize`` alone
-        leaves SEEK_END reporting 16 bytes that no longer exist.
+        SEEK_END has to agree with read-to-EOF. Maintainer decision (davitf,
+        2026-09-16): that policy becomes ``TruncatedError`` — a short last block
+        is corruption, not payload. **Move both sites together, soon**; changing
+        ``finalize`` alone leaves SEEK_END reporting 16 bytes that no longer
+        exist.
         """
         cipher_len = self._cipher_len()
         if cipher_len is None:

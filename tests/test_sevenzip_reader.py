@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
+from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import (
     ArchiveyUsageError,
     EncryptionError,
@@ -412,9 +413,14 @@ def test_aes_encrypted_member_seeks_when_requested(tmp_path: Path) -> None:
 
 @requires_binary("7z")
 @requires("cryptography")
-def test_stored_encrypted_solid_member_seeks_mid_stream(tmp_path: Path) -> None:
-    """Solid COPY+AES puts AesDecryptStream under a prefix slice; mid-seek
-    must restart at a block other than 0 (the py7zr LZMA2 fixtures never do).
+def test_stored_encrypted_member_seeks_past_first_block(tmp_path: Path) -> None:
+    """The py7zr LZMA2 fixtures only ever restart at block 0 because the
+    decompressor rewinds to origin; a stored member seeks the AES stream
+    directly, so an offset past block 0 exercises the CBC restart.
+
+    7-Zip gives every COPY member its own folder regardless of ``-ms``, so
+    this is not a prefix-over-AES case — that shape is not constructible
+    with the CLI.
     """
     payloads = {
         "a.bin": bytes(range(256)) * 8,  # 2 KiB
@@ -422,7 +428,7 @@ def test_stored_encrypted_solid_member_seeks_mid_stream(tmp_path: Path) -> None:
     }
     for name, data in payloads.items():
         (tmp_path / name).write_bytes(data)
-    archive = tmp_path / "store-aes-solid.7z"
+    archive = tmp_path / "store-aes.7z"
     result = subprocess.run(
         [
             "7z",
@@ -431,7 +437,6 @@ def test_stored_encrypted_solid_member_seeks_mid_stream(tmp_path: Path) -> None:
             "-psecret",
             "-mhe=off",
             "-mx0",
-            "-ms=on",
             str(archive),
             *payloads,
             "-y",
@@ -442,18 +447,86 @@ def test_stored_encrypted_solid_member_seeks_mid_stream(tmp_path: Path) -> None:
         text=True,
     )
     if result.returncode != 0:
-        pytest.skip(f"7z CLI cannot build store+AES solid fixture: {result.stderr}")
+        pytest.skip(f"7z CLI cannot build store+AES fixture: {result.stderr}")
 
     offsets = (0, 7, 1000, 1023, 2047)
     with open_archive(archive, password="secret", seekable_members=True) as reader:
         members = {m.name: m for m in reader.members() if m.is_file}
         assert set(members) == set(payloads)
         for name, expected in payloads.items():
+            chain = members[name].compression
+            assert chain and all(c.algo is CompressionAlgorithm.STORED for c in chain)
             with reader.open(members[name]) as stream:
                 assert stream.seekable() is True
                 for off in offsets:
                     assert stream.seek(off) == off
                     assert stream.read() == expected[off:]
+
+
+def _encrypted_codec_archive(tmp_path: Path, *, method: str, payload: bytes) -> Path:
+    (tmp_path / "blob.bin").write_bytes(payload)
+    archive = tmp_path / f"enc-{method.lower()}.7z"
+    result = subprocess.run(
+        [
+            "7z",
+            "a",
+            "-t7z",
+            f"-m0={method}",
+            "-psecret",
+            "-mhe=off",
+            str(archive),
+            "blob.bin",
+            "-y",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build encrypted {method} fixture: {result.stderr}")
+    return archive
+
+
+@requires_binary("7z")
+@requires("cryptography")
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    ("method", "config_field", "algo"),
+    [
+        ("Deflate", "use_rapidgzip", CompressionAlgorithm.DEFLATE),
+        ("BZip2", "use_indexed_bzip2", CompressionAlgorithm.BZIP2),
+    ],
+)
+def test_encrypted_deflate_family_seeks_with_accelerator(
+    tmp_path: Path, method: str, config_field: str, algo: CompressionAlgorithm
+) -> None:
+    """Encrypted Deflate/BZip2 with seekable_members=True, AUTO and ON.
+
+    AUTO on Deflate was broken on main (non-seekable AES). ON was an honest
+    refusal and became a wrong-password misdiagnosis once AES grew seek.
+    Payload is incompressible and above RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE so
+    AUTO actually engages the accelerator.
+    """
+    payload = os.urandom(1_600_000)
+    archive = _encrypted_codec_archive(tmp_path, method=method, payload=payload)
+    for mode in (AcceleratorMode.AUTO, AcceleratorMode.ON):
+        config = ArchiveyConfig(**{config_field: mode})
+        with open_archive(
+            archive,
+            password="secret",
+            seekable_members=True,
+            config=config,
+        ) as reader:
+            member = next(m for m in reader.members() if m.is_file)
+            assert any(c.algo is algo for c in member.compression)
+            with reader.open(member) as stream:
+                assert stream.seekable() is True
+                assert stream.read(16) == payload[:16]
+                stream.seek(0)
+                assert stream.read() == payload
+                stream.seek(1000)
+                assert stream.read() == payload[1000:]
 
 
 @requires("pyppmd")

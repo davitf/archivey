@@ -105,10 +105,9 @@ class _CodecStage:
 
     ``pack_size`` is the coder's *input* length — the output of the preceding coder in
     the linear chain (or ``None`` when this coder consumes the packed slice directly,
-    whose length ``open_codec_stream`` recovers from the sized source). Only PPMd reads
-    it, to gate post-eof recovery on full pack delivery; it is load-bearing when the
-    upstream stage is unsized (e.g. an AES decrypt stream over an encrypted PPMd folder),
-    where the source length is otherwise unknowable.
+    whose length ``open_codec_stream`` recovers from the sized source). PPMd uses it
+    to gate post-eof recovery on full pack delivery. Deflate/zlib rapidgzip uses it
+    to bound the input so AES pad bytes are not read as a concatenated member.
     """
 
     codec: Codec

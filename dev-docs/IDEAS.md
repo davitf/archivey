@@ -230,13 +230,14 @@
   against a FILE record), and RAR5-only scoping — `rar_parser.py` sets
   `file_encryption=None` on the RAR3 path, so RAR4's 8-byte `LHD` salt is not parsed.
   Split/volume-spanning stay excluded by the existing `_can_direct_read` guards.
-  Follow-up recorded on #342 (review D4), not this PR.
+  Maintainer decision (davitf, 2026-09-16): yes, follow-up PR.
 
 - **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** — of the
   divergences `crypto.py` used to list, ownership is `owns_inner`, `read` already gathers
   short source reads, and the 7z zero-pad disappears once a short last block raises
   `TruncatedError`. The ciphertext cursor is derivable as `_cipher_start + _pos +
-  len(_buf)` once source asks are rounded to a block. What actually blocks it: (a) the
+  len(_buf)` for a full-count source (ADR 0014) once source asks are rounded to a
+  block. What actually blocks it: (a) the
   header walk binds `header_fd` to *either* the raw archive handle or the decrypt stream
   and calls `.tell()` on both for `header_offset` / `data_offset`, so `tell()` means
   *archive offset* — a second method doesn't help while the raw handle is the other arm;
@@ -244,7 +245,9 @@
   `AesDecryptStream` would compute `_cipher_len` as "rest of the file" and advertise
   `seekable()`. Converging means an explicit `archive_offset()` with a thin adapter over
   the raw handle plus a `length=` bound on the wrapper. Revisit after the truncation
-  change and the stored-encrypted-RAR5 work land; both shrink the gap.
+  change and the stored-encrypted-RAR5 work land; both shrink the gap. A multi-member
+  COPY folder is not constructible with the 7z CLI (every COPY member gets its own
+  folder regardless of `-ms`), so a prefix-over-AES path is uncovered by construction.
 
 - **`stream_members()` seekability leak** — the intended rule is that a sequential pass
   is never seekable (`seekable_members=True` only changes random `open()`). Enforced
