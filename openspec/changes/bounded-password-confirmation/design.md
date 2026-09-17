@@ -133,8 +133,9 @@ can be garbage that decrypted under the wrong key. Reproduced on both readers:
 | ZipCrypto DEFLATE, same | **OK, returns garbage** | `CorruptionError: Bad CRC-32` |
 | 7z store+AES, wrong password, confirmation bypassed | **OK, returns garbage** | `CorruptionError: digest mismatch` |
 
-WinZip AES is clean: `zip_aes.py:195` drains the remaining ciphertext so a short-read
-caller still gets the HMAC checked.
+WinZip AES HMAC is checked on the completing read, not on `close()` (ADR 0014 /
+ARC-45). A short-read then `close()` is quiet, same as CRC members. The hole
+this section is about therefore applies to AES too.
 
 `ENCRYPTED_MEMBER_UNVERIFIED` is the answer here, and it is the *cheaper* of the two
 answers. See §7.

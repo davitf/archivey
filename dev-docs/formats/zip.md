@@ -244,7 +244,7 @@ no digest at all rather than the constant `crc32(b"")` —
 the codec layer still ends at `zlib`, `bz2` and `lzma` for the methods they cover. archivey
 locates the member's raw compressed bytes with
 a bounded LFH parse (the fixed 30 bytes plus the local name and extra lengths, with
-absurd-length rejection and a name cross-check against the CDH), slices the source, and dispatches on the ZIP method id to the
+an absurd data-offset cap and a name cross-check against the CDH), slices the source, and dispatches on the ZIP method id to the
 shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
@@ -271,8 +271,10 @@ candidate's CRC in constant memory, earliest match winning. That cost is irreduc
 the format; see `open-issues.md` §Irreducible.
 
 For AES, a wrong password fails fast on the 2-byte verification value with no bytes
-returned; a tampered ciphertext fails on the HMAC at the terminal read. AE-1 surfaces and
-verifies `crc32` alongside the HMAC; AE-2 surfaces neither.
+returned; a tampered ciphertext fails on the HMAC at the terminal read. A partial
+read then `close()` is quiet — HMAC is a content verdict, not teardown
+([ADR 0014](../decisions/0014-integrity-verdicts-from-reads-not-close.md)). AE-1
+surfaces and verifies `crc32` alongside the HMAC; AE-2 surfaces neither.
 
 An unknown method id lists fine and raises `UnsupportedFeatureError` on read — never
 guessed output. A missing optional package raises `PackageNotInstalledError` naming the
@@ -448,6 +450,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
 | Short ZipCrypto header is `TruncatedError` on both password paths | Physical EOF, same condition as the stdlib `IndexError`; callers matching `TruncatedError` vs `CorruptionError` would otherwise see a dispatch-dependent split | Mapping the confirm path's `BadZipFile` through the generic ZIP translator (`CorruptionError`); leaving the split |
+| WinZip AES HMAC from the completing read, not `close()` | ADR 0014: `close()` is teardown. STORED members used to drain the MAC on close and raise `CorruptionError` there; compressed members already skipped it because the decompressor borrows the decrypt stream (S1-F1). Removing the drain makes both match CRC members | Wiring compressed members to authenticate on close too (the S1-F1 "fix" that would add a behaviour the ADR already ruled out) |
 
 ## 7. Open questions
 
@@ -488,6 +491,7 @@ behaviour a caller already sees.
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
 | Overlapping-entry bomb | `::test_overlapping_entries_bomb_translated_to_corruption` |
 | AE-1/AE-2, wrong password, tampered ciphertext | `tests/test_zip_aes.py` |
+| Tampered HMAC raises on a full read (STORED and DEFLATE); partial read then `close()` is quiet | `tests/test_zip_aes.py::test_aes_tampered_hmac_raises_corruption`, `::test_aes_tampered_hmac_partial_read_then_close_is_quiet` |
 | Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass | `tests/test_zip_multipassword.py` |

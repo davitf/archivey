@@ -208,19 +208,46 @@ def test_aes_wrong_password_fails_fast() -> None:
             ar.read(ar.members()[0])
 
 
+@pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
 @requires("cryptography")
-def test_aes_tampered_hmac_raises_corruption() -> None:
+def test_aes_tampered_hmac_raises_corruption(method: int) -> None:
     data = _build_aes_zip(
         payload=_PAYLOAD,
         password=_PASSWORD,
         vendor_version=2,
         strength=3,
-        method=0,
+        method=method,
         tamper_hmac=True,
     )
     with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
         with pytest.raises(CorruptionError, match="HMAC"):
             ar.read(ar.members()[0])
+
+
+@pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
+@requires("cryptography")
+def test_aes_tampered_hmac_partial_read_then_close_is_quiet(method: int) -> None:
+    """Partial read then close is not an HMAC verdict (ADR 0014 / ARC-45).
+
+    STORED used to drain and raise from ``close()``. Compressed members already
+    skipped that check (S1-F1): the decompressor borrows the decrypt stream.
+    Removing the drain makes both paths match CRC members.
+    """
+    # Incompressible and larger than one codec feed so DEFLATE cannot exhaust
+    # the ciphertext (and therefore the HMAC) on a 16-byte read.
+    payload = os.urandom(300 * 1024)
+    data = _build_aes_zip(
+        payload=payload,
+        password=_PASSWORD,
+        vendor_version=2,
+        strength=3,
+        method=method,
+        tamper_hmac=True,
+    )
+    with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
+        with ar.open(ar.members()[0]) as stream:
+            assert len(stream.read(16)) == 16
+            stream.close()  # must not raise CorruptionError
 
 
 @requires("cryptography")
