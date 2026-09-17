@@ -3,8 +3,15 @@
 ## 1. The check
 
 - [ ] 1.1 Compute the padding length from the AES coder: `pack_size` minus the coder's
-      declared output size in `UNPACK_INFO`. Guard a `pack_size` that is not a multiple of
-      16 (malformed) and the multi-packed-stream case the reader already refuses.
+      declared output size in `UNPACK_INFO`. Reject a header that breaks the writer
+      invariant — `pack_size % 16 == 0` **and** `0 <= pack_size - unpack_size <= 15` — as
+      `CorruptionError`, from the header alone, before anything is decrypted. The second
+      half is **not** implied by the first: `pack_size < unpack_size` is block-aligned,
+      passes a `% 16` check, and is reported today as "Wrong password or corrupt 7z
+      folder" under the *correct* password. Guarding the full invariant also settles what
+      `_AesCbcTruncatedError` means — see `design.md` §"What the guard in task 1.1 must
+      check" for both measurement tables. Also guard the multi-packed-stream case the
+      reader already refuses.
 - [ ] 1.2 Read the last two ciphertext blocks from the pack view — the coder's IV
       stands in when the stream is one block — and decrypt **one block** with the
       crypto backend's one-shot CBC. Do not wrap the pack view in `AesDecryptStream`
@@ -49,7 +56,14 @@ it is supposed to bypass, so "it rejected the wrong password" proves nothing on 
       anchor"; without it 3.1 and 3.4 both pass with the tail check removed.
 - [ ] 3.6 Commit the p7zip and py7zr padding fixtures with a note on which writer and
       version produced each, so the premise in `design.md` has an artefact.
-- [ ] 3.7 `./scripts/check.sh && ./scripts/test.sh --all-configs`.
+- [ ] 3.7 Invariant guard, both halves, with the correct password: `pack_size % 16 != 0`
+      and `pack_size < unpack_size` each raise `CorruptionError` rather than
+      `EncryptionError` or `_AesCbcTruncatedError`. The second case is the regression test
+      for the misdiagnosis in 1.1 — assert the error type, since a wrong-password
+      `EncryptionError` is what it looks like today. Forge the declared size on a real
+      fixture (`design.md` has the measured table); a `pack_size` forged *longer* must
+      still read, so the guard does not reject valid archives.
+- [ ] 3.8 `./scripts/check.sh && ./scripts/test.sh --all-configs`.
 
 ## 4. Record
 

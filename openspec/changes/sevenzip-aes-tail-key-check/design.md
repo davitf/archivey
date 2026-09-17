@@ -68,8 +68,66 @@ byte-wise, ciphertext length equals plaintext length) and exactly 28 for WinZip 
 (16 salt + 2 `pw_verify` + 10 HMAC; CTR). Both already fill the cheap-key-check rung with
 their own verifier. What generalises across formats is the rung, not the padding.
 
+## What the guard in task 1.1 must check
+
+Task 1.1 computes `pack_size` minus the AES coder's declared output size. That guard is the
+only place holding both numbers, so it is also the only place that can classify a bad
+declaration. Measured on p7zip 16.02 fixtures:
+
+| Folder | `pack_size` | AES coder `unpack_size` | padding |
+| --- | --- | --- | --- |
+| `Copy` + AES | 2048 | 2048 | 0 |
+| LZMA2 + AES | 256 | 255 | 1 |
+
+The writer's invariant is `pack_size % 16 == 0` **and** `0 <= pack_size - unpack_size <= 15`.
+Task 1.1 names only the first half, and the second is not implied by it: a header declaring
+`pack_size < unpack_size` is block-aligned, passes a `% 16` check, and is still malformed.
+
+### The split cannot happen at the raise site
+
+`_CryptographyDecryptStage.finalize` raises `_AesCbcTruncatedError` when the ciphertext it
+was fed is not a whole number of blocks. It cannot say whether the header lied or the bytes
+are missing, because the difference is erased before the stream exists: `_folder_pack_view`
+(`sevenzip_reader.py:583-595`) hands the declared `pack_size` to `SharedSource.view`, which
+clamps an over-long length to the real source size (`shared.py:107`, `_clamp_slice_length`).
+A clamped view and an honestly-short declaration arrive identical.
+
+### When the raise fires — measured
+
+Forging the declared `pack_size` on a store+AES fixture (file 2186 bytes, honest
+`pack_size` 2048, folder `unpack_size` 2048), on #344's head:
+
+| Forged `pack_size` | View length | `% 16` | Clamped | Outcome |
+| --- | --- | --- | --- | --- |
+| 2048 (honest) | 2048 | 0 | no | reads |
+| 2053 | 2053 | 5 | no | **reads** — the extra bytes are never asked for |
+| 102048 | 2154 | 10 | **yes** | **reads** — clamped, but the plaintext still suffices |
+| 2043 | 2043 | 11 | no | `_AesCbcTruncatedError` |
+| 2032 | 2032 | 0 | no | `EncryptionError: Wrong password or corrupt 7z folder` |
+
+**Clamping is not the discriminator.** Row 3 is clamped and reads fine. The raise fires on
+one condition only: the intact plaintext (`view_len - view_len % 16`) falls short of what
+the consumer asked for **and** `view_len % 16 != 0`. A block-aligned shortfall (row 5)
+leaves the stream silent and `_crc_exactly` reports a wrong password instead.
+
+**Row 5 is a live misdiagnosis.** A header declaring `pack_size < unpack_size` is reported
+as `Wrong password or corrupt 7z folder` under the *correct* password — the same class as
+#342 F21 and #344, on a path neither touched. Checking the full invariant fixes it as a
+side effect, which argues for widening task 1.1 rather than opening a separate change.
+
+**The naming then settles itself.** With the invariant enforced from the header before any
+byte is decrypted, a malformed declaration becomes `CorruptionError` at the guard, and what
+still reaches `finalize` is a file holding fewer bytes than a self-consistent header
+declares — genuine truncation, where `TruncatedError` is already right. No exception rename
+is needed (#344 F5, waived there on this reasoning).
+
 ## Open
 
 The premise rests on p7zip 16.02 and py7zr 1.1.3. Fixtures from Windows 7-Zip ≥ 21, WinRAR
 or Bandizip would strengthen it. Not blocking — confirm-only means an unverified writer
 costs a fallback — but it is what §"What is actually in those bytes" can claim.
+
+Nothing validates `pack_pos + sum(pack_sizes)` against the file size at parse time; only
+the next-header offset and size are range-checked (`sevenzip_parser.py:409-413`). The
+invariant guard above covers the AES case it reaches. Whether the general extent check
+belongs here, in the parser, or in the threat-model register is undecided.
