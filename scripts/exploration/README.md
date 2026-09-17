@@ -114,7 +114,9 @@ stream lifetime). Evidence for
 It imports the real corpus (`CORPUS` / `corpus_archive_path` /
 `skip_unless_runnable`) rather than a third fixture list. Skips are
 `UNTESTED`, never `OK`. `--compare` diffs verdicts against the committed
-JSON snapshot; seek-count drift is printed, not a failure.
+JSON snapshot; seek-count drift is printed, not a failure. Encrypted and
+packed RAR rows, and zip-aes, are required to run (exit 3 if skipped) so
+a stored-only RAR matrix cannot look green. Holes are not xfailed.
 
 ```bash
 uv run --no-sync python scripts/exploration/capability_declaration_sweep.py

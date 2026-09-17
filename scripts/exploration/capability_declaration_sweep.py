@@ -19,6 +19,12 @@ that JSON after you have updated the markdown.
 
 Skip reasons from ``skip_unless_runnable`` are recorded as ``UNTESTED``, never
 as ``OK``. Registry formats with no corpus key are ``UNTESTED-NO-CORPUS``.
+
+This script does **not** xfail anything. Measurement holes stay holes.
+``test_member_stream_contract.py`` already pins zip-aes SEEKABLE with
+``xfail(strict=True)``. Required RAR/zip-aes rows (see ``REQUIRED_RAN``)
+must run or the process exits non-zero — dropping them re-acquires the
+stored-only RAR blind spot.
 """
 
 from __future__ import annotations
@@ -54,7 +60,11 @@ from archivey import (  # noqa: E402
 from archivey.config import PasswordInput  # noqa: E402
 from archivey.cost import AccessCost, ListingCost, StreamCapability  # noqa: E402
 from archivey.measurement import enable_measurement  # noqa: E402
-from archivey.types import ArchiveFormat, MemberStreams  # noqa: E402
+from archivey.types import (  # noqa: E402
+    ArchiveFormat,
+    CompressionAlgorithm,
+    MemberStreams,
+)
 from tests.sample_archives import (  # noqa: E402
     CORPUS,
     FORMAT_KEYS,
@@ -76,6 +86,19 @@ ALWAYS_ENTRY_IDS = (
     "large",
     "compressed",
     "sevenzip-stored",
+)
+
+# Must actually run, not merely be listed. The 2026-09-05 sweep called RAR
+# SEEKABLE OK on basic/large because those fixtures are STORED and never
+# reach unrar; encrypted (and later packed ``compressed``) are the rows that
+# do. zip-aes is the remaining SEEKABLE lie. A skip here is a broken run,
+# not UNTESTED-as-pass.
+REQUIRED_RAN: tuple[tuple[str, str, str], ...] = (
+    ("encrypted", "rar", "unrar data path (encryption)"),
+    ("encrypted-mixed", "rar", "stored+encrypted members in one archive"),
+    ("compressed", "rar", "packed RAR, not the stored-slice path"),
+    ("encrypted", "zip-aes", "WinZip AES decrypt wrapper"),
+    ("encrypted-mixed", "zip-aes", "AES vs plaintext disagreement"),
 )
 
 OK = "OK"
@@ -228,6 +251,11 @@ def _file_members(reader: Any) -> list[Any]:
 def _algos(member: Any) -> str:
     chain = getattr(member, "compression", None) or ()
     return "+".join(c.algo.value for c in chain) or "(none)"
+
+
+def _is_only_stored(member: Any) -> bool:
+    chain = getattr(member, "compression", None) or ()
+    return bool(chain) and all(c.algo is CompressionAlgorithm.STORED for c in chain)
 
 
 def _flag_label(value: MemberStreams) -> str:
@@ -686,6 +714,80 @@ def _check_stream_members_seekable(path: Path, entry: CorpusEntry) -> Check:
         )
 
 
+def _check_mechanism(reader: Any, entry: CorpusEntry, key: str) -> Check | None:
+    """Guard the paths that a stored-only / unencrypted matrix would miss."""
+    files = _file_members(reader)
+    stored = [m.name for m in files if _is_only_stored(m)]
+    packed = [m.name for m in files if not _is_only_stored(m)]
+    encrypted = [m.name for m in files if m.is_encrypted]
+    if key == "rar" and entry.id == "compressed":
+        if not packed:
+            return Check(
+                "mechanism",
+                ERROR,
+                "packed RAR (unrar data path)",
+                f"all STORED {stored}",
+                "compressed row took the stored-slice path",
+            )
+        return Check(
+            "mechanism",
+            OK,
+            "packed RAR (unrar data path)",
+            f"packed={packed}",
+        )
+    if key == "rar" and entry.id.startswith("encrypted"):
+        if not encrypted:
+            return Check(
+                "mechanism",
+                ERROR,
+                "encrypted RAR (unrar data path)",
+                "no encrypted FILE",
+            )
+        return Check(
+            "mechanism",
+            OK,
+            "encrypted RAR (unrar data path)",
+            f"encrypted={encrypted} stored={stored}",
+        )
+    if key == "zip-aes" and entry.id.startswith("encrypted"):
+        if not encrypted:
+            return Check(
+                "mechanism",
+                ERROR,
+                "WinZip AES members",
+                "no encrypted FILE",
+            )
+        return Check(
+            "mechanism",
+            OK,
+            "WinZip AES members",
+            f"encrypted={encrypted}",
+        )
+    return None
+
+
+def _coverage_problems(payload: dict[str, Any]) -> list[str]:
+    by = {(row["entry"], row["key"]): row for row in payload["rows"]}
+    problems: list[str] = []
+    for entry, key, why in REQUIRED_RAN:
+        row = by.get((entry, key))
+        if row is None:
+            problems.append(f"missing {entry}/{key} ({why})")
+            continue
+        if row.get("skipped"):
+            problems.append(f"skipped {entry}/{key}: {row['skipped']} ({why})")
+            continue
+        mech = next(
+            (c for c in row.get("checks") or [] if c["name"] == "mechanism"),
+            None,
+        )
+        if mech is not None and mech["verdict"] == ERROR:
+            problems.append(
+                f"{entry}/{key} mechanism: {mech.get('observed', '')} ({why})"
+            )
+    return problems
+
+
 def _measure_row(entry: CorpusEntry, key: str, tmp: Path) -> Row:
     reason = _skip_reason(entry, key)
     if reason is not None:
@@ -706,6 +808,9 @@ def _measure_row(entry: CorpusEntry, key: str, tmp: Path) -> Row:
                 row.checks.append(_check_is_multivolume(reader))
                 row.checks.append(_check_source_path(reader))
                 row.checks.append(_check_access(reader))
+                mech = _check_mechanism(reader, entry, key)
+                if mech is not None:
+                    row.checks.append(mech)
         with open_archive(path, password=pw, seekable_members=True) as reader:
             row.checks.append(_check_seekable_opt_in(reader))
         with open_archive(path, password=pw) as reader:
@@ -898,24 +1003,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     payload = run_sweep()
     _print_tables(payload, sys.stdout)
 
+    coverage = _coverage_problems(payload)
+    if coverage:
+        sys.stdout.write("\n--- required rows ---\n")
+        for line in coverage:
+            sys.stdout.write(line + "\n")
+
     if args.json is not None:
         args.json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         print(f"\nwrote {args.json}", file=sys.stderr)
     if args.write_snapshot is not None:
-        path = Path(args.write_snapshot)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        print(f"wrote snapshot {path}", file=sys.stderr)
+        if coverage:
+            print(
+                "refusing --write-snapshot: required rows did not run",
+                file=sys.stderr,
+            )
+        else:
+            path = Path(args.write_snapshot)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            print(f"wrote snapshot {path}", file=sys.stderr)
 
-    if args.compare is None:
-        return 0
-    prev_path = Path(args.compare)
-    if not prev_path.is_file():
-        print(f"no snapshot at {prev_path} (nothing to compare)", file=sys.stderr)
-        return 2
-    previous = json.loads(prev_path.read_text(encoding="utf-8"))
-    print(f"\n--- compare {prev_path} ---")
-    return compare(payload, previous, sys.stdout)
+    compare_rc = 0
+    if args.compare is not None:
+        prev_path = Path(args.compare)
+        if not prev_path.is_file():
+            print(f"no snapshot at {prev_path} (nothing to compare)", file=sys.stderr)
+            compare_rc = 2
+        else:
+            previous = json.loads(prev_path.read_text(encoding="utf-8"))
+            print(f"\n--- compare {prev_path} ---")
+            compare_rc = compare(payload, previous, sys.stdout)
+    if coverage:
+        return 3
+    return compare_rc
 
 
 if __name__ == "__main__":

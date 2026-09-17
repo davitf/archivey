@@ -2,7 +2,7 @@
   "schema": 1,
   "machine": {
     "python": "3.11.16",
-    "git": "bf2f52db55b3",
+    "git": "ebbbb0e1d162",
     "date": "2026-09-17",
     "rar": "/usr/bin/rar RAR 7.00   Copyright (c) 1993-2024 Alexander Roshal   26 Feb 2024",
     "unrar": "/usr/bin/unrar UNRAR 7.00 freeware      Copyright (c) 1993-2024 Alexander Roshal",
@@ -207,6 +207,13 @@
           "verdict": "OK",
           "declared": "direct",
           "observed": "delta=14 last=14 total=33 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "WinZip AES members",
+          "observed": "encrypted=['also_secret.txt', 'secret.txt']",
           "detail": ""
         },
         {
@@ -3304,6 +3311,13 @@
           "detail": ""
         },
         {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "encrypted RAR (unrar data path)",
+          "observed": "encrypted=['secret.txt', 'also_secret.txt'] stored=[]",
+          "detail": ""
+        },
+        {
           "name": "seekable_opt_in",
           "verdict": "OK",
           "declared": "SEEKABLE",
@@ -3542,6 +3556,13 @@
           "detail": ""
         },
         {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "WinZip AES members",
+          "observed": "encrypted=['also_secret.txt', 'secret.txt']",
+          "detail": ""
+        },
+        {
           "name": "seekable_opt_in",
           "verdict": "DECLARED-NOT-DELIVERED",
           "declared": "SEEKABLE",
@@ -3777,6 +3798,13 @@
           "verdict": "OK",
           "declared": "direct",
           "observed": "delta=19 last=19 total=51 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "encrypted RAR (unrar data path)",
+          "observed": "encrypted=['secret.txt', 'also_secret.txt'] stored=['not_secret.txt']",
           "detail": ""
         },
         {
@@ -4134,6 +4162,13 @@
           "verdict": "OK",
           "declared": "direct",
           "observed": "delta=19 last=19 total=65 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "WinZip AES members",
+          "observed": "encrypted=['also_secret.txt', 'secret.txt', 'very_secret.txt']",
           "detail": ""
         },
         {
@@ -4848,6 +4883,13 @@
           "verdict": "OK",
           "declared": "direct",
           "observed": "delta=8400 last=8400 total=16592 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "packed RAR (unrar data path)",
+          "observed": "packed=['zeros.bin', 'repeated.txt']",
           "detail": ""
         },
         {

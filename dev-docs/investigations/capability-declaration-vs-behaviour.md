@@ -26,6 +26,13 @@ The script draws rows from `tests.sample_archives.CORPUS` /
 up without editing an enrolment list. A skip is `UNTESTED`, never `OK`.
 Registry formats with no corpus key are `UNTESTED-NO-CORPUS`.
 
+Five rows **must run** (`REQUIRED_RAN` in the script): `encrypted`/`encrypted-mixed`
+rar, `compressed` rar, and `encrypted`/`encrypted-mixed` zip-aes. A skip or a
+stored-only `compressed` rar exits non-zero and refuses `--write-snapshot`.
+That is the 2026-09-05 blind spot: `basic`/`large` rar are STORED and never
+reach unrar. Packed `compressed` exists now; encryption is still required
+because it is a different unrar path. The script does not xfail holes.
+
 Triggered by `dev-docs/formats/rar.md`: `seekable_members=True` on RAR,
 `reader.member_streams` reported `SEEKABLE`, the member stream was a pipe.
 That is one field. The sweep asks how many others lie the same way.
@@ -281,13 +288,23 @@ No `DELIVERED-NOT-DECLARED` hits. No `ERROR`. No skipped corpus rows.
 ## xfail now vs needs a decision
 
 **Already pinned** (`xfail(strict=True)` in
-`test_corpus_seekable_members_seek_and_reread`): zip-aes decrypt-wrapper
-members. Do not add a second pin. The day the wrapper seeks, that xfail
-burns.
+`test_corpus_seekable_members_seek_and_reread`,
+`tests/test_member_stream_contract.py:240`): zip-aes decrypt-wrapper
+members. Strict so the day the wrapper seeks, the xfail burns. Do not add
+a second pin in this sweep; the contract suite is the tripwire.
 
 **Do not pin again (closed on this tree):** RAR-via-unrar SEEKABLE,
 encrypted 7z SEEKABLE. The 2026-09-05 recommendation to xfail those rows
 landed as real tests, not xfails, and they pass.
+
+**Do not xfail the measurement holes.** An xfail there would assert
+behaviour nobody measured:
+
+- RAR listing `source_seek_count=0`
+- dir listing seeks
+- compressed-tar listing (`REQUIRES_DECOMPRESSION` with decomp=0 /
+  `consumed=None`)
+- `compressed_bytes_consumed` always `None` on a Path open
 
 **Decision first** (either side is a coherent product):
 
@@ -302,8 +319,6 @@ landed as real tests, not xfails, and they pass.
   with "tree lives in the header region" / "counting requires a walk".
   Only a problem if INDEXED is supposed to mean ZIP-like O(1) central
   directory.
-
-Do not xfail the measurement holes. They are instrumentation gaps.
 
 ## What callers already rely on with no capability field
 
