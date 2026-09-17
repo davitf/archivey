@@ -213,8 +213,12 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   named `ArchiveFormat` instances as `ClassVar`s removed ~20 `# type: ignore`s *and* the
   errors they were masking). When a suppression is genuinely unavoidable (a checker bug,
   or a third-party stub gap), it MUST:
-  - be **specific** — pin the rule, e.g. `# type: ignore[attr-defined]` /
-    `# pyrefly: ignore[...]` / `# ty: ignore[...]`, never a blanket `# type: ignore`; and
+  - be **specific to the checker that errors**, in that checker's native form:
+    `# pyrefly: ignore[<code>]` or `# ty: ignore[<code>]`. Those bracketed codes
+    are validated — a wrong or invented code restores the error. `# type: ignore[attr-defined]`
+    is **not** specific here: Pyrefly does not check the bracketed code, so that form
+    silences every future error on the line. Never a bare `# type: ignore`. Use only
+    the directive of the checker that actually reports the error (they disagree).
   - carry an **inline reason** on the same line or just above, saying *why* it's needed
     and ideally linking the upstream issue.
 
