@@ -94,11 +94,12 @@ the reasoning is kept only so the closures are not re-litigated.
 - **#315 thread 52 is fixed by [#318](https://github.com/davitf/archivey/pull/318).**
   Password confirmation no longer materialises the folder; `sevenzip_reader.py:661` records
   the chunked replacement and its measured ~3× peak.
-- **[`IDEAS.md`](IDEAS.md) §Testing "Decide what native-codec stress coverage is for" still
-  reads as though #187 were open.** It says the criterion "would resolve PR #187 as
+- **[`IDEAS.md`](IDEAS.md) §Testing "Decide what native-codec stress coverage is for" read
+  as though #187 were open.** It said the criterion "would resolve PR #187 as
   close-with-criterion-recorded". #187 was closed on 2026-09-11 **without** the criterion
-  being recorded, so the entry's framing is now backwards: the PR is gone and the question
-  is not. Worth a one-line rewrite the next time that file is touched.
+  being recorded, so the framing was backwards: the PR was gone and the question was not.
+  Rewritten in this pass to state the decision on its own, with the candidate criterion and
+  what adopting or rejecting it costs.
 - **[`IDEAS.md`](IDEAS.md) §Testing "Pin and checksum the Windows UnRAR download" is
   contradicted by a later decision.** #320 (2026-09-10) **rejected** a pinned SHA-256 — the
   URL is unversioned, so the digest goes stale on every upstream release — and handled
@@ -506,9 +507,9 @@ Topic 4 (test-suite strategy, archived) rather than to any open change. What it 
 short evaluation with a stated criterion — the honest candidate being *"a native stress
 harness is built when an upstream defect is observed, not before"*.
 
-Durable home for the question: [`IDEAS.md`](IDEAS.md) §Testing, whose entry still describes
-#187 as open and should be rewritten to state the criterion as a decision to make rather than
-as a verdict on a PR that no longer exists.
+Durable home for the question: [`IDEAS.md`](IDEAS.md) §Testing, whose entry now states it as
+a standing decision rather than as a verdict on a PR that no longer exists. It is the one
+`IDEAS.md` entry that is a **decision owed**, not a speculative idea parked.
 
 ## How much is actually left
 
