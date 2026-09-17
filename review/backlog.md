@@ -37,6 +37,17 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#344 D4 — AES+PPMd wrong-key `MemoryError` aborts password iteration.**
+  Pre-existing on `main`. A wrong AES key into a complete PPMd pack can
+  `MemoryError` inside `pyppmd.Ppmd7Decoder.decode` during confirm's empty
+  drain. `PasswordManager.attempt` advances only on `EncryptionError`, and
+  `MemoryError` is required to propagate, so a later correct candidate is
+  never tried. Not the truncated-pack drain in `known-issues.md` §pyppmd.
+  Catching it in `attempt` is a spec carve-out, not a drive-by. Written
+  home (pinned 194-byte fixture, `wrong856`, rebuild+sweep):
+  [`dev-docs/known-issues.md`](../dev-docs/known-issues.md)
+  §"AES+PPMd wrong-key `MemoryError` aborts password iteration".
+
 - **#333 follow-up — drop `read_exact` where the receiver is the source handle.**
   `ensure_full_count_reads` now makes every archive source full-count on both branches,
   so `read_exact` against the source is a no-op wrapper around one `read(n)`. Of the 30

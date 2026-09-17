@@ -582,7 +582,9 @@ on this host's soak alone. (2) Declared-complete but internally corrupt sized pa
 can still fill toward `unpack_size` via empty drains (container CRC is the backstop).
 (3) `pack_size` must measure the same bytes `feed()` counts — see `PpmdDecoder`
 docstring invariant; the 7z plumbing satisfies it by construction (pack slice length
-/ preceding coder output).
+/ preceding coder output). (4) Wrong-key AES garbage into a *complete* PPMd pack is
+a different `MemoryError` — it aborts password iteration. Separate section below;
+do not fold it into the truncated-pack drain at the pack-size gate.
 
 ### Verification (this investigation)
 
@@ -599,6 +601,164 @@ Do **not** claim the Free race is gone until the deterministic
 quiesce-on-close is defense-in-depth (see *Residual*). See also: exploration doc,
 `dev-docs/investigations/ppmd-native-investigation-results.md` (§D/§I/§J),
 `scripts/ci_run_native_modules.py`, `.github/workflows/ppmd-native-stress.yml`.
+
+## AES+PPMd wrong-key `MemoryError` aborts password iteration (open)
+
+**Status: open / pre-existing.** Recorded from [#344](https://github.com/davitf/archivey/pull/344)
+D4. Not caused by the AES-CBC short-block change; present on `main`. Distinct from
+the truncated-pack `MemoryError` in the pyppmd section above (that one is a short
+`pack_size` plus an empty drain; this one is a complete pack under the wrong AES
+key).
+
+7z AES has no password check value, so confirm decrypts, decodes, and CRCs
+(`SevenZipReader._password_for_folder` → `_verify_decoded_folder`). A wrong key
+feeds PPMd garbage. On some keys pyppmd 1.3.x raises `MemoryError` from
+`PpmdDecoder._decode` → `pyppmd.Ppmd7Decoder.decode` during an empty drain
+(`DecompressorStream._read_decompressed_chunk` → `feed(b"", max_length)`).
+
+`PasswordManager.attempt` advances only on `EncryptionError`. `MemoryError` is not
+that, and the error-handling spec plus `CONTRIBUTING.md` require it to propagate
+unchanged — so the candidate loop dies and a later correct password is never
+tried. PPMd's `TruncatedError("File is truncated")` on garbage is a different
+path: confirm remaps it to `EncryptionError` (origin-tagged AES truncation, #344)
+and iteration continues. `MemoryError` is not an `ArchiveyError`, so that remap
+does not see it.
+
+Catching `MemoryError` inside `attempt` would contradict the spec unless a later
+change scopes it to "decoder `MemoryError` during password confirm". That is a
+product call, not a drive-by in the AES-truncation PR.
+
+### Pinned fixture (one command)
+
+AES salt/IV are per-archive. Rebuilding with `7z a` produces a *different*
+colliding password. These 194 bytes are the measured archive; `wrong856` hits
+`MemoryError` on them.
+
+| | |
+| --- | --- |
+| SHA-256 | `35dbb0c965d7030d5d27986d165483f9db1d923f347fb23a92acdb02d80b8dbb` |
+| Size | 194 bytes |
+| Methods | `PPMD 7zAES` (`7z l`: Headers Size 162, payload compressed 32, unpack 51200) |
+| Headers encrypted | no (`-mhe=off`) — listing succeeds; abort is on first read/confirm |
+| Correct password | `secret` |
+| Colliding wrong password | `wrong856` (also `wrong2552` on the same bytes) |
+| Payload | 51200 bytes of ASCII `a` (`payload.bin`) |
+| Measured | CPython 3.11.16, pyppmd 1.3.1, cryptography 49.0.0, 7-Zip 23.01, Linux |
+
+Base64 (single line; strip whitespace before decode):
+
+```
+N3q8ryccAARi2VNcIAAAAAAAAACCAAAAAAAAAIuCqMonpMt3igbDY+G+w+v4QIi/UMHCwxS/uDM9
+NxKUj6xH9QEEBgABCSAABwsBAAIkBvEHARJTDyPgfVpOxFoWzpLc0dKtViYjAwQBBQYAABAAAQAM
+GcAAyAAICgGfWJo8AAAFARkJAAAAAAAAAAAAERkAcABhAHkAbABvAGEAZAAuAGIAaQBuAAAAGQIA
+ABQKAQD1wcosnEbdARUGAQAggKSBAAA=
+```
+
+From the repo root (`uv sync --group dev --extra all` so `cryptography` and
+`pyppmd` are present):
+
+```python
+import base64
+import hashlib
+import tempfile
+from pathlib import Path
+
+from archivey import open_archive
+
+BLOB = (
+    "N3q8ryccAARi2VNcIAAAAAAAAACCAAAAAAAAAIuCqMonpMt3igbDY+G+w+v4QIi/"
+    "UMHCwxS/uDM9NxKUj6xH9QEEBgABCSAABwsBAAIkBvEHARJTDyPgfVpOxFoWzpLc"
+    "0dKtViYjAwQBBQYAABAAAQAMGcAAyAAICgGfWJo8AAAFARkJAAAAAAAAAAAAERkA"
+    "cABhAHkAbABvAGEAZAAuAGIAaQBuAAAAGQIAABQKAQD1wcosnEbdARUGAQAggKSB"
+    "AAA="
+)
+raw = base64.b64decode("".join(BLOB.split()))
+assert len(raw) == 194
+assert hashlib.sha256(raw).hexdigest() == (
+    "35dbb0c965d7030d5d27986d165483f9db1d923f347fb23a92acdb02d80b8dbb"
+)
+
+path = Path(tempfile.mkdtemp()) / "archive.7z"
+path.write_bytes(raw)
+
+# Control: a non-colliding wrong password then the real one succeeds.
+with open_archive(path, password=["wrong0", "secret"]) as reader:
+    member = next(m for m in reader.members() if m.is_file)
+    assert reader.read(member) == b"a" * 51200
+
+# The bug: MemoryError from pyppmd aborts before "secret" is tried.
+try:
+    with open_archive(path, password=["wrong856", "secret"]) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        reader.read(member)
+except MemoryError:
+    print("reproduced: MemoryError aborted before secret")
+else:
+    raise SystemExit("expected MemoryError; iteration reached secret")
+```
+
+Run: `uv run --no-sync python that_script.py`. Expected: control assertion
+passes, then `MemoryError` with no success path. Stack (trimmed) is
+`_password_for_folder` → `PasswordManager.attempt` → `confirm` →
+`_crc_exactly` → `PpmdDecoder._decode` → `self._decomp.decode(...)`.
+`password="secret"` alone still reads 51200 after the `MemoryError` in the
+same process.
+
+### Rebuild + sweep (new salt/IV)
+
+If the pinned bytes are gone, rebuild and find a colliding password. The
+password will **not** be `wrong856`.
+
+```bash
+mkdir -p /tmp/ppmd-memerr && cd /tmp/ppmd-memerr
+python3 -c "from pathlib import Path; Path('payload.bin').write_bytes(b'a'*51200)"
+7z a -t7z -psecret -mhe=off -mm=PPMd archive.7z payload.bin
+7z l archive.7z   # Method = PPMD 7zAES
+```
+
+From the **repo root** (`uv run --no-sync` outside the project misses
+`cryptography` and raises `PackageNotInstalledError`):
+
+```python
+from collections import Counter
+from pathlib import Path
+from archivey import open_archive
+from archivey.exceptions import EncryptionError
+
+path = Path("/tmp/ppmd-memerr/archive.7z")
+types: Counter[str] = Counter()
+hits = []
+for i in range(3000):
+    pw = f"wrong{i}"
+    try:
+        with open_archive(path, password=pw) as reader:
+            member = next(m for m in reader.members() if m.is_file)
+            reader.read(member)
+        hits.append((pw, "SUCCESS"))
+    except EncryptionError:
+        types["EncryptionError"] += 1
+    except BaseException as exc:
+        types[type(exc).__name__] += 1
+        hits.append((pw, type(exc).__name__, str(exc)))
+        print("HIT", hits[-1], flush=True)
+print(dict(types), "hits", hits)
+```
+
+On the pinned fixture this was `EncryptionError=2998`, `MemoryError=2`
+(`wrong856`, `wrong2552`) in ~3 minutes. Rate is fixture-dependent and
+lower than PPMd's remapped `TruncatedError("File is truncated")` (~0.5–0.8 %
+in the #344 F1 sweep). Then retry with `password=[<hit>, "secret"]` and
+confirm `MemoryError` still escapes.
+
+### What a fix would have to decide
+
+Leave `MemoryError` propagating (current contract; password lists that hit a
+colliding wrong candidate fail closed). Or treat decoder `MemoryError`
+during confirm as "try the next password", which needs an explicit spec
+carve-out next to `error-handling` "Genuine runtime and I/O errors are not
+reclassified". Do not catch `MemoryError` in `attempt` as a silent wrap.
+
+Parked: `review/backlog.md` (#344 D4).
 
 ## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)
 
