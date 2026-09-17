@@ -370,6 +370,12 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    the two skills stay separate rather than merging into one review-and-fix mode: ADR
    [0018](dev-docs/decisions/0018-review-and-address-stay-separate-skills.md).
 
+4. **Linear issues** use `.claude/skills/address-linear-issue/SKILL.md` (Cursor:
+   `/address-linear-issue`). Same two skills, sequenced: the implementing agent reads
+   the ticket and fixes it; a *fresh* Cursor Grok (standard — never the fast variant)
+   subagent runs `code-review-skill` and posts to the PR; the implementing agent then
+   runs `address-review-findings`. Do not review your own diff.
+
 Two things about this repo make the handoff sharper than it looks:
 
 - **Agents post through the maintainer's GitHub account**, unless the host has its own bot

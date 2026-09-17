@@ -200,6 +200,7 @@ means a decision was never recorded on the handbook page.
 | User-facing or handbook prose craft | `/technical-writing` (then `/unslop` on the same prose) |
 | Review (other agent) | Cursor: `/code-review` (project command → archivey skill). Elsewhere: **`/code-review-skill`** — never bare `/code-review` (that is a host builtin). Full PR handoff; packets to maintainer |
 | Address review | Cursor: `/address-review`. Elsewhere: **`address-review-findings`** / ask for that skill by name |
+| Linear issue (read → fix → other-agent review → address) | Cursor: `/address-linear-issue`. Elsewhere: **`address-linear-issue`** / ask for that skill by name |
 | PR babysitting | `steward` as today |
 
 Desktop-only extras (not Cloud Agents): install the Cursor **pstack** plugin from the
