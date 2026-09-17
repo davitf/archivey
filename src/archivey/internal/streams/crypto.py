@@ -139,9 +139,9 @@ class _CryptographyDecryptStage:
             # AES_BLOCK_SIZE. Writer pad is discarded by the AES coder's
             # unpack_size, not here.
             leftover = len(self._buf)
-            # Leftover is a cut-short pack *or* a header-declared pack_size
-            # that is not a multiple of AES_BLOCK_SIZE. This raise does not
-            # tell those apart; sevenzip-aes-tail-key-check task 1.1 will.
+            # View not block-aligned. Header malformed vs short file is a
+            # header check (sevenzip-aes-tail-key-check task 1.1), not a
+            # leftover split here — see that change's design.md.
             raise _AesCbcTruncatedError(
                 f"AES-CBC ciphertext ended mid-block ({leftover} leftover "
                 "byte(s); a truncated block cannot be decrypted)"
