@@ -260,19 +260,14 @@ class _ResumeSource(io.BytesIO):
         return self._resume(target)
 
 
-class _FixedResume(io.BytesIO):
-    """Inner whose resume point is pinned, clamped to ``<= target`` as a real one is."""
-
-    def __init__(self, data: bytes, resume: int) -> None:
-        super().__init__(data)
-        self._resume = resume
-
-    def nearest_resume_offset(self, target: int) -> int:
-        return max(0, min(self._resume, target))
-
-
 def _resume_answer(cipher_start: int, target: int, resume: int) -> int:
-    source = _FixedResume(b"\x00" * cipher_start + _encrypt(_PLAIN[:16]), resume)
+    """Ask ``nearest_resume_offset`` of a source pinned at ``resume``.
+
+    The inner clamps to ``<= target`` like a real resumable stream. The step
+    probe never asks past the IV block, so that clamp does not fire there.
+    """
+    payload = b"\x00" * cipher_start + _encrypt(_PLAIN[:16])
+    source = _ResumeSource(payload, lambda t, r=resume: max(0, min(r, t)))
     source.seek(cipher_start)
     with AesDecryptStream(source, AesParams(key=_KEY, iv=_IV)) as stream:
         return stream.nearest_resume_offset(target)
@@ -330,9 +325,9 @@ def test_nearest_resume_offset_steps_at_a_ciphertext_block(
     """The answer is a step function of the inner's resume point.
 
     An inner that resumes exactly at the IV block ``cs + 16m`` yields
-    ``16m + 16``. One byte later needs a new IV block, so the answer must be
-    strictly greater; one byte earlier is still inside the same block, so it
-    must not move; a full block earlier must step down.
+    ``16m + 16``. One byte later needs a new IV block, so the answer is
+    exactly one AES block later; one byte earlier is still inside the same
+    block, so it must not move; a full block earlier must step down.
 
     ``target`` sits well above the IV block so ``min(block_start, …)`` never
     caps — the cap is covered by the ``inner_free`` row of the table test.
@@ -344,7 +339,9 @@ def test_nearest_resume_offset_steps_at_a_ciphertext_block(
     assert at == iv_block + AES_BLOCK_SIZE
 
     above = _resume_answer(cipher_start, target, cipher_start + iv_block + 1)
-    assert above > at, "one byte past the IV block must need a later restart"
+    assert above == at + AES_BLOCK_SIZE, (
+        "one byte past the IV block must restart exactly one AES block later"
+    )
 
     if block_index >= 1:
         # Below 16 there is no lower step: plaintext block 0 uses the stored IV
