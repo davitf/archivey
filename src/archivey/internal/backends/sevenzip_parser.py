@@ -56,6 +56,9 @@ _SIGNATURE_HEADER_SIZE = 32
 _MAX_UINT64_ENCODING = 8
 _MAX_UTF16_CHARS = 65536
 _MAX_NUM_STREAMS = 65536
+# 7-Zip writes a single encoded-header layer (plain HEADER packed as one folder).
+# A COPY encoded header whose payload is itself loops forever without this cap (O14).
+_MAX_ENCODED_HEADER_NESTING = 1
 # Hostile archives can claim a multi-EiB next-header offset/size. Cap before seek/read so we
 # never OverflowError on C ssize_t conversion or allocate a multi-GiB header buffer. Real 7z
 # headers are kilobytes; tens of MiB is already far past any legitimate archive.
@@ -209,6 +212,23 @@ def _check_length(length: int, context: str) -> None:
             f"Claimed {context} length {length} exceeds the "
             f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
         )
+
+
+def _require_stream_count(count: int, what: str) -> None:
+    if count > _MAX_NUM_STREAMS:
+        raise CorruptionError(f"7z {what} count is too large: {count}")
+
+
+def check_encoded_header_nesting(depth: int) -> int:
+    """Increment encoded-header depth; 7-Zip writes one layer (threat-model O14)."""
+    depth += 1
+    if depth > _MAX_ENCODED_HEADER_NESTING:
+        raise CorruptionError(
+            "Encoded 7z header decoded to another encoded header; "
+            f"nesting {depth} exceeds the {_MAX_ENCODED_HEADER_NESTING}-level "
+            "parser limit"
+        )
+    return depth
 
 
 def _load_bytes(
@@ -584,6 +604,7 @@ __all__ = [
     "SevenZipFileRecord",
     "SevenZipFolder",
     "SignatureInfo",
+    "check_encoded_header_nesting",
     "compression_method_for_coder",
     "empty_archive",
     "encoded_folder_slices",
@@ -628,8 +649,7 @@ def _read_streams_info(cur: _Cursor) -> _StreamsInfo:
     if prop == _Property.PACK_INFO:
         pack_pos = cur.uint64()
         num_streams = cur.uint64()
-        if num_streams > _MAX_NUM_STREAMS:
-            raise CorruptionError(f"7z pack stream count is too large: {num_streams}")
+        _require_stream_count(num_streams, "pack stream")
         pack_sizes: list[int] | None = None
         prop = _read_property(cur, "7z PACK_INFO")
         if prop == _Property.SIZE:
@@ -679,6 +699,7 @@ def _read_unpack_info(cur: _Cursor) -> list[SevenZipFolder]:
         raise CorruptionError(f"Expected FOLDER in 7z UNPACK_INFO, got 0x{prop:02x}")
 
     num_folders = cur.uint64()
+    _require_stream_count(num_folders, "folder")
     external = cur.byte()
     if external != 0:
         raise UnsupportedFeatureError(
@@ -714,6 +735,7 @@ def _read_unpack_info(cur: _Cursor) -> list[SevenZipFolder]:
 
 def _read_folder(cur: _Cursor) -> SevenZipFolder:
     num_coders = cur.uint64()
+    _require_stream_count(num_coders, "coder")
     coders: list[SevenZipCoder] = []
     total_in = 0
     total_out = 0
@@ -735,6 +757,8 @@ def _read_folder(cur: _Cursor) -> SevenZipFolder:
         else:
             num_in_streams = 1
             num_out_streams = 1
+        _require_stream_count(num_in_streams, "coder in-stream")
+        _require_stream_count(num_out_streams, "coder out-stream")
         properties = None
         if flags & 0x20:
             prop_size = cur.uint64()
@@ -742,6 +766,8 @@ def _read_folder(cur: _Cursor) -> SevenZipFolder:
 
         total_in += num_in_streams
         total_out += num_out_streams
+        _require_stream_count(total_in, "folder in-stream")
+        _require_stream_count(total_out, "folder out-stream")
         coders.append(
             SevenZipCoder(
                 method=method,
@@ -777,7 +803,18 @@ def _read_substreams_info(
 ) -> tuple[list[int], list[int], list[int | None]]:
     prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     if prop == _Property.NUM_UNPACK_STREAM:
-        num_unpackstreams_folders = [cur.uint64() for _ in folders]
+        # Remaining header bytes do not bound this field: kSize/kCRC may be
+        # absent, and the else branch does ``digests.extend([None] * count)``
+        # with no per-stream read. ``_load_boolean(..., check_all=True)`` is
+        # the same bomb one property later. See threat-model O13 / S2-F1.
+        num_unpackstreams_folders = []
+        total_unpack_streams = 0
+        for _ in folders:
+            count = cur.uint64()
+            _require_stream_count(count, "unpack stream")
+            total_unpack_streams += count
+            _require_stream_count(total_unpack_streams, "unpack stream")
+            num_unpackstreams_folders.append(count)
         prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     else:
         num_unpackstreams_folders = [1] * len(folders)

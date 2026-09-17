@@ -53,6 +53,7 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipArchive,
     SevenZipCoder,
     SevenZipFolder,
+    check_encoded_header_nesting,
     encoded_folder_slices,
     folder_is_encrypted,
 )
@@ -476,6 +477,7 @@ def decode_encoded_header(
 ) -> bytes:
     """Materialize an ENCODED_HEADER's packed folders to plaintext header bytes."""
     decoded = bytearray()
+    claimed = 0
     for (
         folder,
         absolute_offset,
@@ -484,9 +486,17 @@ def decode_encoded_header(
     ) in encoded_folder_slices(encoded):
         # Hostile archives can claim a multi-EiB folder unpack size. Cap before
         # ``read_exact`` / codec buffers allocate (Atheris: raw MemoryError).
+        # Per-folder is not enough: two COPY folders at 40 MiB concatenate past
+        # the 64 MiB next-header cap (S2-F2).
         if uncompressed_size > _MAX_NEXT_HEADER_SIZE:
             raise CorruptionError(
                 f"Encoded 7z header unpack size {uncompressed_size} exceeds the "
+                f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
+            )
+        claimed += uncompressed_size
+        if claimed > _MAX_NEXT_HEADER_SIZE:
+            raise CorruptionError(
+                f"Encoded 7z header unpack size {claimed} exceeds the "
                 f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
             )
         source = SlicingStream(archive_fp, absolute_offset, compressed_size)
@@ -538,7 +548,9 @@ def parse_sevenzip_archive(
 
     block = parse_header_block(signature.header_data)
     header_encrypted = False
+    nesting = 0
     while isinstance(block, EncodedHeader):
+        nesting = check_encoded_header_nesting(nesting)
         header_encrypted = header_encrypted or encoded_header_needs_password(block)
         decoded = decode_encoded_header(
             fp,

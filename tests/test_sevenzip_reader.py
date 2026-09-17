@@ -1447,6 +1447,29 @@ def test_filetime_conversion_and_invalid_timestamp_issue() -> None:
     assert issue is not None and issue.field == "created"
 
 
+def _sevenzip_uint64(value: int) -> bytes:
+    """Encode ``value`` as a 7z UINT64. Small values stay one byte; large ones use 0xFF+u64."""
+    if value < 0x80:
+        return bytes([value])
+    return b"\xff" + value.to_bytes(8, "little")
+
+
+def _num_unpack_stream_header(count: int, *, crc_all_defined: bool = False) -> bytes:
+    """HEADER + one COPY folder + ``kNumUnPackStream = count``, no SIZE (S2-F1).
+
+    When ``crc_all_defined`` is set, a ``kCRC`` / all-defined flag follows the count so
+    the ``_load_boolean(..., check_all=True)`` ``[True] * count`` path is the one that
+    would allocate. Remaining bytes after the flag are irrelevant: the count must be
+    rejected before that allocation.
+    """
+    body = bytes.fromhex("0104070b010001000c0a00080d") + _sevenzip_uint64(count)
+    if crc_all_defined:
+        body += bytes.fromhex("0a01")
+    else:
+        body += b"\x00"
+    return body + bytes.fromhex("0005000000")
+
+
 def test_files_info_count_is_bounded_against_header_size() -> None:
     # A crafted 7z header can declare an absurd file count in a few bytes; the parser must
     # reject it against the header size instead of pre-allocating one object per claimed
@@ -1459,6 +1482,51 @@ def test_files_info_count_is_bounded_against_header_size() -> None:
     cur = _Cursor(b"\xff" + huge)  # a 9-byte "header" claiming 2**40 files
     with pytest.raises(CorruptionError, match="exceeds the .* header"):
         _read_files_info(cur)
+
+
+def test_num_unpack_streams_count_is_bounded() -> None:
+    """``kNumUnPackStream`` is not bounded by remaining header bytes (S2-F1 / O13)."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import (
+        _MAX_NUM_STREAMS,
+        PlainHeader,
+        parse_header_block,
+    )
+
+    ok = parse_header_block(_num_unpack_stream_header(2))
+    assert isinstance(ok, PlainHeader)
+    assert ok.streams.num_unpackstreams_folders == [2]
+    assert ok.streams.digests == [None, None]
+
+    at_cap = parse_header_block(_num_unpack_stream_header(_MAX_NUM_STREAMS))
+    assert isinstance(at_cap, PlainHeader)
+    assert at_cap.streams.num_unpackstreams_folders == [_MAX_NUM_STREAMS]
+    assert len(at_cap.streams.digests) == _MAX_NUM_STREAMS
+
+    for count in (_MAX_NUM_STREAMS + 1, 1 << 20, 1 << 40):
+        with pytest.raises(CorruptionError, match="unpack stream count"):
+            parse_header_block(_num_unpack_stream_header(count))
+        with pytest.raises(CorruptionError, match="unpack stream count"):
+            parse_header_block(_num_unpack_stream_header(count, crc_all_defined=True))
+
+
+def test_num_unpack_streams_sum_across_folders_is_bounded() -> None:
+    """Per-folder counts under the cap can still sum past it."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import (
+        _MAX_NUM_STREAMS,
+        parse_header_block,
+    )
+
+    # Two COPY folders, kNumUnPackStream = MAX + 1.
+    header = (
+        bytes.fromhex("0104070b0200010001000c0a0a00080d")
+        + _sevenzip_uint64(_MAX_NUM_STREAMS)
+        + _sevenzip_uint64(1)
+        + bytes.fromhex("000005000000")
+    )
+    with pytest.raises(CorruptionError, match="unpack stream count"):
+        parse_header_block(header)
 
 
 def test_cursor_truncated_property_payload_raises() -> None:
@@ -1596,6 +1664,59 @@ def test_encoded_header_huge_unpack_size_is_typed_corruption() -> None:
         "00000017062d010980b600070b010001212101180cffffffffffffff110a0a0a"
         "0a01000000000002830a0a0a0a0a0a0a0a0a0a0a0a816e0000"
     )
+    with pytest.raises(CorruptionError, match="unpack size|parser limit"):
+        parse_sevenzip_archive(io.BytesIO(blob))
+
+
+def _sevenzip_blob(*, packed: bytes, next_header: bytes) -> bytes:
+    from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
+
+    next_crc = zlib.crc32(next_header) & 0xFFFFFFFF
+    start_header = struct.pack("<QQI", len(packed), len(next_header), next_crc)
+    start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
+    return (
+        MAGIC_7Z
+        + bytes([0, 4])
+        + struct.pack("<I", start_crc)
+        + start_header
+        + packed
+        + next_header
+    )
+
+
+@pytest.mark.timeout(5)
+def test_encoded_header_self_copy_is_typed_corruption() -> None:
+    """COPY encoded header whose packed bytes are itself must not hang (S2-F2 / O14)."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+
+    # 66-byte archive from the S2-F2 trigger: signature + 17-byte COPY payload that
+    # *is* the next-header (kEncodedHeader, one COPY folder, unpack=17).
+    next_header = bytes.fromhex("17060001091100070b010001000c110000")
+    blob = _sevenzip_blob(packed=next_header, next_header=next_header)
+    assert len(blob) == 66
+    with pytest.raises(CorruptionError, match="encoded header|nesting|parser limit"):
+        parse_sevenzip_archive(io.BytesIO(blob))
+    with pytest.raises(CorruptionError, match="encoded header|nesting|parser limit"):
+        with open_archive(io.BytesIO(blob)):
+            pass
+
+
+def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
+    """Per-folder unpack cap is not enough: two COPY folders can concatenate past it."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import _MAX_NEXT_HEADER_SIZE
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+
+    # Two COPY folders, unpack 1 + _MAX_NEXT_HEADER_SIZE. The first is under the
+    # per-folder cap; the running total is not.
+    next_header = (
+        bytes.fromhex("1706000209010100070b0200010001000c")
+        + _sevenzip_uint64(1)
+        + _sevenzip_uint64(_MAX_NEXT_HEADER_SIZE)
+        + bytes.fromhex("0000")
+    )
+    blob = _sevenzip_blob(packed=b"\x00\x00", next_header=next_header)
     with pytest.raises(CorruptionError, match="unpack size|parser limit"):
         parse_sevenzip_archive(io.BytesIO(blob))
 

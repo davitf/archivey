@@ -50,6 +50,7 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipArchive,
     SevenZipFileRecord,
     SevenZipFolder,
+    check_encoded_header_nesting,
     compression_method_for_coder,
     empty_archive,
     find_signature_offset,
@@ -286,7 +287,9 @@ class SevenZipReader(BaseArchiveReader):
 
         block = parse_header_block(signature.header_data)
         header_encrypted = False
+        nesting = 0
         while isinstance(block, EncodedHeader):
+            nesting = check_encoded_header_nesting(nesting)
             header_encrypted = header_encrypted or encoded_header_needs_password(block)
             try:
                 decoded = self._decode_encoded_header_block(fp, block)

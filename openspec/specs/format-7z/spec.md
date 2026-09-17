@@ -108,6 +108,7 @@ implemented by reusing `ExtractionLimits.max_entries`.
 | Case | Expected |
 | --- | --- |
 | `num_files` greater than header buffer size | `CorruptionError` at parse; no giant pre-allocation |
+| `NumUnpackStreams` (or the sum across folders) greater than `_MAX_NUM_STREAMS` | `CorruptionError` at parse; no giant `* count` allocation |
 | Legitimate archive whose header is large enough for its file count | Parse succeeds; listing still subject to `ListingLimits` |
 | Archive within parser bounds but over `listing_limits.max_members` | Parse may succeed; `members()` / materialization raises `ResourceLimitError` |
 
@@ -118,6 +119,22 @@ implemented by reusing `ExtractionLimits.max_entries`.
 | Property payload claims more bytes than remain in the header | `CorruptionError`; no read past the buffer |
 | A fixed-width field (uint32 / real-uint64 / byte) read at end-of-buffer | `CorruptionError`; never a short/zero-padded value |
 | Well-formed header exactly consumed to its end | Parse succeeds; no residual-bytes error |
+
+### Requirement: Bound encoded-header decode work
+
+The system SHALL decode at most one encoded-header layer (7-Zip writes one). A
+decoded blob that is itself `kEncodedHeader` SHALL raise `CorruptionError`.
+Unpack sizes across folders of one encoded header SHALL be summed against the
+next-header size cap (`_MAX_NEXT_HEADER_SIZE`) before concatenation, not only
+per folder.
+
+#### Scenario: encoded-header decode bound matrix
+
+| Case | Expected |
+| --- | --- |
+| COPY encoded header whose packed bytes are that same header | `CorruptionError` at open; no hang |
+| Two encoded-header folders whose unpack sizes each fit the cap but sum past it | `CorruptionError` at decode; no concatenated buffer past the next-header cap |
+| Legitimate single-layer encoded header (including header-encrypted) | Decode once; parse the resulting plain HEADER |
 
 ### Requirement: 7z anti-items are MemberType.ANTI
 

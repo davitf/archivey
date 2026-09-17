@@ -24,7 +24,9 @@ when members are registered into a materialized / resolved list (`members()`,
 (`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
 `stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
 hatch). Format-local parser bounds (e.g. 7z `num_files` vs header size →
-`CorruptionError`; RAR member-count ceiling at parse) stay as defense-in-depth.
+`CorruptionError`; 7z pack/unpack-stream counts at `_MAX_NUM_STREAMS`, including
+the `kNumUnPackStream` field that does not consume per-stream header bytes —
+O13; RAR member-count ceiling at parse) stay as defense-in-depth.
 RAR5 QO records that are not FILE never reach `_append_member`; their bound is
 `_RAR5_QO_PAYLOAD_MAX` (16 MiB), and parse of that payload is linear (PR #311).
 Indexed formats (7z/RAR) may still allocate up to those parser ceilings during
@@ -443,6 +445,42 @@ byte-cap (first-member CRC rather than a hard ceiling, so a legitimate huge
 folder still opens) or routing confirm through `ExtractionLimits` /
 `_track_decompressed` would close that; neither is in this change. Found on
 PR #315; tracked from PR #318.
+
+### O13. 7z `NumUnpackStreams` allocated an unbounded list — closed
+
+`num_files` is bounded against header size (O1 / L1). Pack-stream count is
+bounded by `_MAX_NUM_STREAMS` (65536). `kNumUnPackStream` was not.
+
+When `kSize` and `kCRC` are absent, `_read_substreams_info` did
+`digests.extend([None] * count)` with `count` taken verbatim from the archive.
+No remaining-bytes check can save it: no per-stream bytes are read. The CRC
+`all_defined != 0` path is the same bomb one step earlier:
+`_load_boolean(..., check_all=True)` does `[True] * count` before it tries to
+read any CRC words. Measured: N = 2²⁰ allocated 1,048,576 entries in 0.016 s;
+N = 2⁴⁰ dies on untranslated `MemoryError`.
+
+*Closed:* each per-folder unpack-stream count, and the sum across folders, is
+rejected above `_MAX_NUM_STREAMS` before any `* count` / `range(count)`
+allocation. `num_folders`, `num_coders`, and coder in/out stream counts use
+the same helper. Found on PR #315 (S2-F1); Linear ARC-50.
+
+### O14. 7z encoded-header decode had no nesting limit — closed
+
+`while isinstance(block, EncodedHeader)` re-parsed whatever
+`decode_encoded_header` returned. A COPY encoded header whose packed bytes
+*are* that same header decodes to itself. A 66-byte archive hung
+`open_archive` / `parse_sevenzip_archive`; `7z l` 23.01 reports "Headers Error"
+in ~0.2 s. Blast radius is `open_archive`, not a fuzz helper —
+`SevenZipReader._load_archive` ran the same loop.
+
+Related cap in the same function: unpack size was capped at
+`_MAX_NEXT_HEADER_SIZE` **per folder**, so two COPY folders at 40 MiB
+concatenated to 80 MiB past the signature next-header cap.
+
+*Closed:* nesting counter, max 1 (7-Zip writes one layer);
+`CorruptionError` on a header that decodes to another `EncodedHeader`. Running
+total of folder unpack sizes is capped at `_MAX_NEXT_HEADER_SIZE` before
+concatenation. Found on PR #315 (S2-F2); Linear ARC-50.
 
 ## OPEN gaps — compatibility
 
