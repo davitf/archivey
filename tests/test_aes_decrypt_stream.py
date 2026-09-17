@@ -1,7 +1,8 @@
 """Seek, tell, and ownership for the 7z AES-CBC pull stream.
 
 Needs ``cryptography`` (``[all]`` / ``[all-lowest]``). The ``[core-only]`` leg
-skips the whole module: there is no decryptor to wrap.
+skips the whole module: there is no decryptor to wrap. The Hypothesis property
+on ``nearest_resume_offset`` skips itself when that import is missing.
 """
 
 from __future__ import annotations
@@ -10,6 +11,12 @@ import io
 from collections.abc import Callable
 
 import pytest
+
+try:
+    from hypothesis import example, given
+    from hypothesis import strategies as st
+except ImportError:  # pragma: no cover - hypothesis is a dev-group dep
+    example = given = st = None  # type: ignore[misc, assignment]
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.streams import crypto
@@ -303,6 +310,19 @@ class _ResumeSource(io.BytesIO):
         return self._resume(target)
 
 
+def _resume_answer(cipher_start: int, target: int, resume: int) -> int:
+    """Ask ``nearest_resume_offset`` of a source pinned at ``resume``.
+
+    The inner clamps to ``<= target`` like a real resumable stream. The step
+    probe never asks past the IV block, so that clamp does not fire there.
+    """
+    payload = b"\x00" * cipher_start + _encrypt(_PLAIN[:16])
+    source = _ResumeSource(payload, lambda t, r=resume: max(0, min(r, t)))
+    source.seek(cipher_start)
+    with AesDecryptStream(source, AesParams(key=_KEY, iv=_IV)) as stream:
+        return stream.nearest_resume_offset(target)
+
+
 @pytest.mark.parametrize(
     ("cipher_start", "target", "inner_resume", "expected"),
     [
@@ -345,6 +365,139 @@ def test_nearest_resume_offset_composes_with_inner(
     source.seek(cipher_start)
     with AesDecryptStream(source, AesParams(key=_KEY, iv=_IV)) as stream:
         assert stream.nearest_resume_offset(target) == expected
+
+
+@pytest.mark.parametrize("cipher_start", [0, 1, 7, 16, 100])
+@pytest.mark.parametrize("block_index", [0, 1, 2, 7, 12500])
+def test_nearest_resume_offset_steps_at_a_ciphertext_block(
+    cipher_start: int, block_index: int
+) -> None:
+    """The answer is a step function of the inner's resume point.
+
+    An inner that resumes exactly at the IV block ``cs + 16m`` yields
+    ``16m + 16``. One byte later needs a new IV block, so the answer is
+    exactly one AES block later; one byte earlier is still inside the same
+    block, so it must not move; a full block earlier must step down.
+
+    ``target`` sits well above the IV block so ``min(block_start, …)`` never
+    caps — the cap is covered by the ``inner_free`` row of the table test.
+    """
+    iv_block = AES_BLOCK_SIZE * block_index
+    target = iv_block + 10 * AES_BLOCK_SIZE
+
+    at = _resume_answer(cipher_start, target, cipher_start + iv_block)
+    assert at == iv_block + AES_BLOCK_SIZE
+
+    above = _resume_answer(cipher_start, target, cipher_start + iv_block + 1)
+    assert above == at + AES_BLOCK_SIZE, (
+        "one byte past the IV block must restart exactly one AES block later"
+    )
+
+    if block_index >= 1:
+        # Below 16 there is no lower step: plaintext block 0 uses the stored IV
+        # and needs no IV block, so 16 is the floor whenever the inner answers.
+        same = _resume_answer(cipher_start, target, cipher_start + iv_block - 1)
+        assert same == at, "the answer must be flat across a ciphertext block"
+        below = _resume_answer(
+            cipher_start, target, cipher_start + iv_block - AES_BLOCK_SIZE
+        )
+        assert below < at
+
+
+if given is not None:
+
+    @example(cipher_start=0, target=400_000, spec=("none", 0))
+    @example(cipher_start=0, target=400_000, spec=("absent", 0))
+    @example(cipher_start=0, target=400_000, spec=("lag", 0))
+    @example(cipher_start=0, target=400_000, spec=("lag", 1))
+    @example(cipher_start=0, target=7, spec=("lag", 0))
+    @example(cipher_start=100, target=400_000, spec=("lag", 0))
+    @given(
+        cipher_start=st.one_of(
+            st.sampled_from([0, 1, 7, 16, 100]),
+            st.integers(min_value=0, max_value=1024),
+        ),
+        target=st.one_of(
+            st.sampled_from([0, 1, 7, 15, 16, 17, 31, 32, 400_000]),
+            st.integers(min_value=0, max_value=500_000),
+        ),
+        spec=st.one_of(
+            st.just(("none", 0)),
+            st.just(("absent", 0)),
+            st.tuples(st.just("lag"), st.integers(min_value=0, max_value=500_000)),
+        ),
+    )
+    def test_nearest_resume_offset_invariant(
+        cipher_start: int, target: int, spec: tuple[str, int]
+    ) -> None:
+        """Docstring contract for ``nearest_resume_offset``, over random inners.
+
+        For any target and any inner resume point, the returned ``P`` is a CBC
+        restart (``P % 16 == 0``) in ``[0, block_start]``. When the inner
+        answers, a ``P > 0`` never needs an IV block behind that resume — callers
+        may act on this value, so rounding down costs them replay. When the inner
+        declines (no method, or ``None``), ``P == block_start``.
+
+        These four rules are one-sided (``block_start`` satisfies all of them).
+        Composition — that the answer actually moves with the inner — is pinned
+        by ``test_nearest_resume_offset_steps_at_a_ciphertext_block``.
+
+        Resume is generated as a lag behind the asked offset so the fake
+        satisfies ``nearest_resume_offset(t) <= t``, like a real resumable
+        stream.
+
+        CI budget is the shared ``archivey`` Hypothesis profile in
+        ``conftest.py`` (``max_examples=100``, ``deadline=None``,
+        ``derandomize=True``). Deepen locally with
+        ``ARCHIVEY_FUZZ_EXAMPLES=2000``. Hypothesis is a ``dev``-group
+        dependency; this test skips when it is missing so the rest of the
+        module still runs.
+        """
+        kind, lag = spec
+        cipher = _encrypt(_PLAIN[:16])
+        payload = b"\x00" * cipher_start + cipher
+        recorded: list[int] = []
+        if kind == "absent":
+            source: io.BytesIO = io.BytesIO(payload)
+        elif kind == "none":
+            source = _ResumeSource(payload, None)
+        else:
+
+            def recording_resume(t: int, behind: int = lag) -> int:
+                r = max(0, t - behind)
+                recorded.append(r)
+                return r
+
+            source = _ResumeSource(payload, recording_resume)
+        source.seek(cipher_start)
+        with AesDecryptStream(source, AesParams(key=_KEY, iv=_IV)) as stream:
+            result = stream.nearest_resume_offset(target)
+
+        block_start = target - (target % AES_BLOCK_SIZE)
+        assert result % AES_BLOCK_SIZE == 0, f"P={result} is not a CBC block boundary"
+        assert 0 <= result <= block_start, (
+            f"P={result} not in [0, block_start={block_start}] for target={target}"
+        )
+        if kind in ("absent", "none"):
+            assert result == block_start, (
+                f"declining inner must yield block_start={block_start}, got P={result}"
+            )
+            return
+        assert len(recorded) == 1, (
+            f"lag inner must be asked once, got {len(recorded)} calls"
+        )
+        inner_resume = recorded[0]
+        if result > 0:
+            iv_block = cipher_start + result - AES_BLOCK_SIZE
+            assert iv_block >= inner_resume, (
+                f"IV block at {iv_block} is behind inner resume {inner_resume} "
+                f"(P={result}, cipher_start={cipher_start}, target={target})"
+            )
+
+else:
+
+    def test_nearest_resume_offset_invariant() -> None:
+        pytest.skip("hypothesis not installed (dev group)")
 
 
 def test_aes_params_repr_hides_key() -> None:
