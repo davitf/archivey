@@ -33,7 +33,8 @@ specific to Claude Code; everything else would drift if it were duplicated here.
   `/address-review-findings` dispositions them. Ask for those two by those names — a bare
   `/code-review` is a *builtin* skill, not this repo's. A Linear ticket goes through
   `.claude/skills/address-linear-issue/SKILL.md`, which sequences them: implement, then a
-  fresh Cursor Grok (standard, never fast) reviewer, then address. The autopilot entry
+  fresh reviewer (`code-review-skill`; Cursor Grok standard when that slug exists, never
+  the fast variant), then address. The autopilot entry
   point is a **path, not a slash command**: if you are reacting to PR events rather than
   being asked, read `.claude/skills/steward/SKILL.md`, which routes to
   `address-review-findings` and carries this repo's autonomy boundary. `AGENTS.md`

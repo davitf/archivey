@@ -31,6 +31,11 @@ This file exists only because a watching agent starts from a generic posture and
 reads a skill it was not asked for. Everything below is a **delta** against that
 posture. Where the two disagree, this file and `address-review-findings` win.
 
+**Concurrent with `address-linear-issue`.** If this PR is mid that loop — the
+implementing session commissioned the review and has not finished dispositions —
+no-op. That session owns the round. A second `address-review-findings` pass on the
+same F-IDs is how the two agents collide.
+
 ## Where a watcher's defaults differ from this repo
 
 | Default watcher posture | This repo |
