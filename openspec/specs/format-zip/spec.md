@@ -60,10 +60,10 @@ separate decryption path.
 The ZIP backend SHALL decode unencrypted member data through the shared
 `compressed-streams` codec layer rather than stdlib `zipfile`'s internal
 decoders. It SHALL locate a member's raw compressed bytes via a bounded
-local-file-header parse (fixed header + local name/extra lengths, with absurd-
-length rejection) and a slice over the source, then dispatch by ZIP method id
-to the codec's default backend. Central-directory parsing and listing MAY
-continue to use stdlib `zipfile`.
+local-file-header parse (fixed header + local name/extra lengths, with an
+absurd data-offset cap) and a slice over the source, then dispatch by ZIP
+method id to the codec's default backend. Central-directory parsing and
+listing MAY continue to use stdlib `zipfile`.
 
 Member reads SHALL verify `member.hashes["crc32"]` through the shared
 `VerifyingStream` when a CRC is surfaced. A corrupt member body SHALL raise

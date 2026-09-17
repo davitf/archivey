@@ -153,7 +153,6 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._cipher_remaining = cipher_len
         self._mac = b""
         self._mac_needed = _HMAC_LEN
-        self._verified = False
         self._buf = bytearray()
 
     def _pull(self) -> None:
@@ -176,7 +175,6 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
                 raise CorruptionError(
                     "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
                 )
-            self._verified = True
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
