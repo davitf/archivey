@@ -1,5 +1,12 @@
 # Open work inventory and sequencing
 
+> **State now lives in Linear; this page keeps the reasoning.** As of 2026-09-17 the work
+> below is tracked as issues on the `Archivey` Linear team — one issue per unit of work that
+> can be handed out, each linking back here. **Linear answers "is this started, and did a PR
+> close it?"; this page and the registers answer "why".** When the two disagree about state,
+> Linear wins; when they disagree about reasoning, the registers win. GitHub issues are
+> deliberately not used for internal tracking — they stay clear for external reports.
+>
 > **A dated snapshot, not a register.** Snapshot: **2026-09-17** against `main` @ `94468bd0`.
 > Every item below lives somewhere canonical — [`open-issues.md`](open-issues.md),
 > [`threat-model.md`](threat-model.md), [`IDEAS.md`](IDEAS.md),
@@ -37,6 +44,7 @@ which dominated the last two snapshots has gone from 47 open threads to 10.
 | [`review/exception-catchalls/`](../review/exception-catchalls/brief.md) | 30 marked blind `except` sites | **Not started.** `brief.md` is the only file. A verification review; its own brief says a large "actually fine" section is the expected outcome |
 | [`threat-model.md`](threat-model.md) | `O*` register | O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`, in tree since #319 |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
+| **Linear** (`Archivey` team) | 39 issues seeded 2026-09-17 | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
 | **The #315 sweep** — *no register* | 75 of 94 `src/` files never reviewed | **The largest open item here.** 27 481 of 36 134 lines unswept; batched into S1–S14 below |
 | **`dev-docs/formats/`** — *no register* | 2 of ~7 handbook pages written | ZIP and RAR done. `rar.md` alone produced the 21-item `§10` register |
 | **`docs/`** — *tracked in `review/docs-content/`* | ~174 lines of prose + `how-it-works.md` | Skeleton, scope and verified claim inventory all done; the writing is not |
