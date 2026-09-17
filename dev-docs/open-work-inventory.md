@@ -16,9 +16,11 @@
 
 ## The shape of it
 
-Eleven registers hold open work. The count that matters is not the total — it is that **two
-maintainer answers gate everything still parked**, and that the pool which dominated the last
-two snapshots has gone from 47 open threads to 10.
+Eleven registers hold open work, and **two bodies of work that no register covers** — the
+codebase sweep that produced #315, which is 24% done, and the two documentation rewrites.
+Those two are now the largest open items on this page. Among the registers, the count that
+matters is that **two maintainer answers gate everything still parked**, and that the pool
+which dominated the last two snapshots has gone from 47 open threads to 10.
 
 | Register | Open items | Health |
 | --- | --- | --- |
@@ -35,6 +37,9 @@ two snapshots has gone from 47 open threads to 10.
 | [`review/exception-catchalls/`](../review/exception-catchalls/brief.md) | 30 marked blind `except` sites | **Not started.** `brief.md` is the only file. A verification review; its own brief says a large "actually fine" section is the expected outcome |
 | [`threat-model.md`](threat-model.md) | `O*` register | O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`, in tree since #319 |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
+| **The #315 sweep** — *no register* | 75 of 94 `src/` files never reviewed | **The largest open item here.** 27 481 of 36 134 lines unswept; batched into S1–S14 below |
+| **`dev-docs/formats/`** — *no register* | 2 of ~7 handbook pages written | ZIP and RAR done. `rar.md` alone produced the 21-item `§10` register |
+| **`docs/`** — *tracked in `review/docs-content/`* | ~174 lines of prose + `how-it-works.md` | Skeleton, scope and verified claim inventory all done; the writing is not |
 
 **[`IDEAS.md`](IDEAS.md) is not backlog.** 55 entries across six sections, and its job is to
 stop the same speculative idea being re-derived. Nothing in it is late. Treat an `IDEAS.md`
@@ -215,6 +220,102 @@ commissioned in #325 were drawn from.
 whether a RAR header-decrypt offset accounts for `_buf` and for encrypted block boundaries —
 and parcel D measured both against the `encrypted_header__*.rar` fixtures and found neither.
 
+## The sweep that produced #315 is a quarter done
+
+**Not previously on this page, and it changes what the #315 count means.** The 2026-09-08
+review pass was never run over the whole codebase. It covered **15 of 94 files in `src/`,
+8 585 of 36 134 lines — 24%** — concentrated on `streamtools/`, the RAR pair and the 7z
+reader. Draining the threads it produced is not the same as having reviewed the library.
+
+| | Files | Lines |
+| --- | --- | --- |
+| Swept, threads raised and now 46/56 resolved | 15 | 8 585 (24%) |
+| **Never swept** | **75** | **27 481 (76%)** |
+| Trivial (`__init__`, `__main__`) | 4 | 68 |
+
+The unswept 76% includes the four largest files in the repository —
+`base_reader.py` (2 175), `streams/codecs.py` (2 036), `extraction.py` (1 694) and
+`backends/zip_reader.py` (1 612) — none of which any review has read end to end.
+
+**Run it in batches, not in one pass.** The single 8 585-line sweep produced 56 threads and
+six parcels of follow-up work, and it is the most expensive thing on this page per line
+covered. The batches below are drawn on subsystem seams so each is one agent's reading pass
+and one reviewable set of threads, sized in the same range as the original sweep's per-parcel
+slices. The order is roughly by what a reader of the existing threads would most want checked
+next; nothing in it is a hard dependency.
+
+| Batch | Files | Lines |
+| --- | --- | --- |
+| **S1 — ZIP backend** — `zip_reader.py`, `zipcrypto.py`, `zip_detect.py` | 3 | 1 865 |
+| **S2 — 7z parser + pipeline** — `sevenzip_parser.py`, `sevenzip_pipeline.py`, `sevenzip_methods.py`, `sevenzip_detect.py` | 4 | 2 005 |
+| **S3 — reader base** — `base_reader.py`, `reader.py`, `open_site.py` | 3 | 2 481 |
+| **S4 — extraction** — `extraction.py`, `extraction_types.py`, `internal/filters.py`, `escaping.py` | 4 | 2 406 |
+| **S5 — codec engine** — `streams/codecs.py`, `decompressor_stream.py`, `resume.py` | 3 | 2 703 |
+| **S6 — codec formats** — `decompress.py`, `xz.py`, `unix_compress.py`, `lzip.py` | 4 | 2 590 |
+| **S7 — detection** — `detection.py`, `detection_workspace.py`, `registry.py`, `format_provenance.py`, `format_args.py` | 5 | 1 719 |
+| **S8 — stream spine** — `archive_stream.py`, `verify.py`, `counting.py`, `peekable.py`, `streamtools/full_count.py` | 5 | 1 587 |
+| **S9 — TAR + ISO** — `tar_reader.py`, `iso_reader.py` | 2 | 1 438 |
+| **S10 — single-file, directory, `unrar`** — `single_file_reader.py`, `directory_reader.py`, `rar_unrar.py` | 3 | 1 401 |
+| **S11 — public API surface** — `core.py`, `types.py`, `exceptions.py`, `detection_cost.py`, `cost.py`, `config.py` ×2, `__init__.py` | 8 | 2 521 |
+| **S12 — diagnostics, naming, SFX** — `diagnostics.py`, `diagnostics_collector.py`, `naming.py`, `sfx.py`, `selection.py`, `listing_limits.py`, `timestamps.py` | 7 | 1 902 |
+| **S13 — CLI** — all of `cli/` | 14 | 1 975 |
+| **S14 — passwords, hashing, framing** — `password.py`, `password_confirm.py`, `hashing/`, `brotli_framing.py`, `zstd_framing.py`, `measurement.py` ×2, `logs.py` | 10 | 888 |
+
+**Three of these overlap work already specced**, and are worth sequencing around rather than
+running blind: S7 (detection) against the three detection changes, since the evidence ledger
+rewrites much of what it would review; S5/S6 (codecs) against Topic 6, the decode-engine
+performance review that is already ranked; and S4 (extraction) against `bounded-source-spooling`,
+which is waiting on #251's four maintainer answers.
+
+**S1 and S2 are the two to run first.** They are the direct counterparts of the work already
+done — parcels D and E read the RAR pair, and threads 51/53/54 read part of `sevenzip_reader.py`
+— so they are the places where the existing threads most obviously stop mid-subsystem. `zip_aes.py`
+thread 15 also lands in S1's territory.
+
+## The two docs rewrites
+
+**Also not previously on this page**, because both predate it and neither lives in a register
+it tracks.
+
+### 1. The format handbook — `dev-docs/formats/`
+
+Two of the intended set exist: [`rar.md`](formats/rar.md) (91 KB) and
+[`zip.md`](formats/zip.md) (42 KB). Both follow the same nine-section shape — At a glance,
+Shape, The pipeline here, In the wild, Threat surface, Sharp edges, Decisions, Open questions,
+Verify, References — so the template is settled and the remaining pages are writing, not
+design.
+
+| Page | State |
+| --- | --- |
+| `rar.md` | **Written**, and carrying its own unfinished work: `§7` has 5 open questions, `§10` has 4 of 21 changes still open (#6 layer 2, #18, #19, #21) |
+| `zip.md` | **Written**; `§7` has 1 open question (whether PKWARE Strong Encryption deserves an explicit refusal rather than a misleading wrong-password error) |
+| `sevenzip.md` | **Missing.** The format with the most machinery behind it after RAR — folders, coder graphs, substreams, BCJ2 unsupported — and three #315 threads still open against its reader |
+| `tar.md` | **Missing.** Includes the stdlib-leniency question that `open-issues.md` **P3** is about |
+| `iso.md` | **Missing.** Thin — one optional backend, `pycdlib` |
+| `single-file.md` | **Missing.** gzip, bzip2, xz, lzip, zstd, lz4, brotli, `.Z`: the seek-point and truncation behaviour is spread across `codecs.py`, `xz.py`, `lzip.py` and `unix_compress.py` with no single page |
+| `directory.md` | **Missing.** Thinnest of all; may not earn a page |
+
+**The handbook is how `§10` registers get created**, which is the argument for continuing it:
+writing `rar.md` produced 21 tracked code changes, 17 of which have shipped. That is the
+highest-yield documentation work in the repo, and it is also why each new page should be
+expected to *add* open items rather than only close them.
+
+### 2. The user guide — `docs/`
+
+Further along than [`review/STATUS.md`](../review/STATUS.md) suggests. All 15 published pages
+exist — 2 311 lines — and the sixteenth, `how-it-works.md`, still does not.
+
+| Artefact | Where | State |
+| --- | --- | --- |
+| The skeleton | [`review/docs/outline.md`](../review/docs/outline.md) | **Done.** All 16 pages with purpose, reader question, sections in order, explicit non-coverage, and `file:lines` sources |
+| Scope pass (pass 0) | [`review/docs-content/scope.md`](../review/docs-content/scope.md) | **Done**, merged in #242. Every page has a stated job and a non-coverage list |
+| Claim inventory (steps 2–3) | [`review/docs-content/claims.md`](../review/docs-content/claims.md) | **Done** — 1 114 lines, merged from two independent passes (#246, #247), with pass-1 verification complete as of 2026-08-18. Every claim carries a `verified` / `wrong` / `unverifiable` / `out of scope` verdict |
+| The prose | `docs/` | **The unfinished half.** ~174 lines outstanding by the scope pass's re-tally, plus `how-it-works.md` which is 100% new |
+
+**`review/STATUS.md` says "Next: step 3, the claim inventory".** Step 3 is done and verified;
+that line has been stale for a month. The actual next step is writing, and it is the one part
+of this programme with no agent-shaped unit of work defined for it yet.
+
 ## What #324 settled, and what it left
 
 Wave 1 landed as [#324](https://github.com/davitf/archivey/pull/324) and did more than fix
@@ -337,10 +438,20 @@ Topic 8 (docs content) ∥ Topic 10 (catalogue) ──> Topic 6 (perf) ──> T
         └── #243 closed, so #244 is uncontested; Topic 10 is unblocked
 
 typing-escape-hatches ∥ exception-catchalls ──> (nothing; both unblocked, neither started)
+
+sweep S1..S14 ──> new #315-shaped threads ──> new parcels, new changes
+        │              (S1/S2 first; the 76% of src/ no review has read)
+        ├── S4 wants #251's answers first    (bounded-source-spooling)
+        ├── S5, S6 want Topic 6's ranking    (decode-engine performance)
+        └── S7 wants the detection order     (ledger rewrites what it would review)
+
+formats/sevenzip.md, tar.md, iso.md, single-file.md ──> more §10-style registers
+docs/ prose + how-it-works.md ──> (nothing; skeleton, scope and claims all done)
 ```
 
 **Only two things in this graph are waiting on a person rather than on work:** the #251
-`design.md` answers Q1–Q4, and the threads 10/14 module-placement call. Everything else is
+`design.md` answers Q1–Q4, and the threads 10/14 module-placement call. The sweep and the
+docs wait on neither — they wait on someone starting the next batch. Everything else is
 either running, or ready for whoever picks it up next.
 
 `single-file-open-time-validation`, `seekable-gzip-and-block-writing` and
@@ -411,20 +522,31 @@ of actionable work" about a pool that is now nearly empty.
 | Dormant drafts | 5 | **2** |
 | OpenSpec changes in tree, unimplemented | 8 | 6 (+2 proposed in #347) |
 | Reviews commissioned but not started | 2 | 2 |
+| `src/` never swept | *not tracked* | **76% — 75 files, 27 481 lines** |
+| Handbook pages unwritten | *not tracked* | **~5 of ~7** |
 
-**Six days moved 37 threads and closed five PRs.** Nothing in the remaining ten #315 threads
-is a correctness bug: the last two candidates (threads 1 and 2) were measured against fixtures
-in parcel D and neither was one. What is left across the whole page is renames, docstrings,
-one placement decision, one layering fix (thread 15), one performance question
+**Six days moved 37 threads and closed five PRs**, and nothing in the remaining ten #315
+threads is a correctness bug — the last two candidates (threads 1 and 2) were measured
+against fixtures in parcel D and neither was one. What is left in the *registers* is renames,
+docstrings, one placement decision, one layering fix (thread 15), one performance question
 (thread 13's per-read bisect), and a stack of specced-but-unimplemented changes.
 
-**That is the input to the release question.** The blocking work for a first publication is
-not this page's tail — it is whichever of the unimplemented OpenSpec changes are judged to
-change public API or behaviour after 0.2.0. `single-file-open-time-validation` closes two
-confirmed bugs (P15, P16) and `bounded-password-confirmation` closes most of a threat-model
-entry; those are the two with a claim on a release. The detection changes are the ones that
-would be expensive to land *after* people depend on the current surface, because the ledger
-defines vocabulary the other three report in.
+**The registers are not where the remaining work is.** The two rows added to the table above
+are each larger than everything else on this page put together, and until this revision
+neither appeared anywhere that answers "what is open?". A snapshot that counted only the
+registers would read as nearly finished; the honest reading is that the parts of the library
+that have been examined closely are in good shape, and three quarters of it has not been
+examined closely.
+
+**That is the input to the release question**, and it cuts both ways. Nothing measured so far
+blocks a publication: the confirmed bugs are P15 and P16, both specced in
+`single-file-open-time-validation`, and `bounded-password-confirmation` closes most of a
+threat-model entry. Those two are the ones with a claim on a release, and they are 51 tasks
+between them. Against that, the unswept 76% is unmeasured rather than known-good — the swept
+24% yielded four real correctness bugs, so the base rate is not zero. **An alpha is defensible
+now; "a clean state" is not a thing the current evidence can certify.** The detection changes
+are separately expensive to land *after* people depend on the current surface, because the
+ledger defines the vocabulary the other three report in.
 
 ## Plan of attack
 
@@ -480,6 +602,14 @@ being implemented and archived on 2026-09-12.
 **Wave 4 — decisions, then detection.** Answer #251's four questions. Finish or park
 `prefixed-archive-detection`. Then `detection-evidence-ledger` → `detection-result-surface`
 → #274, in that order, retiring the four `IDEAS.md` §API entries as the ledger absorbs them.
+
+**Wave 6 — the sweep and the docs, continuously and in parallel with everything above.**
+Neither is a wave in the sense the others are: they are long-running programmes that should
+have one batch in flight at a time rather than a slot in the order. Run S1 and S2 first, one
+batch at a time to keep the cost bounded, and sequence S4, S5, S6 and S7 around the changes
+and topics they overlap. On the docs side, `sevenzip.md` is the next handbook page by value,
+and the user guide's remaining prose is the one item here with no agent-shaped unit of work
+defined for it yet.
 
 **Wave 5 — the review topics.** Topic 8 ∥ Topic 10 → Topic 6 → Topic 7 last, per
 [`review/STATUS.md`](../review/STATUS.md). Unchanged; this page does not re-rank them. Note
