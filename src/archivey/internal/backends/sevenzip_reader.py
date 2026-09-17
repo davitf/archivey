@@ -82,7 +82,7 @@ from archivey.internal.password import (
 from archivey.internal.registry import register_reader
 from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.crypto import SevenZipKeyCache
+from archivey.internal.streams.crypto import SevenZipKeyCache, _AesCbcTruncatedError
 from archivey.internal.streams.streamtools import (
     ReadableStream,
     SharedSource,
@@ -666,8 +666,16 @@ class SevenZipReader(BaseArchiveReader):
                     member_digests=member_digests,
                 )
                 return kdf_password
-            except (UnsupportedFeatureError, PackageNotInstalledError):
-                # Hostile NumCyclesPower / missing cryptography must not look like a wrong password.
+            except (
+                UnsupportedFeatureError,
+                PackageNotInstalledError,
+                _AesCbcTruncatedError,
+            ):
+                # Hostile NumCyclesPower / missing cryptography / an AES-CBC
+                # mid-block truncation must not look like a wrong password.
+                # Other TruncatedError (PPMd "File is truncated" on
+                # wrong-key garbage) remaps below: PasswordManager.attempt
+                # advances only on EncryptionError.
                 raise
             except ArchiveyError as exc:
                 raise EncryptionError("Wrong password or corrupt 7z folder") from exc

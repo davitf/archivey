@@ -19,6 +19,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     EncryptionError,
     PackageNotInstalledError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFolder
@@ -410,6 +411,209 @@ def test_aes_encrypted_member_seeks_when_requested(tmp_path: Path) -> None:
             assert stream.read() == payload
             stream.seek(10)
             assert stream.read() == payload[10:]
+
+
+class _DecoderTruncatedStream:
+    """Coder-stage stand-in: AES has already decrypted; this is the decoder.
+
+    PPMd reports wrong-key garbage as ``TruncatedError("File is truncated")``
+    (~0.5–0.8 % of wrong passwords). Confirm must remap that to
+    ``EncryptionError`` so ``PasswordManager.attempt`` can try the next
+    candidate. A hand-constructed AES-message ``TruncatedError`` from a
+    fake pipeline (the old test) cannot tell the two origins apart.
+    """
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+
+    def read(self, _n: int = -1) -> bytes:
+        raise TruncatedError("File is truncated")
+
+    def close(self) -> None:
+        close = getattr(self._inner, "close", None)
+        if close is not None:
+            close()
+
+
+def _patch_codec_raises_truncated(
+    monkeypatch: pytest.MonkeyPatch, *, first_n: int | None = None
+) -> dict[str, int]:
+    """Raise decoder ``TruncatedError`` from the codec sitting on AES.
+
+    ``first_n=None`` wraps every AES-backed codec; ``first_n=1`` wraps only
+    the first (wrong-password confirm) so later candidates and the member
+    open see the real decoder. Header LZMA (no AES) is left alone — a
+    blanket ``open_codec_stream`` wrap fires during encoded-header decode
+    and never reaches confirm. Patch ``_execute_stage``: that is the
+    coder-stage open, and production never routes through a reader method.
+    """
+    import archivey.internal.backends.sevenzip_pipeline as pipeline_mod
+    from archivey.internal.streams.crypto import AesDecryptStream
+
+    original = pipeline_mod._execute_stage
+    state = {"calls": 0, "wrapped": 0}
+
+    def wrapping(stream: object, stage: object, **kwargs: object) -> object:
+        out = original(stream, stage, **kwargs)
+        if not isinstance(stream, AesDecryptStream):
+            return out
+        if not isinstance(
+            stage, (pipeline_mod._CodecStage, pipeline_mod._LzmaChainStage)
+        ):
+            return out
+        state["calls"] += 1
+        if first_n is None or state["calls"] <= first_n:
+            state["wrapped"] += 1
+            return _DecoderTruncatedStream(out)
+        return out
+
+    monkeypatch.setattr(pipeline_mod, "_execute_stage", wrapping)
+    return state
+
+
+@requires("cryptography")
+def test_decoder_truncated_error_during_confirm_is_wrong_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decoder ``TruncatedError`` under a wrong password is still a bad key.
+
+    AES+LZMA2 (py7zr default). The codec stage raises the same
+    ``TruncatedError("File is truncated")`` PPMd emits on garbage. Confirm
+    used to re-raise every ``TruncatedError``, which aborted password
+    iteration. Origin-tagging means only the AES-CBC subclass passes
+    through; this one remaps.
+
+    Raise from the codec ``read()``, not from ``open_folder_pipeline``
+    construction: confirm calls the pipeline *before* its ``try``.
+    """
+    archive = tmp_path / "aes-lzma2.7z"
+    _write_py7zr_archive(archive, {"a.txt": b"hello" * 200}, password="secret")
+    state = _patch_codec_raises_truncated(monkeypatch)
+
+    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
+        with open_archive(archive, password="wrong") as reader:
+            member = next(m for m in reader.members() if m.is_file)
+            # Mutation D: catch base TruncatedError in the confirm
+            # passthrough — this leaks TruncatedError and never remaps.
+            reader.read(member)
+
+    assert state["wrapped"] >= 1, "codec stage was never opened"
+
+
+@requires("cryptography")
+def test_decoder_truncated_error_does_not_abort_password_iteration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PasswordManager.attempt`` advances only on ``EncryptionError``.
+
+    First candidate: decoder ``TruncatedError`` (wrong key). That must
+    remap so the second candidate is tried. AES+LZMA2 so the codec stage
+    actually runs (Copy+AES never calls ``open_codec_stream``).
+    """
+    archive = tmp_path / "aes-lzma2.7z"
+    payload = {"a.txt": b"hello" * 200}
+    _write_py7zr_archive(archive, payload, password="secret")
+    state = _patch_codec_raises_truncated(monkeypatch, first_n=1)
+
+    # Mutation D: catch base TruncatedError in the confirm passthrough —
+    # attempt aborts on the first candidate and never reaches "secret".
+    with open_archive(archive, password=["wrong", "secret"]) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        assert reader.read(member) == payload["a.txt"]
+
+    assert state["wrapped"] == 1, (
+        "decoder TruncatedError was not injected on the first candidate"
+    )
+    assert state["calls"] >= 2, "correct password never reached a real codec stage"
+
+
+@requires_binary("7z")
+@requires("cryptography")
+def test_truncated_encrypted_folder_is_not_wrong_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Store+AES, correct password, pack view short of a last CBC block.
+
+    Confirm used to drain the short block as garbage and, if that raised at
+    all, remap it to ``EncryptionError``. Finalize now raises
+    ``TruncatedError``; the confirm ladder must let that through.
+    """
+    payload = tmp_path / "blob.bin"
+    payload.write_bytes(bytes(range(256)) * 8)
+    archive = tmp_path / "store-aes-trunc.7z"
+    result = subprocess.run(
+        [
+            "7z",
+            "a",
+            "-t7z",
+            "-psecret",
+            "-mhe=off",
+            "-mx0",
+            str(archive),
+            payload.name,
+            "-y",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build store+AES fixture: {result.stderr}")
+
+    original = SevenZipReader._folder_pack_view
+
+    def short_view(self: SevenZipReader, folder_index: int) -> io.BytesIO:
+        view = original(self, folder_index)
+        data = view.read()
+        assert len(data) >= 16
+        return io.BytesIO(data[:-5])
+
+    monkeypatch.setattr(SevenZipReader, "_folder_pack_view", short_view)
+
+    with open_archive(archive, password="secret") as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        # Mutation A: restore zero-pad drain — CRC mismatch, EncryptionError.
+        # Mutation C: drop _AesCbcTruncatedError from the confirm passthrough —
+        # same EncryptionError wrapping.
+        with pytest.raises(TruncatedError, match="mid-block"):
+            reader.read(member)
+
+
+@requires("cryptography")
+def test_truncated_aes_lzma2_folder_is_not_wrong_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AES+LZMA2 (py7zr default), correct password, pack view short of a last CBC block.
+
+    AES ``finalize`` wins the race against the decompressor: a mid-block
+    leftover is ``_AesCbcTruncatedError`` before LZMA2 sees a short stream.
+    Confirm must let that subclass through. The store+AES case above is
+    Copy; this is the compressed composition F1 lives in.
+    """
+    archive = tmp_path / "aes-lzma2-trunc.7z"
+    _write_py7zr_archive(
+        archive, {"blob.bin": bytes(range(256)) * 8}, password="secret"
+    )
+
+    original = SevenZipReader._folder_pack_view
+
+    def short_view(self: SevenZipReader, folder_index: int) -> io.BytesIO:
+        view = original(self, folder_index)
+        data = view.read()
+        assert len(data) >= 16
+        return io.BytesIO(data[:-5])
+
+    monkeypatch.setattr(SevenZipReader, "_folder_pack_view", short_view)
+
+    with open_archive(archive, password="secret") as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        # Mutation A: restore zero-pad drain — LZMA2 rejects garbage,
+        # EncryptionError.
+        # Mutation C: drop _AesCbcTruncatedError from the confirm passthrough —
+        # EncryptionError wrapping.
+        with pytest.raises(TruncatedError, match="mid-block"):
+            reader.read(member)
 
 
 @requires_binary("7z")
@@ -1003,6 +1207,34 @@ def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
             _folder(b"\x06\xf1\x07\x01", properties),
             password=b"pw",
         )
+
+
+@requires("cryptography")
+def test_truncated_aes_pack_raises_truncated_error() -> None:
+    """AES-only folder: a short last ciphertext block is TruncatedError, not garbage."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    password = b"pw"
+    properties = b"\xc0\x00\x00\x00"
+    cache = crypto.SevenZipKeyCache()
+    params = cache.aes_params_from_properties(password, properties)
+    plaintext = bytes(range(64))
+    encryptor = Cipher(algorithms.AES(params.key), modes.CBC(params.iv)).encryptor()
+    cipher = encryptor.update(plaintext) + encryptor.finalize()
+    reader = _reader_for_unit_tests()
+    stream = _open_pipeline(
+        reader,
+        io.BytesIO(cipher[:53]),
+        _folder(b"\x06\xf1\x07\x01", properties),
+        password=password,
+    )
+    try:
+        # Mutation A: restore zero-pad drain in finalize — 64 garbage-tailed
+        # bytes, no raise.
+        with pytest.raises(TruncatedError, match="mid-block"):
+            stream.read()
+    finally:
+        stream.close()
 
 
 def _u64(value: int) -> bytes:
