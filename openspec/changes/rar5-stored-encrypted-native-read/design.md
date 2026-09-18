@@ -93,8 +93,8 @@ it a decrypted member stream. Encrypted compressed members are all-or-nothing, a
 
 ### Rejected: widening `_ensure_link_target` in the same change
 
-`_ensure_link_target` (`rar_reader.py:1234`) carries its own `not raw.is_encrypted` guard
-on the RAR4 symlink-target-as-data path. RAR5 symlinks carry their target in `file_redir`
+`_ensure_link_target` (`rar_reader.py:1206`) carries its own `not raw.is_encrypted` guard
+(`:1217`) on the RAR4 symlink-target-as-data path. RAR5 symlinks carry their target in `file_redir`
 and never reach it, so this change does not touch it. It is listed here so the next reader
 does not treat the leftover guard as an oversight.
 

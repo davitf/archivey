@@ -7,16 +7,35 @@
       `_rar5_s2k(password, salt, 1 << kdf_count)` — the **AES key**, at `1 << kdf`, not
       the HashKey at `+16`. Reuse the `_RAR_MAX_KDF_SHIFT` guard; a `kdf_count` past it is
       `CorruptionError`, as in `rar5_hash_key`.
-- [ ] 1.2 Decide the caching shape: per-member derivation is acceptable to start, but
-      record it — PBKDF2 at `1 << kdf_count` is ~0.1 s, so a loop over many small
-      encrypted members pays it once per member. If a cache lands, key it on
-      `(password, salt, kdf_count)`; salts differ per member, so an archive-level cache
-      like `_Rar5HdrEnc.cached_key` would be wrong.
+- [ ] 1.2 Decide the caching shape against the **measured** numbers, not a guess. Real
+      archives written by RARLAB `rar` get `kdf_count=15` — 32 768 iterations, one
+      PBKDF2 pass measured at 8–22 ms on this container (two runs, different load;
+      milliseconds, not the ~0.1 s an earlier draft of this task claimed — 0.1 s is
+      roughly `kdf_count` 18–19). The count is what dominates: spying on `_rar5_s2k`
+      while opening one stored encrypted member **today** gives
+      `[32800, 32784, 32800, 32784]` — four passes, because `_tweaked_verify_spec`
+      (`rar_reader.py:1105`) is evaluated twice on the spawn path (once at `:1324` for
+      `has_hash`, once via `_wrap_payload_stream`) and each evaluation runs
+      `_check_rar5_password` (`+32`) and `rar5_hash_key` (`+16`). The direct path skips
+      the `has_hash` site, so it lands at **three** passes per member: the new AES key at
+      `1 << kdf`, plus `+16` and `+32`. UnRAR derives one chain and reads all three off
+      it at offsets 0 / +16 / +32. Per-member derivation is acceptable to start; if a
+      cache lands, key it on `(password, salt, kdf_count)` — salts differ per member, so
+      an archive-level cache like `_Rar5HdrEnc.cached_key` would be wrong.
+      **Maintainer decision (davitf, 2026-09-18,
+      [#347](https://github.com/davitf/archivey/pull/347#issuecomment-5724553004)):**
+      record the numbers here; the dedup itself — one PBKDF2 pass yielding all three
+      values, and removing the duplicate `_tweaked_verify_spec` evaluation — is **ARC-54**
+      and is not this change's job.
 - [ ] 1.3 **Confirm `_check_rar5_password` accepts a FILE `CRYPT` check value**, with a
       fixture pair: correct password returns `True`, wrong password raises
       `EncryptionError`. `design.md` §"PswCheck on a FILE record" says why this is an
       assumption today. If it does not hold, fall back to digest-only detection and say
       so in the spec rather than shipping a check that silently returns `False`.
+      While here, fix the message it raises: `rar_parser.py:2089` says
+      `"Wrong password for RAR5 header encryption"`, so a typo'd password on a `-p` (not
+      `-hp`) archive would tell the user the *header* password is wrong for an archive
+      whose headers are not encrypted. Parameterise it, or raise from the caller.
 
 ## 2. The read path
 
@@ -26,16 +45,30 @@
       `spanned_volumes` and the `_RAR_METHOD_STORED` check untouched.
 - [ ] 2.2 In `_open_member`, open the ciphertext view over **`compress_size`**
       (`_direct_view(raw, raw.compress_size)`), wrap it in `AesDecryptStream`, and trim to
-      `file_size`. Taking the length from the view hands the caller the CBC padding —
-      `design.md` has the measured table.
+      `file_size` with
+      `SlicingStream(AesDecryptStream(...), length=raw.file_size, owns_inner=True)` —
+      the shape `sevenzip_reader.py:783` already uses, which preserves `seek` over a
+      seekable source so the spec's seek row still holds. `AesDecryptStream.__init__`
+      (`crypto.py:230`) takes `(source, params, *, owns_inner)` and has **no** `length=`;
+      `_wrap_payload_stream`'s `expected_size` *verifies* a length rather than truncating
+      one, so leaning on it hands the caller 3008 bytes and a spurious failure. Taking the
+      length from the view hands the caller the CBC padding — `design.md` has the measured
+      table.
 - [ ] 2.3 Raise `EncryptionError` at open when the FILE record's PswCheck rejects the
       password, before any plaintext is produced.
 - [ ] 2.4 Confirm the direct branch still goes through `_wrap_payload_stream`, so a
       natively decrypted member is digest-verified by `_tweaked_verify_spec` exactly as
       the spawned read is. This is expected to be free; assert it rather than assume it.
 - [ ] 2.5 When neither a crypto backend nor a RARLAB binary is present, raise
-      `PackageNotInstalledError` naming **both** routes. With a binary but no backend,
-      fall through to the spawn unchanged.
+      `PackageNotInstalledError` naming **both** routes. Do this by catching and
+      re-raising at the `_open_member` call site, which is the only place that knows both
+      the member shape and whether the gate declined for want of a backend — **not** by
+      teaching `rar_unrar.py` about `cryptography`. The message today is the module
+      constant `_NOT_INSTALLED_MSG` (`rar_unrar.py:97`, raised at `:182`, `:262`, `:263`,
+      `:502`); it names RARLAB only and has no way to know the member shape, so leaving
+      the work there would either ship a scenario nothing implements or push crypto
+      availability down into the spawn layer. With a binary but no backend, fall through
+      to the spawn unchanged.
 
 ## 3. Tests
 
@@ -70,8 +103,18 @@
 - [ ] 4.1 Amend ADR
       [0002](../../../dev-docs/decisions/0002-native-rar-metadata-unrar-data.md): the
       boundary is *decompression*, not *data*; stored members, encrypted RAR5 included,
-      are native. Note the amending change id.
-- [ ] 4.2 `docs/formats.md`: RAR member data needs `unrar` except stored members; RAR5
-      stored encrypted members need `[recommended]` instead.
+      are native. Only the **Decision** paragraph needs the edit ("Decompress member
+      **data** via the RARLAB `unrar` binary") — the Consequences bullet already reads
+      "reading *compressed* members requires it on `PATH`" and is correct as written.
+      Note the amending change id.
+- [ ] 4.2 `docs/formats.md` has **three** sites, not one: the format-table cell at `:16`
+      (`**`unrar` or `rar` binary for data**`), the bold line at `:22` ("RAR member data
+      needs RARLAB `unrar` or `rar` …"), and the "Member **data**" bullet at `:128`.
+- [ ] 4.2b `dev-docs/formats/rar.md` states the rule this change moves, and is one of the
+      handbook pages already rewritten, so it is current and worth keeping current:
+      the §"Three routes" table row **Direct slice | Stored (`-m0`), unencrypted, …**
+      (`:387`) becomes wrong for RAR5, and the "Core dependencies" row (`:18`) is in the
+      same neighbourhood. Add a sentence on why RAR4 stays on the spawn — the `LHD` salt
+      is not parsed — so the asymmetry reads as a decision rather than an oversight.
 - [ ] 4.3 CHANGELOG.
 - [ ] 4.4 `openspec validate --strict rar5-stored-encrypted-native-read`.

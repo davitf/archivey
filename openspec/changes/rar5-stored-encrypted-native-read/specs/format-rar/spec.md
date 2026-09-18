@@ -68,7 +68,7 @@ spawn SHALL be the `p` (print to stdout) command only.
 | Compressed member, both missing | `PackageNotInstalledError` names `unrar` or `rar` |
 | PATH `unrar` is not RARLAB `unrar`, and no usable `rar` | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
 | RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
-| RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data |
+| RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data; spawn is `rar p` |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
 | Listing only, both missing | No data dependency is checked |
 
@@ -110,6 +110,47 @@ capability’s initial implementation. Hardlink / file-copy members are never na
 | `open()` on hardlink / `FILE_COPY` | `unrar` receives the target FILE path only (after link follow), or equivalent target open |
 | Symlink member | No `unrar` data read for the link payload |
 | Nonsolid `open()` of a natively decrypted stored RAR5 member | No `unrar` invocation at all |
+
+### Requirement: Serve random access and extraction with bounded explicit temp use
+
+The system SHALL serve non-solid random reads by invoking `unrar` for the target
+member **with that member's path as the sole path argument**, doing O(member_size)
+data work. For solid random reads, the system SHALL decode from archive start to
+the target member (named `unrar p … <member>`) or extract once with `unrar x`
+into an explicitly managed temporary directory and serve later reads from disk;
+that directory is cleaned up on reader close. `extract_all()` MAY use one
+`unrar x` to a temporary directory. Any temp materialization SHALL be a declared
+RAR strategy, not an implicit in-memory buffer. When the archive is opened from a
+non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
+caveat **at open** (path sources SHALL NOT): a single stream source SHALL warn
+that reading **a member that requires the RARLAB spawn** will copy the whole archive to
+disk; ordered
+stream volumes SHALL state that volumes were copied at open. The note is a
+static open-time caveat, not an occurrence log:
+it SHALL be present even if only directly-read members are read, and SHALL NOT appear
+after materialization if it was absent at open. Mixed-password
+nonsolid archives MUST NOT demultiplex one unnamed `unrar p` ALL pipe against the
+full member list (wrong-password members are omitted from stdout and would
+desynchronize sizes).
+
+The caveat's wording SHALL track the set in "Use RARLAB unrar only for member data that
+needs it" rather than naming compression: a stored **encrypted** member triggers the copy
+too, and this change removes exactly the RAR5 half of that set. Saying "compressed" would
+leave the caveat understated for RAR4 stored encrypted members, which keep spawning.
+
+#### Scenario: random/extract matrix
+
+| Case | Expected |
+| --- | --- |
+| Random `open()` in non-solid RAR | `unrar p … <archive> <member>`; work is O(member_size) |
+| Repeated random opens in solid RAR | Backend may use one tempdir extraction and remove it on close |
+| `extract_all()` | Backend may use one-shot `unrar x` |
+| Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
+| Single non-path stream, at open | `ar.cost.notes` warns a spawned read will copy to disk |
+| Ordered stream volumes, at open | `ar.cost.notes` states volumes were copied at open |
+| Path source | `ar.cost.notes` has no disk-copy caveat |
+| Non-path stream, RAR5 stored encrypted member read natively | No archive copy; the open-time caveat is still present (static, not an occurrence log) |
+| Non-path stream, RAR4 stored encrypted member | Spawns, so the copy happens — which is why the caveat cannot say "compressed" |
 
 ### Requirement: Decrypt RAR5 header-encrypted archives natively
 

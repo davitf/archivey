@@ -1,63 +1,59 @@
-# Tasks — fold `_HeaderDecryptStream` into `AesDecryptStream`
+# Tasks — fold `_HeaderDecryptStream`, or record why not
 
-## 1. Disentangle the header walk (worth landing alone)
+**Prerequisite:** `rar-archive-offset-and-aes-cursor`. Do not start this change until that
+one has landed — it closes divergences 1 and 2, and the gate in 1.1 counts only what is
+left.
 
-- [ ] 1.1 Add `_archive_offset(fd: _Readable) -> int` in `rar_parser.py` and use it at
-      the four sites that mean "archive offset": `:1125`, `:1152` (RAR3 `header_offset`
-      and `data_offset`) and `:1996`, `:2027` (RAR5). `_Readable` documents archive
-      offset from then on, not "a ciphertext `tell`".
-- [ ] 1.2 Fix `_Readable`'s stale claim that streamtools bases "close the inner stream":
-      `AesDecryptStream` borrows since #340. The surviving reason is the ciphertext
-      cursor.
-- [ ] 1.3 Commit this on its own. It stands whether or not §2 lands.
+Every task below completes under **both** arms of the gate. That is deliberate: a change
+whose boxes can only tick one way is a change that parks in `openspec/changes/` forever.
 
-## 2. Improvements to `AesDecryptStream` that stand on their own
+## 1. Measure the gate
 
-- [ ] 2.1 `read` gathers a short source read (`read_exact(self._source, ask)`) instead of
-      handing a partial block to the stage. This makes the
-      `_cipher_start + _pos + len(_buf)` identity in the `read` docstring unconditional;
-      today the docstring has to disclaim it.
-- [ ] 2.2 Expose the ciphertext cursor (`cipher_tell()`), derived from that identity.
-- [ ] 2.3 Tests for both, on the 7z path, before any RAR caller exists: a source that
-      returns short reads must produce identical plaintext and an unchanged cursor.
+- [ ] 1.1 Count what `AesDecryptStream` must grow to serve the header caller, after the
+      prerequisite: refuse `seek` on a mid-file unbounded stream, refuse `read(-1)`, and
+      not `finalize` at source EOF. Try the **bounded-source** route before the flag route
+      — a `SlicingStream` over `[data_start, data_start + header_size)` makes all three
+      correct rather than forbidden. Establish whether the `DecryptStage` survives the
+      two-phase bound that `_read_rar5_block`'s byte-at-a-time vint read forces. Record the
+      count, and the reason, in this task's completion note.
+      **Gate: at most one new constructor argument folds; more than one does not.**
+      `design.md` §"The denominator" has what sits on the other side of the ledger — 79
+      lines deleted against ~60 lines of test rework and fifteen reference sites.
 
-## 3. The fold itself — measure before committing
+## 2. Act on it
 
-- [ ] 3.1 Write down what the header caller needs beyond §2: refuse `seek`, refuse
-      `read(-1)`, do not `finalize` at source EOF. Count the constructor arguments.
-- [ ] 3.2 Try the bounded-source route first (`design.md` §"The bar"): a view over
-      `[data_start, data_start + header_size)` makes all three correct rather than
-      forbidden. Establish whether the stage can survive the two-phase bound that
-      `_read_rar5_block`'s byte-at-a-time vint read forces.
-- [ ] 3.3 **Decision gate.** One constructor argument or fewer → fold, delete
-      `_HeaderDecryptStream`, rewrite the seven references (two are docstrings and must be
-      rewritten, not deleted). More than one → stop, do task 5.2, and close the change
-      with §1 and §2 landed.
+- [ ] 2.1 **If the gate passes:** fold, delete `_HeaderDecryptStream`, and rewrite the nine
+      `src/` references (`design.md` has the table) — four are docstrings that move rather
+      than disappear, and `rar_parser.py:67` is one the prerequisite change already
+      touched, so re-read it before editing. **If the gate fails:** leave the class, and
+      make its docstring and `crypto.py:200`/`:226` point at the row updated in 3.1 instead
+      of restating the blockers a third time.
+- [ ] 2.2 **If folded, rework the three tests that bind the class by name** — do not delete
+      them to make the suite pass:
+      - `:138-143` `test_encrypted_header_plaintext_tell_breaks_the_walk` re-anchors on the
+        ciphertext accessor. It is the red-green for the `data_offset` bug (#315 threads
+        1–2); deleting it retires the pin for the exact bug the divergence prevents.
+      - `:73` `test_header_decrypt_read_is_bounded_by_caller_not_8kib` carries an error
+        **type and match string** (`CorruptionError`, `"Unbounded read"`) that are contract
+        from #332 CR1/CR-P1. Whatever 1.1 decides, that behaviour survives.
+      - `:47` `test_header_decrypt_tell_is_ciphertext_cursor_not_plaintext` rewrites against
+        the surviving class.
+      `test_encrypted_header_data_offset_skips_aes_block_padding` (`:99`) names no class and
+      needs no change — check that it still passes rather than editing it.
+- [ ] 2.3 **If folded**, error types must not move: the RAR3 walk catches
+      `(CorruptionError, TruncatedError)` and re-raises `EncryptionError` when the block is
+      encrypted, which is how password candidates keep iterating. Assert that a wrong
+      password on `encrypted_header__rar4.rar` still raises `EncryptionError`, and that
+      `_AesCbcTruncatedError` does not escape where `CorruptionError` is raised today.
+- [ ] 2.4 `./scripts/check.sh && ./scripts/test.sh --all-configs`.
 
-## 4. Tests (only if §3 folds)
+## 3. Record, under either arm
 
-- [ ] 4.1 Error types are unchanged: for each existing RAR parser test that asserts
-      `CorruptionError` / `TruncatedError` / `EncryptionError` on an encrypted-header
-      archive, the same type still comes out. Truncated-archive cases specifically —
-      `_AesCbcTruncatedError` must not escape where `CorruptionError` is raised today.
-- [ ] 4.2 `data_offset` lands on the ciphertext boundary for every header of
-      `encrypted_header__.rar` and `encrypted_header__rar4.rar`, where
-      `header_size % 16 != 0` for every FILE header. This is the regression test for
-      divergence 1 in `design.md`.
-- [ ] 4.3 A wrong password on an encrypted-header RAR3 archive still raises
-      `EncryptionError` (not `CorruptionError`), so password candidates keep iterating.
-- [ ] 4.4 No unbounded read reaches the source: assert the shared archive handle's
-      position after a header walk, and that `read(-1)` is still refused on the header
-      path.
-- [ ] 4.5 `./scripts/check.sh && ./scripts/test.sh --all-configs`.
-
-## 5. Record
-
-- [ ] 5.1 If folded: remove `crypto.py` §"Folding `_HeaderDecryptStream` in is blocked by
-      the header walk" and the `_HeaderDecryptStream` docstring, and keep the four
-      divergence answers (ciphertext `tell`, gathered reads, no unbounded read, no
-      `finalize`) as comments where they now live.
-- [ ] 5.2 If not folded: replace both docstring sections with one pointer to a recorded
-      decision (an ADR or a `dev-docs/discussions/` note) stating the measured reason, so
-      the question is not re-derived a third time.
-- [ ] 5.3 `openspec validate --strict fold-rar-header-decrypt-stream`.
+- [ ] 3.1 Update `dev-docs/formats/rar.md:710` — the existing decisions-table row "Keep
+      `_HeaderDecryptStream`; share only the AES *stage* with `crypto.py`" — with the
+      measured outcome of 1.1 and the date. Do **not** open an ADR or a
+      `dev-docs/discussions/` note: that row plus the two docstrings already record this
+      decision three times, and a fourth record is the failure mode, not the fix.
+- [ ] 3.2 If folded, update the other doc sites: `dev-docs/formats/rar.md:286`, `:308`,
+      `:709`, `dev-docs/topics/stream-ownership.md:19`, `:35`, and `review/backlog.md:65`.
+- [ ] 3.3 `openspec validate --strict fold-rar-header-decrypt-stream`.
