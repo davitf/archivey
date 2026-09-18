@@ -37,6 +37,13 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#353 F18 — 7z parser helpers still default `max_members=None`.**
+  Out of scope for the RAR PR. `sevenzip_parser.py` public `parse_header_block`
+  and internals (`_parse_plain_header`, `_read_streams_info`, `_read_unpack_info`,
+  `_read_substreams_info`, `_read_files_info`) default to `None` (UNLIMITED).
+  RAR's equivalent internals now require the keyword (#353 F13). A forgotten 7z
+  kwarg silently disables the bound. Follow-up on the 7z parser.
+
 - **#353 F12 — RAR3 per-member compressed comments expand at open, outside the parse-time count bound.**
   Pre-existing; #353 neither causes it nor claims to fix it. RAR 1.5/2.x FILE
   COMMENT subblocks unpack in `rar_reader.py` after parse (`_resolve_rar3_comment`
