@@ -55,7 +55,8 @@ implementing agent on top of that — it reads the PR threads itself (addendum �
 ## Output format
 
 Emit **exactly three sections** in the addendum's **§0** shape — maintainer briefing,
-paste-ready implementor handoff, maintainer decisions — with §0's brevity fence, two-axis
+implementor handoff (written to go on the PR), maintainer decisions — with §0's brevity
+fence, two-axis
 labelling (severity × confidence) and reclassification rules. Read §0 rather than working
 from a summary here; `assets/pr-review-template.md` is the fill-in form.
 
