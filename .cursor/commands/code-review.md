@@ -37,7 +37,8 @@ Combine the priorities above with that skill’s process:
 
 **Split audience:** post the full three-block review on the PR for the implementor. If
 you are also talking to the maintainer, send **decision packets only** (addendum §0
-block 3) unless they ask for the full handoff.
+block 3) unless they ask for the full handoff. Do **not** write a prompt or brief for the
+implementing agent on top of that — it reads the PR threads itself (addendum §0).
 
 ## Scope
 

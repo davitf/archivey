@@ -39,6 +39,9 @@ host-specific findings tool. This holds however the skill is invoked. Posting to
 **§10**. Reviewing an OpenSpec proposal instead of code → **§9** (values-first), same
 three blocks.
 
+**The review is the handoff.** Do not also produce a prompt or brief for whoever fixes the
+PR — they run `address-review-findings` off the PR threads. §0 has the rule.
+
 ## Review process
 
 Archivey PRs are **code first, then context** (addendum §8). That replaces the generic

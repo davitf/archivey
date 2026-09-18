@@ -90,6 +90,15 @@ Posting for a split implementor/maintainer workflow: blocks 1–2 go on the PR; 
 chat with the maintainer, send **block 3 packets only** unless they ask for the full
 handoff.
 
+**The posted review is the whole handoff — do not also write a prompt for the implementing
+agent.** No “paste this into a fresh agent” brief, no prompt file, no second copy of the
+findings in chat or in a scratch document. The implementing agent runs
+[`address-review-findings`](../../address-review-findings/SKILL.md) and reads the PR
+threads itself, so the copy is redundant on the day it is written and wrong a round later,
+when a thread has been replied to and the copy has not. Block 2 is “copy-paste ready” so
+that it survives being pasted **into the PR** — not so the maintainer has something to
+carry to a worker. A fix direction too long for a thread still belongs in the thread.
+
 **A decision the maintainer already settled is no longer a block 3 item.** Move it into
 block 2 where the implementor works, marked as theirs and not yours:
 

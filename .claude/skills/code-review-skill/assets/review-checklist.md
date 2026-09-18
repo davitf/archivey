@@ -36,6 +36,7 @@ which are the ones reviews here actually miss:
 - [ ] Spec ↔ code ↔ docs: match, intentional revision, or pause-and-ask
 - [ ] Concerns that only dissolve after external prose → usually 🟡 doc debt in the code
 - [ ] Write the **§0 three-block report**: briefing → implementor handoff → decisions
+- [ ] Posted it, and wrote **no** separate implementor prompt — the PR is the handoff
 
 ---
 
