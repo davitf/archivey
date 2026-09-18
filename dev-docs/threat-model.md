@@ -24,9 +24,11 @@ when members are registered into a materialized / resolved list (`members()`,
 (`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
 `stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
 hatch) on scan-as-you-go formats. 7z is indexed: the whole header is parsed at
-`open_archive`, so `listing_limits.max_members` is applied there (pack streams,
-folders, unpack streams, `num_files`) and an over-limit archive fails at open —
-`stream_members()` is not an escape hatch for 7z. `None` (`ListingLimits.UNLIMITED`)
+`open_archive`, so `listing_limits.max_members` is applied there (folders,
+unpack streams, `num_files`) and an over-limit archive fails at open —
+`stream_members()` is not an escape hatch for 7z. Pack streams are a
+coder-graph quantity (BCJ2 has four per folder) and keep the header-size
+bound only. `None` (`ListingLimits.UNLIMITED`)
 disables that bound. Format-local parser bounds (e.g. 7z count fields vs header
 size → `CorruptionError`; 7z per-folder coder/in-out counts at `_MAX_NUM_STREAMS`;
 RAR member-count ceiling at parse) stay as defense-in-depth.
@@ -466,12 +468,13 @@ unpack streams then rejected ordinary solid 7z archives over 65,536 files;
 the same cap already rejected non-solid archives on pack-stream and folder
 counts.
 
-*Closed:* member-scaled counts (pack streams, folders, unpack streams and
-their sum, `num_files`) reject against the header buffer size
-(`CorruptionError`) and against `listing_limits.max_members`
-(`ResourceLimitError`; `None` disables). `_MAX_NUM_STREAMS` stays on
-per-folder coder graphs (coders, in/out streams). Found on PR #315 (S2-F1);
-Linear ARC-50.
+*Closed:* member-scaled counts (folders, unpack streams and their sum,
+`num_files`) reject against the header buffer size (`CorruptionError`) and
+against `listing_limits.max_members` (`ResourceLimitError`; `None` disables).
+Pack streams keep the header-size bound only — a BCJ2 folder has four, so
+`max_members` would refuse a legitimate non-solid BCJ2 archive. `_MAX_NUM_STREAMS`
+stays on per-folder coder graphs (coders, in/out streams). Found on PR #315
+(S2-F1); Linear ARC-50.
 
 ### O14. 7z encoded-header decode had no nesting limit — closed
 
@@ -486,8 +489,8 @@ Related cap in the same function: unpack size was capped at
 `_MAX_NEXT_HEADER_SIZE` **per folder**, so two COPY folders at 40 MiB
 concatenated to 80 MiB past the signature next-header cap.
 
-*Closed:* nesting counter, max 1 (7-Zip writes one layer);
-`CorruptionError` on a header that decodes to another `EncodedHeader`. Running
+*Closed:* one encoded layer unrolled (no nesting counter); `CorruptionError`
+if the decoded blob is still `EncodedHeader`. Running
 total of folder unpack sizes is capped at `_MAX_NEXT_HEADER_SIZE` before
 concatenation. Found on PR #315 (S2-F2); Linear ARC-50.
 

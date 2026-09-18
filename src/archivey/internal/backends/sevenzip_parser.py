@@ -60,14 +60,16 @@ _SIGNATURE_HEADER_SIZE = 32
 _MAX_UINT64_ENCODING = 8
 _MAX_UTF16_CHARS = 65536
 # Structural cap for per-folder coder graphs (coders, coder in/out streams).
-# Pack streams, folders, and unpack streams scale with member count: header size
+# Folders, unpack streams, and num_files scale with member count: header size
 # (CorruptionError) plus listing_limits.max_members (ResourceLimitError, None
 # disables). A solid archive puts every file in one folder; a non-solid archive
-# gives each file its own pack stream and folder.
+# gives each file its own folder. Pack streams are a coder-graph quantity
+# (BCJ2 has four per folder) and keep the header-size bound only.
 _MAX_NUM_STREAMS = 65536
 # 7-Zip writes a single encoded-header layer (plain HEADER packed as one folder).
-# A COPY encoded header whose payload is itself loops forever without this cap (O14).
-_MAX_ENCODED_HEADER_NESTING = 1
+# A COPY encoded header whose payload is itself loops forever without rejecting
+# a second EncodedHeader (O14).
+_NESTED_ENCODED_HEADER = "Encoded 7z header decoded to another encoded header"
 # Hostile archives can claim a multi-EiB next-header offset/size. Cap before seek/read so we
 # never OverflowError on C ssize_t conversion or allocate a multi-GiB header buffer. Real 7z
 # headers are kilobytes; tens of MiB is already far past any legitimate archive.
@@ -252,18 +254,6 @@ def _require_member_scaled_count(
             f"Listing limit reached: max_members={max_members} "
             f"(7z header claims {count} {what}s)"
         )
-
-
-def check_encoded_header_nesting(depth: int) -> int:
-    """Increment encoded-header depth; 7-Zip writes one layer (threat-model O14)."""
-    depth += 1
-    if depth > _MAX_ENCODED_HEADER_NESTING:
-        raise CorruptionError(
-            "Encoded 7z header decoded to another encoded header; "
-            f"nesting {depth} exceeds the {_MAX_ENCODED_HEADER_NESTING}-level "
-            "parser limit"
-        )
-    return depth
 
 
 def _load_bytes(
@@ -645,7 +635,6 @@ __all__ = [
     "SevenZipFileRecord",
     "SevenZipFolder",
     "SignatureInfo",
-    "check_encoded_header_nesting",
     "compression_method_for_coder",
     "empty_archive",
     "encoded_folder_slices",
@@ -690,9 +679,8 @@ def _read_streams_info(cur: _Cursor, *, max_members: int | None = None) -> _Stre
     if prop == _Property.PACK_INFO:
         pack_pos = cur.uint64()
         num_streams = cur.uint64()
-        _require_member_scaled_count(
-            num_streams, len(cur.buf), max_members, "pack stream"
-        )
+        # Coder-graph quantity, not a member count (BCJ2 has four per folder).
+        _require_header_count(num_streams, len(cur.buf), "pack stream")
         pack_sizes: list[int] | None = None
         prop = _read_property(cur, "7z PACK_INFO")
         if prop == _Property.SIZE:

@@ -1555,8 +1555,9 @@ def test_member_scaled_counts_respect_max_members() -> None:
         parse_header_block(header, max_members=100)
 
     pack = bytes.fromhex("01040600") + _sevenzip_uint64(200) + (b"\x00" * 200)
-    with pytest.raises(ResourceLimitError, match="max_members"):
-        parse_header_block(pack, max_members=100)
+    # Pack streams are a coder-graph quantity (BCJ2 has four per folder), not a
+    # member count — header-size bound only.
+    parse_header_block(pack, max_members=100)
 
     folders = bytes.fromhex("0104070b") + _sevenzip_uint64(200) + (b"\x00" * 200)
     with pytest.raises(ResourceLimitError, match="max_members"):
@@ -1729,9 +1730,9 @@ def test_encoded_header_self_copy_is_typed_corruption() -> None:
     next_header = bytes.fromhex("17060001091100070b010001000c110000")
     blob = _sevenzip_blob(packed=next_header, next_header=next_header)
     assert len(blob) == 66
-    with pytest.raises(CorruptionError, match="encoded header|nesting|parser limit"):
+    with pytest.raises(CorruptionError, match="decoded to another encoded header"):
         parse_sevenzip_archive(io.BytesIO(blob))
-    with pytest.raises(CorruptionError, match="encoded header|nesting|parser limit"):
+    with pytest.raises(CorruptionError, match="decoded to another encoded header"):
         with open_archive(io.BytesIO(blob)):
             pass
 
@@ -1800,6 +1801,56 @@ def test_archives_above_stream_cap_still_open(tmp_path: Path) -> None:
         unlimited = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
         with open_archive(archive, config=unlimited) as reader:
             assert sum(1 for m in reader.members() if m.is_file) == n
+
+
+@pytest.mark.timeout(30)
+@requires_binary("7z")
+def test_bcj2_nonsolid_pack_streams_are_not_member_scaled(tmp_path: Path) -> None:
+    """Non-solid BCJ2 has four pack streams per folder; max_members must not use that count."""
+    import shutil
+
+    from archivey.config import ListingLimits
+    from archivey.exceptions import ResourceLimitError
+
+    src = tmp_path / "exes"
+    src.mkdir()
+    sevenz = shutil.which("7z")
+    assert sevenz is not None
+    n_files = 5
+    for i in range(n_files):
+        shutil.copy(sevenz, src / f"prog{i}.exe")
+    archive = tmp_path / "bcj2.7z"
+    result = subprocess.run(
+        [
+            "7z",
+            "a",
+            "-t7z",
+            "-ms=off",
+            "-m0=BCJ2",
+            "-m1=LZMA",
+            "-m2=LZMA",
+            "-m3=LZMA",
+            str(archive),
+            ".",
+        ],
+        cwd=src,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 or not archive.is_file():
+        pytest.skip(f"7z cannot build BCJ2 fixture: {result.stderr!r}")
+
+    with open_archive(archive) as reader:
+        n_members = len(reader.members())
+    assert n_members >= n_files
+    # Pack streams ≈ 4 × files. A budget between member count and pack-stream
+    # count must still open (review F6).
+    mid = ArchiveyConfig(listing_limits=ListingLimits(max_members=n_members + 1))
+    with open_archive(archive, config=mid) as reader:
+        assert len(reader.members()) == n_members
+    tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        open_archive(archive, config=tight)
 
 
 # py7zr's empty.7z: signature + start_header with nextHeaderSize == 0.

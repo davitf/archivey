@@ -110,14 +110,17 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `[None] * N` (and `[True] * N` on the CRC all-defined path) from a few header
   bytes. N = 2²⁰ allocated in 0.016 s; N = 2⁴⁰ was an untranslated `MemoryError`.
   Unpack-stream, pack-stream, folder, and file counts now reject against the
-  header buffer size (`CorruptionError`) and against
-  `listing_limits.max_members` (`ResourceLimitError`; `None` /
-  `ListingLimits.UNLIMITED` disables that bound) before that allocation.
+  header buffer size (`CorruptionError`). Folder, unpack-stream, and file
+  counts also reject against `listing_limits.max_members` (`ResourceLimitError`;
+  `None` / `ListingLimits.UNLIMITED` disables that bound) before that
+  allocation. Pack streams keep the header-size bound only — a BCJ2 folder has
+  four, so `max_members` is not applied to that count.
   Per-folder coder counts still reject above `_MAX_NUM_STREAMS` (65536).
   Threat-model O13.
 - **7z encoded-header decode no longer hangs on a self-copy.** A 66-byte COPY
   encoded header whose packed bytes are itself looped until killed (`7z l` reports
-  "Headers Error" in ~0.2 s). Nesting is capped at one layer; folder unpack sizes
+  "Headers Error" in ~0.2 s). One encoded layer is unrolled (a second
+  `EncodedHeader` is `CorruptionError`); folder unpack sizes
   are summed against the 64 MiB next-header cap, not only per folder. Threat-model
   O14.
 - **Encrypted 7z password confirmation no longer materialises the folder.** 7z AES

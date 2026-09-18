@@ -7,7 +7,7 @@ Module split:
 - :mod:`.sevenzip_pipeline` — folder coder plan/execute + encoded-header decode
 - this module — passwords, member list, solid-folder demux, CRC/encryption mapping
 
-Open path: signature → ``parse_header_block`` → (decode ``EncodedHeader`` loop) →
+Open path: signature → ``parse_header_block`` → (one encoded-header layer) →
 ``materialize_archive`` → list members. Member open folds the folder's packed
 slice through :func:`open_folder_pipeline`; solid folders use
 :class:`~archivey.internal.streams.streamtools.solid.SolidBlockReader` so one
@@ -45,12 +45,12 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.sevenzip_methods import is_aes
 from archivey.internal.backends.sevenzip_parser import (
+    _NESTED_ENCODED_HEADER,
     EncodedHeader,
     PlainHeader,
     SevenZipArchive,
     SevenZipFileRecord,
     SevenZipFolder,
-    check_encoded_header_nesting,
     compression_method_for_coder,
     empty_archive,
     find_signature_offset,
@@ -288,17 +288,20 @@ class SevenZipReader(BaseArchiveReader):
         max_members = self._config.listing_limits.max_members
         block = parse_header_block(signature.header_data, max_members=max_members)
         header_encrypted = False
-        nesting = 0
-        while isinstance(block, EncodedHeader):
-            header_encrypted = header_encrypted or encoded_header_needs_password(block)
+        # Exactly one encoded layer: 7-Zip packs the plain HEADER as one folder
+        # and never nests. Decoding in a loop let a COPY header whose packed
+        # bytes are itself run forever (threat-model O14).
+        if isinstance(block, EncodedHeader):
+            header_encrypted = encoded_header_needs_password(block)
             try:
-                # Inside the try so a nesting reject on a second encoded layer
-                # after a wrong-password AES decrypt still becomes
-                # EncryptionError (D8). Unencrypted self-copy re-raises
-                # CorruptionError unchanged because header_encrypted is False.
-                nesting = check_encoded_header_nesting(nesting)
+                # Inside the try so a nested-header reject after a
+                # wrong-password AES decrypt still becomes EncryptionError
+                # (D8). Unencrypted self-copy re-raises CorruptionError
+                # unchanged because header_encrypted is False.
                 decoded = self._decode_encoded_header_block(fp, block)
                 block = parse_header_block(decoded, max_members=max_members)
+                if isinstance(block, EncodedHeader):
+                    raise CorruptionError(_NESTED_ENCODED_HEADER)
             except (UnsupportedFeatureError, CorruptionError) as exc:
                 # AES header decrypt has no MAC: a wrong password yields garbage that
                 # fails property parsing rather than raising EncryptionError in decrypt.

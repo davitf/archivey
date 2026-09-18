@@ -98,9 +98,11 @@ the header SHALL raise `CorruptionError` at parse, never read past the buffer or
 return a short value.
 
 Spine `ListingLimits` (`archive-reading`) still apply. For 7z they are
-enforced at header parse — pack streams, folders, unpack streams, and
-`num_files` — because the whole index is resident at `open_archive`. A count
-over `listing_limits.max_members` (when not `None`) SHALL raise
+enforced at header parse — folders, unpack streams, and `num_files` —
+because the whole index is resident at `open_archive`. Pack streams are a
+coder-graph quantity (a BCJ2 folder has four) and keep the header-size
+bound only. A folder, unpack-stream, or file count over
+`listing_limits.max_members` (when not `None`) SHALL raise
 `ResourceLimitError` at parse, before per-entry allocation. `None`
 (`ListingLimits.UNLIMITED`) disables that bound; header-size
 `CorruptionError` remains. Parser bounds MUST NOT be implemented by reusing
@@ -112,9 +114,9 @@ over `listing_limits.max_members` (when not `None`) SHALL raise
 | --- | --- |
 | `num_files` greater than header buffer size | `CorruptionError` at parse; no giant pre-allocation |
 | `NumUnpackStreams` (or the sum across folders) greater than the header buffer size | `CorruptionError` at parse; no giant `* count` allocation |
-| Pack-stream or folder count greater than the header buffer size | `CorruptionError` at parse |
+| Pack-stream, folder, unpack-stream, or file count greater than the header buffer size | `CorruptionError` at parse |
 | Legitimate archive whose header is large enough for its file count | Parse succeeds; listing still subject to `ListingLimits` |
-| Pack-stream, folder, unpack-stream, or file count over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` |
+| Folder, unpack-stream, or file count over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` |
 | `listing_limits.max_members is None` (`UNLIMITED`) | Header-size bound only; a large honest archive opens |
 
 #### Scenario: in-header read stays within the buffer
