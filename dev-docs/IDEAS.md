@@ -222,10 +222,13 @@
   2026-09-16): yes, follow-up PR; written up 2026-09-17, not yet scheduled.
 
 - **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** —
-  **promoted** to `openspec/changes/fold-rar-header-decrypt-stream/`, which carries the
-  two blockers (the overloaded `tell()` on `header_fd`'s two arms, and the unbounded
-  mid-file wrapper) and an explicit bar for abandoning the fold. Written up 2026-09-17,
-  not yet scheduled.
+  **promoted**, and split in two after review of
+  [#347](https://github.com/davitf/archivey/pull/347).
+  `openspec/changes/rar-archive-offset-and-aes-cursor/` carries the two halves that are
+  correct on their own terms (an explicit `_archive_offset` accessor, so `header_fd`'s two
+  arms stop overloading `tell()`; gathered source reads and a `cipher_tell()` on
+  `AesDecryptStream`). `openspec/changes/fold-rar-header-decrypt-stream/` is then only the
+  fold and its gate. Neither is scheduled.
 
 - **`stream_members()` seekability leak** — the intended rule is that a sequential pass
   is never seekable (`seekable_members=True` only changes random `open()`). Enforced

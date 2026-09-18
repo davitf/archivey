@@ -1,112 +1,109 @@
-# Design — one AES-CBC pull stream
+# Design — one AES-CBC pull stream, or a recorded reason there are two
 
-Line references are against the tree at the time of writing (post-#342/#343).
+Line references are against the tree at the time of writing (post-#342/#343/#344/#347).
+This change assumes `rar-archive-offset-and-aes-cursor` has landed; without it, two of the
+five divergences below are still open and the gate cannot be measured.
 
 ## What the header walk actually asks for
 
-`_HeaderDecryptStream` (`rar_parser.py:697`) is not a stripped-down
-`AesDecryptStream`. It is a stream with four deliberately different answers, each
-recorded in its docstring with the measurement or incident behind it:
+`_HeaderDecryptStream` (`rar_parser.py:697-775`) is not a stripped-down
+`AesDecryptStream`. It is a stream with five deliberately different answers, each recorded
+in its docstring with the measurement or incident behind it. **The prerequisite change
+removes the first two**, which is the only reason a gate is worth measuring at all:
 
-1. **`tell()` is the ciphertext cursor.** After a full header read, `data_offset` must be
-   where the *next* salt/IV or packed data starts — a 16-byte boundary. Subtracting the
-   unread tail (`len(_buf)`) reports the plaintext offset and lands inside the AES
-   padding, and the next header decrypts as garbage. Measured: every FILE header on
-   `encrypted_header__.rar` and `encrypted_header__rar4.rar` has
-   `header_size % 16 != 0`, so this is not a corner case — it is every header.
-2. **Source reads are `read_exact`, not `read`.** A short non-empty source read would
-   leave a partial block in the stage; the remaining ciphertext then decrypts against the
-   wrong IV and every later header looks corrupt. `AesDecryptStream.read` calls
-   `self._source.read(ask)` and its own docstring notes that the ciphertext-cursor
-   identity does not hold if that comes back short.
-3. **`read(-1)` is `CorruptionError`.** The wrapper sits mid-file on the shared archive
-   handle with no length bound, so "read to EOF" means "decrypt the rest of the archive".
-   `AesDecryptStream` treats `n < 0` as read-to-EOF, which is right for a bounded 7z pack
-   view and wrong here.
-4. **`finalize()` is never called.** The header message ends when the walk has taken
-   `header_size` bytes, not at source EOF. `AesDecryptStream` finalizes on a source that
-   returns empty and raises `_AesCbcTruncatedError` for a short last block.
-
-Plus a structural one: **`header_fd: _Readable = source`** (`rar_parser.py:1102`, `:1802`)
-is either the raw archive handle or the decrypt stream, and `.tell()` means *archive
-offset* on both arms (`:1125`, `:1152`, `:1996`, `:2027`). A second method on
-`AesDecryptStream` does not fix that by itself — the raw handle is the other arm and does
-not have it.
-
-## Decisions
-
-### Resolve the union before touching the crypto class
-
-The overloaded `tell()` is the blocker that has to go first, and it is worth doing whether
-or not the fold follows. Introduce a module-level accessor in `rar_parser.py`:
-
-```python
-def _archive_offset(fd: _Readable) -> int: ...
-```
-
-returning `fd.tell()` for the raw handle and the ciphertext cursor for a decrypt stream,
-and use it at all four sites. `_Readable` then documents *archive offset*, not "a
-ciphertext `tell`", and the two arms stop pretending to be the same protocol. Do this as
-its own commit: it is reviewable on its own, and if the fold is abandoned the codebase is
-still better for it.
-
-### What `AesDecryptStream` would have to grow
-
-| Need | Shape | Cost |
+| # | Divergence | After the prerequisite |
 | --- | --- | --- |
-| Ciphertext cursor | `cipher_tell()`; the identity `_cipher_start + _pos + len(_buf)` is already documented in `read` | small, and arguably clarifies the existing docstring |
-| Full-count source reads | `read_exact(self._source, ask)` instead of `self._source.read(ask)` | small; strictly more correct for the 7z caller too |
-| Refuse `seek` on a mid-file unbounded stream | a constructor flag, or a bounded source | **this is the one to watch** |
-| Refuse `read(-1)` | a constructor flag | ditto |
-| Do not `finalize` at source EOF | a constructor flag, or never reach EOF | ditto |
+| 1 | `tell()` is the ciphertext cursor, not the plaintext offset | **closed** — `_archive_offset` on the walk, `cipher_tell()` on the stream |
+| 2 | source reads are `read_exact`, not `read` | **closed** — `AesDecryptStream.read` gathers |
+| 3 | `read(-1)` raises `CorruptionError` | open |
+| 4 | `finalize()` is never called | open |
+| 5 | no `seek`; the wrapper sits mid-file, unbounded, on the shared archive handle | open |
 
-The first two are improvements to `AesDecryptStream` on their own terms. The last three
-are *the header caller's policy*, and a flag per policy is how a shared class turns into a
-union of two classes with a discriminator.
+Divergence 1 is not a corner case: every FILE header on `encrypted_header__.rar` and
+`encrypted_header__rar4.rar` has `header_size % 16 != 0`, so subtracting the unread tail
+would land `data_offset` inside AES padding on every header, and the next one would decrypt
+as garbage (#315 threads 1–2).
 
-### The bar
+Divergences 3, 4 and 5 are all the *header caller's policy*: the wrapper has no length
+bound, so "read to EOF" means "decrypt the rest of the archive", source EOF is the end of
+the archive rather than the end of the message, and `seekable()` would advertise the rest
+of the file and let a seek reposition the shared handle.
 
-Land the fold only if the last three rows collapse to **at most one** constructor
-argument. The plausible way there is to bound the source instead of flagging the stream: a
-`SlicingStream` / `SharedView` over `[data_start, data_start + header_size)` makes the
-message finite, at which point read-to-EOF, `finalize` and `seek` are all *correct*
-rather than forbidden. The obstacle is that `header_size` is not known until part of the
-header has been decrypted — which is exactly why `_read_rar5_block` reads the size vint
-byte-at-a-time. A two-phase bound (decrypt the fixed prefix, then re-bound) would need the
-stage to survive re-bounding, so measure it before committing to it.
+## The bar
 
-If the answer is three flags, **stop and record it.** Replace the two docstring sections
-(`crypto.py` §"Folding `_HeaderDecryptStream` in is blocked by…" and
-`_HeaderDecryptStream` §"Not `AesDecryptStream`") with one ADR or one
-`dev-docs/discussions/` note the next reader can find, and keep the `_archive_offset`
-cleanup. The question has now been asked twice; the point of the change is that it should
-not be asked a third time from scratch.
+Land the fold only if divergences 3–5 collapse to **at most one** constructor argument. A
+flag per policy is how a shared class becomes two classes with a discriminator, which is
+worse than the duplication it removes.
 
-### Error types must not move
+The plausible route is to bound the source rather than flag the stream: a `SlicingStream`
+over `[data_start, data_start + header_size)` makes the message finite, at which point
+read-to-EOF, `finalize` and `seek` are all *correct* rather than forbidden. The obstacle is
+that `header_size` is not known until part of the header has been decrypted — which is
+exactly why `_read_rar5_block` reads the size vint byte-at-a-time. A two-phase bound
+(decrypt the fixed prefix, then re-bound) would need the `DecryptStage` to survive
+re-bounding. Measure that before committing to it.
 
-The RAR3 walk catches `(CorruptionError, TruncatedError)` and re-raises as
-`EncryptionError` when the block is encrypted — that is how wrong-password candidates keep
-iterating. A fold that lets `_AesCbcTruncatedError` escape from a path that raises
-`CorruptionError` today, or that changes *which* of the two a truncated archive produces,
-changes observable behaviour even though no requirement mentions the class. The RAR5 side
-has the same shape around `_check_rar5_password`. Every error-type assertion in the RAR
-parser tests is load-bearing here.
+## The denominator
 
-### One stale claim to fix either way
+The "~86 lines deleted" figure an earlier draft used was wrong twice over: wrong as a
+count, and wrong as a budget, because it is the numerator only.
 
-`_Readable`'s docstring says streamtools bases "either close the inner stream or have no
-ciphertext `tell`". Since #340 that is half wrong: `AesDecryptStream` takes
-`owns_inner=False` and borrows. The surviving half is the ciphertext `tell`. Correct the
-sentence in whichever direction this change ends up going.
+- **Numerator:** 79 lines (`rar_parser.py:697-775`), of which roughly 40 are the docstring
+  recording the five answers above — a docstring that does not disappear, it moves.
+- **Denominator:** roughly 60 lines of test rework (below), plus nine `src/` sites, four of
+  them docstrings, plus six doc sites across two handbook pages and `review/backlog.md`.
 
-### Rejected: share only the `DecryptStage`
+**`tests/test_rar_parser.py` binds the class by name six times, in three tests:**
 
-That is the status quo — both classes already call `open_aes_decrypt_stage`. The
-duplication being paid for is the *gather loop and its edge cases*, not the cipher
-construction, so this is not a resolution.
+1. `:47` — `test_header_decrypt_tell_is_ciphertext_cursor_not_plaintext`, constructs the
+   class directly and asserts `tell() == 16` with nine bytes left in `_buf`. Rewrites
+   against the surviving class.
+2. `:73` — `test_header_decrypt_read_is_bounded_by_caller_not_8kib`, which pins
+   `pytest.raises(CorruptionError, match="Unbounded read")`. This is the one that turns
+   divergence 3 from an open question into **contract**: the error *type* and the *match
+   string* are both already pinned, from #332 CR1/CR-P1.
+3. `:138-143` — `test_encrypted_header_plaintext_tell_breaks_the_walk`, which works by
+   `monkeypatch.setattr(rar_parser._HeaderDecryptStream, "tell", plaintext_tell)` on both
+   fixtures. Deleting the class removes the thing it monkeypatches. It must be re-anchored
+   on the new ciphertext accessor, not deleted — it is the red-green for divergence 1.
 
-### Rejected: fold `WinZipAesDecryptStream` in as well
+**One test that does *not* need touching**, and that an earlier draft of this change
+proposed to write from scratch: `test_encrypted_header_data_offset_skips_aes_block_padding`
+(`:99`), parametrized over the same two fixtures, asserts `data_offset - header_offset` is
+AES-aligned and strictly greater than `header_size` for at least one header. It never names
+the class, so it survives a fold untouched — and it is exactly the "regression test for
+divergence 1" that draft claimed was missing.
 
-It is CTR, not CBC: it builds its own cipher and shares only the availability check. It
-has no block-restart or IV-chaining semantics to unify, so including it would widen the
-change with no shared logic to gain.
+## The decision is already written down — three times
+
+`grep -rn "_HeaderDecryptStream"`, excluding this change's directory:
+
+| Where | Count |
+| --- | --- |
+| `src/archivey/internal/backends/rar_parser.py` | 7 (`:67`, `:697`, `:1285`, `:1298`, `:1992`, `:2055`, `:2061`) |
+| `src/archivey/internal/streams/crypto.py` | 2 (`:200`, `:226`) |
+| `tests/test_rar_parser.py` | 6 |
+| `dev-docs/formats/rar.md` | 4 (`:286`, `:308`, `:709`, `:710`) |
+| `dev-docs/topics/stream-ownership.md` | 2 (`:19`, `:35`) |
+| `review/backlog.md` | 1 (`:65`) |
+
+Nine in `src/`, four of them docstrings — `rar_parser.py:67` (`_Readable`'s) and `:1992`
+(`_read_rar5_block`'s), plus both in `crypto.py`. `rar_parser.py:67` is the one the
+prerequisite change already edits, so the two edits must not collide.
+
+**`dev-docs/formats/rar.md:710` is a decisions-table row** titled "Keep
+`_HeaderDecryptStream`; share only the AES *stage* with `crypto.py`", carrying the same
+blockers in the same words as the two docstrings. So the "stop and record it" arm must
+update *that* row — opening an ADR or a `dev-docs/discussions/` note would make a fourth
+record of one decision, which is the failure this change exists to end, not repeat.
+
+## Rejected: share only the `DecryptStage`
+
+That is the status quo — both classes already call `open_aes_decrypt_stage`, and
+`rar.md:710` is the row that says so. The duplication being paid for is the gather loop and
+its edge cases, not the cipher construction.
+
+## Rejected: fold `WinZipAesDecryptStream` in as well
+
+It is CTR, not CBC: it builds its own cipher and shares only the availability check. No
+block-restart or IV-chaining semantics to unify.
