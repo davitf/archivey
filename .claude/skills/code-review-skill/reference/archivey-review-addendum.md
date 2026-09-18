@@ -61,12 +61,18 @@ For the maintainer skimming without the code open. Half a screen unless the chan
 
 Zero findings worth action? Say so here and keep blocks 2–3 minimal (`None.`).
 
-#### 2. Implementor handoff (copy-paste ready)
+#### 2. Implementor handoff (goes on the PR)
 
-For whoever fixes or replies. Must be safe to paste into a PR comment, chat, or issue with
-little or no editing: a one-line context header (PR / branch / scope), the full findings,
-then the Verdict line again so the paste doesn't depend on block 1. No "as above" / "see
-briefing" — those break when pasted alone.
+For whoever fixes or replies, **on the PR** — §10 splits it there: located findings become
+inline threads, the rest goes in the body. Write it to survive that split and to be read
+months later by someone who has only the thread in front of them: a one-line context header
+(PR / branch / scope), the full findings, then the Verdict line again so block 2 does not
+depend on block 1. No "as above" / "see briefing" — those break the moment the blocks are
+separated.
+
+Standing alone is about surviving §10, not about being carried elsewhere: the PR is the
+only destination, and nothing here is written for anyone to take away (the rule is under
+block 3 below).
 
 **Evidence, not prose.** Each finding carries severity, confidence, location (`file:line`),
 what's wrong, why it matters, fix direction, and a trigger / repro note where possible
@@ -95,9 +101,9 @@ agent.** No “paste this into a fresh agent” brief, no prompt file, no second
 findings in chat or in a scratch document. The implementing agent runs
 [`address-review-findings`](../../address-review-findings/SKILL.md) and reads the PR
 threads itself, so the copy is redundant on the day it is written and wrong a round later,
-when a thread has been replied to and the copy has not. Block 2 is “copy-paste ready” so
-that it survives being pasted **into the PR** — not so the maintainer has something to
-carry to a worker. A fix direction too long for a thread still belongs in the thread.
+when a thread has been replied to and the copy has not. Block 2 stands alone so that it
+survives being **split across PR threads** — not so the maintainer has something to carry
+to a worker. A fix direction too long for a thread still belongs in the thread.
 
 **A decision the maintainer already settled is no longer a block 3 item.** Move it into
 block 2 where the implementor works, marked as theirs and not yours:

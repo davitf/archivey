@@ -43,7 +43,7 @@ which are the ones reviews here actually miss:
 ## Output shape (addendum §0 — rules and brevity fence live there)
 
 1. **Maintainer briefing** — what the change is, snapshot + verdict, main 🔴/🟡 points
-2. **Implementor handoff** — paste-ready full findings (severity × confidence, `file:line`)
+2. **Implementor handoff** — full findings for the PR (severity × confidence, `file:line`)
 3. **Maintainer decisions** — only human calls; each decidable without the diff; or `None.`
 
 ---

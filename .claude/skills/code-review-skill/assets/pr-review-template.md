@@ -35,9 +35,9 @@ block 2. Do not drop real pause-and-ask items to leave section 3 empty.
 
 ---
 
-## 2. Implementor handoff (copy-paste ready)
+## 2. Implementor handoff (goes on the PR)
 
-**Context:** [PR # / branch / scope — so this paste stands alone]
+**Context:** [PR # / branch / scope — so this block stands alone once §10 splits it]
 
 ### Required changes
 
