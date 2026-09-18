@@ -37,6 +37,15 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#353 F12 — RAR3 per-member compressed comments expand at open, outside the parse-time count bound.**
+  Pre-existing; #353 neither causes it nor claims to fix it. RAR 1.5/2.x FILE
+  COMMENT subblocks unpack in `rar_reader.py` after parse (`_resolve_rar3_comment`
+  per member), via `unrar` for the compressed form. Per comment is uint16-bounded
+  (64 KiB); across members that is `max_members` × 64 KiB. Fork cost dominates;
+  without `unrar` comments are dropped. If this is bounded, the budget belongs in
+  that reader loop — not `rar_parser` (maintainer, #353 F6: no parse-time byte
+  budget). Handbook: [`formats/rar.md`](../dev-docs/formats/rar.md) §6.
+
 - **#344 D4 — AES+PPMd wrong-key `MemoryError` aborts password iteration.**
   Pre-existing on `main`. A wrong AES key into a complete PPMd pack can
   `MemoryError` inside `pyppmd.Ppmd7Decoder.decode` during confirm's empty

@@ -88,10 +88,11 @@ parser-constant ceiling. `stream_members()` / `streaming=True` are not an
 escape hatch.
 
 RAR has no header-size analogue for member count (the walk is sequential), so
-`UNLIMITED` can walk until memory is exhausted. The parse bound is a count,
-not a byte budget: names and comments are already retained by then. Spine
-`ListingLimits.max_metadata_bytes` (`archive-reading`) still apply when members
-are registered into a materialized list (`members()`), not at `open_archive`.
+`UNLIMITED` can walk until memory is exhausted. The parse bound is a member
+count, not a byte budget. Spine `ListingLimits.max_metadata_bytes`
+(`archive-reading`) still apply when members are registered into a
+materialized list (`members()`), the same as every other format — not at
+`open_archive`.
 
 #### Scenario: RAR parser bound matrix
 
