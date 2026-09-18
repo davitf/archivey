@@ -72,7 +72,7 @@ heuristic in the first census pass and are included here.
 | A2 | `iso_reader.py:422` | `record` | unused-as-typed; `rr` on the same line is A-iso |
 | A3 | `iso_reader.py:158` | `**kwargs` | signature should match `deque` instead (see A-iso-init) |
 | A4 | `iso_reader.py:169` | `dir_record` | runtime `isinstance` to `DirectoryRecord` |
-| A5 | `listing_limits.py:24` | `extra: dict[str, Any]` | internal; `dict[str, object]` |
+| A5 | `listing_limits.py:24` | `extra: dict[str, Any]` | **done** — `dict[str, object]` (companion of A26; `dict` is invariant) |
 | A6 | `streamtools/base.py:76` | `write(b)` | typeshed `IO.write` takes `Any`; `object` works |
 | A7 | `binaryio.py:53` | `try_readinto(stream)` | getattr-only |
 | A8 | `binaryio.py:180` | `_is_fifo_or_chardev(stream)` | getattr-only |
@@ -94,16 +94,15 @@ heuristic in the first census pass and are included here.
 | A24 | `verify.py:126` | `_make_hasher(algorithm)` | same |
 | A25 | `types.py:457` | `ArchiveMember._raw` | **private**. `object` is honest. Do this *after* or *with* the asserts; not with C8 DELETE |
 
-### Public `Any` — Q1, do not touch until decided
+### Public `Any` — Q1 **DECIDED A** (tightened in this PR)
 
 | ID | Site | Where | Notes |
 |---|---|---|---|
-| A26 | `types.py:451` | `ArchiveMember.extra: dict[str, Any]` | public dataclass field |
-| A27 | `types.py:570` | `ArchiveInfo.extra: dict[str, Any]` | public |
-| A28 | `types.py:536` | `ArchiveMember.replace(**kwargs: Any)` | public |
+| A26 | `types.py:451` | `ArchiveMember.extra` | **done** — `dict[str, object]` |
+| A27 | `types.py:570` | `ArchiveInfo.extra` | **done** — `dict[str, object]` |
+| A28 | `types.py:536` | `ArchiveMember.replace(**kwargs)` | **done** — `**kwargs: object` |
 
-`object` substitution was both-clean. That does not make it free: callers who
-read `extra["k"]` as `Any` would start seeing `object`.
+Per-format TypedDict aliases are a later option; not the field type. See [`QUESTIONS.md`](QUESTIONS.md).
 
 ### FIX-IN-CODE (both-error with `object`) — staged PR 5
 

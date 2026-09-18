@@ -1,41 +1,42 @@
 # Questions for the maintainer
 
-One public-signature call. Everything else has a recommended disposition in
-[`inventory.md`](inventory.md) and can move in the staged PRs without a
-decision.
+## Q1 — Tighten public `Any` on `ArchiveMember` / `ArchiveInfo` before 0.2.0? ✅ **DECIDED: A**
 
----
+**Maintainer (2026-09-18):** tighten to `object`. Callers should be explicit about
+the type they expect. TypedDict is a later option, not this change.
 
-## Q1 — Tighten public `Any` on `ArchiveMember` / `ArchiveInfo` before 0.2.0?
+Landed as `dict[str, object]` on `ArchiveMember.extra` / `ArchiveInfo.extra` and
+`**kwargs: object` on `replace`. `listing_limits._extra_bytes` followed because
+`dict` is invariant. Private `_raw: Any` is unchanged.
 
-**Question.** `ArchiveMember.extra`, `ArchiveInfo.extra` (`dict[str, Any]`) and
-`ArchiveMember.replace(**kwargs: Any)` are public. Substituting `object` is
-clean on both checkers. Do we tighten those annotations now, or leave them
-until after the freeze?
+### TypedDict later?
 
-**Why it matters.** The brief's reason this review exists *now* is freeze
-proximity: a public signature tightened after `0.2.0` is a compatibility event
-for callers' type checkers. Runtime is unchanged either way. Callers who read
-`member.extra["k"]` and treat the value as `Any` (then call a method on it)
-would start seeing `object` and have to cast themselves.
+Yes, but not one closed TypedDict on `ArchiveMember.extra`.
 
-**Options.**
+The bag is already a documented open map of *optional, per-format* keys. Writers
+today:
 
-- **A — Tighten now** to `dict[str, object]` and `**kwargs: object`. The
-  inventory's A26–A28. Lands in staged PR 6, still before freeze if we want it
-  in `0.2.0`.
-- **B — Leave `Any`.** Record as KEEP-WITH-REASON: format-specific bags are
-  intentionally untyped, and `object` is no more useful to a caller who has to
-  know the key. Revisit post-`0.2.0`.
+| Bag | Keys | Value types |
+|---|---|---|
+| `ArchiveMember.extra` | `is_junction`; `rar.{created_is_ctime,extract_version,file_version,tweaked_crc32,tweaked_blake2sp}`; `zip.{compress_type,aes_vendor_version,aes_strength,aes_actual_method}`; `tar.{type,pax_headers,devmajor,devminor}`; `gzip.original_filename` | `bool`, `int`, `bytes`, `str`, `dict` |
+| `ArchiveInfo.extra` | `iso.namespace`; `{zip,rar,7z}.volume_count` | `str`, `int` |
 
-**Evidence.** Probe at `94468bd0`: `Any` → `object` on all three sites,
-`pyrefly` 0 / `ty` 0. Fields are documented as format-specific extra bags
-(`types.py:451`, `:570`, `:536`). `_raw` is explicitly *not* public and is not
-part of this question (TIGHTEN to `object` on the private field is PR 2/5).
+A single `total=False` TypedDict that lists every key would make
+`member.extra["rar.extract_version"]` type-check on a ZIP member. That is the
+opposite of catching bugs. Per-format TypedDicts (`RarMemberExtra`, …) are the
+shape that would help, used as `cast(RarMemberExtra, member.extra)` after the
+caller has checked the format — helpers, not the field type on the uniform
+`ArchiveMember`.
 
-**Recommendation.** **B.** `dict[str, object]` does not tell a caller what
-`extra["iso.namespace"]` is, so it is a checker-purity win with a real
-annotation delta for users who already special-case those keys. The freeze
-argument cuts the other way only if we had a precise type to offer. We do not.
+Two further constraints:
 
-**Default if you ignore this.** B — public `Any` stays; staged PRs skip A26–A28.
+- The bag is **open**. `codecs.py` writes `gzip.original_filename` onto an
+  already-constructed member; new keys show up with format work. Closed
+  TypedDict rejects unknown keys. PEP 728 `extra_items` (keep known keys
+  precise, allow the rest as `object`) needs Python 3.13+; the library floor is
+  3.11.
+- Two fields, two key sets. Do not merge member extras and `ArchiveInfo.extra`.
+
+Until then, `dict[str, object]` plus the `EXTRA_*` constants (and string keys
+in the format handbooks) is the contract. A later change can add per-format
+TypedDict aliases next to those constants without moving the field off `object`.

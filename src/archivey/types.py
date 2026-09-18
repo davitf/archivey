@@ -448,8 +448,13 @@ class ArchiveMember:
     """
 
     # compare=False: format-specific bags must not affect logical identity.
-    extra: dict[str, Any] = field(default_factory=dict, compare=False)
-    """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality."""
+    extra: dict[str, object] = field(default_factory=dict, compare=False)
+    """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality.
+
+    Values are ``object``: a caller that uses a key must narrow it. Known keys are
+    the ``EXTRA_*`` constants on this module plus the namespaced ``format.key``
+    strings backends write (see each format handbook).
+    """
 
     # Private internal fields (not part of the public contract)
     _member_id: int | None = field(default=None, repr=False, compare=False)
@@ -533,7 +538,7 @@ class ArchiveMember:
             self.extra.get(EXTRA_IS_JUNCTION)
         )
 
-    def replace(self, **kwargs: Any) -> "ArchiveMember":
+    def replace(self, **kwargs: object) -> "ArchiveMember":
         """Return a copy with the given fields changed; never mutates self."""
         return replace(self, **kwargs)
 
@@ -567,7 +572,8 @@ class ArchiveInfo:
     cost: "CostReceipt"
     """Listing/access cost receipt for the archive (see the ``access-mode-and-cost`` capability)."""
 
-    extra: dict[str, Any] = field(default_factory=dict, compare=False)
+    extra: dict[str, object] = field(default_factory=dict, compare=False)
     """Format-specific archive-level metadata, keyed by namespaced strings (mirrors
     ``ArchiveMember.extra``). For example the ISO backend records the auto-selected
-    namespace as ``extra["iso.namespace"]``. Excluded from ``__eq__``."""
+    namespace as ``extra["iso.namespace"]``. Excluded from ``__eq__``. Values are
+    ``object``; a caller that uses a key must narrow it."""

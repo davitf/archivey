@@ -1,8 +1,8 @@
 # Typing escape hatches — SUMMARY
 
 Brief: [`brief.md`](brief.md). Linear [ARC-20](https://linear.app/archivey/issue/ARC-20).
-Measured at `main` @ `94468bd0` (2026-09-17). Inventory only — no hatch was
-removed in this change. Theme files: [`inventory.md`](inventory.md),
+Measured at `main` @ `94468bd0` (2026-09-17). Inventory plus Q1 (public
+`extra: dict[str, object]`). Theme files: [`inventory.md`](inventory.md),
 [`typeguards.md`](typeguards.md), [`binaryio-and-typeshed.md`](binaryio-and-typeshed.md),
 [`QUESTIONS.md`](QUESTIONS.md).
 
@@ -69,7 +69,7 @@ Tree restored after each probe.
 | **A-object** | 🟢 | ~25 `Any` sites accept `object` on both checkers | TIGHTEN | staged PR 2 |
 | **A-iso** | 🟢 | pycdlib dir-record / date bags | Protocol or `TYPE_CHECKING` stubs | staged PR 5 |
 | **A-codec** | 🟢 | `_decomp: Any` on four optional codec wrappers | small Protocol per codec | staged PR 5 |
-| **Q1** | 🟡 | public `ArchiveMember.extra` / `ArchiveInfo.extra` / `replace(**kwargs)` are `Any` | pause — public annotation | [`QUESTIONS.md`](QUESTIONS.md) |
+| **Q1** | 🟡 | public `ArchiveMember.extra` / `ArchiveInfo.extra` / `replace(**kwargs)` are `Any` | **DECIDED A** — `dict[str, object]` | **done** |
 
 No 🔴. Nothing here undercuts a VISION safety/cost claim. The #324 failure
 mode is the ranking reason this review exists; G2 is the leftover of that, not
@@ -77,22 +77,22 @@ a new one.
 
 ## Staged fix PRs
 
-Smallest and most mechanical first, as the brief asked. Each PR is one
-category; none of these land here.
+Smallest and most mechanical first, as the brief asked. Each remaining PR is
+one category.
 
 1. **DELETE the five dead casts** — `progress.py:112`, `tar_reader.py:470`,
    `tar_reader.py:772`, `selection.py:19`, `full_count.py:168`. Annotation-only;
    `./scripts/test.sh` is enough.
 2. **TIGHTEN internal `Any` → `object`** where both checkers stayed clean
-   (`binaryio.py` helpers, `listing_limits`, `verify` algorithm params,
-   `ReadOnlyIOStream.write`, ISO getattr/kwargs). Do **not** include the public
-   `types.py` fields (Q1).
+   (`binaryio.py` helpers, `verify` algorithm params, `ReadOnlyIOStream.write`,
+   ISO getattr/kwargs). `listing_limits` already moved with Q1.
 3. **`@overload` on `_track_source_seeks`** — drops four Path/BinaryIO casts in
    `tar_reader` / `zip_reader`.
 4. **TypeGuard predicates** — G2 and G3. Runtime-visible; needs tests.
 5. **Remaining `Any`** — ISO pycdlib Protocol, codec `_decomp` Protocols,
    `ZipFile._lock` as `ContextManager`, `verify.py` `Mapping[HashAlgorithm \| str, …]`.
-6. **Public `Any` on `types.py`** — only after Q1.
+6. ~~**Public `Any` on `types.py`**~~ **done (Q1 A).** Per-format TypedDict
+   aliases stay a later option, not the field type.
 7. **KEEP comments** on surviving typeshed `BinaryIO` casts, and name
    `FullCountStream` next to `PeekableStream` in the `ReadOnlyIOStream.name`
    docstring.
@@ -146,4 +146,4 @@ category; none of these land here.
 | `CONTRIBUTING.md` describes forms that are actually specific | **yes** | |
 | "12 warnings not shown" answered | **yes** | |
 | `SUMMARY.md` records what is fine | **yes** | |
-| Staged fix PRs | listed | 1–7 above |
+| Staged fix PRs | 6 done (Q1) | 1–5, 7 |
