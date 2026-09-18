@@ -1811,6 +1811,7 @@ def test_bcj2_nonsolid_pack_streams_are_not_member_scaled(tmp_path: Path) -> Non
 
     from archivey.config import ListingLimits
     from archivey.exceptions import ResourceLimitError
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     src = tmp_path / "exes"
     src.mkdir()
@@ -1840,9 +1841,13 @@ def test_bcj2_nonsolid_pack_streams_are_not_member_scaled(tmp_path: Path) -> Non
     if result.returncode != 0 or not archive.is_file():
         pytest.skip(f"7z cannot build BCJ2 fixture: {result.stderr!r}")
 
+    with open(archive, "rb") as fh:
+        parsed = parse_sevenzip_archive(fh)
     with open_archive(archive) as reader:
         n_members = len(reader.members())
     assert n_members >= n_files
+    if len(parsed.pack_sizes) <= n_members + 1:
+        pytest.skip("7z did not produce a multi-stream BCJ2 folder")
     # Pack streams ≈ 4 × files. A budget between member count and pack-stream
     # count must still open (review F6).
     mid = ArchiveyConfig(listing_limits=ListingLimits(max_members=n_members + 1))

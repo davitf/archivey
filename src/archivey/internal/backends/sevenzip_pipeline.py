@@ -50,13 +50,17 @@ from archivey.internal.backends.sevenzip_methods import (
 from archivey.internal.backends.sevenzip_parser import (
     _MAX_NEXT_HEADER_SIZE,
     EncodedHeader,
+    HeaderBlock,
     PlainHeader,
     SevenZipArchive,
     SevenZipCoder,
     SevenZipFolder,
+    empty_archive,
     encoded_folder_slices,
     folder_is_encrypted,
+    materialize_archive,
     parse_header_block,
+    read_signature_and_next_header,
 )
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -519,7 +523,7 @@ def encoded_header_needs_password(encoded: EncodedHeader) -> bool:
 
 
 def unwrap_encoded_header(
-    block: EncodedHeader | PlainHeader,
+    block: HeaderBlock,
     decode: Callable[[EncodedHeader], bytes],
     *,
     max_members: int | None = None,
@@ -555,12 +559,6 @@ def parse_sevenzip_archive(
     password-candidate prompting instead of a single ``password``.
     ``max_members`` is omitted by fuzz helpers (header-size still bounds bombs).
     """
-    from archivey.internal.backends.sevenzip_parser import (
-        empty_archive,
-        materialize_archive,
-        read_signature_and_next_header,
-    )
-
     cache = key_cache if key_cache is not None else SevenZipKeyCache()
     signature = read_signature_and_next_header(fp)
     if not signature.header_data:

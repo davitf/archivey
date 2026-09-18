@@ -286,9 +286,12 @@ class SevenZipReader(BaseArchiveReader):
 
         max_members = self._config.listing_limits.max_members
         block = parse_header_block(signature.header_data, max_members=max_members)
-        header_encrypted = isinstance(block, EncodedHeader) and (
-            encoded_header_needs_password(block)
-        )
+        # Computed before the try: on the exception path the tuple assignment
+        # below never runs, and the handler needs this to translate a wrong
+        # password (D8).
+        header_encrypted = isinstance(
+            block, EncodedHeader
+        ) and encoded_header_needs_password(block)
         try:
             # Nested-header reject after a wrong-password AES decrypt still
             # becomes EncryptionError (D8). Unencrypted self-copy re-raises
