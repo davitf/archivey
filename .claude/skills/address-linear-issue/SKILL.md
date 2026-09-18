@@ -19,8 +19,8 @@ The review **must** be a second opinion: a *fresh* subagent, not this session
 grading its own diff (ADR
 [0018](../../../dev-docs/decisions/0018-review-and-address-stay-separate-skills.md)).
 
-Runs on Cursor desktop, Cursor Cloud Agent, and other hosts that can spawn a
-second agent. It is not desktop-only.
+Runs on Cursor desktop, Cursor Cloud Agent, and Claude Code. Other hosts that
+can spawn a second agent follow the same spawn rules with that host’s tools.
 
 ## 1. Read the issue
 
@@ -53,13 +53,7 @@ Standard repo loop: `dev-docs/code-map.md` for where to start,
 needs a handbook note or a thin brief. Red–green for bug fixes. Specs and
 published docs move with the contract, in the same PR.
 
-Push a branch and open a PR. If the issue already names a PR or branch, continue
-there instead of opening a second one.
-
-After the PR exists, post a Linear comment on the issue with the PR URL
-(`save_comment`). Do not change Linear status unless the user asked.
-
-Gates before you consider the fix ready to review:
+Gates **before pushing**:
 
 ```bash
 ./scripts/check.sh --fix
@@ -68,6 +62,12 @@ Gates before you consider the fix ready to review:
 
 `--all-configs` when extras or versions matter (`CONTRIBUTING.md` §"Before pushing…").
 
+Then push a branch and open a PR. If the issue already names a PR or branch,
+continue there instead of opening a second one.
+
+After the PR exists, post a Linear comment on the issue with the PR URL
+(`save_comment`). Do not change Linear status unless the user asked.
+
 ## 3. Fresh reviewer (hard rules)
 
 Once the PR is up and the fix is on the remote, launch a **new** subagent.
@@ -75,50 +75,55 @@ Do not start this step on uncommitted work.
 
 ### Spawn (this session)
 
-In Cursor (desktop and Cloud Agent) the parent uses the Task tool:
+Invariant: a *fresh* subagent, an explicit model (never omit, never `inherit`),
+never a fast variant. Cursor Grok **standard** means a non-fast Cursor Grok
+slug; the current one is `cursor-grok-4.6-medium`. If that slug is missing,
+pick another Cursor Grok slug that does not end in `-fast`. If no Cursor Grok
+slug is listed, pick a different model than this session from that host’s
+allowed list and say which. Do not retry a rejected slug with a fast one.
+
+**Cursor** (desktop and Cloud Agent) — Task tool:
 
 | Parameter | Value |
 |---|---|
 | `subagent_type` | `generalPurpose` |
-| `model` | `cursor-grok-4.6-medium` (Cursor Grok, **standard**) |
+| `model` | `cursor-grok-4.6-medium` |
 | `resume` | omit — never resume an existing agent |
 | `run_in_background` | `false` — wait for the review to be written |
 
-**Never pass a slug ending in `-fast`.**
-`cursor-grok-4.6-medium-fast`, `cursor-grok-4.6-high-fast`, and the other
-`*-fast` slugs are forbidden, including as a fallback when the requested slug
-is rejected.
+**Claude Code** — `Agent` tool, `subagent_type: general-purpose` (hyphenated).
+Pass an explicit `model` from that host’s allowed list. Never inherit.
 
-**Never omit `model` and never pass `inherit`.** Omitting inherits the parent,
-which may be a fast variant. If `cursor-grok-4.6-medium` is not in the allowed
-list, pick another `cursor-grok-4.6-*` slug that does **not** end in `-fast`.
-If no Cursor Grok slug is listed (non-Cursor host), still spawn a *fresh*
-subagent on a different model than the implementer so the review is a second
-opinion, and say which slug you used.
+If neither tool exists, use that host’s equivalent of a new session. If you
+cannot spawn a second agent at all, stop and say so. Do not review the diff
+yourself.
 
-If Task is missing, use that host’s equivalent of a new session. If you cannot
-spawn a second agent at all, stop and say so. Do not review the diff yourself.
+### Post
 
-### Post (the reviewer)
+The reviewer posts per addendum §10. Try in this order:
 
-The reviewer posts the addendum §0 three-block review (blocks 1, 2, and 3) to
-the PR. Located findings also go inline. Try posting in this order:
-
-1. Cursor `ManagePullRequest` (`post_comment`) — inline for `file:line` findings,
-   top-level for the three-block body.
+1. Cursor `ManagePullRequest` (`post_comment`).
 2. Linear `save_diff_comment` (inline) and `submit_diff_review` (body), which
    sync to GitHub.
-3. Return the full three-block markdown to this session. **This session posts
-   that text unchanged.** Posting the reviewer’s words is not self-review.
+3. Return the three-block markdown **with no attribution footer**. This session
+   posts the reviewer’s words and applies **this host’s** §10 footer rule
+   (Cursor: add the footer; Claude Code posting through a human account: add
+   nothing, the tool appends; distinct bot identity such as `claude[bot]` /
+   `cursor[bot]`: no footer). Posting the reviewer’s words is not self-review.
 
 A missing post tool is not a reason to skip the review or to write a substitute.
 
+The opener is the reviewer’s — it survives a relay and names who wrote the
+review (`**{reviewer name}** · code-review-skill · review of `<sha>`). The
+footer is the **poster’s** job, not the reviewer’s. Relayed markdown that
+already contains a footer must have that footer stripped before this session
+posts, then the poster’s rule applied.
+
 ### Prompt
 
-The reviewer does not implement. Fill in the placeholders; it has none of this
-session’s context. `{reviewer name}` is `Cursor Grok` only when the model slug
-starts with `cursor-grok-4.6-` and does not end in `-fast`; otherwise name the
-model that actually ran.
+The reviewer does not implement. Fill in the placeholders. `{reviewer name}` is
+`Cursor Grok` only for a non-fast Cursor Grok slug; otherwise name the model
+that actually ran.
 
 ```
 You are a fresh reviewer. Edit nothing.
@@ -129,31 +134,28 @@ You are a fresh reviewer. Edit nothing.
    host builtin — do not use it.
 2. Review PR <url> (branch <name>, HEAD <sha>) against main.
    Linear issue <id>: <title>. <one-line summary of the intended change>.
-3. Post the addendum §0 three-block review to that PR (blocks 1, 2, and 3 in
-   the top-level body; located findings also inline) with stable IDs
-   (F1, F2, …). End block 3 with exactly:
+   Previous rounds: <IDs, dispositions and HEADs — or "first review">.
+3. Post per addendum §10. Keep prior finding IDs stable; number new findings
+   from the next free ID. A re-review opens with the §10 status table over
+   those IDs. End block 3 with exactly:
 
    Addressing these: `.claude/skills/address-review-findings/SKILL.md`.
 
    Posting order: ManagePullRequest (`post_comment`); else Linear
    `save_diff_comment` + `submit_diff_review`; else return the three-block
-   markdown to the parent and do not invent a GitHub write.
+   markdown with no attribution footer and do not invent a GitHub write.
 4. Open every posted comment with:
    **{reviewer name}** · `code-review-skill` · review of `<sha>`
-   If the host does not append an attribution footer (Cursor does not), end
-   with:
-
-   ---
-   _Generated by {reviewer name} (`code-review-skill`)_
-
-   Claude Code appends its own footer — do not add a second one there.
-5. Return the PR URL, the finding IDs you posted, and the three-block body if
-   posting failed. Do not push, commit, or edit the tree.
+   If you post yourself, apply your host’s §10 footer rule. If you return
+   markdown for the parent to post, include no footer.
+5. Return the PR URL, the finding IDs you posted, and the three-block body
+   (no footer) if posting failed. Do not push, commit, or edit the tree.
 ```
 
-If the Task call fails because of the model slug, retry with another non-fast
-`cursor-grok-4.6-*` slug. Do not retry with a fast slug. Do not review the diff
-yourself to unblock a spawn failure.
+If the spawn call fails because of the model slug, retry with another non-fast
+Cursor Grok slug (or another allowed non-fast model on a non-Cursor host). Do
+not retry with a fast slug. Do not review the diff yourself to unblock a spawn
+failure.
 
 ## 4. Address the findings
 
@@ -163,16 +165,19 @@ When the reviewer returns, **this** session (the implementer) reads
 on the PR.
 
 This session owns dispositions for the review it commissioned until it stops.
-A `steward` wake on the same PR during that window must no-op — do not start a
-parallel `address-review-findings` round on the same F-IDs.
+Do not wait for steward. Steward skips a second round only when a disposition
+comment (opener names `address-review-findings`) is already on those F-IDs.
+Two agents can still start in the same minute before either replies; that race
+is accepted — do not invent a label or marker to close it.
 
 Stop after the dispositions land. A 🔄 verdict does not spawn a second
-reviewer; the user asks for the next round.
+reviewer; the user asks for the next round. Fill the prompt’s “Previous
+rounds” placeholder from the ledger when that happens.
 
 ## Never
 
 - Review your own diff, or “quickly glance” instead of step 3.
-- Use a `*-fast` model for the reviewer, `inherit`, or `resume`.
+- Use a fast model for the reviewer, `inherit`, or `resume`.
 - Implement from the title without reading Linear comments.
 - Skip posting the PR URL on the Linear issue.
 - Mark the Linear issue done, or close it, unless the user asked.
