@@ -427,6 +427,8 @@ def _append_member(
 ) -> None:
     # ``None`` is ListingLimits.UNLIMITED: no count bound. RAR walks sequentially
     # and has no header-size analogue, so UNLIMITED can allocate until OOM.
+    # Refuse the member that would make len == max_members + 1 — same bound as
+    # ListingLimitTracker._check_members (count > max_members after increment).
     if max_members is not None and len(members) >= max_members:
         raise ResourceLimitError(
             f"Listing limit reached: max_members={max_members} "

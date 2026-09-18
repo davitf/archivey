@@ -82,16 +82,14 @@ walk.
 The native RAR header walk SHALL refuse to retain more members than
 `listing_limits.max_members` when that field is not `None`, and SHALL raise
 `ResourceLimitError` at parse (`open_archive`) when the ceiling is crossed.
-`None` (`ListingLimits.UNLIMITED`) disables the bound. This is defense-in-depth
-against allocation during `open_archive()` for indexed RAR backends that build
-the full member table up front. `stream_members()` is not an escape hatch: the
-table is already built at open.
+`None` (`ListingLimits.UNLIMITED`) disables the bound. The config value is the
+bound at parse because the table is built then; there is no separate
+parser-constant ceiling. `stream_members()` is not an escape hatch.
 
-There is no separate parser-constant member ceiling. RAR has no header-size
-analogue for member count (the walk is sequential), so `UNLIMITED` can walk
-until memory is exhausted. Spine `ListingLimits.max_metadata_bytes`
-(`archive-reading`) still apply when members are registered into a materialized
-list.
+RAR has no header-size analogue for member count (the walk is sequential), so
+`UNLIMITED` can walk until memory is exhausted. Spine
+`ListingLimits.max_metadata_bytes` (`archive-reading`) still apply when members
+are registered into a materialized list.
 
 #### Scenario: RAR parser bound matrix
 

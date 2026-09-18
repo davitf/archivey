@@ -180,7 +180,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. 7z and RAR apply `max_members` at parse, so `open_archive` itself raises and `stream_members()` is not an escape hatch. On other formats, `stream_members()` is intentionally unguarded. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` is intentionally unguarded, except on formats that already apply `max_members` at parse (7z and RAR): `open_archive` itself raises. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES. |
 
 ## Limits
 
@@ -190,11 +190,10 @@ Defaults (via `ExtractionLimits` / `ListingLimits` on `ArchiveyConfig`) cap:
   (`ExtractionLimits`). Trips raise `ResourceLimitError`.
 - **Listing materialization** — member count and retained metadata bytes
   (`ListingLimits`) on `members()` / `scan_members()` / extract-prep materialization.
-  Trips raise `ResourceLimitError`. `stream_members()` stays unguarded on
-  formats that do not apply `max_members` at parse. 7z and RAR apply it at
-  open, so `max_members` can fail at `open_archive` before `stream_members()`
-  runs; raise `listing_limits.max_members` or use `ListingLimits.UNLIMITED` to
-  open a larger 7z or RAR.
+  Trips raise `ResourceLimitError`. `stream_members()` stays unguarded by
+  design, except on 7z and RAR where `max_members` is checked at
+  `open_archive`; raise `listing_limits.max_members` or use
+  `ListingLimits.UNLIMITED` to open a larger 7z or RAR.
 
 Loosen per call with `limits=` (extraction only), raise `listing_limits` at
 `open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /

@@ -2552,6 +2552,13 @@ def test_rar_open_enforces_listing_limits(name: str) -> None:
         open_archive(_fixture(name), config=cfg)
 
 
+def test_rar_split_continuation_does_not_consume_member_slot() -> None:
+    """A FILE split across volumes is one logical member, not two slots."""
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=1))
+    with open_archive(_fixture("tinyvol.part1.rar"), config=cfg) as reader:
+        assert len(reader.members()) == 1
+
+
 def test_rar_unlimited_lifts_member_cap() -> None:
     tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
     with pytest.raises(ResourceLimitError, match="max_members"):

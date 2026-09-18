@@ -23,14 +23,14 @@ when members are registered into a materialized / resolved list (`members()`,
 `ResourceLimitError`. Defaults match extract `max_entries` on the count side
 (`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
 `stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
-hatch) on formats that do not apply `max_members` at parse. 7z applies
-`listing_limits.max_members` at `open_archive` (folders, unpack streams,
-`num_files`) and an over-limit archive fails at open — `stream_members()` is
-not an escape hatch for 7z. Pack streams are a coder-graph quantity (BCJ2 has
-four per folder) and keep the header-size bound only. RAR applies
-`listing_limits.max_members` while parsing the member table at `open_archive`,
-so an over-limit archive fails at open — `stream_members()` is not an escape
-hatch for RAR. `None` (`ListingLimits.UNLIMITED`) disables that bound.
+hatch). 7z applies `listing_limits.max_members` at `open_archive` (folders,
+unpack streams, `num_files`) and an over-limit archive fails at open —
+`stream_members()` is not an escape hatch for 7z. Pack streams are a
+coder-graph quantity (BCJ2 has four per folder) and keep the header-size
+bound only. RAR applies `listing_limits.max_members` while parsing the member
+table at `open_archive`, so an over-limit archive fails at open —
+`stream_members()` is not an escape hatch for RAR. ZIP still caps at
+`members()`. `None` (`ListingLimits.UNLIMITED`) disables that bound.
 Format-local parser bounds (e.g. 7z count fields vs header size →
 `CorruptionError`; 7z per-folder coder/in-out counts at `_MAX_NUM_STREAMS`)
 stay as defense-in-depth. RAR no longer has a separate `_MAX_ARCHIVE_MEMBERS`
