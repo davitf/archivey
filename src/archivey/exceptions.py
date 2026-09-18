@@ -221,7 +221,7 @@ class ResourceLimitError(ArchiveyError):
     """A configured listing or extraction resource limit was exceeded.
 
     Covers :class:`~archivey.config.ListingLimits` materialization caps,
-    parse-time ``max_members`` on indexed RAR, and
+    parse-time ``max_members`` on RAR, and
     :class:`~archivey.config.ExtractionLimits` bomb guards. Sibling of
     :class:`ExtractionError` (not a subclass): limit trips are not filter/path failures.
     """

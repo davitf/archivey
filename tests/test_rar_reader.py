@@ -2544,6 +2544,7 @@ def test_rar_parser_max_members_at_parse() -> None:
 
 def test_rar_parser_omitted_max_members_matches_listing_limits_default() -> None:
     """Direct callers that omit max_members get ListingLimits()'s default, not None."""
+    # Default is bound at def time; monkeypatching ListingLimits cannot exercise it.
     from inspect import signature
 
     from archivey.internal.backends.rar_parser import (
@@ -2861,7 +2862,7 @@ def test_rar5_qo_non_file_records_parse_in_linear_time() -> None:
     size = bytes([len(qbody)])
     rec = zlib.crc32(size + qbody).to_bytes(4, "little") + size + qbody
     payload = rec * (2 * 1024 * 1024 // len(rec))
-    result = rar_parser._parse_rar5_qo_payload(payload, 10**9, 0)
+    result = rar_parser._parse_rar5_qo_payload(payload, 10**9, 0, max_members=None)
     assert result is None
 
 
@@ -3584,6 +3585,7 @@ def _qo_cached_filenames(path: Path) -> set[str]:
             qopen_abs=qopen,
             volume_index=0,
             min_file_offset=source.tell(),
+            max_members=None,
         )
         assert listed is not None
         members, _end = listed

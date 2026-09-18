@@ -448,7 +448,7 @@ def _parse_rar_volume(
     volume_index: int,
     allow_continuation: bool,
     use_qo: bool = True,
-    max_members: int | None = None,
+    max_members: int | None,
 ) -> RarArchive:
     """Parse one volume — one seekable source — into a :class:`RarArchive`.
 
@@ -1114,7 +1114,7 @@ def _parse_rar3(
     password: str | bytes | None,
     sfx_offset: int,
     volume_index: int = 0,
-    max_members: int | None = None,
+    max_members: int | None,
 ) -> RarArchive:
     _require_exact(source, len(RAR_ID), "RAR3 signature")
 
@@ -1578,7 +1578,7 @@ def _parse_rar5_qo_payload(
     qo_header_offset: int,
     volume_index: int,
     *,
-    max_members: int | None = None,
+    max_members: int | None,
 ) -> list[RarMemberInfo] | None:
     """Parse QO cache structures into FILE members, or None if unusable."""
     members: list[RarMemberInfo] = []
@@ -1675,7 +1675,7 @@ def _try_list_via_rar5_qo(
     qopen_abs: int,
     volume_index: int,
     min_file_offset: int,
-    max_members: int | None = None,
+    max_members: int | None,
 ) -> tuple[list[RarMemberInfo], int] | None:
     """Seek to QO and parse FILE copies.
 
@@ -1824,7 +1824,7 @@ def _parse_rar5(
     sfx_offset: int,
     volume_index: int = 0,
     use_qo: bool = True,
-    max_members: int | None = None,
+    max_members: int | None,
 ) -> RarArchive:
     _require_exact(source, len(RAR5_ID), "RAR5 signature")
 
