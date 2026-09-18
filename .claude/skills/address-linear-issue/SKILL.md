@@ -79,8 +79,8 @@ Invariant: a *fresh* subagent, an explicit model (never omit, never `inherit`),
 never a fast variant. Cursor Grok **standard** means a non-fast Cursor Grok
 slug; the current one is `cursor-grok-4.6-medium`. If that slug is missing,
 pick another Cursor Grok slug that does not end in `-fast`. If no Cursor Grok
-slug is listed, pick a different model than this session from that host’s
-allowed list and say which. Do not retry a rejected slug with a fast one.
+slug is listed, pick a different model family than this session, from that
+host’s allowed list, and say which. Do not retry a rejected slug with a fast one.
 
 **Cursor** (desktop and Cloud Agent) — Task tool:
 
@@ -106,15 +106,13 @@ The reviewer posts per addendum §10. Try in this order:
 2. Linear `save_diff_comment` (inline) and `submit_diff_review` (body), which
    sync to GitHub.
 3. Return the three-block markdown **with no attribution footer**. This session
-   posts the reviewer’s words and applies **this host’s** §10 footer rule
-   (Cursor: add the footer; Claude Code posting through a human account: add
-   nothing, the tool appends; distinct bot identity such as `claude[bot]` /
-   `cursor[bot]`: no footer). Posting the reviewer’s words is not self-review.
+   posts the reviewer’s words and applies **this host’s** §10 footer rule.
+   Posting the reviewer’s words is not self-review.
 
 A missing post tool is not a reason to skip the review or to write a substitute.
 
 The opener is the reviewer’s — it survives a relay and names who wrote the
-review (`**{reviewer name}** · code-review-skill · review of `<sha>`). The
+review: **{reviewer name}** · `code-review-skill` · review of `<sha>`. The
 footer is the **poster’s** job, not the reviewer’s. Relayed markdown that
 already contains a footer must have that footer stripped before this session
 posts, then the poster’s rule applied.
