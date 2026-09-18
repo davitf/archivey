@@ -60,10 +60,10 @@ separate decryption path.
 The ZIP backend SHALL decode unencrypted member data through the shared
 `compressed-streams` codec layer rather than stdlib `zipfile`'s internal
 decoders. It SHALL locate a member's raw compressed bytes via a bounded
-local-file-header parse (fixed header + local name/extra lengths, with absurd-
-length rejection) and a slice over the source, then dispatch by ZIP method id
-to the codec's default backend. Central-directory parsing and listing MAY
-continue to use stdlib `zipfile`.
+local-file-header parse (fixed header + local name/extra lengths, with an
+absurd data-offset cap) and a slice over the source, then dispatch by ZIP
+method id to the codec's default backend. Central-directory parsing and
+listing MAY continue to use stdlib `zipfile`.
 
 Member reads SHALL verify `member.hashes["crc32"]` through the shared
 `VerifyingStream` when a CRC is surfaced. A corrupt member body SHALL raise
@@ -111,6 +111,7 @@ AES-encrypted). Traditional ZipCrypto behavior is unchanged.
 | AE-1 or AE-2 member, 128/192/256, correct password, `cryptography` present | Decrypts, decompresses via codec layer, HMAC verified at EOF |
 | Wrong password | `EncryptionError` on the 2-byte verification value; no bytes |
 | Tampered ciphertext, correct password | HMAC mismatch → `CorruptionError` at terminal read |
+| Tampered ciphertext, partial read then `close()` | Quiet; `close()` is teardown, not a verdict (ADR 0014) |
 | AE-2 member | `crc32` absent; no CRC check; HMAC is the integrity signal |
 | AE-1 member | `crc32` present and verified alongside the HMAC |
 | AES member without `cryptography` installed | `PackageNotInstalledError`; still reported as encrypted |
