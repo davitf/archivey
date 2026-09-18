@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from hashlib import pbkdf2_hmac
 from typing import BinaryIO, Protocol
 
+from archivey.config import ListingLimits
 from archivey.escaping import quoted
 from archivey.exceptions import (
     CorruptionError,
@@ -88,6 +89,8 @@ _RAR_MAX_KDF_SHIFT = 24
 _RAR5_MAX_HEADER = 2 * 1024 * 1024
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
+# Same default as ListingLimits.max_members. None is the explicit UNLIMITED opt-out.
+_DEFAULT_MAX_MEMBERS = ListingLimits().max_members
 
 # RAR3 block types
 _RAR3_MARK = 0x72
@@ -307,7 +310,7 @@ def parse_rar_archive(
     *,
     password: str | bytes | None = None,
     use_qo: bool = True,
-    max_members: int | None = None,
+    max_members: int | None = _DEFAULT_MAX_MEMBERS,
 ) -> RarArchive:
     """Parse from current position (archive start). Source must be seekable.
 
@@ -316,8 +319,9 @@ def parse_rar_archive(
     leaves the default.
 
     ``max_members`` is ``ListingLimits.max_members`` from the reader config
-    (``None`` = ``ListingLimits.UNLIMITED``). Direct callers (fuzz, unit tests)
-    omit it and get no member-count bound; RAR has no header-size analogue.
+    (``None`` = ``ListingLimits.UNLIMITED``). Omitting it uses the same default
+    as ``ListingLimits()``; pass ``None`` to lift the bound. RAR has no
+    header-size analogue, so ``None`` can walk until memory is exhausted.
     """
     return _parse_rar_volume(
         source,
@@ -334,7 +338,7 @@ def parse_rar_volumes(
     *,
     password: str | bytes | None = None,
     use_qo: bool = True,
-    max_members: int | None = None,
+    max_members: int | None = _DEFAULT_MAX_MEMBERS,
 ) -> RarArchive:
     """Parse an ordered multi-volume RAR set, merging split members across volumes.
 

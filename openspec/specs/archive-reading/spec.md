@@ -387,21 +387,22 @@ before spine `ListingLimits` are evaluated on materialization (`members()` /
 extract-prep). Being indexed (ZIP central directory, 7z header) is not the
 same as applying `max_members` at parse.
 
-**Unguarded by design:** `stream_members()` / forward-only iteration MUST NOT
-enforce `ListingLimits` (O(1) escape hatch). Callers that need a full resolved
-list use `members()` / `scan_members()` and accept the caps. Formats that apply
-`max_members` at parse (currently RAR) fail at `open_archive` instead, so
-`stream_members()` is not an escape hatch there.
+**Unguarded by design:** `stream_members()` / `streaming=True` / forward-only
+iteration MUST NOT enforce `ListingLimits` (O(1) escape hatch). Callers that
+need a full resolved list use `members()` / `scan_members()` and accept the
+caps. Formats that apply `max_members` at parse (currently RAR) fail at
+`open_archive` instead, so `stream_members()` / `streaming=True` are not an
+escape hatch there.
 
 #### Scenario: listing-limits matrix
 
 | Case | Expected |
 | --- | --- |
 | Default config, archive with ≤1_048_576 members and metadata under 64 MiB | `members()` / `scan_members()` succeed |
-| Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration; no full cache published |
+| Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-rar`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (RAR), which raise at `open_archive` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (RAR), which raise at `open_archive` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting

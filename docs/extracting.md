@@ -180,7 +180,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` is intentionally unguarded, except on formats that already apply `max_members` at parse (7z and RAR): `open_archive` itself raises. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z and RAR): `open_archive` itself raises. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES. |
 
 ## Limits
 
@@ -190,10 +190,11 @@ Defaults (via `ExtractionLimits` / `ListingLimits` on `ArchiveyConfig`) cap:
   (`ExtractionLimits`). Trips raise `ResourceLimitError`.
 - **Listing materialization** — member count and retained metadata bytes
   (`ListingLimits`) on `members()` / `scan_members()` / extract-prep materialization.
-  Trips raise `ResourceLimitError`. `stream_members()` stays unguarded by
-  design, except on 7z and RAR where `max_members` is checked at
-  `open_archive`; raise `listing_limits.max_members` or use
-  `ListingLimits.UNLIMITED` to open a larger 7z or RAR.
+  Trips raise `ResourceLimitError`. `stream_members()` / `streaming=True` stay
+  unguarded by design, except on 7z and RAR where `max_members` is checked at
+  `open_archive`. Raise `listing_limits.max_members` to open a larger 7z or
+  RAR. That parse bound is a member count, not a byte budget:
+  `max_metadata_bytes` still fires when the list is materialized.
 
 Loosen per call with `limits=` (extraction only), raise `listing_limits` at
 `open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /
@@ -201,8 +202,9 @@ Loosen per call with `limits=` (extraction only), raise `listing_limits` at
 
 Bomb guards apply during **extraction**. Listing caps apply when a full member list is
 materialized — prefer `stream_members()` for huge untrusted archives when you only need
-a sequential subset, except on 7z and RAR where `max_members` is already checked at open.
-Encrypted 7z folders confirm the password by decoding on the first
+a sequential subset, except on 7z and RAR where `max_members` is already checked at
+open (`stream_members()` / `streaming=True` included). Encrypted 7z folders
+confirm the password by decoding on the first
 member read, which is neither listing nor extract: peak memory is a 64 KiB chunk plus
 codec buffers. Wall time is *at most* folder size per candidate, and reaches that only
 for **store/copy+AES**, where nothing rejects a wrong key early — a compressed folder's

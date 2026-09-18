@@ -127,8 +127,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   parser used a hardcoded 1 048 576 cap (`CorruptionError`) independent of
   config. `open_archive` now raises `ResourceLimitError` when the archive has
   more members than the reader's `listing_limits.max_members`; `None` /
-  `ListingLimits.UNLIMITED` lifts the bound. `stream_members()` is not an
-  escape hatch (the table is built at open). Threat-model O1.
+  `ListingLimits.UNLIMITED` lifts the bound, which the old hardcoded ceiling
+  did not allow. `stream_members()` / `streaming=True` are not an escape
+  hatch (the table is built at open). Threat-model O1.
 - **Encrypted 7z password confirmation no longer materialises the folder.** 7z AES
   has no check value, so a candidate is still judged by decoding and CRCing, but
   confirm now streams 64 KiB chunks instead of `read_exact`ing the whole folder

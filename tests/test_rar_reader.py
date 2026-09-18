@@ -2542,14 +2542,33 @@ def test_rar_parser_max_members_at_parse() -> None:
         assert len(parse_rar_archive(fh, max_members=None).members) == n
 
 
+def test_rar_parser_omitted_max_members_matches_listing_limits_default() -> None:
+    """Direct callers that omit max_members get ListingLimits()'s default, not None."""
+    from inspect import signature
+
+    from archivey.internal.backends.rar_parser import (
+        _DEFAULT_MAX_MEMBERS,
+        parse_rar_volumes,
+    )
+
+    assert _DEFAULT_MAX_MEMBERS == ListingLimits().max_members
+    assert signature(parse_rar_archive).parameters["max_members"].default == (
+        _DEFAULT_MAX_MEMBERS
+    )
+    assert signature(parse_rar_volumes).parameters["max_members"].default == (
+        _DEFAULT_MAX_MEMBERS
+    )
+
+
 @pytest.mark.parametrize(
     "name",
     ["basic_nonsolid__.rar", "basic_nonsolid__rar4.rar"],
 )
-def test_rar_open_enforces_listing_limits(name: str) -> None:
+@pytest.mark.parametrize("streaming", [False, True])
+def test_rar_open_enforces_listing_limits(name: str, streaming: bool) -> None:
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
     with pytest.raises(ResourceLimitError, match="max_members"):
-        open_archive(_fixture(name), config=cfg)
+        open_archive(_fixture(name), config=cfg, streaming=streaming)
 
 
 def test_rar_split_continuation_does_not_consume_member_slot() -> None:
@@ -3411,6 +3430,42 @@ def test_unreadable_qo_falls_back_to_file_walk(
         assert listed == set(files)
         assert archive.read("f0.txt") == b"body-0\n"
     assert calls, "QO payload was never reached — the flip hit the header"
+
+
+@requires_binary("rar")
+def test_qo_over_max_members_raises_not_unusable(tmp_path: Path) -> None:
+    """An over-limit QO raises ResourceLimitError; it is not swallowed as unusable."""
+    from archivey.internal.backends import rar_parser
+
+    files = {f"f{i}.txt": f"body-{i}\n".encode() for i in range(5)}
+    archive_path = _rar_a(tmp_path / "lim", "lim.rar", files, ["-m0", "-qo+"])
+    with archive_path.open("rb") as source:
+        assert source.read(len(RAR5_ID)) == RAR5_ID
+        parsed = rar_parser._read_rar5_block(source)
+        assert parsed is not None
+        (
+            block_type,
+            _flags,
+            hdata,
+            _pos,
+            header_offset,
+            _header_size,
+            data_offset,
+            add_size,
+            extra_size,
+        ) = parsed
+        assert block_type == rar_parser._RAR5_MAIN
+        qopen = rar_parser._rar5_locator_qopen_abs(hdata, extra_size, header_offset)
+        assert qopen is not None
+        rar_parser._seek_after_packed(source, data_offset, add_size)
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            rar_parser._try_list_via_rar5_qo(
+                source,
+                qopen_abs=qopen,
+                volume_index=0,
+                min_file_offset=source.tell(),
+                max_members=2,
+            )
 
 
 @requires_binary("rar")
