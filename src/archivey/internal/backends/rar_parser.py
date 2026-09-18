@@ -51,6 +51,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
     raw_message_of,
@@ -85,9 +86,6 @@ RAR5_ID = b"Rar!\x1a\x07\x01\x00"
 _RAR_MAX_PASSWORD = 127
 _RAR_MAX_KDF_SHIFT = 24
 _RAR5_MAX_HEADER = 2 * 1024 * 1024
-# Defense-in-depth against member-table bombs at parse/open (matches default
-# ListingLimits.max_members). Spine listing caps still apply on members()/extract-prep.
-_MAX_ARCHIVE_MEMBERS = 1_048_576
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
 
@@ -309,12 +307,17 @@ def parse_rar_archive(
     *,
     password: str | bytes | None = None,
     use_qo: bool = True,
+    max_members: int | None = None,
 ) -> RarArchive:
     """Parse from current position (archive start). Source must be seekable.
 
     ``use_qo=False`` forces the FILE-header walk even when MAIN's locator
     points at a usable QO. Tests compare the two listings; production always
     leaves the default.
+
+    ``max_members`` is ``ListingLimits.max_members`` from the reader config
+    (``None`` = ``ListingLimits.UNLIMITED``). Direct callers (fuzz, unit tests)
+    omit it and get no member-count bound; RAR has no header-size analogue.
     """
     return _parse_rar_volume(
         source,
@@ -322,6 +325,7 @@ def parse_rar_archive(
         volume_index=0,
         allow_continuation=False,
         use_qo=use_qo,
+        max_members=max_members,
     )
 
 
@@ -330,6 +334,7 @@ def parse_rar_volumes(
     *,
     password: str | bytes | None = None,
     use_qo: bool = True,
+    max_members: int | None = None,
 ) -> RarArchive:
     """Parse an ordered multi-volume RAR set, merging split members across volumes.
 
@@ -337,6 +342,10 @@ def parse_rar_volumes(
     ``header_offset`` / ``data_offset`` values are adjusted to a concatenated byte
     space (volume 0 at 0, volume 1 after volume 0's size, …) so a
     :class:`~archivey.internal.volumes.ConcatenatedFile` can serve stored reads.
+
+    ``max_members`` is the same listing budget as :func:`parse_rar_archive`.
+    Each volume is capped independently, and the merged table is capped again
+    so two volumes that are each under the budget cannot together exceed it.
     """
     if not volumes:
         raise ValueError("at least one RAR volume is required")
@@ -350,6 +359,7 @@ def parse_rar_volumes(
             volume_index=index,
             allow_continuation=index > 0,
             use_qo=use_qo,
+            max_members=max_members,
         )
         # Reject sets that do not start at volume 1.
         if index == 0 and (
@@ -382,7 +392,7 @@ def parse_rar_volumes(
                 if member.split_before and merged.members:
                     _merge_split_member(merged.members[-1], member)
                 else:
-                    _append_member(merged.members, member)
+                    _append_member(merged.members, member, max_members=max_members)
 
         # Size of this volume for absolute offset adjustment.
         pos = volume.tell()
@@ -409,10 +419,18 @@ def parse_rar_volumes(
     return merged
 
 
-def _append_member(members: list[RarMemberInfo], member: RarMemberInfo) -> None:
-    if len(members) >= _MAX_ARCHIVE_MEMBERS:
-        raise CorruptionError(
-            f"RAR member count exceeds {_MAX_ARCHIVE_MEMBERS} (probable metadata bomb)"
+def _append_member(
+    members: list[RarMemberInfo],
+    member: RarMemberInfo,
+    *,
+    max_members: int | None,
+) -> None:
+    # ``None`` is ListingLimits.UNLIMITED: no count bound. RAR walks sequentially
+    # and has no header-size analogue, so UNLIMITED can allocate until OOM.
+    if max_members is not None and len(members) >= max_members:
+        raise ResourceLimitError(
+            f"Listing limit reached: max_members={max_members} "
+            f"(registered {len(members) + 1} members)"
         )
     members.append(member)
 
@@ -424,6 +442,7 @@ def _parse_rar_volume(
     volume_index: int,
     allow_continuation: bool,
     use_qo: bool = True,
+    max_members: int | None = None,
 ) -> RarArchive:
     """Parse one volume — one seekable source — into a :class:`RarArchive`.
 
@@ -445,6 +464,7 @@ def _parse_rar_volume(
             sfx_offset=sfx_offset,
             volume_index=volume_index,
             use_qo=use_qo,
+            max_members=max_members,
         )
     else:
         archive = _parse_rar3(
@@ -452,6 +472,7 @@ def _parse_rar_volume(
             password=password,
             sfx_offset=sfx_offset,
             volume_index=volume_index,
+            max_members=max_members,
         )
     if (
         not allow_continuation
@@ -1087,6 +1108,7 @@ def _parse_rar3(
     password: str | bytes | None,
     sfx_offset: int,
     volume_index: int = 0,
+    max_members: int | None = None,
 ) -> RarArchive:
     _require_exact(source, len(RAR_ID), "RAR3 signature")
 
@@ -1233,9 +1255,9 @@ def _parse_rar3(
                         _merge_split_member(members[-1], member)
                     else:
                         # Continuation without a prior part in this volume.
-                        _append_member(members, member)
+                        _append_member(members, member, max_members=max_members)
                 else:
-                    _append_member(members, member)
+                    _append_member(members, member, max_members=max_members)
                 if member.split_after:
                     needs_next_volume = True
             elif (
@@ -1546,7 +1568,11 @@ def _decode_rar5_cmt_bytes(raw: bytes) -> str:
 
 
 def _parse_rar5_qo_payload(
-    payload: bytes, qo_header_offset: int, volume_index: int
+    payload: bytes,
+    qo_header_offset: int,
+    volume_index: int,
+    *,
+    max_members: int | None = None,
 ) -> list[RarMemberInfo] | None:
     """Parse QO cache structures into FILE members, or None if unusable."""
     members: list[RarMemberInfo] = []
@@ -1619,7 +1645,7 @@ def _parse_rar5_qo_payload(
             )
         except (CorruptionError, TruncatedError):
             return None
-        _append_member(members, member)
+        _append_member(members, member, max_members=max_members)
     if not members:
         return None
     return members
@@ -1643,6 +1669,7 @@ def _try_list_via_rar5_qo(
     qopen_abs: int,
     volume_index: int,
     min_file_offset: int,
+    max_members: int | None = None,
 ) -> tuple[list[RarMemberInfo], int] | None:
     """Seek to QO and parse FILE copies.
 
@@ -1696,7 +1723,9 @@ def _try_list_via_rar5_qo(
             return None
         source.seek(data_offset)
         payload = _require_exact(source, member.file_size, "RAR5 QO")
-        qo_members = _parse_rar5_qo_payload(payload, header_offset, volume_index)
+        qo_members = _parse_rar5_qo_payload(
+            payload, header_offset, volume_index, max_members=max_members
+        )
         if qo_members is None:
             return None
         if not _qo_spans_consistent(
@@ -1705,6 +1734,7 @@ def _try_list_via_rar5_qo(
             return None
         _seek_after_packed(source, data_offset, add_size)
         return qo_members, source.tell()
+    # ResourceLimitError must propagate: an over-limit QO is not "unusable".
     except (CorruptionError, TruncatedError, OSError, OverflowError):
         return None
 
@@ -1712,6 +1742,8 @@ def _try_list_via_rar5_qo(
 def _adopt_rar5_file_members(
     members: list[RarMemberInfo],
     incoming: list[RarMemberInfo],
+    *,
+    max_members: int | None,
 ) -> bool:
     """Append FILE members with the same split-merge as the header walk.
 
@@ -1719,20 +1751,25 @@ def _adopt_rar5_file_members(
     """
     needs_next = False
     for member in incoming:
-        if _emit_rar5_file_member(members, member):
+        if _emit_rar5_file_member(members, member, max_members=max_members):
             needs_next = True
     return needs_next
 
 
-def _emit_rar5_file_member(members: list[RarMemberInfo], member: RarMemberInfo) -> bool:
+def _emit_rar5_file_member(
+    members: list[RarMemberInfo],
+    member: RarMemberInfo,
+    *,
+    max_members: int | None,
+) -> bool:
     """Split-merge one FILE into ``members``. Returns ``split_after``."""
     if member.split_before:
         if members:
             _merge_split_member(members[-1], member)
         else:
-            _append_member(members, member)
+            _append_member(members, member, max_members=max_members)
     else:
-        _append_member(members, member)
+        _append_member(members, member, max_members=max_members)
     return member.split_after
 
 
@@ -1746,6 +1783,7 @@ def _emit_and_skip_qo_run(
     qo_by_off: dict[int, RarMemberInfo],
     members: list[RarMemberInfo],
     seen_file_offsets: set[int],
+    max_members: int | None,
 ) -> bool | None:
     """If ``tell()`` is a QO FILE, emit the consecutive cached run and seek past it.
 
@@ -1767,7 +1805,7 @@ def _emit_and_skip_qo_run(
         if nxt <= pos:
             return None
         pos = nxt
-    needs_next = _adopt_rar5_file_members(members, run)
+    needs_next = _adopt_rar5_file_members(members, run, max_members=max_members)
     seen_file_offsets.update(m.header_offset for m in run)
     _seek_to(source, pos)
     return needs_next
@@ -1780,6 +1818,7 @@ def _parse_rar5(
     sfx_offset: int,
     volume_index: int = 0,
     use_qo: bool = True,
+    max_members: int | None = None,
 ) -> RarArchive:
     _require_exact(source, len(RAR5_ID), "RAR5 signature")
 
@@ -1822,6 +1861,7 @@ def _parse_rar5(
             qo_by_off=qo_by_off,
             members=members,
             seen_file_offsets=seen_file_offsets,
+            max_members=max_members,
         )
         if skipped is not None:
             if skipped:
@@ -1890,6 +1930,7 @@ def _parse_rar5(
                         qopen_abs=qopen_abs,
                         volume_index=volume_index,
                         min_file_offset=resume_pos,
+                        max_members=max_members,
                     )
                     if listed is not None:
                         qo_members, _qo_end = listed
@@ -1954,7 +1995,7 @@ def _parse_rar5(
                 # QO copies are emitted in `_emit_and_skip_qo_run` before this
                 # read; this branch is holes, FILE after QO, and the no-QO walk.
                 if member.header_offset not in seen_file_offsets:
-                    if _emit_rar5_file_member(members, member):
+                    if _emit_rar5_file_member(members, member, max_members=max_members):
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
             elif block_type == _RAR5_SERVICE and _is_stored_rar5_cmt(member):

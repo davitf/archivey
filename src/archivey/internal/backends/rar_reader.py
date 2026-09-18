@@ -762,6 +762,8 @@ class RarReader(BaseArchiveReader):
         self._archive_path = paths[0]
 
     def _parse_archive(self) -> tuple[RarArchive, str | None]:
+        max_members = self._config.listing_limits.max_members
+
         def parse(password: bytes | None) -> RarArchive:
             if len(self._volume_paths) > 1:
                 handles: list[BinaryIO] = []
@@ -771,7 +773,9 @@ class RarReader(BaseArchiveReader):
                         if index == 0 and self._volume0_parse_origin:
                             handle.seek(self._volume0_parse_origin)
                         handles.append(handle)
-                    return parse_rar_volumes(handles, password=password)
+                    return parse_rar_volumes(
+                        handles, password=password, max_members=max_members
+                    )
                 finally:
                     for handle in handles:
                         handle.close()
@@ -781,12 +785,16 @@ class RarReader(BaseArchiveReader):
             if self._volume_paths:
                 with self._volume_paths[0].open("rb") as handle:
                     handle.seek(self._origin)
-                    return parse_rar_archive(handle, password=password)
+                    return parse_rar_archive(
+                        handle, password=password, max_members=max_members
+                    )
 
             view = self._shared.view(0)
             try:
                 view.seek(self._origin)
-                archive = parse_rar_archive(view, password=password)
+                archive = parse_rar_archive(
+                    view, password=password, max_members=max_members
+                )
                 if archive.needs_next_volume or archive.is_volume:
                     raise TruncatedError(
                         "Incomplete RAR multi-volume set: additional volumes required"

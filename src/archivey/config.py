@@ -121,7 +121,10 @@ class ListingLimits:
 
     Applied from the reader's open :attr:`ArchiveyConfig.listing_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.
-    ``stream_members`` / forward-only iteration do not enforce these caps.
+    ``stream_members`` / forward-only iteration do not enforce these caps on
+    scan-as-you-go formats. RAR builds the member table at open, so
+    ``max_members`` is enforced then (``open_archive`` raises) and is not an
+    escape hatch.
     """
 
     max_members: int | None = 1_048_576
