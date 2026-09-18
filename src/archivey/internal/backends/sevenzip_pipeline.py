@@ -49,7 +49,6 @@ from archivey.internal.backends.sevenzip_methods import (
 )
 from archivey.internal.backends.sevenzip_parser import (
     _MAX_NEXT_HEADER_SIZE,
-    _NESTED_ENCODED_HEADER_MESSAGE,
     EncodedHeader,
     PlainHeader,
     SevenZipArchive,
@@ -535,8 +534,8 @@ def unwrap_encoded_header(
         decoded = decode(block)
         block = parse_header_block(decoded, max_members=max_members)
         if isinstance(block, EncodedHeader):
-            # A second EncodedHeader is hostile (COPY payload that is itself).
-            raise CorruptionError(_NESTED_ENCODED_HEADER_MESSAGE)
+            # A second EncodedHeader is hostile (COPY payload that is itself; O14).
+            raise CorruptionError("Encoded 7z header decoded to another encoded header")
     assert isinstance(block, PlainHeader)
     return block, header_encrypted
 
