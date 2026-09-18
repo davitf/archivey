@@ -1454,20 +1454,30 @@ def _sevenzip_uint64(value: int) -> bytes:
     return b"\xff" + value.to_bytes(8, "little")
 
 
-def _num_unpack_stream_header(count: int, *, crc_all_defined: bool = False) -> bytes:
+def _num_unpack_stream_header(
+    count: int, *, crc_all_defined: bool = False, header_pad: int = 0
+) -> bytes:
     """HEADER + one COPY folder + ``kNumUnPackStream = count``, no SIZE (S2-F1).
 
     When ``crc_all_defined`` is set, a ``kCRC`` / all-defined flag follows the count so
     the ``_load_boolean(..., check_all=True)`` ``[True] * count`` path is the one that
     would allocate. Remaining bytes after the flag are irrelevant: the count must be
     rejected before that allocation.
+
+    ``header_pad`` inserts a FILES_INFO DUMMY payload so a legitimate-scale count
+    can sit in a header large enough to pass the O1-style buffer bound.
     """
-    body = bytes.fromhex("0104070b010001000c0a00080d") + _sevenzip_uint64(count)
+    body = bytearray(bytes.fromhex("0104070b010001000c0a00080d"))
+    body += _sevenzip_uint64(count)
     if crc_all_defined:
         body += bytes.fromhex("0a01")
     else:
         body += b"\x00"
-    return body + bytes.fromhex("0005000000")
+    body += b"\x00\x05\x00"  # END streams, FILES_INFO, num_files=0
+    if header_pad:
+        body += bytes([0x19]) + _sevenzip_uint64(header_pad) + (b"\x00" * header_pad)
+    body += b"\x00\x00"  # END files, END header
+    return bytes(body)
 
 
 def test_files_info_count_is_bounded_against_header_size() -> None:
@@ -1498,34 +1508,38 @@ def test_num_unpack_streams_count_is_bounded() -> None:
     assert ok.streams.num_unpackstreams_folders == [2]
     assert ok.streams.digests == [None, None]
 
-    at_cap = parse_header_block(_num_unpack_stream_header(_MAX_NUM_STREAMS))
-    assert isinstance(at_cap, PlainHeader)
-    assert at_cap.streams.num_unpackstreams_folders == [_MAX_NUM_STREAMS]
-    assert len(at_cap.streams.digests) == _MAX_NUM_STREAMS
+    # Above the structural pack/folder cap, but inside a header large enough
+    # for the count — the bound that used to reject this is the F1 regression.
+    above_stream_cap = _MAX_NUM_STREAMS + 1
+    at_scale = parse_header_block(
+        _num_unpack_stream_header(above_stream_cap, header_pad=above_stream_cap)
+    )
+    assert isinstance(at_scale, PlainHeader)
+    assert at_scale.streams.num_unpackstreams_folders == [above_stream_cap]
+    assert len(at_scale.streams.digests) == above_stream_cap
 
-    for count in (_MAX_NUM_STREAMS + 1, 1 << 20, 1 << 40):
-        with pytest.raises(CorruptionError, match="unpack stream count"):
+    for count in (above_stream_cap, 1 << 20, 1 << 40):
+        with pytest.raises(CorruptionError, match="unpack stream count .* header"):
             parse_header_block(_num_unpack_stream_header(count))
-        with pytest.raises(CorruptionError, match="unpack stream count"):
+        with pytest.raises(CorruptionError, match="unpack stream count .* header"):
             parse_header_block(_num_unpack_stream_header(count, crc_all_defined=True))
 
 
 def test_num_unpack_streams_sum_across_folders_is_bounded() -> None:
-    """Per-folder counts under the cap can still sum past it."""
+    """Per-folder counts under the header-size cap can still sum past it."""
     from archivey.exceptions import CorruptionError
-    from archivey.internal.backends.sevenzip_parser import (
-        _MAX_NUM_STREAMS,
-        parse_header_block,
-    )
+    from archivey.internal.backends.sevenzip_parser import parse_header_block
 
-    # Two COPY folders, kNumUnPackStream = MAX + 1.
+    # Two COPY folders, counts that each fit in this ~24-byte header (20 < 24)
+    # but sum past it (40 > 24).
     header = (
         bytes.fromhex("0104070b0200010001000c0a0a00080d")
-        + _sevenzip_uint64(_MAX_NUM_STREAMS)
-        + _sevenzip_uint64(1)
+        + _sevenzip_uint64(20)
+        + _sevenzip_uint64(20)
         + bytes.fromhex("000005000000")
     )
-    with pytest.raises(CorruptionError, match="unpack stream count"):
+    assert 20 < len(header) < 40
+    with pytest.raises(CorruptionError, match="unpack stream count .* header"):
         parse_header_block(header)
 
 
@@ -1708,8 +1722,8 @@ def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
     from archivey.internal.backends.sevenzip_parser import _MAX_NEXT_HEADER_SIZE
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
-    # Two COPY folders, unpack 1 + _MAX_NEXT_HEADER_SIZE. The first is under the
-    # per-folder cap; the running total is not.
+    # Two COPY folders, unpack 1 + _MAX_NEXT_HEADER_SIZE. The running total
+    # is the bound; a per-folder check would let the first through.
     next_header = (
         bytes.fromhex("1706000209010100070b0200010001000c")
         + _sevenzip_uint64(1)
@@ -1719,6 +1733,39 @@ def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
     blob = _sevenzip_blob(packed=b"\x00\x00", next_header=next_header)
     with pytest.raises(CorruptionError, match="unpack size|parser limit"):
         parse_sevenzip_archive(io.BytesIO(blob))
+
+
+@pytest.mark.timeout(120)
+@requires_binary("7z")
+def test_solid_archive_above_stream_cap_still_opens(tmp_path: Path) -> None:
+    """A real solid 7z with more members than ``_MAX_NUM_STREAMS`` must still open.
+
+    That cap is structural (pack/folder/coder). Applying it to ``kNumUnPackStream``
+    rejected ordinary 7-Zip output (review F1).
+    """
+    from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
+
+    n = _MAX_NUM_STREAMS + 1
+    src = tmp_path / "many"
+    src.mkdir()
+    for i in range(n):
+        d = src / f"d{i // 1000:03d}"
+        d.mkdir(exist_ok=True)
+        (d / f"f{i:05d}.txt").write_bytes(b"x")
+    archive = tmp_path / "many.7z"
+    result = subprocess.run(
+        ["7z", "a", "-t7z", str(archive), src.name],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build large-member fixture: {result.stderr!r}")
+
+    with open_archive(archive) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        assert len(files) == n
+        assert reader.read(files[-1]) == b"x"
 
 
 # py7zr's empty.7z: signature + start_header with nextHeaderSize == 0.

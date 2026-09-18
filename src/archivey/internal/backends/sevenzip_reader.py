@@ -289,9 +289,13 @@ class SevenZipReader(BaseArchiveReader):
         header_encrypted = False
         nesting = 0
         while isinstance(block, EncodedHeader):
-            nesting = check_encoded_header_nesting(nesting)
             header_encrypted = header_encrypted or encoded_header_needs_password(block)
             try:
+                # Inside the try so a nesting reject on a second encoded layer
+                # after a wrong-password AES decrypt still becomes
+                # EncryptionError (D8). Unencrypted self-copy re-raises
+                # CorruptionError unchanged because header_encrypted is False.
+                nesting = check_encoded_header_nesting(nesting)
                 decoded = self._decode_encoded_header_block(fp, block)
                 block = parse_header_block(decoded)
             except (UnsupportedFeatureError, CorruptionError) as exc:

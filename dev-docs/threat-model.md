@@ -24,9 +24,9 @@ when members are registered into a materialized / resolved list (`members()`,
 (`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
 `stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
 hatch). Format-local parser bounds (e.g. 7z `num_files` vs header size →
-`CorruptionError`; 7z pack/unpack-stream counts at `_MAX_NUM_STREAMS`, including
-the `kNumUnPackStream` field that does not consume per-stream header bytes —
-O13; RAR member-count ceiling at parse) stay as defense-in-depth.
+`CorruptionError`; 7z pack-stream/folder/coder counts at `_MAX_NUM_STREAMS`;
+7z `kNumUnPackStream` vs header size — O13; RAR member-count ceiling at parse)
+stay as defense-in-depth.
 RAR5 QO records that are not FILE never reach `_append_member`; their bound is
 `_RAR5_QO_PAYLOAD_MAX` (16 MiB), and parse of that payload is linear (PR #311).
 Indexed formats (7z/RAR) may still allocate up to those parser ceilings during
@@ -460,9 +460,11 @@ read any CRC words. Measured: N = 2²⁰ allocated 1,048,576 entries in 0.016 s;
 N = 2⁴⁰ dies on untranslated `MemoryError`.
 
 *Closed:* each per-folder unpack-stream count, and the sum across folders, is
-rejected above `_MAX_NUM_STREAMS` before any `* count` / `range(count)`
-allocation. `num_folders`, `num_coders`, and coder in/out stream counts use
-the same helper. Found on PR #315 (S2-F1); Linear ARC-50.
+rejected when it exceeds the already-capped header buffer size, before any
+`* count` / `range(count)` allocation. `_MAX_NUM_STREAMS` stays on pack
+streams, folders, and coders — it must not apply to unpack streams, because a
+solid archive puts every file in one folder so that count *is* the member
+count. Found on PR #315 (S2-F1); Linear ARC-50.
 
 ### O14. 7z encoded-header decode had no nesting limit — closed
 

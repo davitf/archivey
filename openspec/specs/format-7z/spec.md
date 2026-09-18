@@ -108,7 +108,7 @@ implemented by reusing `ExtractionLimits.max_entries`.
 | Case | Expected |
 | --- | --- |
 | `num_files` greater than header buffer size | `CorruptionError` at parse; no giant pre-allocation |
-| `NumUnpackStreams` (or the sum across folders) greater than `_MAX_NUM_STREAMS` | `CorruptionError` at parse; no giant `* count` allocation |
+| `NumUnpackStreams` (or the sum across folders) greater than the header buffer size | `CorruptionError` at parse; no giant `* count` allocation |
 | Legitimate archive whose header is large enough for its file count | Parse succeeds; listing still subject to `ListingLimits` |
 | Archive within parser bounds but over `listing_limits.max_members` | Parse may succeed; `members()` / materialization raises `ResourceLimitError` |
 

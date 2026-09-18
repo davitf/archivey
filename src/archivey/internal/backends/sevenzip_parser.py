@@ -55,6 +55,9 @@ MAGIC_7Z = b"7z\xbc\xaf'\x1c"
 _SIGNATURE_HEADER_SIZE = 32
 _MAX_UINT64_ENCODING = 8
 _MAX_UTF16_CHARS = 65536
+# Structural cap for pack streams, folders, and coders. Unpack-stream counts are
+# the number of files with content in a folder (a solid archive puts every file
+# in one folder), so they use the header-size bound instead — same as num_files.
 _MAX_NUM_STREAMS = 65536
 # 7-Zip writes a single encoded-header layer (plain HEADER packed as one folder).
 # A COPY encoded header whose payload is itself loops forever without this cap (O14).
@@ -217,6 +220,13 @@ def _check_length(length: int, context: str) -> None:
 def _require_stream_count(count: int, what: str) -> None:
     if count > _MAX_NUM_STREAMS:
         raise CorruptionError(f"7z {what} count is too large: {count}")
+
+
+def _require_header_count(count: int, header_size: int, what: str) -> None:
+    if count > header_size:
+        raise CorruptionError(
+            f"7z {what} count {count} exceeds the {header_size}-byte header"
+        )
 
 
 def check_encoded_header_nesting(depth: int) -> int:
@@ -803,17 +813,21 @@ def _read_substreams_info(
 ) -> tuple[list[int], list[int], list[int | None]]:
     prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     if prop == _Property.NUM_UNPACK_STREAM:
-        # Remaining header bytes do not bound this field: kSize/kCRC may be
-        # absent, and the else branch does ``digests.extend([None] * count)``
-        # with no per-stream read. ``_load_boolean(..., check_all=True)`` is
-        # the same bomb one property later. See threat-model O13 / S2-F1.
+        # Remaining bytes do not bound this field: kSize/kCRC may be absent,
+        # and the else branch does ``digests.extend([None] * count)`` with no
+        # per-stream read. ``_load_boolean(..., check_all=True)`` is the same
+        # bomb one property later. Bound against the already-capped header
+        # buffer, like ``num_files`` (O1). ``_MAX_NUM_STREAMS`` is the
+        # pack/folder/coder cap and must not apply here: a solid archive's
+        # unpack-stream count *is* the member count (O13 / review F1).
+        header_size = len(cur.buf)
         num_unpackstreams_folders = []
         total_unpack_streams = 0
         for _ in folders:
             count = cur.uint64()
-            _require_stream_count(count, "unpack stream")
+            _require_header_count(count, header_size, "unpack stream")
             total_unpack_streams += count
-            _require_stream_count(total_unpack_streams, "unpack stream")
+            _require_header_count(total_unpack_streams, header_size, "unpack stream")
             num_unpackstreams_folders.append(count)
         prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     else:

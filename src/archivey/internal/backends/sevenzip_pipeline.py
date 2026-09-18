@@ -484,15 +484,12 @@ def decode_encoded_header(
         compressed_size,
         uncompressed_size,
     ) in encoded_folder_slices(encoded):
-        # Hostile archives can claim a multi-EiB folder unpack size. Cap before
-        # ``read_exact`` / codec buffers allocate (Atheris: raw MemoryError).
-        # Per-folder is not enough: two COPY folders at 40 MiB concatenate past
-        # the 64 MiB next-header cap (S2-F2).
-        if uncompressed_size > _MAX_NEXT_HEADER_SIZE:
-            raise CorruptionError(
-                f"Encoded 7z header unpack size {uncompressed_size} exceeds the "
-                f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
-            )
+        # Hostile archives can claim a multi-EiB folder unpack size. Cap the
+        # running total before ``read_exact`` / codec buffers allocate
+        # (Atheris: raw MemoryError). Per-folder is redundant: unpack sizes
+        # are non-negative, so a single folder over the cap fails the total
+        # on the same iteration. Two COPY folders at 40 MiB concatenate past
+        # the 64 MiB next-header cap (S2-F2) — that is why the total matters.
         claimed += uncompressed_size
         if claimed > _MAX_NEXT_HEADER_SIZE:
             raise CorruptionError(
