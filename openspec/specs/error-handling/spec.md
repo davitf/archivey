@@ -421,18 +421,7 @@ register one, and that seam MUST NOT silently arm this.
 > **Scope of that follow-up: two sites, not one.** The filename decides the stamp here via
 > `_extension_corroborates`, and in `_brotli_probe_confidence` via the `.br`-to-`PROBABLE`
 > rule shipped in #261. They are the same rule expressed twice; removing only the first
-> leaves the second contradicting §9. Neither is introduced by this change.
->
-> **Sequencing, measured.** This requirement never suppresses a stamp that the previous
-> confidence-keyed rule produced: "old stamps, new does not" reduces to `GUESS` **and**
-> corroborated, and that pair is unreachable — every extension that corroborates a Brotli
-> result has `stream is BROTLI`, which is exactly what makes `_brotli_probe_confidence`
-> report `PROBABLE`; the inner-TAR arm forces `PROBABLE`; and the zlib and LZMA Alone
-> probes are unconditionally `PROBABLE`. Measured on the residual fixtures, against the
-> pre-change tree: extensionless Brotli and extensionless LZMA Alone went from silent to
-> stamped, and the `.br` / `.lzma` cases were silent before and after. So this change is a
-> strict increase in what is stamped, and reverting it would restore a larger blind spot
-> (Alone and zlib never stamped at all) rather than remove the contested rule.
+> leaves the second contradicting §9.
 
 Today an uncorroborated source raises `TruncatedError (member=…, format=BROTLI)` — or
 `CorruptionError (format=LZMA_ALONE)` — asserting two things that are not known: that the
