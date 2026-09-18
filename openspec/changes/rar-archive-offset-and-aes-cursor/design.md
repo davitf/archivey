@@ -36,13 +36,27 @@ its docstring explains that this keeps the ciphertext cursor derivable as
 `_cipher_start + _pos + len(_buf)` — then adds: *"A short non-empty source read leaves
 bytes in the stage buffer and the identity does not hold."*
 
-AES-CBC advances a whole block at a time. A short read does not merely break an accounting
-identity; the leftover ciphertext then decrypts against the wrong IV. The 7z caller is
-safe because a `SharedView` over a file returns full counts, so today the hole is
-unreachable — but it is unreachable by the *source's* behaviour, not by anything this
-class does. `_HeaderDecryptStream` closed it with `read_exact` and said why in a comment.
-Using `read_exact` here makes the identity unconditional, which is also what lets
-`cipher_tell()` be a one-liner rather than a caveat.
+**The plaintext is not at risk, and it is worth being precise about that**, because the
+neighbouring comment in `_HeaderDecryptStream` says otherwise for good reasons of its own.
+`AesDecryptStream.read` loops until it has `n` bytes, and `_CryptographyDecryptStage.update`
+(`crypto.py:118`) explicitly holds a partial trailing block until the rest arrives — so a
+short source read costs an extra loop iteration, nothing more. Measured against a 1024-byte
+CBC payload with every source `read` capped at 7 bytes, and again at 1 byte: plaintext
+identical to the full-count run in both cases.
+
+What a short read breaks is the **cursor identity**, because the bytes parked inside the
+stage are unaccounted for by `_cipher_start + _pos + len(_buf)`. Measured: after `read(7)`
+from a 7-byte-capped source, the identity says 16 while the source is at 21.
+
+`_HeaderDecryptStream`'s comment — *"a short read must be gathered, not treated as EOF, or
+the remaining ciphertext decrypts against the wrong IV"* — is true **of that class**, which
+does `read_exact(self._source, 16)` and `break`s on a short count with no retry loop. It
+does not generalise to `AesDecryptStream`, and an earlier draft of this change generalised
+it anyway. Both classes gather; they gather for different reasons.
+
+So `read_exact` here buys exactly one thing: an unconditional cursor identity, which is
+what lets `cipher_tell()` be a one-liner rather than a caveat. That is enough to want it,
+and it is not a correctness fix.
 
 ## Decisions
 

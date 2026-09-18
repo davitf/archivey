@@ -23,13 +23,20 @@
 
 ## 3. Tests
 
-- [ ] 3.1 A source that returns short non-empty reads (a wrapper over `BytesIO` capping
-      each `read` at, say, 7 bytes) produces byte-identical plaintext to a full-count
-      source. Verify it fails against the pre-2.1 code — a short read there corrupts every
-      block after the first, so this should be loudly red, not subtly.
-- [ ] 3.2 `cipher_tell()` equals the source's own `tell()` at several mid-block plaintext
-      positions, including after a partial `read` that leaves `_buf` non-empty. That
-      leftover case is the whole reason the RAR walk needs the accessor.
+- [ ] 3.1 **Regression guard, not a red–green.** A source that returns short non-empty
+      reads (a wrapper over `BytesIO` capping each `read` at, say, 7 bytes) produces
+      byte-identical plaintext to a full-count source. This already passes before 2.1 and
+      must keep passing after it — do **not** expect it to go red. `AesDecryptStream.read`
+      loops until it has `n` bytes and `_CryptographyDecryptStage.update` holds a partial
+      trailing block, so short reads have never been a correctness problem here; see
+      `design.md` §"Why the gather is a correction, not a preference" for the measurement
+      and for why `_HeaderDecryptStream`'s comment about the wrong IV does not generalise.
+- [ ] 3.2 **This is the red–green for 2.1 and 2.2.** `cipher_tell()` equals the source's
+      own `tell()` at several mid-block plaintext positions, including after a partial
+      `read` that leaves `_buf` non-empty, **and** against a source that returns short
+      reads. The short-read case is the one that fails before 2.1: measured, after
+      `read(7)` from a 7-byte-capped source the identity gives 16 while the source is at
+      21. That leftover case is also the whole reason the RAR walk needs the accessor.
 - [ ] 3.3 The existing RAR parser suite still passes unchanged — especially
       `test_encrypted_header_plaintext_tell_breaks_the_walk`, which pins the `tell()`
       semantics task 1.1 is re-expressing. If it needs editing, 1.1 went wrong.

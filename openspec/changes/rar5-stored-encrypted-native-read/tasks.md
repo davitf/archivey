@@ -60,7 +60,12 @@
       natively decrypted member is digest-verified by `_tweaked_verify_spec` exactly as
       the spawned read is. This is expected to be free; assert it rather than assume it.
 - [ ] 2.5 When neither a crypto backend nor a RARLAB binary is present, raise
-      `PackageNotInstalledError` naming **both** routes. Do this by catching and
+      `PackageNotInstalledError` naming **both** routes.
+      **Maintainer decision (davitf, 2026-09-18,
+      [#356](https://github.com/davitf/archivey/pull/356#pullrequestreview-5250124282)):**
+      keep both routes in the exception — `[recommended]` becomes a real alternative to the
+      binary for this member shape, so a caller who has neither should be told both doors.
+      Not open to re-litigation. Do this by catching and
       re-raising at the `_open_member` call site, which is the only place that knows both
       the member shape and whether the gate declined for want of a backend — **not** by
       teaching `rar_unrar.py` about `cryptography`. The message today is the module

@@ -16,9 +16,11 @@ keeping them aligned is prose.
 **`AesDecryptStream` disclaims its own invariant.** Its `read` docstring states that the
 ciphertext cursor is derivable as `_cipher_start + _pos + len(_buf)` *"for a full-count
 source"*, and then notes that a short non-empty `self._source.read(ask)` leaves bytes in
-the stage and breaks the identity. `_HeaderDecryptStream` does not have that hole: it uses
-`read_exact`. The 7z caller does not hit it in practice because a `SharedView` returns full
-counts, but "does not hit it in practice" is what the disclaimer is admitting.
+the stage and breaks the identity. The **plaintext** is fine either way — the read loop and
+the stage's own partial-block buffer see to that, measured at 1-byte and 7-byte source caps
+— so this is an accounting hole, not a correctness one. It is still worth closing, because
+the identity is what `cipher_tell()` is built on, and a cursor with a disclaimer attached
+is not a cursor the RAR walk can use.
 
 ## What Changes
 

@@ -106,6 +106,21 @@ stdlib/`cryptography`, and the RAR5 KDF wiring already in the tree under `rarfil
 licence. No decompression algorithm is derived or reimplemented, and every compressed
 member still goes to the RARLAB binary.
 
+### The temp-copy caveat says "compressed" where it means "needs the spawn"
+
+`format-rar`'s "Serve random access and extraction with bounded explicit temp use" warns a
+non-path stream caller that reading a **compressed** member copies the whole archive to
+disk. That has always been understated: a stored *encrypted* member goes through the spawn
+and triggers the copy too. `rar5-stored-encrypted-native-read` removes exactly the RAR5
+half of that set, which is what makes the wording this change's problem rather than a
+pre-existing one to leave alone.
+
+Rejected: leaving the word "compressed" and noting the requirement was considered. It would
+stay understated for RAR4 stored encrypted members, which keep spawning — so the caveat
+would be wrong in a way this change is directly responsible for narrowing. Widening it to
+"a member that requires the RARLAB spawn" makes it true before and after, and the RAR4
+scenario row is what keeps it honest.
+
 ## ADR amendment
 
 ADR [0002](../../../dev-docs/decisions/0002-native-rar-metadata-unrar-data.md) says

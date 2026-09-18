@@ -135,8 +135,7 @@ desynchronize sizes).
 
 The caveat's wording SHALL track the set in "Use RARLAB unrar only for member data that
 needs it" rather than naming compression: a stored **encrypted** member triggers the copy
-too, and this change removes exactly the RAR5 half of that set. Saying "compressed" would
-leave the caveat understated for RAR4 stored encrypted members, which keep spawning.
+too.
 
 #### Scenario: random/extract matrix
 
