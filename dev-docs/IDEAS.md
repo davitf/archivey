@@ -213,42 +213,19 @@
   once `sevenzip-aes-tail-key-check` lands, the `Copy` case is O(1) for the ~75% of
   archives with at least 4 padding bytes, leaving `Copy` + short-or-nonstandard padding +
   a multi-member solid folder. Promote with the seekable-stream change rather than alone.
+  A multi-member COPY folder is not constructible with the 7z CLI (every COPY member
+  gets its own folder regardless of `-ms`), so a prefix-over-AES path is uncovered by
+  construction.
 
-- **Read a stored encrypted RAR5 member without `unrar`** — `_can_direct_read`
-  (`rar_reader.py`) already serves stored, non-solid, unsplit members from a direct
-  `SharedView` slice; `not info.is_encrypted` is the only thing excluding the encrypted
-  ones. Everything needed is parsed already: `_parse_rar5_file_encryption` captures
-  per-file salt + IV + check value, and `_rar5_s2k(password, salt, 1 << kdf_count)` *is*
-  the AES key derivation (`rar5_hash_key`'s docstring records the offset scheme; the
-  header path already calls it). Verified on #342: key + IV + `AesDecryptStream` over
-  the slice reproduces `unrar`'s output byte-for-byte at 7 / 3000 / 3001 bytes, and
-  seeks. Wins a dropped subprocess, no `PackageNotInstalledError` for that shape, no
-  temp-file copy for a non-path source, and O(1) seek from the CBC restart. Needs: an
-  ADR [0002](decisions/0002-native-rar-metadata-unrar-data.md) amendment (it scopes
-  native decryption to headers), a wrong-password path from the FILE record's 12-byte
-  PswCheck (`_check_rar5_password` is written for the header block and is untested
-  against a FILE record), and RAR5-only scoping — `rar_parser.py` sets
-  `file_encryption=None` on the RAR3 path, so RAR4's 8-byte `LHD` salt is not parsed.
-  Split/volume-spanning stay excluded by the existing `_can_direct_read` guards.
-  Maintainer decision (davitf, 2026-09-16): yes, follow-up PR.
+- **Read a stored encrypted RAR5 member without `unrar`** — **promoted** to
+  `openspec/changes/rar5-stored-encrypted-native-read/`. Maintainer decision (davitf,
+  2026-09-16): yes, follow-up PR; written up 2026-09-17, not yet scheduled.
 
-- **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** — of the
-  divergences `crypto.py` used to list, ownership is `owns_inner`, `read` already gathers
-  short source reads, and a short last block now raises `TruncatedError` instead of
-  the 7z zero-pad drain. The ciphertext cursor is derivable as `_cipher_start + _pos +
-  len(_buf)` for a full-count source (ADR 0014) once source asks are rounded to a
-  block. What actually blocks it: (a) the
-  header walk binds `header_fd` to *either* the raw archive handle or the decrypt stream
-  and calls `.tell()` on both for `header_offset` / `data_offset`, so `tell()` means
-  *archive offset* — a second method doesn't help while the raw handle is the other arm;
-  (b) the header stream sits on the archive handle mid-file and unbounded, so
-  `AesDecryptStream` would compute `_cipher_len` as "rest of the file" and advertise
-  `seekable()`. Converging means an explicit `archive_offset()` with a thin adapter over
-  the raw handle plus a `length=` bound on the wrapper. The truncation change removed
-  one divergence; the two blockers above are unaffected. Revisit after the
-  stored-encrypted-RAR5 work lands. A multi-member
-  COPY folder is not constructible with the 7z CLI (every COPY member gets its own
-  folder regardless of `-ms`), so a prefix-over-AES path is uncovered by construction.
+- **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** —
+  **promoted** to `openspec/changes/fold-rar-header-decrypt-stream/`, which carries the
+  two blockers (the overloaded `tell()` on `header_fd`'s two arms, and the unbounded
+  mid-file wrapper) and an explicit bar for abandoning the fold. Written up 2026-09-17,
+  not yet scheduled.
 
 - **`stream_members()` seekability leak** — the intended rule is that a sequential pass
   is never seekable (`seekable_members=True` only changes random `open()`). Enforced
