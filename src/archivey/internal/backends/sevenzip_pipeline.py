@@ -49,13 +49,15 @@ from archivey.internal.backends.sevenzip_methods import (
 )
 from archivey.internal.backends.sevenzip_parser import (
     _MAX_NEXT_HEADER_SIZE,
-    _NESTED_ENCODED_HEADER,
+    _NESTED_ENCODED_HEADER_MESSAGE,
     EncodedHeader,
+    PlainHeader,
     SevenZipArchive,
     SevenZipCoder,
     SevenZipFolder,
     encoded_folder_slices,
     folder_is_encrypted,
+    parse_header_block,
 )
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -517,6 +519,28 @@ def encoded_header_needs_password(encoded: EncodedHeader) -> bool:
     return any(folder_is_encrypted(folder) for folder in folders)
 
 
+def unwrap_encoded_header(
+    block: EncodedHeader | PlainHeader,
+    decode: Callable[[EncodedHeader], bytes],
+    *,
+    max_members: int | None = None,
+) -> tuple[PlainHeader, bool]:
+    """Decode at most one encoded-header layer. 7-Zip writes one.
+
+    Returns the plain header and whether that layer used 7zAES.
+    """
+    header_encrypted = False
+    if isinstance(block, EncodedHeader):
+        header_encrypted = encoded_header_needs_password(block)
+        decoded = decode(block)
+        block = parse_header_block(decoded, max_members=max_members)
+        if isinstance(block, EncodedHeader):
+            # A second EncodedHeader is hostile (COPY payload that is itself).
+            raise CorruptionError(_NESTED_ENCODED_HEADER_MESSAGE)
+    assert isinstance(block, PlainHeader)
+    return block, header_encrypted
+
+
 def parse_sevenzip_archive(
     fp: BinaryIO,
     *,
@@ -533,11 +557,8 @@ def parse_sevenzip_archive(
     ``max_members`` is omitted by fuzz helpers (header-size still bounds bombs).
     """
     from archivey.internal.backends.sevenzip_parser import (
-        EncodedHeader,
-        PlainHeader,
         empty_archive,
         materialize_archive,
-        parse_header_block,
         read_signature_and_next_header,
     )
 
@@ -547,24 +568,18 @@ def parse_sevenzip_archive(
         return empty_archive(signature)
 
     block = parse_header_block(signature.header_data, max_members=max_members)
-    header_encrypted = False
-    # Exactly one encoded layer: 7-Zip packs the plain HEADER as one folder and
-    # never nests. Decoding in a loop let a COPY header whose packed bytes are
-    # itself run forever (threat-model O14).
-    if isinstance(block, EncodedHeader):
-        header_encrypted = encoded_header_needs_password(block)
-        decoded = decode_encoded_header(
+    block, header_encrypted = unwrap_encoded_header(
+        block,
+        lambda encoded: decode_encoded_header(
             fp,
-            block,
+            encoded,
             password=password,
             key_cache=cache,
             stream_config=stream_config,
             collector=collector,
-        )
-        block = parse_header_block(decoded, max_members=max_members)
-        if isinstance(block, EncodedHeader):
-            raise CorruptionError(_NESTED_ENCODED_HEADER)
-    assert isinstance(block, PlainHeader)
+        ),
+        max_members=max_members,
+    )
     # O8: encrypted headers never legitimately decode to zero file records.
     # Without this, ~0.3% of wrong-password py7zr salts slip through as empty.
     if header_encrypted and not block.files:

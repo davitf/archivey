@@ -45,9 +45,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.sevenzip_methods import is_aes
 from archivey.internal.backends.sevenzip_parser import (
-    _NESTED_ENCODED_HEADER,
     EncodedHeader,
-    PlainHeader,
     SevenZipArchive,
     SevenZipFileRecord,
     SevenZipFolder,
@@ -64,6 +62,7 @@ from archivey.internal.backends.sevenzip_pipeline import (
     decode_folder_to_bytes,
     encoded_header_needs_password,
     open_folder_pipeline,
+    unwrap_encoded_header,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
@@ -287,30 +286,24 @@ class SevenZipReader(BaseArchiveReader):
 
         max_members = self._config.listing_limits.max_members
         block = parse_header_block(signature.header_data, max_members=max_members)
-        header_encrypted = False
-        # Exactly one encoded layer: 7-Zip packs the plain HEADER as one folder
-        # and never nests. Decoding in a loop let a COPY header whose packed
-        # bytes are itself run forever (threat-model O14).
-        if isinstance(block, EncodedHeader):
-            header_encrypted = encoded_header_needs_password(block)
-            try:
-                # Inside the try so a nested-header reject after a
-                # wrong-password AES decrypt still becomes EncryptionError
-                # (D8). Unencrypted self-copy re-raises CorruptionError
-                # unchanged because header_encrypted is False.
-                decoded = self._decode_encoded_header_block(fp, block)
-                block = parse_header_block(decoded, max_members=max_members)
-                if isinstance(block, EncodedHeader):
-                    raise CorruptionError(_NESTED_ENCODED_HEADER)
-            except (UnsupportedFeatureError, CorruptionError) as exc:
-                # AES header decrypt has no MAC: a wrong password yields garbage that
-                # fails property parsing rather than raising EncryptionError in decrypt.
-                if header_encrypted and self._passwords.has_static_candidates():
-                    raise EncryptionError(
-                        "Password(s) rejected for the 7z header"
-                    ) from exc
-                raise
-        assert isinstance(block, PlainHeader)
+        header_encrypted = isinstance(block, EncodedHeader) and (
+            encoded_header_needs_password(block)
+        )
+        try:
+            # Nested-header reject after a wrong-password AES decrypt still
+            # becomes EncryptionError (D8). Unencrypted self-copy re-raises
+            # CorruptionError because header_encrypted is False.
+            block, header_encrypted = unwrap_encoded_header(
+                block,
+                lambda encoded: self._decode_encoded_header_block(fp, encoded),
+                max_members=max_members,
+            )
+        except (UnsupportedFeatureError, CorruptionError) as exc:
+            # AES header decrypt has no MAC: a wrong password yields garbage that
+            # fails property parsing rather than raising EncryptionError in decrypt.
+            if header_encrypted and self._passwords.has_static_candidates():
+                raise EncryptionError("Password(s) rejected for the 7z header") from exc
+            raise
         # O8: 7zAES has no password check value. Wrong-key garbage occasionally
         # LZMA-decodes into a header that parses with zero file records (py7zr
         # omits the encoded-header folder CRC). Legitimate writers never encrypt

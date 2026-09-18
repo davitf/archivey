@@ -67,9 +67,8 @@ _MAX_UTF16_CHARS = 65536
 # (BCJ2 has four per folder) and keep the header-size bound only.
 _MAX_NUM_STREAMS = 65536
 # 7-Zip writes a single encoded-header layer (plain HEADER packed as one folder).
-# A COPY encoded header whose payload is itself loops forever without rejecting
-# a second EncodedHeader (O14).
-_NESTED_ENCODED_HEADER = "Encoded 7z header decoded to another encoded header"
+# A COPY encoded header whose payload is itself is a second EncodedHeader (O14).
+_NESTED_ENCODED_HEADER_MESSAGE = "Encoded 7z header decoded to another encoded header"
 # Hostile archives can claim a multi-EiB next-header offset/size. Cap before seek/read so we
 # never OverflowError on C ssize_t conversion or allocate a multi-GiB header buffer. Real 7z
 # headers are kilobytes; tens of MiB is already far past any legitimate archive.
