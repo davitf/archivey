@@ -524,11 +524,13 @@ def parse_sevenzip_archive(
     key_cache: SevenZipKeyCache | None = None,
     stream_config: StreamConfig | None = None,
     collector: DiagnosticCollector | None = None,
+    max_members: int | None = None,
 ) -> SevenZipArchive:
     """Parse a 7z archive end-to-end (plain or encoded header).
 
     Used by fuzz harnesses and tests. The reader uses the same two-phase flow with
     password-candidate prompting instead of a single ``password``.
+    ``max_members`` is omitted by fuzz helpers (header-size still bounds bombs).
     """
     from archivey.internal.backends.sevenzip_parser import (
         PlainHeader,
@@ -543,7 +545,7 @@ def parse_sevenzip_archive(
     if not signature.header_data:
         return empty_archive(signature)
 
-    block = parse_header_block(signature.header_data)
+    block = parse_header_block(signature.header_data, max_members=max_members)
     header_encrypted = False
     nesting = 0
     while isinstance(block, EncodedHeader):
@@ -557,7 +559,7 @@ def parse_sevenzip_archive(
             stream_config=stream_config,
             collector=collector,
         )
-        block = parse_header_block(decoded)
+        block = parse_header_block(decoded, max_members=max_members)
     assert isinstance(block, PlainHeader)
     # O8: encrypted headers never legitimately decode to zero file records.
     # Without this, ~0.3% of wrong-password py7zr salts slip through as empty.

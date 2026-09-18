@@ -1543,6 +1543,26 @@ def test_num_unpack_streams_sum_across_folders_is_bounded() -> None:
         parse_header_block(header)
 
 
+def test_member_scaled_counts_respect_max_members() -> None:
+    """Honest counts over ``listing_limits.max_members`` are ResourceLimitError, not corrupt."""
+    from archivey.exceptions import ResourceLimitError
+    from archivey.internal.backends.sevenzip_parser import parse_header_block
+
+    header = _num_unpack_stream_header(200, header_pad=200)
+    parse_header_block(header)
+    parse_header_block(header, max_members=None)
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        parse_header_block(header, max_members=100)
+
+    pack = bytes.fromhex("01040600") + _sevenzip_uint64(200) + (b"\x00" * 200)
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        parse_header_block(pack, max_members=100)
+
+    folders = bytes.fromhex("0104070b") + _sevenzip_uint64(200) + (b"\x00" * 200)
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        parse_header_block(folders, max_members=100)
+
+
 def test_cursor_truncated_property_payload_raises() -> None:
     """A property size larger than remaining header bytes must raise CorruptionError."""
     from archivey.exceptions import CorruptionError
@@ -1737,12 +1757,16 @@ def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
 
 @pytest.mark.timeout(120)
 @requires_binary("7z")
-def test_solid_archive_above_stream_cap_still_opens(tmp_path: Path) -> None:
-    """A real solid 7z with more members than ``_MAX_NUM_STREAMS`` must still open.
+def test_archives_above_stream_cap_still_open(tmp_path: Path) -> None:
+    """Solid and non-solid 7z above ``_MAX_NUM_STREAMS`` must still open.
 
-    That cap is structural (pack/folder/coder). Applying it to ``kNumUnPackStream``
-    rejected ordinary 7-Zip output (review F1).
+    That cap is structural (per-folder coders). Applying it to unpack streams
+    rejected ordinary solid 7-Zip output (review F1); applying it to pack
+    streams / folders rejected non-solid output (review F2). ``max_members``
+    is the liftable budget and fires at parse, not after allocating the table.
     """
+    from archivey.config import ListingLimits
+    from archivey.exceptions import ResourceLimitError
     from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
 
     n = _MAX_NUM_STREAMS + 1
@@ -1752,20 +1776,30 @@ def test_solid_archive_above_stream_cap_still_opens(tmp_path: Path) -> None:
         d = src / f"d{i // 1000:03d}"
         d.mkdir(exist_ok=True)
         (d / f"f{i:05d}.txt").write_bytes(b"x")
-    archive = tmp_path / "many.7z"
-    result = subprocess.run(
-        ["7z", "a", "-t7z", str(archive), src.name],
-        cwd=tmp_path,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        pytest.skip(f"7z CLI cannot build large-member fixture: {result.stderr!r}")
 
-    with open_archive(archive) as reader:
-        files = [m for m in reader.members() if m.is_file]
-        assert len(files) == n
-        assert reader.read(files[-1]) == b"x"
+    for extra_args, name in (([], "solid"), (["-ms=off"], "nonsolid")):
+        archive = tmp_path / f"{name}.7z"
+        result = subprocess.run(
+            ["7z", "a", "-t7z", *extra_args, str(archive), src.name],
+            cwd=tmp_path,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"7z CLI cannot build {name} fixture: {result.stderr!r}")
+
+        with open_archive(archive) as reader:
+            files = [m for m in reader.members() if m.is_file]
+            assert len(files) == n
+            assert reader.read(files[-1]) == b"x"
+
+        tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            open_archive(archive, config=tight)
+
+        unlimited = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
+        with open_archive(archive, config=unlimited) as reader:
+            assert sum(1 for m in reader.members() if m.is_file) == n
 
 
 # py7zr's empty.7z: signature + start_header with nextHeaderSize == 0.

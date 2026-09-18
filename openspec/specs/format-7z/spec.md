@@ -97,11 +97,14 @@ stream): any field or property read whose length exceeds the bytes remaining in
 the header SHALL raise `CorruptionError` at parse, never read past the buffer or
 return a short value.
 
-Spine `ListingLimits` (`archive-reading`) still apply when members are
-registered into a materialized list and raise `ResourceLimitError` when
-configured caps are exceeded. Parser bounds are defense-in-depth against
-allocation before Python `ArchiveMember` objects exist; they MUST NOT be
-implemented by reusing `ExtractionLimits.max_entries`.
+Spine `ListingLimits` (`archive-reading`) still apply. For 7z they are
+enforced at header parse — pack streams, folders, unpack streams, and
+`num_files` — because the whole index is resident at `open_archive`. A count
+over `listing_limits.max_members` (when not `None`) SHALL raise
+`ResourceLimitError` at parse, before per-entry allocation. `None`
+(`ListingLimits.UNLIMITED`) disables that bound; header-size
+`CorruptionError` remains. Parser bounds MUST NOT be implemented by reusing
+`ExtractionLimits.max_entries`.
 
 #### Scenario: 7z header bound matrix
 
@@ -109,8 +112,10 @@ implemented by reusing `ExtractionLimits.max_entries`.
 | --- | --- |
 | `num_files` greater than header buffer size | `CorruptionError` at parse; no giant pre-allocation |
 | `NumUnpackStreams` (or the sum across folders) greater than the header buffer size | `CorruptionError` at parse; no giant `* count` allocation |
+| Pack-stream or folder count greater than the header buffer size | `CorruptionError` at parse |
 | Legitimate archive whose header is large enough for its file count | Parse succeeds; listing still subject to `ListingLimits` |
-| Archive within parser bounds but over `listing_limits.max_members` | Parse may succeed; `members()` / materialization raises `ResourceLimitError` |
+| Pack-stream, folder, unpack-stream, or file count over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` |
+| `listing_limits.max_members is None` (`UNLIMITED`) | Header-size bound only; a large honest archive opens |
 
 #### Scenario: in-header read stays within the buffer
 

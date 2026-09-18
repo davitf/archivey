@@ -23,14 +23,18 @@ when members are registered into a materialized / resolved list (`members()`,
 `ResourceLimitError`. Defaults match extract `max_entries` on the count side
 (`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
 `stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
-hatch). Format-local parser bounds (e.g. 7z `num_files` vs header size →
-`CorruptionError`; 7z pack-stream/folder/coder counts at `_MAX_NUM_STREAMS`;
-7z `kNumUnPackStream` vs header size — O13; RAR member-count ceiling at parse)
-stay as defense-in-depth.
+hatch) on scan-as-you-go formats. 7z is indexed: the whole header is parsed at
+`open_archive`, so `listing_limits.max_members` is applied there (pack streams,
+folders, unpack streams, `num_files`) and an over-limit archive fails at open —
+`stream_members()` is not an escape hatch for 7z. `None` (`ListingLimits.UNLIMITED`)
+disables that bound. Format-local parser bounds (e.g. 7z count fields vs header
+size → `CorruptionError`; 7z per-folder coder/in-out counts at `_MAX_NUM_STREAMS`;
+RAR member-count ceiling at parse) stay as defense-in-depth.
 RAR5 QO records that are not FILE never reach `_append_member`; their bound is
 `_RAR5_QO_PAYLOAD_MAX` (16 MiB), and parse of that payload is linear (PR #311).
-Indexed formats (7z/RAR) may still allocate up to those parser ceilings during
-`open_archive()` before spine listing caps apply. `max_metadata_bytes` budgets
+Indexed formats may still allocate up to parser ceilings during
+`open_archive()` (7z: `max_members` or header size, whichever is tighter; RAR:
+`_MAX_ARCHIVE_MEMBERS`, still a parser constant). `max_metadata_bytes` budgets
 *retained* member metadata; it does not see a transient decode buffer discarded
 before any member exists. RAR3 compressed Unicode names used to expand ~100×
 that way (listing-time CPU at the `uint16` `name_size` ceiling, not unbounded
@@ -448,7 +452,7 @@ PR #315; tracked from PR #318.
 
 ### O13. 7z `NumUnpackStreams` allocated an unbounded list — closed
 
-`num_files` is bounded against header size (O1 / L1). Pack-stream count is
+`num_files` is bounded against header size (O1 / L1). Pack-stream count was
 bounded by `_MAX_NUM_STREAMS` (65536). `kNumUnPackStream` was not.
 
 When `kSize` and `kCRC` are absent, `_read_substreams_info` did
@@ -457,14 +461,17 @@ No remaining-bytes check can save it: no per-stream bytes are read. The CRC
 `all_defined != 0` path is the same bomb one step earlier:
 `_load_boolean(..., check_all=True)` does `[True] * count` before it tries to
 read any CRC words. Measured: N = 2²⁰ allocated 1,048,576 entries in 0.016 s;
-N = 2⁴⁰ dies on untranslated `MemoryError`.
+N = 2⁴⁰ dies on untranslated `MemoryError`. Applying `_MAX_NUM_STREAMS` to
+unpack streams then rejected ordinary solid 7z archives over 65,536 files;
+the same cap already rejected non-solid archives on pack-stream and folder
+counts.
 
-*Closed:* each per-folder unpack-stream count, and the sum across folders, is
-rejected when it exceeds the already-capped header buffer size, before any
-`* count` / `range(count)` allocation. `_MAX_NUM_STREAMS` stays on pack
-streams, folders, and coders — it must not apply to unpack streams, because a
-solid archive puts every file in one folder so that count *is* the member
-count. Found on PR #315 (S2-F1); Linear ARC-50.
+*Closed:* member-scaled counts (pack streams, folders, unpack streams and
+their sum, `num_files`) reject against the header buffer size
+(`CorruptionError`) and against `listing_limits.max_members`
+(`ResourceLimitError`; `None` disables). `_MAX_NUM_STREAMS` stays on
+per-folder coder graphs (coders, in/out streams). Found on PR #315 (S2-F1);
+Linear ARC-50.
 
 ### O14. 7z encoded-header decode had no nesting limit — closed
 

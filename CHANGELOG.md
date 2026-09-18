@@ -109,9 +109,12 @@ promise with that line; treat `0.2.0` as the first release of this library.
   was not bounded by remaining header bytes: with no `kSize`/`kCRC`, the parser did
   `[None] * N` (and `[True] * N` on the CRC all-defined path) from a few header
   bytes. N = 2²⁰ allocated in 0.016 s; N = 2⁴⁰ was an untranslated `MemoryError`.
-  Unpack-stream counts now reject against the header buffer size (same as
-  `num_files`) before that allocation. Pack-stream, folder, and coder counts
-  still reject above `_MAX_NUM_STREAMS` (65536). Threat-model O13.
+  Unpack-stream, pack-stream, folder, and file counts now reject against the
+  header buffer size (`CorruptionError`) and against
+  `listing_limits.max_members` (`ResourceLimitError`; `None` /
+  `ListingLimits.UNLIMITED` disables that bound) before that allocation.
+  Per-folder coder counts still reject above `_MAX_NUM_STREAMS` (65536).
+  Threat-model O13.
 - **7z encoded-header decode no longer hangs on a self-copy.** A 66-byte COPY
   encoded header whose packed bytes are itself looped until killed (`7z l` reports
   "Headers Error" in ~0.2 s). Nesting is capped at one layer; folder unpack sizes

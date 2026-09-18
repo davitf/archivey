@@ -285,7 +285,8 @@ class SevenZipReader(BaseArchiveReader):
         if not signature.header_data:
             return empty_archive(signature)
 
-        block = parse_header_block(signature.header_data)
+        max_members = self._config.listing_limits.max_members
+        block = parse_header_block(signature.header_data, max_members=max_members)
         header_encrypted = False
         nesting = 0
         while isinstance(block, EncodedHeader):
@@ -297,7 +298,7 @@ class SevenZipReader(BaseArchiveReader):
                 # CorruptionError unchanged because header_encrypted is False.
                 nesting = check_encoded_header_nesting(nesting)
                 decoded = self._decode_encoded_header_block(fp, block)
-                block = parse_header_block(decoded)
+                block = parse_header_block(decoded, max_members=max_members)
             except (UnsupportedFeatureError, CorruptionError) as exc:
                 # AES header decrypt has no MAC: a wrong password yields garbage that
                 # fails property parsing rather than raising EncryptionError in decrypt.
