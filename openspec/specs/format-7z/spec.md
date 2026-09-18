@@ -97,19 +97,27 @@ stream): any field or property read whose length exceeds the bytes remaining in
 the header SHALL raise `CorruptionError` at parse, never read past the buffer or
 return a short value.
 
-Spine `ListingLimits` (`archive-reading`) still apply when members are
-registered into a materialized list and raise `ResourceLimitError` when
-configured caps are exceeded. Parser bounds are defense-in-depth against
-allocation before Python `ArchiveMember` objects exist; they MUST NOT be
-implemented by reusing `ExtractionLimits.max_entries`.
+Spine `ListingLimits` (`archive-reading`) still apply. For 7z they are
+enforced at header parse — folders, unpack streams, and `num_files` —
+because the whole index is resident at `open_archive`. Pack streams are a
+coder-graph quantity (a BCJ2 folder has four) and keep the header-size
+bound only. A folder, unpack-stream, or file count over
+`listing_limits.max_members` (when not `None`) SHALL raise
+`ResourceLimitError` at parse, before per-entry allocation. `None`
+(`ListingLimits.UNLIMITED`) disables that bound; header-size
+`CorruptionError` remains. Parser bounds MUST NOT be implemented by reusing
+`ExtractionLimits.max_entries`.
 
 #### Scenario: 7z header bound matrix
 
 | Case | Expected |
 | --- | --- |
 | `num_files` greater than header buffer size | `CorruptionError` at parse; no giant pre-allocation |
+| `NumUnpackStreams` (or the sum across folders) greater than the header buffer size | `CorruptionError` at parse; no giant `* count` allocation |
+| Pack-stream, folder, unpack-stream, or file count greater than the header buffer size | `CorruptionError` at parse |
 | Legitimate archive whose header is large enough for its file count | Parse succeeds; listing still subject to `ListingLimits` |
-| Archive within parser bounds but over `listing_limits.max_members` | Parse may succeed; `members()` / materialization raises `ResourceLimitError` |
+| Folder, unpack-stream, or file count over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` |
+| `listing_limits.max_members is None` (`UNLIMITED`) | Header-size bound only; a large honest archive opens |
 
 #### Scenario: in-header read stays within the buffer
 
@@ -118,6 +126,22 @@ implemented by reusing `ExtractionLimits.max_entries`.
 | Property payload claims more bytes than remain in the header | `CorruptionError`; no read past the buffer |
 | A fixed-width field (uint32 / real-uint64 / byte) read at end-of-buffer | `CorruptionError`; never a short/zero-padded value |
 | Well-formed header exactly consumed to its end | Parse succeeds; no residual-bytes error |
+
+### Requirement: Bound encoded-header decode work
+
+The system SHALL decode at most one encoded-header layer (7-Zip writes one). A
+decoded blob that is itself `kEncodedHeader` SHALL raise `CorruptionError`.
+Unpack sizes across folders of one encoded header SHALL be summed against the
+next-header size cap (`_MAX_NEXT_HEADER_SIZE`) before concatenation, not only
+per folder.
+
+#### Scenario: encoded-header decode bound matrix
+
+| Case | Expected |
+| --- | --- |
+| COPY encoded header whose packed bytes are that same header | `CorruptionError` at open; no hang |
+| Two encoded-header folders whose unpack sizes each fit the cap but sum past it | `CorruptionError` at decode; no concatenated buffer past the next-header cap |
+| Legitimate single-layer encoded header (including header-encrypted) | Decode once; parse the resulting plain HEADER |
 
 ### Requirement: 7z anti-items are MemberType.ANTI
 
