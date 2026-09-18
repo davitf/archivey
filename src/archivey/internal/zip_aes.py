@@ -195,11 +195,14 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         return out
 
     def close(self) -> None:
-        if not self.closed:
+        if self.closed:
+            return
+        try:
             # Do not drain remaining ciphertext for HMAC: close is teardown,
             # not a verdict (ADR 0014).
             self._source.close()
-        super().close()
+        finally:
+            super().close()
 
 
 def open_winzip_aes_member(

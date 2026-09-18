@@ -17,7 +17,7 @@ from archivey.exceptions import (
     EncryptionError,
     PackageNotInstalledError,
 )
-from archivey.internal.zip_aes import parse_winzip_aes_extra
+from archivey.internal.zip_aes import WinZipAesDecryptStream, parse_winzip_aes_extra
 from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.zip_aes_fixture import build_aes_zip
@@ -248,6 +248,63 @@ def test_aes_tampered_hmac_partial_read_then_close_is_quiet(method: int) -> None
         with ar.open(ar.members()[0]) as stream:
             assert len(stream.read(16)) == 16
             stream.close()  # must not raise CorruptionError
+
+
+class _CloseCounter(io.BytesIO):
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+def _aes_decrypt_stream(source: io.BytesIO) -> WinZipAesDecryptStream:
+    return WinZipAesDecryptStream(
+        source,
+        enc_key=b"\x00" * 16,
+        auth_key=b"\x00" * 16,
+        cipher_len=50,
+    )
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_close_releases_source() -> None:
+    """Partial read then close still owns the source; a second close is a no-op.
+
+    After ARC-45, releasing ``_source`` is the only thing ``close()`` does.
+    """
+    src = _CloseCounter(b"\x00" * 60)
+    stream = _aes_decrypt_stream(src)
+    assert len(stream.read(16)) == 16
+    stream.close()
+    assert src.closed
+    assert src.close_calls == 1
+    assert stream.closed
+    stream.close()
+    assert src.close_calls == 1
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_close_marks_wrapper_closed_when_source_raises() -> None:
+    """A teardown OSError from the source still marks the wrapper closed.
+
+    ADR 0014: teardown errors propagate. ``super().close()`` must still run so a
+    later ``close()`` does not retry the source.
+    """
+
+    class BoomSource(io.BytesIO):
+        def close(self) -> None:
+            super().close()
+            raise OSError("teardown")
+
+    stream = _aes_decrypt_stream(BoomSource(b"\x00" * 60))
+    stream.read(16)
+    with pytest.raises(OSError, match="teardown"):
+        stream.close()
+    assert stream.closed
+    stream.close()  # no-op; must not re-raise
 
 
 @requires("cryptography")

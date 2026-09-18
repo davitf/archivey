@@ -226,9 +226,10 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     UnicodeDecodeError,
     ValueError,
     OSError,
-    # stdlib zipfile raises bare EOFError when a member's local data is truncated
-    # mid-read (e.g. a corrupt symlink target during listing). Must be translated
-    # like the other member-read errors — otherwise it escapes as a raw exception.
+    # stdlib zipfile raises bare EOFError on a truncated member body
+    # (ZipExtFile._read2 / _ZipDecrypter). Live site: compressed-confirm's
+    # prefix read. Must be translated like the other member-read errors —
+    # otherwise it escapes as a raw exception.
     EOFError,
 )
 

@@ -1043,7 +1043,7 @@ def test_verify_close_propagates_inner_close_error_and_closes_wrapper() -> None:
     """A teardown/integrity error raised by the inner's *own* close() propagates,
     and the wrapper is still marked closed. close() never probes/reads the inner to
     force a verdict — that is the read path's job — so this error can only come from
-    inner.close() itself (e.g. WinZip AES HMAC verification on close)."""
+    inner.close() itself (e.g. a subprocess teardown error)."""
     from archivey.exceptions import EncryptionError
 
     class AuthOnClose(io.BytesIO):
