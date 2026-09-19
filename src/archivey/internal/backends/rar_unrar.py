@@ -323,16 +323,49 @@ def _unrar_glob_demux_ok(presented: str) -> bool:
 
 
 def _unrar_component_match(name: str, mask: str) -> bool:
-    """Glob-match one path component: ``*``/``?`` wildcards, ``[]`` literal."""
-    parts: list[str] = []
-    for ch in mask:
-        if ch == "*":
-            parts.append(".*")
-        elif ch == "?":
-            parts.append(".")
+    """Glob-match one path component: ``*``/``?`` wildcards, ``[]`` literal.
+
+    Hand-written rather than compiled to a regex. The regex form spelled ``*`` as
+    ``.*``, which backtracks exponentially when a mask alternates wildcards with
+    literals that the subject can satisfy many ways — and both operands come from
+    the archive, so a hostile member name chose them. Measured before this rewrite:
+    ``"a" + "*a"*n + "b.txt"`` against ``"a"*60 + ".txt"`` cost 0.039 s at n=5 and
+    18.2 s at n=8, about 8x per added ``*``, with a name long enough to hold
+    hundreds. A 271-byte two-member archive spent 32.9 s inside ``reader.open()``,
+    before ``unrar`` was even spawned, so there was no subprocess to time out.
+
+    This is the standard two-pointer wildcard match: on a mismatch it retries from
+    the last ``*`` with one more character consumed, which is O(len(name) x
+    len(mask)) in the worst case and has no exponential term. Semantics are
+    unchanged — ``[`` and ``]`` are ordinary characters (unlike ``fnmatch``),
+    ``\\`` does not escape, and ``?`` matches any single character including a
+    newline (the old ``re.DOTALL``).
+    """
+    n_len, m_len = len(name), len(mask)
+    n_i = m_i = 0
+    # Position of the last ``*`` in the mask, and how much of ``name`` it had
+    # consumed when we passed it; -1 means we have not seen one yet.
+    star_m = -1
+    star_n = 0
+    while n_i < n_len:
+        if m_i < m_len and (mask[m_i] == "?" or mask[m_i] == name[n_i]):
+            n_i += 1
+            m_i += 1
+        elif m_i < m_len and mask[m_i] == "*":
+            star_m = m_i
+            star_n = n_i
+            m_i += 1
+        elif star_m >= 0:
+            # Backtrack: let the last ``*`` swallow one more character.
+            star_n += 1
+            n_i = star_n
+            m_i = star_m + 1
         else:
-            parts.append(re.escape(ch))
-    return re.fullmatch("".join(parts), name, flags=re.DOTALL) is not None
+            return False
+    # Trailing ``*``s may match empty; anything else left over is a mismatch.
+    while m_i < m_len and mask[m_i] == "*":
+        m_i += 1
+    return m_i == m_len
 
 
 def _unrar_mask_match(name: str, mask: str) -> bool:
