@@ -914,7 +914,7 @@ in the finding.
 ### The review trigger phrase is a command, not a quotable string
 
 The automated loop starts a review round when a **top-level comment** on a pull request or
-issue contains the trigger phrase ([`review-loop.yml`](../../../../.github/workflows/review-loop.yml);
+issue opens with the trigger phrase ([`review-loop.yml`](../../../../.github/workflows/review-loop.yml);
 [`review-loop.md`](../../../../dev-docs/review-loop.md) for what a round then does). **It is
 a command whoever wrote it.** An agent posting through the maintainer's account is
 indistinguishable from the maintainer, so a comment written to *explain* the phrase starts a
@@ -927,10 +927,14 @@ cannot fire it, and neither can a file in the tree. That is why `review-loop.yml
 [`review-loop.md`](../../../../dev-docs/review-loop.md) can quote the phrase freely — and
 why this file can.
 
-So: **never put the phrase in a comment you post unless you mean to start a round.** The
-match is a case-insensitive search rather than an anchored one, so "as in the phrase
-`@claude` + `review`" does not save you — mid-sentence counts. When a comment needs to talk
-about it, call it *the review trigger phrase* and link the workflow.
+So: **never open a comment with the phrase unless you mean to start a round.** Position is
+what carries the meaning — the match is anchored, so the phrase counts only at the start of a
+comment, leading whitespace aside, and quoting it mid-sentence asks for nothing. One
+side effect is worth knowing before you quote it: the general `@claude` assistant skips any
+comment holding the phrase anywhere, so a comment that mentions it mid-sentence gets no
+answer from the assistant either.
+[`review-loop.md`](../../../../dev-docs/review-loop.md) has the matching rules and the
+incident that produced them.
 
 ### Name the responder skill in the review body
 
