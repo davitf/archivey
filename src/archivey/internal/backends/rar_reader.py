@@ -39,6 +39,7 @@ from archivey.diagnostics import (
     DigestContext,
     MemberHeaderRecordContext,
 )
+from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -1460,6 +1461,27 @@ class RarReader(BaseArchiveReader):
         glob_prefix = self._unrar_glob_prefix(
             member, presented, version_control=version_control
         )
+        if glob_prefix and not self._config.rar_allow_glob_member_concatenation:
+            # unrar decompresses every earlier match before the target and emits
+            # them concatenated. The skip below returns the right bytes, but the
+            # decode has already happened, it is not bounded by anything the
+            # caller can set (`ExtractionLimits` do not reach `open()`/`read()`),
+            # and `AccessCost.DIRECT` does not predict it on a nonsolid archive.
+            # A name that reaches here matches a same-length sibling on every
+            # literal position, which is a constructed archive far more often
+            # than an accident. Maintainer (davitf, 2026-09-19): refuse it, with
+            # the config flag as the escape hatch. A glob name matching nothing
+            # else has `glob_prefix == 0` and never reaches this.
+            raise UnsupportedFeatureError(
+                f"Reading RAR member {quoted(member.name)} would decompress "
+                f"{glob_prefix} bytes of earlier members first: its stored name "
+                "is an unrar include mask that also matches them. Set "
+                "ArchiveyConfig.rar_allow_glob_member_concatenation=True to read "
+                "it anyway.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
 
         def _spawn() -> BinaryIO:
             proc, stdout = open_unrar_p(

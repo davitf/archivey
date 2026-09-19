@@ -264,6 +264,16 @@ class ArchiveyConfig:
     # local codepage (e.g. "cp1252", "shift_jis") for a known-legacy corpus. An explicit
     # ``encoding=`` on ``open_archive`` overrides this and disables the sniff entirely.
     zip_unflagged_fallback_encoding: str = "cp437"
+    # Escape hatch for RAR members whose *stored name* contains ``*`` or ``?``.
+    # ``unrar`` is addressed by an include mask, so such a name can also match other
+    # members; unrar then decompresses every earlier match and emits them concatenated
+    # ahead of the target. Archivey skips those bytes and returns the right content, but
+    # the decode already happened, and nothing bounds it — ``AccessCost.DIRECT`` does not
+    # predict it and ``ExtractionLimits`` do not cover ``open()`` / ``read()``. By default
+    # such a member raises ``UnsupportedFeatureError`` rather than paying an unbounded
+    # decode for a name only a constructed archive is likely to carry. Set True to read
+    # it anyway. A glob name that matches no other member is unaffected either way.
+    rar_allow_glob_member_concatenation: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)

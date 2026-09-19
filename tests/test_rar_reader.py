@@ -78,6 +78,11 @@ _WILDCARD_FIXTURES = (
     "wildcard_names_solid__.rar",
     "wildcard_names__rar4.rar",
 )
+# Reading a glob-named member whose mask also matches earlier members is refused by
+# default (see ``test_glob_member_with_earlier_matches_is_refused``). The skip that
+# makes such a read correct is still live behind this flag, and these tests are what
+# pin it, so they opt in explicitly.
+_ALLOW_GLOB_CONCAT = ArchiveyConfig(rar_allow_glob_member_concatenation=True)
 _WILDCARD_DIRGLOB_CONTENTS = {
     "aaa/x.txt": b"aaa\n" + _WILDCARD_PAD,
     "dX/x.txt": b"dX\n" + _WILDCARD_PAD,
@@ -3180,7 +3185,7 @@ def test_wildcard_member_name_reads_its_own_bytes(
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
 
-    with open_archive(_fixture(name)) as archive:
+    with open_archive(_fixture(name), config=_ALLOW_GLOB_CONCAT) as archive:
         files = [m for m in archive.members() if m.is_file]
         assert {m.name for m in files} == set(_WILDCARD_CONTENTS)
         names = [m.name for m in files]
@@ -3192,9 +3197,54 @@ def test_wildcard_member_name_reads_its_own_bytes(
 
 
 @requires_binary("unrar")
+@pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
+def test_glob_member_with_earlier_matches_is_refused(name: str) -> None:
+    """A glob name whose mask also matches earlier members is refused by default.
+
+    ``unrar -n./a*.txt`` decompresses every match and emits them concatenated, so
+    reading ``a*.txt`` pays for ``subdir/aY.txt`` first. The skip returns the right
+    bytes, but the decode already happened and nothing bounds it: ``ExtractionLimits``
+    do not reach ``open()``/``read()`` and ``AccessCost.DIRECT`` does not predict it.
+    Maintainer (davitf, 2026-09-19): refuse, with the config flag as the escape hatch.
+    """
+    with open_archive(_fixture(name)) as archive:
+        with pytest.raises(UnsupportedFeatureError, match="would decompress"):
+            archive.read("a*.txt")
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
+def test_glob_member_matching_nothing_else_still_reads(name: str) -> None:
+    """A glob name that matches no other member has no prefix, so it is not refused.
+
+    ``only*.dat`` is the accidental ``report*.pdf`` case: the mask matches only
+    itself, ``_unrar_glob_prefix`` is 0, and the refusal never triggers. This is the
+    boundary the refusal must not overshoot, so it is pinned without the flag.
+    """
+    with open_archive(_fixture(name)) as archive:
+        assert archive.read("only*.dat") == _WILDCARD_CONTENTS["only*.dat"]
+
+
+@requires_binary("unrar")
+def test_glob_concatenation_flag_names_itself_in_the_refusal() -> None:
+    """The refusal tells the caller the byte count and the exact flag to set."""
+    with open_archive(_fixture("wildcard_names__.rar")) as archive:
+        with pytest.raises(UnsupportedFeatureError) as excinfo:
+            archive.read("a*.txt")
+    message = str(excinfo.value)
+    assert "rar_allow_glob_member_concatenation" in message
+    assert str(len(_WILDCARD_CONTENTS["subdir/aY.txt"])) in message
+
+
+@requires_binary("unrar")
 def test_wildcard_solid_stream_members_reads_all() -> None:
     """The unnamed ALL-pipe has no ``-n`` mask, so wildcard names already demux by
-    size; this pins that the glob skip on the named route did not leak into it."""
+    size; this pins that the glob skip on the named route did not leak into it.
+
+    Also davitf's carve-out (2026-09-19): a solid streaming pass builds no mask, so
+    the glob refusal cannot reach it. No flag here, deliberately — the exemption
+    falls out of the code rather than being special-cased.
+    """
     with open_archive(_fixture("wildcard_names_solid__.rar")) as archive:
         got = {
             member.name: stream.read()
@@ -3202,6 +3252,25 @@ def test_wildcard_solid_stream_members_reads_all() -> None:
             if member.is_file and stream is not None
         }
     assert got == _WILDCARD_CONTENTS
+
+
+@requires_binary("unrar")
+def test_wildcard_nonsolid_stream_members_hits_the_refusal() -> None:
+    """A nonsolid streaming pass takes the named route, so the refusal reaches it.
+
+    Characterization, not a desired end state. ``_iter_with_data`` falls through to
+    per-member named opens for nonsolid archives, so ``stream_members()`` builds the
+    same ``-n`` mask a random ``open()`` does and carries the same concatenation —
+    worse, in fact, since the pass decodes the prefix member once as itself and again
+    inside the target's pipe. The solid pass above is exempt because it builds no
+    mask. Whether nonsolid streaming should also be exempt is with davitf; if it is
+    exempted, this test flips to asserting the read succeeds.
+    """
+    with open_archive(_fixture("wildcard_names__.rar")) as archive:
+        with pytest.raises(UnsupportedFeatureError, match="would decompress"):
+            for member, stream in archive.stream_members():
+                if stream is not None:
+                    stream.read()
 
 
 @requires_binary("unrar")
@@ -3224,7 +3293,9 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
 
     expected = _WILDCARD_CONTENTS["a*.txt"]
     with open_archive(
-        _fixture("wildcard_names_solid__.rar"), seekable_members=True
+        _fixture("wildcard_names_solid__.rar"),
+        seekable_members=True,
+        config=_ALLOW_GLOB_CONCAT,
     ) as archive:
         with archive.open("a*.txt") as stream:
             assert stream.seekable() is True
@@ -3283,7 +3354,9 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
 @requires_binary("unrar")
 def test_wildcard_ver_live_glob_skips_history_rows() -> None:
     """``unrar p -n./data*`` without ``-ver`` omits history; the skip must too."""
-    with open_archive(_fixture("wildcard_ver__.rar")) as archive:
+    with open_archive(
+        _fixture("wildcard_ver__.rar"), config=_ALLOW_GLOB_CONCAT
+    ) as archive:
         files = {m.name: m for m in archive.members() if m.is_file}
         assert set(files) == set(_WILDCARD_VER_CONTENTS)
         for member_name, expected in _WILDCARD_VER_CONTENTS.items():
