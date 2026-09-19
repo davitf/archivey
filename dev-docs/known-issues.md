@@ -117,7 +117,8 @@ a single combined chain. Measured 2026-09-19 on 2911 bytes written by `7z a -m0=
 -m1=LZMA`: the five listed filters extract correctly, and IA64 **hangs** — the truncated
 look-ahead never arrives, `out_remaining` never reaches zero, and `py7zr.py:1507`'s
 `while out_remaining > 0` spins at 100% CPU with no error and no timeout. archivey reads
-all six correctly. Nothing has been reported upstream; that is the maintainer's call.
+all six correctly. Drafted, not filed:
+[`investigations/py7zr-upstream-report.md`](investigations/py7zr-upstream-report.md).
 
 ### What archivey does now
 
@@ -153,8 +154,9 @@ payload split into 16 KiB windows came back with 9 318 of 65 536 bytes wrong.
 **`pybcj`'s own pure-Python fallback (`bcj._bcjfilter`)** accepts a 3 GiB stream size, but
 runs at 3.2 MiB/s against the C extension's 582 MiB/s on the same x86-like data (182x
 slower; roughly eleven minutes for a 2.1 GiB member), and is **not** equivalent: on a
-64 KiB x86-like input its output differs from liblzma's in the final two bytes. Worth
-reporting upstream on its own.
+64 KiB x86-like input its output differs from liblzma's in the final two bytes — report 2
+in [`investigations/pybcj-upstream-report.md`](investigations/pybcj-upstream-report.md),
+which carries all three pybcj drafts.
 
 ### Reproduction
 
