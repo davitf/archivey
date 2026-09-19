@@ -30,7 +30,7 @@ import tempfile
 import zlib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -89,6 +89,7 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
     SharedSource,
+    SharedView,
     SlicingStream,
     SolidBlockReader,
     is_seekable,
@@ -120,8 +121,8 @@ _STREAM_SINGLE_DISK_COPY_NOTE = (
     "RARLAB unrar or rar can read it."
 )
 _STREAM_VOLUMES_DISK_COPY_NOTE = (
-    "Stream volumes were copied to a temp directory at open so "
-    "RARLAB unrar or rar can read them."
+    "Reading a compressed member will copy every volume to a temp directory "
+    "so RARLAB unrar or rar can read them."
 )
 
 
@@ -129,10 +130,10 @@ def _rar_stream_copy_cost_notes(source: Path | BinaryIO) -> tuple[str, ...]:
     """Open-time caveat when member data needs a filesystem path for ``unrar``.
 
     Path sources (including ``ConcatenatedFile`` of path volumes) get no note.
-    A single non-path stream gets a predictive caveat (copy on first compressed
-    read). ``ConcatenatedFile`` of stream volumes is materialized in ``__init__``,
-    so the note is past tense. Keyed from source shape so ``Path`` items inside
-    ``_materialize_stream_volumes`` are not mis-labelled as streams.
+    Both stream shapes get the same predictive caveat: the copy happens on the
+    first read ``unrar`` has to serve, not at open. Keyed from source shape so
+    ``Path`` items inside ``_materialize_stream_volumes`` are not mis-labelled
+    as streams.
     """
     if isinstance(source, Path):
         return ()
@@ -679,6 +680,8 @@ class RarReader(BaseArchiveReader):
         self._owned_concat: ConcatenatedFile | None = None
         self._archive_path: Path | None = None
         self._volume_paths: list[Path] = []
+        # Stream volumes, kept unmaterialized until unrar actually needs files.
+        self._stream_volume_items: list[Path | BinaryIO] = []
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
         # Open-time caveat from source shape, not from later materialization
         # (CostReceipt is a static snapshot; see access-mode-and-cost).
@@ -704,7 +707,7 @@ class RarReader(BaseArchiveReader):
         # ``_volume0_parse_origin``.
         self._origin = start_offset
         self._shared = self._open_shared_source(source)
-        if self._origin and len(self._volume_paths) > 1:
+        if self._origin and self._volume_set_size() > 1:
             self._volume0_parse_origin = self._origin
             self._origin = 0
         self._archive, self._unrar_password = self._parse_archive()
@@ -739,17 +742,34 @@ class RarReader(BaseArchiveReader):
                 self._volume_count = len(paths)
                 self._archive_path = paths[0]
                 return SharedSource(source, wrap_handle=wrap)
-            # Stream volumes: materialize for unrar; parse from originals.
+            # Stream volumes: parse from the originals; copy for unrar only when
+            # a member actually needs one (_ensure_archive_path).
             items = source.volume_items
+            self._stream_volume_items = items
             self._volume_count = len(items)
-            self._materialize_stream_volumes(items)
             return SharedSource(source, wrap_handle=wrap)
 
         # Single non-path stream — materialize later when unrar is needed.
         return SharedSource(source, wrap_handle=wrap)
 
-    def _materialize_stream_volumes(self, items: Sequence[Path | BinaryIO]) -> None:
-        """Write ordered volumes into a temp dir with ``name.partN.rar`` names."""
+    def _volume_set_size(self) -> int:
+        """Volumes in this set, whether or not they are files yet."""
+        return max(len(self._volume_paths), len(self._stream_volume_items))
+
+    def _materialize_stream_volumes(self) -> None:
+        """Write ordered volumes into a temp dir with ``name.partN.rar`` names.
+
+        Called from :meth:`_ensure_archive_path`, on the first read ``unrar``
+        has to serve — not from ``__init__``. Listing a stream-volume set never
+        reaches this, so a caller that only lists writes nothing.
+
+        Stream items are copied through a :class:`SharedSource` view rather than
+        read directly, so the copy takes the same lock every other read of these
+        volumes takes. ``Path`` items are copied by the filesystem: they are not
+        shared state.
+        """
+        items = self._stream_volume_items
+        ranges = self._stream_volume_ranges()
         temp_dir = Path(tempfile.mkdtemp(prefix="archivey-rar-vol-"))
         self._temp_dir = temp_dir
         stem = "archive"
@@ -762,7 +782,13 @@ class RarReader(BaseArchiveReader):
                 if isinstance(item, Path):
                     shutil.copy2(item, dest)
                 else:
-                    _copy_stream_to_path(item, dest)
+                    start, size = ranges[index - 1]
+                    view = self._shared.view(start, size)
+                    try:
+                        with dest.open("wb") as out:
+                            shutil.copyfileobj(view, out, length=1 << 20)
+                    finally:
+                        view.close()
                 paths.append(dest)
         except BaseException:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -770,6 +796,14 @@ class RarReader(BaseArchiveReader):
             raise
         self._volume_paths = paths
         self._archive_path = paths[0]
+
+    def _stream_volume_ranges(self) -> list[tuple[int, int]]:
+        """``(start, size)`` per volume in the concatenated space this reader reads."""
+        source = self._source
+        assert isinstance(source, ConcatenatedFile), (
+            "stream volumes only come from a ConcatenatedFile source"
+        )
+        return source.volume_ranges
 
     def _parse_archive(self) -> tuple[RarArchive, str | None]:
         max_members = self._config.listing_limits.max_members
@@ -789,6 +823,28 @@ class RarReader(BaseArchiveReader):
                 finally:
                     for handle in handles:
                         handle.close()
+
+            if len(self._stream_volume_items) > 1:
+                # Stream volumes, not yet copied anywhere. The header walk needs
+                # each volume as its own stream positioned at its start, which
+                # the concatenation cannot be, so mint one bounded view per
+                # volume over the same source. Views are non-owning and take the
+                # shared lock, so nothing here touches the caller's streams.
+                views: list[SharedView] = []
+                try:
+                    for index, (start, size) in enumerate(self._stream_volume_ranges()):
+                        view = self._shared.view(start, size)
+                        views.append(view)
+                        if index == 0 and self._volume0_parse_origin:
+                            view.seek(self._volume0_parse_origin)
+                    return parse_rar_volumes(
+                        cast("Sequence[BinaryIO]", views),
+                        password=password,
+                        max_members=max_members,
+                    )
+                finally:
+                    for view in views:
+                        view.close()
 
             # Single volume — may still be a ConcatenatedFile of streams that we
             # already materialized into _volume_paths of length 1, or a lone file.
@@ -821,7 +877,7 @@ class RarReader(BaseArchiveReader):
                     raise
                 archive = self._passwords.attempt(None, parse)
             # Incomplete set opened as a lone volume-1 path with no siblings.
-            if archive.needs_next_volume and len(self._volume_paths) <= 1:
+            if archive.needs_next_volume and self._volume_set_size() <= 1:
                 raise TruncatedError(
                     "Incomplete RAR multi-volume set: end of archive expects "
                     "another volume"
@@ -856,6 +912,13 @@ class RarReader(BaseArchiveReader):
     def _ensure_archive_path(self) -> Path:
         """Return a filesystem path ``unrar`` can open (materialize streams once)."""
         if self._archive_path is not None:
+            return self._archive_path
+        if self._stream_volume_items:
+            # Stream volumes: unrar needs sibling files on disk, so the whole set
+            # is written, not just the volume holding this member. Nothing before
+            # this point needed them — the listing was parsed from the originals.
+            self._materialize_stream_volumes()
+            assert self._archive_path is not None
             return self._archive_path
         # Single stream source: write one temp .rar for unrar.
         fd, name = tempfile.mkstemp(suffix=".rar")
@@ -1471,12 +1534,12 @@ class RarReader(BaseArchiveReader):
         is_multivolume = (
             self._archive.is_volume
             or self._volume_count > 1
-            or len(self._volume_paths) > 1
+            or self._volume_set_size() > 1
         )
         archive_comment = self._archive.comment
         assert not isinstance(archive_comment, _Rar3Comment)
         info_extra = ArchiveInfoExtra(
-            {"rar.volume_count": max(self._volume_count, len(self._volume_paths))}
+            {"rar.volume_count": max(self._volume_count, self._volume_set_size())}
         )
         return ArchiveInfo(
             format=ArchiveFormat.RAR,

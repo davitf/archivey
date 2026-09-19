@@ -960,7 +960,7 @@ def _single_stream_copy_note_present(notes: tuple[str, ...]) -> bool:
 
 
 def _stream_volumes_copy_note_present(notes: tuple[str, ...]) -> bool:
-    return any("were copied to a temp directory at open" in note for note in notes)
+    return any("will copy every volume to a temp directory" in note for note in notes)
 
 
 def test_path_source_has_no_stream_copy_cost_note() -> None:
@@ -1011,6 +1011,66 @@ def test_multi_volume_stream_materialization() -> None:
     finally:
         for stream in streams:
             stream.close()
+
+
+def _rar_volume_temp_dirs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record every temp directory the stream-volume copy creates."""
+    created: list[Path] = []
+    real = rar_reader.tempfile.mkdtemp
+
+    def spy(*args: object, **kwargs: object) -> str:
+        made = real(*args, **kwargs)  # type: ignore[arg-type]
+        created.append(Path(made))
+        return made
+
+    monkeypatch.setattr(rar_reader.tempfile, "mkdtemp", spy)
+    return created
+
+
+def test_stream_volume_listing_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Listing a stream-volume set is served from the originals, not from copies.
+
+    The header walk reads each volume through its own ``SharedSource`` view, so a
+    caller that only lists pays no disk write. Before this, the constructor copied
+    every volume whether or not anything read a member.
+    """
+    created = _rar_volume_temp_dirs(monkeypatch)
+    streams = [
+        io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
+        io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+    ]
+    with open_archive(streams) as archive:
+        assert [m.name for m in archive.members()] == ["payload.bin"]
+        assert archive.info.is_multivolume is True
+        assert archive.info.extra.get("rar.volume_count") == 2
+        assert created == []
+
+
+@requires_binary("unrar")
+def test_stream_volume_read_materializes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The copy happens on the first read unrar serves, and only once."""
+    created = _rar_volume_temp_dirs(monkeypatch)
+    streams = [
+        io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
+        io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+    ]
+    with open_archive(streams) as archive:
+        assert created == []
+        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+        assert len(created) == 1
+        # unrar resolves siblings by name, so the whole set is written, not one volume.
+        assert sorted(p.name for p in created[0].iterdir()) == [
+            "archive.part1.rar",
+            "archive.part2.rar",
+        ]
+        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+        assert len(created) == 1
+        temp_dir = created[0]
+    assert not temp_dir.exists()
 
 
 def test_incomplete_multi_volume_raises() -> None:
