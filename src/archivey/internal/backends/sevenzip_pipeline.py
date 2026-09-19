@@ -11,8 +11,8 @@ Decode order (packed → unpacked)::
 not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
 
 - LZMA2 ± Delta ± BCJ → one stdlib ``lzma`` raw filter chain
-- LZMA1 + BCJ → capped LZMA1 stages + separate ``pybcj`` (BPO-21872 truncation)
-- BCJ alone → ``pybcj`` stages
+- LZMA1 + BCJ → capped LZMA1 stages + separate BCJ stages (BPO-21872 truncation)
+- BCJ alone → BCJ stages
 - BCJ2 (``0x0303011B``) → ``UnsupportedFeatureError`` (never garbage output)
 
 Two phases: :func:`plan_folder` resolves stages (pure — no I/O); then
@@ -32,7 +32,6 @@ from typing import BinaryIO
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
-    PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -68,13 +67,6 @@ from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stre
 from archivey.internal.streams.crypto import SevenZipKeyCache, open_aes_decrypt_stream
 from archivey.internal.streams.decompress import BcjFilterStream
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
-from archivey.types import MissingComponent
-
-# pybcj only stages BCJ for LZMA1 folders; LZMA2+BCJ folds the filter into the liblzma
-# chain and needs nothing installed.
-_PYBCJ_REQUIREMENT = MissingComponent(
-    "pybcj", "pip install archivey[recommended]", ("bcj",)
-)
 
 # stdlib exposes no public decoder for a raw LZMA1/LZMA2 property blob → filter dict;
 # py7zr relies on the same private `lzma._decode_filter_properties`. Bind once at import.
@@ -141,9 +133,13 @@ class _LzmaChainStage:
 
 @dataclass
 class _BcjStage:
-    """A single BCJ branch filter staged through pybcj (LZMA1+BCJ / BCJ-alone)."""
+    """A single BCJ branch filter staged on its own (LZMA1+BCJ / BCJ-alone).
 
-    pybcj_attr: str
+    ``lzma_filter_id`` is the liblzma branch-filter id; :class:`BcjDecoder` runs it
+    outside the folder's main chain, over its own LZMA2 framing.
+    """
+
+    lzma_filter_id: int
     unpack_size: int
 
 
@@ -222,7 +218,7 @@ def _plan_lzma_family(
         )
 
     if has_bcj and not has_lzma1 and not has_lzma2:
-        # BCJ alone (or after COPY / Deflate / …): each BCJ is its own pybcj stage.
+        # BCJ alone (or after COPY / Deflate / …): each BCJ is its own stage.
         stages: list[_Stage] = []
         for coder, size in zip(run, unpack_sizes, strict=True):
             if not is_bcj(coder.method):
@@ -236,7 +232,7 @@ def _plan_lzma_family(
     if has_lzma1 and has_bcj:
         # liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
         # (BPO-21872). Stage each stdlib LZMA1 (+ Delta, …) run capped to its output
-        # size, then each BCJ through pybcj — never one combined liblzma chain.
+        # size, then each BCJ separately — never one combined liblzma chain.
         staged: list[_Stage] = []
         index = 0
         while index < len(run):
@@ -264,15 +260,6 @@ def _check_linear_coder_chain(folder: SevenZipFolder) -> None:
         )
 
 
-def _require_pybcj() -> None:
-    try:
-        import bcj  # noqa: F401
-    except ImportError as exc:
-        raise PackageNotInstalledError(
-            _PYBCJ_REQUIREMENT.message("LZMA1+BCJ 7z folders")
-        ) from exc
-
-
 def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
     if coder.properties is None:
         return {"id": filter_id}
@@ -295,7 +282,7 @@ def _lzma_filter(coder: SevenZipCoder) -> dict:
         if len(coder.properties) != 1:
             raise CorruptionError("Malformed 7z Delta coder properties")
         return {"id": lzma.FILTER_DELTA, "dist": coder.properties[0] + 1}
-    if method.lzma_filter_id is not None and method.pybcj_attr is not None:
+    if method.lzma_filter_id is not None and is_bcj(coder.method):
         return {"id": method.lzma_filter_id}
     raise UnsupportedFeatureError(
         f"Unsupported 7z LZMA-family coder {_method_hex(coder.method)}"
@@ -322,11 +309,11 @@ def _open_aes_stage(
 
 def _bcj_stage(coder: SevenZipCoder, unpack_size: int) -> _BcjStage:
     method = require(coder.method)
-    if method.pybcj_attr is None:
+    if method.lzma_filter_id is None or not is_bcj(coder.method):
         raise UnsupportedFeatureError(
             f"Unsupported 7z BCJ coder {_method_hex(coder.method)}"
         )
-    return _BcjStage(method.pybcj_attr, unpack_size)
+    return _BcjStage(method.lzma_filter_id, unpack_size)
 
 
 def _lzma_chain_stage(
@@ -389,7 +376,7 @@ def _execute_stage(
         return out
     return BcjFilterStream(
         stream,
-        decoder_attr=stage.pybcj_attr,
+        lzma_filter_id=stage.lzma_filter_id,
         unpack_size=stage.unpack_size,
         seekable=seekable,
         owns_inner=(stage_index > 0),
@@ -409,7 +396,7 @@ def open_folder_pipeline(
     """Compose a folder's coder chain into a single pull stream (plan, then fold).
 
     ``source`` is a borrowed pack view. Each stage wraps the previous output.
-    Only a pybcj ``_BcjStage`` takes ``owns_inner``: True when it is not first
+    Only a ``_BcjStage`` takes ``owns_inner``: True when it is not first
     (``stage_index > 0``), so it closes the previous stage's output — the LZMA1
     cap slice, or an ``AesDecryptStream`` on ``[AES, BCJ]``. Other follow-on
     stages do not close their input: ``[AES, LZMA]`` (the common encrypted
@@ -420,10 +407,6 @@ def open_folder_pipeline(
     """
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
     stages = plan_folder(folder)
-    # Fail fast before opening any stream if a pybcj-staged BCJ filter is needed but
-    # absent (LZMA2+BCJ folds BCJ into the liblzma chain and emits no _BcjStage).
-    if any(isinstance(stage, _BcjStage) for stage in stages):
-        _require_pybcj()
     stream: BinaryIO = source
     for i, stage in enumerate(stages):
         stream = _execute_stage(

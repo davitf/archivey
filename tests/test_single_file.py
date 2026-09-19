@@ -11,6 +11,7 @@ from __future__ import annotations
 import bz2
 import contextlib
 import gzip
+import hashlib
 import io
 import logging
 import lzma
@@ -422,6 +423,60 @@ def test_lzma_alone_size_none_when_unknown_marker(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         assert ar.members()[0].size is None
         assert ar.read(ar.members()[0]) == payload
+
+
+# Real LZMA Alone streams from the CPython BPO-21872 attachments: declared size known,
+# no end-of-payload marker. Provenance and why only three of the nineteen are committed:
+# tests/fixtures/external/README.md. The digests are of the decompressed bytes, taken from
+# `xz --format=lzma -dc` rather than from stdlib `lzma`, so the pin does not rest on the
+# same library the reader uses.
+_BPO21872_DIR = Path(__file__).parent / "fixtures" / "external" / "lzma_bpo21872"
+_BPO21872_SAMPLES = {
+    "22h_ticks_bad.bi5": (
+        45480,
+        "d8006300ac1a5c5b76423d24e7bb2adcae3fb00c163d917b5e8572948d699f6d",
+    ),
+    "23h_ticks_good.bi5": (
+        34740,
+        "96d031b2404fc47af4fd0838f5d0c2264a7053d16e56ef0510af44125e053157",
+    ),
+    "failed_file_01.lzma": (
+        33812,
+        "73ef3f56add4db467b4b8e4953e195e7978b02c92905d2edd1f90986918bfc2b",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_BPO21872_SAMPLES))
+def test_bpo21872_lzma_alone_samples_decode_whole(name: str) -> None:
+    """Files that stdlib `lzma` used to return short must come back whole.
+
+    CPython fixed the underlying defect in 3.7, so this pins our own stream layer,
+    which chunks its reads differently from `lzma.open`. The original bug was
+    sensitive to where a read landed relative to an internal buffer boundary, hence
+    the several chunk sizes — 8192 is the one the bug report singles out.
+    """
+    expected_size, expected_digest = _BPO21872_SAMPLES[name]
+    path = _BPO21872_DIR / name
+
+    with open_archive(path) as ar:
+        member = ar.members()[0]
+        # These carry a real known size in the header, which stdlib never writes.
+        assert member.size == expected_size
+        whole = ar.read(member)
+    assert len(whole) == expected_size
+    assert hashlib.sha256(whole).hexdigest() == expected_digest
+
+    for chunk_size in (1, 8192, 65536):
+        with open_archive(path) as ar:
+            stream = ar.open(ar.members()[0])
+            got = bytearray()
+            while True:
+                chunk = stream.read(chunk_size)
+                if not chunk:
+                    break
+                got += chunk
+        assert bytes(got) == whole, f"short read at chunk_size={chunk_size}"
 
 
 def test_tar_lzma_alone_roundtrip(tmp_path: Path) -> None:

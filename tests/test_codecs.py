@@ -398,7 +398,7 @@ def test_decompressor_read_one_bounds_internal_buffer() -> None:
 def test_decompressor_owns_inner_closes_private_source(tmp_path: Path) -> None:
     """Pipeline stages own the previous stream; a borrowed archive view does not.
 
-    7z later pybcj BCJ stages wrap a private previous output (the LZMA1 cap
+    7z later ``_BcjStage``s wrap a private previous output (the LZMA1 cap
     ``SlicingStream(owns_inner=True)``). The default DecompressorStream close
     left that slice open (the leak oracle's first finding). ``owns_inner=True``
     closes it; the default still borrows.

@@ -4,7 +4,7 @@
 
 - ``COPY`` / ``AES`` / ``BCJ2`` / ``SINGLE`` — self-explanatory stages
 - ``LZMA_FAMILY`` — **not** "is LZMA": Delta and BCJ share this kind because they
-  batch into the same liblzma / ``pybcj`` staging run as LZMA1/2
+  batch into the same liblzma staging run as LZMA1/2
 
 BCJ entries carry both short and long on-disk method ids (``aliases``) — 7-Zip
 has historically written either form.
@@ -42,7 +42,7 @@ class SevenZipMethod:
     kind: MethodKind
     codec: Codec | None = None
     lzma_filter_id: int | None = None
-    pybcj_attr: str | None = None
+    is_branch_filter: bool = False
     aliases: tuple[bytes, ...] = ()
 
 
@@ -51,7 +51,6 @@ def _bcj(
     long: bytes,
     codec: Codec,
     filter_id: int,
-    pybcj: str,
 ) -> SevenZipMethod:
     return SevenZipMethod(
         short,
@@ -59,7 +58,7 @@ def _bcj(
         MethodKind.LZMA_FAMILY,
         codec=codec,
         lzma_filter_id=filter_id,
-        pybcj_attr=pybcj,
+        is_branch_filter=True,
         aliases=(long,),
     )
 
@@ -93,22 +92,12 @@ _METHODS: tuple[SevenZipMethod, ...] = (
         codec=Codec.DELTA,
         lzma_filter_id=lzma.FILTER_DELTA,
     ),
-    _bcj(b"\x04", b"\x03\x03\x01\x03", Codec.BCJ_X86, lzma.FILTER_X86, "BCJDecoder"),
-    _bcj(
-        b"\x05", b"\x03\x03\x02\x05", Codec.BCJ_PPC, lzma.FILTER_POWERPC, "PPCDecoder"
-    ),
-    _bcj(b"\x06", b"\x03\x03\x04\x01", Codec.BCJ_IA64, lzma.FILTER_IA64, "IA64Decoder"),
-    _bcj(b"\x07", b"\x03\x03\x05\x01", Codec.BCJ_ARM, lzma.FILTER_ARM, "ARMDecoder"),
-    _bcj(
-        b"\x08",
-        b"\x03\x03\x07\x01",
-        Codec.BCJ_ARMT,
-        lzma.FILTER_ARMTHUMB,
-        "ARMTDecoder",
-    ),
-    _bcj(
-        b"\x09", b"\x03\x03\x08\x05", Codec.BCJ_SPARC, lzma.FILTER_SPARC, "SparcDecoder"
-    ),
+    _bcj(b"\x04", b"\x03\x03\x01\x03", Codec.BCJ_X86, lzma.FILTER_X86),
+    _bcj(b"\x05", b"\x03\x03\x02\x05", Codec.BCJ_PPC, lzma.FILTER_POWERPC),
+    _bcj(b"\x06", b"\x03\x03\x04\x01", Codec.BCJ_IA64, lzma.FILTER_IA64),
+    _bcj(b"\x07", b"\x03\x03\x05\x01", Codec.BCJ_ARM, lzma.FILTER_ARM),
+    _bcj(b"\x08", b"\x03\x03\x07\x01", Codec.BCJ_ARMT, lzma.FILTER_ARMTHUMB),
+    _bcj(b"\x09", b"\x03\x03\x08\x05", Codec.BCJ_SPARC, lzma.FILTER_SPARC),
     SevenZipMethod(b"\x03\x03\x01\x1b", CompressionAlgorithm.BCJ2, MethodKind.BCJ2),
     _single(b"\x04\x01\x08", CompressionAlgorithm.DEFLATE, Codec.DEFLATE),
     _single(b"\x04\x01\x09", CompressionAlgorithm.DEFLATE64, Codec.DEFLATE64),
@@ -148,7 +137,7 @@ def require(method_id: bytes) -> SevenZipMethod:
 
 def is_bcj(method_id: bytes) -> bool:
     entry = lookup(method_id)
-    return entry is not None and entry.pybcj_attr is not None
+    return entry is not None and entry.is_branch_filter
 
 
 def is_aes(method_id: bytes) -> bool:
