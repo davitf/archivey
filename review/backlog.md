@@ -49,9 +49,13 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   COMMENT subblocks unpack in `rar_reader.py` after parse (`_resolve_rar3_comment`
   per member), via `unrar` for the compressed form. Per comment is uint16-bounded
   (64 KiB); across members that is `max_members` × 64 KiB. Fork cost dominates;
-  without `unrar` comments are dropped. If this is bounded, the budget belongs in
-  that reader loop — not `rar_parser` (maintainer, #353 F6: no parse-time byte
-  budget). Handbook: [`formats/rar.md`](../dev-docs/formats/rar.md) §6.
+  without `unrar` comments are dropped. **Decided (maintainer, 2026-09-19):** bound it
+  in that reader loop against `max_metadata_bytes`, raising `ResourceLimitError` — not in
+  `rar_parser` (maintainer, #353 F6: no parse-time byte budget). `_Rar3Comment` carries
+  each comment's `unpacked_size` from the header, so this can be a pre-check over the sum
+  and refuse a hostile archive before any `unrar` fork. Decoding every comment through a
+  single synthetic RAR, rather than one subprocess each, is tracked separately and does
+  not block this. Handbook: [`formats/rar.md`](../dev-docs/formats/rar.md) §4, §6.
 
 - **#344 D4 — AES+PPMd wrong-key `MemoryError` aborts password iteration.**
   Pre-existing on `main`. A wrong AES key into a complete PPMd pack can
