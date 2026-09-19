@@ -754,12 +754,10 @@ class _Lzma2Framer:
 class BcjDecoder(BaseDecoder):
     """Apply a BCJ branch filter to an already-decompressed byte stream.
 
-    The filter runs through liblzma rather than ``pybcj``. ``pybcj`` takes the
-    stream size as a C signed ``int``, so it cannot be constructed at all for a
-    member of 2 GiB or more, and its IA64 filter drops the trailing partial 16-byte
-    block on a stream whose length is not a multiple of 16. Both are reachable on
-    archives 7-Zip writes and reads back happily; liblzma has neither flaw and its
-    output is byte-identical elsewhere. See ``dev-docs/known-issues.md``.
+    The filter runs through liblzma, over an :class:`_Lzma2Framer` wrapper because
+    liblzma needs a compression filter to close the chain. It must not be ``pybcj``:
+    that decoder cannot be constructed for a member of 2 GiB or more, and its IA64
+    filter truncates. See ``dev-docs/known-issues.md`` → "7z BCJ branch filters".
 
     ``unpack_size`` is the coder's declared output length, used only to decide
     whether the stream finished — never passed to the filter, which needs no bound.

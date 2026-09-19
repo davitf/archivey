@@ -136,7 +136,7 @@ class _BcjStage:
     """A single BCJ branch filter staged on its own (LZMA1+BCJ / BCJ-alone).
 
     ``lzma_filter_id`` is the liblzma branch-filter id; :class:`BcjDecoder` runs it
-    outside the folder's main chain. See its docstring for why not ``pybcj``.
+    outside the folder's main chain, over its own LZMA2 framing.
     """
 
     lzma_filter_id: int

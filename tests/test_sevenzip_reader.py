@@ -1140,9 +1140,8 @@ def _folder(method: bytes, properties: bytes | None = None) -> SevenZipFolder:
     )
 
 
-@requires("bcj")
 def test_first_stage_bcj_does_not_close_pack_source() -> None:
-    """A first-stage pybcj BCJ borrows the pack view (Copy+BCJ / BCJ-alone).
+    """A first-stage BCJ stage borrows the pack view (Copy+BCJ / BCJ-alone).
 
     Later BCJ stages wrap a private previous output and pass ``owns_inner=True``.
     Hardcoding True on every ``_BcjStage`` closed a raw ``BytesIO`` here;
