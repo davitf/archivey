@@ -10,8 +10,9 @@ block 2. Do not drop real pause-and-ask items to leave section 3 empty.
 
 ## 1. Maintainer briefing (read this first)
 
-**What this change is** — *first round only; on a re-review delete this heading and open with
-the status table over the previous IDs instead (addendum §0, §10)*
+**What this change is** — *once per PR, not once per reviewer: if any review on this PR
+already carries one, delete this heading and open with the status table over the existing
+IDs instead (addendum §0, §10)*
 
 [2–4 sentences: intent, areas touched, behaviour delta — readable without the diff]
 

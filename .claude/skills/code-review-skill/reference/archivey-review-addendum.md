@@ -52,10 +52,16 @@ For the maintainer skimming without the code open. Half a screen unless the chan
 
 - **What this change is** — 2–4 sentences: intent, main files/areas touched, behaviour
   delta, in plain language. Assume no familiarity with the PR or the OpenSpec change name.
-  **First round only.** The maintainer read it last round and the PR has not become a
-  different change, so a re-review opens with the status table over the previous IDs
-  (§10) instead. The one exception is a rework that made the earlier description wrong:
-  then give one line on what changed, not a fresh description.
+  **Once per PR, not once per reviewer.** Write it only if no review on this PR carries
+  one yet. The maintainer has already read it otherwise, and that is true whether the
+  previous review was yours or the other reviewer's — a second reviewer's first look is
+  not a re-review under §10, but the description is just as redundant. Any later review
+  opens with the status table over whatever IDs already exist (§10) instead. The one
+  exception is a rework that made the earlier description wrong: then give one line on
+  what changed, not a fresh description.
+
+  (Fix-diff scope, §10, stays per *reviewer* — a second reviewer has not read the tree
+  and reads `main...HEAD`. It is only the description that is per PR.)
 - **Snapshot** — size (approx. lines / small|medium|large), gates (CI status, §10), and
   **Verdict**: ✅ Approve / ✅ Approve conditional on the listed fixes / 💬 Comment /
   🔄 Request Changes — meanings below, and “only nits left” is not an approval.

@@ -50,7 +50,7 @@ which are the ones reviews here actually miss:
 
 - [ ] Scope is `<last-reviewed-sha>..HEAD`, not `main...HEAD` (addendum §10)
 - [ ] Status table over the previous IDs before any new finding, **in place of** "what
-  this change is" — that is first-round only (§0)
+  this change is" — that is once per PR, including a different reviewer's first look (§0)
 - [ ] Nothing re-measured that a previous round already recorded (§10)
 - [ ] Round 3+ with only 🟢 nits open → conditional approval, not another round (§0)
 
