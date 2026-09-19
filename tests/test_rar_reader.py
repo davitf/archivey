@@ -2935,6 +2935,53 @@ def test_unrar_mask_match_treats_brackets_as_literal() -> None:
     assert _unrar_mask_match("a/b1.txt", r"a\b*.txt")
 
 
+def test_unrar_component_match_is_linear_on_a_wildcard_heavy_mask() -> None:
+    """A hostile member name must not make the skip matcher backtrack.
+
+    Both operands come from the archive: ``_unrar_glob_prefix`` matches every
+    earlier member's name against the target's. The regex this replaced spelled
+    ``*`` as ``.*`` and cost ~8x per added ``*`` — 18.2 s at eight of them, and a
+    271-byte two-member archive spent 32.9 s inside ``reader.open()``. The bound
+    is wall clock rather than a call count because the defect was the shape of
+    the search, not how often it ran.
+    """
+    from archivey.internal.backends.rar_unrar import _unrar_component_match
+
+    name = "a" * 60 + ".txt"
+    for stars in (8, 64, 256):
+        mask = "a" + "*a" * stars + "b.txt"
+        started = time.perf_counter()
+        assert not _unrar_component_match(name, mask)
+        elapsed = time.perf_counter() - started
+        # Microseconds in practice; the old form needed 18 s at stars=8 alone.
+        assert elapsed < 1.0, f"{stars} wildcards took {elapsed:.3f}s"
+
+
+def test_unrar_component_match_semantics_unchanged_by_the_rewrite() -> None:
+    """Pin the cases the regex form defined, including where it differs from
+    ``fnmatch``: ``[]`` literal, ``\\`` literal, and ``?`` matching a newline
+    (the old ``re.DOTALL``)."""
+    from archivey.internal.backends.rar_unrar import _unrar_component_match
+
+    assert _unrar_component_match("", "")
+    assert _unrar_component_match("", "*")
+    assert _unrar_component_match("", "**")
+    assert not _unrar_component_match("", "?")
+    assert not _unrar_component_match("a", "")
+    assert _unrar_component_match("abc", "a*c")
+    assert _unrar_component_match("ac", "a*c")
+    assert not _unrar_component_match("ab", "a*c")
+    assert _unrar_component_match("a.c", "a?c")
+    assert _unrar_component_match("a\nc", "a?c")
+    assert _unrar_component_match("a\nc", "a*c")
+    assert _unrar_component_match("a[b]c", "a[b]c")
+    assert not _unrar_component_match("abc", "a[b]c")
+    assert _unrar_component_match(r"a\bc", r"a\bc")
+    assert not _unrar_component_match("abc", r"a\bc")
+    assert _unrar_component_match("a+c", "a+c")
+    assert not _unrar_component_match("aac", "a+c")
+
+
 def test_unrar_glob_demux_ok_basename_only() -> None:
     """Demux is offered only for a glob confined to the basename, no backslash."""
     from archivey.internal.backends.rar_unrar import _unrar_glob_demux_ok

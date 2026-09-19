@@ -34,7 +34,11 @@ from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode, DigestContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DigestContext,
+    MemberHeaderRecordContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -68,6 +72,7 @@ from archivey.internal.backends.rar_unrar import (
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
@@ -960,9 +965,9 @@ class RarReader(BaseArchiveReader):
     def _emit_member_diagnostics(
         self, info: RarMemberInfo, member: ArchiveMember, presented: str
     ) -> None:
-        """Name-normalization and tweaked-digest diagnostics.
+        """Name-normalization, dropped-header-record and tweaked-digest diagnostics.
 
-        Both attach onto ``member`` (``attach_to_member=True``) and can raise
+        All attach onto ``member`` (``attach_to_member=True``) and can raise
         under a strict collector, so this must run before ``_to_member`` returns.
         """
         emit_member_name_normalized(
@@ -971,6 +976,26 @@ class RarReader(BaseArchiveReader):
             presented_name=presented,
             archive_name=self._archive_name,
         )
+        for record, record_id, reason in info.skipped_header_records:
+            named = record if record_id is None else f"{record} ({record_id})"
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"RAR5 extra record {named} is malformed and was dropped "
+                    f"({reason}); the member is listed without what it carried."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    record=record,
+                    record_id=record_id,
+                    reason=reason,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
         # Pure; same predicate ``_rar_member_extra_and_link`` uses for extra keys.
         if not _crc_is_tweaked(info) or self._unrar_password is not None:
             return
