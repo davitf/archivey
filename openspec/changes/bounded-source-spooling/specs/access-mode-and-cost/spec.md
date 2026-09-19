@@ -42,7 +42,7 @@ The system SHALL allow the caller to name the directory used for spooling.
 
 | Case | Expected |
 | --- | --- |
-| Limit is a byte count, source smaller | Spooled; `CostReceipt.notes` records the spool and its size |
+| Limit is a byte count, source smaller | Spooled; the open-time caveat already named the bound |
 | Limit is a byte count, source larger, size known in advance | `SpoolLimitExceededError` before any bytes are written |
 | Limit is a byte count, source larger, size not known in advance | `SpoolLimitExceededError` during the write; partial file removed |
 | Limit is unlimited | Spooled whatever the size; still recorded in `CostReceipt.notes` |
@@ -53,22 +53,32 @@ The system SHALL allow the caller to name the directory used for spooling.
 | Caller names a spool directory | That directory is used; the platform default is not consulted |
 | Reader closed | Temporary file or directory removed |
 
-### Requirement: Every spool is reported in the cost receipt
+### Requirement: The spool caveat is stated at open and names its bound
 
-The system SHALL record each spool it performs in `CostReceipt.notes`, naming the byte
-count. The system SHALL NOT emit a diagnostic for a spool: the `diagnostics` admission
-clause covers what the caller could not determine from the declared contract of the call,
-and a spool inside a limit the caller configured is declared; the placement clause prefers a
-structured field where one exists, and `CostReceipt.notes` is that field.
+Where a reader may spool its source, `CostReceipt.notes` SHALL carry the caveat **at
+open**, and that caveat SHALL name the configured limit that bounds the copy. A caller
+therefore learns the worst case before the first read rather than the actual cost after
+it.
+
+`CostReceipt` is an immutable open-time cost description, and the caveat is a static
+open-time statement, not an occurrence log: it SHALL be present even if nothing is
+ultimately spooled, and SHALL NOT be added later by a spool that happens after open.
+That contract is already stated for RAR in `format-rar` and is unchanged here; what this
+change adds is the bound in the caveat's text.
+
+The system SHALL NOT emit a diagnostic for a spool. The `diagnostics` admission clause
+covers what the caller could not determine from the declared contract of the call, and a
+spool inside a limit the caller configured, announced at open, is declared twice over.
 
 #### Scenario: spool reporting matrix
 
 | Case | Expected |
 | --- | --- |
-| A spool occurs | `CostReceipt.notes` gains an entry naming the byte count |
-| A spool occurs | No diagnostic is emitted for the spool itself |
-| No spool occurs | `CostReceipt.notes` is unchanged by spooling |
-| Two operations on one reader both need the source materialized | One spool, one note; materialization happens once per reader |
+| Reader that may spool, at open | `CostReceipt.notes` carries the caveat, naming the limit |
+| Only stored members are read, so nothing is spooled | The caveat is still present — it is a statement about the reader, not a log |
+| A spool occurs after open | `CostReceipt.notes` is unchanged; it was already accurate |
+| Reader that cannot spool (path source, or limit set to none) | No caveat |
+| Any spool | No diagnostic is emitted for it |
 
 ### Requirement: Spooling happens at the operation that needs it, and the timing is stated
 
@@ -77,7 +87,9 @@ operation that is depends on the source and the format, and the difference is
 caller-visible: an archive whose metadata is parsed natively can be **listed** without
 paying for a spool, while a source that must be made seekable before the format can be
 opened at all pays at open. The documentation SHALL state when each happens rather than
-leaving the caller to infer it, and `CostReceipt.notes` makes the timing observable.
+leaving the caller to infer it. The open-time caveat does not distinguish the two, because
+it describes the worst case rather than what occurred; the documentation is where a caller
+learns which operation pays.
 
 #### Scenario: spool timing matrix
 
@@ -134,28 +146,63 @@ disabling random-access APIs independently of any loaded index.
 
 ## MODIFIED Requirements
 
-### Requirement: Fail fast on non-seekable random access
+### Requirement: Declaring access mode at open_archive()
 
-With `streaming=False`, when the format requires a seekable source and the source is not
-seekable, the system SHALL raise at open rather than buffering the source implicitly. The
-system SHALL NOT silently buffer a non-seekable source into memory or temporary storage to
-make a seek-requiring format work.
+`open_archive(..., streaming: bool = False)` SHALL accept exactly two modes:
 
-**This rule is unchanged in substance and now names its one exception:** a spool that the
-configured limit permits is not *implicit* buffering. ADR 0010 forbids hidden unbounded
-resource use, not temporary storage as such; a spool bounded by an explicit limit and
-reported in `CostReceipt.notes` satisfies the decision's reasoning rather than defeating it.
-With spooling set to none, the behaviour is exactly as before.
+| Mode | Meaning |
+| --- | --- |
+| `streaming=False` (default) | **Random access.** Load indexes when available. Fail fast at open if the source is non-seekable and the format cannot adapt and the configured spool limit does not permit materializing it — never silently degrade to forward-only. Seek points for single-stream formats are built **lazily** on first `seek()`. |
+| `streaming=True` | **Forward-only, single pass.** Disable index loading where possible; works on non-seekable sources **where the backend reads front to back** (see below). Random-access / full-materialization APIs disabled **uniformly** (independent of any loaded index). `members_report_if_available()` stays callable (never scans). |
 
-When the system raises for this reason, the error message SHALL name the setting that would
-permit the spool, so a caller who wants it can find it from the failure.
+Non-seekable sources are never given random access *implicitly*: with
+`streaming=False` the library fails fast at open when the format needs seek, and
+SHALL NOT buffer the source into memory or a temp file on its own initiative.
+`streaming=True` is the fix for pipes and sockets **only where the backend reads
+front to back** (TAR, the single-file compressors). A format that needs seek in
+either mode (ZIP, ISO, 7z, RAR) SHALL be refused with one message naming a seekable
+source as the fix, in both modes, rather than proposing a `streaming=True` retry the
+same call would then refuse.
 
-#### Scenario: non-seekable random access matrix
+**The one exception is a spool the caller configured.** When the spool limit permits
+it, the system MAY materialize a non-seekable source to temporary storage so a
+seek-requiring format can be opened, bounded and reported as `access-mode-and-cost`
+requires. That is not implicit buffering: the caller set the bound, and every spool
+appears in `CostReceipt.notes`. With the limit set to none the behaviour is exactly
+as stated above, and the refusal message SHALL name the setting that would permit
+the spool, so the error teaches the fix.
+Eager seek-point building is not exposed.
+
+**Every** stream source SHALL be made full-count at the source boundary
+(`ensure_full_count_reads`): a raw `read(n)` may legally return short, and some header
+parsers, archivey's and the stdlib's alike, issue one `read(n)` and raise or treat a
+short as EOF. The source kinds get that guarantee by different means, and the
+difference is read-ahead:
+
+| Source | Boundary wrapper | Read-ahead |
+| --- | --- | --- |
+| Seekable stream | Fixed-size read buffer (`io.BufferedReader`) | Bounded. Recoverable by seeking, and it collapses the parsers' many tiny reads |
+| Non-seekable stream, not already a CPython buffer | `FullCountStream` — gathers by re-asking for the bytes still missing | **None at the boundary.** A `read(n)` on the returned stream takes exactly `n` from the source. Codec layers above it may still buffer |
+| Non-seekable stream that is already `io.BufferedReader` / `io.BufferedRandom` | Returned unchanged | The caller's buffer already supplies full-count. Its read-ahead is the caller's; archivey does not add a second buffer or drop `fileno()` |
+
+Neither is the materialization discussed above. `FullCountStream` SHALL hold no
+buffered bytes and SHALL report `seekable()` as `False`, so it converts nothing: a
+non-seekable source stays non-seekable, and `streaming=False` over it still fails fast
+at open unless a configured spool makes it seekable first. A path source has always paid the seekable cost through `open()`'s
+`BufferedReader`.
+
+#### Scenario: open mode matrix
 
 | Case | Expected |
 | --- | --- |
-| Pipe source, ZIP / 7z / RAR / ISO, spooling set to none, `streaming=False` | `StreamNotSeekableError` at open, naming the setting |
-| Pipe source, ZIP / 7z / RAR / ISO, spooling set to none, `streaming=True` | `StreamNotSeekableError` at open, naming the setting |
-| Pipe source, TAR or single-file compressor, `streaming=True` | Opens and streams forward; no spool involved |
-| Pipe source, seek-requiring format, spool within the limit | Opens; `CostReceipt.notes` records the spool |
-| Seekable source, any format | Unchanged; no spool is considered for seekability |
+| `streaming=False` on indexed ZIP | Central directory loaded; random access available |
+| `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
+| `streaming=False` on non-seekable source, backend reads front to back | Error at open (before member data) naming `streaming=True` — library does not buffer on its own initiative |
+| Either mode on non-seekable source, backend needs seek, spooling set to none | Same error and same message in both modes, naming a seekable source (buffer to disk or a `BytesIO`) and the setting that would permit a spool |
+| Either mode on non-seekable source, backend needs seek, spool within the limit | Opens; the source is materialized at open and the spool is in `CostReceipt.notes` |
+| Non-seekable source, backend needs seek, archive over the spool limit | `SpoolLimitExceededError` |
+| Seekable stream source, either mode | Buffered at the source boundary for full-count `read(n)`; bounded readahead only — never materialized to memory or disk |
+| Non-seekable stream source, `streaming=True` | The stream the source boundary returns gives full-count `read(n)` with **zero** read-ahead of its own: `seekable()` stays `False`, and a `read(n)` on *that stream* takes exactly `n` bytes from the source. Codec layers above the boundary may still buffer — `DecompressorStream` wraps its input in a `BufferedReader`, so an end-to-end `read(20)` on a compressed non-seekable open takes `io.DEFAULT_BUFFER_SIZE` from the source (8 KiB through 3.13, 128 KiB from 3.14). This change does not alter that |
+| Non-seekable stream that is already `io.BufferedReader` | Returned unchanged; the caller's buffer already supplies full-count. `fileno()` stays intact |
+| Non-seekable stream source, metadata probes | The boundary wrapper is transparent: a source carrying `name` / `size` still answers `source_name` and `source_byte_size` through it, so `compressed_source_size` and `ResolvedSource.archive_name` do not degrade. `tell()` is not forwarded — it raises, as the seek-required refusals depend on |
+| Non-seekable short-returning source, any supported streaming format, with and without `format=` | Opens, lists, and reads identically to the full-count source — the guarantee does not depend on detection having run or on a third-party reader's internal buffering |

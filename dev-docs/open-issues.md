@@ -206,19 +206,25 @@ nor `DIRECTORY`. Original write-up below.
 
 ### P11. A RAR stream source silently costs a whole-archive disk copy, in no signal
 
-> **Design in progress 2026-08-17:** `openspec/changes/bounded-source-spooling` is the home
-> for this. It reframes P11 as an *unmanaged instance* of a feature rather than a standalone
-> defect: today's RAR spill is the worst available configuration of source spooling — no
-> setting, no limit, no signal — and the change puts every spool under **one configured byte
-> limit** (a count, an unlimited sentinel, or none) that also lets a non-seekable source be
-> spooled so seek-requiring formats can read a pipe. **P11's open question is answered
-> there:** `CostReceipt.notes`, not a diagnostic, because a spool inside a limit the caller
-> set is declared, and the `diagnostics` admission clause covers only what they could not
-> have determined. Specs-first; the four design questions were settled on 2026-09-17 — a
-> 1 GiB default limit, a frozen `SpoolLimits` with an `UNLIMITED` classvar, a
-> `SpoolLimitExceededError` subclassing `ResourceLimitError`, and `streaming=True` reading
-> forward from the spooled file. The default is the load-bearing one: a RAR-from-stream read
-> over 1 GiB starts failing where it works today.
+> **Half fixed; the measurement below is stale.** The *reporting* half shipped:
+> `format-rar` now requires the disk-copy caveat in `ar.cost.notes` at open for non-path
+> stream sources, and `rar_reader.py:119` emits it. Re-measured on `main` at `74a8f92`, a
+> `rar -m5` archive read from a `BytesIO` gives
+> `cost.notes = ('Reading a compressed member will copy the whole archive to disk so RARLAB
+> unrar or rar can read it.',)`, no diagnostics, and a temp `.rar` of full archive size —
+> so the `notes=()` line below is no longer what the library does, and the open question it
+> poses is answered. **The bound is what remains:** the caller is told and still cannot say
+> no, because no spool limit exists.
+>
+> `openspec/changes/bounded-source-spooling` is the home for that half. It reframes P11 as an
+> *unmanaged instance* of a feature rather than a standalone defect, and puts every spool
+> under **one configured byte limit** (a count, an unlimited sentinel, or none) that also
+> lets a non-seekable source be spooled so seek-requiring formats can read a pipe.
+> Specs-first; the four design questions were settled on 2026-09-17 — a 1 GiB default limit,
+> a frozen `SpoolLimits` with an `UNLIMITED` classvar, a `SpoolLimitExceededError`
+> subclassing `ResourceLimitError`, and `streaming=True` reading forward from the spooled
+> file. The default is the load-bearing one: a RAR-from-stream read over 1 GiB starts
+> failing where it works today.
 
 - **Today:** `unrar` needs a filesystem path, so `RarReader._ensure_archive_path()`
   (`src/archivey/internal/backends/rar_reader.py:532-555`) writes the **entire archive**

@@ -2,34 +2,52 @@
 
 ## MODIFIED Requirements
 
-### Requirement: RAR member payloads are read through RARLAB unrar
+### Requirement: Serve random access and extraction with bounded explicit temp use
 
-RAR member payload bytes SHALL be read through RARLAB `unrar` (ADR 0002), which accepts a
-filesystem path and not an in-process stream. When the source is not already a path, the
-system SHALL materialize it — and that materialization SHALL be subject to the source spool
-limit in `access-mode-and-cost` and SHALL be recorded in `CostReceipt.notes`. It is not an
-implementation detail and SHALL NOT be exempt from the limit on the grounds that the source
-was already seekable.
+The system SHALL serve non-solid random reads by invoking `unrar` for the target
+member **with that member's path as the sole path argument**, doing O(member_size)
+data work. For solid random reads, the system SHALL decode from archive start to
+the target member (named `unrar p … <member>`) or extract once with `unrar x`
+into an explicitly managed temporary directory and serve later reads from disk;
+that directory is cleaned up on reader close. `extract_all()` MAY use one
+`unrar x` to a temporary directory. Any temp materialization SHALL be a declared
+RAR strategy, not an implicit in-memory buffer.
 
-The system SHALL NOT materialize a source whose members can all be read directly. A stored,
-unencrypted, non-split member is read from the source in place; materialization happens on
-the first member that cannot be, and once per reader. Any member of a **solid** archive
-requires it, because the payloads are demultiplexed from a single `unrar` pipe.
+**Materializing the archive source is subject to the configured spool limit**
+(`access-mode-and-cost`) and SHALL NOT be exempt from it on the grounds that the source
+was already seekable: the bytes, the directory and the cost are the same either way. A
+source larger than the limit SHALL raise `SpoolLimitExceededError` before any bytes are
+written, since the archive size is known. With the limit set to none, a member that
+cannot be read directly SHALL be refused rather than materialized. Multi-volume stream
+sources SHALL be measured **across the whole volume set**, not per volume.
 
-Multi-volume stream sources SHALL be materialized as a set under the same limit, measured
-across all volumes rather than per volume.
+When the archive is opened from a
+non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
+caveat **at open** (path sources SHALL NOT): a single stream source SHALL warn
+that reading a compressed member will copy the whole archive to disk; ordered
+stream volumes SHALL state that volumes were copied at open. The caveat SHALL name
+the limit that bounds the copy, so a caller reads the worst case rather than only the
+fact of it. The note is a
+static open-time caveat, not an occurrence log:
+it SHALL be present even if only stored members are read, and SHALL NOT appear
+after materialization if it was absent at open. Mixed-password
+nonsolid archives MUST NOT demultiplex one unnamed `unrar p` ALL pipe against the
+full member list (wrong-password members are omitted from stdout and would
+desynchronize sizes).
 
-#### Scenario: RAR materialization matrix
+#### Scenario: random/extract matrix
 
 | Case | Expected |
 | --- | --- |
-| Path source, any member | No spool; `unrar` is given the caller's path |
-| Stream source, listing only | No spool; RAR metadata is parsed natively |
-| Stream source, stored unencrypted member | No spool; the member is read directly from the source |
-| Stream source, compressed member, within the limit | One spool of the whole archive, recorded in `CostReceipt.notes` |
-| Stream source, solid archive, any member | One spool; the pipe demux requires it |
+| Random `open()` in non-solid RAR | `unrar p … <archive> <member>`; work is O(member_size) |
+| Stream source, archive within the spool limit | One materialization; the open-time caveat already named the bound |
+| Stream source, archive over the spool limit | `SpoolLimitExceededError` before any bytes are written |
+| Stream source, spool limit set to none, compressed member | Refused; nothing is written |
 | Stream source, second compressed member after the first | No second spool; materialization is once per reader |
-| Stream source, archive larger than the limit | `SpoolLimitExceededError` before writing, since the size is known |
-| Stream source, spooling set to none, compressed member | `SpoolLimitExceededError`; no bytes written |
 | Multi-volume stream source | One spool set; the limit applies to the total across volumes |
-| Reader closed | Temporary file or directory removed |
+| Repeated random opens in solid RAR | Backend may use one tempdir extraction and remove it on close |
+| `extract_all()` | Backend may use one-shot `unrar x` |
+| Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
+| Single non-path stream, at open | `ar.cost.notes` warns a compressed read will copy to disk, naming the limit that bounds it |
+| Ordered stream volumes, at open | `ar.cost.notes` states volumes were copied at open |
+| Path source | `ar.cost.notes` has no disk-copy caveat |

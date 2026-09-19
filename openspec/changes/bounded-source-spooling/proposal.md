@@ -6,17 +6,30 @@
 external binary for data). So `RarReader._ensure_archive_path()` writes the **whole
 archive** to `tempfile.mkstemp(suffix=".rar")` the first time a member cannot be read
 directly, and `_materialize_stream_volumes()` does the same for multi-volume stream
-sources. Measured on a `rar -m5` archive read from a `BytesIO`:
+sources.
+
+This was `dev-docs/open-issues.md` **P11**, filed when the copy was both unbounded and
+unreported. **The reporting half has since shipped.** `format-rar` now requires a
+disk-copy caveat in `ar.cost.notes` at open for non-path stream sources, and
+`rar_reader.py:119` emits it. Re-measured on a `rar -m5` archive read from a `BytesIO`,
+on `main` at `74a8f92`:
 
 ```
-member: big.txt  size: 300000        read from stream: 300000 bytes, ok
-_ensure_archive_path calls: 1        -> /tmp/tmpqee8ey8z.rar   (whole archive)
-reader.diagnostics: []               reader.cost: notes=()   (identical to a path source)
+archive size: 65 946                read from stream: 1 048 576 bytes, ok
+cost.notes: ('Reading a compressed member will copy the whole archive to disk
+              so RARLAB unrar or rar can read it.',)
+diagnostics: 0                      path source cost.notes: ()
+new temp .rar: tmpwcvadlai.rar      65 946 bytes  (the whole archive)
 ```
 
-No size limit, no configuration, no entry in either honesty channel. The caller cannot
-have known. This is `dev-docs/open-issues.md` **P11**, and it is why this change exists
-rather than being a nice-to-have alongside it.
+**The caller is now told, and still cannot say no.** There is no size limit and no
+configuration: `spool_limit` does not exist, so a caller handing over a 4 GiB `BytesIO`
+reads an accurate warning and then gets a 4 GiB temp file anyway. A warning without a
+bound is half an answer — it converts a hidden cost into a declared one, which is
+progress, but it leaves nothing for the caller who wants the cost refused rather than
+announced. **That remaining half is what this change is now for**, and it is the only
+half: the note's wording, its placement in `notes` rather than `diagnostics`, and its
+at-open timing are settled and shipped, and this change does not revisit them.
 
 Separately, ZIP, 7z, RAR and ISO all declare `required_source = SEEKABLE`, so a pipe is
 refused at open with `StreamNotSeekableError` under both `streaming=False` and
@@ -62,10 +75,12 @@ as a guarantee — `TMPDIR` may be a different device, free space is a race, con
 host figures, and a memory-backed temporary directory makes a byte limit a *memory* limit.
 The caller can name the spool directory for exactly that reason.
 
-**Every spool appears in `CostReceipt.notes`.** That answers P11's open question: the
-`diagnostics` admission clause covers what the caller could not determine from the declared
-contract of the call, and a spool the caller bounded is declared; the placement clause
-prefers a structured field where one exists, and `notes` is that field.
+**The open-time caveat gains its bound.** P11's note-versus-diagnostic question is already
+answered and shipped; what the caveat cannot say today is how large the copy may get, because
+nothing bounds it. With a limit configured it can, so the existing note names it. Nothing is
+appended when a spool actually happens: `CostReceipt` is an immutable open-time description,
+and `format-rar` already requires the caveat to be a static statement rather than an
+occurrence log.
 
 **Explicitly out of scope: caching decompressed member payloads.** Writing *decompressed*
 data to disk to speed seeking is a caller-side concern best served by a wrapper stream
@@ -77,8 +92,8 @@ decompression-bomb territory, and it overlaps Topic 6 and the parked `stream-lay
 ## Specs
 
 - **`access-mode-and-cost`** — ADDED: the spool limit, its three settings, the
-  1 GiB default, the `SpoolLimitExceededError` on exceeding it, the `CostReceipt.notes`
-  requirement, the best-effort pre-flight, the rule that a spool happens at the first
+  1 GiB default, the `SpoolLimitExceededError` on exceeding it, the open-time caveat naming
+  its bound, the best-effort pre-flight, the rule that a spool happens at the first
   operation needing it rather than at open, and the rule that a spooled source does not turn
   a `streaming=True` read into a random-access one. MODIFIED: the non-seekable fail-fast
   requirement gains its "unless spooling is permitted" clause, so ADR 0010's rule stays

@@ -44,17 +44,24 @@ two reasons:
 `ExtractionLimits.UNLIMITED` and `ListingLimits.UNLIMITED` establish the sentinel pattern;
 this reads as the third member of an existing family rather than a new concept.
 
-## Decision 3 — `CostReceipt.notes`, not a diagnostic
+## Decision 3 — `CostReceipt.notes`, not a diagnostic — **settled and shipped**
 
-P11 left this open. The `diagnostics` capability settles it once the spool is *bounded*:
+P11 left this open; it was answered the way this section argued, and it has since landed.
+`format-rar` requires the disk-copy caveat in `ar.cost.notes` at open, and
+`rar_reader.py:119` emits it. The reasoning is kept because it is the record of why the
+note went where it did, not because anything here is still to decide.
+
+The `diagnostics` capability settles it once the spool is *bounded*:
 
 - The **admission** clause covers what a caller could not determine from the declared
   contract of the call. A spool inside a limit the caller set is declared.
 - The **placement** clause prefers a structured field where one exists. `CostReceipt.notes`
   exists and is already the home for per-reader cost facts.
 
-The reasoning inverts for *today's* unbounded, unreported behaviour, which no caller
-declared — which is why P11 is a defect and not a preference.
+The reasoning inverted for the *unreported* behaviour P11 was filed against, which no
+caller declared — which is why it was a defect and not a preference. With the note
+shipped, what remains is the bound, and a bound is a configuration question rather than
+an honesty one.
 
 ## Decision 4 — config, not a per-call argument
 

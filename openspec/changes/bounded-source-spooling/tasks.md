@@ -32,7 +32,10 @@
       it is not, removing the partial file on the way out.
 - [ ] 2.3 Best-effort free-space pre-flight per `design.md` Decision 5 — a fast-fail, never
       a promise, and not reachable as a guarantee from any public docstring.
-- [ ] 2.4 Record every spool in `CostReceipt.notes` with its byte count. No diagnostic.
+- [ ] 2.4 Extend the existing open-time caveat (`rar_reader.py:119`) to name the configured
+      limit. Do **not** append a note when a spool happens: `CostReceipt` is an immutable
+      open-time description and `format-rar` already forbids a post-open note. No
+      diagnostic.
 - [ ] 2.5 Refusal path for the "none" setting, raising the same `SpoolLimitExceededError` —
       a limit of none is a limit of zero bytes. Keep `StreamNotSeekableError` for the
       non-seekable-source case, extending its message to name the setting.
@@ -78,8 +81,9 @@
 
 ## 6. Registers and docs
 
-- [ ] 6.1 Close `dev-docs/open-issues.md` **P11**, recording the limit that shipped and the
-      `CostReceipt.notes` choice.
+- [ ] 6.1 Close `dev-docs/open-issues.md` **P11**, recording the limit that shipped. Its
+      `CostReceipt.notes` half is already closed — the note ships today; update the entry's
+      stale "no signal" measurement at the same time.
 - [ ] 6.2 Threat-model pass: untrusted bytes at a predictable path, spool-directory
       permissions, cleanup after a hard kill. Match `docs/extracting.md`'s existing
       `.archivey-tmp-*` treatment rather than inventing a second convention.
