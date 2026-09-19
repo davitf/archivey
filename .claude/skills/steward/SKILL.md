@@ -31,6 +31,13 @@ This file exists only because a watching agent starts from a generic posture and
 reads a skill it was not asked for. Everything below is a **delta** against that
 posture. Where the two disagree, this file and `address-review-findings` win.
 
+**Concurrent with `address-linear-issue`.** That implementing session owns the
+round it commissioned and does not wait for you. If an `address-review-findings`
+disposition is already on this review’s F-IDs (opener names that skill), do not
+start a second round. If none is posted yet, proceed — a simultaneous start is
+the same race as any other review wake. Do not no-op on every agent-reviewed PR,
+and do not look for a label or “in progress” marker that this loop does not write.
+
 ## Where a watcher's defaults differ from this repo
 
 | Default watcher posture | This repo |
