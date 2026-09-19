@@ -158,6 +158,18 @@ _RAR5_XFILE_VERSION = 4
 _RAR5_XFILE_REDIR = 5
 _RAR5_XFILE_OWNER = 6
 
+# Names for the FHEXTRA record types, for the diagnostic raised when one of them
+# is malformed and dropped. The numeric type travels with it, so a record this
+# map does not name is still identifiable.
+_RAR5_XNAMES: dict[int, str] = {
+    _RAR5_XFILE_ENCRYPTION: "encryption",
+    _RAR5_XFILE_HASH: "hash",
+    _RAR5_XFILE_TIME: "time",
+    _RAR5_XFILE_VERSION: "version",
+    _RAR5_XFILE_REDIR: "redir",
+    _RAR5_XFILE_OWNER: "owner",
+}
+
 _RAR5_MHEXTRA_LOCATOR = 1
 _RAR5_MHEXTRA_LOCATOR_QLIST = 0x01
 _RAR5_QO_NAME = "QO"
@@ -275,6 +287,13 @@ class RarMemberInfo:
     # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
     file_version: int | None = None
+    # RAR5 FHEXTRA records that were malformed and dropped, as
+    # ``(record_name, record_type, reason)``. Empty for every well-formed archive,
+    # and the shared empty tuple costs one slot per member rather than an object —
+    # the per-member footprint is load-bearing here (see ADR/#353's measurement of
+    # retained bytes per header byte). The reader turns each entry into a
+    # ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
+    skipped_header_records: tuple[tuple[str, int | None, str], ...] = ()
 
     def needs_password(self) -> bool:
         return self.is_encrypted
@@ -2179,6 +2198,7 @@ def _parse_rar5_file_block(
     flags = 0
     ctime: datetime | None = None
     atime: datetime | None = None
+    skipped_records: list[tuple[str, int | None, str]] = []
 
     if extra_size:
         # Walk extras until near end (allow 1 byte of padding like rarfile).
@@ -2190,31 +2210,60 @@ def _parse_rar5_file_block(
             if xsize < 0 or pos + xsize > len(hdata):
                 break
             xdata, pos = _load_bytes(hdata, xsize, pos)
-            xtype, xpos = load_vint(xdata, 0)
-            if xtype == _RAR5_XFILE_TIME:
-                mtime, ctime, atime = _parse_rar5_xtime(
-                    xdata, xpos, mtime, ctime, atime
+            try:
+                xtype, xpos = load_vint(xdata, 0)
+            except CorruptionError as exc:
+                # A record too short to name itself. The enclosing header's CRC
+                # already matched, so its length is trusted and the next record
+                # starts where ``pos`` says; only this one is lost.
+                skipped_records.append(("unknown", None, raw_message_of(exc)))
+                continue
+            try:
+                if xtype == _RAR5_XFILE_TIME:
+                    mtime, ctime, atime = _parse_rar5_xtime(
+                        xdata, xpos, mtime, ctime, atime
+                    )
+                elif xtype == _RAR5_XFILE_ENCRYPTION:
+                    # Deliberately *not* skippable. Dropping this record would
+                    # leave ``file_encryption`` unset and the member would list as
+                    # plaintext, which is a wrong answer rather than a missing one
+                    # — the failure class this library treats as the worst. A
+                    # member whose encryption parameters cannot be read is not a
+                    # member that can be presented at all.
+                    file_encryption = _parse_rar5_file_encryption(xdata, xpos)
+                    flags |= _RAR3_FILE_PASSWORD
+                elif xtype == _RAR5_XFILE_HASH:
+                    hash_type, xpos = load_vint(xdata, xpos)
+                    if hash_type == _RAR5_XHASH_BLAKE2SP:
+                        blake2sp_hash, xpos = _load_bytes(xdata, 32, xpos)
+                elif xtype == _RAR5_XFILE_REDIR:
+                    redir_type, xpos = load_vint(xdata, xpos)
+                    redir_flags, xpos = load_vint(xdata, xpos)
+                    redir_name, xpos = _load_vstr(xdata, xpos)
+                    file_redir = (
+                        redir_type,
+                        redir_flags,
+                        redir_name.decode("utf8", "replace"),
+                    )
+                elif xtype == _RAR5_XFILE_VERSION:
+                    _vflags, xpos = load_vint(xdata, xpos)
+                    file_version, xpos = load_vint(xdata, xpos)
+                # OWNER / SERVICE / unknown: ignore
+            except CorruptionError as exc:
+                if xtype == _RAR5_XFILE_ENCRYPTION:
+                    raise
+                # Drop this record and keep the member. The walk already ignores a
+                # record type it does not know; a *known* type it cannot parse is
+                # the same amount of missing information, and refusing the archive
+                # over it loses every member that parsed. ``unrar`` 7.00 lists such
+                # an archive. The caller surfaces this as a diagnostic, which under
+                # a strict policy raises — so strictness stays available without
+                # being the default. Whatever the record would have set keeps the
+                # value it had; nothing half-written is committed, because each
+                # branch assigns only on its own last statement.
+                skipped_records.append(
+                    (_RAR5_XNAMES.get(xtype, "unknown"), xtype, raw_message_of(exc))
                 )
-            elif xtype == _RAR5_XFILE_ENCRYPTION:
-                file_encryption = _parse_rar5_file_encryption(xdata, xpos)
-                flags |= _RAR3_FILE_PASSWORD
-            elif xtype == _RAR5_XFILE_HASH:
-                hash_type, xpos = load_vint(xdata, xpos)
-                if hash_type == _RAR5_XHASH_BLAKE2SP:
-                    blake2sp_hash, xpos = _load_bytes(xdata, 32, xpos)
-            elif xtype == _RAR5_XFILE_REDIR:
-                redir_type, xpos = load_vint(xdata, xpos)
-                redir_flags, xpos = load_vint(xdata, xpos)
-                redir_name, xpos = _load_vstr(xdata, xpos)
-                file_redir = (
-                    redir_type,
-                    redir_flags,
-                    redir_name.decode("utf8", "replace"),
-                )
-            elif xtype == _RAR5_XFILE_VERSION:
-                _vflags, xpos = load_vint(xdata, xpos)
-                file_version, xpos = load_vint(xdata, xpos)
-            # OWNER / SERVICE / unknown: ignore
 
     is_symlink = False
     is_hardlink_or_copy = False
@@ -2261,6 +2310,7 @@ def _parse_rar5_file_block(
         split_before=split_before,
         split_after=split_after,
         file_version=file_version,
+        skipped_header_records=tuple(skipped_records),
     )
 
 

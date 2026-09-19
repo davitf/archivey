@@ -60,6 +60,7 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | `PASSWORD_ARGUMENT_UNUSED` | You passed `password=` to a format with no encryption. Passing a keyring across a batch of mixed archives is the intended use, so it is accepted and simply never consulted. |
 | `ENCODING_ARGUMENT_UNUSED` | You passed `encoding=` to a backend that decodes names another way — 7z stores UTF-16, RAR decodes in its own parser, directory and single-file names come from the filesystem. |
 | `MEMBER_NAME_BIDI_CONTROL` | A member name contains a Unicode bidi formatting control. The context names the exact codepoints, because an *override* (U+202A–202E, U+2066–2069 — how `evil‮gnp.exe` displays as a `.png`) is a different thing from a *directional mark* (U+061C, U+200E, U+200F), which appears in ordinary Arabic and Hebrew filenames. |
+| `MEMBER_HEADER_RECORD_SKIPPED` | One optional record in a member's header was malformed and was dropped; the member is listed without whatever it carried. Today this is the RAR5 extra area — a checksum, a timestamp, a redirect target. The field it would have filled is **absent, never wrong**, and the context names the record and the parse failure. Refusing the whole archive over one bad checksum record would discard every member that parsed, and `unrar` itself lists such archives. |
 
 #### What is *not* here: per-member extraction outcomes
 

@@ -69,6 +69,7 @@ from archivey.diagnostics import (
     EmptyArchiveContext,  # noqa: F401
     ExtractionReport,
     FormatConflictContext,  # noqa: F401
+    MemberHeaderRecordContext,  # noqa: F401
     MemberListReport,
     MemberNameControlsContext,  # noqa: F401
     MemberTimestampContext,  # noqa: F401
