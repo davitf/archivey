@@ -322,6 +322,17 @@ Once the round is done, the PR should record what happened to every finding.
 
 Reply once per round, not once per fix.
 
+**Then say you have finished**, in a comment on the PR containing `@claude review`.
+That starts the next round of the [review loop](../../../dev-docs/review-loop.md)
+immediately. It is the last thing you do, after the final push — a commit pushed
+after it will not be in what gets reviewed.
+
+Saying nothing is not a failure, only a slower path: the loop starts a round by
+itself once the branch has gone ten minutes without a new commit. So the signal is
+worth sending and never worth faking. Do not send it before the work is pushed, and
+do not send it to reach past a `loop:done`, `loop:decision` or `loop:hold` — those
+stop a round whoever asks, and the gate will ignore it.
+
 ---
 
 ## Anti-patterns

@@ -84,6 +84,7 @@ jobs:
           FORCE_INPUT: ${{ inputs.force || false }}
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_ASSOC: ${{ github.event.comment.author_association }}
+          COMMENT_LOGIN: ${{ github.event.comment.user.login }}
           IS_PR_COMMENT: ${{ github.event.issue.pull_request != null }}
         run: |
           set -euo pipefail
@@ -101,6 +102,7 @@ jobs:
             --arg action "$EVENT_ACTION" \
             --arg comment_body "$COMMENT_BODY" \
             --arg assoc "$COMMENT_ASSOC" \
+            --arg login "$COMMENT_LOGIN" \
             --argjson number "$pr" \
             --argjson is_pr "$IS_PR_COMMENT" \
             --argjson force "$FORCE_INPUT" \
@@ -111,6 +113,7 @@ jobs:
               number: $number,
               comment_body: $comment_body,
               comment_author_association: $assoc,
+              comment_author_login: $login,
               is_pull_request: $is_pr,
               force: $force,
               labels: [$pr[0].labels[].name],

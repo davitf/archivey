@@ -78,24 +78,31 @@ After the PR exists, post a Linear comment on the issue with the PR URL
 Once the PR is up and the fix is on the remote, put it in the loop and stop.
 Do not start this step on uncommitted work, and do not review the diff yourself.
 
+**Open the pull request as a draft, then take it out of draft when you are
+finished.** Coming out of draft is what starts the review, and it is the one
+signal that cannot be mistimed: everything pushed before it is what gets read.
+
 A branch named `cursor/*` enrols itself when the pull request opens. Anything
-else needs the label:
+else needs the label first:
 
 ```bash
 gh pr edit <number> --add-label loop:on
+gh pr ready <number>
 ```
 
-That is the whole handoff. Within ten minutes of the branch’s last commit, the
-loop runs `code-review-skill` against the PR and posts the review there, with
-`loop:round-1` on the pull request. Up to three rounds run.
+That is the whole handoff. `code-review-skill` runs against the PR in a separate
+Claude session and posts the review there, with `loop:round-1` on the pull
+request. Up to three rounds run.
 
 Two consequences worth stating, because they change what this session does next:
 
-- **Stop pushing when you are done.** The quiet period is how the loop knows the
-  work is finished. A commit pushed while you wait restarts the ten minutes.
 - **Nothing here waits for the review.** It arrives on the pull request minutes
   later, on GitHub, not as a return value. Say in your reply that the loop has
   it, and leave.
+- **Stop pushing once you have said you are finished.** If you never say so at
+  all, the loop starts a round by itself after the branch has gone ten minutes
+  without a new commit — so a late commit does not lose the review, it only
+  delays it and reviews a state you did not mean to submit.
 
 If the loop is not available — no GitHub Actions, or a fork, where the workflow
 has no secrets — say so and stop rather than reviewing your own work. A review

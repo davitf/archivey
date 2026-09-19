@@ -48,6 +48,7 @@ def event(**overrides) -> dict:
         "cross_repository": False,
         "comment_body": "",
         "comment_author_association": "",
+        "comment_author_login": "",
         "is_pull_request": False,
         "force": False,
     }
@@ -294,6 +295,72 @@ def test_a_comment_can_buy_a_fourth_round() -> None:
     assert decision.round == 4
     # Whoever asked can ask again, so this round must not announce itself as the last.
     assert not decision.final
+
+
+def test_the_implementing_agent_can_say_it_has_finished() -> None:
+    """The explicit signal, preferred over waiting out the quiet period.
+
+    `cursor[bot]` is not a repository collaborator — GitHub reports `NONE` — so it
+    gets here on its login rather than on its association.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=["loop:round-1"],
+            is_pull_request=True,
+            comment_body="Findings addressed and pushed. @claude review",
+            comment_author_association="NONE",
+            comment_author_login="cursor[bot]",
+        )
+    )
+    assert decision.run
+    assert decision.round == 2
+    # Not forced: an agent saying it is done cannot reach past a park or the cap.
+    assert not decision.forced
+
+
+@pytest.mark.parametrize(
+    ("labels", "why"),
+    [
+        (["loop:round-3"], "the cap"),
+        (["loop:round-1", "loop:decision"], "a maintainer decision"),
+        (["loop:round-1", "loop:hold"], "a hold"),
+        ([], "never having been enrolled"),
+    ],
+)
+def test_the_agent_cannot_talk_its_way_past_a_stop(labels: list[str], why: str) -> None:
+    """The whole difference between the bot path and the human one.
+
+    A person asking for a round is asking past the cap and past the park they set
+    themselves. An agent reporting that it has stopped pushing is not asking for
+    anything, so every stop still holds — otherwise an agent that fixes, comments,
+    fixes and comments could run the loop indefinitely.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=labels,
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="NONE",
+            comment_author_login="cursor[bot]",
+        )
+    )
+    assert not decision.run, why
+
+
+def test_an_unknown_bot_is_still_a_stranger() -> None:
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=["loop:round-1"],
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="NONE",
+            comment_author_login="dependabot[bot]",
+        )
+    )
+    assert not decision.run
 
 
 def test_a_stranger_cannot_spend_review_credits() -> None:

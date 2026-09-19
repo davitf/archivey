@@ -12,26 +12,27 @@ questions a review cannot answer for itself — is the one thing the loop stops 
 ## The circuit
 
 ```text
-Linear issue ──@Cursor──► Cursor implements ──► opens a pull request (loop:on)
+Linear issue ──@Cursor──► Cursor implements ──► opens a draft pull request
                                                       │
                              ┌────────────────────────┘
-                             │  ten minutes with no new commit
-                             ▼
+                             │  Cursor says it has finished: out of draft, or an
+                             │  `@claude review` comment. Failing that, ten minutes
+                             ▼  with no new commit
                   Claude reviews (round N of 3)
                              │
         ┌────────────────────┼──────────────────────────┐
         ▼                    ▼                          ▼
    nothing found      findings, no question      a maintainer decision
    loop:done          `@cursor` comment          loop:decision
-   over to a human    Cursor pushes ─► round N+1  everything stops
+   over to a human    Cursor fixes ─► round N+1   everything stops
 ```
 
 | Hop | What triggers it | Where it is configured |
 | --- | --- | --- |
 | Issue → implementation | `@Cursor` in a Linear comment, or assigning the issue to Cursor. Triage rules can do it automatically | Linear, team ARC |
-| Implementation → review | The branch going ten minutes without a new commit, noticed by a scan that runs every ten minutes. Marking a draft ready for review skips the wait | [`.github/workflows/review-loop.yml`](../.github/workflows/review-loop.yml) |
+| Implementation → review | The implementing agent taking the pull request out of draft. Failing that, the branch going ten minutes without a new commit | [`.github/workflows/review-loop.yml`](../.github/workflows/review-loop.yml) |
 | Review → addressing | An `@cursor` comment the workflow posts after each round of findings | Same workflow |
-| Addressing → next review | Cursor's push, once it stops pushing | Same workflow |
+| Addressing → next review | An `@claude review` comment from the implementing agent. Failing that, the same ten minutes of quiet | Same workflow |
 | Any step → the maintainer | A `loop:decision` label and a plain-language question on the pull request | Same workflow |
 
 **The `@cursor` comment is the part worth understanding.** Cursor sometimes picks a
@@ -41,36 +42,65 @@ one. Asking explicitly, every round, removes the guessing: the comment names
 [`address-review-findings`](../.claude/skills/address-review-findings/SKILL.md) rather
 than in a generic "fix the comments" posture.
 
-## A round starts when the branch goes quiet
-
-The loop is scheduled, not push-driven, and that is the single design decision most
-worth understanding, because it is not the obvious one.
+## A round starts when the implementer says it has finished
 
 A push looks like the end of a piece of work and almost never is. On the first pull
 request this loop ever saw, Cursor pushed at 05:27:09, 05:27:52, 05:28:24 and 05:40:26
 — four commits, thirteen minutes, all one ticket. A review per push would have spent
 the entire three-round cap inside seventy-five seconds, on three snapshots of
-half-written code, and had nothing left for the branch as it finally stood.
+half-written code, and had nothing left for the branch as it finally stood. So pushes
+are not a trigger at all.
 
-GitHub offers no "the agent has finished" event, so the loop infers one from silence.
-A scan runs every ten minutes, looks at the pull requests carrying a loop label, and
-reviews the one whose head commit has been sitting untouched the longest — provided it
-has been untouched for at least ten minutes and is not the commit the last round
-already read. One pull request per tick, so the first tick after this lands cannot
-start a review on everything at once.
+What replaces them is the implementing agent stating outright that it has stopped,
+which the repo's own instructions tell it to do as its last action:
+
+- **Taking the pull request out of draft**, after the first implementation. Cursor
+  opens drafts anyway, so this costs nothing to ask for.
+- **Commenting `@claude review`**, after addressing a round of findings, when the pull
+  request is already out of draft and has no second draft transition to offer.
+
+Both start a round immediately. [`address-linear-issue`](../.claude/skills/address-linear-issue/SKILL.md)
+and [`address-review-findings`](../.claude/skills/address-review-findings/SKILL.md) §7
+carry the instruction, and `.cursor/commands/` repeats it at the entrypoints Cursor
+actually reads.
+
+### Why there is still a timer behind it
+
+An instruction is not a guarantee. Agents forget, run out of turn, or finish in a way
+that never reaches the last step, and a loop that only starts when an agent remembers
+to start it stops silently the first time one does not. So a scan runs every ten
+minutes over the pull requests carrying a loop label and reviews the one whose head
+commit has been untouched the longest — provided it has been untouched for at least
+ten minutes and is not the commit the last round already read. One pull request per
+tick, so the first tick after this lands cannot start a review on everything at once.
+
+The timer is the floor, not the mechanism. When the signal arrives the review is
+immediate; when it does not, the work still gets reviewed, ten minutes later, and
+nobody has to notice.
 
 Two consequences that are easy to trip over:
 
-- **Pushing again while you wait pushes the review back.** That is the intended
-  behaviour, and the reason `address-linear-issue` tells the implementing agent to
-  stop pushing once it is done.
-- **Marking a draft ready for review skips the wait.** "Ready for review" is a person
-  or an agent stating explicitly what the quiet period exists to infer, so the loop
-  takes it at its word and reviews immediately.
+- **Say it last.** A commit pushed after the signal is not in what gets reviewed.
+- **Pushing again while you wait pushes the review back**, if you are relying on the
+  quiet period.
 
-Draft status is otherwise ignored. Cursor opens its pull requests as drafts and does
-not always take them out, so waiting for that would mean waiting for a human — which
-is the thing the loop is for.
+Draft status is otherwise ignored, and `loop:off` is what takes a pull request out for
+good. A draft nobody ever marks ready still gets reviewed once it goes quiet, because
+waiting for a human to click a button is the thing the loop exists to avoid.
+
+### Who may say it
+
+`@claude review` from a repository collaborator is a *forced* round: it runs past the
+three-round cap and past `loop:decision` or `loop:hold`, because a person is who set
+those and is entitled to clear them.
+
+The same comment from `cursor[bot]` is not. It starts an ordinary round, so the cap
+and every park still hold. GitHub reports `author_association: NONE` for a bot even on
+a pull request it has been working on, so the gate recognises it by login instead —
+`TRUSTED_BOTS` in `scripts/review_loop_gate.py`. The narrower grant is deliberate: an
+agent that fixes, comments, fixes and comments would otherwise run the loop
+indefinitely, and "I have stopped pushing" is a statement of fact, not a request for
+an exception.
 
 ## Round state is labels
 
@@ -184,9 +214,13 @@ commenting `@claude review` on it.
 - **Whether Cursor answers an `@cursor` from `claude[bot]`** has not been observed yet.
   If it turns out to ignore bot comments, the fallback is the same comment from a
   personal access token, or a `@Cursor` comment on the Linear issue instead.
-- **Ten minutes is a guess.** It is long enough to cover the gaps observed so far and
-  short enough not to feel broken. `QUIET_MINUTES` in the gate is the one place to
-  change it; the cron interval should move with it.
+- **Ten minutes is a guess.** It only matters when an agent does not send the signal,
+  and it is long enough to cover the gaps observed so far and short enough not to feel
+  broken. `QUIET_MINUTES` in the gate is the one place to change it; the cron interval
+  should move with it.
+- **Whether Cursor actually sends the signal** has not been observed yet. If it turns
+  out to ignore the instruction, the quiet period is what catches it, which is why the
+  timer stays.
 - **A scheduled round and an `@claude review` on the same pull request can overlap.**
   They are in different concurrency groups, and the scan records the commit it read
   only once its round finishes. Two reviews of one commit is wasteful but harmless, and

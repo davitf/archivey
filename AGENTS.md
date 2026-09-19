@@ -376,8 +376,10 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    the ticket, fixes it, opens the PR and enrols it in the
    [review loop](dev-docs/review-loop.md), which runs `code-review-skill` in a separate
    Claude session and posts to the PR; whoever holds the branch then runs
-   `address-review-findings`. Do not review your own diff, and do not spawn a reviewer
-   of your own — the loop is the second opinion. Maintainer decision (davitf,
+   `address-review-findings`. **Say when you have finished** — take the PR out of draft
+   after implementing, comment `@claude review` after addressing a round — as the last
+   action, after the final push; that is what starts each round. Do not review your own
+   diff, and do not spawn a reviewer of your own — the loop is the second opinion. Maintainer decision (davitf,
    2026-09-19): Claude reviews PRs started from a Linear issue, replacing the fresh
    Cursor Grok subagent this step used to spawn.
 

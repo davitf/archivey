@@ -70,6 +70,16 @@ COMMENT_TRIGGER = re.compile(r"@claude review", re.IGNORECASE)
 #: Who may force a round by commenting.
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
+#: Bots whose ``@claude review`` comment starts a round.
+#:
+#: A bot cannot be a repository collaborator — GitHub reports `author_association:
+#: NONE` for `cursor[bot]` even on a pull request it has been working on — so the test
+#: above never reaches it. This is the narrow exception, and it grants strictly less
+#: than the human one: a person asking for a round is asking past the cap and past a
+#: parked label, because a person is who parked it. An agent saying "I have finished
+#: pushing" is not, so the cap and every park still hold for these.
+TRUSTED_BOTS = frozenset({"cursor[bot]"})
+
 #: Labels that park the loop. A pull request carrying one is skipped by the scan.
 PARKED_LABELS = (LABEL_DONE, LABEL_DECISION, LABEL_HOLD)
 
@@ -151,11 +161,26 @@ def _classify(event: dict) -> Decision:
             return Decision(False, done, "comment is not on a pull request")
         if not COMMENT_TRIGGER.search(event.get("comment_body") or ""):
             return Decision(False, done, "comment does not ask for a review")
-        if event.get("comment_author_association") not in TRUSTED_ASSOCIATIONS:
-            return Decision(False, done, "commenter is not a repository collaborator")
-        # A round bought by hand is never the "final" one: whoever asked for it can
-        # ask again, so the loop has no business announcing that it is finished.
-        return Decision(True, nxt, "requested by comment", forced=True)
+        if event.get("comment_author_association") in TRUSTED_ASSOCIATIONS:
+            # A round bought by hand is never the "final" one: whoever asked for it can
+            # ask again, so the loop has no business announcing that it is finished.
+            return Decision(True, nxt, "requested by comment", forced=True)
+
+        if str(event.get("comment_author_login") or "") in TRUSTED_BOTS:
+            # The implementing agent saying it has stopped pushing — the signal the
+            # quiet period exists to infer, stated outright, so do not wait for it.
+            if not enrolled(labels):
+                return Decision(False, done, "pull request is not enrolled in the loop")
+            for label in PARKED_LABELS:
+                if label in labels:
+                    return Decision(False, done, f"{label} is set")
+            if nxt > MAX_ROUNDS:
+                return Decision(False, done, "round cap spent", cap_reached=True)
+            return Decision(
+                True, nxt, "the implementing agent says it is finished", final=final
+            )
+
+        return Decision(False, done, "commenter is not a repository collaborator")
 
     if event_name == "workflow_dispatch":
         if event.get("force"):
