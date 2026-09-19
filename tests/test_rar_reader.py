@@ -3258,13 +3258,15 @@ def test_wildcard_solid_stream_members_reads_all() -> None:
 def test_wildcard_nonsolid_stream_members_hits_the_refusal() -> None:
     """A nonsolid streaming pass takes the named route, so the refusal reaches it.
 
-    Characterization, not a desired end state. ``_iter_with_data`` falls through to
-    per-member named opens for nonsolid archives, so ``stream_members()`` builds the
-    same ``-n`` mask a random ``open()`` does and carries the same concatenation —
-    worse, in fact, since the pass decodes the prefix member once as itself and again
-    inside the target's pipe. The solid pass above is exempt because it builds no
-    mask. Whether nonsolid streaming should also be exempt is with davitf; if it is
-    exempted, this test flips to asserting the read succeeds.
+    ``_iter_with_data`` falls through to per-member named opens for nonsolid archives,
+    so ``stream_members()`` builds the same ``-n`` mask a random ``open()`` does and
+    carries the same concatenation — worse, in fact, since the pass decodes the prefix
+    member once as itself and again inside the target's pipe. The solid pass above is
+    exempt only because it builds no mask at all.
+
+    Maintainer (davitf, 2026-09-19), asked whether iteration should be exempted:
+    "right now don't exempt iteration, it can fail as the other modes." So this is
+    the decided behaviour, not a placeholder.
     """
     with open_archive(_fixture("wildcard_names__.rar")) as archive:
         with pytest.raises(UnsupportedFeatureError, match="would decompress"):

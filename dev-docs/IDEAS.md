@@ -476,6 +476,22 @@
 
 ## Performance & robustness
 
+- **Batch small members into one `unrar` call on a nonsolid archive** — a nonsolid
+  `stream_members()` pass spawns one `unrar p -n./<member>` **per member**; only the
+  *solid* path uses a single unnamed ALL-pipe demuxed by `SolidBlockReader`
+  (`_iter_with_data` falls through to per-member named opens when `is_solid` is false).
+  Measured 2026-09-19 on a 20-member `-m3` archive, 20 KB per member, streaming the
+  whole thing: **nonsolid 20 spawns / 0.108 s, solid 1 spawn / 0.007 s** — same bytes
+  out, ~15x, so roughly 5 ms of process overhead per member, which dominates entirely at
+  this member size. Worth measuring the spawn cost properly and then deciding
+  *intelligently* whether to batch: `unrar` accepts several member paths in one call, so
+  a run of small adjacent members could share a process and be demuxed by size the way
+  the solid path already is. The decision wants a real threshold from measurement, not a
+  guessed constant, and it has to stay honest about what a batch costs when the caller
+  abandons the iterator early. Note `format-rar`'s "Constrain unrar argv by call site"
+  requirement currently forbids passing multiple member paths, so this needs a spec
+  change and not just an optimization. Raised by davitf, 2026-09-19.
+
 - **Detection budget / receipt public surface** — deferred by `detection-prefix-workspace`
   Decision 3A. Types live in `archivey.detection_cost` but are omitted from
   `archivey.__all__`. When `detection-result-surface` lands, decide: root re-exports vs
