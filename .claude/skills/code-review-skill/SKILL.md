@@ -43,6 +43,10 @@ three blocks.
 **The review is the handoff.** Do not also produce a prompt or brief for whoever fixes the
 PR — they run `address-review-findings` off the PR threads. §0 has the rule.
 
+**Sweeping whole files rather than a diff?** Every file you finish reading gets a `SWEPT`
+marker comment on #315, findings or no findings — addendum §10. A clean read that posts
+nothing is indistinguishable from a file nobody opened, and twice it has been counted as one.
+
 ## Review process
 
 Archivey PRs are **code first, then context** (addendum §8). That replaces the generic

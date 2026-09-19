@@ -381,6 +381,52 @@ done — parcels D and E read the RAR pair, and threads 51/53/54 read part of `s
 — so they are the places where the existing threads most obviously stop mid-subsystem. `zip_aes.py`
 thread 15 also lands in S1's territory.
 
+### How sweep coverage is counted
+
+**From the `SWEPT` markers on #315, never from thread counts.** Every file a sweep finishes
+reading gets one top-level comment on #315 whose first line is a machine-readable marker —
+path, batch, date, line count, finding count. The shape is defined in
+[`archivey-review-addendum.md`](../.claude/skills/code-review-skill/reference/archivey-review-addendum.md)
+§10, and [`scripts/sweep_coverage.py`](../scripts/sweep_coverage.py) does the arithmetic:
+
+```
+for p in 1 2 3; do \
+  curl -s "https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100&page=$p" \
+  | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]'; \
+done | python3 scripts/sweep_coverage.py --by-pass --unswept
+```
+
+That loop pages deliberately: the endpoint serves 100 comments at a time, #315 gains a marker per file swept, and a single-page fetch drops the rest **silently** — the files on the missing page come back as unswept. Raise the range until the last page prints nothing. With the `gh` CLI, `gh api --paginate repos/davitf/archivey/issues/315/comments --jq '.[].body'` does the same in one call.
+
+The denominator is the tree in the checkout, not a number remembered from a previous
+snapshot. A file counts once however many times it has been swept. Lines come from the tree
+rather than from the marker, so a file read six months and a rewrite ago is reported as
+drifted rather than silently counted as current.
+
+**The rule exists because counting threads produced the wrong answer twice.** The 2026-09-17
+snapshot said 24% and a revision on 2026-09-19 said 35%; the true figures were 12% and 23%.
+Both counted the fifteen threads dated 2026-09-07 — maintainer questions on six files no
+agent had read — as sweep output, and the error survived a revision because nothing on #315
+distinguished a file read and found sound from a file nobody opened. It put
+`backends/rar_parser.py`, the largest file in the repository and its most exposed
+hostile-input surface, in the swept column while it had never been read. It has been read
+since — S16, on 2026-09-19 — which is how the miscount came to be caught rather than a reason
+it stopped mattering.
+
+**The sixteen pre-convention files were backfilled on 2026-09-19**, at the maintainer's
+decision: the nine of the 2026-09-08 pass and the seven of S1 and S2. Each of those markers
+carries `backfilled=2026-09-19` and says in its own text that nobody re-read the file — it
+records the pass that did — and each was reconstructed from the paths the threads landed on,
+the batch scope tables, and `main`'s tip on the pass date. The command above reproduces the
+16 files and 8 299 lines this page derived by hand for S0, S1 and S2, which is the check that
+the reconstruction is not a fresh guess. Because each marker records the line count as read, the
+drift table above falls straight out of them rather than needing to be measured by hand
+again.
+
+**So every coverage number on this page is a snapshot and the command is the source.** The
+batches running on 2026-09-19 post markers as they finish each file, which moves the figure
+within a day; a row here is what was true when the row was written.
+
 ## The two docs rewrites
 
 **Also not previously on this page**, because both predate it and neither lives in a register

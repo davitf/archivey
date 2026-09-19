@@ -566,6 +566,90 @@ cannot be dispositioned finding-by-finding costs the next round more than it sav
 Where the host cannot post inline comments, one top-level comment is acceptable, but the
 IDs are not optional.
 
+### Whole-file sweeps: one `SWEPT` marker per file
+
+A **sweep batch** is a cold whole-file reading pass rather than a diff review — the `S*`
+batches posted to [#315](https://github.com/davitf/archivey/pull/315). Findings post exactly
+as above, one inline thread each. What a sweep posts *in addition* is a per-file record that
+the file was read at all, **whether or not it found anything**:
+
+- **One top-level comment on #315 per file**, posted when you finish reading that file and
+  before you start the next one. Not inline: a whole-file read has no line to anchor to.
+- **The marker is always its own comment, including for a file that produced findings.**
+  Never put the `SWEPT` line in a review body, a finding, or a reply. A file with findings
+  therefore gets its findings *and* a marker comment, which is the point: the marker says
+  the file was read end to end, and the findings say what was in it. Keeping markers in one
+  comment type is what makes the whole set fetchable in one call — the counting command in
+  [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md) reads the issue
+  comments and nothing else.
+- Its **first line** is the marker, in exactly this shape:
+
+  ```
+  **SWEPT** `src/archivey/internal/backends/zip_reader.py` — pass=S1 date=2026-09-17 lines=1612 findings=3 ids=S1-F1,S1-F2,S1-F3 reviewer=cursor head=94468bd
+  ```
+
+  `**SWEPT**`, the repo-relative path in backticks, an em dash, then the fields as
+  `key=value` in that order, space separated, **no spaces inside a value**.
+
+  | Field | What |
+  |---|---|
+  | `pass=` | The batch id — `S1`, `S3`, … The 2026-09-08 pass is `S0`. Split a batch as `S3a` / `S3b` |
+  | `date=` | The ISO date you read the file |
+  | `lines=` | The file's line count at `head` |
+  | `findings=` | How many block-2 findings you raised against this file |
+  | `ids=` | Their IDs, comma separated; `-` when `findings=0` |
+  | `reviewer=` | `claude-code` or `cursor` |
+  | `head=` | The commit you read the file at |
+
+- Under the marker, three to five lines of prose: what you read, what you checked that came
+  back clean, and anything you deliberately left to another batch. **A clean file's comment
+  is the short one and the valuable one** — it is the only thing that distinguishes a file
+  that was read and found sound from a file nobody opened.
+- **A sweep finding's ID is `<pass>-<your initial><n>`** — `S16-K1`, `S17-C1` — which carries
+  both prefixes this file already requires: the batch, so two batches on #315 cannot collide,
+  and the reviewer's initial, so two reviewers in one batch cannot either. **This applies from
+  the next batch and renames nothing.** An ID that is already anchored in a posted thread is
+  never renumbered (§"Stable IDs"), so a batch that used another form keeps it and says so in
+  its markers. `ids=` therefore carries whatever IDs the findings actually have, and nothing
+  reading a marker may assume they share the `pass=` value.
+- **One marker per file per pass**, and a batch posts each file's marker once. Re-sweeping
+  a file in a later batch posts a **new** marker rather than editing the old one: the newest
+  wins and the older stays as the record of what was true then. `sweep_coverage.py` counts a
+  path once however many markers it carries, so a slip cannot inflate the figure — it warns
+  instead when one path carries two markers from the same pass.
+
+`lines=` is recorded as read, not looked up later, because coverage decays: the first
+backfill showed seven of nine files from the 2026-09-08 pass more than 10% away from the shape
+that pass read, all in the one package whose findings had since been fixed. Draining a sweep's
+threads rewrites the code the sweep read, so a marker that could only say "swept" would
+overstate the subsystem where the follow-up was most thorough. Record the drift; when to act
+on it is the maintainer's to schedule, and as of 2026-09-19 the answer is after the first
+pass over the whole codebase, not during it.
+
+**A marker for a read you did not perform carries `backfilled=<date>` as a final field**, and
+its prose says in as many words that nobody re-read the file. That form exists for one event
+— the sixteen files swept on 2026-09-08 and 2026-09-17, before the convention, backfilled on
+2026-09-19 at the maintainer's decision from the batch scope tables and the paths the threads
+landed on. A pass that predates stable finding IDs writes `ids=untagged`, and one whose
+reviewing host is not recorded writes `reviewer=unknown`. Do not reach for any of the three
+when recording your own read.
+
+**Why this exists.** Findings are evidence of a read; the absence of findings is not. The
+coverage figure on [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md)
+was overstated by twelve points in two consecutive snapshots because threads were counted as
+coverage, and `backends/rar_parser.py` — the largest file in the repository and its most
+exposed hostile-input surface — was believed swept when no agent had ever read it. Two sweep
+threads also reached opposite conclusions about the same two files from the same evidence.
+Markers make "was this file swept?" answerable by looking rather than by inference.
+
+The marker line carries the reviewer and the head, so on this comment type it **replaces**
+the §"A short marker at the top" opener rather than sitting under it. Attribution and footer
+rules are unchanged.
+
+Coverage is counted from these markers, never from thread counts —
+[`dev-docs/open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md) §How sweep
+coverage is counted, and `scripts/sweep_coverage.py`, which does the counting.
+
 ### Re-reviews state what happened to the last round
 
 A second pass on the same PR opens with a **status table over the previous IDs** — fixed /
@@ -720,6 +804,32 @@ On a PR whose threads mix maintainer questions, `cursor[bot]` dispositions, and 
 posting through the maintainer's account, this is what makes a thread scannable — the
 author avatar says `davitf` for two of those three. Keep it to one line; the detail belongs
 in the finding.
+
+### The review trigger phrase is a command, not a quotable string
+
+The automated loop starts a review round when a **top-level comment on a pull request**
+opens with the trigger phrase ([`review-loop.yml`](../../../../.github/workflows/review-loop.yml);
+[`review-loop.md`](../../../../dev-docs/review-loop.md) for what a round then does). **It is
+a command whoever wrote it.** An agent posting through the maintainer's account is
+indistinguishable from the maintainer, so a comment written to *explain* the phrase starts a
+real round on whatever pull request it was posted to — which has happened, on the PR that was
+fixing the loop.
+
+The exposure is exactly that one surface, and it is narrow: the guard sits on the
+`issue_comment` path and the gate refuses a comment that is not on a pull request, so an
+issue comment, a pull request body, an inline review comment and a review body cannot fire
+it, and neither can a file in the tree. That is why `review-loop.yml` and
+[`review-loop.md`](../../../../dev-docs/review-loop.md) can quote the phrase freely — and
+why this file can.
+
+So: **never open a comment with the phrase unless you mean to start a round.** Position is
+what carries the meaning — the match is anchored, so the phrase counts only at the start of a
+comment, leading whitespace aside, and quoting it mid-sentence asks for nothing. One
+side effect is worth knowing before you quote it: the general `@claude` assistant skips any
+comment holding the phrase anywhere, so a comment that mentions it mid-sentence gets no
+answer from the assistant either.
+[`review-loop.md`](../../../../dev-docs/review-loop.md) has the matching rules and the
+incident that produced them.
 
 ### Name the responder skill in the review body
 
