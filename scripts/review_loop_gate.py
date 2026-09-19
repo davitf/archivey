@@ -7,7 +7,7 @@ a gate that has to be exercised by pushing to a pull request is a gate nobody te
 
 Reads one JSON object on stdin, writes one JSON object on stdout:
 
-    {"run": true, "pr": 365, "round": 2, "head_sha": "abc…", "reason": "...",
+    {"run": true, "pr": 365, "round": 2, "head_sha": "abc…", "head_ref": "…", "reason": "...",
      "cap_reached": false, "forced": false, "enrol": false, "final": false}
 
 Two shapes go in. A single event (`pull_request`, `issue_comment`,
@@ -130,6 +130,10 @@ class Decision:
     reason: str
     pr: int = 0
     head_sha: str = ""
+    #: The head branch name. Not a decision input — the workflow needs it to tell which
+    #: agent holds the branch, and everything the workflow acts on comes off the gate so
+    #: there is one place to look when a run does something surprising.
+    head_ref: str = ""
     cap_reached: bool = False
     forced: bool = False
     #: Add `loop:on`: this pull request belongs in the loop and was not in it yet.
@@ -175,6 +179,7 @@ def decide(event: dict) -> Decision:
         _classify(event),
         pr=int(event.get("number") or 0),
         head_sha=str(event.get("head_sha") or ""),
+        head_ref=str(event.get("head_ref") or ""),
     )
 
 
@@ -305,6 +310,7 @@ def _scheduled(candidate: dict, now: datetime | None, quiet: timedelta) -> Decis
             reason,
             pr=pr,
             head_sha=head_sha,
+            head_ref=str(candidate.get("head_ref") or ""),
             cap_reached=cap_reached,
             final=final,
         )

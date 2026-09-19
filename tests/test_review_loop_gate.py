@@ -608,6 +608,7 @@ def test_the_script_reads_stdin_and_writes_json() -> None:
         "reason",
         "pr",
         "head_sha",
+        "head_ref",
         "cap_reached",
         "forced",
         "enrol",
@@ -707,3 +708,36 @@ def test_the_trigger_is_anchored_in_the_pattern_not_only_in_the_call() -> None:
     assert not gate.COMMENT_TRIGGER.search(quoting)
     assert not gate.COMMENT_TRIGGER.match(quoting)
     assert gate.COMMENT_TRIGGER.search("@claude review")
+
+
+def test_the_head_branch_comes_back_so_the_ping_can_be_addressed() -> None:
+    """The workflow asks the branch who is fixing, and reads it off the gate.
+
+    `@cursor` used to be hardcoded in the findings ping, which is right only while
+    Cursor is the implementer. When Claude implements and Cursor reviews, that comment
+    handed the fixes to the agent that had just written them up. The branch prefix is
+    the same signal the gate already uses to enrol a new pull request, so it comes out
+    of the gate rather than being fetched again in bash.
+    """
+    ready = gate.decide(
+        event(
+            event_name="pull_request",
+            action="ready_for_review",
+            head_ref="cursor/delegating-stream-flags-8161",
+            labels=["loop:on"],
+        )
+    )
+    assert ready.run
+    assert ready.head_ref == "cursor/delegating-stream-flags-8161"
+
+    # The scan carries it too, since a scheduled round posts the same ping.
+    assert (
+        scan(candidate(head_ref="claude/project-thread-blk7eo")).head_ref
+        == "claude/project-thread-blk7eo"
+    )
+
+    # Absent from the payload is the empty string, never None: the workflow interpolates
+    # it into a `case`, where a null would read as the literal "null".
+    bare = event(labels=["loop:round-1"])
+    del bare["head_ref"]
+    assert gate.decide(bare).head_ref == ""

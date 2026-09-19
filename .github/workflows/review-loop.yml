@@ -191,6 +191,7 @@ jobs:
             echo "pr=$(jq -r .pr /tmp/gate.json)"
             echo "round=$(jq -r .round /tmp/gate.json)"
             echo "head_sha=$(jq -r .head_sha /tmp/gate.json)"
+            echo "head_ref=$(jq -r .head_ref /tmp/gate.json)"
             echo "cap_reached=$(jq -r .cap_reached /tmp/gate.json)"
             echo "enrol=$(jq -r .enrol /tmp/gate.json)"
             echo "final=$(jq -r .final /tmp/gate.json)"
@@ -337,6 +338,7 @@ jobs:
           ROUND: ${{ steps.gate.outputs.round }}
           FINAL: ${{ steps.gate.outputs.final }}
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          HEAD_REF: ${{ steps.gate.outputs.head_ref }}
         run: |
           set -euo pipefail
 
@@ -418,13 +420,22 @@ jobs:
           commits stop for thirty minutes. The loop stops after round 3.
           EOF
               fi
+              # Ping whoever holds the branch, not whoever usually does. Cursor is the
+              # implementer on a `cursor/*` branch, but the roles also run the other way
+              # round — Claude implements, Cursor reviews, Claude does a final pass — and
+              # there this comment used to hand the fixes to the agent that had just
+              # written them up. The branch prefix is the same signal the gate already
+              # uses to enrol a new pull request.
+              case "$HEAD_REF" in
+                cursor/*) fixer="@cursor" ;;
+                *)        fixer="@claude" ;;
+              esac
               cat > /tmp/ping.md <<EOF
-          @cursor Please work through the review findings on this pull request.
+          $fixer Please work through the review findings on this pull request.
 
-          Use the \`/address-review\` command (\`.cursor/commands/address-review.md\`) and follow
-          it: every finding gets an explicit disposition, nothing is called fixed without being
-          reproduced first, and anything needing a maintainer ruling is escalated rather than
-          guessed at.
+          Use the \`/address-review\` command and follow it: every finding gets an explicit
+          disposition, nothing is called fixed without being reproduced first, and anything
+          needing a maintainer ruling is escalated rather than guessed at.
 
           This is round $ROUND of 3. Push to this branch when you are done; the next review
           starts on its own once the branch has been quiet for thirty minutes.

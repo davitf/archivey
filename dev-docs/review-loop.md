@@ -23,24 +23,53 @@ Linear issue ──@Cursor──► Cursor implements ──► opens a draft pu
         ┌────────────────────┼──────────────────────────┐
         ▼                    ▼                          ▼
    nothing found      findings, no question      a maintainer decision
-   loop:done          `@cursor` comment          loop:decision
-   over to a human    Cursor fixes ─► round N+1   everything stops
+   loop:done          ping the implementer       loop:decision
+   over to a human    it fixes ─► round N+1      everything stops
 ```
 
 | Hop | What triggers it | Where it is configured |
 | --- | --- | --- |
 | Issue → implementation | `@Cursor` in a Linear comment, or assigning the issue to Cursor. Triage rules can do it automatically | Linear, team ARC |
 | Implementation → review | The implementing agent taking the pull request out of draft. Failing that, the branch going thirty minutes without a new commit | [`.github/workflows/review-loop.yml`](../.github/workflows/review-loop.yml) |
-| Review → addressing | An `@cursor` comment the workflow posts after each round of findings | Same workflow |
+| Review → addressing | A comment the workflow posts after each round of findings, addressed to whoever holds the branch | Same workflow |
 | Addressing → next review | A comment from the implementing agent *starting* with `@claude review`. Failing that, the same thirty minutes of quiet | Same workflow |
 | Any step → the maintainer | A `loop:decision` label and a plain-language question on the pull request | Same workflow |
 
-**The `@cursor` comment is the part worth understanding.** Cursor sometimes picks a
-review up on its own and sometimes does not, which made the third hop the unreliable
-one. Asking explicitly, every round, removes the guessing: the comment names
-`/address-review` so the fixing agent lands in
+**That ping is the part worth understanding.** Cursor sometimes picks a review up on
+its own and sometimes does not, which made the third hop the unreliable one. Asking
+explicitly, every round, removes the guessing: the comment names `/address-review` so
+the fixing agent lands in
 [`address-review-findings`](../.claude/skills/address-review-findings/SKILL.md) rather
-than in a generic "fix the comments" posture.
+than in a generic "fix the comments" posture. Who it addresses depends on the branch —
+see [The roles run both ways round](#the-roles-run-both-ways-round).
+
+## The roles run both ways round
+
+Cursor implementing and Claude reviewing is the common direction, not the only one.
+Claude also implements — from this project's threads, on a `claude/*` branch — and then
+Cursor reviews, because [Claude never reviews its own diff](pair-workflow.md). The loop
+is the same loop in both directions; two things had to stop assuming who was who.
+
+**The findings ping is addressed by branch prefix.** After a round of findings the
+workflow asks the implementing agent to work through them, and that comment used to say
+`@cursor` unconditionally — which, in the reversed direction, handed the fixes to the
+agent that had just written them up. It now reads `@cursor` on a `cursor/*` branch and
+`@claude` on anything else. The prefix is the signal the gate already uses to decide
+enrolment, so there is no new piece of state, and `head_ref` comes out of the gate
+alongside the sha the round is reviewing.
+
+**Cursor hands an approval back for a pass from zero** (davitf, 2026-09-19). When
+Cursor's verdict is ✅ Approve and Claude implemented, `.cursor/commands/code-review.md`
+tells it to post one last comment starting `@claude review`. That is an ordinary forced
+round, and it reads the whole diff rather than a fix-diff: the round counter only counts
+rounds this loop ran, so a pull request Cursor has reviewed three times still arrives at
+Claude's round 1. A second reviewer's first look is not a re-review. Two reviewers who
+have each read the same tree cold are worth more than one that read it twice.
+
+If that pass finds something real, it is the ordinary loop and not an escalation: the
+implementer is pinged and rounds continue under the same cap (davitf, 2026-09-19). One
+reviewer disagreeing with another's approval is not by itself evidence of anything, and
+stopping for a human there would cost a round trip for what is usually a nit.
 
 ## A round starts when the implementer says it has finished
 
@@ -237,6 +266,20 @@ assistant is the side effect, and it is silent — a comment that asks `@claude`
 question *and* quotes the trigger phrase gets no answer and no explanation. Quote the
 phrase or ask the assistant, not both in one comment.
 
+**`claude.yml` also answers only people now.** It passes no `allowed_bots`, so a
+bot-authored `@claude` does not quietly do nothing — the action aborts with "Workflow
+initiated by non-human actor" and leaves a red check on the pull request. That is how
+#369 got one: `cursor[bot]` left a review comment that mentioned `@claude` while
+discussing this loop. Each branch of the guard now requires `user.type != 'Bot'`, and
+the phrase exclusion, which used to sit on the `issue_comment` branch alone, is on every
+branch that reads a body. Naming the bots in `allowed_bots` would have been the wrong
+repair: it makes those runs execute rather than abort, which is more agent usage, not
+less.
+
+That guard is also what lets the findings ping address `@claude` on a `claude/*` branch.
+The workflow posts it as `github-actions[bot]`, so it reaches the session watching the
+pull request without waking the general assistant on the way past.
+
 ## Bots trigger almost everything here, and must be named
 
 `anthropics/claude-code-action` refuses to run when the workflow was initiated by a bot
@@ -283,10 +326,12 @@ opening a comment on it with `@claude review`.
 
 ## Known rough edges
 
-- **Whether Cursor answers the `@cursor` ping** has not been observed yet. The workflow
-  posts it with `GITHUB_TOKEN`, so it arrives from `github-actions[bot]`. If Cursor
-  turns out to ignore bot comments, the fallback is the same comment from a personal
-  access token, or a `@Cursor` comment on the Linear issue instead.
+- **Whether either agent answers the findings ping** has not been observed yet. The
+  workflow posts it with `GITHUB_TOKEN`, so it arrives from `github-actions[bot]`. If
+  Cursor turns out to ignore bot comments, the fallback is the same comment from a
+  personal access token, or a `@Cursor` comment on the Linear issue instead. The
+  `@claude` form has a different path: it is read by whatever session is subscribed to
+  the pull request's activity, not by `claude.yml`, which ignores bots by design.
 - **Thirty minutes is a guess**, and it started as ten. It only matters when an agent
   does not send the signal. The change (davitf, 2026-09-19) was about which way to be
   wrong: a premature round spends one of three on half-written code, while a late one
