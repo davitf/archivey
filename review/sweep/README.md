@@ -13,7 +13,7 @@ reading found — lives on #315 itself.
 |---|---|
 | The brief handed to each batch agent | [`brief-template.md`](brief-template.md) |
 | What a batch posts, and the `SWEPT` marker shape | [`archivey-review-addendum.md`](../../.claude/skills/code-review-skill/reference/archivey-review-addendum.md) §10 |
-| Which batches exist (S1–S14) and in what order | [`dev-docs/open-work-inventory.md`](../../dev-docs/open-work-inventory.md) |
+| Which batches were planned (S1–S14) and in what order | [`dev-docs/open-work-inventory.md`](../../dev-docs/open-work-inventory.md) — **the plan, not the record.** Batches get re-cut as they run; the markers say what was actually read |
 | How coverage is counted | Same page, §How sweep coverage is counted; [`scripts/sweep_coverage.py`](../../scripts/sweep_coverage.py) does it |
 
 ## One `SWEPT` marker per file, findings or not

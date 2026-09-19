@@ -3,6 +3,29 @@
 > Template. Fill in every `<…>`, delete this line and the notes in square brackets, and paste
 > the result into a fresh agent. The S1 and S2 briefs are the worked examples.
 
+## Before you write this brief — build the scope from the markers
+
+Run the counter first and take the scope from what it says is left:
+
+```
+curl -s 'https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100' \
+  | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]' \
+  | python3 scripts/sweep_coverage.py --unswept
+```
+
+**Exclude every file that already carries a marker.** The `S1`–`S14` table on
+[`dev-docs/open-work-inventory.md`](../../dev-docs/open-work-inventory.md) is the *plan*, and
+the markers are the *record*. The two have already diverged: the batches run on 2026-09-19
+were cut on different seams, finished S5 between them, and took a file each out of S6, S10 and
+S12. A brief written from the table alone sends an agent back over code another batch has read
+— which nearly happened to `rar_parser.py` twice in one day.
+
+A file the counter reports as **drifted** is a different case: it was read, but the code has
+moved since, so re-reading it is a deliberate re-sweep. Say so in the brief, and give the
+marker's `head=` as what to diff against.
+
+---
+
 Paste this whole file into a fresh agent on `archivey`, `main` @ `<sha>`.
 
 ---

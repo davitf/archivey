@@ -328,6 +328,11 @@ or it spends its budget re-raising known items.
 The order is roughly by what a reader of the existing threads would most want checked next;
 nothing in it is a hard dependency.
 
+**This table is the plan; the `SWEPT` markers are the record.** Batches get re-cut as they
+run — the ones on 2026-09-19 finished S5 between them and took a file each out of S6, S10 and
+S12 — so build the next batch's scope from `sweep_coverage.py --unswept` rather than from a
+row here.
+
 | Batch | Files | Lines |
 | --- | --- | --- |
 | ~~**S1 — ZIP backend**~~ — *done 2026-09-17, 3 findings* | 3 | 1 855 |
