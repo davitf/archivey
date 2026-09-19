@@ -109,7 +109,9 @@ the way `lock=None` used to. A second class for that is `SharedView` already.
 already encodes the answer at construction. Renaming them to `owns_inner`
 would collide with the wrapper vocabulary for no call-site gain.
 
-`readinto_passthrough` shares `DelegatingStream.__init__` and is not ownership.
+`readinto_passthrough` and `peel_for_source_size` share the same
+class-flag-plus-constructor-override pattern as `_SUBCLASS_CLOSES_INNER`.
+Neither is ownership.
 
 ## 5. Leak oracle
 

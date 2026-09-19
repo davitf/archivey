@@ -300,7 +300,8 @@ def source_name(source: Any) -> str | None:
 def _peel_passthrough(stream: Any) -> Any:
     """Walk opt-in pass-through wrappers so a seek counter does not hide cheap size.
 
-    Only wrappers that set ``peel_for_source_size`` are unwrapped. Transforming
+    Only wrappers that set ``peel_for_source_size`` (class flag, or a
+    constructor override on ``DelegatingStream``) are unwrapped. Transforming
     wrappers (decrypt, BCJ, ``OutputCountingStream``) must not opt in — their
     cheap size is not the inner file's. The peel is for the cheapness decision
     and metadata; :func:`source_byte_size` still I/Os the original wrapper on

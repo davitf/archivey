@@ -221,6 +221,36 @@ def test_delegating_readinto_passthrough_false_routes_through_read() -> None:
     assert reads == [4]  # read() ran (passthrough would have left this empty)
 
 
+def test_delegating_readinto_passthrough_class_flag_routes_through_read() -> None:
+    """The production path: class flag False, constructor kwarg omitted."""
+    reads: list[int] = []
+
+    class _Tracking(DelegatingStream):
+        readinto_passthrough = False
+
+        def read(self, n: int = -1, /) -> bytes:
+            data = self._inner.read(n)
+            reads.append(len(data))
+            return data
+
+    s = _Tracking(io.BytesIO(b"abcdef"))
+    buf = bytearray(4)
+    assert s.readinto(buf) == 4
+    assert bytes(buf) == b"abcd"
+    assert reads == [4]
+
+
+def test_delegating_peel_for_source_size_constructor_override() -> None:
+    """Ad-hoc construction can opt a plain DelegatingStream into peeling."""
+    from archivey.internal.streams.streamtools import source_byte_size
+
+    inner = io.BytesIO(b"0123456789")
+    assert source_byte_size(DelegatingStream(inner)) is None
+    inner.seek(0)
+    peeled = DelegatingStream(inner, peel_for_source_size=True)
+    assert source_byte_size(peeled) == 10
+
+
 def test_delegating_stream_does_not_forward_resume_offset() -> None:
     class _Inner(io.BytesIO):
         def nearest_resume_offset(self, target: int) -> int:
@@ -499,10 +529,10 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     ``DelegatingStream.readinto`` zero-copies to ``inner.readinto`` by default,
     which bypasses this class's ``read``. The two production cases that
     override ``read`` only (``_GzipTruncationCheckStream``,
-    ``_UnrarOwnedStream``) pass ``readinto_passthrough=False`` so the side
-    effect still runs. Deleting those two kwargs leaves the rest of the suite
-    green (3279 passed / 35 skipped / 12 xfailed on ``bd647df``). This test
-    is the gate that does not.
+    ``_UnrarOwnedStream``) set ``readinto_passthrough = False`` on the class
+    and omit the constructor kwarg so the side effect still runs. Deleting
+    those two class flags leaves the rest of the suite green; this test is
+    the gate that does not.
 
     The dangerous set is computed from ``cls.__dict__``, not a hand-maintained
     list: overrides ``read``, does not override ``readinto``. Runtime
@@ -515,14 +545,14 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
 
     Mandatory-explicit ``True`` on the other seven would record a decision
     that was never made: three never override ``read``, four already
-    implement ``readinto``. Those must omit the kwarg.
+    implement ``readinto``. Those must leave the class flag at the default.
 
-    ``_init_keyword`` only inspects ``cls.__dict__["__init__"]``. A subclass
-    that inherits ``__init__`` is not charged with the parent's kwarg. The
-    mirror — override ``read``, inherit an ``__init__`` that already passes
-    ``False`` — then looks like the flag is missing. A per-class syntactic
-    check cannot get both; a class flag would, at the cost of duplicating
-    the two call sites.
+    The walk asserts the class flag. A production ``__init__`` that still
+    passes ``readinto_passthrough=False`` while leaving the flag True used
+    to be the only way to set it, and would now evade a flag-only check
+    (the kwarg overrides the flag at runtime). The constructor kwarg stays
+    for ad-hoc construction in tests; that path is not inventory-checked.
+    Same grain as ``test_delegating_stream_close_inventory``.
 
     Reuses ``_delegating_stream_subclasses`` (archivey modules only); test-file
     subclasses do not trip it.
@@ -535,26 +565,31 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
         for cls in found
         if "read" in cls.__dict__ and "readinto" not in cls.__dict__
     }
-    missing = {
-        cls
-        for cls in needs_via_read
-        if _init_keyword(cls, "readinto_passthrough") is not False
-    }
+    missing = {cls for cls in needs_via_read if cls.readinto_passthrough is not False}
     assert missing == set(), (
         "DelegatingStream subclass overrides read but not readinto; "
-        "must pass readinto_passthrough=False so readinto does not skip "
-        f"the read side effect: {missing}"
+        "must set readinto_passthrough = False on the class so readinto "
+        f"does not skip the read side effect: {missing}"
     )
-    extra = {
+    unexpected = {
         cls
         for cls in found
-        if cls not in needs_via_read
-        and _init_keyword(cls, "readinto_passthrough") is not _INIT_KWARG_MISSING
+        if cls not in needs_via_read and cls.readinto_passthrough is not True
     }
-    assert extra == set(), (
+    assert unexpected == set(), (
         "readinto_passthrough is irrelevant when the class does not override "
-        "read, or already implements readinto. Omit the kwarg: "
-        f"{extra}"
+        "read, or already implements readinto. Leave the class flag at the "
+        f"default: {unexpected}"
+    )
+    passed_kwarg = {
+        cls
+        for cls in found
+        if _init_keyword(cls, "readinto_passthrough") is not _INIT_KWARG_MISSING
+    }
+    assert passed_kwarg == set(), (
+        "production DelegatingStream subclass __init__ must set "
+        "readinto_passthrough on the class and omit the constructor kwarg "
+        f"(kwarg is for ad-hoc tests): {passed_kwarg}"
     )
 
 
