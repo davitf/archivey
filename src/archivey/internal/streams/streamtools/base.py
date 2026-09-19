@@ -175,7 +175,7 @@ class DelegatingStream(ReadOnlyIOStream):
     """
 
     # Opt-in class flag; :func:`source_byte_size` peels only when this is True.
-    # Inventory/construction: ``__init__`` uses it when the kwarg is omitted.
+    # Inventory test reads this; ``__init__`` uses it when the kwarg is omitted.
     peel_for_source_size: bool = False
     # Class-level readinto contract. False: route readinto through this class's
     # read() so a side-effecting override is not bypassed. Inventory test reads

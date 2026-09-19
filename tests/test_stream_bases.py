@@ -594,6 +594,41 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     )
 
 
+def test_delegating_stream_peel_inventory() -> None:
+    """Production peel is a class flag; the constructor kwarg is tests-only.
+
+    ``source_byte_size`` peels on the resolved instance value, so
+    ``super().__init__(inner, peel_for_source_size=True)`` peels even when
+    the class flag stays False. Close and readinto already reject that
+    production kwarg. Mutants this test must catch:
+
+    - ``peel_for_source_size=True`` on ``SeekCountingStream.__init__``'s
+      ``super()`` → ``passed_kwarg``
+    - ``OutputCountingStream.peel_for_source_size = True`` → True-set
+
+    ``FullCountStream`` is a ``ReadOnlyIOStream`` and is not in this walk.
+    """
+    _import_all_archivey_modules()
+    import archivey.internal.streams.counting as counting
+
+    found = _delegating_stream_subclasses()
+    peels = {cls for cls in found if cls.peel_for_source_size is True}
+    assert peels == {counting.SeekCountingStream}, (
+        "DelegatingStream subclass peel_for_source_size does not match "
+        f"the inventory (only SeekCountingStream peels): {peels}"
+    )
+    passed_kwarg = {
+        cls
+        for cls in found
+        if _init_keyword(cls, "peel_for_source_size") is not _INIT_KWARG_MISSING
+    }
+    assert passed_kwarg == set(), (
+        "production DelegatingStream subclass __init__ must set "
+        "peel_for_source_size on the class and omit the constructor kwarg "
+        f"(kwarg is for ad-hoc tests): {passed_kwarg}"
+    )
+
+
 def test_init_keyword_ignores_comments() -> None:
     """AST lookup must not treat a comment mentioning the flag as passing it."""
 
