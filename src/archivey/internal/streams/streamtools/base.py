@@ -133,17 +133,21 @@ class DelegatingStream(ReadOnlyIOStream):
     Subclasses override only the method whose behavior they change (e.g. just ``seek`` to add a
     warning, or just ``close`` to add a cleanup guard).
 
+    All three flags are a class default with a constructor override. Production
+    subclasses set the class flag and omit the kwarg; ad-hoc construction may
+    pass the kwarg. ``__init__`` uses the class value when the kwarg is omitted.
+
     ``peel_for_source_size`` is an opt-in for pass-through wrappers whose cheap size
     *is* the inner's (a seek counter on ``ZipFile.fp``). :func:`source_byte_size`
     peels those and never every :class:`DelegatingStream` — a transforming wrapper
     (decrypt, BCJ, ``OutputCountingStream`` on a decompressor) must not report the
-    underlying file's size as its own.
+    underlying file's size as its own. Subclasses set ``peel_for_source_size = True``.
 
     **Consistency caveat (``readinto_passthrough``).** By default ``readinto`` forwards straight
     to ``inner.readinto`` (zero-copy), which *bypasses this class's ``read``*. That is correct
     for a plain delegator, but a subclass that overrides ``read`` with a side effect (tracking
     bytes, hashing, a check at EOF) would have that side effect skipped on ``readinto``-driven
-    reads. Such a subclass MUST pass ``readinto_passthrough=False``, which routes ``readinto``
+    reads. Such a subclass MUST set ``readinto_passthrough = False``, which routes ``readinto``
     through ``read`` (the :class:`ReadOnlyIOStream` implementation) so the override always runs.
     (We use an explicit flag rather than auto-detecting an overridden ``read``: a plain
     pass-through override of ``read`` should keep the zero-copy path, and silent auto-detection
@@ -171,7 +175,12 @@ class DelegatingStream(ReadOnlyIOStream):
     """
 
     # Opt-in class flag; :func:`source_byte_size` peels only when this is True.
+    # Inventory test reads this; ``__init__`` uses it when the kwarg is omitted.
     peel_for_source_size: bool = False
+    # Class-level readinto contract. False: route readinto through this class's
+    # read() so a side-effecting override is not bypassed. Inventory test reads
+    # this; ``__init__`` uses it when the kwarg is omitted.
+    readinto_passthrough: bool = True
     # Class-level close contract. True: the subclass closes ``_inner`` itself.
     # Inventory test reads this; ``__init__`` uses it when the kwarg is omitted.
     _SUBCLASS_CLOSES_INNER: bool = False
@@ -180,11 +189,19 @@ class DelegatingStream(ReadOnlyIOStream):
         self,
         inner: BinaryIO,
         *,
-        readinto_passthrough: bool = True,
+        peel_for_source_size: bool | None = None,
+        readinto_passthrough: bool | None = None,
         subclass_closes_inner: bool | None = None,
     ) -> None:
         super().__init__()
         self._inner = inner
+        if peel_for_source_size is None:
+            peel_for_source_size = type(self).peel_for_source_size
+        # Instance shadows the class flag so a constructor override is visible
+        # to :func:`source_byte_size`'s ``getattr(..., "peel_for_source_size")``.
+        self.peel_for_source_size = peel_for_source_size
+        if readinto_passthrough is None:
+            readinto_passthrough = type(self).readinto_passthrough
         self._readinto_passthrough = readinto_passthrough
         # True when the subclass closes ``_inner`` itself (finalize guard, reap a
         # subprocess) and then calls ``super().close()`` only to mark this wrapper closed.
