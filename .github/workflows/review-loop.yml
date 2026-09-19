@@ -5,10 +5,17 @@ name: Review loop
 #
 # The loop has three actors and this workflow is only one of them:
 #
-#   Cursor   implements, and addresses findings. Triggered from a Linear issue to
-#            start, and by an `@cursor` comment this workflow posts after each round.
-#   Claude   reviews, using the repo's own `code-review-skill`. That is this file.
-#   davitf   answers the questions a review cannot answer for itself.
+#   an agent   implements, and addresses findings. Cursor from a Linear issue, on a
+#              `cursor/*` branch; a Claude Code session from this project's threads,
+#              on a `claude/*` one. Either is pinged by a comment this workflow posts
+#              after each round, addressed by the branch prefix.
+#   a reviewer reviews, using the repo's own `code-review-skill`. This file runs the
+#              Claude one; Cursor reviews from its own entrypoint and hands an
+#              approval back here for a pass from zero.
+#   davitf     answers the questions a review cannot answer for itself.
+#
+# So do not assume Cursor implements and Claude reviews — the roles run both ways
+# round, and `dev-docs/review-loop.md` has the section on what that changes.
 #
 # **A round starts when the branch goes quiet, not when it is pushed to.** An agent
 # working a ticket pushes several times in a few minutes, and a round per push would
