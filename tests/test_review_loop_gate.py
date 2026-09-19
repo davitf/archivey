@@ -193,7 +193,6 @@ def test_a_stranger_cannot_spend_review_credits() -> None:
     "body",
     [
         "thanks @claude",
-        "we should ask @claude to reviewer this",
         "the review loop is great",
         "",
     ],
@@ -220,6 +219,35 @@ def test_a_comment_on_an_issue_is_not_a_pull_request() -> None:
         )
     )
     assert not decision.run
+
+
+def test_the_trigger_phrase_agrees_with_the_other_workflow() -> None:
+    """The two `issue_comment` workflows must partition comments, not overlap.
+
+    `.github/workflows/claude.yml` runs the general-purpose assistant on any comment
+    containing `@claude`, and skips the ones containing `@claude review` so this loop
+    can have them. That skip is a GitHub `contains()` — a case-insensitive substring
+    test, with no regex available. So this gate's phrase has to be the same plain
+    substring: anything it matches more loosely fires both workflows on one comment,
+    and anything it matches more strictly fires neither.
+    """
+
+    def github_contains(body: str) -> bool:
+        """What `contains(github.event.comment.body, '@claude review')` does."""
+        return "@claude review" in body.lower()
+
+    for body in [
+        "@claude review",
+        "@Claude Review please",
+        "answered — option B. @claude review",
+        "@claude  review",  # two spaces: contains() says no, so the gate must too
+        "@claude reviewer",  # contains() says yes, so the gate must too
+        "@claude what do you think?",
+        "thanks @claude",
+        "nothing to see here",
+        "",
+    ]:
+        assert bool(gate.COMMENT_TRIGGER.search(body)) == github_contains(body), body
 
 
 def test_manual_dispatch_respects_the_cap_unless_forced() -> None:

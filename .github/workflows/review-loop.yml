@@ -48,6 +48,12 @@ concurrency:
 jobs:
   loop:
     name: Review round
+    # The gate refuses an unrelated comment anyway, but only after a runner has
+    # started and checked the repository out. `issue_comment` fires on every comment
+    # in the repository, so that is a runner per comment. Screen them here instead.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      contains(github.event.comment.body, '@claude review')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

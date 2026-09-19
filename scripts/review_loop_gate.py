@@ -42,7 +42,13 @@ ROUND_LABEL = re.compile(r"^loop:round-(\d+)$")
 CURSOR_BRANCH_PREFIX = "cursor/"
 
 #: What a human comments to force another round.
-COMMENT_TRIGGER = re.compile(r"@claude\s+review\b", re.IGNORECASE)
+#:
+#: This is a plain substring, matched case-insensitively, because it has to agree
+#: exactly with the `contains(github.event.comment.body, '@claude review')` guard in
+#: `.github/workflows/claude.yml` — GitHub expressions have no regex, and `contains`
+#: is case-insensitive. The two workflows both listen to `issue_comment`, so a phrase
+#: either of them matches loosely is a phrase they would both act on.
+COMMENT_TRIGGER = re.compile(r"@claude review", re.IGNORECASE)
 
 #: Who may force a round by commenting.
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
