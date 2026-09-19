@@ -135,6 +135,33 @@ def test_a_branch_still_being_pushed_to_is_left_alone() -> None:
     assert "quiet" in per_pr.reason
 
 
+def test_the_quiet_period_is_measured_from_the_last_commit() -> None:
+    """Pin the boundary to `QUIET_MINUTES` itself, so raising it cannot drift silently.
+
+    The threshold moved from ten minutes to thirty on 2026-09-19 because ten was short
+    enough that an ordinary pause mid-task — a long test run, a slow tool call — read
+    as "the implementer has finished" and spent a round on half-written code. The two
+    cases below are a minute either side of whatever the constant now says.
+    """
+    now = gate.parse_time(NOW)
+    quiet = gate.timedelta(minutes=gate.QUIET_MINUTES)
+
+    def at(minutes_ago: int) -> str:
+        return (now - gate.timedelta(minutes=minutes_ago)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
+    just_short = gate._scheduled(
+        candidate(head_committed_at=at(gate.QUIET_MINUTES - 1)), now, quiet
+    )
+    assert not just_short.run
+    assert "quiet" in just_short.reason
+
+    assert gate._scheduled(
+        candidate(head_committed_at=at(gate.QUIET_MINUTES + 1)), now, quiet
+    ).run
+
+
 def test_the_same_commit_is_not_reviewed_twice() -> None:
     """The scan runs every few minutes; without this it would re-review on every tick."""
     decision = scan(candidate(last_reviewed_sha="a" * 40))

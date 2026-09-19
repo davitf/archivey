@@ -100,7 +100,7 @@ Two consequences worth stating, because they change what this session does next:
   later, on GitHub, not as a return value. Say in your reply that the loop has
   it, and leave.
 - **Stop pushing once you have said you are finished.** If you never say so at
-  all, the loop starts a round by itself after the branch has gone ten minutes
+  all, the loop starts a round by itself after the branch has gone thirty minutes
   without a new commit — so a late commit does not lose the review, it only
   delays it and reviews a state you did not mean to submit.
 
@@ -117,7 +117,7 @@ reproduce-before-fix, gates, one decision packet at a time, replies on the PR.
 
 So whether **this** session does that work depends on who is still holding the
 branch. If you are and the user is waiting on you, read that skill and do it;
-the push that follows starts the next round ten minutes later, with no further
+the push that follows starts the next round half an hour later, with no further
 handoff. If Cursor picked the branch up, leave it alone: two agents pushing to
 one branch is worse than a slower round. Steward skips a second round only when
 a disposition comment (opener names `address-review-findings`) is already on

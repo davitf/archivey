@@ -332,7 +332,7 @@ so that a dispositions comment quoting it does not start a round by itself. Post
 its own comment, phrase first, anything else after.
 
 Saying nothing is not a failure, only a slower path: the loop starts a round by
-itself once the branch has gone ten minutes without a new commit. So the signal is
+itself once the branch has gone thirty minutes without a new commit. So the signal is
 worth sending and never worth faking. Do not send it before the work is pushed.
 
 And do not send it to reach past a `loop:done`, `loop:decision` or `loop:hold`. From a

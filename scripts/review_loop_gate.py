@@ -53,7 +53,14 @@ MAX_FORCED_ROUNDS = 2 * MAX_ROUNDS
 #: push would spend the cap reviewing half-written work and then have nothing left for
 #: the finished branch. Silence is the only "the implementer has stopped" signal
 #: GitHub offers, so the loop waits for it.
-QUIET_MINUTES = 10
+#: Thirty rather than ten (davitf, 2026-09-19). The fallback only has to be *safe*,
+#: not fast: an agent that finishes properly says so and gets its round immediately,
+#: so the timer is there for the agent that died mid-task. Ten minutes was short
+#: enough that an ordinary pause — a long test run, a slow tool call, a session
+#: waiting on a person — read as "finished" and spent a round on half-written code.
+#: The cost of being wrong is asymmetric: a premature round burns one of three, while
+#: a late one only delays a branch nobody is watching anyway.
+QUIET_MINUTES = 30
 
 #: Opt out entirely. Wins over everything, including an explicit ``@claude review``.
 LABEL_OFF = "loop:off"

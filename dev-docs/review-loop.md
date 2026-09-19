@@ -16,7 +16,7 @@ Linear issue ──@Cursor──► Cursor implements ──► opens a draft pu
                                                       │
                              ┌────────────────────────┘
                              │  Cursor says it has finished: out of draft, or a
-                             │  comment starting `@claude review`. Failing that, ten minutes
+                             │  comment starting `@claude review`. Failing that, thirty
                              ▼  with no new commit
                   Claude reviews (round N of 3)
                              │
@@ -30,9 +30,9 @@ Linear issue ──@Cursor──► Cursor implements ──► opens a draft pu
 | Hop | What triggers it | Where it is configured |
 | --- | --- | --- |
 | Issue → implementation | `@Cursor` in a Linear comment, or assigning the issue to Cursor. Triage rules can do it automatically | Linear, team ARC |
-| Implementation → review | The implementing agent taking the pull request out of draft. Failing that, the branch going ten minutes without a new commit | [`.github/workflows/review-loop.yml`](../.github/workflows/review-loop.yml) |
+| Implementation → review | The implementing agent taking the pull request out of draft. Failing that, the branch going thirty minutes without a new commit | [`.github/workflows/review-loop.yml`](../.github/workflows/review-loop.yml) |
 | Review → addressing | An `@cursor` comment the workflow posts after each round of findings | Same workflow |
-| Addressing → next review | A comment from the implementing agent *starting* with `@claude review`. Failing that, the same ten minutes of quiet | Same workflow |
+| Addressing → next review | A comment from the implementing agent *starting* with `@claude review`. Failing that, the same thirty minutes of quiet | Same workflow |
 | Any step → the maintainer | A `loop:decision` label and a plain-language question on the pull request | Same workflow |
 
 **The `@cursor` comment is the part worth understanding.** Cursor sometimes picks a
@@ -73,11 +73,11 @@ that never reaches the last step, and a loop that only starts when an agent reme
 to start it stops silently the first time one does not. So a scan runs every ten
 minutes over the pull requests carrying a loop label and reviews the one whose head
 commit has been untouched the longest — provided it has been untouched for at least
-ten minutes and is not the commit the last round already read. One pull request per
+thirty minutes and is not the commit the last round already read. One pull request per
 tick, so the first tick after this lands cannot start a review on everything at once.
 
 The timer is the floor, not the mechanism. When the signal arrives the review is
-immediate; when it does not, the work still gets reviewed, ten minutes later, and
+immediate; when it does not, the work still gets reviewed, half an hour later, and
 nobody has to notice.
 
 Two consequences that are easy to trip over:
@@ -165,7 +165,7 @@ Eight pull requests were open the day this landed, and a loop that reviewed all 
 would have been switched off within the hour.
 
 One thing the labels do not record is *which commit* a round read, and without it the
-scan would review the same head every ten minutes forever. That lives in the status
+scan would review the same head on every tick forever. That lives in the status
 comment's HTML marker (`<!-- archivey-review-loop-status sha=… -->`), which the loop
 already has to keep current, so there is no second piece of state to forget.
 
@@ -266,10 +266,17 @@ opening a comment on it with `@claude review`.
   posts it with `GITHUB_TOKEN`, so it arrives from `github-actions[bot]`. If Cursor
   turns out to ignore bot comments, the fallback is the same comment from a personal
   access token, or a `@Cursor` comment on the Linear issue instead.
-- **Ten minutes is a guess.** It only matters when an agent does not send the signal,
-  and it is long enough to cover the gaps observed so far and short enough not to feel
-  broken. `QUIET_MINUTES` in the gate is the one place to change it; the cron interval
-  should move with it.
+- **Thirty minutes is a guess**, and it started as ten. It only matters when an agent
+  does not send the signal. The change (davitf, 2026-09-19) was about which way to be
+  wrong: a premature round spends one of three on half-written code, while a late one
+  only delays a branch nobody is watching. Ten minutes was short enough that an
+  ordinary pause — a long test run, a slow tool call, a session waiting on a person —
+  read as "finished". `QUIET_MINUTES` in the gate is the one place to change it.
+  **The cron interval is a separate knob and does not move with it**: the schedule is
+  how often the state is checked, the quiet period is how long a branch must have been
+  still. Checking every ten minutes keeps the fallback responsive once a branch does
+  qualify; it costs nothing, because a tick that finds nothing eligible is the gate
+  declining in seconds with no model call.
 - **Whether Cursor actually sends the signal** has not been observed yet. If it turns
   out to ignore the instruction, the quiet period is what catches it, which is why the
   timer stays.
