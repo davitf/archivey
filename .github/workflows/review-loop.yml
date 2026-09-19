@@ -127,9 +127,18 @@ jobs:
         if: steps.gate.outputs.run == 'true' || steps.gate.outputs.cap_reached == 'true'
         run: |
           set -euo pipefail
+          # Create, or correct one that already exists. A `loop:*` label can be made
+          # outside this workflow — adding one through the API creates it implicitly,
+          # with GitHub's default grey and no description — and create-only would then
+          # leave it that way forever. The colours are the signal in the pull request
+          # list (`loop:decision` red, `loop:done` green), so this file is the
+          # definition and it reasserts itself.
           ensure() {
             gh label create "$1" --repo "$GITHUB_REPOSITORY" \
-              --color "$2" --description "$3" 2>/dev/null || true
+              --color "$2" --description "$3" 2>/dev/null \
+              || gh label edit "$1" --repo "$GITHUB_REPOSITORY" \
+                   --color "$2" --description "$3" 2>/dev/null \
+              || true
           }
           ensure "loop:round-1" "ededed" "Review loop: round 1 has been reviewed"
           ensure "loop:round-2" "ededed" "Review loop: round 2 has been reviewed"
