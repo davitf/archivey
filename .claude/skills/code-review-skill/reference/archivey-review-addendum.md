@@ -750,7 +750,9 @@ the file was read at all, **whether or not it found anything**:
 backfill showed seven of nine files from the 2026-09-08 pass more than 10% away from the shape
 that pass read, all in the one package whose findings had since been fixed. Draining a sweep's
 threads rewrites the code the sweep read, so a marker that could only say "swept" would
-overstate the subsystem where the follow-up was most thorough.
+overstate the subsystem where the follow-up was most thorough. Record the drift; when to act
+on it is the maintainer's to schedule, and as of 2026-09-19 the answer is after the first
+pass over the whole codebase, not during it.
 
 **A marker for a read you did not perform carries `backfilled=<date>` as a final field**, and
 its prose says in as many words that nobody re-read the file. That form exists for one event

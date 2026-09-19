@@ -39,8 +39,10 @@ Each one carries `backfilled=2026-09-19` and says in its own text that nobody re
 file — the marker records the pass that did. They were reconstructed from the paths the
 threads landed on, the S1 and S2 scope tables, and `main`'s tip on the pass date. The
 reconstruction reproduces the hand-derived figure on
-[`open-work-inventory.md`](../../dev-docs/open-work-inventory.md) exactly — 16 files, 8 299
-lines, 22.9% — which is the check that it is not a fresh guess.
+[`open-work-inventory.md`](../../dev-docs/open-work-inventory.md) for those three passes
+exactly — 16 files, 8 299 lines — which is the check that it is not a fresh guess. What the
+sixteen come to as a share of `src/` has already moved since, because batches ran the same
+day; take that figure from the script.
 
 Two caveats live in the markers rather than here. The 2026-09-08 pass recorded no head, so
 `head=7ed4879` is inferred from the date; and its file list comes from the paths its findings
@@ -57,7 +59,11 @@ findings the pass produced.
 So "swept" decays, and it decays furthest exactly where the follow-up was most thorough. That
 is why a marker records `lines=` as read rather than pointing at the file: it is what lets
 [`sweep_coverage.py`](../../scripts/sweep_coverage.py) report a file as drifted instead of
-counting a stale read as current, and it is an argument for re-sweeping a subsystem after its
-parcels land rather than treating one pass as permanent.
+counting a stale read as current.
 [`dev-docs/open-work-inventory.md`](../../dev-docs/open-work-inventory.md) carries the
 measured table.
+
+**A re-sweep of `streamtools/` is decided, and the answer is not now** (davi, 2026-09-19):
+finish reading the whole codebase and fix what that turns up, then make another pass. Do not
+propose it again before the first pass is complete. Record drift where the markers already do
+— it is what makes the later pass cheap to scope — and leave the scheduling alone.
