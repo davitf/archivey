@@ -1,0 +1,7 @@
+schema: library
+created: 2026-09-17
+
+# Pure refactor: one AES-CBC pull stream instead of two. No requirement in
+# format-rar, format-7z or crypto-surface changes wording or behaviour — the header
+# walk keeps its exact contract, including which error type each failure raises.
+skip_specs: true

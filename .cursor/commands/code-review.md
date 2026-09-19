@@ -37,7 +37,8 @@ Combine the priorities above with that skill’s process:
 
 **Split audience:** post the full three-block review on the PR for the implementor. If
 you are also talking to the maintainer, send **decision packets only** (addendum §0
-block 3) unless they ask for the full handoff.
+block 3) unless they ask for the full handoff. Do **not** write a prompt or brief for the
+implementing agent on top of that — it reads the PR threads itself (addendum §0).
 
 ## Scope
 
@@ -54,7 +55,8 @@ block 3) unless they ask for the full handoff.
 ## Output format
 
 Emit **exactly three sections** in the addendum's **§0** shape — maintainer briefing,
-paste-ready implementor handoff, maintainer decisions — with §0's brevity fence, two-axis
+implementor handoff (written to go on the PR), maintainer decisions — with §0's brevity
+fence, two-axis
 labelling (severity × confidence) and reclassification rules. Read §0 rather than working
 from a summary here; `assets/pr-review-template.md` is the fill-in form.
 

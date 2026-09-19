@@ -40,7 +40,11 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import BinaryIO
 
-from archivey.exceptions import CorruptionError, UnsupportedFeatureError
+from archivey.exceptions import (
+    CorruptionError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.backends.sevenzip_methods import (
     METHOD_COPY,
     is_aes,
@@ -55,6 +59,12 @@ MAGIC_7Z = b"7z\xbc\xaf'\x1c"
 _SIGNATURE_HEADER_SIZE = 32
 _MAX_UINT64_ENCODING = 8
 _MAX_UTF16_CHARS = 65536
+# Structural cap for per-folder coder graphs (coders, coder in/out streams).
+# Folders, unpack streams, and num_files scale with member count: header size
+# (CorruptionError) plus listing_limits.max_members (ResourceLimitError, None
+# disables). A solid archive puts every file in one folder; a non-solid archive
+# gives each file its own folder. Pack streams are a coder-graph quantity
+# (BCJ2 has four per folder) and keep the header-size bound only.
 _MAX_NUM_STREAMS = 65536
 # Hostile archives can claim a multi-EiB next-header offset/size. Cap before seek/read so we
 # never OverflowError on C ssize_t conversion or allocate a multi-GiB header buffer. Real 7z
@@ -208,6 +218,37 @@ def _check_length(length: int, context: str) -> None:
         raise CorruptionError(
             f"Claimed {context} length {length} exceeds the "
             f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
+        )
+
+
+def _require_stream_count(count: int, what: str) -> None:
+    if count > _MAX_NUM_STREAMS:
+        raise CorruptionError(f"7z {what} count is too large: {count}")
+
+
+def _require_header_count(count: int, header_size: int, what: str) -> None:
+    if count > header_size:
+        raise CorruptionError(
+            f"7z {what} count {count} exceeds the {header_size}-byte header"
+        )
+
+
+def _require_member_scaled_count(
+    count: int,
+    header_size: int,
+    max_members: int | None,
+    what: str,
+) -> None:
+    """Header-size impossibility, then the caller's listing budget.
+
+    ``max_members is None`` is ``ListingLimits.UNLIMITED``: only the header-size
+    bound remains, so a user who raises the config can open a large archive.
+    """
+    _require_header_count(count, header_size, what)
+    if max_members is not None and count > max_members:
+        raise ResourceLimitError(
+            f"Listing limit reached: max_members={max_members} "
+            f"(7z header claims {count} {what}s)"
         )
 
 
@@ -431,8 +472,14 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
     return SignatureInfo(major_version, minor_version, header_data)
 
 
-def parse_header_block(header_data: bytes) -> HeaderBlock:
-    """Parse one header block into a plain HEADER or an ENCODED_HEADER descriptor."""
+def parse_header_block(
+    header_data: bytes, *, max_members: int | None = None
+) -> HeaderBlock:
+    """Parse one header block into a plain HEADER or an ENCODED_HEADER descriptor.
+
+    ``max_members`` is ``ListingLimits.max_members`` from the reader config
+    (``None`` disables). Fuzz helpers omit it; header-size still bounds bombs.
+    """
     if not header_data:
         return PlainHeader(_StreamsInfo(), [], None)
 
@@ -441,10 +488,10 @@ def parse_header_block(header_data: bytes) -> HeaderBlock:
     if prop == _Property.END:
         return PlainHeader(_StreamsInfo(), [], None)
     if prop == _Property.HEADER:
-        return _parse_plain_header(cur)
+        return _parse_plain_header(cur, max_members=max_members)
     if prop != _Property.ENCODED_HEADER:
         raise CorruptionError(f"Expected 7z HEADER or ENCODED_HEADER, got 0x{prop:02x}")
-    return EncodedHeader(_read_streams_info(cur))
+    return EncodedHeader(_read_streams_info(cur, max_members=max_members))
 
 
 def materialize_archive(
@@ -596,7 +643,7 @@ __all__ = [
 ]
 
 
-def _parse_plain_header(cur: _Cursor) -> PlainHeader:
+def _parse_plain_header(cur: _Cursor, *, max_members: int | None = None) -> PlainHeader:
     streams = _StreamsInfo()
     files: list[SevenZipFileRecord] = []
     comment: str | None = None
@@ -608,11 +655,11 @@ def _parse_plain_header(cur: _Cursor) -> PlainHeader:
         if prop == _Property.ARCHIVE_PROPERTIES:
             _skip_archive_properties(cur)
         elif prop == _Property.ADDITIONAL_STREAMS_INFO:
-            _read_streams_info(cur)  # skip by consuming
+            _read_streams_info(cur, max_members=max_members)  # skip by consuming
         elif prop == _Property.MAIN_STREAMS_INFO:
-            streams = _read_streams_info(cur)
+            streams = _read_streams_info(cur, max_members=max_members)
         elif prop == _Property.FILES_INFO:
-            files, file_comment = _read_files_info(cur)
+            files, file_comment = _read_files_info(cur, max_members=max_members)
             if file_comment is not None:
                 comment = file_comment
         else:
@@ -621,15 +668,15 @@ def _parse_plain_header(cur: _Cursor) -> PlainHeader:
             )
 
 
-def _read_streams_info(cur: _Cursor) -> _StreamsInfo:
+def _read_streams_info(cur: _Cursor, *, max_members: int | None = None) -> _StreamsInfo:
     streams = _StreamsInfo()
     prop = _read_property(cur, "7z streams info")
 
     if prop == _Property.PACK_INFO:
         pack_pos = cur.uint64()
         num_streams = cur.uint64()
-        if num_streams > _MAX_NUM_STREAMS:
-            raise CorruptionError(f"7z pack stream count is too large: {num_streams}")
+        # Coder-graph quantity, not a member count (BCJ2 has four per folder).
+        _require_header_count(num_streams, len(cur.buf), "pack stream")
         pack_sizes: list[int] | None = None
         prop = _read_property(cur, "7z PACK_INFO")
         if prop == _Property.SIZE:
@@ -647,7 +694,7 @@ def _read_streams_info(cur: _Cursor) -> _StreamsInfo:
         prop = _read_property(cur, "7z streams info")
 
     if prop == _Property.UNPACK_INFO:
-        streams.folders = _read_unpack_info(cur)
+        streams.folders = _read_unpack_info(cur, max_members=max_members)
         prop = _read_property(cur, "7z streams info")
 
     if prop == _Property.SUBSTREAMS_INFO:
@@ -657,7 +704,7 @@ def _read_streams_info(cur: _Cursor) -> _StreamsInfo:
             streams.num_unpackstreams_folders,
             streams.unpack_sizes,
             streams.digests,
-        ) = _read_substreams_info(cur, streams.folders)
+        ) = _read_substreams_info(cur, streams.folders, max_members=max_members)
         prop = _read_property(cur, "7z streams info")
     elif streams.folders is not None:
         streams.num_unpackstreams_folders = [1] * len(streams.folders)
@@ -673,12 +720,15 @@ def _read_streams_info(cur: _Cursor) -> _StreamsInfo:
     return streams
 
 
-def _read_unpack_info(cur: _Cursor) -> list[SevenZipFolder]:
+def _read_unpack_info(
+    cur: _Cursor, *, max_members: int | None = None
+) -> list[SevenZipFolder]:
     prop = _read_property(cur, "7z UNPACK_INFO")
     if prop != _Property.FOLDER:
         raise CorruptionError(f"Expected FOLDER in 7z UNPACK_INFO, got 0x{prop:02x}")
 
     num_folders = cur.uint64()
+    _require_member_scaled_count(num_folders, len(cur.buf), max_members, "folder")
     external = cur.byte()
     if external != 0:
         raise UnsupportedFeatureError(
@@ -714,6 +764,7 @@ def _read_unpack_info(cur: _Cursor) -> list[SevenZipFolder]:
 
 def _read_folder(cur: _Cursor) -> SevenZipFolder:
     num_coders = cur.uint64()
+    _require_stream_count(num_coders, "coder")
     coders: list[SevenZipCoder] = []
     total_in = 0
     total_out = 0
@@ -735,6 +786,8 @@ def _read_folder(cur: _Cursor) -> SevenZipFolder:
         else:
             num_in_streams = 1
             num_out_streams = 1
+        _require_stream_count(num_in_streams, "coder in-stream")
+        _require_stream_count(num_out_streams, "coder out-stream")
         properties = None
         if flags & 0x20:
             prop_size = cur.uint64()
@@ -742,6 +795,8 @@ def _read_folder(cur: _Cursor) -> SevenZipFolder:
 
         total_in += num_in_streams
         total_out += num_out_streams
+        _require_stream_count(total_in, "folder in-stream")
+        _require_stream_count(total_out, "folder out-stream")
         coders.append(
             SevenZipCoder(
                 method=method,
@@ -773,11 +828,34 @@ def _read_folder(cur: _Cursor) -> SevenZipFolder:
 
 
 def _read_substreams_info(
-    cur: _Cursor, folders: list[SevenZipFolder]
+    cur: _Cursor,
+    folders: list[SevenZipFolder],
+    *,
+    max_members: int | None = None,
 ) -> tuple[list[int], list[int], list[int | None]]:
     prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     if prop == _Property.NUM_UNPACK_STREAM:
-        num_unpackstreams_folders = [cur.uint64() for _ in folders]
+        # Remaining bytes do not bound this field: kSize/kCRC may be absent,
+        # and the else branch does ``digests.extend([None] * count)`` with no
+        # per-stream read. ``_load_boolean(..., check_all=True)`` is the same
+        # bomb one property later. Header size is the impossibility bound (O1);
+        # ``max_members`` is the caller's listing budget (None = UNLIMITED).
+        # ``_MAX_NUM_STREAMS`` is the per-folder coder-graph cap and must not
+        # apply here: a solid archive's unpack-stream count *is* the member
+        # count (O13 / review F1).
+        header_size = len(cur.buf)
+        num_unpackstreams_folders = []
+        total_unpack_streams = 0
+        for _ in folders:
+            count = cur.uint64()
+            _require_member_scaled_count(
+                count, header_size, max_members, "unpack stream"
+            )
+            total_unpack_streams += count
+            _require_member_scaled_count(
+                total_unpack_streams, header_size, max_members, "unpack stream"
+            )
+            num_unpackstreams_folders.append(count)
         prop = _read_property(cur, "7z SUBSTREAMS_INFO")
     else:
         num_unpackstreams_folders = [1] * len(folders)
@@ -838,7 +916,9 @@ def _read_substreams_info(
     return num_unpackstreams_folders, unpack_sizes, digests
 
 
-def _read_files_info(cur: _Cursor) -> tuple[list[SevenZipFileRecord], str | None]:
+def _read_files_info(
+    cur: _Cursor, *, max_members: int | None = None
+) -> tuple[list[SevenZipFileRecord], str | None]:
     num_files = cur.uint64()
     # Bound the file count against the header size before pre-allocating one object per
     # claimed file. See threat-model O1 / review L1. CRC does NOT make the header
@@ -848,6 +928,11 @@ def _read_files_info(cur: _Cursor) -> tuple[list[SevenZipFileRecord], str | None
         raise CorruptionError(
             f"7z file count {num_files} exceeds the {header_size}-byte header "
             f"(each file needs at least one byte of metadata)"
+        )
+    if max_members is not None and num_files > max_members:
+        raise ResourceLimitError(
+            f"Listing limit reached: max_members={max_members} "
+            f"(7z header claims {num_files} files)"
         )
     files = [_FileProps() for _ in range(num_files)]
     num_empty_streams = 0

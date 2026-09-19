@@ -50,11 +50,17 @@ from archivey.internal.backends.sevenzip_methods import (
 from archivey.internal.backends.sevenzip_parser import (
     _MAX_NEXT_HEADER_SIZE,
     EncodedHeader,
+    HeaderBlock,
+    PlainHeader,
     SevenZipArchive,
     SevenZipCoder,
     SevenZipFolder,
+    empty_archive,
     encoded_folder_slices,
     folder_is_encrypted,
+    materialize_archive,
+    parse_header_block,
+    read_signature_and_next_header,
 )
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -476,17 +482,23 @@ def decode_encoded_header(
 ) -> bytes:
     """Materialize an ENCODED_HEADER's packed folders to plaintext header bytes."""
     decoded = bytearray()
+    claimed = 0
     for (
         folder,
         absolute_offset,
         compressed_size,
         uncompressed_size,
     ) in encoded_folder_slices(encoded):
-        # Hostile archives can claim a multi-EiB folder unpack size. Cap before
-        # ``read_exact`` / codec buffers allocate (Atheris: raw MemoryError).
-        if uncompressed_size > _MAX_NEXT_HEADER_SIZE:
+        # Hostile archives can claim a multi-EiB folder unpack size. Cap the
+        # running total before ``read_exact`` / codec buffers allocate
+        # (Atheris: raw MemoryError). Per-folder is redundant: unpack sizes
+        # are non-negative, so a single folder over the cap fails the total
+        # on the same iteration. Two COPY folders at 40 MiB concatenate past
+        # the 64 MiB next-header cap (S2-F2) — that is why the total matters.
+        claimed += uncompressed_size
+        if claimed > _MAX_NEXT_HEADER_SIZE:
             raise CorruptionError(
-                f"Encoded 7z header unpack size {uncompressed_size} exceeds the "
+                f"Encoded 7z header unpack size {claimed} exceeds the "
                 f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
             )
         source = SlicingStream(archive_fp, absolute_offset, compressed_size)
@@ -510,6 +522,28 @@ def encoded_header_needs_password(encoded: EncodedHeader) -> bool:
     return any(folder_is_encrypted(folder) for folder in folders)
 
 
+def unwrap_encoded_header(
+    block: HeaderBlock,
+    decode: Callable[[EncodedHeader], bytes],
+    *,
+    max_members: int | None = None,
+) -> tuple[PlainHeader, bool]:
+    """Decode at most one encoded-header layer. 7-Zip writes one.
+
+    Returns the plain header and whether that layer used 7zAES.
+    """
+    header_encrypted = False
+    if isinstance(block, EncodedHeader):
+        header_encrypted = encoded_header_needs_password(block)
+        decoded = decode(block)
+        block = parse_header_block(decoded, max_members=max_members)
+        if isinstance(block, EncodedHeader):
+            # A second EncodedHeader is hostile (COPY payload that is itself; O14).
+            raise CorruptionError("Encoded 7z header decoded to another encoded header")
+    assert isinstance(block, PlainHeader)
+    return block, header_encrypted
+
+
 def parse_sevenzip_archive(
     fp: BinaryIO,
     *,
@@ -517,39 +551,32 @@ def parse_sevenzip_archive(
     key_cache: SevenZipKeyCache | None = None,
     stream_config: StreamConfig | None = None,
     collector: DiagnosticCollector | None = None,
+    max_members: int | None = None,
 ) -> SevenZipArchive:
     """Parse a 7z archive end-to-end (plain or encoded header).
 
     Used by fuzz harnesses and tests. The reader uses the same two-phase flow with
     password-candidate prompting instead of a single ``password``.
+    ``max_members`` is omitted by fuzz helpers (header-size still bounds bombs).
     """
-    from archivey.internal.backends.sevenzip_parser import (
-        PlainHeader,
-        empty_archive,
-        materialize_archive,
-        parse_header_block,
-        read_signature_and_next_header,
-    )
-
     cache = key_cache if key_cache is not None else SevenZipKeyCache()
     signature = read_signature_and_next_header(fp)
     if not signature.header_data:
         return empty_archive(signature)
 
-    block = parse_header_block(signature.header_data)
-    header_encrypted = False
-    while isinstance(block, EncodedHeader):
-        header_encrypted = header_encrypted or encoded_header_needs_password(block)
-        decoded = decode_encoded_header(
+    block = parse_header_block(signature.header_data, max_members=max_members)
+    block, header_encrypted = unwrap_encoded_header(
+        block,
+        lambda encoded: decode_encoded_header(
             fp,
-            block,
+            encoded,
             password=password,
             key_cache=cache,
             stream_config=stream_config,
             collector=collector,
-        )
-        block = parse_header_block(decoded)
-    assert isinstance(block, PlainHeader)
+        ),
+        max_members=max_members,
+    )
     # O8: encrypted headers never legitimately decode to zero file records.
     # Without this, ~0.3% of wrong-password py7zr salts slip through as empty.
     if header_encrypted and not block.files:

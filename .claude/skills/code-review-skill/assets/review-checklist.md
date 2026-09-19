@@ -36,13 +36,14 @@ which are the ones reviews here actually miss:
 - [ ] Spec ↔ code ↔ docs: match, intentional revision, or pause-and-ask
 - [ ] Concerns that only dissolve after external prose → usually 🟡 doc debt in the code
 - [ ] Write the **§0 three-block report**: briefing → implementor handoff → decisions
+- [ ] Posted it, and wrote **no** separate implementor prompt — the PR is the handoff
 
 ---
 
 ## Output shape (addendum §0 — rules and brevity fence live there)
 
 1. **Maintainer briefing** — what the change is, snapshot + verdict, main 🔴/🟡 points
-2. **Implementor handoff** — paste-ready full findings (severity × confidence, `file:line`)
+2. **Implementor handoff** — full findings for the PR (severity × confidence, `file:line`)
 3. **Maintainer decisions** — only human calls; each decidable without the diff; or `None.`
 
 ---
