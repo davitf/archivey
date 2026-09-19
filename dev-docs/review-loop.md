@@ -115,8 +115,10 @@ Should it ever need redoing by hand: `claude setup-token`, then Settings → Sec
 variables → Actions. `ANTHROPIC_API_KEY` works in its place if per-token billing is
 preferred; swap the input name in the workflow.
 
-The loop labels are created on first use by the workflow, so there is nothing to set up
-by hand.
+The loop labels need no setting up by hand. The workflow creates them on first use, and
+corrects the colour and description of any that already exist — adding a `loop:*` label
+through the API creates it implicitly with GitHub's default grey, and the colours are
+what make the state readable in the pull request list.
 
 ## Known rough edges
 
