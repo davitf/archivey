@@ -26,8 +26,15 @@ which are the ones reviews here actually miss:
 - [ ] No silent re-decompression; cost signals still honest (addendum §5)
 - [ ] Changes land in the right module layer; public API impact intentional
 - [ ] An existing helper wasn't reinvented — checked adjacent modules
-- [ ] Red–green test for a bugfix; edge / error / hostile cases covered
+- [ ] Red–green test for a bugfix; a stated mutation for any new guard / property test
 - [ ] Complex parser logic explained *near the code*, not only in PR prose
+- [ ] Comments still match the code: none naming a deleted call site or a case the change
+  made unreachable, none carrying history, none claiming more than the code guarantees
+  (addendum §3 Comments — the largest finding category here)
+- [ ] New resource bounds are reachable from `ArchiveyConfig`, not a parser `_MAX_…`
+  constant (addendum §5)
+- [ ] Nothing drops or clamps data silently; a changed exception type was checked against
+  what catches it upstream (`CONTRIBUTING.md`)
 
 ## Pass 2 — context (required)
 
@@ -37,6 +44,15 @@ which are the ones reviews here actually miss:
 - [ ] Concerns that only dissolve after external prose → usually 🟡 doc debt in the code
 - [ ] Write the **§0 three-block report**: briefing → implementor handoff → decisions
 - [ ] Posted it, and wrote **no** separate implementor prompt — the PR is the handoff
+- [ ] Closed with a **Measured this round** list, so the next round inherits it (§10)
+
+## Re-reviews (round 2 and later)
+
+- [ ] Scope is `<last-reviewed-sha>..HEAD`, not `main...HEAD` (addendum §10)
+- [ ] Status table over the previous IDs before any new finding, **in place of** "what
+  this change is" — that is once per PR, including a different reviewer's first look (§0)
+- [ ] Nothing re-measured that a previous round already recorded (§10)
+- [ ] Round 3+ with only 🟢 nits open → conditional approval, not another round (§0)
 
 ---
 

@@ -52,6 +52,16 @@ For the maintainer skimming without the code open. Half a screen unless the chan
 
 - **What this change is** — 2–4 sentences: intent, main files/areas touched, behaviour
   delta, in plain language. Assume no familiarity with the PR or the OpenSpec change name.
+  **Once per PR, not once per reviewer.** Write it only if no review on this PR carries
+  one yet. The maintainer has already read it otherwise, and that is true whether the
+  previous review was yours or the other reviewer's — a second reviewer's first look is
+  not a re-review under §10, but the description is just as redundant. Any later review
+  opens with the status table over whatever IDs already exist (§10) instead. The one
+  exception is a rework that made the earlier description wrong: then give one line on
+  what changed, not a fresh description.
+
+  (Fix-diff scope, §10, stays per *reviewer* — a second reviewer has not read the tree
+  and reads `main...HEAD`. It is only the description that is per PR.)
 - **Snapshot** — size (approx. lines / small|medium|large), gates (CI status, §10), and
   **Verdict**: ✅ Approve / ✅ Approve conditional on the listed fixes / 💬 Comment /
   🔄 Request Changes — meanings below, and “only nits left” is not an approval.
@@ -154,6 +164,24 @@ per the settled-decision rule in block 3.
 
 The 💡 / 📚 / 🎉 tiers are the genuinely optional ones — they propose or teach, they do not
 ask for a change, and they never hold a merge.
+
+### Round budget — from round 3, nits do not hold the PR
+
+**From the third round on, if only 🟢 nits remain open, the verdict is
+"✅ Approve, conditional on the listed fixes" and you stop reviewing.** Do not open a
+fourth round to confirm wording changes you already described. Whether it then merges is
+the maintainer's call, as always — this bounds re-reading, not merging.
+
+This is not a relaxation of the nit rule — the conditioned findings are still posted in
+full and still fixed. It is a bound on *re-reading*. In the two weeks to 2026-09-19, every
+🔴 in the repo was raised in round 1 or 2; rounds 3 to 6 produced almost only 🟢 wording
+findings, and #326 reached six rounds. Late rounds also manufacture their own work: seven
+findings in that window existed only because an earlier fix on the same PR created them
+(a fix that deleted the rationale the finding asked for, a fix that broke `__del__`, a
+correction to wording a previous fix introduced).
+
+A round 3+ that finds a 🔴 or a 🟡 is a normal round — say so and keep going. The budget
+binds only the case where the remainder is nits.
 
 ### Two axes: severity ≠ confidence
 
@@ -301,6 +329,14 @@ debt* (`review/backlog.md`). Clean-as-you-go is how day-to-day PRs enforce that:
   either **paid now** or recorded as keep-with-reason — not ignored
 - [ ] **Pause and ask** on real design discrepancies — do not silently pick a winner
   (`CONTRIBUTING.md`, `CLAUDE.md`, `review/README.md`)
+- [ ] A **pre-existing bug in the mechanism this PR is already editing**, where the fix is
+  proportionate, is in scope and is a normal finding — do not soften it to "pre-existing,
+  not this PR's" or route it to the backlog. Being in a touched *file* is not the test;
+  the mechanism under change is (`CONTRIBUTING.md` §Coding standards).
+  A **sweep** across files the PR does not touch is the follow-up
+  (`CONTRIBUTING.md` §Coding standards). This one is settled: the maintainer has ruled
+  "fix it in this PR" on #342, #344 and #349, and "not in this PR" only where the ask was
+  a cross-file sweep (#339, #353)
 
 ### Specs & OpenSpec changes
 
@@ -330,6 +366,21 @@ when reality or a better design wins.
 - [ ] Links to specs / decisions / explorations / OpenSpec changes are fine for complex
   decisions — but an inline summary should usually carry the *why*
 - [ ] Match surrounding comment density
+- [ ] **No history in `src/` comments** — "previously", "the old implementation", "this
+  change", a PR number, an OpenSpec change name, a work-batch name (`Parcel B`, `Wave 1`),
+  or an argument corrected against something the reader cannot see
+  (`CONTRIBUTING.md` §Coding standards)
+- [ ] **No comment left pointing at what the diff removed** — a call site that no longer
+  exists, or a case the change made unreachable. Read the comments around every hunk,
+  not just the changed lines
+- [ ] **No claim stronger than the code guarantees** — a stated bound, ratio or
+  invariant is something a reader will rely on; check it against the code or ask for the
+  measurement
+
+These three are the largest finding category in this repo by a wide margin. They are
+deliberately a reviewer's job rather than a checker's: the wording is what makes them
+wrong, and a grep for the phrasing would miss the ones that matter and fire on the ones
+that do not.
 
 ---
 
@@ -344,6 +395,11 @@ Review whether the change *has* the right tests; don't re-run the suite (§10).
 - [ ] Use the **declarative corpus** / conformance sweep where format×shape coverage
   matters (`testing-contract`)
 - [ ] Bug fixes: **red–green** — failing repro first, then fix
+- [ ] **New guard / property / inventory tests: which mutation did they fail against?**
+  A test added to defend an invariant is not done until the invariant has been broken and
+  the test watched to fail, and the PR should say which mutation was applied
+  (`CONTRIBUTING.md` §Testing standards). "Passes vacuously", "cannot fail for its stated
+  reason", and "the fixture never reaches this path" are the recurring shapes here
 - [ ] Say which dependency config a finding needs: `[all]`, `[all-lowest]`,
   `[core-only]` (`CONTRIBUTING.md`)
 - [ ] Format before commit (`ruff`); don’t bike-shed formatting in review
@@ -365,6 +421,12 @@ Use alongside the skill’s generic checklist. Severity: 🔴 blocking / 🟡 im
   never-write-through-symlink (`threat-model`, `safe-extraction`)
 - [ ] Bomb / resource limits: output caps, ratios, entry counts, listing limits where
   applicable
+- [ ] Every **policy** bound is **reachable from `ArchiveyConfig`** (`ListingLimits` /
+  `ExtractionLimits`, raisable to `UNLIMITED`). A new `_MAX_…` constant inside a parser
+  or reader is a finding — it is invisible from the API and turns a real archive into an
+  error the caller cannot accept — **unless the bound is structural rather than policy**,
+  which CONTRIBUTING allows with a reason at the constant and a spec row
+  (`CONTRIBUTING.md` §Coding standards). Check for that reason before filing
 - [ ] Parser bounds: huge length/count fields from headers cannot OOM the process
 - [ ] Subprocess (`unrar`, fixture `7z`, …): list args, no `shell=True` interpolation
 - [ ] Passwords / key material absent from logs, `repr`, and exception messages
@@ -566,6 +628,13 @@ Run every proposal — and every contract-moving code change — past these:
   user/decision docs move in the same change (§3).
 - [ ] **Pause-and-ask** on conflicts with existing specs / docs / VISION — surface, don't
   silently reconcile (§3).
+- [ ] **Names of public types are settled here, not after implementation.** If a proposal
+  introduces a public class, protocol or config field, the name is a reviewable item at
+  *this* stage — raise it now. Once the type is implemented, a rename is a spec and
+  archive sweep rather than a one-line edit, so after implementation a rename needs a
+  reason beyond taste and is the maintainer's call. (`FullCountStream` cost two rounds on
+  #333 for exactly this reason, and the maintainer's note there was "we should have
+  caught this while reviewing the spec".)
 
 ### Decision gaps & unknown unknowns
 
@@ -606,9 +675,14 @@ cannot be dispositioned finding-by-finding costs the next round more than it sav
 
 ### Stable IDs, one thread per finding
 
-- **Give every block-2 finding a stable ID** (`F1`, `F2`, …) and keep those IDs across
-  re-reviews — a re-review of `F3` says `F3`, not `2`. The responder's status table and the
-  maintainer's memory both key on them; renumbering between rounds silently breaks both.
+- **Give every block-2 finding a stable ID and keep it across re-reviews** — a re-review
+  of `F3` says `F3`, not `2`. The responder's status table and the maintainer's memory
+  both key on them; renumbering between rounds silently breaks both.
+- **Prefix the ID with your own initial** (`C1`, `C2`, … from Cursor; `K1`, `K2`, … from
+  Claude Code) rather than a bare `F`. Two reviewers work the same PR here, and a bare
+  `F` collides: #353 carried two different `F16`s, from two reviewers, at the same time,
+  and the responder had to disambiguate them by hand. Keep counting up across your own
+  rounds on that PR — `K7` follows `K6` even in a later round.
 - **Post each block-2 finding that has a `file:line` as an inline review comment** anchored
   there, not buried in one long top-level wall. Inline findings can be replied to and
   resolved individually, which is what makes the state of a round visible later.
@@ -627,7 +701,18 @@ still open / superseded — before any new findings. Say which HEAD you reviewed
 made an earlier review obsolete, say so explicitly rather than leaving two contradictory
 reviews for the responder to reconcile.
 
-### Do not re-run the gates
+**Review the fix-diff, not the PR again.** From round 2 on, the scope is
+`git diff <the-SHA-you-last-reviewed>..HEAD` plus the still-open threads — not
+`main...HEAD`. You already read the rest; re-reading it is the largest avoidable cost in
+this loop, and it manufactures findings of its own, because a fix made for round 1 is the
+thing round 2 then reports (an over-deleted rationale, a `__del__` broken by the previous
+fix, wording introduced by the previous wording fix).
+
+Two exceptions, both narrow: the head was rebased or force-pushed, so the previous SHA is
+no longer an ancestor; or a fix changed a contract, in which case re-read the callers of
+what moved, not the whole diff. Say which scope you used in the Snapshot line.
+
+### Do not re-run the gates — or re-measure what a previous round recorded
 
 The implementer and CI already ran `check.sh` / `test.sh`. A review does **not**
 re-run ruff, pyrefly, ty, or the test suite. Glance at CI in logistics (§8) only
@@ -638,6 +723,25 @@ Run a command only when the review itself needs a result CI cannot give:
 reproducing a suspected bug, checking a runtime claim, confirming a "does not
 reproduce." When you do, say exactly what you ran. A "does not reproduce" with
 no command is still a copied claim.
+
+**The same rule applies to your own earlier rounds.** Rebuilding a fixture, re-timing a
+bomb, re-running a mutant, or re-deriving an offset that a previous round already
+established is the single largest measured waste in this loop — on #342 the same
+arithmetic was re-derived from scratch in three consecutive rounds (twice wrongly), and
+#349 and #353 rebuilt 70,000-file fixtures and re-timed both bombs in rounds 2, 3 and 4.
+
+So **close every review body with a `Measured this round` list** — one line per command,
+with its result:
+
+```
+### Measured this round
+- `python scripts/make_7z_bomb.py --members 70000` → 2.1 s, 4.4 MB header
+- `pytest tests/test_sevenzip_limits.py -k bcj2` → 12 passed, RESTART BLOCKS SEEN: [0]
+```
+
+The next round inherits that list and re-runs only what the new HEAD invalidates. When
+you do re-run something, say what changed to make it necessary. An empty list is a
+perfectly good answer and should be written as `None.`
 
 **CI not posted** (unpushed, or still running): the Snapshot line says
 `gates: CI pending`. Don't infer a result, don't stand in for CI — ask the author
@@ -662,7 +766,7 @@ So:
   `submit_pending`). `REQUEST_CHANGES` is rejected on your own PR for the same reason —
   `COMMENT` is the only event that goes through.
 - **Carry the verdict in the text**, where the §0 Verdict line already puts it. The
-  briefing's `✅ Approve` / `✅ Approve conditional on F4, F5` / `🔄 Request Changes` is the
+  briefing's `✅ Approve` / `✅ Approve conditional on K4, C5` / `🔄 Request Changes` is the
   review's actual conclusion; the green check in GitHub's UI is not available to say it.
 - **Do not narrate the limitation** to the maintainer as a discovery each round, and do not
   retry `APPROVE` to see if it works this time. If it is worth a line at all, it is one

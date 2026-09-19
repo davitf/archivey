@@ -38,7 +38,7 @@ copy that will drift, the way the attribution row did.
 
 **Concurrent with `address-linear-issue`.** That implementing session owns the
 round it commissioned and does not wait for you. If an `address-review-findings`
-disposition is already on this review’s F-IDs (opener names that skill), do not
+disposition is already on this review’s finding IDs (opener names that skill), do not
 start a second round. If none is posted yet, proceed — a simultaneous start is
 the same race as any other review wake. Do not no-op on every agent-reviewed PR,
 and do not look for a label or “in progress” marker that this loop does not write.

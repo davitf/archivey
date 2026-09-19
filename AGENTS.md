@@ -346,7 +346,8 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    the maintainer, send **decision packets only** unless they ask for the full handoff
    ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet). Rules are
    in `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`; **§10
-   covers posting** — stable finding IDs (`F1`, `F2`, … kept across re-reviews), located
+   covers posting** — stable finding IDs prefixed with the reviewer's own initial (`K1`,
+   `K2`, … from Claude Code; `C1`, … from Cursor), kept across re-reviews, located
    findings as inline comments so they can be resolved individually, blocks 1 and 3 in the
    body, and a status table over the previous IDs when re-reviewing.
 2. **The implementing agent works through them** with `address-review-findings`
@@ -375,6 +376,33 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    the ticket and fixes it; a *fresh* Cursor Grok (standard — never the fast variant)
    subagent runs `code-review-skill` and posts to the PR; the implementing agent then
    runs `address-review-findings`. Do not review your own diff.
+
+**Nothing from the internal tracker goes into PR text.** This repository is public; the
+tracker is not. Three rules, and they are about the *internal tracker* only:
+
+- **Never** an internal-tracker URL, anywhere — PR title or body, review or inline
+  comment, commit message, or a file in the repo.
+- **Not** an internal-tracker key (`ARC-123`) in a PR title or body, a review or inline
+  comment, or a commit message. Write "tracked internally" instead: the reader cannot open
+  the ticket, so the key is dead weight to them and it publishes the internal layout.
+- **GitHub `#nnn` is the public record and is always fine** — in PR text, commits,
+  comments and repo files alike. This rule does not touch it.
+
+**Inside `dev-docs/` and `openspec/changes/`, a bare key may mark tracked work — never
+cite one as a source.** Maintainer decision (davitf, 2026-09-19): the data lives in the
+repo and the PRs, so a key says *where this work is tracked*, not *where the reason is
+written*. "The dedup is ARC-54, not this change's job" is fine. "See ARC-54 for the
+measurement" is not — put the measurement here. Test it by deleting the key: if the
+sentence still says everything a reader needs, it was a tracking tag; if the sentence
+now has a hole, the content is in the wrong place. The existing citations in
+`threat-model.md`, `investigations/adr-0014-investigation.md` and two
+`openspec/changes/` files all pass that test, so this is a rule for new writing, not a
+sweep.
+
+Where a finding deserves a durable in-repo home, that is `review/backlog.md` under
+"Parked from PR reviews", with the reasoning in the format handbook
+(`dev-docs/formats/<fmt>.md` §6). The cross-reference runs one way only: put the PR URL on
+the tracker item, never the reverse.
 
 Two things about this repo make the handoff sharper than it looks:
 

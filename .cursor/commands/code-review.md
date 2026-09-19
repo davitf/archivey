@@ -71,13 +71,20 @@ Skip formatting/lint nits that `ruff` / the type-checkers already own.
 ## Posting to a PR
 
 If the review is being posted to a pull request rather than printed here, follow addendum
-**§10**: give every block-2 finding a **stable ID** (`F1`, `F2`, … — kept across
-re-reviews), post located findings as **inline comments** so they can be replied to and
-resolved individually, put blocks 1 and 3 in the review body, open a re-review with a
-**status table over the previous IDs**, and make every comment identifiable as
+**§10**: give every block-2 finding a **stable ID carrying your own initial** (`C1`, `C2`,
+… from Cursor — kept across re-reviews, and distinct from the `K…` a Claude Code reviewer
+uses on the same PR), post located findings as **inline comments** so they can be replied
+to and resolved individually, put blocks 1 and 3 in the review body, open a re-review with
+a **status table over the previous IDs**, and make every comment identifiable as
 agent-authored — a distinct bot identity if your host posts under one, otherwise an
 attribution footer naming the tool that wrote it. Do **not** re-run the gates unless
-you are actually testing a claim (addendum §10).
+you are actually testing a claim — nor re-measure what a previous round already recorded;
+close the review with a **Measured this round** list so the next round inherits it
+(addendum §10).
+
+A re-review reads `<the SHA you last reviewed>..HEAD` plus the open threads, not the whole
+PR again, and from round 3 a PR with only 🟢 nits open gets the conditional approval rather
+than another round (addendum §10 and §0).
 
 The implementing agent then works through it with `/address-review`
 ([`.claude/skills/address-review-findings/`](../../.claude/skills/address-review-findings/SKILL.md)).

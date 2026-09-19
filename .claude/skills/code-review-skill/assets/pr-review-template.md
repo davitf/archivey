@@ -10,17 +10,23 @@ block 2. Do not drop real pause-and-ask items to leave section 3 empty.
 
 ## 1. Maintainer briefing (read this first)
 
-**What this change is**
+**What this change is** — *once per PR, not once per reviewer: if any review on this PR
+already carries one, delete this heading and open with the status table over the existing
+IDs instead (addendum §0, §10)*
 
 [2–4 sentences: intent, areas touched, behaviour delta — readable without the diff]
 
 **Snapshot**
 
 - **PR size:** [Small/Medium/Large] (~X lines)
+- **Review scope:** [`main...HEAD` on a first round; `<last-reviewed-sha>..HEAD` from
+  round 2 on — addendum §10 "Re-reviews"]
 - **Gates (CI status, not re-run):** [ruff / pyrefly / ty / pytest — or `CI pending`]
-- **Verdict:** [✅ Approve / ✅ Approve conditional on F<n>, F<n> / 💬 Comment / 🔄 Request Changes]
+- **Verdict:** [✅ Approve / ✅ Approve conditional on <your-prefix><n>, … / 💬 Comment / 🔄 Request Changes]
   - “Only nits left” is not an approval — addendum §0 Verdicts. Nits get fixed on this PR,
     or the verdict is the conditional approval, naming the IDs it is conditioned on.
+  - Round 3 or later with only 🟢 nits open → the conditional approval, and stop reviewing;
+    do not open another round to confirm wording (addendum §0 Round budget).
   - Posting through the maintainer's account? Submit as `COMMENT`; GitHub blocks
     self-approval (addendum §10). The verdict line *is* the verdict.
 
@@ -38,6 +44,9 @@ block 2. Do not drop real pause-and-ask items to leave section 3 empty.
 ## 2. Implementor handoff (goes on the PR)
 
 **Context:** [PR # / branch / scope — so this block stands alone once §10 splits it]
+
+Finding IDs carry your own initial (`K1`, `K2`, … from Claude Code; `C1`, `C2`, … from
+Cursor) and keep counting up across your rounds on this PR — addendum §10.
 
 ### Required changes
 
@@ -75,7 +84,14 @@ Nits are small, not optional: they are fixed on this PR (addendum §0 Verdicts).
 
 🎉 **[praise]** [Specific strength worth keeping]
 
-**Verdict:** [✅ Approve / ✅ Approve conditional on F<n>, F<n> / 💬 Comment / 🔄 Request Changes]
+**Verdict:** [✅ Approve / ✅ Approve conditional on <your-prefix><n>, … / 💬 Comment / 🔄 Request Changes]
+
+### Measured this round
+
+One line per command you ran, with its result, so the next round inherits it instead of
+re-deriving it (addendum §10). Ran nothing? `None.`
+
+- `[command]` → [result]
 
 ---
 
