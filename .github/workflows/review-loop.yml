@@ -107,8 +107,18 @@ jobs:
             *)              pr="$PR_INPUT" ;;
           esac
 
-          gh pr view "$pr" --repo "$GITHUB_REPOSITORY" \
-            --json labels,headRefName,headRefOid,isCrossRepository > /tmp/pr.json
+          # `issue_comment` fires on plain issues too, where `$pr` is an issue number
+          # and `gh pr view` exits non-zero — which under `set -e` killed the step, so
+          # the run went red and the gate's own "comment is not on a pull request"
+          # refusal could never execute. Hand it the empty shape instead and let it
+          # answer.
+          if [ "$EVENT_NAME" = "issue_comment" ] && [ "$IS_PR_COMMENT" != "true" ]; then
+            echo '{"labels":[],"headRefName":"","headRefOid":"","isCrossRepository":false}' \
+              > /tmp/pr.json
+          else
+            gh pr view "$pr" --repo "$GITHUB_REPOSITORY" \
+              --json labels,headRefName,headRefOid,isCrossRepository > /tmp/pr.json
+          fi
 
           jq -n \
             --arg event_name "$EVENT_NAME" \
@@ -157,19 +167,50 @@ jobs:
             > /tmp/candidates.json
 
           # Two facts the list endpoint does not carry, fetched only for the handful of
-          # pull requests in the loop: when the head commit landed (the quiet period is
-          # measured from it), and which commit the last round read, which the status
-          # comment records so a tick does not review the same commit twice.
+          # pull requests in the loop: when the head commit was **committed**, which is
+          # what the quiet period is measured from (`QUIET_MINUTES` in the gate says
+          # what that costs — it is the committer's clock, not the push), and which
+          # commit the last round read, which the status comment records so a tick does
+          # not review the same commit twice.
+          #
+          # Both fetches are allowed to fail on purpose. This loop runs under `set -e`,
+          # and its inputs came from a separate `gh pr list` moments earlier, so a head
+          # that 404s after a force-push, a rate limit, or a fork head the base
+          # repository declines to resolve would abort the step — and the tick would
+          # then review nothing at all, for every enrolled pull request. This scan is
+          # the floor the rest of the design leans on, and it runs unwatched, so a bad
+          # candidate drops out of this tick instead. The skip goes in the run summary
+          # so a candidate that fails every tick is visible rather than silent.
+          #
+          # `first // empty`, not `first // ""`. `--jq` runs once per *page* and the
+          # output is concatenated, so `// ""` emits a blank line for every page
+          # holding no status comment and `seen` comes back as "\n\n<sha>", which never
+          # equals the head sha. That made the same-commit guard silently inert on any
+          # pull request whose status comment sat past the first page of 30 comments,
+          # and the scan would then spend the whole cap re-reviewing one commit.
+          # `.github/scripts/loop-status.sh` gets this right; this did not.
           : > /tmp/candidates.jsonl
           for n in $(jq -r '.[].number' /tmp/candidates.json); do
             sha="$(jq -r --argjson n "$n" \
               '.[] | select(.number == $n) | .head_sha' /tmp/candidates.json)"
-            when="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" \
-              --jq '.commit.committer.date')"
-            seen="$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate \
-              --jq '[.[].body
+            if ! when="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" \
+              --jq '.commit.committer.date')"; then
+              echo "Scan: skipped #$n — could not read its head commit" \
+                >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            # Tested by exit status rather than by emptiness, because empty is a
+            # legitimate answer here — a pull request in its first round has no status
+            # comment yet — and taking a failed fetch for "never reviewed" would spend
+            # a round re-reviewing a commit the loop had already read.
+            if ! seen="$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" \
+              --paginate --jq '[.[].body
                      | select(startswith("<!-- archivey-review-loop-status"))
-                     | capture("sha=(?<s>[0-9a-f]+)").s] | first // ""')"
+                     | capture("sha=(?<s>[0-9a-f]+)").s] | first // empty')"; then
+              echo "Scan: skipped #$n — could not read its comments" \
+                >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
             jq -c --argjson n "$n" --arg when "$when" --arg seen "$seen" \
               '.[] | select(.number == $n)
                    | . + {head_committed_at: $when, last_reviewed_sha: $seen}' \
@@ -399,6 +440,20 @@ jobs:
               ;;
 
             *)
+              # Who holds the branch, not who usually does. Cursor is the implementer
+              # on a `cursor/*` branch, but the roles run the other way round too —
+              # Claude implements, Cursor reviews, Claude passes from zero after the
+              # approval — and there this comment used to hand the fixes back to the
+              # agent that had just written them up. The branch prefix is the same
+              # signal the gate uses to enrol a new pull request. Each agent gets the
+              # entrypoint it actually has: `/address-review` is Cursor's slash
+              # command, while a Claude Code session lands in the skill.
+              case "$HEAD_REF" in
+                cursor/*) fixer="@cursor"; who="Cursor"
+                          entry="the \`/address-review\` command" ;;
+                *)        fixer="@claude"; who="Claude"
+                          entry="the \`address-review-findings\` skill" ;;
+              esac
               # The last round says so as it posts. There is no round 4 to notice the
               # cap later, because a push is no longer an event this workflow sees.
               if [ "$FINAL" = "true" ]; then
@@ -406,7 +461,7 @@ jobs:
                 cat > /tmp/status.md <<EOF
           **Round $ROUND posted findings, and that was the last automatic round.** $summary
 
-          Cursor has been asked to work through them, but nothing will review the result: the
+          $who has been asked to work through them, but nothing will review the result: the
           loop is finished and this is a person's from here.
 
           To buy another round, comment \`@claude review\` — those two words first, at the
@@ -416,29 +471,22 @@ jobs:
                 cat > /tmp/status.md <<EOF
           **Round $ROUND posted findings.** $summary
 
-          Cursor has been asked to work through them. Round $next starts by itself once its
-          commits stop for thirty minutes. The loop stops after round 3.
+          $who has been asked to work through them. Round $next starts as soon as it says it
+          has finished, or by itself once its commits stop for thirty minutes. The loop stops
+          after round 3.
           EOF
               fi
-              # Ping whoever holds the branch, not whoever usually does. Cursor is the
-              # implementer on a `cursor/*` branch, but the roles also run the other way
-              # round — Claude implements, Cursor reviews, Claude does a final pass — and
-              # there this comment used to hand the fixes to the agent that had just
-              # written them up. The branch prefix is the same signal the gate already
-              # uses to enrol a new pull request.
-              case "$HEAD_REF" in
-                cursor/*) fixer="@cursor" ;;
-                *)        fixer="@claude" ;;
-              esac
               cat > /tmp/ping.md <<EOF
           $fixer Please work through the review findings on this pull request.
 
-          Use the \`/address-review\` command and follow it: every finding gets an explicit
-          disposition, nothing is called fixed without being reproduced first, and anything
-          needing a maintainer ruling is escalated rather than guessed at.
+          Use $entry and follow it: every finding gets an explicit disposition, nothing is
+          called fixed without being reproduced first, and anything needing a maintainer
+          ruling is escalated rather than guessed at.
 
-          This is round $ROUND of 3. Push to this branch when you are done; the next review
-          starts on its own once the branch has been quiet for thirty minutes.
+          This is round $ROUND of 3. When you are done, push first, then say so in a comment
+          whose first two words are \`@claude review\` — that starts round $next straight
+          away. Nothing is lost if you do not: the round comes anyway once this branch has
+          been quiet for thirty minutes, which is the fallback rather than the mechanism.
 
           ---
           _Generated by [Claude Code](https://claude.ai/code)_

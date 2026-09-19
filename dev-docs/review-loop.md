@@ -60,11 +60,22 @@ alongside the sha the round is reviewing.
 
 **Cursor hands an approval back for a pass from zero** (davitf, 2026-09-19). When
 Cursor's verdict is ✅ Approve and Claude implemented, `.cursor/commands/code-review.md`
-tells it to post one last comment starting `@claude review`. That is an ordinary forced
-round, and it reads the whole diff rather than a fix-diff: the round counter only counts
-rounds this loop ran, so a pull request Cursor has reviewed three times still arrives at
-Claude's round 1. A second reviewer's first look is not a re-review. Two reviewers who
-have each read the same tree cold are worth more than one that read it twice.
+tells it to post one last comment starting `@claude review`. That is an ordinary round,
+not a forced one — the cap and every park still apply to it, as they do to any agent's
+comment — and it reads the whole diff rather than a fix-diff: the round counter only
+counts rounds this loop ran, so a pull request Cursor has reviewed three times still
+arrives at Claude's round 1. A second reviewer's first look is not a re-review. Two
+reviewers who have each read the same tree cold are worth more than one that read it
+twice.
+
+**That hand-back also enrols the pull request**, which is the one thing it needs that no
+other agent comment does. Only `cursor/*` auto-enrols, deliberately, so a `claude/*`
+branch reaches the hand-back with no loop label and the bot path's enrolment check
+refused it — silently, because the workflow posts nothing when the gate declines. An
+explicit request from a trusted agent is a better enrolment signal than a branch prefix,
+so it is taken as one. An unenrolled `cursor/*` branch is still refused: Cursor's own
+pull requests enrol themselves when they open, so one without a label predates the loop,
+and sweeping those in is exactly what keeping the prefix out of the scan avoids.
 
 If that pass finds something real, it is the ordinary loop and not an escalation: the
 implementer is pinged and rounds continue under the same cap (davitf, 2026-09-19). One
@@ -296,9 +307,13 @@ this repository marks them ready as `claude[bot]`. The first real round failed t
 seconds in for exactly this reason, and it stayed hidden until then because an earlier
 draft guard had refused every run before it reached the action.
 
-The list names those two rather than using `*`. The point of the setting is that an
-unexpected bot cannot spend review credits, and the gate's own guards — forks,
-enrolment, the cap — sit behind the action, not in front of it.
+The list names six entries rather than using `*`: `cursor`, `claude` and
+`github-actions`, each in both spellings, because the action's own refusal prints the
+bare name while the event carries the `[bot]` suffix. `github-actions[bot]` is there for
+the scheduled scan, which is the path the whole fallback rests on and the one no person
+ever initiates. The point of the setting is that an unexpected bot cannot spend review
+credits, and the gate's own guards — forks, enrolment, the cap — sit behind the action,
+not in front of it.
 
 ## What stays manual
 
@@ -345,6 +360,13 @@ opening a comment on it with `@claude review`.
   only delays a branch nobody is watching. Ten minutes was short enough that an
   ordinary pause — a long test run, a slow tool call, a session waiting on a person —
   read as "finished". `QUIET_MINUTES` in the gate is the one place to change it.
+  **The clock is the committer's, not the push's**: the scan reads the head commit's
+  `committer.date`, because GitHub carries no per-commit push time it can reach. Since
+  `CONTRIBUTING.md` asks for a long gate run before pushing, a commit made at 12:00 and
+  pushed at 12:40 already counts as forty minutes quiet when it lands. Closing that
+  needs a record of when the scan first saw a head, which is a second piece of
+  per-commit state; what makes it not worth carrying yet is that a branch the clock
+  misjudges is one whose agent did not send the finish signal.
   **The cron interval is a separate knob and does not move with it**: the schedule is
   how often the state is checked, the quiet period is how long a branch must have been
   still. Checking every ten minutes keeps the fallback responsive once a branch does
@@ -353,6 +375,13 @@ opening a comment on it with `@claude review`.
 - **Whether Cursor actually sends the signal** has not been observed yet. If it turns
   out to ignore the instruction, the quiet period is what catches it, which is why the
   timer stays.
+- **Every scheduled tick shares one concurrency group**, `scan`, and a round can take
+  the full 45-minute timeout. So a scheduled round blocks every later scheduled tick
+  until it finishes, including ticks for other pull requests, and GitHub keeps only the
+  most recent of the ones that queue behind it. That is the intended trade — the
+  fallback has to be safe, not fast, and a comment-triggered round has its own group
+  keyed on the pull request — but it means the floor is one pull request per *review*,
+  not one per tick.
 - **A scheduled round and an `@claude review` on the same pull request can overlap.**
   They are in different concurrency groups, and the scan records the commit it read
   only once its round finishes. Two reviews of one commit is wasteful but harmless, and

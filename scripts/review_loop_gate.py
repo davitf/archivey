@@ -60,6 +60,17 @@ MAX_FORCED_ROUNDS = 2 * MAX_ROUNDS
 #: waiting on a person — read as "finished" and spent a round on half-written code.
 #: The cost of being wrong is asymmetric: a premature round burns one of three, while
 #: a late one only delays a branch nobody is watching anyway.
+#:
+#: **It is measured from the committer's clock, not from the push.** The scan reads
+#: `.commit.committer.date`, which is when the commit was made; GitHub does not carry a
+#: per-commit push time anywhere the scan can reach. `CONTRIBUTING.md` asks for the
+#: three-config gate before pushing, so the gap is real and routine: commit at 12:00,
+#: run the gate, push at 12:40, and the 12:45 tick sees a head forty-five minutes old
+#: and calls a branch quiet five minutes after a push. A rebase that preserves
+#: committer dates does the same. Closing it properly means recording when the scan
+#: first *saw* a head, which is a second piece of per-commit state; the signal the
+#: implementer sends is what makes that not worth carrying yet, since a branch this
+#: misjudges is one whose agent did not send it.
 QUIET_MINUTES = 30
 
 #: Opt out entirely. Wins over everything, including an explicit ``@claude review``.
@@ -171,6 +182,11 @@ def enrolled(labels: list[str]) -> bool:
     return LABEL_ON in labels or current_round(labels) > 0
 
 
+def _minutes(span: timedelta) -> int:
+    """A quiet period in whole minutes, for the reason strings."""
+    return int(span.total_seconds() // 60)
+
+
 def decide(event: dict) -> Decision:
     """The answer for one event: which pull request to review, and as which round."""
     if event.get("event_name") == "schedule":
@@ -205,6 +221,14 @@ def _classify(event: dict) -> Decision:
             return Decision(False, done, "comment is not on a pull request")
         if not COMMENT_TRIGGER.match(event.get("comment_body") or ""):
             return Decision(False, done, "comment does not ask for a review")
+        if event.get("cross_repository"):
+            # The `pull_request` path below refuses a fork on the grounds that the run
+            # has no secrets and the review would fail anyway. That reason does not
+            # hold here: an `issue_comment` run is on the base repository and *does*
+            # get them, so this is the one automatic path where a fork round would
+            # really start. It is also the only one a fork can reach, since both the
+            # others refuse a fork before any label could be written.
+            return Decision(False, done, "pull request is from a fork")
         if event.get("comment_author_association") in TRUSTED_ASSOCIATIONS:
             # The ceiling lives inside this branch, not ahead of it. `cap_reached` is
             # not an inert field: the workflow's hand-back step keys on it, adds
@@ -226,17 +250,42 @@ def _classify(event: dict) -> Decision:
             return Decision(True, nxt, "requested by comment", forced=True, final=final)
 
         if str(event.get("comment_author_login") or "") in TRUSTED_BOTS:
-            # The implementing agent saying it has stopped pushing — the signal the
-            # quiet period exists to infer, stated outright, so do not wait for it.
-            if not enrolled(labels):
-                return Decision(False, done, "pull request is not enrolled in the loop")
+            # An agent saying it has stopped pushing — the signal the quiet period
+            # exists to infer, stated outright, so do not wait for it. Every park
+            # still holds: unlike a person, a bot is not who set one.
             for label in PARKED_LABELS:
                 if label in labels:
                     return Decision(False, done, f"{label} is set")
+
+            enrol = False
+            if not enrolled(labels):
+                # This is where the reviewing agent hands an approval back for a pass
+                # from zero, and a `claude/*` branch has no enrolment to hand it: only
+                # `cursor/*` auto-enrols, deliberately, so that the scan cannot have
+                # Claude review its own diff before a second reviewer has looked.
+                # Refusing here left that hand-back dead with nothing posted to say so.
+                # An explicit request from a trusted agent is a better enrolment signal
+                # than a branch prefix, so take it as one.
+                #
+                # An unenrolled `cursor/*` branch is the opposite case and still
+                # refused: Cursor's own pull requests enrol themselves when they open,
+                # so one without a label is a pull request that predates the loop, and
+                # sweeping those in is what the prefix is kept out of the scan to
+                # avoid.
+                if str(event.get("head_ref") or "").startswith(CURSOR_BRANCH_PREFIX):
+                    return Decision(
+                        False, done, "pull request is not enrolled in the loop"
+                    )
+                enrol = True
+
             if nxt > MAX_ROUNDS:
                 return Decision(False, done, "round cap spent", cap_reached=True)
             return Decision(
-                True, nxt, "the implementing agent says it is finished", final=final
+                True,
+                nxt,
+                "the implementing agent says it is finished",
+                enrol=enrol,
+                final=final,
             )
 
         return Decision(False, done, "commenter is not a repository collaborator")
@@ -276,7 +325,15 @@ def _classify(event: dict) -> Decision:
 
     for label in PARKED_LABELS:
         if label in labels:
-            return Decision(False, done, f"{label} is set", enrol=True)
+            # No `enrol` here, on purpose. The enrol step is gated on that flag alone,
+            # so setting it would run `loop-status.sh` and overwrite the status comment
+            # that explains the park — the maintainer's question, on `loop:decision`,
+            # or why a round died, on `loop:hold` — with "a review starts by itself".
+            # A pull request carrying a park label is already enrolled; that is how it
+            # got parked. The cap branch below can afford the flag because the hand-back
+            # step runs after the enrol step and overwrites the wrong status with the
+            # right one.
+            return Decision(False, done, f"{label} is set")
 
     if nxt > MAX_ROUNDS:
         return Decision(False, done, "round cap spent", cap_reached=True, enrol=True)
@@ -339,14 +396,17 @@ def _scheduled(candidate: dict, now: datetime | None, quiet: timedelta) -> Decis
         # quiet, and the expensive answer is the one that assumes it is.
         return out(False, done, "scan time is unknown")
     if now - pushed < quiet:
+        # `quiet`, not `QUIET_MINUTES`: the threshold is a parameter, the tests pass
+        # other values, and a message naming the constant would describe a rule that
+        # did not produce it.
         return out(
-            False, done, f"still being pushed to — quiet for under {QUIET_MINUTES}m"
+            False, done, f"still being pushed to — quiet for under {_minutes(quiet)}m"
         )
 
     return out(
         True,
         nxt,
-        f"no new commits for {QUIET_MINUTES} minutes",
+        f"no new commits for {_minutes(quiet)} minutes",
         final=nxt >= MAX_ROUNDS,
     )
 

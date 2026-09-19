@@ -371,7 +371,7 @@ def test_the_implementing_agent_can_say_it_has_finished(login: str) -> None:
         (["loop:round-3"], "the cap"),
         (["loop:round-1", "loop:decision"], "a maintainer decision"),
         (["loop:round-1", "loop:hold"], "a hold"),
-        ([], "never having been enrolled"),
+        ([], "never having been enrolled, on a branch that predates the loop"),
     ],
 )
 def test_the_agent_cannot_talk_its_way_past_a_stop(labels: list[str], why: str) -> None:
@@ -393,6 +393,112 @@ def test_the_agent_cannot_talk_its_way_past_a_stop(labels: list[str], why: str) 
         )
     )
     assert not decision.run, why
+
+
+def test_the_reviewers_hand_back_enrols_a_branch_that_never_did() -> None:
+    """Cursor approving a Claude branch has to be able to start the pass from zero.
+
+    Only `cursor/*` auto-enrols, so a `claude/*` pull request reaches this comment
+    with no loop label at all and the hand-back used to be refused with nothing
+    posted to say so. The request itself is the enrolment signal here; the branch
+    prefix is what enrols the other direction.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=[],
+            head_ref="claude/project-thread-blk7eo",
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="NONE",
+            comment_author_login="cursor[bot]",
+        )
+    )
+    assert decision.run
+    assert decision.enrol
+    assert decision.round == 1
+    # Enrolling is not the same as forcing: the cap and the parks still apply.
+    assert not decision.forced
+
+
+def test_a_park_stops_the_hand_back_before_it_can_enrol() -> None:
+    """Order matters in the bot branch, and nothing else pins it.
+
+    Enrolment now has an escape hatch, so the parks have to be read first — a
+    pull request parked on a maintainer decision must not be restarted by an
+    agent's comment just because it carries no `loop:on`.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=["loop:decision"],
+            head_ref="claude/project-thread-blk7eo",
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="NONE",
+            comment_author_login="cursor[bot]",
+        )
+    )
+    assert not decision.run
+    assert not decision.enrol
+
+
+def test_a_fork_cannot_buy_a_round_by_commenting() -> None:
+    """The comment path is the only one where a fork round would really start.
+
+    `pull_request` and the scan both refuse a fork earlier, and the recorded reason
+    for the `pull_request` guard — a fork run has no secrets, so the review fails
+    anyway — is not true here: an `issue_comment` run is on the base repository.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=["loop:on"],
+            cross_repository=True,
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="OWNER",
+        )
+    )
+    assert not decision.run
+    assert "fork" in decision.reason
+
+
+def test_marking_a_parked_pull_request_ready_leaves_its_status_alone() -> None:
+    """`enrol` is what runs the step that rewrites the status comment.
+
+    On a parked pull request that comment is the only thing saying why nothing is
+    happening — the maintainer's question, or why a round died. Setting `enrol` on a
+    refusal replaced it with "a review starts by itself once the branch goes quiet",
+    a promise nothing would honour. A parked pull request is already enrolled anyway.
+    """
+    for park in ("loop:decision", "loop:hold", "loop:done"):
+        decision = gate.decide(event(labels=["loop:round-1", park]))
+        assert not decision.run
+        assert not decision.enrol, park
+
+
+def test_a_refusal_names_the_threshold_that_produced_it() -> None:
+    """The reason strings interpolated the constant while the rule used the argument.
+
+    Nothing asserted on them, so the two could drift into a message that described a
+    rule it was not produced by.
+    """
+    decision = gate._scheduled(
+        candidate(head_committed_at=JUST_NOW),
+        gate.parse_time(NOW),
+        gate.timedelta(minutes=5),
+    )
+    assert not decision.run
+    assert "under 5m" in decision.reason
+
+    ran = gate._scheduled(
+        candidate(head_committed_at=JUST_NOW),
+        gate.parse_time(NOW),
+        gate.timedelta(0),
+    )
+    assert ran.run
+    assert "for 0 minutes" in ran.reason
 
 
 def test_an_unknown_bot_is_still_a_stranger() -> None:
