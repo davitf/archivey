@@ -733,6 +733,13 @@ the file was read at all, **whether or not it found anything**:
   back clean, and anything you deliberately left to another batch. **A clean file's comment
   is the short one and the valuable one** — it is the only thing that distinguishes a file
   that was read and found sound from a file nobody opened.
+- **A sweep finding's ID is `<pass>-<your initial><n>`** — `S16-K1`, `S17-C1` — which carries
+  both prefixes this file already requires: the batch, so two batches on #315 cannot collide,
+  and the reviewer's initial, so two reviewers in one batch cannot either. **This applies from
+  the next batch and renames nothing.** An ID that is already anchored in a posted thread is
+  never renumbered (§"Stable IDs"), so a batch that used another form keeps it and says so in
+  its markers. `ids=` therefore carries whatever IDs the findings actually have, and nothing
+  reading a marker may assume they share the `pass=` value.
 - **One marker per file per pass**, and a batch posts each file's marker once. Re-sweeping
   a file in a later batch posts a **new** marker rather than editing the old one: the newest
   wins and the older stays as the record of what was true then. `sweep_coverage.py` counts a

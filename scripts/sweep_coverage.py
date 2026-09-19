@@ -45,6 +45,9 @@ Counting rules, deliberately narrow:
   counted. It needs re-anchoring by hand.
 * **Threads are never counted.** Nothing in here looks at findings to decide coverage;
   `findings=` is carried through for the per-batch report only.
+* **`ids=` is opaque.** It must be present, and that is all. Batches have used more than one
+  ID form and a posted ID is never renumbered, so do not add a check that IDs start with the
+  `pass=` value — it would fire on correct history.
 """
 
 from __future__ import annotations

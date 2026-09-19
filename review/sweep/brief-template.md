@@ -67,7 +67,9 @@ Addendum §0's three-block shape: (1) maintainer briefing, (2) implementor hando
 severity × confidence, (3) maintainer decisions. Addendum §10 has the mechanics. In short:
 
 - **Every finding with a `file:line` goes inline, anchored there** — one thread per finding.
-  Stable IDs prefixed `S<N>-`, so `S<N>-F1`, `S<N>-F2`, …
+  Stable IDs are `S<N>-<your initial><n>`: `S<N>-K1` from Claude Code, `S<N>-C1` from Cursor.
+  The batch prefix keeps two batches apart, the initial keeps two reviewers apart, and neither
+  is ever renumbered once posted.
 - **Every file you finish reading gets a `SWEPT` marker comment**, findings or not, posted
   before you move to the next file:
 
