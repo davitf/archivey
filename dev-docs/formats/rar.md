@@ -109,8 +109,9 @@ Everything about that boundary is a consequence:
 the walk reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
 reading the structure needs seek, and a non-seekable source is refused in both access modes
 (§2.1); the whole member table is built at open — walking every header, or reading `QO`
-and skipping the FILE headers it already holds (§1.1) — which is why the parser carries
-its own ceiling of 1 048 576 members before `ListingLimits` ever apply — and
+and skipping the FILE headers it already holds (§1.1) — which is why
+`listing_limits.max_members` is applied at parse (`ResourceLimitError`; `None` /
+`ListingLimits.UNLIMITED` lifts it) — and
 every length is a variable-length integer whose byte count the input chooses, so bounds
 have to be on **bytes consumed**, not on the decoded value — the one place that was
 violated was a quadratic pre-read loop in front of the capped decoder
@@ -606,8 +607,8 @@ RAR-specific only. General extraction and name hazards are §2.4.
   it: the backend did control the argv it intended to build, and the hostile-name axis
   was simply not one anybody had enumerated.
 - **Listing is attacker-controlled work with no decompression.** A small file can declare an
-  enormous member table; the parser ceiling of 1 048 576 bounds the walk before
-  `ListingLimits` are evaluated at materialization. [`threat-model.md`](../threat-model.md) O1.
+  enormous member table; `listing_limits.max_members` bounds the walk at parse
+  (`ResourceLimitError`; `ListingLimits.UNLIMITED` disables it). [`threat-model.md`](../threat-model.md) O1.
 - **RAR3 names are themselves compressed.** The *retained* name bytes are roughly 1:1 with
   header bytes on a successful decode. Before #292 the transient cost was the lever: the
   decoder continued past a failed 8-bit read with `?`, so an empty 8-bit field plus
@@ -708,6 +709,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Encrypted-header `tell()` is the ciphertext cursor; leftover `_buf` is AES padding | `data_offset` must skip the padded ciphertext so the next salt/IV is aligned. Subtracting leftover plaintext lands in padding — measured on both `encrypted_header__*.rar` fixtures, where every FILE `header_size % 16 != 0` | Reporting a logical plaintext offset from `tell()` |
 | No 8 KiB cap on `_HeaderDecryptStream.read`; callers use the format's own header limit | RAR5 already refuses `hdrlen > _RAR5_MAX_HEADER` (2 MiB) before the body read; RAR3 `header_size` is a uint16. The encrypted wrong-password path decrypts one garbage header then raises `EncryptionError` — strictly less than the unencrypted walk already allows. A tighter cap rejected a legitimate header as wrong-password. Unbounded `read(-1)` stays refused. Maintainer (2026-09-13): use each format's unencrypted limit; delete the 8 KiB branch | Keep 8 KiB and split the error (`CorruptionError` would abort password iteration); a second cap of 2 MiB inside `read` |
 | Keep `_HeaderDecryptStream`; share only the AES *stage* with `crypto.py` | The header walk binds `header_fd` to either the raw archive handle or the decrypt stream and calls `.tell()` for `header_offset` / `data_offset` — archive offset, not a ciphertext cursor vs plaintext. The wrapper also sits mid-file unbounded, so `AesDecryptStream` would advertise seekable over the rest of the archive. Both streams borrow (`owns_inner`). A short last block now raises `TruncatedError` on the 7z pull stream; the header stream still never calls `finalize`. | Wrapping headers in `open_aes_decrypt_stream`; replacing `_Readable` with `BinaryIO` / a streamtools base |
+| `max_members` is the parser's only listing guard | The table is built at open, so the count bound belongs at parse. Measured retained/wire is ~9×, dominated by the fixed `RarMemberInfo` object, which `max_members` already caps; names are within ~4× of the header bytes (RAR3 UCS-4 worst case), typically ~1:1. A parse-time byte budget would guard the minor term, and a fixed header-bytes ceiling would reject archives `ListingLimits` permits — the `_MAX_ARCHIVE_MEMBERS` bug this exists to fix. **Maintainer (davitf, [#353](https://github.com/davitf/archivey/pull/353) F6):** do not thread `max_metadata_bytes`, a `ListingLimits`, or a `ListingLimitTracker` into `rar_parser` | Parse-time `max_metadata_bytes`; a parser-local header-bytes constant |
 
 ## 7. Open questions
 
@@ -821,7 +823,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | RAR5/RAR3 `accessed`/`created` from the time extra, and `None` when the extra or slot is absent | `::test_rar5_xtime_fixture_surfaces_accessed_and_created`, `::test_rar4_xtime_fixture_surfaces_accessed_and_created`, `::test_xtime_absent_accessed_created_are_none`, `::test_parse_rar5_xtime_keeps_ctime_and_atime_with_ns`, `::test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime` |
 | RAR3 compressed-name decode fails closed on overrun; long RLE stays bounded (§4) | `::test_rar3_compressed_name_decode_is_bounded`, `::test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present`, `::test_rar3_rle_name_may_be_longer_than_encdata`, `::test_rar3_rle_name_zero_correction_keeps_hi_byte`, `::test_rar3_unicode_name_decode_matches_reference_and_stays_bounded` |
 | The >4 GiB RAR3 packed skip, and split-continuation identity checks | `::test_rar3_large_packed_member_skips_full_64bit_size`, `::test_rar3_mismatched_split_continuation_is_corruption` and the three tests after it |
-| Member-table ceiling at parse, `ListingLimits` at materialization | `::test_rar_parser_bounds_member_count`, `::test_rar_members_enforces_listing_limits` |
+| Member-table ceiling at parse via `listing_limits.max_members` | `::test_rar_parser_max_members_at_parse`, `::test_rar_parser_omitted_max_members_matches_listing_limits_default`, `::test_rar_open_enforces_listing_limits`, `::test_rar_unlimited_lifts_member_cap`, `::test_rar_split_continuation_does_not_consume_member_slot`, `::test_qo_over_max_members_raises_not_unusable` |
 | The SFX needle validator, its `DAMAGED` verdict, and a decoy skipped for the real payload | `tests/test_sfx.py::test_rar_main_header_validator`, `::test_rar_main_header_validator_crc_fail_is_damaged`, `::test_rar_clamped_header_peek_is_valid_when_remaining_is_known`, `::test_mz_rar5_crc_fail_skips_to_the_real_payload`, `::test_shebang_script_mentioning_rar_magic_is_not_rar`, `::test_shebang_plus_real_rar_detects` |
 | Metadata and bytes match `rarfile` on our fixtures and on the corpus | `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes`, `::test_corpus_rar_matches_rarfile` |
 | Mutation and coverage-guided fuzzing of the header walk | `tests/fuzz_rar_parser.py::test_parse_rar_archive_fuzz_harness`, `tests/test_mutation_fuzz.py` (`basic-solid-rar5` / `basic-solid-rar4` entries), Atheris targets `rar_header` and `rar` |

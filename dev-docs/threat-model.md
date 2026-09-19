@@ -22,21 +22,25 @@ when members are registered into a materialized / resolved list (`members()`,
 `scan_members()`, extract-prep materialization). Crossing a cap raises
 `ResourceLimitError`. Defaults match extract `max_entries` on the count side
 (`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
-`stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
-hatch) on scan-as-you-go formats. 7z is indexed: the whole header is parsed at
-`open_archive`, so `listing_limits.max_members` is applied there (folders,
-unpack streams, `num_files`) and an over-limit archive fails at open —
-`stream_members()` is not an escape hatch for 7z. Pack streams are a
-coder-graph quantity (BCJ2 has four per folder) and keep the header-size
-bound only. `None` (`ListingLimits.UNLIMITED`)
-disables that bound. Format-local parser bounds (e.g. 7z count fields vs header
-size → `CorruptionError`; 7z per-folder coder/in-out counts at `_MAX_NUM_STREAMS`;
-RAR member-count ceiling at parse) stay as defense-in-depth.
-RAR5 QO records that are not FILE never reach `_append_member`; their bound is
-`_RAR5_QO_PAYLOAD_MAX` (16 MiB), and parse of that payload is linear (PR #311).
-Indexed formats may still allocate up to parser ceilings during
-`open_archive()` (7z: `max_members` or header size, whichever is tighter; RAR:
-`_MAX_ARCHIVE_MEMBERS`, still a parser constant). `max_metadata_bytes` budgets
+`stream_members()` / `streaming=True` / forward-only iteration remain unguarded by
+design (O(1) escape hatch). 7z applies `listing_limits.max_members` at
+`open_archive` (folders, unpack streams, `num_files`) and an over-limit
+archive fails at open — `stream_members()` / `streaming=True` are not an
+escape hatch for 7z. Pack streams are a coder-graph quantity (BCJ2 has four
+per folder) and keep the header-size bound only. RAR applies
+`listing_limits.max_members` while parsing the member table at
+`open_archive`, so an over-limit archive fails at open —
+`stream_members()` / `streaming=True` are not an escape hatch for RAR. ZIP
+still caps at `members()`. `None` (`ListingLimits.UNLIMITED`) disables that
+bound. `max_metadata_bytes` remains a materialization guard on every format,
+including 7z and RAR. Format-local parser bounds (e.g. 7z count fields vs
+header size → `CorruptionError`; 7z per-folder coder/in-out counts at
+`_MAX_NUM_STREAMS`) stay as defense-in-depth. RAR no longer has a separate
+`_MAX_ARCHIVE_MEMBERS` parser constant. RAR5 QO records that are not FILE
+never reach `_append_member`; their bound is `_RAR5_QO_PAYLOAD_MAX` (16 MiB),
+and parse of that payload is linear (PR #311). 7z may still allocate up to
+its header-size ceilings during `open_archive()` (`max_members` or header
+size, whichever is tighter). `max_metadata_bytes` budgets
 *retained* member metadata; it does not see a transient decode buffer discarded
 before any member exists. RAR3 compressed Unicode names used to expand ~100×
 that way (listing-time CPU at the `uint16` `name_size` ceiling, not unbounded

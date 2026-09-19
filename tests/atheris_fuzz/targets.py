@@ -186,11 +186,7 @@ def rar_open_available() -> bool:
 
 def rar_header_one(data: bytes) -> None:
     try:
-        archive = parse_rar_archive(io.BytesIO(data))
-        # Bound listing work even if parse succeeded with a huge table (defense
-        # in depth; parser also caps at ListingLimits default).
-        if len(archive.members) > _MAX_MEMBERS:
-            return
+        parse_rar_archive(io.BytesIO(data), max_members=_MAX_MEMBERS)
     except ArchiveyError:
         return
 
