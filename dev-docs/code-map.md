@@ -141,6 +141,7 @@ often they turn out to be the right place:
 | Question | Look in |
 |---|---|
 | How should we work this change? | `dev-docs/pair-workflow.md` |
+| Why did a review appear on this PR by itself? | `dev-docs/review-loop.md` |
 | What is true *here* for a format / topic? | `dev-docs/formats/<format>.md` / `dev-docs/topics/<topic>.md` when present; else code-map + threat model + ADRs/investigations — create the handbook page in the PR that needs it ([`pair-workflow.md`](pair-workflow.md)) |
 | What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |
 | Why was this chosen? (legacy / repo-wide) | `dev-docs/decisions/` (ADR log, `index.md` first); new answers prefer handbook pages |

@@ -31,6 +31,10 @@ live in
 7. User docs if needed      Diátaxis mode + unslop (published `docs/` only)
 ```
 
+Steps 4–6 can run without a driver: Cursor implements, Claude reviews, Cursor addresses,
+up to three rounds, stopping the moment a decision packet appears.
+[`review-loop.md`](review-loop.md) has the wiring and the `loop:*` labels that stop it.
+
 | Phase | Human sees | Agents may also use |
 | --- | --- | --- |
 | Investigate / grill | Conversation + handbook edits | code map, threat model, tests, old ADRs/investigations as sources |
