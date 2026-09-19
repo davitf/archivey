@@ -206,15 +206,21 @@ guard and the two split the traffic.
 
 The requirement is that they never both fire, which means the loop's trigger has to be
 no looser than `claude.yml`'s skip. It is now strictly tighter: `claude.yml` skips any
-comment holding the phrase anywhere, and the loop takes it only at the top. A comment
-that merely writes about the phrase therefore runs neither workflow, which is exactly
-what [Why the phrase has to come first](#why-the-phrase-has-to-come-first) wants.
-`tests/test_review_loop_gate.py` asserts the one direction that matters — nothing the
-gate accepts is something `claude.yml` would also answer. GitHub
-expressions have no regex, so `claude.yml`'s half is the same plain, case-insensitive
-substring that `contains()` tests, and `tests/test_review_loop_gate.py` asserts the two
-agree on a table of near misses. Re-running the App installer overwrites `claude.yml`
-and drops the guard.
+comment holding the phrase anywhere, and the loop takes it only at the top.
+`tests/test_review_loop_gate.py` asserts that one direction over a table of near misses
+— nothing the gate accepts is something `claude.yml` would also answer. GitHub
+expressions have no regex, which is why `claude.yml`'s half stays a plain,
+case-insensitive substring; re-running the App installer overwrites that file and drops
+the guard entirely.
+
+**The gap between the two is a cost a writer should know about.** A comment that quotes
+the phrase mid-sentence runs neither workflow: the loop ignores it because it is not at
+the top, and the general assistant ignores it because `contains()` sees the phrase
+anywhere. Not starting a round is the point
+([Why the phrase has to come first](#why-the-phrase-has-to-come-first)). Losing the
+assistant is the side effect, and it is silent — a comment that asks `@claude` a
+question *and* quotes the trigger phrase gets no answer and no explanation. Quote the
+phrase or ask the assistant, not both in one comment.
 
 ## Bots trigger almost everything here, and must be named
 
