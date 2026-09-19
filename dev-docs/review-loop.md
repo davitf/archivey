@@ -16,8 +16,8 @@ Linear issue ──@Cursor──► Cursor implements ──► opens a draft pu
                                                       │
                              ┌────────────────────────┘
                              │  Cursor says it has finished: out of draft, or a
-                             │  comment starting `@claude review`. Failing that, thirty
-                             ▼  with no new commit
+                             │  comment starting `@claude review`. Failing that,
+                             ▼  thirty minutes with no new commit
                   Claude reviews (round N of 3)
                              │
         ┌────────────────────┼──────────────────────────┐
@@ -288,3 +288,18 @@ opening a comment on it with `@claude review`.
   handoff. Stable finding IDs are what make that work
   ([addendum §10](../.claude/skills/code-review-skill/reference/archivey-review-addendum.md)),
   so renumbering between rounds breaks the status table the next round opens with.
+
+  Each round is a fresh session with no memory of the last one, which is deliberate —
+  a reviewer that remembers proposing a fix is a poor judge of that fix, for the same
+  reason the implementer does not review its own diff. The cost is that everything
+  round 2 knows has to be written down on the pull request by round 1. Two rules in
+  §10 close the gap that leaves: round 2 reads its own earlier *review bodies* rather
+  than only the still-open threads, because a resolved thread drops out of the default
+  view while the body stays; and it traces each fix outward for a moved contract rather
+  than trusting the fix-diff, because a fix that is correct in isolation and wrong for
+  one caller is exactly what the narrow scope would otherwise hide. Considered and
+  rejected (davitf, 2026-09-19): keeping one warm session subscribed to the pull request
+  across rounds. It buys memory at the price of the cold judgement above, and the memory
+  is the unreliable half — the container is reclaimed after a period of inactivity and
+  long context is compacted lossily, both of which bite hardest in the slow cases where
+  the memory would have mattered most.
