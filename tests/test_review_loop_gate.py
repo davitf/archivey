@@ -283,7 +283,7 @@ def test_a_collaborator_can_restart_a_parked_loop() -> None:
             event_name="issue_comment",
             labels=["loop:round-1", "loop:decision"],
             is_pull_request=True,
-            comment_body="Answered below — option B. @claude review please",
+            comment_body="@claude review please\n\nAnswered below — option B.",
             comment_author_association="OWNER",
         )
     )
@@ -322,7 +322,7 @@ def test_the_implementing_agent_can_say_it_has_finished(login: str) -> None:
             event_name="issue_comment",
             labels=["loop:round-1"],
             is_pull_request=True,
-            comment_body="Findings addressed and pushed. @claude review",
+            comment_body="@claude review\n\nFindings addressed and pushed.",
             comment_author_association="NONE",
             comment_author_login=login,
         )
@@ -461,15 +461,16 @@ def test_a_comment_on_an_issue_is_not_a_pull_request() -> None:
     assert not decision.run
 
 
-def test_the_trigger_phrase_agrees_with_the_other_workflow() -> None:
+def test_the_trigger_phrase_never_fires_both_workflows() -> None:
     """The two `issue_comment` workflows must partition comments, not overlap.
 
     `.github/workflows/claude.yml` runs the general-purpose assistant on any comment
     containing `@claude`, and skips the ones containing `@claude review` so this loop
     can have them. That skip is a GitHub `contains()` — a case-insensitive substring
-    test, with no regex available. So this gate's phrase has to be the same plain
-    substring: anything it matches more loosely fires both workflows on one comment,
-    and anything it matches more strictly fires neither.
+    test, with no regex available — so the gate must never accept a comment that
+    `contains()` would let through to the assistant. The gate being the stricter of
+    the two is fine and deliberate: a comment that merely writes about the phrase
+    then runs neither workflow, which is the outcome this loop wants.
     """
 
     def github_contains(body: str) -> bool:
@@ -479,15 +480,63 @@ def test_the_trigger_phrase_agrees_with_the_other_workflow() -> None:
     for body in [
         "@claude review",
         "@Claude Review please",
+        "\n@claude review",
         "answered — option B. @claude review",
         "@claude  review",  # two spaces: contains() says no, so the gate must too
-        "@claude reviewer",  # contains() says yes, so the gate must too
+        "@claude reviewer",
         "@claude what do you think?",
         "thanks @claude",
         "nothing to see here",
         "",
     ]:
-        assert bool(gate.COMMENT_TRIGGER.search(body)) == github_contains(body), body
+        if gate.COMMENT_TRIGGER.match(body):
+            assert github_contains(body), body
+
+
+def test_writing_about_the_trigger_is_not_asking_for_a_round() -> None:
+    """The loop's own paperwork quotes its trigger phrase, and must not trip on it.
+
+    All four bodies below are real shapes: the workflow's hand-back comments, a
+    reviewer's maintainer question, a dispositions comment, and this module's own
+    docstrings. The first three are posted on the pull request the loop is running
+    on, by accounts the gate trusts. Before the phrase was anchored, a dispositions
+    comment on #369 spent a forced round on the pull request that was fixing the loop.
+    """
+
+    for body in [
+        "Round 3 of 3 is spent. Comment `@claude review` to buy another round.",
+        "Options\n - A — treat a comment carrying `@claude review` as ordinary.",
+        "C3 — fixed in 3f24fa8. The gate now accepts `@claude review` from claude[bot].",
+        "I answered above; no need to re-run. (Not writing the trigger phrase here.)",
+    ]:
+        assert not gate.decide(
+            event(
+                event_name="issue_comment",
+                is_pull_request=True,
+                comment_body=body,
+                comment_author_association="OWNER",
+            )
+        ).run, body
+
+
+def test_asking_for_a_round_still_works_at_the_top_of_a_comment() -> None:
+    """The anchor must not cost the escape hatch it is guarding."""
+
+    for body in [
+        "@claude review",
+        "  @claude review\n\nanswered option B above.",
+        "@Claude Review — the decision is settled, carry on.",
+    ]:
+        decision = gate.decide(
+            event(
+                event_name="issue_comment",
+                is_pull_request=True,
+                comment_body=body,
+                comment_author_association="OWNER",
+            )
+        )
+        assert decision.run, body
+        assert decision.forced, body
 
 
 def test_manual_dispatch_respects_the_cap_unless_forced() -> None:

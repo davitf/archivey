@@ -60,6 +60,13 @@ jobs:
     # The gate refuses an unrelated comment anyway, but only after a runner has
     # started and checked the repository out. `issue_comment` fires on every comment
     # in the repository, so that is a runner per comment. Screen them here instead.
+    #
+    # Deliberately looser than the gate, which takes the phrase only at the top of a
+    # comment. `contains` has no anchor and no regex, and a body with a blank first
+    # line would fail `startsWith`, so a real trigger would be dropped here with
+    # nothing to say why. Let those through and let the tested gate refuse them: the
+    # cost of a comment that only quotes the phrase is a runner for a few seconds and
+    # no model tokens, because the review step sits behind `steps.gate.outputs.run`.
     if: >-
       github.event_name != 'issue_comment' ||
       contains(github.event.comment.body, '@claude review')
@@ -243,7 +250,8 @@ jobs:
           **The loop has stopped here.** Three review rounds are done and findings are still
           open, so this needs a person rather than another round.
 
-          Comment `@claude review` to run one more round anyway.
+          To run one more round anyway, comment `@claude review` — those two words first,
+          at the top of the comment.
           EOF
           .github/scripts/loop-status.sh "$PR" /tmp/status.md
 
@@ -332,7 +340,8 @@ jobs:
           **Round $ROUND did not finish.** The review stopped before it reached a verdict, so
           nothing was asked of Cursor and no round was counted.
 
-          Comment \`@claude review\` to try again.
+          To try again, comment \`@claude review\` — those two words first, at the top of
+          the comment.
           EOF
             # No sha: nothing was reviewed, so the scan must be free to try this
             # commit again once the hold is cleared. Passing one here would record it
@@ -351,7 +360,7 @@ jobs:
 
           # Every park that predates this round is now stale, and the branches below
           # set the real state. Without this the loop restarts exactly once: answering
-          # a `loop:decision` and commenting `@claude review` runs the round, but the
+          # a `loop:decision` and opening a comment with `@claude review` runs the round, but the
           # label survives it, so the next round is refused and nothing says why.
           for stale in "loop:decision" "loop:hold" "loop:done"; do
             gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$stale" || true
@@ -376,7 +385,8 @@ jobs:
 
           The options, and what each one costs, are in the review above. Nothing further happens
           on this pull request until this is answered. Answer it in the review thread, then
-          comment \`@claude review\` to restart the loop.
+          comment \`@claude review\` to restart the loop — those two words first, at the top
+          of the comment.
           EOF
               ;;
 
@@ -391,7 +401,8 @@ jobs:
           Cursor has been asked to work through them, but nothing will review the result: the
           loop is finished and this is a person's from here.
 
-          Comment \`@claude review\` to buy another round.
+          To buy another round, comment \`@claude review\` — those two words first, at the
+          top of the comment.
           EOF
               else
                 cat > /tmp/status.md <<EOF

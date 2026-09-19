@@ -15,8 +15,8 @@ questions a review cannot answer for itself — is the one thing the loop stops 
 Linear issue ──@Cursor──► Cursor implements ──► opens a draft pull request
                                                       │
                              ┌────────────────────────┘
-                             │  Cursor says it has finished: out of draft, or an
-                             │  `@claude review` comment. Failing that, ten minutes
+                             │  Cursor says it has finished: out of draft, or a
+                             │  comment starting `@claude review`. Failing that, ten minutes
                              ▼  with no new commit
                   Claude reviews (round N of 3)
                              │
@@ -32,7 +32,7 @@ Linear issue ──@Cursor──► Cursor implements ──► opens a draft pu
 | Issue → implementation | `@Cursor` in a Linear comment, or assigning the issue to Cursor. Triage rules can do it automatically | Linear, team ARC |
 | Implementation → review | The implementing agent taking the pull request out of draft. Failing that, the branch going ten minutes without a new commit | [`.github/workflows/review-loop.yml`](../.github/workflows/review-loop.yml) |
 | Review → addressing | An `@cursor` comment the workflow posts after each round of findings | Same workflow |
-| Addressing → next review | An `@claude review` comment from the implementing agent. Failing that, the same ten minutes of quiet | Same workflow |
+| Addressing → next review | A comment from the implementing agent *starting* with `@claude review`. Failing that, the same ten minutes of quiet | Same workflow |
 | Any step → the maintainer | A `loop:decision` label and a plain-language question on the pull request | Same workflow |
 
 **The `@cursor` comment is the part worth understanding.** Cursor sometimes picks a
@@ -56,8 +56,10 @@ which the repo's own instructions tell it to do as its last action:
 
 - **Taking the pull request out of draft**, after the first implementation. Cursor
   opens drafts anyway, so this costs nothing to ask for.
-- **Commenting `@claude review`**, after addressing a round of findings, when the pull
-  request is already out of draft and has no second draft transition to offer.
+- **Opening a comment with `@claude review`**, after addressing a round of findings,
+  when the pull request is already out of draft and has no second draft transition to
+  offer. The phrase counts only at the top of a comment — see
+  [Why the phrase has to come first](#why-the-phrase-has-to-come-first).
 
 Both start a round immediately. [`address-linear-issue`](../.claude/skills/address-linear-issue/SKILL.md)
 and [`address-review-findings`](../.claude/skills/address-review-findings/SKILL.md) §7
@@ -88,6 +90,30 @@ Draft status is otherwise ignored, and `loop:off` is what takes a pull request o
 good. A draft nobody ever marks ready still gets reviewed once it goes quiet, because
 waiting for a human to click a button is the thing the loop exists to avoid.
 
+### Why the phrase has to come first
+
+The gate takes `@claude review` only at the start of a comment, leading whitespace
+aside. That is not tidiness: this loop's paperwork quotes its own trigger constantly.
+The hand-back comments the workflow posts say "comment `@claude review` to buy another
+round". A review packet puts the phrase inside a maintainer question about the phrase.
+A dispositions comment quotes it back while explaining what was fixed.
+
+On 2026-09-19 all three shapes were live on #369, the pull request that was building
+the loop. The reviewer's packet tripped the guard at 12:15 and the dispositions comment
+tripped it at 12:24 — that second one got past the gate as a *forced* round, because it
+was posted from the maintainer's account, and started a full Claude review of the pull
+request fixing the loop. It was cancelled by hand.
+
+Anchoring separates asking for a round from writing about one. Nobody opens a comment
+with the phrase by accident, and an agent told to post it first has no trouble doing so.
+
+The job-level `if:` in the workflow stays the loose `contains()`, on purpose. GitHub
+expressions have no anchor and no regex, and `startsWith` would drop a real trigger
+whose body begins with a blank line, silently. So the workflow lets anything mentioning
+the phrase reach the gate, and the gate — which is unit-tested — decides. A quoting
+comment costs a runner for a few seconds and no model tokens, because the review step
+sits behind `steps.gate.outputs.run`.
+
 ### Who may say it
 
 `@claude review` from a repository collaborator is a *forced* round: it runs past the
@@ -113,7 +139,7 @@ is not something an agent presses.
 **A round that runs clears the parks that predate it.** `loop:decision`, `loop:hold`
 and `loop:done` are all removed as the verdict is applied, and the verdict then sets
 the real state. Without that the loop restarts exactly once: answering the question and
-commenting `@claude review` runs the round, but `loop:decision` survives it and the
+opening a comment with `@claude review` runs the round, but `loop:decision` survives it and the
 round after is refused with nothing on the pull request saying why.
 
 ## Round state is labels
@@ -162,7 +188,8 @@ commenting `@claude review`.
   rather than letting Cursor guess at the answer while the question is open. The
   status comment carries the question in plain language; the packet with the options
   and their costs stays in the review.
-- **Answer, then restart.** Reply in the review thread, then comment `@claude review`.
+- **Answer, then restart.** Reply in the review thread, then post a comment that
+  *starts* with `@claude review`.
   That clears the park and buys a round immediately, without waiting for a scan,
   including a fourth one past the cap.
 - **Three rounds, then a person.** Round 3 says so as it posts, rather than leaving it
@@ -175,11 +202,16 @@ commenting `@claude review`.
 `.github/workflows/claude.yml`, written by the Claude GitHub App installer, answers
 `@claude` on any comment. This loop listens to the same `issue_comment` event and wants
 `@claude review` for itself, so `claude.yml` carries a `!contains(…, '@claude review')`
-guard and the two split the traffic exactly.
+guard and the two split the traffic.
 
-"Exactly" is the requirement, not a nicety: a phrase both match starts two agents on one
-comment, and a phrase neither matches is a comment that silently does nothing. GitHub
-expressions have no regex, so the loop's trigger is the same plain, case-insensitive
+The requirement is that they never both fire, which means the loop's trigger has to be
+no looser than `claude.yml`'s skip. It is now strictly tighter: `claude.yml` skips any
+comment holding the phrase anywhere, and the loop takes it only at the top. A comment
+that merely writes about the phrase therefore runs neither workflow, which is exactly
+what [Why the phrase has to come first](#why-the-phrase-has-to-come-first) wants.
+`tests/test_review_loop_gate.py` asserts the one direction that matters — nothing the
+gate accepts is something `claude.yml` would also answer. GitHub
+expressions have no regex, so `claude.yml`'s half is the same plain, case-insensitive
 substring that `contains()` tests, and `tests/test_review_loop_gate.py` asserts the two
 agree on a table of near misses. Re-running the App installer overwrites `claude.yml`
 and drops the guard.
@@ -226,7 +258,7 @@ what make the state readable in the pull request list.
 
 Scheduled workflows only run from the default branch, so the scan does nothing until
 this file's workflow is merged to `main`. A branch can still be reviewed before then by
-commenting `@claude review` on it.
+opening a comment on it with `@claude review`.
 
 ## Known rough edges
 

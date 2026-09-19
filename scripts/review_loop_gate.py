@@ -72,14 +72,23 @@ ROUND_LABEL = re.compile(r"^loop:round-(\d+)$")
 #: Branch prefix Cursor's cloud agents use, which is what auto-enrols a new PR.
 CURSOR_BRANCH_PREFIX = "cursor/"
 
-#: What a human comments to force another round.
+#: What a human comments to force another round: the phrase, at the top of the comment.
 #:
-#: This is a plain substring, matched case-insensitively, because it has to agree
-#: exactly with the `contains(github.event.comment.body, '@claude review')` guard in
-#: `.github/workflows/claude.yml` — GitHub expressions have no regex, and `contains`
-#: is case-insensitive. The two workflows both listen to `issue_comment`, so a phrase
-#: either of them matches loosely is a phrase they would both act on.
-COMMENT_TRIGGER = re.compile(r"@claude review", re.IGNORECASE)
+#: The position is the whole point. The loop's own prose quotes its trigger — the
+#: hand-back comments below say "Comment `@claude review` to buy another round", a
+#: review packet puts the phrase in a maintainer question, a dispositions comment
+#: quotes it back while explaining what it does. On 2026-09-19 that happened for real:
+#: a dispositions comment on #369 spent a forced round reviewing the very pull request
+#: that was fixing the loop, and the reviewer's own packet had tripped the same guard
+#: nine minutes earlier. Anchoring at the start separates asking for a round from
+#: writing about one, because nobody opens a comment with the phrase by accident.
+#:
+#: Leading whitespace is allowed; `\b` keeps "@claude reviewer" out. It stays
+#: case-insensitive to match `contains()` in `.github/workflows/claude.yml`, which
+#: skips any comment holding this substring anywhere so the assistant and the loop
+#: never both answer one comment. That guard being the looser of the two is the safe
+#: direction: a comment that merely mentions the phrase now runs neither workflow.
+COMMENT_TRIGGER = re.compile(r"\s*@claude review\b", re.IGNORECASE)
 
 #: Who may force a round by commenting.
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
@@ -177,7 +186,7 @@ def _classify(event: dict) -> Decision:
     if event_name == "issue_comment":
         if not event.get("is_pull_request"):
             return Decision(False, done, "comment is not on a pull request")
-        if not COMMENT_TRIGGER.search(event.get("comment_body") or ""):
+        if not COMMENT_TRIGGER.match(event.get("comment_body") or ""):
             return Decision(False, done, "comment does not ask for a review")
         if nxt > MAX_FORCED_ROUNDS:
             # Ahead of the trust checks: this one holds for everybody.
