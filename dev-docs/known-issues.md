@@ -108,6 +108,17 @@ py7zr 1.1.3 lists the 2 GiB archive and then raises the same exception from
 `bcj.BCJDecoder(size)` (`compressor.py:467`), passing `unpacksizes[i]` with no bound. The
 ceiling is `pybcj`'s API surfacing in every caller, not an archivey-specific mistake.
 
+Its staging is the same shape as archivey's: a BCJ coder beside LZMA2 is folded into the
+liblzma chain, and beside anything else it is handed to `pybcj` instead (the "hack for
+LZMA1+BCJ which should be native+alternative" at `compressor.py:634`). **But its three
+branch-filter lists — `compressor.py:620`, `:767` and `:836` — name x86, ARM, ARMT, PPC
+and SPARC and omit IA64**, so LZMA1+IA64 is the one combination py7zr still sends through
+a single combined chain. Measured 2026-09-19 on 2911 bytes written by `7z a -m0=IA64
+-m1=LZMA`: the five listed filters extract correctly, and IA64 **hangs** — the truncated
+look-ahead never arrives, `out_remaining` never reaches zero, and `py7zr.py:1507`'s
+`while out_remaining > 0` spins at 100% CPU with no error and no timeout. archivey reads
+all six correctly. Nothing has been reported upstream; that is the maintainer's call.
+
 ### What archivey does now
 
 A BCJ coder inside an LZMA2 chain is folded into that chain, as before. A BCJ coder staged
