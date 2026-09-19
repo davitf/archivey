@@ -84,18 +84,12 @@ already done.
 
 ## The gate, before every push
 
-```bash
-./scripts/check.sh --fix    # ruff, pyrefly, ty, openspec, docs — runs all, then lists failures
-./scripts/test.sh           # the everyday [all] leg
-```
-
-Run `./scripts/test.sh --all-configs` when behaviour depends on extras or versions —
-that is the `CONTRIBUTING.md` §"Before pushing…" three-config gate. Report which legs
-you ran and what they returned; if you skipped one, say so rather than implying it
-passed.
-
-If this PR finishes an OpenSpec change, archive it — CI checks this. If the design is
-still moving under review, leave the trailing task unchecked and say so in your reply.
+[`address-review-findings` §5](../address-review-findings/SKILL.md) — the two scripts, the
+three-config leg, the cross-platform traps and the OpenSpec archiving step. Do not copy it
+back here: the one thing a generic watcher gets wrong is running `ruff` alone, and the
+defaults table above already carries that, so a second copy of the gate is below this
+file's bar. Report which legs you ran and what they returned; if you skipped one, say so
+rather than implying it passed.
 
 ## Never
 
