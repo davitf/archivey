@@ -65,6 +65,7 @@ from archivey.internal.backends.rar_parser import (
 )
 from archivey.internal.backends.rar_unrar import (
     _unrar_glob_demux_ok,
+    _unrar_mask_for,
     _unrar_mask_match,
     decompress_rar3_blob,
     open_unrar_p,
@@ -1271,9 +1272,14 @@ class RarReader(BaseArchiveReader):
         headers. Zero when the presented name has no glob characters. History
         rows are omitted unless ``version_control`` is set, matching ``unrar``
         (``-ver`` is passed only for a history-row target).
+
+        Matched against :func:`_unrar_mask_for` of the presented name, not the
+        name itself: that is the string ``unrar`` was given, and sizing the skip
+        against a wider mask would step past bytes the pipe never carried.
         """
         if "*" not in presented and "?" not in presented:
             return 0
+        mask = _unrar_mask_for(presented)
         prefix = 0
         for member in self._members:
             raw = member._raw
@@ -1281,7 +1287,7 @@ class RarReader(BaseArchiveReader):
                 continue
             if raw.is_file_version_history() and not version_control:
                 continue
-            if not _unrar_mask_match(_presented_filename(raw), presented):
+            if not _unrar_mask_match(_presented_filename(raw), mask):
                 continue
             if member is target:
                 return prefix

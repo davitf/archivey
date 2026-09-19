@@ -281,6 +281,29 @@ def _password_stdin_bytes(password: str | bytes) -> bytes:
     return password.encode("utf-8", errors="surrogateescape")
 
 
+def _unrar_mask_for(member: str) -> str:
+    """The ``-n`` mask archivey sends for a member name: every ``*`` narrowed to ``?``.
+
+    A member whose stored name contains ``*`` or ``?`` is itself a glob once it is
+    handed to ``unrar -n``, so the pipe carries every sibling the name happens to
+    match and archivey has to size a skip past them. Sending the name verbatim makes
+    that mask a hostile one: ``unrar`` 7.00's own matcher backtracks exponentially on
+    a name that alternates ``*`` with literals, and no archivey-side change reaches
+    a cost paid inside the subprocess.
+
+    Substituting ``?`` for ``*`` removes it. ``?`` matches exactly one character, so
+    the mask is fixed-length: it still matches the member itself (same length, a ``?``
+    wherever the name had a ``*``) and it matches a subset of what the ``*`` mask did,
+    which only ever means fewer siblings to skip. With no ``*`` left there is nothing
+    for either matcher to backtrack on. ``dev-docs/formats/rar.md`` §6 has the numbers.
+
+    Whatever this returns is the mask ``unrar`` actually sees, so the skip in
+    ``RarReader._unrar_glob_prefix`` must be sized against this string and not
+    against the presented name.
+    """
+    return member.replace("*", "?")
+
+
 def _member_include_switch(member: str) -> str:
     """Build a safe ``unrar`` include-mask switch for one member name.
 
@@ -295,14 +318,15 @@ def _member_include_switch(member: str) -> str:
 
     ``unrar`` masks treat ``*`` and ``?`` as wildcards with no escape (``[]`` are
     literal, ``\\`` does not escape). A name whose globs are confined to the
-    basename and that contains no backslash is still passed as the mask;
+    basename and that contains no backslash is still passed as a mask, via
+    :func:`_unrar_mask_for`, which narrows ``*`` to ``?``;
     ``RarReader._open_member`` skips other matching members using the parsed
     member list and :func:`_unrar_mask_match`. A glob in a directory component,
     or a backslash in the presented name, raises ``UnsupportedFeatureError``
     instead — :func:`_unrar_mask_match` is not faithful there, and Windows
     ``unrar`` treats ``\\`` as a separator (see :func:`_unrar_glob_demux_ok`).
     """
-    return "-n./" + member
+    return "-n./" + _unrar_mask_for(member)
 
 
 def _unrar_glob_demux_ok(presented: str) -> bool:
@@ -323,63 +347,50 @@ def _unrar_glob_demux_ok(presented: str) -> bool:
 
 
 def _unrar_component_match(name: str, mask: str) -> bool:
-    """Glob-match one path component: ``*``/``?`` wildcards, ``[]`` literal.
+    """Match one path component against a ``?``-only ``unrar`` mask.
 
-    Matched by hand rather than through a compiled regex, because spelling ``*`` as
-    ``.*`` backtracks exponentially on a mask that alternates wildcards with literals
-    the subject can satisfy many ways — and both operands come from the archive, so a
-    hostile member name picks them. This two-pointer walk retries from the last ``*``
-    with one more character consumed, which is O(len(name) x len(mask)) at worst and
-    has no exponential term. ``dev-docs/formats/rar.md`` §6 carries the measurements.
+    Every mask reaching here is built by :func:`_unrar_mask_for`, which leaves no
+    ``*`` behind, so matching is a fixed-length walk with no backtracking: equal
+    lengths, and each mask character either is ``?`` or equals the name character.
+    Measured against ``unrar`` 7.00, ``?`` consumes exactly one character — it does
+    not match the empty string and there is no DOS-style extension special case.
 
     ``[`` and ``]`` are ordinary characters here, unlike :mod:`fnmatch`; ``\\`` does
     not escape; and ``?`` matches any single character, newline included.
+
+    A ``*`` in the mask would mean :func:`_unrar_mask_for` was bypassed and the skip
+    is about to be sized against a mask ``unrar`` never saw, so it is a bug rather
+    than something to match.
     """
-    n_len, m_len = len(name), len(mask)
-    n_i = m_i = 0
-    # Position of the last ``*`` in the mask, and how much of ``name`` it had
-    # consumed when we passed it; -1 means we have not seen one yet.
-    star_m = -1
-    star_n = 0
-    while n_i < n_len:
-        # The wildcard arm must come first. This function exists for names that
-        # themselves contain ``*`` and ``?`` — that is the whole glob-demux case —
-        # so an equality test placed ahead of it would match a mask ``*`` against a
-        # literal ``*`` in the name, consume both as one character, and never record
-        # a backtrack point.
-        if m_i < m_len and mask[m_i] == "*":
-            star_m = m_i
-            star_n = n_i
-            m_i += 1
-        elif m_i < m_len and (mask[m_i] == "?" or mask[m_i] == name[n_i]):
-            n_i += 1
-            m_i += 1
-        elif star_m >= 0:
-            # Backtrack: let the last ``*`` swallow one more character.
-            star_n += 1
-            n_i = star_n
-            m_i = star_m + 1
-        else:
-            return False
-    # Trailing ``*``s may match empty; anything else left over is a mismatch.
-    while m_i < m_len and mask[m_i] == "*":
-        m_i += 1
-    return m_i == m_len
+    if "*" in mask:
+        raise AssertionError(
+            "unrar mask still contains '*'; build it with _unrar_mask_for"
+        )
+    if len(name) != len(mask):
+        return False
+    return all(m == "?" or m == n for n, m in zip(name, mask))
 
 
 def _unrar_mask_match(name: str, mask: str) -> bool:
     """Match ``name`` the way ``unrar -n`` does.
 
     No wildcards: exact path (``./`` already stripped by the caller of ``-n./``).
-    With ``*``/``?``: ``MATCH_WILDSUBPATH`` — the last mask component matches the
-    basename at any depth, and a non-wildcard directory prefix constrains which
-    subtrees. ``[]`` are literal (unlike Python ``fnmatch``). On Windows, ``unrar``
-    folds case; we do too so the skip stays aligned with the pipe.
+    With ``?`` (the only wildcard :func:`_unrar_mask_for` leaves in a mask):
+    ``MATCH_WILDSUBPATH`` — the last mask component matches the basename at any
+    depth, and a non-wildcard directory prefix constrains which subtrees. ``[]``
+    are literal (unlike Python ``fnmatch``). On Windows, ``unrar`` folds case; we
+    do too so the skip stays aligned with the pipe.
 
     Not a source-faithful port: a glob in a directory component over-matches
-    (``d*/x.txt`` vs ``aaa/x.txt``), and folding ``\\`` to ``/`` collides a
+    (``d?/x.txt`` vs ``aaa/x.txt``), and folding ``\\`` to ``/`` collides a
     Linux literal backslash with a separator. Callers must refuse those names
     via :func:`_unrar_glob_demux_ok` before using this to size a skip.
+
+    One more divergence is Windows-only and not guarded: ``?`` is length-sensitive,
+    and Windows ``unrar`` counts UTF-16 code units where Python counts code points,
+    so a sibling holding a non-BMP character can be counted a match here and not
+    there. It needs a glob member name and an astral sibling of exactly the wrong
+    length; the CRC check is the net.
     """
     if mask.startswith("./"):
         mask = mask[2:]
