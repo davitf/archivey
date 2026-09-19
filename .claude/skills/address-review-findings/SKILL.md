@@ -97,7 +97,21 @@ For each one, the disposition is exactly one of:
 | **Fix** | You agree; it is in scope | Code change + a reply |
 | **Disproven** | You traced it; the code is correct | A reply with the trace — and see below |
 | **Escalate** | Needs a human call | §6, one at a time |
-| **Defer** | Real, out of scope for this PR | `review/backlog.md` or `dev-docs/IDEAS.md` with a reason — *recorded*, not just mentioned |
+| **Defer** | Real, out of scope for this PR — **never available for a 🟢 nit** | `review/backlog.md` or `dev-docs/IDEAS.md` with a reason — *recorded*, not just mentioned |
+
+**A 🟢 nit has no deferred disposition.** In this repo a nit is *small*, not *optional*:
+it is fixed on this PR, or the maintainer waives it explicitly and you record that waiver
+as theirs (§6). "Leave it for a follow-up" is not something you may choose — nobody comes
+back for it and the next agent starts with no memory of this round. The reviewer's side of
+this rule is [addendum §0 Verdicts](../code-review-skill/reference/archivey-review-addendum.md);
+they match deliberately, and where you think a nit really is out of scope, that is an
+escalation (§6), not a disposition.
+
+**Scope, when the finding is a pre-existing bug.** If it lives in the mechanism this PR
+already edits and the fix is proportionate, fix it here — that is the maintainer's
+standing ruling (#342, #344, #349), not a scope question to re-ask. What is genuinely out
+of scope is a *sweep*: the same mistake across files this PR does not touch, or a rename
+rippling through specs and archived changes (#339, #353). Defer that, with a written home.
 
 **A disproven finding is rarely nothing.** The addendum's routing rule runs in this
 direction too: if a careful reviewer read this code and concluded it was broken, ask why.
@@ -137,6 +151,12 @@ Standard repo rules apply — they are not relaxed because the change is review-
   actually pins the bug by reverting the fix and watching it fail. A guardrail test that
   passes against the unfixed code is worse than no test; that has happened here, when a
   test used a TAR for a bug only reachable on backends with an upfront index.
+- **The same proof for any guard you add.** A property test, inventory test, static guard
+  or new assertion is done only once you have broken the thing it names and watched it
+  fail — and your reply says which mutation you applied
+  (`CONTRIBUTING.md` §Testing standards). This repo has shipped a property test that
+  passed a `return block_start` mutant and an inventory test that passed vacuously; both
+  reported coverage that did not exist.
 - **Fix the cause, not the symptom.** If the same mistake could exist elsewhere, look
   there in the same change.
 - **Contract moves ⇒ spec and docs move with it**, in the same PR. If a fix contradicts
@@ -146,7 +166,17 @@ Standard repo rules apply — they are not relaxed because the change is review-
   shortcut needs a recorded, justified decision.
 - **Consistency across documents.** On #236 a single residual was described four different
   ways across the proposal, `tasks.md`, the threat model, and a spec table. When you change
-  a claim, grep for every place that states it.
+  a claim, grep for every place that states it. On #356 the implementer found the claim had
+  propagated to `design.md` and `proposal.md` as well: "fixing only the task would have
+  left the source of it."
+- **Re-read the comments around every hunk before you push.** The largest finding category
+  in this repo's reviews is comments that no longer match the code: one naming a call site
+  the change deleted, one explaining a case the change made unreachable, one carrying
+  history ("previously", "the old implementation", "this change", a parcel or PR number),
+  or one claiming a bound the code does not guarantee. The rule is
+  `CONTRIBUTING.md` §Coding standards; the point here is that it is cheapest to catch in
+  the files you just edited, and it is the reviewer's job only because it is wording, which
+  no checker can judge.
 
 ---
 

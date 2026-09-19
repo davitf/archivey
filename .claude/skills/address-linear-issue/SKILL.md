@@ -130,9 +130,11 @@ You are a fresh reviewer. Edit nothing.
    `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`
    (especially §0 output shape and §10 posting). A bare `/code-review` is a
    host builtin — do not use it.
-2. Review PR <url> (branch <name>, HEAD <sha>) against main.
+2. Review PR <url> (branch <name>, HEAD <sha>) against main — or, on a
+   re-review, against the HEAD you last reviewed, per addendum §10.
    Linear issue <id>: <title>. <one-line summary of the intended change>.
-   Previous rounds: <IDs, dispositions and HEADs — or "first review">.
+   Previous rounds: <IDs, dispositions, HEADs and what each round measured —
+   or "first review">.
 3. Post per addendum §10. Keep prior finding IDs stable; number new findings
    from the next free ID. A re-review opens with the §10 status table over
    those IDs. End block 3 with exactly:
@@ -164,7 +166,7 @@ on the PR.
 
 This session owns dispositions for the review it commissioned until it stops.
 Do not wait for steward. Steward skips a second round only when a disposition
-comment (opener names `address-review-findings`) is already on those F-IDs.
+comment (opener names `address-review-findings`) is already on those finding IDs.
 Two agents can still start in the same minute before either replies; that race
 is accepted — do not invent a label or marker to close it.
 

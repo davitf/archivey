@@ -192,6 +192,14 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   `openspec/specs/` that describe it in the same change. The one exception is the
   pause-and-ask rule below: when a cleanup would resolve a genuine design discrepancy,
   surface it instead of silently picking a direction.
+- **A pre-existing bug in code this change already touches is fixed here.** Finding one
+  mid-change is not a reason to open a ticket and move on: if it lives in the mechanism
+  you are already editing and the fix is proportionate, it lands in this PR, where the
+  reviewer can see it against the code it belongs to. What does *not* land here is a
+  **sweep**: the same mistake across files this change does not touch, or a rename that
+  ripples through specs and archived changes. That is a follow-up, recorded in
+  `review/backlog.md` or `dev-docs/IDEAS.md` with a reason. The line is whether you are
+  still in the code under review, not whether the bug is old.
 - **Leave the code self-explanatory.** The *resulting* tree — names, structure, and
   nearby comments — must make sense to a future editor who never saw the PR. They will
   read the current code, not the diff or the OpenSpec change / `design.md` / PR body
@@ -205,6 +213,21 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   complex decision, a comment **may point** at a spec, `dev-docs/decisions/`, architecture
   note, exploration, or OpenSpec change — but **summarize the reason inline whenever
   possible** so the pointer is optional depth, not the only explanation.
+- **Comments describe the code as it is, not how it got there.** A comment in `src/` is
+  read by someone who never saw the change that produced it, so it must not depend on
+  that change being remembered. Three things this rules out:
+  - **History.** "Previously", "the old implementation", "this change", "we used to",
+    a parcel or PR number, or a correction of an argument nobody else can see. If the
+    superseded approach is worth recording, it goes in `dev-docs/decisions/` or the
+    format handbook, not in a comment next to the code that replaced it.
+  - **Claims stronger than the code.** A comment that states a bound, a ratio, or an
+    invariant asserts something a reader will rely on. Say what is actually guaranteed,
+    or measure it — "roughly 1:1 with the header" where the proven bound is 4× is a
+    defect, not a rounding.
+  - **References to what you just removed.** After an edit, re-read the comments in the
+    files you touched: a comment naming a deleted call site, or explaining a case the
+    change made unreachable, is now wrong. This is the single most common finding in
+    this repo's reviews, and it is cheapest to catch before pushing.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
 - **Type-checker suppressions must be justified, and are a last resort.** A bare
@@ -221,6 +244,24 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   An unjustified or non-specific suppression should be treated as a review blocker. The
   library is kept clean on **both** Pyrefly and ty precisely so neither checker's blind
   spot can hide an error the other would catch — don't defeat that with a suppression.
+- **Every resource bound is reachable from the public config.** Guards against hostile
+  input belong in `ListingLimits` / `ExtractionLimits` on `ArchiveyConfig`, where a user
+  who legitimately needs a bigger archive can raise them — including to `UNLIMITED`. Do
+  **not** add a second ceiling as a module constant inside a parser or reader: it is
+  invisible from the API, it cannot be lifted, and it turns a real archive into an error
+  the caller has no way to accept. If a bound genuinely cannot be expressed in the config
+  (it is structural, not a policy), say why in a comment at the constant and treat it as
+  a contract change: it needs a spec row, not a quiet `_MAX_…`.
+- **Never silently drop or clamp data.** Truncating an over-long read, clamping a seek
+  past a boundary, or discarding a consumed count desynchronizes the stream for every
+  later caller and turns a detectable error into wrong bytes. Raise, with a message that
+  says which invariant was violated. Where `streamtools` cannot raise an `ArchiveyError`,
+  `ValueError` is the right type (maintainer decision on #326).
+- **Picking an exception type means checking what catches it.** In this codebase an
+  exception type is control flow: `TruncatedError` from the wrong layer aborts
+  password-candidate iteration, and a `CorruptionError` where a wrong-password error was
+  expected ends the same iteration early. Before choosing or changing a type, grep for
+  what catches it upstream and say in the PR what you found.
 - **Exception translation is specific.** All errors caused by archive problems must
   surface as `ArchiveyError` subclasses, via each reader's per-library translator:
   - Map *known* third-party exceptions to the right `ArchiveyError`
@@ -267,6 +308,14 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
 - **Fixing a bug? Red–green TDD.** First write a test that **reproduces** the bug and
   **fails**; then make it pass with the fix. The failing test is the proof the bug
   existed and that you fixed *that* bug.
+- **A guard test must be shown to fail.** Red–green is not only for bug fixes. A new
+  property test, inventory test, static guard, or assertion added to defend an invariant
+  is done only once you have broken the thing it names and watched it fail. Write down in
+  the PR which mutation you applied. A test that passes against the unfixed or
+  un-guarded code is worse than no test, because it reports coverage that does not
+  exist — this repo has shipped a property test that passed a `return block_start`
+  mutant, an inventory test that passed vacuously, and a test whose fixture could not
+  reach the path it named.
 
 ### Coverage-guided fuzz (Atheris)
 

@@ -53,7 +53,9 @@ pass 2.
 
 Canonical list: addendum §8 and the checklist point here rather than restating it.
 
-1. Scope: `git diff main...HEAD` (or the paths / PR named); size (>400 lines? ask to split)
+1. Scope: `git diff main...HEAD` (or the paths / PR named); size (>400 lines? ask to
+   split). **Re-reviewing?** Scope is `<the SHA you last reviewed>..HEAD` plus the open
+   threads, not the whole PR again (addendum §10)
 2. CI status if posted (`ruff`, pyrefly/ty, pytest) — glance only, **do not re-run**
    (addendum §10); enough to know whether failures are in-scope. Not posted → say so,
    don't infer
@@ -94,9 +96,13 @@ checklist. Then write the §0 three-block report.
 Non-blocking annotations: 💡 `[suggestion]` · 📚 `[learning]` · 🎉 `[praise]`.
 Those three tiers are the standard across every guide here. Pair each
 finding with a confidence tag — `CONFIRMED` / `PLAUSIBLE` / `DISPROVEN` (addendum §0).
+Finding IDs carry your own initial (`K1…` from Claude Code, `C1…` from Cursor) so two
+reviewers on one PR cannot collide (addendum §10).
 
 **Verdict.** “Only nits left” is not an approval here: nits get fixed before merge, or the
-verdict is *approve conditional on the listed fixes* (addendum §0 Verdicts). A review posted
+verdict is *approve conditional on the listed fixes* (addendum §0 Verdicts). From round 3,
+if nothing above 🟡 is open, that conditional approval is the verdict — do not open another
+round to confirm wording (§0 Round budget). A review posted
 through the maintainer's own account cannot carry a GitHub `APPROVE` event at all — expected,
 not a problem to report: the verdict lives in the text (addendum §10).
 

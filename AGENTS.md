@@ -346,7 +346,8 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    the maintainer, send **decision packets only** unless they ask for the full handoff
    ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet). Rules are
    in `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`; **§10
-   covers posting** — stable finding IDs (`F1`, `F2`, … kept across re-reviews), located
+   covers posting** — stable finding IDs prefixed with the reviewer's own initial (`K1`,
+   `K2`, … from Claude Code; `C1`, … from Cursor), kept across re-reviews, located
    findings as inline comments so they can be resolved individually, blocks 1 and 3 in the
    body, and a status table over the previous IDs when re-reviewing.
 2. **The implementing agent works through them** with `address-review-findings`
@@ -375,6 +376,15 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    the ticket and fixes it; a *fresh* Cursor Grok (standard — never the fast variant)
    subagent runs `code-review-skill` and posts to the PR; the implementing agent then
    runs `address-review-findings`. Do not review your own diff.
+
+**Nothing from the internal tracker goes into anything public.** This repository is
+public; the tracker is not. Do not put a tracker URL or an issue id in a PR title or
+body, a review or inline comment, a commit message, or a file in the repo — the link is
+dead weight for anyone reading the PR, since they cannot open it, and it publishes the
+internal layout. Write "tracked internally" instead. Where the finding deserves a durable
+in-repo home, that is `review/backlog.md` under "Parked from PR reviews", with the
+reasoning in the format handbook (`dev-docs/formats/<fmt>.md` §6). The cross-reference
+runs one way only: put the PR URL on the tracker item, never the reverse.
 
 Two things about this repo make the handoff sharper than it looks:
 

@@ -13,7 +13,9 @@ disposition. The full process lives in the skill:
    post through the maintainer's account, so a `davitf` comment *without* an agent
    attribution footer is the human.
 2. **Ledger first, edits second.** Every finding gets an ID and exactly one disposition:
-   fix / disproven / escalate / defer-with-a-written-home. Nothing is dropped silently.
+   fix / disproven / escalate / defer-with-a-written-home. Nothing is dropped silently,
+   and **defer is never available for a 🟢 nit** — a nit is fixed here or waived by the
+   maintainer.
 3. **Verify before acting.** Reproduce the finding. Automated reviewers here do produce
    false positives, and real findings are often narrower and sharper than described.
 4. **Fix the cause, red–green, specs and docs move with the contract.** If an ad-hoc
