@@ -331,8 +331,13 @@ def test_a_comment_can_buy_a_fourth_round() -> None:
     )
     assert decision.run
     assert decision.round == 4
-    # Whoever asked can ask again, so this round must not announce itself as the last.
-    assert not decision.final
+    # And it is still past the automatic cap. This assertion used to read `not final`,
+    # on the reasoning that whoever asked could ask again — true, and beside the point:
+    # `final` is what puts `loop:done` back after the verdict step clears the stale
+    # parks, so leaving it false took the label off a pull request the scan and the
+    # bots both refuse. `test_a_bought_round_past_the_cap_is_still_the_last_automatic_one`
+    # covers the consequence.
+    assert decision.final
 
 
 @pytest.mark.parametrize("login", ["cursor[bot]", "claude[bot]"])
@@ -611,3 +616,94 @@ def test_the_script_reads_stdin_and_writes_json() -> None:
     assert payload["run"] is True
     assert payload["round"] == 2
     assert payload["pr"] == 365
+
+
+def test_a_bought_round_past_the_cap_is_still_the_last_automatic_one() -> None:
+    """`final` means the automatic loop is spent, not that nobody can buy another.
+
+    A forced round used to leave `final` false on the reasoning that whoever bought it
+    could buy another. But the workflow clears every stale park as a round runs and
+    re-adds `loop:done` only when `final` is set, so a bought round 4 with findings took
+    `loop:done` off and never put it back: the scan refuses it (`nxt > MAX_ROUNDS`), a
+    bot's comment refuses it, and the status comment promised a round that could not
+    come. `loop:done` marks the end of the *automatic* loop, which round 4 is past by
+    definition however it was bought.
+    """
+    for event_name, extra in [
+        ("issue_comment", {"comment_author_association": "OWNER"}),
+        ("workflow_dispatch", {"force": True}),
+    ]:
+        decision = gate.decide(
+            event(
+                event_name=event_name,
+                is_pull_request=True,
+                comment_body="@claude review",
+                labels=["loop:round-3", "loop:done"],
+                **extra,
+            )
+        )
+        assert decision.run, event_name
+        assert decision.round == 4, event_name
+        assert decision.forced, event_name
+        assert decision.final, event_name
+
+    # Below the cap a bought round is genuinely not the last one.
+    early = gate.decide(
+        event(
+            event_name="issue_comment",
+            is_pull_request=True,
+            comment_body="@claude review",
+            labels=["loop:round-1"],
+            comment_author_association="OWNER",
+        )
+    )
+    assert early.run and early.forced and not early.final
+
+
+def test_a_stranger_cannot_move_the_labels_by_naming_the_ceiling() -> None:
+    """The forced ceiling binds the forced path only, and nothing before it.
+
+    `cap_reached` is not an inert field: the workflow's hand-back step keys on it, adds
+    `loop:done` and rewrites the status comment. Checking the ceiling ahead of the trust
+    tests handed that write to anyone who could comment. A stranger has to fall through
+    to the same refusal they get at every other round.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            is_pull_request=True,
+            comment_body="@claude review",
+            labels=["loop:round-6"],
+            comment_author_association="NONE",
+            comment_author_login="dependabot[bot]",
+        )
+    )
+    assert not decision.run
+    assert not decision.cap_reached
+    assert "collaborator" in decision.reason
+
+    # The ceiling still binds the path it was written for.
+    spent = gate.decide(
+        event(
+            event_name="issue_comment",
+            is_pull_request=True,
+            comment_body="@claude review",
+            labels=[f"loop:round-{gate.MAX_FORCED_ROUNDS}"],
+            comment_author_association="OWNER",
+        )
+    )
+    assert not spent.run
+    assert spent.cap_reached
+    assert "ceiling" in spent.reason
+
+
+def test_the_trigger_is_anchored_in_the_pattern_not_only_in_the_call() -> None:
+    """The anchor must survive someone swapping `.match` for `.search`.
+
+    Relying on the call site made the paperwork-quoting bug one substitution away from
+    returning, and nothing at the call site says so.
+    """
+    quoting = "C3 fixed. Use @claude review from bots."
+    assert not gate.COMMENT_TRIGGER.search(quoting)
+    assert not gate.COMMENT_TRIGGER.match(quoting)
+    assert gate.COMMENT_TRIGGER.search("@claude review")

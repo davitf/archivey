@@ -128,10 +128,17 @@ is deliberate: an agent that fixes, comments, fixes and comments would otherwise
 the loop indefinitely, and "I have stopped pushing" is a statement of fact, not a
 request for an exception.
 
-**No comment starts a round past round 6**, whoever sends it. The two cases above are
-not actually distinguishable: the review addendum lets an agent post through the
-maintainer's account, where it is `OWNER` like the maintainer, and `MAX_FORCED_ROUNDS`
-is what stops that from being an unbounded spend. Six is twice the automatic cap, so a
+**No comment starts a round past round 6**, whoever sends it — by three different
+routes, not one. A collaborator's meets `MAX_FORCED_ROUNDS`; a bot's met the ordinary
+cap at round 3 long before; a stranger's was never going to start a round at all. The
+ceiling sits inside the collaborator branch rather than ahead of all three, because
+`cap_reached` makes the workflow write `loop:done` and rewrite the status comment, and
+that is not a write to hand to anyone who can type the phrase.
+
+The case it exists for is that the first two are not actually distinguishable: the
+review addendum lets an agent post through the maintainer's account, where it is
+`OWNER` like the maintainer, and `MAX_FORCED_ROUNDS` is what stops that from being an
+unbounded spend. Six is twice the automatic cap, so a
 person asking for one more round will never meet it. Past it, `workflow_dispatch` with
 `force` is the override, and that one stays unbounded because a button in the GitHub UI
 is not something an agent presses.
@@ -155,6 +162,14 @@ means it is visible in the GitHub UI and a human can change it without a commit.
 | `loop:decision` | Parked on a maintainer decision |
 | `loop:hold` | Parked by a human, or by a review that failed before reaching a verdict |
 | `loop:done` | Finished: a clean review, or the last round is spent |
+
+`loop:done` marks the end of the **automatic** loop, not the end of what is possible. A
+person can always buy another round; that is true at round 3 as much as at round 5. So a
+round bought past the cap still counts as the last automatic one and still puts the label
+back as it finishes. Treating a bought round as "not the last" instead left a pull request
+past the cap with no `loop:done` at all, after the verdict step had cleared the stale
+parks — refused by the scan and by every bot, with a status comment promising a round that
+could not come.
 
 **Enrolment is opt-in and happens once, when the pull request opens.** A branch named
 `cursor/*` enrols itself; anything else needs `loop:on` added by hand, which is what

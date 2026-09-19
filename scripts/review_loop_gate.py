@@ -90,12 +90,17 @@ CURSOR_BRANCH_PREFIX = "cursor/"
 #: nine minutes earlier. Anchoring at the start separates asking for a round from
 #: writing about one, because nobody opens a comment with the phrase by accident.
 #:
+#: The `^` is not redundant with the `.match` below. Anchoring only at the call site
+#: put the paperwork-quoting bug one `.match` → `.search` substitution away from coming
+#: back, and nothing at the call site would have said so. In the pattern, either method
+#: is safe.
+#:
 #: Leading whitespace is allowed; `\b` keeps "@claude reviewer" out. It stays
 #: case-insensitive to match `contains()` in `.github/workflows/claude.yml`, which
 #: skips any comment holding this substring anywhere so the assistant and the loop
 #: never both answer one comment. That guard being the looser of the two is the safe
 #: direction: a comment that merely mentions the phrase now runs neither workflow.
-COMMENT_TRIGGER = re.compile(r"\s*@claude review\b", re.IGNORECASE)
+COMMENT_TRIGGER = re.compile(r"^\s*@claude review\b", re.IGNORECASE)
 
 #: Who may force a round by commenting.
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
@@ -195,14 +200,25 @@ def _classify(event: dict) -> Decision:
             return Decision(False, done, "comment is not on a pull request")
         if not COMMENT_TRIGGER.match(event.get("comment_body") or ""):
             return Decision(False, done, "comment does not ask for a review")
-        if nxt > MAX_FORCED_ROUNDS:
-            # Ahead of the trust checks: this one holds for everybody.
-            return Decision(False, done, "forced-round ceiling spent", cap_reached=True)
-
         if event.get("comment_author_association") in TRUSTED_ASSOCIATIONS:
-            # A round bought by hand is never the "final" one: whoever asked for it can
-            # ask again, so the loop has no business announcing that it is finished.
-            return Decision(True, nxt, "requested by comment", forced=True)
+            # The ceiling lives inside this branch, not ahead of it. `cap_reached` is
+            # not an inert field: the workflow's hand-back step keys on it, adds
+            # `loop:done` and rewrites the status comment. Checking it before the trust
+            # tests handed those writes to anyone who could type the phrase. The bot
+            # path below has its own stop at `MAX_ROUNDS`, and a stranger falls through
+            # to the same refusal they get at every other round, so nothing is lost by
+            # binding this to the only path that can reach past the ordinary cap.
+            if nxt > MAX_FORCED_ROUNDS:
+                return Decision(
+                    False, done, "forced-round ceiling spent", cap_reached=True
+                )
+            # `final` still applies. It does not mean "nobody can buy another round" —
+            # a person always can, at round 3 as much as at round 5. It means the
+            # automatic loop is spent, which is exactly what `loop:done` records, and
+            # the workflow clears every stale park as a round runs and re-adds that
+            # label only when this is set. Dropping it here took `loop:done` off a
+            # pull request that was past the cap and never put it back.
+            return Decision(True, nxt, "requested by comment", forced=True, final=final)
 
         if str(event.get("comment_author_login") or "") in TRUSTED_BOTS:
             # The implementing agent saying it has stopped pushing — the signal the
@@ -222,7 +238,9 @@ def _classify(event: dict) -> Decision:
 
     if event_name == "workflow_dispatch":
         if event.get("force"):
-            return Decision(True, nxt, "requested manually", forced=True)
+            # Same reasoning as the forced comment above: forcing skips the cap, it
+            # does not make a post-cap round stop being the last automatic one.
+            return Decision(True, nxt, "requested manually", forced=True, final=final)
         if nxt > MAX_ROUNDS:
             return Decision(False, done, "round cap spent", cap_reached=True)
         return Decision(True, nxt, "requested manually", final=final)
