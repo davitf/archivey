@@ -1,0 +1,8 @@
+schema: library
+created: 2026-09-18
+
+# Pure refactor: an explicit archive-offset accessor in the RAR header walk, and two
+# corrections to AesDecryptStream (gathered source reads, a ciphertext cursor). No
+# requirement in format-rar or format-7z changes wording or behaviour — no spec names
+# AesDecryptStream at all.
+skip_specs: true

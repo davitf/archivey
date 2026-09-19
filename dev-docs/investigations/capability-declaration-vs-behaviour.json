@@ -1,0 +1,5080 @@
+{
+  "schema": 1,
+  "machine": {
+    "python": "3.11.16",
+    "git": "ebbbb0e1d162",
+    "date": "2026-09-17",
+    "rar": "/usr/bin/rar RAR 7.00   Copyright (c) 1993-2024 Alexander Roshal   26 Feb 2024",
+    "unrar": "/usr/bin/unrar UNRAR 7.00 freeware      Copyright (c) 1993-2024 Alexander Roshal",
+    "7z": "/usr/bin/7z 7-Zip 23.01 (x64) : Copyright (c) 1999-2023 Igor Pavlov : 2023-06-20",
+    "zip": "/usr/bin/zip Copyright (c) 1990-2008 Info-ZIP - Type 'zip \"-L\"' for software license."
+  },
+  "registry_not_in_corpus": [
+    {
+      "format": "ArchiveFormat.LZMA_ALONE",
+      "ext": "lzma",
+      "support": "FULL",
+      "verdict": "UNTESTED-NO-CORPUS"
+    },
+    {
+      "format": "ArchiveFormat.Z",
+      "ext": "Z",
+      "support": "FULL",
+      "verdict": "UNTESTED-NO-CORPUS"
+    },
+    {
+      "format": "ArchiveFormat(<ContainerFormat.TAR: 'tar'>, <StreamFormat.LZMA_ALONE: 'lzma'>)",
+      "ext": "tar.lzma",
+      "support": "FULL",
+      "verdict": "UNTESTED-NO-CORPUS"
+    },
+    {
+      "format": "ArchiveFormat(<ContainerFormat.TAR: 'tar'>, <StreamFormat.UNIX_COMPRESS: 'Z'>)",
+      "ext": "tar.Z",
+      "support": "FULL",
+      "verdict": "UNTESTED-NO-CORPUS"
+    }
+  ],
+  "rows": [
+    {
+      "entry": "basic",
+      "key": "zip",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=6 seeks=7 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "6",
+          "observed": "declared=6 listed=6",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=12 last=12 total=41 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted",
+      "key": "zip-aes",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=2 seeks=7 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "2",
+          "observed": "declared=2 listed=2",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=['also_secret.txt', 'secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=14 last=14 total=33 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "WinZip AES members",
+          "observed": "encrypted=['also_secret.txt', 'secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "DECLARED-NOT-DELIVERED",
+          "declared": "SEEKABLE",
+          "observed": "also_secret.txt=False, secret.txt=False",
+          "detail": "'also_secret.txt' seekable=False codec=stored; 'secret.txt' seekable=False codec=stored"
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'also_secret.txt' and 'secret.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "also_secret.txt=True, secret.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "tar",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "requires_scanning",
+          "observed": "n=6 seeks=3 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=6",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=12 last=12 total=41 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=6",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "tar.gz",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=6 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=6",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=12 last=12 total=41 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=6",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "tar.bz2",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=6 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=6",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=12 last=12 total=41 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=6",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "tar.xz",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=6 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=6",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=12 last=12 total=41 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=6",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "tar.zst",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=6 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=6",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=12 last=12 total=41 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=6",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "tar.lz4",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=6 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=6",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=12 last=12 total=41 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=6",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "tar.lz",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=6 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=6",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=12 last=12 total=41 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=6",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "tar.zz",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=6 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=6",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=12 last=12 total=41 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=6",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "tar.br",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=6 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=6",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=12 last=12 total=41 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=6",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "dir",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_scanning",
+          "observed": "n=7 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_SCANNING with no visible seeks (Path / os.walk)"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=7",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=16 last=16 total=41 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "empty_file.txt=True, file1.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'empty_file.txt' and 'file1.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "UNTESTED",
+          "declared": "n/a",
+          "observed": "directory",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "empty_file.txt=True, file1.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "iso",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=7 seeks=28 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=7",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=16 last=16 total=41 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "empty_file.txt=True, file1.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'empty_file.txt' and 'file1.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "empty_file.txt=True, file1.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "iso-joliet",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=7 seeks=25 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=7",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=16 last=16 total=41 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "single-file",
+      "key": "gz",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=1 seeks=1 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=44 last=44 total=0 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "single-file=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'single-file' and 'single-file'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=1",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "single-file=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "single-file-meta",
+      "key": "gz-meta",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=1 seeks=1 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=44 last=44 total=0 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "single-file-meta=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'single-file-meta' and 'single-file-meta'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=1",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "single-file-meta=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "single-file",
+      "key": "bz2",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=1 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=44 last=44 total=0 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "single-file=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'single-file' and 'single-file'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=1",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "single-file=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "single-file",
+      "key": "xz",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=1 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=44 last=44 total=44 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "single-file=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'single-file' and 'single-file'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=1",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "single-file=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "single-file",
+      "key": "zst",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=1 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=44 last=44 total=0 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "single-file=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'single-file' and 'single-file'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=1",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "single-file=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "single-file",
+      "key": "lz4",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=1 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=44 last=44 total=0 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "single-file=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'single-file' and 'single-file'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=1",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "single-file=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "single-file",
+      "key": "lz",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=1 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=44 last=44 total=44 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "single-file=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'single-file' and 'single-file'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=1",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "single-file=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "single-file",
+      "key": "zz",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=1 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=44 last=44 total=0 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "single-file=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'single-file' and 'single-file'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=1",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "single-file=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "single-file",
+      "key": "br",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=1 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=44 last=44 total=0 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "single-file=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'single-file' and 'single-file'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=1",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "single-file=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "7z",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=7 seeks=4 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "7",
+          "observed": "declared=7 listed=7",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "solid",
+          "observed": "delta=41 last=16 total=41 solid=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "empty_file.txt=True, file1.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'empty_file.txt' and 'file1.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "empty_file.txt=False, file1.txt=False, implicit_subdir/file3.txt=False, subdir/file2.txt=False",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "rar",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=6 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "6",
+          "observed": "declared=6 listed=6",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=12 last=12 total=41 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'file1.txt' and 'empty_file.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted",
+      "key": "zip",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=2 seeks=7 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "2",
+          "observed": "declared=2 listed=2",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=['also_secret.txt', 'secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=14 last=14 total=33 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "also_secret.txt=True, secret.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'also_secret.txt' and 'secret.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "also_secret.txt=True, secret.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted",
+      "key": "7z",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=2 seeks=4 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "2",
+          "observed": "declared=2 listed=2",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "DECLARED-NOT-DELIVERED",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=True members=['also_secret.txt', 'secret.txt']",
+          "detail": "per-member/folder encryption reported as archive is_encrypted"
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "solid",
+          "observed": "delta=33 last=14 total=33 solid=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "also_secret.txt=True, secret.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'also_secret.txt' and 'secret.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "also_secret.txt=False, secret.txt=False",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted",
+      "key": "rar",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=2 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "2",
+          "observed": "declared=2 listed=2",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "DECLARED-NOT-DELIVERED",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=True members=['secret.txt', 'also_secret.txt']",
+          "detail": "per-member/folder encryption reported as archive is_encrypted"
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=19 last=19 total=33 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "encrypted RAR (unrar data path)",
+          "observed": "encrypted=['secret.txt', 'also_secret.txt'] stored=[]",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "secret.txt=True, also_secret.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'secret.txt' and 'also_secret.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "secret.txt=True, also_secret.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted-mixed",
+      "key": "zip",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=3 seeks=7 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "3",
+          "observed": "declared=3 listed=3",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=['also_secret.txt', 'secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=14 last=14 total=51 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "also_secret.txt=True, not_secret.txt=True, secret.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'also_secret.txt' and 'not_secret.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "also_secret.txt=True, not_secret.txt=True, secret.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted-mixed",
+      "key": "zip-aes",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=3 seeks=7 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "3",
+          "observed": "declared=3 listed=3",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=['also_secret.txt', 'secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=14 last=14 total=51 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "WinZip AES members",
+          "observed": "encrypted=['also_secret.txt', 'secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "DECLARED-NOT-DELIVERED",
+          "declared": "SEEKABLE",
+          "observed": "also_secret.txt=False, not_secret.txt=True, secret.txt=False",
+          "detail": "'also_secret.txt' seekable=False codec=stored; 'secret.txt' seekable=False codec=stored"
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'also_secret.txt' and 'not_secret.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "also_secret.txt=True, not_secret.txt=True, secret.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted-mixed",
+      "key": "7z",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=3 seeks=4 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "3",
+          "observed": "declared=3 listed=3",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "DECLARED-NOT-DELIVERED",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=True members=['also_secret.txt', 'not_secret.txt', 'secret.txt']",
+          "detail": "per-member/folder encryption reported as archive is_encrypted"
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "solid",
+          "observed": "delta=51 last=14 total=51 solid=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "also_secret.txt=True, not_secret.txt=True, secret.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'also_secret.txt' and 'not_secret.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "also_secret.txt=False, not_secret.txt=False, secret.txt=False",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted-mixed",
+      "key": "rar",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=3 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "3",
+          "observed": "declared=3 listed=3",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "DECLARED-NOT-DELIVERED",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=True members=['secret.txt', 'also_secret.txt']",
+          "detail": "per-member/folder encryption reported as archive is_encrypted"
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=19 last=19 total=51 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "encrypted RAR (unrar data path)",
+          "observed": "encrypted=['secret.txt', 'also_secret.txt'] stored=['not_secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "not_secret.txt=True, secret.txt=True, also_secret.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'not_secret.txt' and 'secret.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "not_secret.txt=True, secret.txt=True, also_secret.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted-header",
+      "key": "7z",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=2 seeks=4 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "2",
+          "observed": "declared=2 listed=2",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=True members=['also_secret.txt', 'secret.txt']",
+          "detail": "header-encrypted"
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "solid",
+          "observed": "delta=33 last=14 total=33 solid=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "also_secret.txt=True, secret.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'also_secret.txt' and 'secret.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "also_secret.txt=False, secret.txt=False",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted-multi",
+      "key": "zip",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=4 seeks=7 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "4",
+          "observed": "declared=4 listed=4",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=['also_secret.txt', 'secret.txt', 'very_secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=19 last=19 total=65 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "also_secret.txt=True, plain.txt=True, secret.txt=True, very_secret.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'also_secret.txt' and 'plain.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "also_secret.txt=True, plain.txt=True, secret.txt=True, very_secret.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "encrypted-multi",
+      "key": "zip-aes",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=4 seeks=7 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "4",
+          "observed": "declared=4 listed=4",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=['also_secret.txt', 'secret.txt', 'very_secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=19 last=19 total=65 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "WinZip AES members",
+          "observed": "encrypted=['also_secret.txt', 'secret.txt', 'very_secret.txt']",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "DECLARED-NOT-DELIVERED",
+          "declared": "SEEKABLE",
+          "observed": "also_secret.txt=False, plain.txt=True, secret.txt=False, very_secret.txt=False",
+          "detail": "'also_secret.txt' seekable=False codec=stored; 'secret.txt' seekable=False codec=stored; 'very_secret.txt' seekable=False codec=stored"
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'also_secret.txt' and 'plain.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "also_secret.txt=True, plain.txt=True, secret.txt=True, very_secret.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "large",
+      "key": "zip",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=3 seeks=7 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "3",
+          "observed": "declared=3 listed=3",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=64014 last=64014 total=192042 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'large1.txt' and 'large2.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "large",
+      "key": "tar.gz",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=3 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=3",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=64014 last=64014 total=192042 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'large1.txt' and 'large2.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=3",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "large",
+      "key": "tar.zst",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "requires_decompression",
+          "observed": "n=3 seeks=0 decomp=0 consumed=None",
+          "detail": "REQUIRES_DECOMPRESSION but listing shows no decode / consume"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=3",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "solid",
+          "observed": "delta=64014 last=64014 total=192042 solid=True",
+          "detail": "SOLID but last-member \u0394decomp \u2248 last size (wrap counts the opened member)"
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'large1.txt' and 'large2.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "forward_only members=3",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "large",
+      "key": "7z",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=3 seeks=4 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "3",
+          "observed": "declared=3 listed=3",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=True",
+          "observed": "access_cost=solid",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "solid",
+          "observed": "delta=192042 last=64014 total=192042 solid=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'large1.txt' and 'large2.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "large1.txt=False, large2.txt=False, large3.txt=False",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "large",
+      "key": "rar",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=3 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "3",
+          "observed": "declared=3 listed=3",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=64014 last=64014 total=192042 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'large1.txt' and 'large2.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "compressed",
+      "key": "rar",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "MEASUREMENT-HOLE",
+          "declared": "indexed",
+          "observed": "n=2 seeks=0 decomp=0 consumed=None",
+          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "2",
+          "observed": "declared=2 listed=2",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=8400 last=8400 total=16592 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "mechanism",
+          "verdict": "OK",
+          "declared": "packed RAR (unrar data path)",
+          "observed": "packed=['zeros.bin', 'repeated.txt']",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "zeros.bin=True, repeated.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'zeros.bin' and 'repeated.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "zeros.bin=True, repeated.txt=True",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    },
+    {
+      "entry": "sevenzip-stored",
+      "key": "7z",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=1 seeks=4 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "1",
+          "observed": "declared=1 listed=1",
+          "detail": ""
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=5750 last=5750 total=5750 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "stored.bin=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'stored.bin' and 'stored.bin'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "not required to seek",
+          "observed": "stored.bin=False",
+          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+        }
+      ]
+    }
+  ]
+}

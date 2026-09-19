@@ -1,0 +1,52 @@
+## Why
+
+`format-detection` already requires SFX detection behind an executable stub
+(`payload_offset > 0`), but `detect_format` never scans — the module comment defers it.
+Topic 8 claim A-34 measured the worst consequence: a low-entropy `MZ` stub can be claimed
+by the Brotli content probe, and `open_archive` then succeeds with a fabricated
+`*.uncompressed` member (silent wrong answer). The same shape hits ZIP SFX
+(`PK\x03\x04` behind the stub) even though forced `format=ZIP` already reads the real
+members. `payload_offset` is never consumed by `open_archive` even when detection would
+set it. Found by the docs-content verification pass (#252); not yet a
+`dev-docs/open-issues.md` P-entry. **Maintainer raised priority (MD1 = B, 2026-08-18):**
+implement ahead of ordinary docs prose fixes; silent-success regression is mandatory.
+**Maintainer (#253 F1 = A):** include ZIP local-header in the SFX scan needles.
+
+## What Changes
+
+- Implement the SFX scan in `detect_format` (bounded window for RAR / 7z / ZIP
+  local-header magic when leading bytes look executable-shaped).
+- Split “no silent wrong answer on executable-shaped prefixes” into its own
+  requirement; investigate Brotli/probe vs stub differentiation before locking
+  heuristics (not a hard “disable Brotli on `MZ`”).
+- Wire `FormatInfo.payload_offset` through `open_archive` so backends open at the
+  payload start (read in place, no copy).
+- Red–green tests that cover the **silent-success** path specifically (not only
+  `FormatDetectionError`), including ZIP SFX and a real-Brotli-with-weak-cue case.
+- No **BREAKING** public API change: `FormatInfo.payload_offset` already exists; it
+  becomes non-zero for real SFX inputs.
+
+## Capabilities
+
+### New Capabilities
+
+### Modified Capabilities
+- `format-detection` — SFX scan includes ZIP; split “no silent wrong answer on
+  executable-shaped prefixes” into its own requirement; probe-vs-stub
+  differentiation investigated before locking heuristics; keep `payload_offset`
+  contract.
+- `archive-reading` — open path SHALL honour a non-zero `payload_offset` from detection
+  (or an equivalent start-offset hand-off to the backend).
+
+## Impact
+
+- Modules: `src/archivey/internal/detection.py`, `src/archivey/core.py` open path,
+  backend `open_read` start-offset plumbing (RAR already scans internally; 7z needs
+  sibling change `sevenz-sfx-start-offset`).
+- Public API: behaviour of `detect_format` / auto `open_archive` on SFX inputs; CLI
+  `info` already prints `sfx_offset` when set.
+- Tests: SFX fixtures (RAR + ZIP + 7z) with low-entropy and varied stubs; assert no
+  silent `BROTLI` success; assert `payload_offset` and successful open of real members.
+- Docs: unlocks writing `formats.md` Detection / SFX prose (Topic 8 A-34 / Q1).
+- Depends on / pairs with: `sevenz-sfx-start-offset` for 7z forced-format and
+  offset-accept parity (RAR already has parser-side SFX).
