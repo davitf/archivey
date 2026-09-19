@@ -244,10 +244,11 @@ def test_delegating_peel_for_source_size_constructor_override() -> None:
     """Ad-hoc construction can opt a plain DelegatingStream into peeling."""
     from archivey.internal.streams.streamtools import source_byte_size
 
-    inner = io.BytesIO(b"0123456789")
-    assert source_byte_size(DelegatingStream(inner)) is None
-    inner.seek(0)
-    peeled = DelegatingStream(inner, peel_for_source_size=True)
+    # Keep the wrappers alive: DelegatingStream owns inner, so a temporary
+    # would close the BytesIO before a second wrap could use it.
+    opaque = DelegatingStream(io.BytesIO(b"0123456789"))
+    assert source_byte_size(opaque) is None
+    peeled = DelegatingStream(io.BytesIO(b"0123456789"), peel_for_source_size=True)
     assert source_byte_size(peeled) == 10
 
 
