@@ -580,9 +580,31 @@ this loop, and it manufactures findings of its own, because a fix made for round
 thing round 2 then reports (an over-deleted rationale, a `__del__` broken by the previous
 fix, wording introduced by the previous wording fix).
 
-Two exceptions, both narrow: the head was rebased or force-pushed, so the previous SHA is
-no longer an ancestor; or a fix changed a contract, in which case re-read the callers of
-what moved, not the whole diff. Say which scope you used in the Snapshot line.
+**Read your own previous review bodies first, not just the open threads.** In the loop
+each round is a fresh session with no memory of the last one, so the earlier review *is*
+the handoff, and it carries what a thread does not: block 1's briefing, block 3's
+decisions, and the reasoning behind a finding rather than its one-line statement. The
+threads are also the wrong place to look for a complete picture, because a resolved or
+collapsed one drops out of the default view while the review body stays. Read every
+review you posted on this PR, including rounds whose findings are all closed. This does
+not reopen the cost rule above: the bodies are a few kilobytes, and you are fetching the
+PR's comments for the status table anyway.
+
+**Then check what each fix reaches.** The narrow scope is safe for a fix that stays inside
+its own lines and unsafe for one that does not, and the difference is not visible from the
+fix-diff. For each fix, ask whether it moved a signature, a return-or-raise contract, a
+default, an invariant, or the lifetime of something a caller holds. Where it did, read the
+callers of what moved before judging the fix. This is a check with an answer rather than
+something to notice in passing: say in the Snapshot line which fixes you traced outward
+and what came back, or that none of them moved a contract. A fix that is correct in
+isolation and wrong for one caller is the failure this scope would otherwise let through,
+and it is the one a round-1 reviewer is least likely to catch, because the fix is its own
+suggestion coming back.
+
+Two exceptions to the scope itself, both narrow: the head was rebased or force-pushed, so
+the previous SHA is no longer an ancestor; or the trace above sent you to callers outside
+the fix-diff, which you read rather than the whole diff. Say which scope you used in the
+Snapshot line.
 
 ### Do not re-run the gates — or re-measure what a previous round recorded
 
