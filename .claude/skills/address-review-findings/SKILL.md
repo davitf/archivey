@@ -172,7 +172,8 @@ Standard repo rules apply — they are not relaxed because the change is review-
 - **Re-read the comments around every hunk before you push.** The largest finding category
   in this repo's reviews is comments that no longer match the code: one naming a call site
   the change deleted, one explaining a case the change made unreachable, one carrying
-  history ("previously", "the old implementation", "this change", a parcel or PR number),
+  history ("previously", "the old implementation", "this change", a PR number, an OpenSpec
+  change name, a work-batch name like `Parcel B`),
   or one claiming a bound the code does not guarantee. The rule is
   `CONTRIBUTING.md` §Coding standards; the point here is that it is cheapest to catch in
   the files you just edited, and it is the reviewer's job only because it is wording, which

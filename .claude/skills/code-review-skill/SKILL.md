@@ -101,7 +101,7 @@ reviewers on one PR cannot collide (addendum §10).
 
 **Verdict.** “Only nits left” is not an approval here: nits get fixed before merge, or the
 verdict is *approve conditional on the listed fixes* (addendum §0 Verdicts). From round 3,
-if nothing above 🟡 is open, that conditional approval is the verdict — do not open another
+if only 🟢 nits remain open, that conditional approval is the verdict — do not open another
 round to confirm wording (§0 Round budget). A review posted
 through the maintainer's own account cannot carry a GitHub `APPROVE` event at all — expected,
 not a problem to report: the verdict lives in the text (addendum §10).

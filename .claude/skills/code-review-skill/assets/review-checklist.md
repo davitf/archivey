@@ -51,7 +51,7 @@ which are the ones reviews here actually miss:
 - [ ] Scope is `<last-reviewed-sha>..HEAD`, not `main...HEAD` (addendum §10)
 - [ ] Status table over the previous IDs before any new finding
 - [ ] Nothing re-measured that a previous round already recorded (§10)
-- [ ] Round 3+ with only nits open → conditional approval, not another round (§0)
+- [ ] Round 3+ with only 🟢 nits open → conditional approval, not another round (§0)
 
 ---
 

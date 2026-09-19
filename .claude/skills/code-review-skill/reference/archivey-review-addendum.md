@@ -157,9 +157,10 @@ ask for a change, and they never hold a merge.
 
 ### Round budget — from round 3, nits do not hold the PR
 
-**From the third round on, if nothing above 🟡 is open, the verdict is
-"✅ Approve, conditional on the listed fixes" and the PR merges once they are in.** Do not
-open a fourth round to confirm wording changes you already described.
+**From the third round on, if only 🟢 nits remain open, the verdict is
+"✅ Approve, conditional on the listed fixes" and you stop reviewing.** Do not open a
+fourth round to confirm wording changes you already described. Whether it then merges is
+the maintainer's call, as always — this bounds re-reading, not merging.
 
 This is not a relaxation of the nit rule — the conditioned findings are still posted in
 full and still fixed. It is a bound on *re-reading*. In the two weeks to 2026-09-19, every
@@ -318,8 +319,10 @@ debt* (`review/backlog.md`). Clean-as-you-go is how day-to-day PRs enforce that:
   either **paid now** or recorded as keep-with-reason — not ignored
 - [ ] **Pause and ask** on real design discrepancies — do not silently pick a winner
   (`CONTRIBUTING.md`, `CLAUDE.md`, `review/README.md`)
-- [ ] A **pre-existing bug in code this PR already touches** is in scope and is a normal
-  finding — do not soften it to "pre-existing, not this PR's" or route it to the backlog.
+- [ ] A **pre-existing bug in the mechanism this PR is already editing**, where the fix is
+  proportionate, is in scope and is a normal finding — do not soften it to "pre-existing,
+  not this PR's" or route it to the backlog. Being in a touched *file* is not the test;
+  the mechanism under change is (`CONTRIBUTING.md` §Coding standards).
   A **sweep** across files the PR does not touch is the follow-up
   (`CONTRIBUTING.md` §Coding standards). This one is settled: the maintainer has ruled
   "fix it in this PR" on #342, #344 and #349, and "not in this PR" only where the ask was
@@ -354,8 +357,9 @@ when reality or a better design wins.
   decisions — but an inline summary should usually carry the *why*
 - [ ] Match surrounding comment density
 - [ ] **No history in `src/` comments** — "previously", "the old implementation", "this
-  change", a parcel or PR number, or an argument corrected against something the reader
-  cannot see (`CONTRIBUTING.md` §Coding standards)
+  change", a PR number, an OpenSpec change name, a work-batch name (`Parcel B`, `Wave 1`),
+  or an argument corrected against something the reader cannot see
+  (`CONTRIBUTING.md` §Coding standards)
 - [ ] **No comment left pointing at what the diff removed** — a call site that no longer
   exists, or a case the change made unreachable. Read the comments around every hunk,
   not just the changed lines
@@ -407,10 +411,12 @@ Use alongside the skill’s generic checklist. Severity: 🔴 blocking / 🟡 im
   never-write-through-symlink (`threat-model`, `safe-extraction`)
 - [ ] Bomb / resource limits: output caps, ratios, entry counts, listing limits where
   applicable
-- [ ] Every bound is **reachable from `ArchiveyConfig`** (`ListingLimits` /
+- [ ] Every **policy** bound is **reachable from `ArchiveyConfig`** (`ListingLimits` /
   `ExtractionLimits`, raisable to `UNLIMITED`). A new `_MAX_…` constant inside a parser
-  or reader is a finding: it is invisible from the API and turns a real archive into an
-  error the caller cannot accept (`CONTRIBUTING.md` §Coding standards)
+  or reader is a finding — it is invisible from the API and turns a real archive into an
+  error the caller cannot accept — **unless the bound is structural rather than policy**,
+  which CONTRIBUTING allows with a reason at the constant and a spec row
+  (`CONTRIBUTING.md` §Coding standards). Check for that reason before filing
 - [ ] Parser bounds: huge length/count fields from headers cannot OOM the process
 - [ ] Subprocess (`unrar`, fixture `7z`, …): list args, no `shell=True` interpolation
 - [ ] Passwords / key material absent from logs, `repr`, and exception messages
@@ -750,7 +756,7 @@ So:
   `submit_pending`). `REQUEST_CHANGES` is rejected on your own PR for the same reason —
   `COMMENT` is the only event that goes through.
 - **Carry the verdict in the text**, where the §0 Verdict line already puts it. The
-  briefing's `✅ Approve` / `✅ Approve conditional on F4, F5` / `🔄 Request Changes` is the
+  briefing's `✅ Approve` / `✅ Approve conditional on K4, C5` / `🔄 Request Changes` is the
   review's actual conclusion; the green check in GitHub's UI is not available to say it.
 - **Do not narrate the limitation** to the maintainer as a discovery each round, and do not
   retry `APPROVE` to see if it works this time. If it is worth a line at all, it is one

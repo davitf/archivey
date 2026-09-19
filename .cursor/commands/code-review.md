@@ -83,7 +83,7 @@ close the review with a **Measured this round** list so the next round inherits 
 (addendum §10).
 
 A re-review reads `<the SHA you last reviewed>..HEAD` plus the open threads, not the whole
-PR again, and from round 3 a PR with only nits open gets the conditional approval rather
+PR again, and from round 3 a PR with only 🟢 nits open gets the conditional approval rather
 than another round (addendum §10 and §0).
 
 The implementing agent then works through it with `/address-review`

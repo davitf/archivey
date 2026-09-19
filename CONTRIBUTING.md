@@ -192,10 +192,11 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   `openspec/specs/` that describe it in the same change. The one exception is the
   pause-and-ask rule below: when a cleanup would resolve a genuine design discrepancy,
   surface it instead of silently picking a direction.
-- **A pre-existing bug in code this change already touches is fixed here.** Finding one
-  mid-change is not a reason to open a ticket and move on: if it lives in the mechanism
-  you are already editing and the fix is proportionate, it lands in this PR, where the
-  reviewer can see it against the code it belongs to. What does *not* land here is a
+- **A pre-existing bug in the mechanism this change is already editing is fixed here,
+  when the fix is proportionate.** Finding one mid-change is not a reason to open a ticket
+  and move on: it lands in this PR, where the reviewer can see it against the code it
+  belongs to. Being in a file the change touches is not enough on its own — the test is
+  the mechanism under change, not the file. What does *not* land here is a
   **sweep**: the same mistake across files this change does not touch, or a rename that
   ripples through specs and archived changes. That is a follow-up, recorded in
   `review/backlog.md` or `dev-docs/IDEAS.md` with a reason. The line is whether you are
@@ -216,8 +217,10 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
 - **Comments describe the code as it is, not how it got there.** A comment in `src/` is
   read by someone who never saw the change that produced it, so it must not depend on
   that change being remembered. Three things this rules out:
-  - **History.** "Previously", "the old implementation", "this change", "we used to",
-    a parcel or PR number, or a correction of an argument nobody else can see. If the
+  - **History.** "Previously", "the old implementation", "this change", "we used to", a
+    PR number, an OpenSpec change name, the name of the work batch a change belonged to
+    (`Parcel B`, `Wave 1` — see `dev-docs/open-work-inventory.md`), or a correction of an
+    argument nobody else can see. If the
     superseded approach is worth recording, it goes in `dev-docs/decisions/` or the
     format handbook, not in a comment next to the code that replaced it.
   - **Claims stronger than the code.** A comment that states a bound, a ratio, or an

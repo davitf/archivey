@@ -377,14 +377,25 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    subagent runs `code-review-skill` and posts to the PR; the implementing agent then
    runs `address-review-findings`. Do not review your own diff.
 
-**Nothing from the internal tracker goes into anything public.** This repository is
-public; the tracker is not. Do not put a tracker URL or an issue id in a PR title or
-body, a review or inline comment, a commit message, or a file in the repo — the link is
-dead weight for anyone reading the PR, since they cannot open it, and it publishes the
-internal layout. Write "tracked internally" instead. Where the finding deserves a durable
-in-repo home, that is `review/backlog.md` under "Parked from PR reviews", with the
-reasoning in the format handbook (`dev-docs/formats/<fmt>.md` §6). The cross-reference
-runs one way only: put the PR URL on the tracker item, never the reverse.
+**Nothing from the internal tracker goes into PR text.** This repository is public; the
+tracker is not. Three rules, and they are about the *internal tracker* only:
+
+- **Never** an internal-tracker URL, anywhere — PR title or body, review or inline
+  comment, commit message, or a file in the repo.
+- **Not** an internal-tracker key (`ARC-123`) in a PR title or body, a review or inline
+  comment, or a commit message. Write "tracked internally" instead: the reader cannot open
+  the ticket, so the key is dead weight to them and it publishes the internal layout.
+- **GitHub `#nnn` is the public record and is always fine** — in PR text, commits,
+  comments and repo files alike. This rule does not touch it.
+
+Bare tracker keys already appear inside `dev-docs/` and `openspec/changes/` as internal
+cross-references (`dev-docs/threat-model.md`, for one). Those stay; the rule above is
+about what a PR publishes, not a retroactive sweep of internal notes.
+
+Where a finding deserves a durable in-repo home, that is `review/backlog.md` under
+"Parked from PR reviews", with the reasoning in the format handbook
+(`dev-docs/formats/<fmt>.md` §6). The cross-reference runs one way only: put the PR URL on
+the tracker item, never the reverse.
 
 Two things about this repo make the handoff sharper than it looks:
 
