@@ -18,12 +18,23 @@ This script reads those lines and reports coverage against the tree it is run in
 takes whole comment bodies and ignores everything that is not a marker, so you can pipe
 the #315 comments in unfiltered:
 
-    curl -s 'https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100' \
-      | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]' \
+    gh api --paginate repos/davitf/archivey/issues/315/comments --jq '.[].body' \
       | python3 scripts/sweep_coverage.py
 
-(That endpoint pages at 100; add `&page=2` until it comes back empty. Any other route to
-the comment bodies works as well — the script only cares about the marker lines.)
+`--paginate` is what makes that correct rather than merely usually correct: the endpoint
+serves 100 comments a page, #315 is already past 30 and gains one marker per file swept,
+and a truncated fetch loses markers *silently* — the files on the dropped page come back
+as unswept and the next batch brief sends an agent over code someone has already read.
+Without `gh` — a Claude Code session has none — page explicitly, and raise the range
+until the last page prints nothing:
+
+    for p in 1 2 3; do \
+      curl -s "https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100&page=$p" \
+      | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]'; \
+    done | python3 scripts/sweep_coverage.py
+
+Any other route to the comment bodies works too — the script only cares about the marker
+lines — as long as it reaches the last page.
 
     python3 scripts/sweep_coverage.py --markers markers.txt   # from a file
     python3 scripts/sweep_coverage.py --unswept               # list what is left, biggest first
@@ -124,12 +135,38 @@ def newest_per_path(markers: list[Marker]) -> dict[str, Marker]:
     return latest
 
 
+def has_drifted(read_lines: int, tree_lines: int) -> bool:
+    """Has the file moved far enough since it was read that the reading is stale?
+
+    The band is symmetric: code deleted since the sweep invalidates a reading as surely as
+    code added, because what the reviewer reasoned about is gone either way. The boundary
+    itself is inside the band — exactly `DRIFT_TOLERANCE` is not yet drift — so a file that
+    has grown by a tenth is reported as still swept rather than flickering between the two.
+    """
+    return abs(tree_lines - read_lines) > DRIFT_TOLERANCE * max(read_lines, 1)
+
+
 def duplicates_within_a_pass(markers: list[Marker]) -> list[tuple[str, str, int]]:
     """Two markers for one file in one pass: a double post, not a re-sweep."""
     seen: dict[tuple[str, str], int] = {}
     for marker in markers:
         seen[marker.path, marker.batch] = seen.get((marker.path, marker.batch), 0) + 1
     return [(path, batch, n) for (path, batch), n in sorted(seen.items()) if n > 1]
+
+
+BATCH_KEY_RE = re.compile(r"^([A-Za-z]*)(\d*)(.*)$")
+
+
+def batch_sort_key(batch: str) -> tuple[str, int, str]:
+    """Order batch ids the way a reader counts them: S2 before S15, S3a beside S3.
+
+    Plain `sorted()` is lexicographic, which puts S15 and S16 between S1 and S2 — a
+    breakdown nobody can read against the plan. The numeric run is what needs ordering
+    numerically; the letters around it fall back to string order, so an unnumbered or
+    oddly shaped id still sorts deterministically rather than raising.
+    """
+    prefix, digits, suffix = BATCH_KEY_RE.match(batch).groups()  # always matches
+    return (prefix, int(digits) if digits else -1, suffix)
 
 
 def tree_line_counts() -> dict[str, int]:
@@ -155,7 +192,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    raw = sys.stdin.read() if args.markers == "-" else Path(args.markers).read_text()
+    raw = (
+        sys.stdin.read()
+        if args.markers == "-"
+        else Path(args.markers).read_text(encoding="utf-8")
+    )
     markers, malformed = parse_markers(raw)
     latest = newest_per_path(markers)
     tree = tree_line_counts()
@@ -165,7 +206,7 @@ def main() -> int:
     drifted = [
         (path, marker.lines, tree[path])
         for path, marker in sorted(swept.items())
-        if abs(tree[path] - marker.lines) > DRIFT_TOLERANCE * max(marker.lines, 1)
+        if has_drifted(marker.lines, tree[path])
     ]
 
     total_files, total_lines = len(tree), sum(tree.values())
@@ -184,7 +225,7 @@ def main() -> int:
         batches: dict[str, list[Marker]] = {}
         for marker in swept.values():
             batches.setdefault(marker.batch, []).append(marker)
-        for batch in sorted(batches):
+        for batch in sorted(batches, key=batch_sort_key):
             group = batches[batch]
             lines = sum(tree[marker.path] for marker in group)
             findings = sum(marker.findings for marker in group)

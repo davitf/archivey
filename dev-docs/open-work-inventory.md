@@ -390,10 +390,13 @@ path, batch, date, line count, finding count. The shape is defined in
 §10, and [`scripts/sweep_coverage.py`](../scripts/sweep_coverage.py) does the arithmetic:
 
 ```
-curl -s 'https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100' \
-  | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]' \
-  | python3 scripts/sweep_coverage.py --by-pass --unswept
+for p in 1 2 3; do \
+  curl -s "https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100&page=$p" \
+  | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]'; \
+done | python3 scripts/sweep_coverage.py --by-pass --unswept
 ```
+
+That loop pages deliberately: the endpoint serves 100 comments at a time, #315 gains a marker per file swept, and a single-page fetch drops the rest **silently** — the files on the missing page come back as unswept. Raise the range until the last page prints nothing. With the `gh` CLI, `gh api --paginate repos/davitf/archivey/issues/315/comments --jq '.[].body'` does the same in one call.
 
 The denominator is the tree in the checkout, not a number remembered from a previous
 snapshot. A file counts once however many times it has been swept. Lines come from the tree

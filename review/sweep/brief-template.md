@@ -8,10 +8,13 @@
 Run the counter first and take the scope from what it says is left:
 
 ```
-curl -s 'https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100' \
-  | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]' \
-  | python3 scripts/sweep_coverage.py --unswept
+for p in 1 2 3; do \
+  curl -s "https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100&page=$p" \
+  | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]'; \
+done | python3 scripts/sweep_coverage.py --unswept
 ```
+
+That loop pages deliberately: the endpoint serves 100 comments at a time, #315 gains a marker per file swept, and a single-page fetch drops the rest **silently** — the files on the missing page come back as unswept. Raise the range until the last page prints nothing. With the `gh` CLI, `gh api --paginate repos/davitf/archivey/issues/315/comments --jq '.[].body'` does the same in one call.
 
 **Exclude every file that already carries a marker.** The `S1`–`S14` table on
 [`dev-docs/open-work-inventory.md`](../../dev-docs/open-work-inventory.md) is the *plan*, and
@@ -97,7 +100,7 @@ severity × confidence, (3) maintainer decisions. Addendum §10 has the mechanic
   before you move to the next file:
 
   ```
-  **SWEPT** `<path>` — pass=S<N> date=<YYYY-MM-DD> lines=<n> findings=<n> ids=<S<N>-F1,…|-> reviewer=<claude-code|cursor> head=<sha>
+  **SWEPT** `<path>` — pass=S<N> date=<YYYY-MM-DD> lines=<n> findings=<n> ids=<S<N>-K1,…|-> reviewer=<claude-code|cursor> head=<sha>
   ```
 
   Then three to five lines: what you read, what you checked that came back clean, what you

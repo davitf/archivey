@@ -913,8 +913,8 @@ in the finding.
 
 ### The review trigger phrase is a command, not a quotable string
 
-The automated loop starts a review round when a **top-level comment** on a pull request or
-issue opens with the trigger phrase ([`review-loop.yml`](../../../../.github/workflows/review-loop.yml);
+The automated loop starts a review round when a **top-level comment on a pull request**
+opens with the trigger phrase ([`review-loop.yml`](../../../../.github/workflows/review-loop.yml);
 [`review-loop.md`](../../../../dev-docs/review-loop.md) for what a round then does). **It is
 a command whoever wrote it.** An agent posting through the maintainer's account is
 indistinguishable from the maintainer, so a comment written to *explain* the phrase starts a
@@ -922,8 +922,9 @@ real round on whatever pull request it was posted to — which has happened, on 
 fixing the loop.
 
 The exposure is exactly that one surface, and it is narrow: the guard sits on the
-`issue_comment` path, so a pull request body, an inline review comment and a review body
-cannot fire it, and neither can a file in the tree. That is why `review-loop.yml` and
+`issue_comment` path and the gate refuses a comment that is not on a pull request, so an
+issue comment, a pull request body, an inline review comment and a review body cannot fire
+it, and neither can a file in the tree. That is why `review-loop.yml` and
 [`review-loop.md`](../../../../dev-docs/review-loop.md) can quote the phrase freely — and
 why this file can.
 
