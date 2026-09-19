@@ -694,6 +694,57 @@ cannot be dispositioned finding-by-finding costs the next round more than it sav
 Where the host cannot post inline comments, one top-level comment is acceptable, but the
 IDs are not optional.
 
+### Whole-file sweeps: one `SWEPT` marker per file
+
+A **sweep batch** is a cold whole-file reading pass rather than a diff review — the `S*`
+batches posted to [#315](https://github.com/davitf/archivey/pull/315). Findings post exactly
+as above, one inline thread each. What a sweep posts *in addition* is a per-file record that
+the file was read at all, **whether or not it found anything**:
+
+- **One top-level comment on #315 per file**, posted when you finish reading that file and
+  before you start the next one. Not inline: a whole-file read has no line to anchor to.
+- Its **first line** is the marker, in exactly this shape:
+
+  ```
+  **SWEPT** `src/archivey/internal/backends/zip_reader.py` — pass=S1 date=2026-09-17 lines=1612 findings=3 ids=S1-F1,S1-F2,S1-F3 reviewer=cursor head=94468bd
+  ```
+
+  `**SWEPT**`, the repo-relative path in backticks, an em dash, then the fields as
+  `key=value` in that order, space separated, **no spaces inside a value**.
+
+  | Field | What |
+  |---|---|
+  | `pass=` | The batch id — `S1`, `S3`, … The 2026-09-08 pass is `S0`. Split a batch as `S3a` / `S3b` |
+  | `date=` | The ISO date you read the file |
+  | `lines=` | The file's line count at `head` |
+  | `findings=` | How many block-2 findings you raised against this file |
+  | `ids=` | Their IDs, comma separated; `-` when `findings=0` |
+  | `reviewer=` | `claude-code` or `cursor` |
+  | `head=` | The commit you read the file at |
+
+- Under the marker, three to five lines of prose: what you read, what you checked that came
+  back clean, and anything you deliberately left to another batch. **A clean file's comment
+  is the short one and the valuable one** — it is the only thing that distinguishes a file
+  that was read and found sound from a file nobody opened.
+- Re-sweeping a file posts a **new** marker rather than editing the old one. The newest
+  marker for a path wins; the older one stays as the record of what was true then.
+
+**Why this exists.** Findings are evidence of a read; the absence of findings is not. The
+coverage figure on [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md)
+was overstated by twelve points in two consecutive snapshots because threads were counted as
+coverage, and `backends/rar_parser.py` — the largest file in the repository and its most
+exposed hostile-input surface — was believed swept when no agent had ever read it. Two sweep
+threads also reached opposite conclusions about the same two files from the same evidence.
+Markers make "was this file swept?" answerable by looking rather than by inference.
+
+The marker line carries the reviewer and the head, so on this comment type it **replaces**
+the §"A short marker at the top" opener rather than sitting under it. Attribution and footer
+rules are unchanged.
+
+Coverage is counted from these markers, never from thread counts —
+[`dev-docs/open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md) §How sweep
+coverage is counted, and `scripts/sweep_coverage.py`, which does the counting.
+
 ### Re-reviews state what happened to the last round
 
 A second pass on the same PR opens with a **status table over the previous IDs** — fixed /

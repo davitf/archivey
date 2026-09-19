@@ -50,7 +50,7 @@ findings cost to fix — and that is the sweep working as intended rather than a
 | [`threat-model.md`](threat-model.md) | `O*` register | O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`, in tree since #319 |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
 | **Linear** (`Archivey` team) | 39 issues seeded 2026-09-17 | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
-| **The #315 sweep** — *no register* | 78 of 94 `src/` files never reviewed | **The largest open item here.** 27 999 of 36 298 lines unswept; batched into S1–S14 below |
+| **The #315 sweep** — *the `SWEPT` markers on #315* | 78 of 94 `src/` files never reviewed | **The largest open item here.** 27 999 of 36 298 lines unswept at this snapshot; batched into S1–S14 below. Read the live figure with `scripts/sweep_coverage.py` rather than from this row |
 | **`dev-docs/formats/`** — *no register* | 2 of ~7 handbook pages written | ZIP and RAR done. `rar.md` alone produced the 21-item `§10` register |
 | **`docs/`** — *tracked in `review/docs-content/`* | ~174 lines of prose + `how-it-works.md` | Skeleton, scope and verified claim inventory all done; the writing is not |
 
@@ -356,6 +356,39 @@ will impose on extraction is now known rather than pending.
 done — parcels D and E read the RAR pair, and threads 51/53/54 read part of `sevenzip_reader.py`
 — so they are the places where the existing threads most obviously stop mid-subsystem. `zip_aes.py`
 thread 15 also lands in S1's territory.
+
+### How sweep coverage is counted
+
+**From the `SWEPT` markers on #315, never from thread counts.** Every file a sweep finishes
+reading gets one top-level comment on #315 whose first line is a machine-readable marker —
+path, batch, date, line count, finding count. The shape is defined in
+[`archivey-review-addendum.md`](../.claude/skills/code-review-skill/reference/archivey-review-addendum.md)
+§10, and [`scripts/sweep_coverage.py`](../scripts/sweep_coverage.py) does the arithmetic:
+
+```
+curl -s 'https://api.github.com/repos/davitf/archivey/issues/315/comments?per_page=100' \
+  | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]' \
+  | python3 scripts/sweep_coverage.py --by-pass --unswept
+```
+
+The denominator is the tree in the checkout, not a number remembered from a previous
+snapshot. A file counts once however many times it has been swept. Lines come from the tree
+rather than from the marker, so a file read six months and a rewrite ago is reported as
+drifted rather than silently counted as current.
+
+**The rule exists because counting threads produced the wrong answer twice.** The 2026-09-17
+snapshot said 24% and a revision on 2026-09-19 said 35%; the true figures were 12% and 23%.
+Both counted the fifteen threads dated 2026-09-07 — maintainer questions on six files no
+agent had read — as sweep output, and the error survived a revision because nothing on #315
+distinguished a file read and found sound from a file nobody opened. It put
+`backends/rar_parser.py`, the largest file in the repository and its most exposed
+hostile-input surface, in the swept column while it had never been read.
+
+**The markers before 2026-09-19 do not exist.** The nine files of the 2026-09-08 pass and the
+seven of S1/S2 were swept before the convention, so the script reports them unswept until
+someone decides whether to backfill markers for them — which would assert a read that the
+backfiller did not perform. Until that is decided, the figures on this page come from the
+file lists reconstructed by hand, and only later batches are machine-counted.
 
 ## The two docs rewrites
 
