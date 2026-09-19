@@ -50,7 +50,7 @@ findings cost to fix — and that is the sweep working as intended rather than a
 | [`threat-model.md`](threat-model.md) | `O*` register | O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`, in tree since #319 |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
 | **Linear** (`Archivey` team) | 39 issues seeded 2026-09-17 | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
-| **The #315 sweep** — *no register* | 75 of 94 `src/` files never reviewed | **The largest open item here.** 27 481 of 36 134 lines unswept; batched into S1–S14 below |
+| **The #315 sweep** — *no register* | 78 of 94 `src/` files never reviewed | **The largest open item here.** 27 999 of 36 298 lines unswept; batched into S1–S14 below |
 | **`dev-docs/formats/`** — *no register* | 2 of ~7 handbook pages written | ZIP and RAR done. `rar.md` alone produced the 21-item `§10` register |
 | **`docs/`** — *tracked in `review/docs-content/`* | ~174 lines of prose + `how-it-works.md` | Skeleton, scope and verified claim inventory all done; the writing is not |
 
@@ -283,6 +283,28 @@ largest file in the repository at 2 358 lines, it is hostile-input surface, and 
 been swept — it carries only davi's eight questions. So the four largest files in the
 repository are all unswept: `rar_parser.py`, `base_reader.py`, `streams/codecs.py` and
 `extraction.py`. `backends/zip_reader.py`, which S1 covered, is the fifth.
+
+**Some of the swept 23% is swept against code that no longer exists.** Measured between
+`7ed4879` (`main` on the pass date) and today, seven of the nine files the 2026-09-08 pass
+read have drifted by more than 10%:
+
+| File | Then | Now | |
+| --- | --- | --- | --- |
+| `streamtools/base.py` | 165 | 251 | +52% |
+| `streamtools/binaryio.py` | 514 | 716 | +39% |
+| `streamtools/slice.py` | 316 | 421 | +33% |
+| `streamtools/solid.py` | 172 | 225 | +31% |
+| `streamtools/__init__.py` | 81 | 93 | +15% |
+| `streamtools/shared.py` | 155 | 135 | −13% |
+| `streamtools/locked.py` | 108 | 96 | −11% |
+
+**The drift is all of `streamtools/` and none of the two native backends**, which moved about
+5% each — and the cause is this page's own history. Nine commits rewrote `streamtools/` since
+the pass, and five of them (#324, #326, #328, #329, #340) are the parcels that fixed the
+findings that pass produced. Draining a sweep's threads rewrites the code the sweep read, so
+`streamtools/` is the subsystem where "swept" has decayed furthest, and it decayed *because*
+the follow-up was done rather than in spite of it. Re-sweeping it is worth more than its
+position in the batch order below suggests.
 
 **S1 and S2 are the evidence for what the rest is worth.** 3 972 lines produced fifteen
 findings, all `CONFIRMED`, including **two 🔴 blocking hostile-input bugs in the 7z parser** —
