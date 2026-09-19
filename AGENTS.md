@@ -388,9 +388,16 @@ tracker is not. Three rules, and they are about the *internal tracker* only:
 - **GitHub `#nnn` is the public record and is always fine** — in PR text, commits,
   comments and repo files alike. This rule does not touch it.
 
-Bare tracker keys already appear inside `dev-docs/` and `openspec/changes/` as internal
-cross-references (`dev-docs/threat-model.md`, for one). Those stay; the rule above is
-about what a PR publishes, not a retroactive sweep of internal notes.
+**Inside `dev-docs/` and `openspec/changes/`, a bare key may mark tracked work — never
+cite one as a source.** Maintainer decision (davitf, 2026-09-19): the data lives in the
+repo and the PRs, so a key says *where this work is tracked*, not *where the reason is
+written*. "The dedup is ARC-54, not this change's job" is fine. "See ARC-54 for the
+measurement" is not — put the measurement here. Test it by deleting the key: if the
+sentence still says everything a reader needs, it was a tracking tag; if the sentence
+now has a hole, the content is in the wrong place. The existing citations in
+`threat-model.md`, `investigations/adr-0014-investigation.md` and two
+`openspec/changes/` files all pass that test, so this is a rule for new writing, not a
+sweep.
 
 Where a finding deserves a durable in-repo home, that is `review/backlog.md` under
 "Parked from PR reviews", with the reasoning in the format handbook
