@@ -50,7 +50,7 @@ Two recurring notes:
 | xz | native `xz.py` over stdlib `lzma` | core | **yes** (block index) | yes (CRC) | yes |
 | lzip | native `lzip.py` over stdlib `lzma` | core | **yes** (trailer scan) | yes (CRC) | yes |
 | LZMA1/LZMA2 (raw) | stdlib `lzma` `FORMAT_RAW` | core | n/a (container-owned) | yes | yes |
-| Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters; LZMA1+BCJ stages BCJ via `pybcj` | core (LZMA2+BCJ); `[recommended]` (`pybcj`) for LZMA1+BCJ | n/a (filter stage) | yes | yes |
+| Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters throughout | core | n/a (filter stage) | yes | yes |
 | raw Deflate / zlib | stdlib `zlib` | core | no (rewind) | yes | yes |
 | zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[recommended]` on <3.14; core on 3.14+ | no (rewind) | yes (frame checksum) | **yes** |
 | lz4 | `lz4` | `[recommended]` | no (rewind) | yes | yes |
@@ -285,9 +285,19 @@ Raw LZMA1/LZMA2 (7z/ZIP coder streams) use stdlib `lzma` in `FORMAT_RAW` with th
 properties. Delta and BCJ-over-**LZMA2** compose into one stdlib filter chain (zero-dep core).
 **LZMA1+BCJ** is different: combining them in one liblzma `FORMAT_RAW` chain can silently
 truncate the final BCJ look-ahead bytes when LZMA1 lacks an EOS marker (common from the
-7-Zip CLI; see BPO-21872 / xz-devel). Archivey stages LZMA1 via stdlib and BCJ via
-`pybcj` (import name `bcj`) under the `[recommended]` extra — the same approach py7zr uses.
-BCJ2 remains unsupported.
+7-Zip CLI; see BPO-21872 / xz-devel). Archivey stages LZMA1 via stdlib and each BCJ filter
+separately — but still through liblzma, not `pybcj` (import name `bcj`), which is the
+approach py7zr uses and which archivey used until 2026-09.
+
+`pybcj` takes the decoder's stream size as a C signed `int`, so it cannot decode a BCJ
+member of 2 GiB or more at all, and its IA64 filter drops the trailing partial 16-byte
+block; both are reachable on archives 7-Zip writes and reads back correctly, and py7zr
+inherits the first. liblzma has neither flaw. Because liblzma refuses a raw chain whose
+only filter is a branch filter, a separately-staged BCJ frames its input as LZMA2
+*uncompressed* chunks (3 bytes per 64 KiB, no compression work) so the chain becomes
+`[<branch filter>, FILTER_LZMA2]`. Output is byte-identical to `pybcj`'s wherever `pybcj`
+is correct, verified across all six filters; see `known-issues.md`. BCJ2 remains
+unsupported.
 
 ### raw Deflate / zlib — stdlib `zlib`, accelerated by `rapidgzip`
 

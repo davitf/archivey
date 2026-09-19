@@ -852,21 +852,20 @@ def test_header_encrypted_empty_decoded_header_rejected(
         parse_sevenzip_archive(archive.open("rb"), password=b"secret")
 
 
-@requires("bcj")
 def test_lzma1_bcj_fixture_roundtrip(tmp_path: Path) -> None:
-    """py7zr LZMA1+BCJ archives decode via staged pybcj (not combined liblzma)."""
+    """py7zr LZMA1+BCJ archives decode via a staged BCJ filter (not combined liblzma)."""
     archive = tmp_path / "lzma1-bcj.7z"
     _write_py7zr_archive(archive, _FILES, filters=_filters("X86", "LZMA"))
     _assert_roundtrip(archive, _FILES)
 
 
-@requires("bcj")
 @requires_binary("7z")
 def test_7z_cli_lzma1_bcj_avoids_liblzma_truncation(tmp_path: Path) -> None:
     """7-Zip CLI LZMA1+BCJ can silently truncate under combined liblzma filters.
 
     A ~12800-byte payload with 0xE8 call patterns reproduces the look-ahead flush
-    failure (output 12796 instead of 12800). Staged pybcj must return full bytes.
+    failure (output 12796 instead of 12800). The staged BCJ filter must return
+    full bytes.
     """
     payload = bytearray(os.urandom(12800))
     for offset in range(0, 12800 - 5, 40):
@@ -1922,9 +1921,8 @@ def test_nameless_7z_members_use_archive_stem(tmp_path: Path) -> None:
 
 
 @requires("py7zr")
-@requires("bcj")
 def test_copy_bcj_folder_roundtrip(tmp_path: Path) -> None:
-    """Standalone BCJ (no LZMA) must stage via pybcj, not the liblzma path."""
+    """Standalone BCJ (no LZMA) must be staged on its own, not folded into a chain."""
     payload = bytes(range(256)) * 40
     archive = tmp_path / "copy_bcj.7z"
     _write_py7zr_archive(
@@ -1933,6 +1931,66 @@ def test_copy_bcj_folder_roundtrip(tmp_path: Path) -> None:
         filters=_filters("X86", "COPY"),
     )
     _assert_roundtrip(archive, {"x.bin": payload})
+
+
+# x86-like machine code: dense enough in branch opcodes that every architecture's
+# filter rewrites something, so these round-trips exercise the filter rather than a
+# pass-through.
+_BCJ_CODE_PATTERN = bytes(
+    [0x8B, 0x45, 0xF8, 0xE8, 0x10, 0x20, 0x00, 0x00]
+    + [0x89, 0x45, 0xFC, 0xE9, 0x00, 0x01, 0x00, 0x00]
+)
+
+
+@pytest.mark.parametrize("method", ["IA64", "ARM", "ARMT", "PPC", "SPARC", "BCJ"])
+@requires_binary("7z")
+def test_bcj_member_whose_length_is_not_a_whole_number_of_blocks(
+    tmp_path: Path, method: str
+) -> None:
+    """Every branch filter must return the trailing partial block.
+
+    IA64 is the one that was broken: pybcj's decoder dropped the final incomplete
+    16-byte block, so a 2911-byte member came back as 2896 bytes and archivey
+    raised ``TruncatedError`` on an archive 7-Zip writes and reads back fine
+    (dev-docs/known-issues.md). 2911 is not a multiple of any filter's block size,
+    so the same payload covers the other five through the liblzma path.
+    """
+    payload = (_BCJ_CODE_PATTERN * 200)[:2911]
+    src = tmp_path / "payload.bin"
+    src.write_bytes(payload)
+    archive = tmp_path / f"{method.lower()}.7z"
+    subprocess.run(
+        ["7z", "a", "-t7z", f"-m0={method}", "-m1=LZMA", str(archive), src.name, "-y"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    _assert_roundtrip(archive, {"payload.bin": payload})
+
+
+def test_bcj_decoder_accepts_an_unpack_size_above_two_gib() -> None:
+    """A BCJ member of 2 GiB or more must be decodable.
+
+    pybcj takes the stream size as a C signed ``int``, so ``BCJDecoder(2**31)``
+    raised a bare ``OverflowError`` — not even an ``ArchiveyError`` — before any byte
+    was read, on archives 7-Zip writes with ``-m0=BCJ -m1=LZMA`` and reads back fine
+    (dev-docs/known-issues.md). The declared size no longer reaches the filter at
+    all, so the same bytes decode the same way whatever it says; this pins that
+    without building a 2 GiB fixture.
+    """
+    import lzma
+
+    from archivey.internal.streams.decompress import BcjDecoder
+
+    payload = bytes(range(256)) * 8
+    small = BcjDecoder(lzma_filter_id=lzma.FILTER_X86, unpack_size=len(payload))
+    huge = BcjDecoder(lzma_filter_id=lzma.FILTER_X86, unpack_size=2**31)
+    assert huge.feed(payload).data == small.feed(payload).data
+    # The declared size still decides whether the stream finished, so the 2 GiB
+    # decoder arms the truncation error that the correctly-sized one does not.
+    assert small.flush().data == huge.flush().data
+    assert small.finished and small.pending_error is None
+    assert not huge.finished and isinstance(huge.pending_error, TruncatedError)
 
 
 _LZ4_7Z_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sevenzip" / "lz4.7z"
@@ -2074,19 +2132,27 @@ def test_lz4_without_lz4_package_raises(monkeypatch: pytest.MonkeyPatch) -> None
         )
 
 
-def test_missing_pybcj_hint_names_a_real_extra(monkeypatch: pytest.MonkeyPatch) -> None:
-    """LZMA1+BCJ without pybcj must advise an extra that can actually be installed.
+@requires_binary("7z")
+def test_lzma1_bcj_decodes_without_pybcj_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BCJ decoding must not import ``bcj``: liblzma carries the branch filters now.
 
-    ``sys.modules[name] = None`` makes the guarded ``import bcj`` raise ImportError, so
-    this runs in every dependency leg including the one where pybcj is present.
+    ``sys.modules[name] = None`` makes any ``import bcj`` raise ImportError, so this
+    runs in every dependency leg including the one where pybcj is present.
     """
     import sys
 
-    from archivey.internal.backends import sevenzip_pipeline
+    payload = bytes(range(256)) * 50
+    src = tmp_path / "payload.bin"
+    src.write_bytes(payload)
+    archive = tmp_path / "lzma1-bcj-no-pybcj.7z"
+    subprocess.run(
+        ["7z", "a", "-t7z", "-m0=BCJ", "-m1=LZMA", str(archive), src.name, "-y"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
 
     monkeypatch.setitem(sys.modules, "bcj", None)
-    with pytest.raises(PackageNotInstalledError) as excinfo:
-        sevenzip_pipeline._require_pybcj()
-    message = str(excinfo.value)
-    assert "pybcj" in message
-    assert "archivey[recommended]" in message
+    _assert_roundtrip(archive, {"payload.bin": payload})

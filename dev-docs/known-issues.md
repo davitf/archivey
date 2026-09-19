@@ -28,19 +28,19 @@ then, `test_inexact_7z_decoy_loses_to_a_later_exact_payload` is
 `pyproject.toml`, so `strict=True` is on the marker). `[~]` on task 2.3 stops
 `prefixed-archive-detection` from archiving while this stands.
 
-## 7z BCJ members at or above 2 GiB: `pybcj` takes a C `int32` size (open)
+## 7z BCJ branch filters: two `pybcj` defects, now decoded through liblzma (fixed)
 
-**Status: open / shared with upstream.** Found in the S15 7z sweep as finding K5. An
-ordinary 7z archive — one 7-Zip writes itself and `7z t` verifies — is unreadable when a
-member is **2 GiB or larger** and the folder uses a **BCJ** filter. Nothing is crafted and
-no attacker is involved: `7z a -m0=BCJ -m1=LZMA` over any 2 GiB-plus file produces one.
+**Status: fixed in archivey; both defects open upstream.** Found in the S15 7z sweep as
+finding K5. Two ordinary archives — written by 7-Zip, verified by `7z t`, read back
+correctly by 7-Zip itself — were unreadable, because archivey ran BCJ branch filters
+through `pybcj`. They now run through liblzma, in core, for every folder shape, and
+`pybcj` has left the `[recommended]` extra. Kept here because the measurements are what
+rule out the obvious cheaper fixes, and because the upstream bugs are still live for
+anyone else calling `pybcj` — py7zr included.
 
-`pybcj`'s C extension parses the decoder's stream-size argument as a C **signed** `int`, so
-constructing a decoder for a stream that size raises a bare `OverflowError` before a byte is
-read. Archivey passes the folder's declared unpack size straight in
-(`streams/decompress.py`, `BcjDecoder.__init__`), so the failure surfaces from
-`open_archive(...).open(member)`, inside `sevenzip_pipeline.open_folder_pipeline` →
-`_execute_stage`. Listing the same archive works.
+### Defect 1: a member of 2 GiB or more could not be opened at all
+
+`pybcj`'s C extension parses the decoder's stream-size argument as a C **signed** `int`:
 
 ```
 >>> import bcj
@@ -50,15 +50,38 @@ read. Archivey passes the folder's declared unpack size straight in
 OverflowError: signed integer is greater than maximum
 ```
 
-All six decoders take the same argument and fail the same way: `BCJDecoder` (x86),
-`ARMDecoder`, `ARMTDecoder`, `PPCDecoder`, `SparcDecoder`, `IA64Decoder`. Sizes at or above
-2^63 fail earlier still, with `Python int too large to convert to C long` — the argument is
-read as a C `long` and then range-checked to `int`.
+Archivey passed the folder's declared unpack size straight in, so `reader.open(member)`
+raised that builtin from `sevenzip_pipeline.open_folder_pipeline` → `_execute_stage`,
+before a byte was read. Listing the same archive worked. All six decoders took the same
+argument and failed the same way: `BCJDecoder` (x86), `ARMDecoder`, `ARMTDecoder`,
+`PPCDecoder`, `SparcDecoder`, `IA64Decoder`. Sizes at or above 2^63 fail earlier still,
+with `Python int too large to convert to C long` — the argument is read as a C `long` and
+then range-checked to `int`.
 
-### Which archives are affected
+Nothing is crafted and no attacker is involved: `7z a -m0=BCJ -m1=LZMA` over any
+2 GiB-plus file produces one. (A crafted archive reaches it more cheaply — a header may
+declare a multi-GiB unpack size behind a few hundred bytes of pack data — but the bug
+needs no crafting.)
 
-Measured by spying on `bcj.BCJDecoder` while archivey read a small archive of each shape, so
-the rows say where a pybcj stage is built at all, not just where 2 GiB was reached:
+**`OverflowError` is not an `ArchiveyError`.** `SevenZipReader._translate_exception` maps
+only `EOFError`, and the base translator returns `None` by design — CONTRIBUTING's
+never-a-catch-all rule, correct for *unrecognized* exceptions. This one was reachable on a
+**valid** archive, so `except ArchiveyError` missed a failure
+`docs/errors-and-diagnostics.md` promises it catches. That was archivey's own bug whatever
+upstream decided, and the fix removes it rather than translating it.
+
+### Defect 2: IA64 lost the trailing partial block, at any size
+
+`pybcj`'s IA64 decoder drops the final incomplete 16-byte block. A 2911-byte member came
+back as 2896 bytes, so archivey raised `TruncatedError` on an archive `7z x` extracts
+byte-for-byte. It reproduces from **21 bytes** up — no size threshold, no crafted input.
+The other five filters are unaffected: over 120 random payloads each, liblzma and `pybcj`
+agreed exactly for x86, ARM, ARMT, PPC and SPARC, and disagreed on IA64 in 80 of 120.
+
+### Which archives were affected
+
+Measured by spying on `bcj.BCJDecoder` while archivey read a small archive of each shape,
+so the rows say where a `pybcj` stage was built at all, not just where 2 GiB was reached:
 
 | Folder coders | pybcj stage built with | Affected |
 | --- | --- | --- |
@@ -69,79 +92,62 @@ the rows say where a pybcj stage is built at all, not just where 2 GiB was reach
 | `BCJ` + `Copy` | the member's unpack size | yes |
 | `BCJ` + `LZMA2` | *(none built)* | **no** |
 
-`BCJ` + `LZMA2` is exempt because `sevenzip_pipeline._plan_lzma_family` folds the branch
-filter into one liblzma chain there (`[FILTER_X86, FILTER_LZMA2]`) and never reaches pybcj.
-Confirmed at full size, not only structurally: the same 2.1 GiB payload written with
-`7z a -m0=BCJ -m1=LZMA2` reads back through archivey in 28 s to a SHA-256 matching the
-source. The other pairs stage BCJ separately — LZMA1 because of the BPO-21872 truncation the module
-documents, the rest because liblzma will not run a raw chain whose only filter is a BCJ
-(`lzma.LZMADecompressor(FORMAT_RAW, [{"id": FILTER_X86}])` raises
+`BCJ` + `LZMA2` was exempt because `sevenzip_pipeline._plan_lzma_family` folds the branch
+filter into one liblzma chain there (`[FILTER_X86, FILTER_LZMA2]`) and never reached
+`pybcj`. Confirmed at full size, not only structurally: the same 2.1 GiB payload written
+with `7z a -m0=BCJ -m1=LZMA2` read back through archivey in 28 s to a SHA-256 matching the
+source. The other pairs staged BCJ separately — LZMA1 because of the BPO-21872 truncation
+the module documents, the rest because liblzma will not run a raw chain whose only filter
+is a BCJ (`lzma.LZMADecompressor(FORMAT_RAW, [{"id": FILTER_X86}])` raises
 `LZMAError: Invalid or unsupported options`).
-
-A crafted archive reaches the same crash cheaply — a header may declare a multi-GiB unpack
-size behind a few hundred bytes of pack data — but the bug needs no crafting to hit.
 
 ### py7zr fails identically (measured, not inferred)
 
-py7zr 1.1.3 lists the same archive and then raises the same exception from
+py7zr 1.1.3 lists the 2 GiB archive and then raises the same exception from
 `compressor.py:671` → `_get_alternative_decompressor` → `BCJDecoder.__init__` →
-`bcj.BCJDecoder(size)` (`compressor.py:467`), passing `unpacksizes[i]` with no bound. This is
-pybcj's API limit surfacing in every caller, not an archivey-specific mistake.
+`bcj.BCJDecoder(size)` (`compressor.py:467`), passing `unpacksizes[i]` with no bound. The
+ceiling is `pybcj`'s API surfacing in every caller, not an archivey-specific mistake.
 
-### Archivey's own bug, regardless of where the root cause sits
+### What archivey does now
 
-`OverflowError` is not an `ArchiveyError`. `SevenZipReader._translate_exception` maps only
-`EOFError`, and the base translator returns `None` by design — CONTRIBUTING's
-never-a-catch-all rule, which is correct for *unrecognized* exceptions. This one is now
-recognized and reachable on a **valid** archive, so it is ours to map:
-`docs/errors-and-diagnostics.md` promises that every failure coming from the archive or its
-environment derives from `ArchiveyError`, and today `except ArchiveyError` does not catch
-this. That part is fixable in archivey whatever upstream decides.
+A BCJ coder inside an LZMA2 chain is folded into that chain, as before. A BCJ coder staged
+on its own — after LZMA1, after a non-LZMA codec, or alone — runs as a raw liblzma chain of
+`[<branch filter>, FILTER_LZMA2]` with its input framed as LZMA2 **uncompressed** chunks
+(`_Lzma2Framer` in `streams/decompress.py`). The framing exists only because liblzma
+rejects a chain whose last filter is not a compression filter; it compresses nothing and
+costs 3 bytes per 64 KiB, 0.005% of the payload. The declared unpack size no longer reaches
+the filter at all — it decides only whether the stream finished.
 
-### Options, and what each costs
+Measured on the 2.1 GiB BCJ+LZMA1 archive: 2 254 857 830 bytes in 30.7 s, SHA-256 matching
+the source, against 28.0 s for the same payload as BCJ+LZMA2. LZMA1+BCJ still never goes
+into one combined `FORMAT_RAW` chain; BPO-21872 is a separate defect and that staging rule
+is unchanged.
 
-**1. Translate the error (small, correct, does not read the archive).** Map the
-construction-time `OverflowError` at the BCJ stage to `UnsupportedFeatureError` naming the
-member and its size. Restores the `ArchiveyError` contract and turns an opaque builtin into a
-message that says what is wrong. Does not make the member readable.
+### The cheaper fixes that look right and are not
 
-**2. Decode BCJ through liblzma by reframing (reads the archive; verified byte-identical).**
-liblzma has no 32-bit stream-size limit. It refuses a raw chain of BCJ alone, but accepts
-`[FILTER_X86, FILTER_LZMA2]` — so wrapping the already-decompressed bytes as LZMA2
-**uncompressed chunks** (one 5-byte header per 64 KiB, plus a one-byte end marker) gives
-liblzma a chain it will run, and the BCJ output is identical to pybcj's. Framing overhead is
-0.0046%. Measured end to end on the 2.1 GiB payload below: liblzma decoded all 2 254 857 830
-bytes at 236 MiB/s to a SHA-256 matching the source, for a stream `bcj.BCJDecoder` cannot
-even be constructed for. On an 8 MiB micro-benchmark the reframed path ran at 78 MiB/s
-against pybcj's 86 MiB/s on the same bytes. It also reuses the liblzma chain path that
-`BCJ` + `LZMA2` already takes. Costs: synthesizing a container in the read path, and the
-seek/`recreate` path has to reset framing state with the decoder.
+Both were tested rather than reasoned about, because both are the first thing to try.
 
-**3. Clamping the declared size — does not work, and fails silently.** The size is not a
-buffer hint; it is the position at which the filter releases its last look-ahead bytes. Over
-300 random payloads decoded against liblzma as the reference, a declared size **equal** to
-the true size was correct 300/300; half the true size was wrong 232/300, `1` was wrong
-257/300, and an overstated size was wrong **300/300** — output either 4 bytes short or the
-same length with wrong bytes. That is precisely the silent truncation CONTRIBUTING forbids.
+**Clamping the declared size** does not work: the size is not a buffer hint but the
+position at which `pybcj` releases its final look-ahead bytes. Over 300 random payloads
+decoded against liblzma's `FILTER_X86` as the reference, a declared size **equal** to the
+true size was correct 300/300; half the true size was wrong 232/300, `1` was wrong 257/300,
+and an overstated size was wrong **300/300** — output either 4 bytes short or the same
+length with wrong bytes. That is the silent truncation CONTRIBUTING forbids.
 
-**4. Chunking pybcj per 2 GiB window — does not work.** The x86 filter is
-position-dependent (`distance = current_position + i`) and pybcj exposes no start offset, so
-a fresh decoder for a window beginning at a nonzero offset decodes wrong: over a 64 KiB x86
-payload split into 16 KiB windows, 9 318 of 65 536 bytes differed from the correct output.
+**Chunking `pybcj` per 2 GiB window** does not work either: the x86 filter is
+position-dependent (`distance = current_position + i`) and `pybcj` exposes no start offset,
+so a fresh decoder for a window beginning at a nonzero offset decodes wrong. A 64 KiB x86
+payload split into 16 KiB windows came back with 9 318 of 65 536 bytes wrong.
 
-**5. pybcj's own pure-Python fallback (`bcj._bcjfilter`) — rejected.** It accepts a 3 GiB
-stream size, but it runs at 3.2 MiB/s against the C extension's 582 MiB/s on the same x86-like
-data (182x slower; roughly eleven minutes for the 2.1 GiB member), and it is **not
-equivalent**: on a 64 KiB x86-like input its output differs from liblzma's in the final two
-bytes. Worth reporting upstream on its own.
-
-Option 1 is a prerequisite either way — even with option 2 in place, a BCJ variant liblzma
-cannot express still needs a typed refusal.
+**`pybcj`'s own pure-Python fallback (`bcj._bcjfilter`)** accepts a 3 GiB stream size, but
+runs at 3.2 MiB/s against the C extension's 582 MiB/s on the same x86-like data (182x
+slower; roughly eleven minutes for a 2.1 GiB member), and is **not** equivalent: on a
+64 KiB x86-like input its output differs from liblzma's in the final two bytes. Worth
+reporting upstream on its own.
 
 ### Reproduction
 
-Needs ~2.5 GB of free disk and a few minutes of CPU. 7-Zip's own `t` verifies the archive,
-so any failure below is the reader's.
+Needs ~2.5 GB of free disk and a few minutes of CPU. The IA64 case needs neither.
 
 ```bash
 python - <<'PY'
@@ -156,39 +162,40 @@ with open("big.bin", "wb") as f:
         f.write(chunk[:n])
         written += n
 PY
-7z a -m0=BCJ -m1=LZMA big_bcj_lzma1.7z big.bin   # 2 254 857 830 bytes in
+7z a -m0=BCJ -m1=LZMA big_bcj_lzma1.7z big.bin
 7z t big_bcj_lzma1.7z                            # Everything is Ok
+
+head -c 2911 big.bin > ia64.bin
+7z a -m0=IA64 -m1=LZMA ia64.7z ia64.bin
 ```
+
+Both read correctly now. Against the pre-fix reader, the first raised
+`OverflowError: signed integer is greater than maximum` from `reader.open(member)` and the
+second raised `TruncatedError`. The upstream defects are still reproducible directly:
 
 ```python
-import archivey
+import bcj
 
-with archivey.open_archive("big_bcj_lzma1.7z") as reader:
-    member = next(m for m in reader.members() if m.is_file)
-    print(member.name, member.size)   # big.bin 2254857830 — listing is fine
-    try:
-        reader.open(member)
-    except archivey.ArchiveyError:
-        raise SystemExit("unexpected: this is not currently an ArchiveyError")
-    except OverflowError as exc:
-        print("reproduced:", exc)     # signed integer is greater than maximum
+bcj.BCJDecoder(2**31)                     # OverflowError
+
+pat = bytes([0x8B, 0x45, 0xF8, 0xE8, 0x10, 0x20, 0x00, 0x00,
+             0x89, 0x45, 0xFC, 0xE9, 0x00, 0x01, 0x00, 0x00])
+src = (pat * 20)[:21]
+encoder = bcj.IA64Encoder()
+filtered = encoder.encode(src) + encoder.flush()
+assert bcj.IA64Decoder(len(src)).decode(filtered) == src   # fails: 16 bytes of 21
 ```
-
-`py7zr.SevenZipFile("big_bcj_lzma1.7z").extract(path="out")` raises the same `OverflowError`
-on the same file.
 
 | | |
 | --- | --- |
 | Payload | 2 254 857 830 bytes (2.1 GiB) of repeating x86-like code |
 | Archive | 93 760 017 bytes, `Method = BCJ LZMA:24`, one folder, `7z t` Everything is Ok |
-| LZMA2 control | same payload, `Method = BCJ LZMA2:24`, 93 760 614 bytes — archivey reads it |
+| LZMA2 control | same payload, `Method = BCJ LZMA2:24`, 93 760 614 bytes |
 | Measured | CPython 3.11.15, pybcj 1.0.7, py7zr 1.1.3, 7-Zip 23.01, Linux x86-64 |
 
-Archivey's own regression test cannot ship this fixture: the archive is 90 MB and the payload
-is 2.1 GiB. A test has to build both at run time and skip when disk or time is short, or
-construct a small archive whose header is patched to declare an unpack size above the
-boundary — which means fixing `NextHeaderCRC` and then `StartHeaderCRC` over the bytes that
-cover it, with the header left uncompressed (`-mhc=off`).
+The regression tests are in `tests/test_sevenzip_reader.py`: the IA64 case round-trips a
+2911-byte member through `7z`, and the 2 GiB case pins `BcjDecoder` against an `unpack_size`
+of 2^31 without building a fixture, since the size no longer reaches the filter.
 
 ## MacPaw `unar` / XADMaster: RAR5 solid + empty FILE is silent-wrong (open)
 
