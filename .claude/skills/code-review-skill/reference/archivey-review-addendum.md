@@ -746,6 +746,12 @@ the file was read at all, **whether or not it found anything**:
   path once however many markers it carries, so a slip cannot inflate the figure — it warns
   instead when one path carries two markers from the same pass.
 
+`lines=` is recorded as read, not looked up later, because coverage decays: the first
+backfill showed seven of nine files from the 2026-09-08 pass more than 10% away from the shape
+that pass read, all in the one package whose findings had since been fixed. Draining a sweep's
+threads rewrites the code the sweep read, so a marker that could only say "swept" would
+overstate the subsystem where the follow-up was most thorough.
+
 **A marker for a read you did not perform carries `backfilled=<date>` as a final field**, and
 its prose says in as many words that nobody re-read the file. That form exists for one event
 — the sixteen files swept on 2026-09-08 and 2026-09-17, before the convention, backfilled on

@@ -390,13 +390,13 @@ carries `backfilled=2026-09-19` and says in its own text that nobody re-read the
 records the pass that did — and each was reconstructed from the paths the threads landed on,
 the batch scope tables, and `main`'s tip on the pass date. The command above reproduces this
 page's hand-derived 16 files and 8 299 lines exactly, which is the check that the
-reconstruction is not a fresh guess. The reconstruction also surfaced something the hand
-count could not: seven of the nine files from 2026-09-08 have drifted more than 10% since
-they were read, `binaryio.py` from 514 lines to 716, so part of that coverage stands against
-a shape the code no longer has.
+reconstruction is not a fresh guess. Because each marker records the line count as read, the
+drift table above falls straight out of them rather than needing to be measured by hand
+again.
 
-**So the number below is a snapshot and the command is the source.** Batches running on
-2026-09-19 post markers as they finish files, which moves the figure within a day.
+**So every coverage number on this page is a snapshot and the command is the source.** The
+batches running on 2026-09-19 post markers as they finish each file, which moves the figure
+within a day; a row here is what was true when the row was written.
 
 ## The two docs rewrites
 

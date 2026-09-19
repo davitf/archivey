@@ -45,5 +45,19 @@ lines, 22.9% — which is the check that it is not a fresh guess.
 Two caveats live in the markers rather than here. The 2026-09-08 pass recorded no head, so
 `head=7ed4879` is inferred from the date; and its file list comes from the paths its findings
 landed on, so a file it read and found clean is not represented anywhere and never can be.
-Seven of its nine files have since drifted by more than 10% — `binaryio.py` from 514 lines to
-716 — so they are marked swept against a shape the code no longer has.
+
+## Coverage decays, and fastest where the sweep worked best
+
+The backfill made something visible that the thread counts never could: seven of the nine
+files from 2026-09-08 have drifted more than 10% since they were read, all of them in
+`streamtools/` and neither native backend. The cause is the sweep's own success — five of the
+nine commits that rewrote `streamtools/` since that pass are the parcels that fixed the
+findings the pass produced.
+
+So "swept" decays, and it decays furthest exactly where the follow-up was most thorough. That
+is why a marker records `lines=` as read rather than pointing at the file: it is what lets
+[`sweep_coverage.py`](../../scripts/sweep_coverage.py) report a file as drifted instead of
+counting a stale read as current, and it is an argument for re-sweeping a subsystem after its
+parcels land rather than treating one pass as permanent.
+[`dev-docs/open-work-inventory.md`](../../dev-docs/open-work-inventory.md) carries the
+measured table.
