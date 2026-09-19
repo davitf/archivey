@@ -79,6 +79,20 @@ a stranger commenting `@claude review`.
   of review and fixes have not converged, another round is not the missing ingredient.
 - **`loop:off`** takes a pull request out permanently.
 
+## Sharing `@claude` with the general assistant
+
+`.github/workflows/claude.yml`, written by the Claude GitHub App installer, answers
+`@claude` on any comment. This loop listens to the same `issue_comment` event and wants
+`@claude review` for itself, so `claude.yml` carries a `!contains(…, '@claude review')`
+guard and the two split the traffic exactly.
+
+"Exactly" is the requirement, not a nicety: a phrase both match starts two agents on one
+comment, and a phrase neither matches is a comment that silently does nothing. GitHub
+expressions have no regex, so the loop's trigger is the same plain, case-insensitive
+substring that `contains()` tests, and `tests/test_review_loop_gate.py` asserts the two
+agree on a table of near misses. Re-running the App installer overwrites `claude.yml`
+and drops the guard.
+
 ## What stays manual
 
 - **Merging.** Nothing in the loop merges, approves, or pushes to `main`.
@@ -92,11 +106,14 @@ a stranger commenting `@claude review`.
 
 ## Setup
 
-One repository secret, `CLAUDE_CODE_OAUTH_TOKEN`, generated with `claude setup-token`
-and added under Settings → Secrets and variables → Actions. `ANTHROPIC_API_KEY` works
-in its place if per-token billing is preferred; swap the input name in the workflow.
-The Claude GitHub App must be installed on the repository, which is what gives the
-review its `claude[bot]` identity.
+Already done, by the Claude GitHub App installer on 2026-09-19: it installed the App —
+which is what gives the review its `claude[bot]` identity — wrote `claude.yml`, and set
+the `CLAUDE_CODE_OAUTH_TOKEN` repository secret this workflow reads. Confirmed working
+by the first `claude.yml` run, which reached the model rather than failing at setup.
+
+Should it ever need redoing by hand: `claude setup-token`, then Settings → Secrets and
+variables → Actions. `ANTHROPIC_API_KEY` works in its place if per-token billing is
+preferred; swap the input name in the workflow.
 
 The loop labels are created on first use by the workflow, so there is nothing to set up
 by hand.
