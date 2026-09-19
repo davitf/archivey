@@ -5,14 +5,16 @@ symbols — so text-to-speech reads cleanly. Aim for ~200–280 words. Derive it
 proposal.md / design.md / tasks.md; do not introduce new decisions here.
 -->
 
-# verification-integrity-mode — A streaming default and a strict opt-in for content verification
+# verification-integrity-mode — A strict opt-in for content verification
 
-**Status:** Design proposal, open questions on naming and where the small first half lands. Depends on the gzip truncation change. Effort: the default-consistency half is small; the strict mode is larger.
+**Status:** Design proposal, accepted but deliberately not scheduled. Two questions stay open: what to call the modes, and whether a seek under strict verifies ahead or simply fails. Effort: moderate, and gated on a design question it shares with another idea.
 
-**Why it matters:** Content verification today is verify-as-you-go. If you read a member fully, you get a verdict; if you read part of it, or seek, or read then close, verification is quietly abandoned. That is a deliberate streaming choice, but it means integrity is not guaranteed for every access pattern. Two things are inconsistent. Encrypted members break the rule the strict way: WinZip AES drains and checks its authentication tag on close, raising a corruption error from close, verifying a partial read that a checksummed member would not. Checksummed members break it the lax way: there is no way to demand full verification, which is exactly what extracting an untrusted archive wants.
+**Why it matters:** Content verification is verify-as-you-go. Read a member fully and you get a verdict; read part of it, or seek, or read then close, and verification is quietly abandoned. That is deliberate, it is what keeps verification inside the performance budget, and decision fourteen settled it as the contract. What is missing is the way out of that bargain. Someone extracting an untrusted archive wants to demand verification however they read, and there is no way to ask. For an encrypted member the gap is sharper, because the authentication tag sits at the end: a partial read hands back plaintext that nobody has authenticated, with no error and no signal. The caller who most needs the guarantee is the one who cannot get it.
 
-**What it does:** It makes verification a mode. The default, streaming, is uniform: a verdict only from the read that finishes the stream; partial reads, seeks, and close are quiet, and close never surfaces a first content fault, for checksums and encrypted members alike. The encrypted close-drain goes away, though a full read still authenticates. A new opt-in strict mode guarantees a verdict no matter how you read: it verifies the whole member before handing out untrusted bytes, forces a full pass around a seek, and completes verification on close, the same way for checksums and authentication tags. Strict can force a full decompress or decrypt in advance, so it knowingly breaks the performance budget, and that cost is documented.
+**What already happened:** This proposal had two halves and the first one shipped. Pull request three hundred and fifty removed the WinZip AES close-time drain, so the default is now uniform across checksummed and encrypted members, and two of the four original questions went with it.
 
-**Assessment:** Not overkill. It fits the safe-by-default and honest-cost goals, and it turns the encrypted always-authenticate behavior into one uniform mode instead of a per-format surprise.
+**What it does:** It adds one opt-in mode, strict, that guarantees a verdict no matter how you read. A partial read forces a bounded verifying pass. A seek either verifies ahead or fails, never silently drops the check. Close completes verification. Strict can force a full decompress or decrypt in advance, so it knowingly breaks the performance budget, and it is never selected implicitly.
 
-**Your call:** Names for the mode, whether the small default-consistency fix rides with the gzip change, and whether a strict seek verifies ahead or simply fails.
+**Why it is not scheduled:** The maintainer asked that strict and the separate idea of verification state as data, a verified level on a stream plus an on-demand verify method, be designed as one question rather than two. Both run through the same verifier class, and a mode flag designed alone would later have to be reconciled with a level model covering the same ground.
+
+**Your call, when it comes up:** the names, and whether a strict seek verifies ahead or fails.

@@ -1,57 +1,85 @@
+# An opt-in mode that guarantees a verdict however the caller reads
+
 ## Why
 
-Decompressed-content verification (CRC/digest, declared length, and encrypted
-members' authentication tags) is **verify-as-you-go**: the verdict fires from the
-read that completes the stream, and a partial read, a seek off the sequential
-frontier, or a read-then-close **abandons** verification with no verdict. That is
-a deliberate streaming / perf-budget choice, but it means integrity is **not
-guaranteed for every access pattern** — a caller can consume unverified (and for
-encrypted members, unauthenticated) bytes and get no error.
+Content verification is verify-as-you-go. A full read yields a verdict; a partial
+read, a seek off the sequential frontier, or a read-then-close **abandons**
+verification quietly. That is deliberate — it is what keeps verification inside the
+performance budget — and ADR 0014 settled it as the contract: *integrity verdicts
+surface from reads, never from `close()`*.
 
-Two inconsistencies make this sharp:
+**What is missing is the opt-out from that bargain.** A caller extracting an
+untrusted archive wants "verify everything, however I read it", and there is no way
+to ask. For an encrypted member the gap is sharper than for a checksummed one: the
+authentication tag is at the end of the member, so a partial read returns AE-2
+plaintext that **no one has authenticated**, with no error and no signal. The
+caller who most needs the guarantee is exactly the one who cannot get it.
 
-- **Encrypted members break the rule in the *strict* direction.** WinZip AES
-  (`WinZipAesDecryptStream.close`) drains the remaining ciphertext and verifies
-  the trailing HMAC **on `close()`**, raising `CorruptionError` from close even
-  for a partial-read caller. That surfaces a content fault from close (the very
-  thing `compressed-streams` now forbids), verifies partial-read abandons that a
-  CRC member would not, and makes the same access pattern behave differently by
-  format — a "no surprises" violation.
-- **Digest/CRC members break it in the *lax* direction.** A caller that reads a
-  fixed prefix, or seeks, then closes gets no verdict — acceptable for streaming,
-  but there is no opt-in for "verify everything regardless of how I read it,"
-  which is exactly what extracting untrusted archives wants.
+ADR 0014 names this change as the answer —
+*"Callers who need verification regardless of access pattern use
+`VerificationMode.STRICT` (`verification-integrity-mode`)"* — so the ADR is
+accepted and merged with a pointer at work that does not exist yet.
 
-The uniform, honest fix is a **verification mode**: a consistent streaming
-default (no content fault ever from `close`, for CRC *and* AES alike) plus an
-opt-in strict mode that guarantees verification independent of access pattern.
+## What already shipped
 
-Depends on `gzip-zlib-truncation-recovery` (the "content faults raise from read,
-never from close" requirement and the `finish_on_close` teardown-only close).
+**This proposal originally had two halves, and the first one landed.** It argued
+that the default was not uniform, because WinZip AES drained the remaining
+ciphertext and verified the HMAC from `close()`, raising a content fault from close
+and verifying an abandon that a CRC member would not.
+
+PR #350 removed that drain. `zip_aes.py` now closes without draining, citing
+ADR 0014, and `compressed-streams` carries *"Content faults raise from read, never
+from close"* as a requirement. The default is uniform across digest and auth-tag
+members, and nothing here revisits it.
+
+**Two of the four open questions went with it.** Whether the default-consistency
+fix should ride with `gzip-zlib-truncation-recovery` is moot — it shipped
+separately. Whether a partial read of an encrypted member quietly returning
+unauthenticated bytes is the accepted default is answered: it is what the library
+does, and ADR 0014 states why.
 
 ## What Changes
 
-- **Default (`STREAMING`) made uniform.** Content verdicts (digest, length,
-  auth-tag) fire only from the completing read; partial read / seek-off-frontier /
-  read-then-close abandon with no verdict; `close()` never surfaces a first
-  content fault — **including encrypted members**. The WinZip AES close-drain is
-  removed from the default path (the HMAC still fires on a full read, when the
-  authenticating bytes are consumed).
-- **New opt-in `VerificationMode.STRICT`** on `ArchiveyConfig`. STRICT guarantees
-  a verdict regardless of access pattern, uniformly for CRC/digest *and* encrypted
-  auth tags:
-  - a member whose integrity cannot be confirmed never returns bytes that are
-    silently trusted — STRICT verifies the whole member (decompress/decrypt-ahead)
-    and raises before/at the point the unverifiable bytes would be handed out;
-  - a seek that would disable frontier verification first forces a full verifying
-    pass (or fails the seek) rather than silently dropping the check;
-  - `close()` after a partial read completes verification (drain + verdict).
-- **Honest cost signal.** STRICT can force a full decompress/decrypt ahead of use
-  and therefore **breaks the ≤~1.3× budget by design**; the cost model / docs say
-  so, and the mode is never the default.
-- **Encrypted-member policy is a mode, not a per-format special case.** "Always
-  authenticate" becomes STRICT behavior applied uniformly, not a gzip-vs-AES
-  surprise baked into one backend's `close`.
+**One new opt-in mode, and nothing else.** `VerificationMode.STRICT` guarantees a
+verdict regardless of access pattern, uniformly for digest and auth-tag members:
+
+- a member whose integrity cannot be confirmed does not silently yield trusted
+  bytes — a partial read forces a bounded full verifying pass and raises on a
+  corrupt, tampered or short member;
+- a seek that would disable frontier verification forces a full verifying pass, or
+  fails the seek with a typed error — never silently drops the check;
+- `close()` after a partial read completes verification.
+
+`STREAMING` is named as the existing default so the two have a common vocabulary.
+It is a name for what the library already does, not a change to it.
+
+**The cost is stated, not hidden.** STRICT can force a full decompress or decrypt
+ahead of use and therefore breaks the ≤~1.3× budget by design. It is never selected
+implicitly, and the verify-ahead pass is bounded by `extraction_limits` so it does
+not become a decompression-bomb surface of its own.
+
+## Sequencing — designed together with `stream.verified`
+
+**STRICT is not ready to implement, and this is why.** The maintainer attached a
+constraint to it: STRICT and the *"Verification state as data: `stream.verified`
+plus an on-demand `verify()`"* idea in `dev-docs/IDEAS.md` are **one design
+question, not two**. Both thread through the same class — `MemberVerifier`
+(`src/archivey/internal/streams/verify.py`) is where a mode would be plumbed and
+where a `verified` level would be computed.
+
+The risk of ignoring that is concrete: a boolean-ish mode flag designed alone would
+later have to be reconciled with a level-and-ceiling model covering the same ground.
+The IDEAS entry has already worked through the hard part of that model — that a
+level needs a **ceiling** as well as a current value, because a stored 7z member
+with no CRC can never reach `CONTENT`, so `while stream.verified < CONTENT:
+stream.verify()` would spin. It also separates a stream-level `verify()`, which can
+only upgrade while the stream is alive, from a `reader.verify(member)`, which is a
+different capability.
+
+So this change is **accepted as the statement of the requirement and not
+scheduled**. The two remaining open questions in `design.md` — naming, and whether
+a seek under STRICT verifies ahead or fails — are cheaper to answer once, alongside
+that model, than twice.
 
 ## Capabilities
 
@@ -61,26 +89,21 @@ never from close" requirement and the `finish_on_close` teardown-only close).
 
 ### Modified Capabilities
 
-- `compressed-streams` — verification timing becomes a documented **mode**:
-  a uniform streaming default (no content fault from `close` for digest *and*
-  auth-tag members; abandon = no verdict) and an opt-in `STRICT` mode guaranteeing
-  a verdict across partial reads, seeks, and close, with an honest cost signal.
+- `compressed-streams` — verification timing becomes a documented **mode**: the
+  shipped lazy-abandon behaviour is named `STREAMING`, and an opt-in `STRICT`
+  guarantees a verdict across partial reads, seeks and close, with an honest cost
+  signal.
 
 ## Impact
 
-- Modules: `config.py` (`VerificationMode` enum + `ArchiveyConfig` field);
-  `internal/streams/verify.py` (`MemberVerifier` mode plumbing);
-  `internal/zip_aes.py` (`WinZipAesDecryptStream.close` no longer drains/authenticates
-  in the default mode); the fused `ArchiveStream` path; possibly the seek path that
-  disables verification.
-- Public API: new `VerificationMode` + `ArchiveyConfig.verification_mode`
-  (default `STREAMING`); no change to the streaming default's observable behavior
-  except that encrypted members no longer raise a content fault from `close` in
-  the default mode.
-- Deps/extras: none.
-- Tests: default — AES partial-read-then-close is quiet, full read still
-  authenticates; STRICT — partial read of a corrupt/tampered member raises,
-  seek-then-read still verifies (or the seek fails), close completes verification;
-  parity across CRC and AES.
-- Docs: `costs` (STRICT breaks the budget), `safe-extraction` (when to use STRICT),
-  `usage` (the config knob), a decision note.
+- **Modules:** `config.py` (`VerificationMode` enum plus an `ArchiveyConfig`
+  field); `internal/streams/verify.py` (`MemberVerifier` mode plumbing); the fused
+  `ArchiveStream` path; the seek path that disables verification.
+- **Public API:** a new enum and config field, defaulting to today's behaviour.
+  Additive; no observable change to the default path.
+- **Not implemented, and not scheduled.** Specs-first. `tasks.md` describes the
+  implementation for when the design question above is settled.
+- **Deps/extras:** none.
+- **Docs:** `costs` (STRICT breaks the budget), `safe-extraction` (when to use it,
+  and that STREAMING returns unauthenticated bytes on a partial read of an
+  encrypted member), `usage` (the knob).

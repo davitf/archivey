@@ -2,8 +2,10 @@
 
 Provenance: review of PR #183 (`gzip-zlib-truncation-recovery`). That change made
 "content faults surface from read, never from `close`" the contract for decode +
-verify streams, and made `MemberVerifier.finish_on_close` teardown-only. Two
-things fall out of that and motivate this change.
+verify streams, and made `MemberVerifier.finish_on_close` teardown-only. Two things
+fell out of that and motivated this change; **one of them has since shipped**, and
+this document is re-scoped around the other. ADR 0014 records the contract and names
+this change as the vehicle for the remaining half.
 
 ### The default verification contract today
 
@@ -17,29 +19,32 @@ completing read consumes bytes without a verdict. This is a deliberate streaming
 
 ### The two asymmetries
 
-| Path | Today | Problem |
+| Path | When this was written | Now |
 | --- | --- | --- |
-| CRC/digest member, partial/seek/close | No verdict (quiet) | Correct for streaming, but no way to *demand* verification |
-| WinZip AES member, partial read then close | `close()` drains ciphertext + verifies HMAC, **raises `CorruptionError`** | Content fault from `close`; verifies an abandon a CRC member would not; per-format surprise |
+| CRC/digest member, partial/seek/close | No verdict (quiet) | Unchanged — correct for streaming, and still **no way to demand verification**. This is what the change is for |
+| WinZip AES member, partial read then close | `close()` drained ciphertext and verified the HMAC, raising `CorruptionError` | **Fixed by PR #350.** `close` no longer drains; the drain's removal cites ADR 0014 in `zip_aes.py` |
 
-`WinZipAesDecryptStream.close` (`zip_aes.py`) intentionally drains "so a short-read
-caller still gets HMAC checked." That is a security instinct (don't hand out
-unauthenticated AE-2 plaintext) implemented as a per-format `close` side effect —
-exactly the inconsistency the mode below resolves.
+`WinZipAesDecryptStream.close` drained "so a short-read caller still gets HMAC
+checked" — a security instinct implemented as a per-format `close` side effect. The
+instinct was sound and the mechanism was not, which is why the behaviour it wanted
+belongs in `STRICT` rather than in one backend's teardown. Only the second row of
+that table is settled; the first is the live one.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-1. One **uniform** streaming default: verdict only from the completing read;
-   partial/seek/close abandon with no verdict; `close()` never a first content
-   fault — for digest **and** encrypted members alike.
-2. An opt-in **`STRICT`** mode that guarantees a verdict regardless of access
+1. An opt-in **`STRICT`** mode that guarantees a verdict regardless of access
    pattern (partial read, seek, close), uniformly for CRC/digest and auth tags.
-3. Honest cost: STRICT may decode/decrypt-ahead and breaks the ≤1.3× budget by
+2. Honest cost: STRICT may decode or decrypt ahead and breaks the ≤1.3× budget by
    design; documented, never default.
-4. Encrypted "always authenticate" expressed as a **mode**, not a backend-specific
-   `close` behavior.
+3. Encrypted "always authenticate" expressed as a **mode**, not a backend-specific
+   `close` behaviour.
+4. A name for the existing default, so the two modes share a vocabulary. **Achieved,
+   not pursued:** the uniform streaming default — verdict only from the completing
+   read, abandon quiet, `close()` never a first content fault for digest and
+   encrypted members alike — shipped in PR #350 and is now stated by
+   `compressed-streams`.
 
 **Non-Goals:**
 
@@ -73,9 +78,10 @@ folded into the gzip PR):
 - Interaction with `extraction_limits` (a STRICT verify-ahead must still honor
   output caps / bomb bounds).
 
-**Verdict:** worth doing, as a **separate** change. The *default-consistency* half
-(remove the AES close-drain; `close` never a content fault, uniformly) is small
-and unblocks the gzip PR's contract; the `STRICT` half is the larger, opt-in piece.
+**Verdict:** worth doing. The *default-consistency* half — remove the AES
+close-drain so `close` is never a content fault, uniformly — was small and has since
+shipped in PR #350. The `STRICT` half is the larger, opt-in piece, and it is all that
+remains here.
 
 ## Decisions
 
@@ -84,13 +90,14 @@ and unblocks the gzip PR's contract; the `STRICT` half is the larger, opt-in pie
    open (see Q1). **Rejected:** a bare `verify_strict: bool` — an enum leaves room
    for a future `OFF` (skip verification) or `EAGER` variant without a breaking flag.
 
-2. **Default `STREAMING` is uniform across digest and auth tags.** Verdict only
-   from the completing read; partial/seek/close abandon; `close()` never surfaces a
-   first content `TruncatedError` / `CorruptionError`. **Encrypted members follow
-   this too:** the WinZip AES HMAC still fires on a full read (the authenticating
-   bytes are consumed), but the `close`-time drain is removed from the default
-   path. **Rejected:** keep AES authenticating on close in the default — it is the
-   inconsistency this change exists to remove.
+2. **Default `STREAMING` is uniform across digest and auth tags — shipped.**
+   Verdict only from the completing read; partial/seek/close abandon; `close()`
+   never surfaces a first content `TruncatedError` / `CorruptionError`. Encrypted
+   members follow this too: the WinZip AES HMAC still fires on a full read, when the
+   authenticating bytes are consumed, but the `close`-time drain is gone (PR #350).
+   **Rejected:** keeping AES authenticating on close in the default — that was the
+   inconsistency, and it is the decision `zip_aes.py` now records. What is left here
+   is only to give the behaviour a name.
 
 3. **`STRICT` guarantees a verdict regardless of access pattern**, uniformly:
    - Partial read of a member whose integrity cannot yet be confirmed: STRICT does
@@ -100,8 +107,9 @@ and unblocks the gzip PR's contract; the `STRICT` half is the larger, opt-in pie
      pass first, or fails the seek with a typed error — never silently drops the
      check.
    - `close()` after a partial read: STRICT completes verification (drain + verdict)
-     — this is the *mode's* behavior, applied to every integrity check, replacing
-     the per-format AES close-drain.
+     — this is the *mode's* behaviour, applied to every integrity check. It is not a
+     reinstatement of the per-format AES close-drain: the verdict belongs to the mode
+     the caller chose, not to the format.
    **Rejected:** STRICT that only tightens `close` (still lets a mid-stream seek
    skip verification) — that would leave a silent hole.
 
@@ -109,10 +117,26 @@ and unblocks the gzip PR's contract; the `STRICT` half is the larger, opt-in pie
    decode/decrypt ahead of use). The cost model / `costs` doc states it; STRICT is
    never selected implicitly.
 
-5. **Sequencing.** Land Decision 2 (default-consistency: remove the AES close-drain;
-   uniform quiet close) first — it is small and completes the gzip PR's contract.
-   Decision 3 (`STRICT`) follows as the larger opt-in piece. Both can ship in this
-   change or Decision 2 can be pulled into the gzip PR; see Q2.
+5. **Sequencing.** Decision 2 landed first, on its own, in PR #350. Decision 3
+   (`STRICT`) is what remains, and it is gated on the design constraint below rather
+   than on any other change.
+
+## Questions settled by what shipped
+
+**Q2 — where the default-consistency fix lands — is moot.** It landed on its own, in
+PR #350: `WinZipAesDecryptStream.close` no longer drains ciphertext or verifies the
+HMAC, and `zip_aes.py` records ADR 0014 as the reason. `compressed-streams` carries
+*"Content faults raise from read, never from close"*, so the claim that change was
+completing is now a requirement rather than an open edge.
+
+**Q4 — the security nuance — is answered by the same event.** Removing the drain
+means a partial read of an encrypted member returns unauthenticated AE-2 plaintext
+with no error, the same posture as an unverified CRC. That is the shipped default,
+and it is the right one: a partial read **cannot** authenticate, because the MAC is
+at the end of the member. The honest options were to return unauthenticated bytes
+quietly or to refuse partial reads of encrypted members outright, and the second
+would break streaming for every caller to serve the few who need the guarantee.
+`STRICT` is that guarantee, taken deliberately.
 
 ## Open Questions
 
@@ -120,23 +144,42 @@ and unblocks the gzip PR's contract; the `STRICT` half is the larger, opt-in pie
    `{AS_YOU_GO, FULL}`; field name `verification_mode`. Also: do we want a third
    `OFF` (skip verification entirely) now or later?
 
-2. **Where does the default-consistency fix land?** In this change, or pulled into
-   `gzip-zlib-truncation-recovery` (since it completes that change's
-   "close never raises a content fault" claim for encrypted members too)? The
-   `gzip` change's spec already says "close never a first content fault"; the AES
-   close-drain is currently a live exception to it.
+2. **STRICT on seekable members: verify-ahead vs. fail-the-seek.** Buffer or
+   re-decode the whole member to verify (costly, but random access keeps working),
+   or refuse a seek under STRICT with a typed error (cheap, but less capable)?
+   Recommendation: verify-ahead when the source is seekable and within
+   `extraction_limits`, else a typed error.
 
-3. **STRICT on seekable members: verify-ahead vs. fail-the-seek.** Buffer/re-decode
-   the whole member to verify (costly, but random access keeps working) or refuse a
-   seek in STRICT with a typed error (cheap, but less capable)? Recommendation:
-   verify-ahead when the source is seekable and within `extraction_limits`, else a
-   typed error.
+Both are cheaper to answer alongside the design constraint below than on their own.
 
-4. **Security nuance for encrypted members in STREAMING.** Removing the AES
-   close-drain means a partial read of an encrypted member returns *unauthenticated*
-   AE-2 plaintext with no error (same posture as unverified CRC). Confirm this is
-   acceptable as the default (a partial read *cannot* authenticate anyway — the MAC
-   is at the end), with STRICT as the answer for callers who must authenticate.
+## Design constraint — one question with `stream.verified`
+
+The maintainer attached this to the STRICT half in September: `STRICT` and the
+*"Verification state as data: `stream.verified` plus an on-demand `verify()`"* entry
+in `dev-docs/IDEAS.md` are **one design question, not two**.
+
+The shared mechanism is real rather than speculative. `MemberVerifier`
+(`src/archivey/internal/streams/verify.py`) is the class a mode would be threaded
+into, and it is the same class that would have to produce a `verified` level. A mode
+flag designed on its own would later need reconciling with a level-and-ceiling model
+covering the same ground.
+
+The IDEAS entry has already done the hard part of that model, and two of its
+conclusions bear directly on `STRICT`:
+
+- **A level needs a ceiling as well as a current value.** A stored 7z member with no
+  CRC can never reach `CONTENT`, so a caller writing `while stream.verified <
+  CONTENT: stream.verify()` would spin. `STRICT` faces the same case and has to say
+  what it does with a member that carries nothing to verify — raise, or pass.
+- **Two axes, not one.** *The password is right* and *the payload is intact* are
+  established by different evidence, and for ciphers whose only real verifier is the
+  trailing digest — ZipCrypto and 7z AES — an unverified partial read can be garbage
+  that decrypted under the wrong key, returned with no error. That is a sharper
+  version of the gap `STRICT` exists to close, and it argues the mode should be
+  expressed in terms of the level reached rather than as a boolean.
+
+So this change is the statement of the requirement, deliberately not scheduled until
+that model is settled.
 
 ## Risks / Trade-offs
 
