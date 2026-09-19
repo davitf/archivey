@@ -73,6 +73,7 @@ run "ty"                  uv run --no-sync ty check
 # Stdlib-only, same as CI. `openspec validate` needs the npm CLI, which the setup script
 # installs; skip rather than fail if someone is running on a bare clone.
 run "openspec archived" python3 scripts/check_openspec_archived.py
+run "openspec self-reference" python3 scripts/check_openspec_self_reference.py
 if command -v openspec >/dev/null 2>&1; then
   run "openspec validate" openspec validate --all
 else

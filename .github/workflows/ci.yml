@@ -114,6 +114,19 @@ jobs:
       - name: Assert no finished change is left unarchived
         run: python3 scripts/check_openspec_archived.py
 
+  # A separate job rather than a second step in `openspec`, so the existing required
+  # check keeps meaning exactly what its name says. Rename/merge them if branch
+  # protection is updated to match.
+  openspec-self-reference:
+    name: OpenSpec spec prose
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Stdlib-only script, so no uv sync — the runner's python3 is enough.
+      - name: Assert no spec prose refers to "this change"
+        run: python3 scripts/check_openspec_self_reference.py
+
   test:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     runs-on: ${{ matrix.os }}

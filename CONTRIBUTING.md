@@ -31,6 +31,24 @@ steady stream of PRs whose entire content was `openspec archive` (#214, #215, #2
 #238). CI enforces this on pull requests and on `main`
 (`scripts/check_openspec_archived.py`).
 
+### Writing a delta requirement body
+
+**Do not write "this change" in a requirement body or its scenarios.** It is unambiguous
+while you are writing it and meaningless the moment `openspec archive` folds that body
+into `openspec/specs/`: the change has moved to `openspec/changes/archive/` and a reader
+of the authoritative spec cannot tell which one you meant. Ten such phrases had
+accumulated across five capabilities before anyone counted, and most were not worth
+naming even then — they were pre-merge arguments ("this change is a strict increase in
+what is stamped", "it SHALL ship anyway because…") whose other referents, the prior
+behaviour and the pre-change tree, had gone too.
+
+State the contract as it stands. The reasoning behind it goes in the change's
+`design.md`, which `openspec/config.yaml` rules.specs already asks for. Naming the change
+id is the last resort, for a cross-reference a reader of the archived spec would follow.
+`scripts/check_openspec_self_reference.py` enforces this over `openspec/specs/` and over
+in-flight deltas; the two changes that predate it are grandfathered in its `PENDING` set,
+and it fails if an entry there goes stale, so the list can only shrink.
+
 Practically, make the archive the change's **last task**, so checking the final box and
 applying the deltas are the same act. Most of the archived corpus is already written this
 way.
@@ -64,7 +82,8 @@ Then two scripts cover the gates, split by how long they take and how often you 
 
 `check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs — `ruff check`,
 `ruff format --check`, **`pyrefly`**, **`ty`**, `check_openspec_archived.py`,
-`openspec validate --all`, `check_docs_nav.py`, and the strict docs build. It runs every
+`check_openspec_self_reference.py`, `openspec validate --all`, `check_docs_nav.py`, and
+the strict docs build. It runs every
 gate even after one fails and lists what failed at the end, so a single run tells you
 everything that is wrong. Without `--fix` it writes nothing and answers "will CI pass?".
 
