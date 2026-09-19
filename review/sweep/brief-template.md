@@ -79,6 +79,9 @@ severity × confidence, (3) maintainer decisions. Addendum §10 has the mechanic
   left to another batch. **The clean files matter most here** — a file you read and found
   sound is invisible without this, and twice that has been miscounted as a file nobody
   opened.
+- **The marker is always its own comment**, including for a file that produced findings —
+  never a line inside a review body or a finding. A file with findings gets both: its
+  threads, and one marker comment saying the whole file was read.
 - **Blocks 1 and 3 go in one top-level comment** at the end of the batch, with the
   location-less findings.
 - **Do not hold the findings until the end.** Post file by file, in scope-table order, so a

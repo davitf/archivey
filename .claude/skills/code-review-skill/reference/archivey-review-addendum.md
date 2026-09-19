@@ -703,6 +703,13 @@ the file was read at all, **whether or not it found anything**:
 
 - **One top-level comment on #315 per file**, posted when you finish reading that file and
   before you start the next one. Not inline: a whole-file read has no line to anchor to.
+- **The marker is always its own comment, including for a file that produced findings.**
+  Never put the `SWEPT` line in a review body, a finding, or a reply. A file with findings
+  therefore gets its findings *and* a marker comment, which is the point: the marker says
+  the file was read end to end, and the findings say what was in it. Keeping markers in one
+  comment type is what makes the whole set fetchable in one call — the counting command in
+  [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md) reads the issue
+  comments and nothing else.
 - Its **first line** is the marker, in exactly this shape:
 
   ```
@@ -726,8 +733,11 @@ the file was read at all, **whether or not it found anything**:
   back clean, and anything you deliberately left to another batch. **A clean file's comment
   is the short one and the valuable one** — it is the only thing that distinguishes a file
   that was read and found sound from a file nobody opened.
-- Re-sweeping a file posts a **new** marker rather than editing the old one. The newest
-  marker for a path wins; the older one stays as the record of what was true then.
+- **One marker per file per pass**, and a batch posts each file's marker once. Re-sweeping
+  a file in a later batch posts a **new** marker rather than editing the old one: the newest
+  wins and the older stays as the record of what was true then. `sweep_coverage.py` counts a
+  path once however many markers it carries, so a slip cannot inflate the figure — it warns
+  instead when one path carries two markers from the same pass.
 
 **Why this exists.** Findings are evidence of a read; the absence of findings is not. The
 coverage figure on [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md)

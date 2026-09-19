@@ -34,7 +34,9 @@ Counting rules, deliberately narrow:
 * **The denominator is the tree, not a remembered number** — every `.py` under `src/`, as
   it stands in this checkout.
 * **One marker per path counts once.** A re-sweep posts a second marker; the newest `date=`
-  wins and the file is still one file.
+  wins and the file is still one file. A path that carries two markers from the *same* pass
+  is a double post rather than a re-sweep, so it is reported — it cannot inflate the figure,
+  but it means two agents read the same file or one posted twice.
 * **Lines come from the tree, not from the marker.** `lines=` in the marker records what
   was read then; the coverage figure is about the code that exists now. Where the two
   differ by more than 10% the file is reported as drifted — it was read, but not as it
@@ -119,6 +121,14 @@ def newest_per_path(markers: list[Marker]) -> dict[str, Marker]:
     return latest
 
 
+def duplicates_within_a_pass(markers: list[Marker]) -> list[tuple[str, str, int]]:
+    """Two markers for one file in one pass: a double post, not a re-sweep."""
+    seen: dict[tuple[str, str], int] = {}
+    for marker in markers:
+        seen[marker.path, marker.batch] = seen.get((marker.path, marker.batch), 0) + 1
+    return [(path, batch, n) for (path, batch), n in sorted(seen.items()) if n > 1]
+
+
 def tree_line_counts() -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in sorted(SRC.rglob("*.py")):
@@ -186,6 +196,12 @@ def main() -> int:
             if path not in swept:
                 print(f"  {lines:5d}  {path}")
 
+    for path, batch, count in duplicates_within_a_pass(markers):
+        print(
+            f"\nDUPLICATE marker: {path} has {count} markers from pass {batch} "
+            f"(counted once)",
+            file=sys.stderr,
+        )
     for path, recorded, now in drifted:
         print(
             f"\nDRIFTED  {path}: read at {recorded} lines, now {now}", file=sys.stderr
