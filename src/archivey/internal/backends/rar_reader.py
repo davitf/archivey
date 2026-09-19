@@ -1467,11 +1467,19 @@ class RarReader(BaseArchiveReader):
             # decode has already happened, it is not bounded by anything the
             # caller can set (`ExtractionLimits` do not reach `open()`/`read()`),
             # and `AccessCost.DIRECT` does not predict it on a nonsolid archive.
-            # A name that reaches here matches a same-length sibling on every
-            # literal position, which is a constructed archive far more often
-            # than an accident. Maintainer (davitf, 2026-09-19): refuse it, with
-            # the config flag as the escape hatch. A glob name matching nothing
-            # else has `glob_prefix == 0` and never reaches this.
+            # Maintainer (davitf, 2026-09-19): refuse it, with the config flag
+            # as the escape hatch. A glob name matching nothing else has
+            # `glob_prefix == 0` and never reaches this -- which also means this
+            # is **not** a guard against a hostile mask as such: a name built to
+            # make a matcher backtrack, with no sibling it can match, has a zero
+            # prefix and still goes to unrar. That is bounded separately, by
+            # narrowing the mask itself. This bounds the payload, not the match.
+            #
+            # The predicate is deliberately `_unrar_glob_prefix`'s own answer and
+            # not a second walk: which siblings match is decided by the mask
+            # actually handed to unrar, which that function owns. Recomputing it
+            # from the presented name here would refuse archives that read fine
+            # under the mask unrar is given.
             raise UnsupportedFeatureError(
                 f"Reading RAR member {quoted(member.name)} would decompress "
                 f"{glob_prefix} bytes of earlier members first: its stored name "
