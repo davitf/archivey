@@ -37,7 +37,7 @@ findings cost to fix — and that is the sweep working as intended rather than a
 | Register | Open items | Health |
 | --- | --- | --- |
 | Open PRs | 9 live, 2 dormant drafts, 1 hub | #101, #187 and #243 **closed** 2026-09-11; #331 closed and #347 merged since. Four PRs opened 2026-09-17 to 09-19 — #352, #353, #357, #361 |
-| [#315](https://github.com/davitf/archivey/pull/315) review threads | 71 total, **52 resolved, 19 open** | Parcels A–E closed 44 between 2026-09-11 and 2026-09-17; five S1/S2 threads resolved 2026-09-19; thread 56 (ARC-12) applied the class-flag pattern. Left: parcel F and ten S1/S2 findings |
+| [#315](https://github.com/davitf/archivey/pull/315) review threads | 71 total, **52 resolved, 19 open** | Parcels A–E closed 44 between 2026-09-11 and 2026-09-17; five S1/S2 threads resolved 2026-09-19; thread 56 closed by [#365](https://github.com/davitf/archivey/pull/365) (ARC-12). Left: parcel F and ten S1/S2 findings |
 | `openspec/changes/` (10 active) | 9 unimplemented, 1 half-done | `prefixed-archive-detection` is 31/68; the rest are 0/N. #347 and #356 added three RAR changes |
 | [`open-issues.md`](open-issues.md) | 13 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned; **P18 is new** since the first snapshot |
 | [`formats/rar.md`](formats/rar.md) `§10` | 4 of 21 (#6 layer 2, #18, #19, #21) | Healthy — 17 closed with PR links |
@@ -168,7 +168,7 @@ a three-item leak list reduced to one — so the opening comment is often no lon
 | 1, 2, 4, 5, 6, 7, 8, 9 | Parcel D ([#332](https://github.com/davitf/archivey/pull/332)) |
 | 43, 44, 46, 47, 48, 49 | Parcel E ([#336](https://github.com/davitf/archivey/pull/336)) |
 | 3 | [#342](https://github.com/davitf/archivey/pull/342) / [#344](https://github.com/davitf/archivey/pull/344), with the merge half promoted to a change in [#347](https://github.com/davitf/archivey/pull/347) |
-| 56 | ARC-12 — class flag + constructor override for `peel_for_source_size` and `readinto_passthrough` |
+| 56 | [#365](https://github.com/davitf/archivey/pull/365) — ARC-12; class flag + constructor override for `peel_for_source_size` and `readinto_passthrough` |
 
 **Thread 45 was parcel E's, and parcel A closed it.** It was the third site of
 `DelegatingStream.close`'s workaround; A replaced all of them with `manual_inner_close=True`
@@ -202,7 +202,7 @@ The 9 that remain. `*` marks a thread whose follow-up narrowed it.
 | `reader_state.py` | 1 | 11 | "I can't even begin to review it." Explanation, not code |
 
 **What is left is one parcel.** Nine threads, all parcel F. Thread 56 arrived
-after `streamtools/` was declared drained and is closed (ARC-12): both remaining
+after `streamtools/` was declared drained and is closed ([#365](https://github.com/davitf/archivey/pull/365) / ARC-12): both remaining
 `DelegatingStream` flags now use the class-flag-plus-constructor-override pattern
 `_SUBCLASS_CLOSES_INNER` already had.
 
@@ -632,7 +632,7 @@ also surfaced the two reviews now commissioned in #325, and left `src/` with zer
 `# type: ignore`.
 
 **Wave 2 — drain #315 in six parcels. A through E are done.** One parcel remains.
-Thread 56 (the post-drain orphan) closed with ARC-12.
+Thread 56 (the post-drain orphan) closed with [#365](https://github.com/davitf/archivey/pull/365) / ARC-12.
 
 | Parcel | Files | Threads | State |
 | --- | --- | --- | --- |
@@ -642,7 +642,7 @@ Thread 56 (the post-drain orphan) closed with ARC-12.
 | ~~D — RAR parser~~ | `backends/rar_parser.py` | 1, 2, 4, 5, 6, 7, 8, 9 | **Done** — [#332](https://github.com/davitf/archivey/pull/332). Threads 1 and 2 were the two possible header-decrypt bugs; both measured against fixtures and neither was one |
 | ~~E — RAR reader~~ | `backends/rar_reader.py` | 43, 44, 46, 47, 48, 49 | **Done** — [#336](https://github.com/davitf/archivey/pull/336) |
 | **F — placement + odds** | `rar_detect.py`, `zip_aes.py`, `volumes.py`, `reader_state.py`, `sevenzip_reader.py` | 10, 11, 12, 13, 14, 15, 51\*, 53, 54 | **Ready, and the last one.** Nine threads. Thread 3 left the parcel when #342 answered it. Threads 10 and 14 are a maintainer call, not a fix — answer that first, because the placement decision is what makes the rest mechanical |
-| ~~(orphan)~~ | `streamtools/base.py` | 56 | **Done** — ARC-12. Both remaining flags now use the class-flag-plus-constructor-override pattern from #340 / #341 |
+| ~~(orphan)~~ | `streamtools/base.py` | 56 | **Done** — [#365](https://github.com/davitf/archivey/pull/365) / ARC-12. Both remaining flags now use the class-flag-plus-constructor-override pattern from #340 / #341 |
 
 **Parcel F's prompt should carry three corrections** the follow-up comments make and the
 opening comments do not: thread 3 is closed and out of scope; thread 51 is a rename plus a
