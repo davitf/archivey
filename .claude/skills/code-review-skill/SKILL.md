@@ -51,11 +51,10 @@ pass 2.
 
 ### Logistics (≤1 min, before either pass)
 
-Canonical list: addendum §8 and the checklist point here rather than restating it.
+This list lives here and nowhere else; addendum §8 points at it.
 
 1. Scope: `git diff main...HEAD` (or the paths / PR named); size (>400 lines? ask to
-   split). **Re-reviewing?** Scope is `<the SHA you last reviewed>..HEAD` plus the open
-   threads, not the whole PR again (addendum §10)
+   split). **Re-reviewing?** The scope is narrower, and §10 defines it
 2. CI status if posted (`ruff`, pyrefly/ty, pytest) — glance only, **do not re-run**
    (addendum §10); enough to know whether failures are in-scope. Not posted → say so,
    don't infer
@@ -99,18 +98,16 @@ finding with a confidence tag — `CONFIRMED` / `PLAUSIBLE` / `DISPROVEN` (adden
 Finding IDs carry your own initial (`K1…` from Claude Code, `C1…` from Cursor) so two
 reviewers on one PR cannot collide (addendum §10).
 
-**Verdict.** “Only nits left” is not an approval here: nits get fixed before merge, or the
-verdict is *approve conditional on the listed fixes* (addendum §0 Verdicts). From round 3,
-if only 🟢 nits remain open, that conditional approval is the verdict — do not open another
-round to confirm wording (§0 Round budget). A review posted
-through the maintainer's own account cannot carry a GitHub `APPROVE` event at all — expected,
-not a problem to report: the verdict lives in the text (addendum §10).
+**Verdict.** What each one commits to, when "only nits left" is not an approval, and the
+round budget: **addendum §0 Verdicts**. A posted review cannot carry a GitHub `APPROVE`
+event — expected, not a problem to report; the verdict lives in the text (§10).
 
 ## Guides — open as needed
 
 | Doc | When |
 |-----|------|
-| **[Archivey addendum](reference/archivey-review-addendum.md)** | **Always.** VISION ranking, contracts, testing, domain checklist, output shape, posting rules |
+| **[Archivey addendum](reference/archivey-review-addendum.md)** | **Always.** VISION ranking, what to check, output shape, review order, posting rules |
+| **[`CONTRIBUTING.md`](../../../CONTRIBUTING.md)** | **At the start of a review.** The coding and testing rules the addendum checks against — it cites them rather than repeating them |
 | [Python](reference/python.md) | Mutable default args, exception handling, class attributes |
 | [Architecture](reference/architecture-review-guide.md) | SOLID, coupling/cohesion, dependency direction |
 | [Performance](reference/performance-review-guide.md) | Streaming, solid-archive costs, memory, complexity |
@@ -120,4 +117,6 @@ not a problem to report: the verdict lives in the text (addendum §10).
 | [Error handling](reference/cross-cutting/error-handling-principles.md) | Fail fast, exception hierarchy/translation, logging |
 | [Concurrency](reference/cross-cutting/async-concurrency-patterns.md) | Races, deadlocks; sync-first API |
 | [Best practices](reference/code-review-best-practices.md) | Communication, reviewer mindset |
-| [Checklist](assets/review-checklist.md) · [PR template](assets/pr-review-template.md) | Quick reference · fill-in report shape |
+| [Reviewing proposals](reference/reviewing-proposals.md) | The thing under review is a proposal / delta spec / `design.md`, not code (§9) |
+| [Deep reviews](reference/deep-reviews.md) | A commissioned `review/` brief, not an ordinary PR (§6) |
+| [PR template](assets/pr-review-template.md) | The fill-in report shape (form only — the rules are in the addendum) |
