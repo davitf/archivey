@@ -373,9 +373,13 @@ PR review here is a **handoff between two agents**, and each half has a skill:
 
 4. **Linear issues** use `.claude/skills/address-linear-issue/SKILL.md` (Cursor:
    `/address-linear-issue`). Same two skills, sequenced: the implementing agent reads
-   the ticket and fixes it; a *fresh* Cursor Grok (standard — never the fast variant)
-   subagent runs `code-review-skill` and posts to the PR; the implementing agent then
-   runs `address-review-findings`. Do not review your own diff.
+   the ticket, fixes it, opens the PR and enrols it in the
+   [review loop](dev-docs/review-loop.md), which runs `code-review-skill` in a separate
+   Claude session and posts to the PR; whoever holds the branch then runs
+   `address-review-findings`. Do not review your own diff, and do not spawn a reviewer
+   of your own — the loop is the second opinion. Maintainer decision (davitf,
+   2026-09-19): Claude reviews PRs started from a Linear issue, replacing the fresh
+   Cursor Grok subagent this step used to spawn.
 
 **Nothing from the internal tracker goes into PR text.** This repository is public; the
 tracker is not. Three rules, and they are about the *internal tracker* only:

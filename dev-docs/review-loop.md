@@ -12,9 +12,10 @@ questions a review cannot answer for itself — is the one thing the loop stops 
 ## The circuit
 
 ```text
-Linear issue ──@Cursor──► Cursor implements ──► opens a pull request
+Linear issue ──@Cursor──► Cursor implements ──► opens a pull request (loop:on)
                                                       │
                              ┌────────────────────────┘
+                             │  ten minutes with no new commit
                              ▼
                   Claude reviews (round N of 3)
                              │
@@ -28,9 +29,9 @@ Linear issue ──@Cursor──► Cursor implements ──► opens a pull req
 | Hop | What triggers it | Where it is configured |
 | --- | --- | --- |
 | Issue → implementation | `@Cursor` in a Linear comment, or assigning the issue to Cursor. Triage rules can do it automatically | Linear, team ARC |
-| Implementation → review | The pull request opening, and every later push to it | [`.github/workflows/review-loop.yml`](../.github/workflows/review-loop.yml) |
+| Implementation → review | The branch going ten minutes without a new commit, noticed by a scan that runs every ten minutes. Marking a draft ready for review skips the wait | [`.github/workflows/review-loop.yml`](../.github/workflows/review-loop.yml) |
 | Review → addressing | An `@cursor` comment the workflow posts after each round of findings | Same workflow |
-| Addressing → next review | Cursor's push, which is a `synchronize` event | Same workflow |
+| Addressing → next review | Cursor's push, once it stops pushing | Same workflow |
 | Any step → the maintainer | A `loop:decision` label and a plain-language question on the pull request | Same workflow |
 
 **The `@cursor` comment is the part worth understanding.** Cursor sometimes picks a
@@ -40,6 +41,37 @@ one. Asking explicitly, every round, removes the guessing: the comment names
 [`address-review-findings`](../.claude/skills/address-review-findings/SKILL.md) rather
 than in a generic "fix the comments" posture.
 
+## A round starts when the branch goes quiet
+
+The loop is scheduled, not push-driven, and that is the single design decision most
+worth understanding, because it is not the obvious one.
+
+A push looks like the end of a piece of work and almost never is. On the first pull
+request this loop ever saw, Cursor pushed at 05:27:09, 05:27:52, 05:28:24 and 05:40:26
+— four commits, thirteen minutes, all one ticket. A review per push would have spent
+the entire three-round cap inside seventy-five seconds, on three snapshots of
+half-written code, and had nothing left for the branch as it finally stood.
+
+GitHub offers no "the agent has finished" event, so the loop infers one from silence.
+A scan runs every ten minutes, looks at the pull requests carrying a loop label, and
+reviews the one whose head commit has been sitting untouched the longest — provided it
+has been untouched for at least ten minutes and is not the commit the last round
+already read. One pull request per tick, so the first tick after this lands cannot
+start a review on everything at once.
+
+Two consequences that are easy to trip over:
+
+- **Pushing again while you wait pushes the review back.** That is the intended
+  behaviour, and the reason `address-linear-issue` tells the implementing agent to
+  stop pushing once it is done.
+- **Marking a draft ready for review skips the wait.** "Ready for review" is a person
+  or an agent stating explicitly what the quiet period exists to infer, so the loop
+  takes it at its word and reviews immediately.
+
+Draft status is otherwise ignored. Cursor opens its pull requests as drafts and does
+not always take them out, so waiting for that would mean waiting for a human — which
+is the thing the loop is for.
+
 ## Round state is labels
 
 There is no database. The loop's whole memory is the labels on the pull request, which
@@ -48,22 +80,30 @@ means it is visible in the GitHub UI and a human can change it without a commit.
 | Label | Meaning |
 | --- | --- |
 | `loop:round-N` | Round N has been reviewed. The highest one is the count |
-| `loop:on` | Opt a pull request in whose branch name did not enrol it |
+| `loop:on` | In the loop. Applied on enrolment; also how you opt a pull request in by hand |
 | `loop:off` | Never run here. Beats everything, including an explicit request |
 | `loop:decision` | Parked on a maintainer decision |
 | `loop:hold` | Parked by a human, or by a review that failed before reaching a verdict |
-| `loop:done` | Finished: a clean review, or the round cap spent |
+| `loop:done` | Finished: a clean review, or the last round is spent |
 
 **Enrolment is opt-in and happens once, when the pull request opens.** A branch named
-`cursor/*` enrols itself; anything else needs `loop:on`. A pull request that was already
-open when this landed has no round label, so a push to it does nothing — which is the
-point. Eight pull requests were open the day this was written, and a loop that reviewed
-all of them on their next push would have been switched off within the hour.
+`cursor/*` enrols itself; anything else needs `loop:on` added by hand, which is what
+[`address-linear-issue`](../.claude/skills/address-linear-issue/SKILL.md) does on a
+branch of its own. The scan reads only the label, never the branch prefix — a scan that
+honoured the prefix would sweep in every `cursor/*` pull request that was already open.
+Eight pull requests were open the day this landed, and a loop that reviewed all of them
+would have been switched off within the hour.
 
-`scripts/review_loop_gate.py` makes that decision, on facts the workflow collects for
-it, with no GitHub access of its own. That split is so the rules are testable:
-`tests/test_review_loop_gate.py` covers the cap, each parked label, forks, drafts, and
-a stranger commenting `@claude review`.
+One thing the labels do not record is *which commit* a round read, and without it the
+scan would review the same head every ten minutes forever. That lives in the status
+comment's HTML marker (`<!-- archivey-review-loop-status sha=… -->`), which the loop
+already has to keep current, so there is no second piece of state to forget.
+
+`scripts/review_loop_gate.py` makes every one of these decisions, on facts the workflow
+collects for it, with no GitHub access of its own. That split is so the rules are
+testable: `tests/test_review_loop_gate.py` covers the cap, the quiet period, each
+parked label, forks, the choice between several eligible pull requests, and a stranger
+commenting `@claude review`.
 
 ## Stopping it
 
@@ -74,9 +114,11 @@ a stranger commenting `@claude review`.
   status comment carries the question in plain language; the packet with the options
   and their costs stays in the review.
 - **Answer, then restart.** Reply in the review thread, then comment `@claude review`.
-  That clears the park and buys a round, including a fourth one past the cap.
-- **Three rounds, then a person.** Round 4 does not start on its own. If three rounds
-  of review and fixes have not converged, another round is not the missing ingredient.
+  That clears the park and buys a round immediately, without waiting for a scan,
+  including a fourth one past the cap.
+- **Three rounds, then a person.** Round 3 says so as it posts, rather than leaving it
+  to be discovered later: there is no round 4 to notice. If three rounds of review and
+  fixes have not converged, another round is not the missing ingredient.
 - **`loop:off`** takes a pull request out permanently.
 
 ## Sharing `@claude` with the general assistant
@@ -92,6 +134,19 @@ expressions have no regex, so the loop's trigger is the same plain, case-insensi
 substring that `contains()` tests, and `tests/test_review_loop_gate.py` asserts the two
 agree on a table of near misses. Re-running the App installer overwrites `claude.yml`
 and drops the guard.
+
+## Bots trigger almost everything here, and must be named
+
+`anthropics/claude-code-action` refuses to run when the workflow was initiated by a bot
+unless that bot is listed in `allowed_bots`. Every automatic path into this loop is a
+bot: Cursor pushes and opens pull requests as `cursor[bot]`, and an agent working in
+this repository marks them ready as `claude[bot]`. The first real round failed two
+seconds in for exactly this reason, and it stayed hidden until then because an earlier
+draft guard had refused every run before it reached the action.
+
+The list names those two rather than using `*`. The point of the setting is that an
+unexpected bot cannot spend review credits, and the gate's own guards — forks,
+enrolment, the cap — sit behind the action, not in front of it.
 
 ## What stays manual
 
@@ -109,7 +164,7 @@ and drops the guard.
 Already done, by the Claude GitHub App installer on 2026-09-19: it installed the App —
 which is what gives the review its `claude[bot]` identity — wrote `claude.yml`, and set
 the `CLAUDE_CODE_OAUTH_TOKEN` repository secret this workflow reads. Confirmed working
-by the first `claude.yml` run, which reached the model rather than failing at setup.
+by the OIDC token exchange in the first run that reached the action.
 
 Should it ever need redoing by hand: `claude setup-token`, then Settings → Secrets and
 variables → Actions. `ANTHROPIC_API_KEY` works in its place if per-token billing is
@@ -120,14 +175,22 @@ corrects the colour and description of any that already exist — adding a `loop
 through the API creates it implicitly with GitHub's default grey, and the colours are
 what make the state readable in the pull request list.
 
+Scheduled workflows only run from the default branch, so the scan does nothing until
+this file's workflow is merged to `main`. A branch can still be reviewed before then by
+commenting `@claude review` on it.
+
 ## Known rough edges
 
 - **Whether Cursor answers an `@cursor` from `claude[bot]`** has not been observed yet.
   If it turns out to ignore bot comments, the fallback is the same comment from a
   personal access token, or a `@Cursor` comment on the Linear issue instead.
-- **Every push counts as a round**, including a rebase or a typo fix. That is the
-  simplest rule that cannot silently skip a real round, and the escape hatch for
-  spending the cap too fast is `@claude review`.
+- **Ten minutes is a guess.** It is long enough to cover the gaps observed so far and
+  short enough not to feel broken. `QUIET_MINUTES` in the gate is the one place to
+  change it; the cron interval should move with it.
+- **A scheduled round and an `@claude review` on the same pull request can overlap.**
+  They are in different concurrency groups, and the scan records the commit it read
+  only once its round finishes. Two reviews of one commit is wasteful but harmless, and
+  the alternative — a lock — is more machinery than the failure justifies.
 - **The review reads its own previous rounds from the pull request**, not from a
   handoff. Stable finding IDs are what make that work
   ([addendum §10](../.claude/skills/code-review-skill/reference/archivey-review-addendum.md)),

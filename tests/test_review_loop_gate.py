@@ -1,9 +1,10 @@
 """The review loop's gate, exercised without GitHub.
 
-`scripts/review_loop_gate.py` decides whether an automated review round runs and which
-round number it is. Everything it needs arrives as JSON, so the interesting cases —
-the round cap, the parked labels, a fork, a stranger asking for a review — are testable
-here instead of by pushing to a pull request and watching what happens.
+`scripts/review_loop_gate.py` decides whether an automated review round runs, on which
+pull request, and which round number it is. Everything it needs arrives as JSON, so the
+interesting cases — the round cap, the quiet period, the parked labels, a fork, a
+stranger asking for a review — are testable here instead of by pushing to a pull request
+and watching what happens.
 
 The cases that matter most are the ones where the answer must be *no*: a gate that
 over-fires spends review credits on pull requests nobody enrolled, and one that ignores
@@ -30,14 +31,19 @@ gate = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
+NOW = "2026-09-19T12:00:00Z"
+LONG_AGO = "2026-09-19T11:00:00Z"  # an hour before NOW: quiet
+JUST_NOW = "2026-09-19T11:59:00Z"  # a minute before NOW: still being pushed to
+
 
 def event(**overrides) -> dict:
-    """A push to an enrolled, non-draft, in-repo pull request — the common case."""
+    """A pull request being marked ready for review — the common single event."""
     base = {
         "event_name": "pull_request",
-        "action": "synchronize",
+        "action": "ready_for_review",
+        "number": 365,
+        "head_sha": "a" * 40,
         "labels": ["loop:round-1"],
-        "draft": False,
         "head_ref": "cursor/some-fix-1234",
         "cross_repository": False,
         "comment_body": "",
@@ -46,6 +52,26 @@ def event(**overrides) -> dict:
         "force": False,
     }
     return base | overrides
+
+
+def candidate(**overrides) -> dict:
+    """An enrolled pull request that has gone quiet — the common scan candidate."""
+    base = {
+        "number": 365,
+        "labels": ["loop:round-1"],
+        "head_ref": "cursor/some-fix-1234",
+        "cross_repository": False,
+        "head_sha": "a" * 40,
+        "head_committed_at": LONG_AGO,
+        "last_reviewed_sha": "b" * 40,
+    }
+    return base | overrides
+
+
+def scan(*candidates: dict, now: str = NOW) -> gate.Decision:
+    return gate.decide(
+        {"event_name": "schedule", "now": now, "candidates": list(candidates)}
+    )
 
 
 # --- counting rounds ---------------------------------------------------------------
@@ -60,17 +86,89 @@ def test_round_label_is_the_only_state() -> None:
     assert gate.current_round(["loop:round-x", "loop:roundup"]) == 0
 
 
-def test_each_push_advances_one_round() -> None:
-    assert gate.decide(event(labels=["loop:round-1"])).round == 2
-    assert gate.decide(event(labels=["loop:round-2"])).round == 3
+def test_each_round_advances_one() -> None:
+    assert scan(candidate(labels=["loop:round-1"])).round == 2
+    assert scan(candidate(labels=["loop:round-2"])).round == 3
 
 
 def test_the_cap_is_three_rounds() -> None:
-    decision = gate.decide(event(labels=["loop:round-3"]))
+    decision = scan(candidate(labels=["loop:round-3"]))
     assert not decision.run
-    assert decision.cap_reached
+    # Nothing was eligible, so the scan reports on the tick rather than on one PR.
+    assert decision.reason == "no pull request is waiting for a round"
+
+    # The PR-level answer is the one that carries the cap.
+    parked = gate._scheduled(
+        candidate(labels=["loop:round-3"]), gate.parse_time(NOW), gate.timedelta(0)
+    )
+    assert not parked.run
+    assert parked.cap_reached
     # The round stays at what was actually done, so the hand-back message can say "3".
-    assert decision.round == 3
+    assert parked.round == 3
+
+
+def test_the_round_before_the_cap_announces_itself_as_the_last() -> None:
+    # Round 3 has to say so as it posts: there is no round 4 to discover it later.
+    assert scan(candidate(labels=["loop:round-2"])).final
+    assert not scan(candidate(labels=["loop:round-1"])).final
+
+
+# --- the quiet period ----------------------------------------------------------------
+
+
+def test_a_branch_still_being_pushed_to_is_left_alone() -> None:
+    """The reason the loop is scheduled rather than push-driven.
+
+    Four commits landed on the first pull request the loop saw inside thirteen minutes.
+    A round per push would have spent the whole cap on half-written work.
+    """
+    decision = scan(candidate(head_committed_at=JUST_NOW))
+    assert not decision.run
+
+    per_pr = gate._scheduled(
+        candidate(head_committed_at=JUST_NOW),
+        gate.parse_time(NOW),
+        gate.timedelta(minutes=gate.QUIET_MINUTES),
+    )
+    assert not per_pr.run
+    assert "quiet" in per_pr.reason
+
+
+def test_the_same_commit_is_not_reviewed_twice() -> None:
+    """The scan runs every few minutes; without this it would re-review on every tick."""
+    decision = scan(candidate(last_reviewed_sha="a" * 40))
+    assert not decision.run
+
+    # A push moves the head, and the round is due again.
+    assert scan(candidate(head_sha="c" * 40, last_reviewed_sha="a" * 40)).run
+
+
+def test_a_commit_with_no_timestamp_is_skipped_rather_than_reviewed() -> None:
+    assert not scan(candidate(head_committed_at="")).run
+    assert not scan(candidate(head_committed_at="not a date")).run
+
+
+def test_one_pull_request_per_tick_longest_waiting_first() -> None:
+    decision = scan(
+        candidate(number=400, head_committed_at="2026-09-19T11:50:00Z"),
+        candidate(number=365, head_committed_at="2026-09-19T09:00:00Z"),
+        candidate(number=380, head_committed_at="2026-09-19T10:00:00Z"),
+    )
+    assert decision.run
+    assert decision.pr == 365
+
+
+def test_ties_break_on_the_pull_request_number() -> None:
+    # Two agents finishing in the same second must not make the choice arbitrary: a
+    # retried tick has to pick the same pull request as the one it is retrying.
+    decision = scan(candidate(number=400), candidate(number=365))
+    assert decision.pr == 365
+
+
+def test_an_empty_scan_says_so_without_naming_a_pull_request() -> None:
+    decision = scan()
+    assert not decision.run
+    assert decision.pr == 0
 
 
 # --- stopping ----------------------------------------------------------------------
@@ -78,11 +176,16 @@ def test_the_cap_is_three_rounds() -> None:
 
 @pytest.mark.parametrize("label", ["loop:decision", "loop:hold", "loop:done"])
 def test_parked_labels_stop_an_automatic_round(label: str) -> None:
-    decision = gate.decide(event(labels=["loop:round-1", label]))
-    assert not decision.run
-    assert label in decision.reason
+    assert not scan(candidate(labels=["loop:round-1", label])).run
+
+    per_pr = gate._scheduled(
+        candidate(labels=["loop:round-1", label]),
+        gate.parse_time(NOW),
+        gate.timedelta(0),
+    )
+    assert label in per_pr.reason
     assert (
-        not decision.cap_reached
+        not per_pr.cap_reached
     )  # not the cap — a different "no", and a different message
 
 
@@ -97,52 +200,66 @@ def test_loop_off_beats_even_an_explicit_request() -> None:
         )
     )
     assert not decision.run
-
-
-def test_a_draft_is_left_alone_until_it_is_ready() -> None:
-    assert not gate.decide(event(draft=True)).run
-    # ...and reviewed the moment it is, without waiting for another push.
-    assert gate.decide(event(draft=True, action="ready_for_review", labels=[])).run
+    assert not scan(candidate(labels=["loop:round-1", "loop:off"])).run
 
 
 def test_a_fork_never_runs() -> None:
     # A fork's `pull_request` run has no secrets, so this would fail rather than review.
     assert not gate.decide(event(cross_repository=True)).run
+    assert not scan(candidate(cross_repository=True)).run
 
 
 # --- enrolment ---------------------------------------------------------------------
 
 
-def test_a_cursor_branch_enrols_itself_at_open() -> None:
+def test_opening_a_cursor_branch_enrols_it_without_reviewing_it() -> None:
     decision = gate.decide(
         event(action="opened", labels=[], head_ref="cursor/fix-1234")
     )
-    assert decision.run
-    assert decision.round == 1
+    # Nothing to review yet: the agent that opened it is still pushing.
+    assert not decision.run
+    assert decision.enrol
 
 
 def test_any_other_new_branch_needs_the_opt_in_label() -> None:
     assert not gate.decide(
         event(action="opened", labels=[], head_ref="claude/some-work")
-    ).run
+    ).enrol
     assert gate.decide(
         event(action="opened", labels=["loop:on"], head_ref="claude/some-work")
-    ).run
+    ).enrol
+
+
+def test_ready_for_review_does_not_wait_for_the_quiet_period() -> None:
+    """An explicit "this is finished" is the signal the quiet period exists to infer."""
+    decision = gate.decide(event(action="ready_for_review", labels=[]))
+    assert decision.run
+    assert decision.round == 1
+    assert decision.enrol  # and it joins the loop, so later rounds are scanned for
+
+
+def test_a_push_is_not_an_event_the_loop_acts_on() -> None:
+    decision = gate.decide(event(action="synchronize"))
+    assert not decision.run
+    assert not decision.enrol
 
 
 def test_pull_requests_that_predate_the_loop_stay_out_of_it() -> None:
-    """The guard that keeps this from firing on every PR already open.
+    """The guard that keeps this from firing on every `cursor/*` pull request.
 
-    Enrolment happens at `opened`. A push to a long-open pull request carries no round
-    label, so it is refused until someone adds `loop:on` deliberately.
+    The branch prefix enrols a pull request once, when it opens. The scan reads only
+    the label, so a pull request that was already open when the loop landed is never
+    picked up until someone adds `loop:on` deliberately.
     """
-    decision = gate.decide(
-        event(action="synchronize", labels=[], head_ref="cursor/old")
+    decision = gate._scheduled(
+        candidate(labels=[], head_ref="cursor/old"),
+        gate.parse_time(NOW),
+        gate.timedelta(0),
     )
     assert not decision.run
     assert "not enrolled" in decision.reason
 
-    assert gate.decide(event(action="synchronize", labels=["loop:on"])).run
+    assert scan(candidate(labels=["loop:on"], head_ref="cursor/old")).run
 
 
 # --- asking for a round by hand -----------------------------------------------------
@@ -175,6 +292,8 @@ def test_a_comment_can_buy_a_fourth_round() -> None:
     )
     assert decision.run
     assert decision.round == 4
+    # Whoever asked can ask again, so this round must not announce itself as the last.
+    assert not decision.final
 
 
 def test_a_stranger_cannot_spend_review_credits() -> None:
@@ -259,6 +378,18 @@ def test_manual_dispatch_respects_the_cap_unless_forced() -> None:
 # --- the wiring the workflow depends on ---------------------------------------------
 
 
+def test_every_answer_names_the_pull_request_it_is_about() -> None:
+    """The workflow reads the pull request number back off the gate, not off the event.
+
+    A scheduled tick has no pull request in its event payload at all, so the gate is
+    the only thing that knows which one the rest of the job is acting on.
+    """
+    assert gate.decide(event(number=365)).pr == 365
+    assert gate.decide(event(number=365)).head_sha == "a" * 40
+    assert scan(candidate(number=380, head_sha="d" * 40)).pr == 380
+    assert scan(candidate(number=380, head_sha="d" * 40)).head_sha == "d" * 40
+
+
 def test_the_script_reads_stdin_and_writes_json() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT)],
@@ -269,6 +400,17 @@ def test_the_script_reads_stdin_and_writes_json() -> None:
     )
     payload = json.loads(result.stdout)
     # The workflow reads exactly these keys out with `jq`.
-    assert payload.keys() == {"run", "round", "reason", "cap_reached", "forced"}
+    assert payload.keys() == {
+        "run",
+        "round",
+        "reason",
+        "pr",
+        "head_sha",
+        "cap_reached",
+        "forced",
+        "enrol",
+        "final",
+    }
     assert payload["run"] is True
     assert payload["round"] == 2
+    assert payload["pr"] == 365

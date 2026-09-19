@@ -1,9 +1,10 @@
 ---
 name: address-linear-issue
 description: |
-  Read a Linear issue, implement the fix, then hand the PR to a fresh Cursor Grok
-  (standard, never fast) subagent running code-review-skill. The implementing
-  agent then dispositions the review with address-review-findings.
+  Read a Linear issue, implement the fix, open the PR, and put it in the
+  automated review loop, which runs code-review-skill as a separate Claude
+  session. Findings come back to the PR and are dispositioned with
+  address-review-findings.
   Use when: addressing a Linear issue, implementing a Linear ticket, "fix LIN-123",
   working from a Linear URL, or when the user invokes /address-linear-issue.
 ---
@@ -15,12 +16,16 @@ Orchestrator only. Review process stays in
 dispositions stay in [`address-review-findings`](../address-review-findings/SKILL.md).
 Do not restate those files here.
 
-The review **must** be a second opinion: a *fresh* subagent, not this session
-grading its own diff (ADR
+The review **must** be a second opinion, never this session grading its own
+diff (ADR
 [0018](../../../dev-docs/decisions/0018-review-and-address-stay-separate-skills.md)).
+The [review loop](../../../dev-docs/review-loop.md) is what supplies it: a
+GitHub Actions job runs `code-review-skill` in a Claude session that has none of
+this one’s context and posts to the pull request. This skill’s job is to get the
+pull request into that loop, not to spawn a reviewer of its own.
 
-Runs on Cursor desktop, Cursor Cloud Agent, and Claude Code. Other hosts that
-can spawn a second agent follow the same spawn rules with that host’s tools.
+Runs on Cursor desktop, Cursor Cloud Agent, and Claude Code. The handoff is the
+same everywhere, because it happens on GitHub rather than in this session.
 
 ## 1. Read the issue
 
@@ -68,116 +73,60 @@ continue there instead of opening a second one.
 After the PR exists, post a Linear comment on the issue with the PR URL
 (`save_comment`). Do not change Linear status unless the user asked.
 
-## 3. Fresh reviewer (hard rules)
+## 3. Hand the pull request to the review loop
 
-Once the PR is up and the fix is on the remote, launch a **new** subagent.
-Do not start this step on uncommitted work.
+Once the PR is up and the fix is on the remote, put it in the loop and stop.
+Do not start this step on uncommitted work, and do not review the diff yourself.
 
-### Spawn (this session)
+A branch named `cursor/*` enrols itself when the pull request opens. Anything
+else needs the label:
 
-Invariant: a *fresh* subagent, an explicit model (never omit, never `inherit`),
-never a fast variant. Cursor Grok **standard** means a non-fast Cursor Grok
-slug; the current one is `cursor-grok-4.6-medium`. If that slug is missing,
-pick another Cursor Grok slug that does not end in `-fast`. If no Cursor Grok
-slug is listed, pick a different model family than this session, from that
-host’s allowed list, and say which. Do not retry a rejected slug with a fast one.
-
-**Cursor** (desktop and Cloud Agent) — Task tool:
-
-| Parameter | Value |
-|---|---|
-| `subagent_type` | `generalPurpose` |
-| `model` | `cursor-grok-4.6-medium` |
-| `resume` | omit — never resume an existing agent |
-| `run_in_background` | `false` — wait for the review to be written |
-
-**Claude Code** — `Agent` tool, `subagent_type: general-purpose` (hyphenated).
-Pass an explicit `model` from that host’s allowed list. Never inherit.
-
-If neither tool exists, use that host’s equivalent of a new session. If you
-cannot spawn a second agent at all, stop and say so. Do not review the diff
-yourself.
-
-### Post
-
-The reviewer posts per addendum §10. Try in this order:
-
-1. Cursor `ManagePullRequest` (`post_comment`).
-2. Linear `save_diff_comment` (inline) and `submit_diff_review` (body), which
-   sync to GitHub.
-3. Return the three-block markdown **with no attribution footer**. This session
-   posts the reviewer’s words and applies **this host’s** §10 footer rule.
-   Posting the reviewer’s words is not self-review.
-
-A missing post tool is not a reason to skip the review or to write a substitute.
-
-The opener is the reviewer’s — it survives a relay and names who wrote the
-review: **{reviewer name}** · `code-review-skill` · review of `<sha>`. The
-footer is the **poster’s** job, not the reviewer’s. Relayed markdown that
-already contains a footer must have that footer stripped before this session
-posts, then the poster’s rule applied.
-
-### Prompt
-
-The reviewer does not implement. Fill in the placeholders. `{reviewer name}` is
-`Cursor Grok` only for a non-fast Cursor Grok slug; otherwise name the model
-that actually ran.
-
-```
-You are a fresh reviewer. Edit nothing.
-
-1. Read `.claude/skills/code-review-skill/SKILL.md` and
-   `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`
-   (especially §0 output shape and §10 posting). A bare `/code-review` is a
-   host builtin — do not use it.
-2. Review PR <url> (branch <name>, HEAD <sha>) against main — or, on a
-   re-review, against the HEAD you last reviewed, per addendum §10.
-   Linear issue <id>: <title>. <one-line summary of the intended change>.
-   Previous rounds: <IDs, dispositions, HEADs and what each round measured —
-   or "first review">.
-3. Post per addendum §10. Keep prior finding IDs stable; number new findings
-   from the next free ID. A re-review opens with the §10 status table over
-   those IDs. End block 3 with exactly:
-
-   Addressing these: `.claude/skills/address-review-findings/SKILL.md`.
-
-   Posting order: ManagePullRequest (`post_comment`); else Linear
-   `save_diff_comment` + `submit_diff_review`; else return the three-block
-   markdown with no attribution footer and do not invent a GitHub write.
-4. Open every posted comment with:
-   **{reviewer name}** · `code-review-skill` · review of `<sha>`
-   If you post yourself, apply your host’s §10 footer rule. If you return
-   markdown for the parent to post, include no footer.
-5. Return the PR URL, the finding IDs you posted, and the three-block body
-   (no footer) if posting failed. Do not push, commit, or edit the tree.
+```bash
+gh pr edit <number> --add-label loop:on
 ```
 
-If the spawn call fails because of the model slug, retry with another non-fast
-Cursor Grok slug (or another allowed non-fast model on a non-Cursor host). Do
-not retry with a fast slug. Do not review the diff yourself to unblock a spawn
-failure.
+That is the whole handoff. Within ten minutes of the branch’s last commit, the
+loop runs `code-review-skill` against the PR and posts the review there, with
+`loop:round-1` on the pull request. Up to three rounds run.
+
+Two consequences worth stating, because they change what this session does next:
+
+- **Stop pushing when you are done.** The quiet period is how the loop knows the
+  work is finished. A commit pushed while you wait restarts the ten minutes.
+- **Nothing here waits for the review.** It arrives on the pull request minutes
+  later, on GitHub, not as a return value. Say in your reply that the loop has
+  it, and leave.
+
+If the loop is not available — no GitHub Actions, or a fork, where the workflow
+has no secrets — say so and stop rather than reviewing your own work. A review
+this session writes is not a second opinion whatever it is labelled.
 
 ## 4. Address the findings
 
-When the reviewer returns, **this** session (the implementer) reads
-[`address-review-findings`](../address-review-findings/SKILL.md) and follows it
-— ledger, reproduce-before-fix, gates, one decision packet at a time, replies
-on the PR.
+The review lands on the pull request, and the loop posts an `@cursor` comment
+asking for it to be addressed through
+[`address-review-findings`](../address-review-findings/SKILL.md) — ledger,
+reproduce-before-fix, gates, one decision packet at a time, replies on the PR.
 
-This session owns dispositions for the review it commissioned until it stops.
-Do not wait for steward. Steward skips a second round only when a disposition
-comment (opener names `address-review-findings`) is already on those finding IDs.
-Two agents can still start in the same minute before either replies; that race
-is accepted — do not invent a label or marker to close it.
+So whether **this** session does that work depends on who is still holding the
+branch. If you are and the user is waiting on you, read that skill and do it;
+the push that follows starts the next round ten minutes later, with no further
+handoff. If Cursor picked the branch up, leave it alone: two agents pushing to
+one branch is worse than a slower round. Steward skips a second round only when
+a disposition comment (opener names `address-review-findings`) is already on
+those finding IDs. Two agents can still start in the same minute before either
+replies; that race is accepted — do not invent a label or marker to close it.
 
-Stop after the dispositions land. A 🔄 verdict does not spawn a second
-reviewer; the user asks for the next round. Fill the prompt’s “Previous
-rounds” placeholder from the ledger when that happens.
+The loop stops itself after three rounds, or the moment a review raises a
+question only the maintainer can answer. Neither is this session’s to override.
 
 ## Never
 
 - Review your own diff, or “quickly glance” instead of step 3.
-- Use a fast model for the reviewer, `inherit`, or `resume`.
+- Spawn a reviewer subagent of your own. The loop is the reviewer; a second one
+  costs credits to duplicate a review that is already coming.
+- Keep pushing to the branch after the handoff “while waiting”. That is what
+  stops the review from starting.
 - Implement from the title without reading Linear comments.
 - Skip posting the PR URL on the Linear issue.
 - Mark the Linear issue done, or close it, unless the user asked.
