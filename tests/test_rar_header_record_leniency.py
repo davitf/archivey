@@ -27,7 +27,7 @@ from archivey import (
 )
 from archivey.exceptions import CorruptionError
 from archivey.internal.backends.rar_parser import load_vint
-from archivey.types import HashAlgorithm
+from archivey.types import HashAlgorithm, MemberType
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -40,6 +40,8 @@ _UNIMPLEMENTED_XTYPE = 100
 _XTYPE_CRYPT = 1
 _XTYPE_HASH = 2
 _XTYPE_TIME = 3
+_XTYPE_VERSION = 4
+_XTYPE_REDIR = 5
 
 
 class _Record:
@@ -224,3 +226,59 @@ def test_unrar_lists_the_short_checksum_archive_too(short_hash_archive: Path) ->
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "store.txt" in result.stdout
+
+
+def test_a_short_redirect_record_lists_a_symlink_as_a_plain_file(
+    tmp_path: Path,
+) -> None:
+    """The failure direction for a dropped `redir`, pinned because it is what decides
+    whether this record belongs in the fatal set with encryption.
+
+    It does not: the member loses its link nature and lists as an empty regular file,
+    so extracting writes a file where a symlink was. That is the *under*-privileged
+    direction — nothing is created pointing somewhere it should not. Contrast the
+    encryption record, where the drop would present ciphertext as plaintext.
+    """
+    data = (_FIXTURES / "symlinks_solid__.rar").read_bytes()
+    record = next(r for r in _extra_records(data) if r.xtype == _XTYPE_REDIR)
+    path = tmp_path / "short_redir.rar"
+    path.write_bytes(_shrink_record(data, record, new_size=1))
+
+    with open_archive(path) as archive:
+        members = {m.name: m for m in archive.members()}
+        damaged = members["subdir/link_to_file1.txt"]
+        assert damaged.type is MemberType.FILE
+        assert damaged.link_target is None
+        assert [d.code for d in damaged.diagnostics] == [
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+        # The siblings keep their targets: one bad record costs one record.
+        assert members["symlink_to_file1.txt"].link_target == "file1.txt"
+
+
+def test_a_short_version_record_does_not_promote_a_stale_revision(
+    tmp_path: Path,
+) -> None:
+    """The other candidate for the fatal set, and the same answer.
+
+    A `-ver` revision carries its index in the version record, and RAR5 has it
+    nowhere else — so dropping it costs the `;n` suffix and the member collides by
+    name with the live revision. It does *not* become the live one: duplicate names
+    are resolved last-entry-wins archive-wide, and the live revision is written last.
+    So the archive lists one extra non-current entry, which is how every duplicate
+    name already presents, rather than serving stale bytes as current.
+    """
+    data = (_FIXTURES / "file_version__.rar").read_bytes()
+    record = next(r for r in _extra_records(data) if r.xtype == _XTYPE_VERSION)
+    path = tmp_path / "short_version.rar"
+    path.write_bytes(_shrink_record(data, record, new_size=1))
+
+    with open_archive(path) as archive:
+        members = archive.members()
+        current = [m for m in members if m.is_current]
+        assert [m.name for m in current] == ["file.txt"]
+        assert not current[0].diagnostics, (
+            "the live revision must be the untouched one, not the damaged member"
+        )
+        damaged = next(m for m in members if m.diagnostics)
+        assert damaged.name == "file.txt" and not damaged.is_current
