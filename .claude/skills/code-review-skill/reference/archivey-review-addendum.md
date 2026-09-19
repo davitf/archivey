@@ -9,12 +9,17 @@
 >
 > Do not merge these rules into the upstream-derived guides — keep the delta visible.
 
-**Authoritative sources (read these when a finding touches them):**
+**Read at the start of a review:**
+
+| Source | Role |
+|--------|------|
+| [`CONTRIBUTING.md`](../../../../CONTRIBUTING.md) | **The coding and testing rules themselves** — typing, exceptions, comments, config bounds, the three-config gate. §3 and §4 below say which of them PRs here break; they do not restate them |
+
+**Authoritative sources (open these when a finding touches them):**
 
 | Source | Role |
 |--------|------|
 | [`VISION.md`](../../../../VISION.md) | Product tie-breaker when trade-offs conflict |
-| [`CONTRIBUTING.md`](../../../../CONTRIBUTING.md) | Coding, typing, exceptions, testing, three-config gate |
 | [`openspec/specs/`](../../../../openspec/specs/) | Capability contracts — starting point for behavior, revisable when wrong (§3) |
 | [`dev-docs/threat-model.md`](../../../../dev-docs/threat-model.md) | Trust boundaries + open security gaps |
 | [`review/README.md`](../../../../review/README.md) | Deep-review conventions, ranking, deliverable shape |
@@ -40,7 +45,8 @@ dump — dense detail belongs in block 2. [`assets/pr-review-template.md`](../as
 is the fill-in form.
 
 **Brevity fence.** Short form applies only to how blocks 1 and 3 are *presented*. It must
-not reduce review depth (full §8–§9 passes, same tracing and checklists), finding
+not reduce review depth (the full §8 passes, and §9 where the change moves a contract;
+same tracing and checklists), finding
 discipline (over-report on existence; severity × confidence), **block 2** specificity, or
 real pause-and-ask items in block 3 — when unsure whether something needs a human call,
 include it and label confidence. If block 1 is short because the analysis was thin, that
@@ -289,210 +295,141 @@ duplicate-name / `is_current` semantics.
 
 ## 3. Coding & contract checks (`CONTRIBUTING.md`)
 
-These are **review blockers** when violated — not style nits.
+**`CONTRIBUTING.md` §Coding standards holds the rule text, and holds it once.** Read it at
+the start of a review, not once per finding. What follows is the reviewer's half: which of
+those rules PRs in this repo actually break, and how to label a break. Violating one is a
+**review blocker**, not a style nit.
 
-### Zero-dep core & extras
+- [ ] **Zero-dep core.** Core, native 7z read and RAR metadata import nothing third-party
+  at runtime; a new dependency lands as an optional extra matching `packaging-and-extras`;
+  optional imports stay lazy at the boundary
+- [ ] **Types.** Public API and what feeds it is typed, the `py.typed` story is preserved,
+  Pyrefly *and* ty stay clean, and every suppression is specific and reasoned inline
+- [ ] **Exception translation.** `ArchiveyError` subclasses via the per-reader translator;
+  no catch-all; `OSError` / `KeyboardInterrupt` / `MemoryError` propagate;
+  `ArchiveyUsageError` stays outside the archive-error tree
+- [ ] **A changed exception type was checked against what catches it upstream** — here a
+  type is control flow, and the PR should say what the grep found
+- [ ] **Nothing drops or clamps silently** — an over-long read, a seek past a boundary, a
+  consumed count
+- [ ] **Every policy bound is reachable from `ArchiveyConfig`.** A new `_MAX_…` inside a
+  parser or reader is a finding *unless* the constant carries a stated structural reason
+  and a spec row, which CONTRIBUTING allows. Check for that reason before filing
+- [ ] **Clean-as-you-go, with no unspoken deferral.** A "we'll clean this later" shortcut
+  needs an explicit home (PR note, `IDEAS.md`, `review/backlog.md`); an unrecorded one is
+  debt
+- [ ] **Pause-and-ask** on a real design discrepancy — neither author nor reviewer
+  silently picks a winner
+- [ ] **Comments** explain *why*, carry no history, point at nothing the diff removed, and
+  claim nothing stronger than the code guarantees
 
-- [ ] Core / native 7z read / RAR metadata import **no** third-party packages at runtime
-- [ ] New deps land only as optional extras and match `packaging-and-extras`
-- [ ] Optional imports are lazy at the right boundary (don’t pull extras into core import)
+### The comment rules need a reviewer, not a checker
 
-### Types
+Stale and overclaiming comments are the largest finding category in this repo by a wide
+margin, and they are deliberately not automated: the wording is what makes them wrong, so a
+grep would miss the ones that matter and fire on the ones that do not. Read the comments
+*around* every hunk, not only the changed lines.
 
-- [ ] Public API and anything feeding it is typed; `py.typed` story preserved
-- [ ] Both **Pyrefly and ty** stay clean (not mypy/pyright)
-- [ ] `# type: ignore` / checker suppressions are **specific**, rare, and **reasoned**
-  inline — unjustified suppressions are blocking
+### Pre-existing bugs — settled, do not re-escalate
 
-### Exception translation
+A pre-existing bug in the **mechanism the PR is already editing**, where the fix is
+proportionate, is in scope and is a normal finding. Do not soften it to "pre-existing, not
+this PR's" or route it to the backlog. Being in a touched *file* is not the test. A
+**sweep** across files the PR does not touch is the follow-up. The maintainer has ruled
+"fix it in this PR" on #342, #344 and #349, and "not in this PR" only where the ask was a
+cross-file sweep (#339, #353) — so this one does not need another decision packet.
 
-- [ ] Archive problems surface as `ArchiveyError` subclasses via the reader translator
-- [ ] Known third-party errors map to the right type (`CorruptionError`,
-  `TruncatedError`, `EncryptionError`, …)
-- [ ] **No catch-all** `except Exception` that converts unknowns — return `None` from
-  the translator and let unrecognized exceptions propagate
-- [ ] `OSError` / `KeyboardInterrupt` / `MemoryError` propagate unless a spec says
-  otherwise (e.g. safe-extraction `OnError.CONTINUE`)
-- [ ] `ArchiveyUsageError` stays **outside** the archive-error tree (caller misuse)
+### Specs
 
-### Zero tech debt (and clean-as-you-go)
+Specs are the best current description of the contract, not holy writ.
 
-The project aim is **debt-free** — not “clean enough,” but *no deliberately carried
-debt* (`review/backlog.md`). Clean-as-you-go is how day-to-day PRs enforce that:
-
-- [ ] Touched code is left in the shape it *should* have (rename / move / small
-  refactor in the same change when the design requires it)
-- [ ] Don’t land a “we’ll clean this later” shortcut without an **explicit, justified
-  decision** (PR note, `QUESTIONS.md`, `IDEAS.md`, or `review/backlog.md`) — unspoken
-  deferrals are debt
-- [ ] Duplication, drift, and TODOs introduced or left adjacent to the change are
-  either **paid now** or recorded as keep-with-reason — not ignored
-- [ ] **Pause and ask** on real design discrepancies — do not silently pick a winner
-  (`CONTRIBUTING.md`, `CLAUDE.md`, `review/README.md`)
-- [ ] A **pre-existing bug in the mechanism this PR is already editing**, where the fix is
-  proportionate, is in scope and is a normal finding — do not soften it to "pre-existing,
-  not this PR's" or route it to the backlog. Being in a touched *file* is not the test;
-  the mechanism under change is (`CONTRIBUTING.md` §Coding standards).
-  A **sweep** across files the PR does not touch is the follow-up
-  (`CONTRIBUTING.md` §Coding standards). This one is settled: the maintainer has ruled
-  "fix it in this PR" on #342, #344 and #349, and "not in this PR" only where the ask was
-  a cross-file sweep (#339, #353)
-
-### Specs & OpenSpec changes
-
-Specs are **guidelines for intended behavior**, not holy writ. Reviewers and authors
-should treat them as the best current description of the contract — and revise them
-when reality or a better design wins.
-
-- [ ] **Not every change needs a spec.** Bug fixes, refactors, tests, tooling, docs
-  polish, and internal cleanups usually do not. Prefer a spec/`openspec/changes/`
-  delta when the **public or cross-format behavior contract** moves (or when an
-  in-flight change proposal already owns the work).
-- [ ] When a change *does* move a contract, update the relevant
-  `openspec/specs/` (or propose via `openspec/changes/`) and matching user/decision
-  docs in the **same** change — don’t leave prose lying.
-- [ ] **If following a spec yields a worse outcome**, don’t contort the code to satisfy
-  the letter of the doc. Surface it: prefer changing the spec (or opening a change
-  proposal / maintainer question) so the written contract matches the better design.
-- [ ] Spec ↔ doc ↔ code conflicts still use **pause-and-ask** — guessing bakes the
-  wrong decision in. The goal is an explicit revision, not silent divergence.
-- [ ] Open threat-model gaps (`O*`) are not “fixed” by marketing language alone
-
-### Comments
-
-- [ ] Explain *why* (format quirks, hostile-input edges), not narrate *what*
-- [ ] Resulting code is self-explanatory (`CONTRIBUTING.md`); OpenSpec / PR prose is not
-  the only explanation — future editors see the tree, not the diff
-- [ ] Links to specs / decisions / explorations / OpenSpec changes are fine for complex
-  decisions — but an inline summary should usually carry the *why*
-- [ ] Match surrounding comment density
-- [ ] **No history in `src/` comments** — "previously", "the old implementation", "this
-  change", a PR number, an OpenSpec change name, a work-batch name (`Parcel B`, `Wave 1`),
-  or an argument corrected against something the reader cannot see
-  (`CONTRIBUTING.md` §Coding standards)
-- [ ] **No comment left pointing at what the diff removed** — a call site that no longer
-  exists, or a case the change made unreachable. Read the comments around every hunk,
-  not just the changed lines
-- [ ] **No claim stronger than the code guarantees** — a stated bound, ratio or
-  invariant is something a reader will rely on; check it against the code or ask for the
-  measurement
-
-These three are the largest finding category in this repo by a wide margin. They are
-deliberately a reviewer's job rather than a checker's: the wording is what makes them
-wrong, and a grep for the phrasing would miss the ones that matter and fire on the ones
-that do not.
+- [ ] Not every change needs one. Bugfixes, refactors, tests, tooling and docs polish
+  usually do not; a spec delta is for a moving **public or cross-format contract**
+- [ ] When a contract does move, the spec and the matching docs move in the **same** change
+- [ ] A spec that yields a worse outcome gets **revised**, not worked around — surface it
+  instead of contorting the code to satisfy the letter of the doc
+- [ ] Open threat-model gaps (`O*`) are not closed by prose alone
 
 ---
 
 ## 4. Testing expectations
 
-Review whether the change *has* the right tests; don't re-run the suite (§10).
+Rule text: `CONTRIBUTING.md` §Testing standards. Review whether the change *has* the right
+tests; do not re-run the suite (§10).
 
-- [ ] Prefer **behavior** assertions on the public API; unit-test stream/parser/codec
-  internals when they are shared foundations
-- [ ] Corrupt, truncated, encrypted, wrong-password, empty members, weird names,
-  non-seekable sources are in scope — especially when touching readers/translators
-- [ ] Use the **declarative corpus** / conformance sweep where format×shape coverage
-  matters (`testing-contract`)
-- [ ] Bug fixes: **red–green** — failing repro first, then fix
-- [ ] **New guard / property / inventory tests: which mutation did they fail against?**
-  A test added to defend an invariant is not done until the invariant has been broken and
-  the test watched to fail, and the PR should say which mutation was applied
-  (`CONTRIBUTING.md` §Testing standards). "Passes vacuously", "cannot fail for its stated
-  reason", and "the fixture never reaches this path" are the recurring shapes here
-- [ ] Say which dependency config a finding needs: `[all]`, `[all-lowest]`,
-  `[core-only]` (`CONTRIBUTING.md`)
-- [ ] Format before commit (`ruff`); don’t bike-shed formatting in review
+- [ ] Behaviour assertions on the public API, plus unit tests for the shared foundations —
+  stream primitives, format parsers, the codec layer
+- [ ] Corrupt, truncated, encrypted, wrong-password, empty, weird-named and non-seekable
+  cases, especially when the change touches readers or translators
+- [ ] The declarative corpus / conformance sweep where format×shape coverage matters
+  (`testing-contract`)
+- [ ] A bug fix has a red–green repro
+- [ ] **A new guard, property or inventory test names the mutation it failed against.**
+  The PR must say which one was applied. "Passes vacuously", "cannot fail for its stated
+  reason" and "the fixture never reaches this path" are the recurring shapes here
+- [ ] A finding that depends on extras says which config it needs: `[all]`,
+  `[all-lowest]`, `[core-only]`
 
-Past review lesson: “no test in the suite catches this” is often a **strategy** gap
-(property/fuzz/fault-injection), not only a missing example — flag thin coverage
-honestly (`review/backlog.md` Topic 4).
+"No test in the suite catches this" is usually a **strategy** gap — property, fuzz,
+fault-injection — not one missing example. Flag thin coverage honestly
+(`review/backlog.md` Topic 4).
 
 ---
 
 ## 5. Domain checklist (PR-sized)
 
-Use alongside the skill’s generic checklist. Severity: 🔴 blocking / 🟡 important /
-🟢 nit — same labels as the skill.
+The archive-specific traps, alongside the skill's generic checklist. Where one of these
+constrains how code must be written, `CONTRIBUTING.md` carries the rule; this is what to go
+looking for. Severity: 🔴 blocking / 🟡 important / 🟢 nit.
 
 ### Safety & hostile input
 
-- [ ] Extract paths: traversal, absolute/UNC, null bytes, symlink/hardlink escape,
-  never-write-through-symlink (`threat-model`, `safe-extraction`)
-- [ ] Bomb / resource limits: output caps, ratios, entry counts, listing limits where
-  applicable
-- [ ] Every **policy** bound is **reachable from `ArchiveyConfig`** (`ListingLimits` /
-  `ExtractionLimits`, raisable to `UNLIMITED`). A new `_MAX_…` constant inside a parser
-  or reader is a finding — it is invisible from the API and turns a real archive into an
-  error the caller cannot accept — **unless the bound is structural rather than policy**,
-  which CONTRIBUTING allows with a reason at the constant and a spec row
-  (`CONTRIBUTING.md` §Coding standards). Check for that reason before filing
-- [ ] Parser bounds: huge length/count fields from headers cannot OOM the process
-- [ ] Subprocess (`unrar`, fixture `7z`, …): list args, no `shell=True` interpolation
-- [ ] Passwords / key material absent from logs, `repr`, and exception messages
+- [ ] Extract paths: traversal, absolute / UNC, null bytes, symlink and hardlink escape,
+  never write through a symlink (`threat-model`, `safe-extraction`)
+- [ ] Bomb and resource limits: output caps, ratios, entry counts, listing limits — and
+  reachable from `ArchiveyConfig` (§3)
+- [ ] Parser bounds: a huge length or count field from a header cannot OOM the process
+- [ ] Subprocess arguments are a list, and passwords or key material are absent from logs,
+  `repr` and exception messages (`CONTRIBUTING.md`)
 
 ### Streaming, cost model, performance
 
-- [ ] Hot paths stream; avoid slurp-then-parse unless justified
-- [ ] Solid / multi-member access does not **silently** re-decompress the same block
-- [ ] Cost signals (`ListingCost` / `AccessCost`) stay honest if behavior changes
-- [ ] Prefer stored digests (`member.hashes`) over decompress-to-hash when the format
+- [ ] Hot paths stream rather than slurp-then-parse, unless the PR justifies it
+- [ ] Solid / multi-member access does not silently re-decompress a block, and the cost
+  signals still match what the code does (`CONTRIBUTING.md`)
+- [ ] Stored digests (`member.hashes`) preferred over decompress-to-hash where the format
   provides them
-- [ ] Perf claims cite bytes/seeks or existing `benchmarks/` — not vibes
+- [ ] Perf claims cite bytes and seeks, or an existing `benchmarks/` run
 
 ### API & layering
 
-- [ ] Public vs `internal/` boundary respected (CLI reaching into `internal/` is a
-  smell — often an API gap; see `review/api-coherence/`)
-- [ ] New exports are intentional freeze surface; don’t grow `__all__` casually
+- [ ] Public vs `internal/` boundary respected, and new `__all__` entries are intentional
+  (`CONTRIBUTING.md`). The CLI reaching into `internal/` usually means an API gap — see
+  `review/api-coherence/`
 - [ ] Format backends stay behind the uniform reader contracts
 - [ ] Sync-first: no accidental async public API
 
 ### Specs & docs (quick)
 
-- [ ] Spec update only when the behavior contract moves — see §3
-- [ ] Don’t reject a better design solely because an old spec forbids it; propose
-  revising the spec instead
-- [ ] Don’t demand a new OpenSpec change for pure refactors / bugfixes with no
-  contract delta
+- [ ] A spec delta only when the behaviour contract moves, and no new OpenSpec change
+  demanded for a pure refactor or bugfix (§3)
+
+### Red flags — worth a grep on any diff
+
+An empty `except:` or a swallowed error · `shell=True` with interpolation · an ad-hoc path
+join on an extract destination · a TODO in a production path with no home · commented-out
+code · a magic number in a parser · a copy-pasted codec or backend block that should share
+a helper · a hardcoded credential.
 
 ---
 
 ## 6. Deep reviews (`review/`) — when the skill expands into a brief
 
-For commissioned deep reviews (not ordinary PR review), inherit
-[`review/README.md`](../../../../review/README.md):
-
-1. **Baseline first** — record green gates (pytest / skips, pyrefly, ty, ruff) and
-   which dependency config. Overrides §10's no-re-run default — no CI run to inherit.
-2. **VISION ranking** — order findings by load-bearing claims (§1).
-3. **Deliverable shape** — `SUMMARY.md` (headline + severity table + status), theme
-   files, `QUESTIONS.md` for maintainer decisions, and a **“what is actually fine”**
-   section.
-4. **Evidence** — `file:line`, concrete triggering input/state, runnable repro when
-   practical.
-5. **Pause and ask** — spec/design conflicts go to `QUESTIONS.md`, not silent fixes
-   (including “the spec is wrong; here’s the better contract”).
-6. **Don’t re-litigate settled ground** — check archive tables + `STATUS.md` for
-   already-closed findings before spending budget.
-7. **Archive lifecycle** — only move a review to `review/archive/` when every
-   actionable item is fixed or consciously deferred (`STATUS.md` / `backlog.md`).
-
-Review themes to know. **`review/STATUS.md` is the live index — read it rather than this
-table**, which records lenses, not state. A theme listed as archived means findings in
-that area are *re-reviews*: check the archive tables first so you do not re-litigate
-settled ground (`review/backlog.md` carries the deferred topics and their reasons).
-
-| Review | Lens | State |
-|--------|------|-------|
-| `docs/` | Documentation IA, then content accuracy/gaps (Topic 8) | **In flight** — see `STATUS.md` |
-| `api-coherence/` | Uniform interface, surface size, CLI-as-consumer gaps | Archived |
-| `performance/` | ≤1.3× budget, gate efficacy, solid/listing hotspots | Archived |
-| `debt-ledger/` | Freeze-cost debt; corpus matrix (`corpus-matrix.md`) | Archived |
-| `stream-layering/` | Wrapper correctness + collapse | Archived |
-| `cli-product/` | CLI UX / grammar / exit codes (product, not correctness) | Archived |
-| `simplicity-consistency/` | Topic 9 — duplicated concepts, inconsistent surfaces | Archived 2026-08-15 |
-| Security round | Hostile input, crypto, RAR, stream decoder | Archived |
+Commissioned deep reviews inherit [`review/README.md`](../../../../review/README.md) and a
+different deliverable shape — baseline gates recorded rather than inherited, `SUMMARY.md`
+plus theme files, `QUESTIONS.md` for maintainer decisions, and the archive lifecycle.
+**[`deep-reviews.md`](deep-reviews.md)** carries it, including the theme table and why
+`review/STATUS.md` is the live index. Ordinary PR review does not need that file.
 
 ---
 
@@ -559,8 +496,10 @@ Now open the narrative and contracts:
    `design.md`) / `review/` brief or finding.
 2. Applicable rows in this addendum (§1 VISION ranking, §3 contracts, §5 domain)
    and authoritative sources at the top of this file when a finding touches them. For a
-   contract-moving change, run the **values & contracts consistency check (§9)** — the
-   same checklist proposals get, applied to the resulting behavior.
+   contract-moving change, run the **values & contracts consistency check** — the same
+   checklist proposals get, applied to the resulting behavior. It is the first section of
+   [`reviewing-proposals.md`](reviewing-proposals.md), and the only one a code PR needs
+   (§9).
 3. Spec ↔ code ↔ docs: match, intentional revision, or **pause-and-ask** (§3) —
    including “self-contained and clear, but disagrees with the capability scenario
    / invents undecided behavior / breaks format parity.”
@@ -582,87 +521,20 @@ still undercut a VISION claim, disagree with a scenario, or land unjustified deb
 
 ## 9. Reviewing OpenSpec proposals & design docs (not code)
 
-§8's **code-first** ordering is for **actual code / PR reviews**. When the artifact under
-review is an OpenSpec **proposal**, delta spec, or `design.md` — not a diff — there is no
-"resulting tree" to read cold. Review it against the project's **values and contracts**
-instead. (This same check is pass-2 step 2 for code reviews — see §8; for a proposal it
-is the *whole* review.)
+A proposal has no resulting tree to read cold, so it gets a **values-first** order rather
+than §8's: VISION and CONTRIBUTING consistency, then proposal shape, then decision gaps
+and unknown unknowns. **[`reviewing-proposals.md`](reviewing-proposals.md)** carries that
+order and its checklists.
 
-Finding discipline (§0) applies unchanged: severity × confidence, over-report and label,
-pause-and-ask on conflicts rather than silently reconciling.
+It has two readers, and they open different amounts of it:
 
-### Values & contracts consistency check (VISION / CONTRIBUTING)
+- **Reviewing a proposal, a delta spec or a `design.md`** — the whole file, in its order.
+- **Reviewing a contract-moving code PR** — only the **values & contracts consistency
+  check**, which is §8's pass-2 step 2. The proposal-shape and decision-gap sections do not
+  apply; the resulting code is what you have. The naming rule lives in the proposal-shape
+  list, so a PR that adds a public type or config field wants that list too.
 
-Run every proposal — and every contract-moving code change — past these:
-
-- [ ] **Uniform interface / no surprises (§2):** one honest interface preserved? Every
-  per-format behavior difference expressed as **data** (`None`, enums, documented
-  sentinels), never a silent guess?
-- [ ] **Safe by default (§1.2):** zip-slip / symlink escape / bombs still require explicit
-  opt-out; the design doesn't quietly relax a safety contract.
-- [ ] **Memory-safe hostile parsing (§1.3):** pure-Python parse boundaries preserved;
-  crafted input yields honest errors, not native-memory corruption.
-- [ ] **Damaged input is first-class (§1.4):** recoverable-members + honest-error posture
-  preserved; salvage isn't invented where the backlog hasn't committed to it.
-- [ ] **Cost honesty & perf budget (§1.5):** cost signals stay truthful; ≤ ~1.3× budget
-  acknowledged in bytes/seeks (not vibes) where the design touches hot paths.
-- [ ] **Contracts (§3):** zero-dep core, exception-translation model, sync-first, typing
-  story, extras layering — none silently broken by the *design*.
-- [ ] **Non-goals (§1):** not smuggling in an async public API, `zipfile`/`py7zr`/`rarfile`
-  compat shims, quirk-driven architecture, or in-place 7z/RAR modification.
-- [ ] **Threat-model gaps (`O*`):** open gaps the proposal touches are addressed in
-  substance, not closed by marketing language.
-
-### Proposal-shape checks
-
-- [ ] **Scope right-sized (§3):** does this actually need a spec/change, or is it a
-  bugfix/refactor that moves no contract?
-- [ ] **Scenarios are falsifiable:** WHEN/THEN reads as testable behavior, not aspiration
-  — a reviewer could write the conformance assertion.
-- [ ] **Cross-format parity considered:** the parity hot spots in §2 are addressed where
-  the change spans backends.
-- [ ] **Error / edge / hostile paths specified**, not just the happy path (§4, §5).
-- [ ] **Rationale present:** `design.md` records alternatives considered and the *why*,
-  per the library schema — not just the *what* (stub OK for trivial deltas).
-- [ ] **Docs move together:** if the contract moves, the matching `openspec/specs/` and
-  user/decision docs move in the same change (§3).
-- [ ] **Pause-and-ask** on conflicts with existing specs / docs / VISION — surface, don't
-  silently reconcile (§3).
-- [ ] **Names of public types are settled here, not after implementation.** If a proposal
-  introduces a public class, protocol or config field, the name is a reviewable item at
-  *this* stage — raise it now. Once the type is implemented, a rename is a spec and
-  archive sweep rather than a one-line edit, so after implementation a rename needs a
-  reason beyond taste and is the maintainer's call. (`FullCountStream` cost two rounds on
-  #333 for exactly this reason, and the maintainer's note there was "we should have
-  caught this while reviewing the spec".)
-
-### Decision gaps & unknown unknowns
-
-The checks above verify what the proposal *says*; this step hunts what it **doesn't**.
-Go looking, don't wait for gaps to surface during implementation.
-
-- [ ] **Implementor decision gaps** — read it as if you must implement it tomorrow. What
-  would force you to *guess*? Under-specified error behavior, ambiguous field meaning,
-  unhandled format/edge combinations, boundary/empty/overflow values, ordering,
-  defaults, concurrency. List each as an explicit question the proposal should **decide
-  before coding**, not during.
-- [ ] **Unknown unknowns** — what is the proposal not thinking about? Format quirks not
-  yet considered, interactions with existing capabilities, cross-format parity fallout
-  (§2 hot spots), perf/cost surprises, security edges, dependency/version assumptions.
-  Name what we *don't yet know* that could change the design, and how to shrink the
-  unknown (spike, oracle comparison against `archivey-dev`/`py7zr`/`rarfile`, corpus
-  probe, or a maintainer decision).
-- [ ] **Assumptions taken on faith** — for each load-bearing assumption, is it verified
-  or assumed? Flag the untested ones and the cheapest way to test them.
-
-These are findings too (§0): a decision gap that could send implementation down the wrong
-path is 🟡+ and belongs in **block 3 (Maintainer decisions)** — pause-and-ask, never a
-silent assumption baked into the review. Detail for whoever revises the proposal goes in
-block 2.
-
-Rank the same way (§0/§7): a proposal that undercuts a load-bearing VISION claim (§1) is
-🔴; a decision gap or thin scenario is 🟡; wording nits are 🟢. Emit the same
-three-block output shape (§0).
+An ordinary code PR that moves no contract does not open it at all.
 
 ---
 
