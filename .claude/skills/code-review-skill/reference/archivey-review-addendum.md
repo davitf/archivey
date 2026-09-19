@@ -739,6 +739,14 @@ the file was read at all, **whether or not it found anything**:
   path once however many markers it carries, so a slip cannot inflate the figure — it warns
   instead when one path carries two markers from the same pass.
 
+**A marker for a read you did not perform carries `backfilled=<date>` as a final field**, and
+its prose says in as many words that nobody re-read the file. That form exists for one event
+— the sixteen files swept on 2026-09-08 and 2026-09-17, before the convention, backfilled on
+2026-09-19 at the maintainer's decision from the batch scope tables and the paths the threads
+landed on. A pass that predates stable finding IDs writes `ids=untagged`, and one whose
+reviewing host is not recorded writes `reviewer=unknown`. Do not reach for any of the three
+when recording your own read.
+
 **Why this exists.** Findings are evidence of a read; the absence of findings is not. The
 coverage figure on [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md)
 was overstated by twelve points in two consecutive snapshots because threads were counted as

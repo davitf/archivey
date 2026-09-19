@@ -384,11 +384,19 @@ distinguished a file read and found sound from a file nobody opened. It put
 `backends/rar_parser.py`, the largest file in the repository and its most exposed
 hostile-input surface, in the swept column while it had never been read.
 
-**The markers before 2026-09-19 do not exist.** The nine files of the 2026-09-08 pass and the
-seven of S1/S2 were swept before the convention, so the script reports them unswept until
-someone decides whether to backfill markers for them — which would assert a read that the
-backfiller did not perform. Until that is decided, the figures on this page come from the
-file lists reconstructed by hand, and only later batches are machine-counted.
+**The sixteen pre-convention files were backfilled on 2026-09-19**, at the maintainer's
+decision: the nine of the 2026-09-08 pass and the seven of S1 and S2. Each of those markers
+carries `backfilled=2026-09-19` and says in its own text that nobody re-read the file — it
+records the pass that did — and each was reconstructed from the paths the threads landed on,
+the batch scope tables, and `main`'s tip on the pass date. The command above reproduces this
+page's hand-derived 16 files and 8 299 lines exactly, which is the check that the
+reconstruction is not a fresh guess. The reconstruction also surfaced something the hand
+count could not: seven of the nine files from 2026-09-08 have drifted more than 10% since
+they were read, `binaryio.py` from 514 lines to 716, so part of that coverage stands against
+a shape the code no longer has.
+
+**So the number below is a snapshot and the command is the source.** Batches running on
+2026-09-19 post markers as they finish files, which moves the figure within a day.
 
 ## The two docs rewrites
 

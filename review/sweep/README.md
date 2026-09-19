@@ -29,11 +29,21 @@ opened looked identical on #315, and fifteen maintainer questions were read as s
 in the swept column having never been read. Two sweep threads also reached opposite
 conclusions about `internal/volumes.py` and `streams/crypto.py` from the same evidence.
 
-## Open question — the files swept before the markers existed
+## The sixteen files swept before the markers existed — backfilled
 
 The 2026-09-08 pass (nine files) and batches S1 and S2 (seven files) were read before this
-convention. Backfilling markers for them would make the count machine-readable in one step,
-but it asserts a read that whoever writes the marker did not perform, which is the same class
-of claim that caused the original miscount. **Waiting on the maintainer.** Until then
-`sweep_coverage.py` reports those sixteen files as unswept and the figure on the inventory
-page is the hand-reconstructed one.
+convention. The maintainer's call on 2026-09-19 was to **backfill** them rather than leave
+them invisible or re-sweep them, and the sixteen markers are on #315.
+
+Each one carries `backfilled=2026-09-19` and says in its own text that nobody re-read the
+file — the marker records the pass that did. They were reconstructed from the paths the
+threads landed on, the S1 and S2 scope tables, and `main`'s tip on the pass date. The
+reconstruction reproduces the hand-derived figure on
+[`open-work-inventory.md`](../../dev-docs/open-work-inventory.md) exactly — 16 files, 8 299
+lines, 22.9% — which is the check that it is not a fresh guess.
+
+Two caveats live in the markers rather than here. The 2026-09-08 pass recorded no head, so
+`head=7ed4879` is inferred from the date; and its file list comes from the paths its findings
+landed on, so a file it read and found clean is not represented anywhere and never can be.
+Seven of its nine files have since drifted by more than 10% — `binaryio.py` from 514 lines to
+716 — so they are marked swept against a shape the code no longer has.
