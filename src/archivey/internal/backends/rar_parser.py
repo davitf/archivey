@@ -289,9 +289,9 @@ class RarMemberInfo:
     file_version: int | None = None
     # RAR5 FHEXTRA records that were malformed and dropped, as
     # ``(record_name, record_type, reason)``. Empty for every well-formed archive,
-    # and the shared empty tuple costs one slot per member rather than an object —
-    # the per-member footprint is load-bearing here (see ADR/#353's measurement of
-    # retained bytes per header byte). The reader turns each entry into a
+    # and the shared empty tuple keeps that case at one slot rather than an object:
+    # the listing bound is expressed in members, so per-member retained bytes are
+    # load-bearing. The reader turns each entry into a
     # ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
     skipped_header_records: tuple[tuple[str, int | None, str], ...] = ()
 

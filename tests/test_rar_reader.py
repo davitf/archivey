@@ -2982,6 +2982,65 @@ def test_unrar_component_match_semantics_unchanged_by_the_rewrite() -> None:
     assert not _unrar_component_match("aac", "a+c")
 
 
+def test_unrar_component_match_wildcards_in_the_name_are_ordinary_characters() -> None:
+    """A mask ``*`` must expand across a literal ``*`` in the *name*.
+
+    This is the case the function exists for: the demux compares one glob member
+    name against its siblings, so both operands can carry ``*`` and ``?``. Testing
+    character equality ahead of the wildcard arm silently matches the two ``*``
+    against each other, records no backtrack point, and under-matches — which
+    attributes a sibling's bytes to the target member, because the skip that
+    ``_unrar_glob_prefix`` computes comes out short.
+    """
+    from archivey.internal.backends.rar_unrar import (
+        _unrar_component_match,
+        _unrar_mask_match,
+    )
+
+    assert _unrar_component_match("*a", "*")
+    assert _unrar_component_match("*a.txt", "*.txt")
+    assert _unrar_component_match("*ab", "*b")
+    assert _unrar_component_match("**", "*")
+    assert _unrar_component_match("?a", "*")
+    assert _unrar_component_match("a*b", "a*b")
+    assert _unrar_component_match("a*b", "a?b")
+    assert not _unrar_component_match("*a", "a*")
+    assert _unrar_mask_match("*a.txt", "*.txt")
+
+
+def test_unrar_component_match_agrees_with_the_regex_glob_it_replaces() -> None:
+    """Exhaustive equivalence against the regex spelling of the same grammar.
+
+    The linear matcher is only worth having if it decides every input the way the
+    obvious regex does. An alphabet of plain characters cannot show that: the
+    wildcards have to appear on the *name* side too, which is what makes this
+    exhaustive rather than a handful of cases. Bounded at length 3 so the regex's
+    own backtracking stays trivial — the reason it is not in the product code.
+    """
+    import itertools
+    import re
+
+    from archivey.internal.backends.rar_unrar import _unrar_component_match
+
+    def as_regex(name: str, mask: str) -> bool:
+        pattern = "".join(
+            ".*" if ch == "*" else "." if ch == "?" else re.escape(ch) for ch in mask
+        )
+        return re.fullmatch(pattern, name, flags=re.DOTALL) is not None
+
+    alphabet = "a*?."
+    words = [
+        "".join(w) for n in range(4) for w in itertools.product(alphabet, repeat=n)
+    ]
+    divergences = [
+        (name, mask)
+        for name in words
+        for mask in words
+        if _unrar_component_match(name, mask) != as_regex(name, mask)
+    ]
+    assert not divergences, f"{len(divergences)} disagree, e.g. {divergences[:5]}"
+
+
 def test_unrar_glob_demux_ok_basename_only() -> None:
     """Demux is offered only for a glob confined to the basename, no backslash."""
     from archivey.internal.backends.rar_unrar import _unrar_glob_demux_ok
