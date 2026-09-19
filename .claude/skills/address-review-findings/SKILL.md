@@ -329,9 +329,14 @@ after it will not be in what gets reviewed.
 
 Saying nothing is not a failure, only a slower path: the loop starts a round by
 itself once the branch has gone ten minutes without a new commit. So the signal is
-worth sending and never worth faking. Do not send it before the work is pushed, and
-do not send it to reach past a `loop:done`, `loop:decision` or `loop:hold` — those
-stop a round whoever asks, and the gate will ignore it.
+worth sending and never worth faking. Do not send it before the work is pushed.
+
+And do not send it to reach past a `loop:done`, `loop:decision` or `loop:hold`. From a
+bot account the gate simply refuses that. From the maintainer's account it does not:
+the phrase is *also* how a person restarts a parked loop, so posting through their
+account spends a round they did not ask for. Whether you can tell which account you are
+posting under is exactly the point — if you are not sure, do not send it on a parked
+pull request.
 
 ---
 

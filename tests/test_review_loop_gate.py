@@ -149,6 +149,17 @@ def test_a_commit_with_no_timestamp_is_skipped_rather_than_reviewed() -> None:
     assert not scan(candidate(head_committed_at="not a date")).run
 
 
+def test_an_unknown_scan_time_fails_closed() -> None:
+    """Not knowing the time is not the same as knowing the branch is quiet.
+
+    The workflow always passes `date -u`, so this is about which way the gate falls
+    over when it does not: the wrong direction spends a review on a branch that is
+    still being written.
+    """
+    assert not scan(candidate(), now="").run
+    assert not scan(candidate(), now="not a date").run
+
+
 def test_one_pull_request_per_tick_longest_waiting_first() -> None:
     decision = scan(
         candidate(number=400, head_committed_at="2026-09-19T11:50:00Z"),
@@ -297,11 +308,14 @@ def test_a_comment_can_buy_a_fourth_round() -> None:
     assert not decision.final
 
 
-def test_the_implementing_agent_can_say_it_has_finished() -> None:
+@pytest.mark.parametrize("login", ["cursor[bot]", "claude[bot]"])
+def test_the_implementing_agent_can_say_it_has_finished(login: str) -> None:
     """The explicit signal, preferred over waiting out the quiet period.
 
-    `cursor[bot]` is not a repository collaborator — GitHub reports `NONE` — so it
-    gets here on its login rather than on its association.
+    Neither bot is a repository collaborator — GitHub reports `NONE` — so they get
+    here on their login rather than on their association. Both hosts matter:
+    `address-review-findings` §7 tells whichever of them holds the branch to send
+    this, so a gate that knew only one would make the instruction a lie on the other.
     """
     decision = gate.decide(
         event(
@@ -310,7 +324,7 @@ def test_the_implementing_agent_can_say_it_has_finished() -> None:
             is_pull_request=True,
             comment_body="Findings addressed and pushed. @claude review",
             comment_author_association="NONE",
-            comment_author_login="cursor[bot]",
+            comment_author_login=login,
         )
     )
     assert decision.run
@@ -361,6 +375,46 @@ def test_an_unknown_bot_is_still_a_stranger() -> None:
         )
     )
     assert not decision.run
+
+
+def test_no_comment_runs_forever_however_entitled_the_commenter() -> None:
+    """The ceiling the forced path needs because a forced round ignores every stop.
+
+    An agent posting through the maintainer's account is `OWNER` like the maintainer,
+    and `address-review-findings` §7 tells it to send this phrase after every round.
+    Without a ceiling that is fix-comment-fix-comment at full review cost, forever.
+    """
+    owner = {
+        "event_name": "issue_comment",
+        "is_pull_request": True,
+        "comment_body": "@claude review",
+        "comment_author_association": "OWNER",
+        "comment_author_login": "davitf",
+    }
+    assert gate.decide(event(labels=["loop:round-5"], **owner)).run  # round 6: fine
+    spent = gate.decide(event(labels=["loop:round-6"], **owner))
+    assert not spent.run
+    assert spent.cap_reached
+
+    # A bot is bounded long before this, by the ordinary cap.
+    assert not gate.decide(
+        event(
+            labels=["loop:round-5"],
+            **(
+                owner
+                | {
+                    "comment_author_login": "cursor[bot]",
+                    "comment_author_association": "NONE",
+                }
+            ),
+        )
+    ).run
+
+    # The deliberate override survives, because a button in the GitHub UI is not
+    # something an agent presses.
+    assert gate.decide(
+        event(event_name="workflow_dispatch", labels=["loop:round-9"], force=True)
+    ).run
 
 
 def test_a_stranger_cannot_spend_review_credits() -> None:

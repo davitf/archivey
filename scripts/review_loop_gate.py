@@ -32,6 +32,19 @@ from datetime import datetime, timedelta, timezone
 #: How many automated review rounds run before the loop hands the PR back to a human.
 MAX_ROUNDS = 3
 
+#: The round past which no *comment* starts anything, however entitled the commenter.
+#:
+#: `@claude review` from a person is a forced round precisely so it can reach past the
+#: cap and past a park. That is right for a person and unbounded for an agent, and the
+#: two are indistinguishable here: `address-review-findings` tells the fixing agent to
+#: send that phrase after every round, and an agent posting through the maintainer's
+#: account (which the review addendum allows) is `OWNER` like the maintainer. Without a
+#: ceiling, fix-comment-fix-comment reviews forever at full cost. Six is twice the
+#: automatic cap: enough that a person who genuinely wants another round gets it without
+#: noticing this exists. Past it `workflow_dispatch` with `force` is the override, and it
+#: stays unbounded because a button in the GitHub UI is not something an agent presses.
+MAX_FORCED_ROUNDS = 2 * MAX_ROUNDS
+
 #: How long a pull request's head commit must sit untouched before a round starts.
 #:
 #: This is the whole reason the loop is scheduled rather than push-driven. An agent
@@ -44,7 +57,8 @@ QUIET_MINUTES = 10
 
 #: Opt out entirely. Wins over everything, including an explicit ``@claude review``.
 LABEL_OFF = "loop:off"
-#: In the loop. Applied when a PR enrols, and the only thing the scan looks for.
+#: How a pull request joins the loop. Removed once a round has run, because
+#: ``loop:round-N`` carries the enrolment from then on — the scan matches either.
 LABEL_ON = "loop:on"
 #: The loop finished: clean review, or the round cap is spent.
 LABEL_DONE = "loop:done"
@@ -78,7 +92,11 @@ TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 #: than the human one: a person asking for a round is asking past the cap and past a
 #: parked label, because a person is who parked it. An agent saying "I have finished
 #: pushing" is not, so the cap and every park still hold for these.
-TRUSTED_BOTS = frozenset({"cursor[bot]"})
+#: Both spellings of each, because the identity an agent posts under is not one thing:
+#: Cursor's cloud agent is `cursor[bot]`, a Claude Code session is `claude[bot]`, and
+#: `address-review-findings` §7 tells whichever of them holds the branch to send the
+#: same phrase. Leaving Claude Code out made the instruction a lie on half its hosts.
+TRUSTED_BOTS = frozenset({"cursor[bot]", "cursor", "claude[bot]", "claude"})
 
 #: Labels that park the loop. A pull request carrying one is skipped by the scan.
 PARKED_LABELS = (LABEL_DONE, LABEL_DECISION, LABEL_HOLD)
@@ -161,6 +179,10 @@ def _classify(event: dict) -> Decision:
             return Decision(False, done, "comment is not on a pull request")
         if not COMMENT_TRIGGER.search(event.get("comment_body") or ""):
             return Decision(False, done, "comment does not ask for a review")
+        if nxt > MAX_FORCED_ROUNDS:
+            # Ahead of the trust checks: this one holds for everybody.
+            return Decision(False, done, "forced-round ceiling spent", cap_reached=True)
+
         if event.get("comment_author_association") in TRUSTED_ASSOCIATIONS:
             # A round bought by hand is never the "final" one: whoever asked for it can
             # ask again, so the loop has no business announcing that it is finished.
@@ -272,7 +294,11 @@ def _scheduled(candidate: dict, now: datetime | None, quiet: timedelta) -> Decis
     pushed = parse_time(candidate.get("head_committed_at"))
     if pushed is None:
         return out(False, done, "head commit has no timestamp")
-    if now is not None and now - pushed < quiet:
+    if now is None:
+        # Fail closed. Not knowing the time means not knowing whether the branch is
+        # quiet, and the expensive answer is the one that assumes it is.
+        return out(False, done, "scan time is unknown")
+    if now - pushed < quiet:
         return out(
             False, done, f"still being pushed to — quiet for under {QUIET_MINUTES}m"
         )

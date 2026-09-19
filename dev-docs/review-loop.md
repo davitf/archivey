@@ -94,13 +94,27 @@ waiting for a human to click a button is the thing the loop exists to avoid.
 three-round cap and past `loop:decision` or `loop:hold`, because a person is who set
 those and is entitled to clear them.
 
-The same comment from `cursor[bot]` is not. It starts an ordinary round, so the cap
-and every park still hold. GitHub reports `author_association: NONE` for a bot even on
-a pull request it has been working on, so the gate recognises it by login instead —
-`TRUSTED_BOTS` in `scripts/review_loop_gate.py`. The narrower grant is deliberate: an
-agent that fixes, comments, fixes and comments would otherwise run the loop
-indefinitely, and "I have stopped pushing" is a statement of fact, not a request for
-an exception.
+The same comment from `cursor[bot]` or `claude[bot]` is not. It starts an ordinary
+round, so the cap and every park still hold. GitHub reports `author_association: NONE`
+for a bot even on a pull request it has been working on, so the gate recognises these
+by login instead — `TRUSTED_BOTS` in `scripts/review_loop_gate.py`. The narrower grant
+is deliberate: an agent that fixes, comments, fixes and comments would otherwise run
+the loop indefinitely, and "I have stopped pushing" is a statement of fact, not a
+request for an exception.
+
+**No comment starts a round past round 6**, whoever sends it. The two cases above are
+not actually distinguishable: the review addendum lets an agent post through the
+maintainer's account, where it is `OWNER` like the maintainer, and `MAX_FORCED_ROUNDS`
+is what stops that from being an unbounded spend. Six is twice the automatic cap, so a
+person asking for one more round will never meet it. Past it, `workflow_dispatch` with
+`force` is the override, and that one stays unbounded because a button in the GitHub UI
+is not something an agent presses.
+
+**A round that runs clears the parks that predate it.** `loop:decision`, `loop:hold`
+and `loop:done` are all removed as the verdict is applied, and the verdict then sets
+the real state. Without that the loop restarts exactly once: answering the question and
+commenting `@claude review` runs the round, but `loop:decision` survives it and the
+round after is refused with nothing on the pull request saying why.
 
 ## Round state is labels
 
@@ -128,6 +142,11 @@ One thing the labels do not record is *which commit* a round read, and without i
 scan would review the same head every ten minutes forever. That lives in the status
 comment's HTML marker (`<!-- archivey-review-loop-status sha=… -->`), which the loop
 already has to keep current, so there is no second piece of state to forget.
+
+It records only what a round actually read. A review that dies before reaching a
+verdict writes no sha, so clearing the `loop:hold` it leaves behind is enough to make
+the scan try that commit again; recording it there would have marked the head read and
+skipped it for good.
 
 `scripts/review_loop_gate.py` makes every one of these decisions, on facts the workflow
 collects for it, with no GitHub access of its own. That split is so the rules are
@@ -211,9 +230,10 @@ commenting `@claude review` on it.
 
 ## Known rough edges
 
-- **Whether Cursor answers an `@cursor` from `claude[bot]`** has not been observed yet.
-  If it turns out to ignore bot comments, the fallback is the same comment from a
-  personal access token, or a `@Cursor` comment on the Linear issue instead.
+- **Whether Cursor answers the `@cursor` ping** has not been observed yet. The workflow
+  posts it with `GITHUB_TOKEN`, so it arrives from `github-actions[bot]`. If Cursor
+  turns out to ignore bot comments, the fallback is the same comment from a personal
+  access token, or a `@Cursor` comment on the Linear issue instead.
 - **Ten minutes is a guess.** It only matters when an agent does not send the signal,
   and it is long enough to cover the gaps observed so far and short enough not to feel
   broken. `QUIET_MINUTES` in the gate is the one place to change it; the cron interval

@@ -263,7 +263,13 @@ jobs:
           # gate's own guards (forks, enrolment, the cap) sit behind it, not in front.
           # The action reports the actor with and without the `[bot]` suffix depending
           # on the code path, so both spellings are listed.
-          allowed_bots: "cursor,cursor[bot],claude,claude[bot]"
+          # `github-actions[bot]` is here for the scheduled scan, whose actor is
+          # documented as whoever last edited the cron but is not worth betting the
+          # fallback on: if GitHub attributes it to the Actions bot instead, the floor
+          # this workflow relies on dies exactly the way round 1 on #365 did, and
+          # silently. It cannot be abused to spend a review either way — GitHub does
+          # not raise workflow events from `GITHUB_TOKEN` writes in the first place.
+          allowed_bots: "cursor,cursor[bot],claude,claude[bot],github-actions,github-actions[bot]"
           claude_args: |
             --model claude-opus-5
             --allowedTools Read,Grep,Glob,WebFetch,Bash
@@ -328,7 +334,10 @@ jobs:
 
           Comment \`@claude review\` to try again.
           EOF
-            .github/scripts/loop-status.sh "$PR" /tmp/status.md "$HEAD_SHA"
+            # No sha: nothing was reviewed, so the scan must be free to try this
+            # commit again once the hold is cleared. Passing one here would record it
+            # as read and the same-commit guard would skip this head for good.
+            .github/scripts/loop-status.sh "$PR" /tmp/status.md
             exit 0
           fi
 
@@ -339,6 +348,14 @@ jobs:
 
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "loop:round-$ROUND"
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "loop:on" || true
+
+          # Every park that predates this round is now stale, and the branches below
+          # set the real state. Without this the loop restarts exactly once: answering
+          # a `loop:decision` and commenting `@claude review` runs the round, but the
+          # label survives it, so the next round is refused and nothing says why.
+          for stale in "loop:decision" "loop:hold" "loop:done"; do
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$stale" || true
+          done
 
           case "$verdict" in
             clean)
