@@ -267,10 +267,17 @@ question *and* quotes the trigger phrase gets no answer and no explanation. Quot
 phrase or ask the assistant, not both in one comment.
 
 **`claude.yml` also answers only people now.** It passes no `allowed_bots`, so a
-bot-authored `@claude` does not quietly do nothing — the action aborts with "Workflow
+bot-authored `@claude` can do worse than nothing: the action aborts with "Workflow
 initiated by non-human actor" and leaves a red check on the pull request. That is how
-#369 got one: `cursor[bot]` left a review comment that mentioned `@claude` while
-discussing this loop. Each branch of the guard now requires `user.type != 'Bot'`, and
+#369 got one — `cursor[bot]` left a review comment mentioning `@claude` while discussing
+this loop.
+
+Whether it aborts or skips is the action's own call, and not one the workflow can
+predict. `anthropics/claude-code-action` decides separately from the `if:` whether a
+mention is addressed to it, and logs `No trigger was met for @claude` when it is not; a
+run that gets that far skips and goes green whoever triggered it. Both shapes appeared on
+#369 inside twenty minutes, from the same two accounts. That unpredictability is the
+reason to guard rather than to rely on it. Each branch of the guard now requires `user.type != 'Bot'`, and
 the phrase exclusion, which used to sit on the `issue_comment` branch alone, is on every
 branch that reads a body. Naming the bots in `allowed_bots` would have been the wrong
 repair: it makes those runs execute rather than abort, which is more agent usage, not

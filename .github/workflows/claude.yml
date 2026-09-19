@@ -18,13 +18,15 @@ jobs:
     # Two conditions repeat on every branch, for reasons this repo learned the hard way.
     #
     # `user.type != 'Bot'`: this assistant answers a person asking. It passes no
-    # `allowed_bots`, so a bot-authored mention does not merely get ignored — the action
+    # `allowed_bots`, so a bot-authored mention the action *does* read as addressed to it
     # aborts with "Workflow initiated by non-human actor" and posts a **red check on the
-    # pull request**. That happened on #369 when `cursor[bot]` left a review comment that
-    # mentioned `@claude` while discussing the review loop. Adding `allowed_bots` would be
-    # the wrong repair: it would make those runs actually execute, which is more agent
-    # usage rather than less. Bots talk to each other through the loop's own trigger, not
-    # by summoning this.
+    # pull request**. That happened on #369 when `cursor[bot]` left a review comment
+    # mentioning `@claude` while discussing the review loop. A mention the action does not
+    # read as a request ("No trigger was met for @claude") skips harmlessly instead, so the
+    # abort is intermittent by the action's own judgement — which is the reason to guard
+    # rather than to rely on it. Adding `allowed_bots` would be the wrong repair: it would
+    # make those runs actually execute, which is more agent usage rather than less. Bots
+    # talk to each other through the loop's own trigger, not by summoning this.
     #
     # `!contains(…, '@claude review')` hands that one phrase to `review-loop.yml`, which
     # also listens to `issue_comment`. It used to be on the `issue_comment` branch alone,
