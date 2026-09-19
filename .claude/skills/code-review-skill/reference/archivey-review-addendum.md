@@ -911,6 +911,27 @@ posting through the maintainer's account, this is what makes a thread scannable 
 author avatar says `davitf` for two of those three. Keep it to one line; the detail belongs
 in the finding.
 
+### The review trigger phrase is a command, not a quotable string
+
+The automated loop starts a review round when a **top-level comment** on a pull request or
+issue contains the trigger phrase ([`review-loop.yml`](../../../../.github/workflows/review-loop.yml);
+[`review-loop.md`](../../../../dev-docs/review-loop.md) for what a round then does). **It is
+a command whoever wrote it.** An agent posting through the maintainer's account is
+indistinguishable from the maintainer, so a comment written to *explain* the phrase starts a
+real round on whatever pull request it was posted to — which has happened, on the PR that was
+fixing the loop.
+
+The exposure is exactly that one surface, and it is narrow: the guard sits on the
+`issue_comment` path, so a pull request body, an inline review comment and a review body
+cannot fire it, and neither can a file in the tree. That is why `review-loop.yml` and
+[`review-loop.md`](../../../../dev-docs/review-loop.md) can quote the phrase freely — and
+why this file can.
+
+So: **never put the phrase in a comment you post unless you mean to start a round.** The
+match is a case-insensitive search rather than an anchored one, so "as in the phrase
+`@claude` + `review`" does not save you — mid-sentence counts. When a comment needs to talk
+about it, call it *the review trigger phrase* and link the workflow.
+
 ### Name the responder skill in the review body
 
 End block 3 with a one-line pointer to the responder skill:
