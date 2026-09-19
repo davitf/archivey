@@ -214,9 +214,11 @@ nor `DIRECTORY`. Original write-up below.
 > spooled so seek-requiring formats can read a pipe. **P11's open question is answered
 > there:** `CostReceipt.notes`, not a diagnostic, because a spool inside a limit the caller
 > set is declared, and the `diagnostics` admission clause covers only what they could not
-> have determined. Specs-first; four questions still open in that change's `design.md`, the
-> load-bearing one being the default limit — it decides which of today's working
-> RAR-from-stream reads start failing.
+> have determined. Specs-first; the four design questions were settled on 2026-09-17 — a
+> 1 GiB default limit, a frozen `SpoolLimits` with an `UNLIMITED` classvar, a
+> `SpoolLimitExceededError` subclassing `ResourceLimitError`, and `streaming=True` reading
+> forward from the spooled file. The default is the load-bearing one: a RAR-from-stream read
+> over 1 GiB starts failing where it works today.
 
 - **Today:** `unrar` needs a filesystem path, so `RarReader._ensure_archive_path()`
   (`src/archivey/internal/backends/rar_reader.py:532-555`) writes the **entire archive**

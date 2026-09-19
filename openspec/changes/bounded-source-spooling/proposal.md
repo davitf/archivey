@@ -35,10 +35,14 @@ whenever it needs to, bounded by a single configured byte limit, and reports eve
 performs. It does not distinguish *why* the spool was needed:
 
 ```
-spool_limit = <bytes>              # spool when needed, up to this much
-spool_limit = SpoolLimit.UNLIMITED # never refuse on size
-spool_limit = None                 # never spool
+SpoolLimits(max_bytes=<bytes>)     # spool when needed, up to this much
+SpoolLimits.UNLIMITED              # never refuse on size
+SpoolLimits(max_bytes=None)        # never spool
 ```
+
+**The default is 1 GiB**, settled with the other three open questions on 2026-09-17. A byte
+count rather than unlimited (which leaves the behaviour that makes this a defect in place)
+or none (which removes a capability that works today).
 
 An earlier draft of this proposal split the limit in two — one switch for materializing a
 seekable source for an external binary, another for making a non-seekable source seekable —
@@ -73,24 +77,29 @@ decompression-bomb territory, and it overlaps Topic 6 and the parked `stream-lay
 ## Specs
 
 - **`access-mode-and-cost`** — ADDED: the spool limit, its three settings, the
-  `ResourceLimitError` on exceeding it, the `CostReceipt.notes` requirement, the
-  best-effort pre-flight, and the rule that a spool happens at the first operation needing
-  it rather than at open. MODIFIED: the non-seekable fail-fast requirement gains its
-  "unless spooling is permitted" clause, so ADR 0010's rule stays stated rather than
-  quietly outgrown.
+  1 GiB default, the `SpoolLimitExceededError` on exceeding it, the `CostReceipt.notes`
+  requirement, the best-effort pre-flight, the rule that a spool happens at the first
+  operation needing it rather than at open, and the rule that a spooled source does not turn
+  a `streaming=True` read into a random-access one. MODIFIED: the non-seekable fail-fast
+  requirement gains its "unless spooling is permitted" clause, so ADR 0010's rule stays
+  stated rather than quietly outgrown.
 - **`archive-reading`** — MODIFIED: the limit reaches the reader through `ArchiveyConfig`,
-  beside `listing_limits`.
+  beside `listing_limits`, as a frozen `SpoolLimits` with an `UNLIMITED` classvar.
 - **`format-rar`** — MODIFIED: the existing materialization becomes subject to the limit
   and to the cost note.
 
 ## Impact
 
-- **Public surface:** one new field on `ArchiveyConfig` (plus a spool directory), which
-  already carries `extraction_limits` and `listing_limits`. Additive; worth settling
-  pre-`0.2.0` because a config field is cheap to add later and expensive to reshape.
+- **Public surface:** one new `ArchiveyConfig` field carrying a frozen `SpoolLimits`
+  (limit plus spool directory), beside `extraction_limits` and `listing_limits`; and one new
+  exception, `SpoolLimitExceededError`, subclassing `ResourceLimitError`. Additive; worth
+  settling pre-`0.2.0` because a config field is cheap to add later and expensive to
+  reshape.
 - **Behaviour change, pre-tag and deliberate:** a RAR-from-stream read of an archive larger
-  than the default limit starts raising `ResourceLimitError` where it previously succeeded.
-  The unbounded case is the defect.
+  than 1 GiB starts raising `SpoolLimitExceededError` where it previously succeeded. The
+  unbounded case is the defect. **No corpus archive reaches that boundary** — the largest is
+  188 KiB — so CI will not catch a badly chosen default, and the implementation owns a test
+  that drives the boundary directly.
 - **Capability gain:** seek-requiring formats become openable from a pipe when the limit
   allows it.
 - **Not a breaking change for the common path:** path sources, and stream sources whose

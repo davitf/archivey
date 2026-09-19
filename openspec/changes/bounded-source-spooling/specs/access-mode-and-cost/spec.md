@@ -13,15 +13,28 @@ accept three settings:
   `ListingLimits.UNLIMITED` pattern — never refuse on size;
 - **none** — never spool.
 
+The default SHALL be **1 GiB**. A byte count is the default rather than unlimited or none:
+unlimited leaves the behaviour that makes this a defect in place, and none removes a
+capability that works today. 1 GiB keeps essentially every archive that works today working
+while making the bound real.
+
 The system SHALL NOT expose *why* a spool was needed as a configuration axis. Materializing
 a seekable source for an external binary that accepts only a filesystem path, and
 materializing a non-seekable source so a seek-requiring format can read it, are the same
 operation at the same cost with the same remedy, and SHALL be governed by the same limit.
 
-A spool that would exceed the limit SHALL raise `ResourceLimitError` — the same family as
-`ExtractionLimits` and `ListingLimits` — and SHALL do so **before writing any bytes** when
-the source's size is known in advance. When the size is not known, the system SHALL enforce
-the limit during the write and SHALL remove the partial temporary file before raising.
+A spool that would exceed the limit SHALL raise `SpoolLimitExceededError`, and SHALL do so
+**before writing any bytes** when the source's size is known in advance. When the size is
+not known, the system SHALL enforce the limit during the write and SHALL remove the partial
+temporary file before raising.
+
+`SpoolLimitExceededError` SHALL subclass `ResourceLimitError`, so that `except
+ResourceLimitError` keeps catching every configured-limit trip while a caller who wants to
+distinguish the spool can. The **none** setting SHALL raise the same error: a limit of none
+is a limit of zero bytes, and any spool exceeds it. The system SHALL NOT use
+`UnsupportedOperationError` — a limit the caller can raise is not something that cannot be
+done — nor `ArchiveyUsageError`, which sits outside `ArchiveyError` (ADR 0012) and would
+present a configured bound as a programming mistake.
 
 The system SHALL allow the caller to name the directory used for spooling.
 
@@ -30,10 +43,12 @@ The system SHALL allow the caller to name the directory used for spooling.
 | Case | Expected |
 | --- | --- |
 | Limit is a byte count, source smaller | Spooled; `CostReceipt.notes` records the spool and its size |
-| Limit is a byte count, source larger, size known in advance | `ResourceLimitError` before any bytes are written |
-| Limit is a byte count, source larger, size not known in advance | `ResourceLimitError` during the write; partial file removed |
+| Limit is a byte count, source larger, size known in advance | `SpoolLimitExceededError` before any bytes are written |
+| Limit is a byte count, source larger, size not known in advance | `SpoolLimitExceededError` during the write; partial file removed |
 | Limit is unlimited | Spooled whatever the size; still recorded in `CostReceipt.notes` |
-| Limit is none, operation needs a spool | Refused with a typed error; nothing is written |
+| Limit is none, operation needs a spool | `SpoolLimitExceededError`; nothing is written |
+| No limit configured | 1 GiB applies |
+| Caller catches `ResourceLimitError` | The spool refusal is caught, like a listing or extraction limit |
 | Limit is none, operation needs no spool | Unaffected |
 | Caller names a spool directory | That directory is used; the platform default is not consulted |
 | Reader closed | Temporary file or directory removed |
@@ -95,6 +110,27 @@ memory limit.
 | Free space reported sufficient, filesystem fills mid-write | The underlying `OSError` propagates translated; the pre-flight is not claimed to have promised otherwise |
 | Source size not known in advance | No pre-flight is possible; the limit is enforced during the write |
 | Spool directory is memory-backed | Behaviour unchanged and the limit still applies; the documentation says what that means |
+
+### Requirement: A spooled source does not turn a streaming read into a random-access one
+
+With `streaming=True`, when the source has been spooled, the system SHALL read forward from
+the spooled file and SHALL NOT switch to random access because spooling made the source
+seekable. `streaming=True` states an intent about how the archive is read; spooling is an
+implementation detail of reading the caller's source, not a revision of that intent.
+
+The system SHALL apply this uniformly across formats. **If `streaming=True` means something
+different per format, code that is wrong passes its tests on the format its author happened
+to use and fails in production when another appears** — which is the same reasoning behind
+disabling random-access APIs independently of any loaded index.
+
+#### Scenario: streaming over a spooled source matrix
+
+| Case | Expected |
+| --- | --- |
+| `streaming=True`, source spooled | Forward reads from the spooled file; random-access APIs stay disabled |
+| `streaming=True`, source spooled, caller requests random access | Refused as it is for any `streaming=True` reader |
+| `streaming=False`, source spooled | Random access as usual |
+| `streaming=True`, no spool needed | Unchanged |
 
 ## MODIFIED Requirements
 

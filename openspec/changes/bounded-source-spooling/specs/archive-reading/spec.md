@@ -10,9 +10,12 @@ NOT be a per-call argument on `open_archive()` / `open_stream()` / `extract()`: 
 handling applies to every read the reader performs, which is what distinguishes it from
 `limits=`, an extraction-scoped argument.
 
-The setting SHALL be expressible in a single field whose three values are a byte count, an
-unlimited sentinel, and none, so that a caller who wants archivey never to use temporary
-storage can say so in one place. The spool directory SHALL be settable alongside it.
+The setting SHALL live on a **frozen `SpoolLimits` dataclass with an `UNLIMITED` classvar**,
+matching `ExtractionLimits` and `ListingLimits` exactly, so the spool limit reads as the
+third member of a family the caller has already met rather than a new shape to learn. Its
+limit field SHALL take a byte count, the `UNLIMITED` sentinel, or none, so that a caller who
+wants archivey never to use temporary storage can say so in one place. The spool directory
+SHALL travel on the same object.
 
 #### Scenario: spool configuration matrix
 

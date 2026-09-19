@@ -3,15 +3,19 @@
 > **Specs-first proposal. Nothing here is implemented.** These tasks describe the
 > implementation for when the change is accepted and scheduled. Run tools through `uv`
 > (`uv run pytest`, `uv run pyrefly check`, `uv run ty check`, `uv run ruff`).
-> `design.md` §Open questions must be answered before task 1 — the default limit and the
-> packaging are inputs, not implementation choices.
+>
+> **The four design questions are settled** (`design.md` §Decisions the maintainer settled):
+> a 1 GiB default, a frozen `SpoolLimits` with an `UNLIMITED` classvar, a
+> `SpoolLimitExceededError` subclassing `ResourceLimitError`, and `streaming=True` reading
+> forward from the spooled file. They are inputs here, not implementation choices.
 
 ## 1. The setting
 
-- [ ] 1.1 Add the spool limit to `ArchiveyConfig` beside `listing_limits`, in the shape
-      chosen for `design.md` Q2, with the three values: byte count, unlimited sentinel,
-      none. Match the `ExtractionLimits.UNLIMITED` / `ListingLimits.UNLIMITED` pattern.
-- [ ] 1.2 Add the spool directory alongside it.
+- [ ] 1.1 Add a frozen `SpoolLimits` dataclass with an `UNLIMITED` classvar, matching
+      `ExtractionLimits` and `ListingLimits`, and hang it on `ArchiveyConfig` beside
+      `listing_limits`. Its limit takes a byte count, `UNLIMITED`, or none, and **defaults
+      to 1 GiB**.
+- [ ] 1.2 Put the spool directory on the same object.
 - [ ] 1.3 Export any new public name from `archivey.__all__` and give it an `api.md` entry.
 - [ ] 1.4 Docstrings on the field and any new type — `api.md` renders from docstrings, and
       a `#` comment reaches no reader (`review/docs-content/scope.md` §Precondition).
@@ -19,16 +23,19 @@
 ## 2. The spool primitive
 
 - [ ] 2.1 One internal helper performing a bounded spool: takes the limit, the directory, a
-      source and an optional known size; returns a path; raises `ResourceLimitError` on the
-      limit; registers cleanup with the reader's close.
+      source and an optional known size; returns a path; raises `SpoolLimitExceededError` on
+      the limit; registers cleanup with the reader's close.
+- [ ] 2.1a Add `SpoolLimitExceededError` subclassing `ResourceLimitError`, and widen
+      `ResourceLimitError`'s docstring, which currently scopes itself to `ExtractionLimits`
+      and `ListingLimits`.
 - [ ] 2.2 Check the size **before** writing when it is known; enforce during the write when
       it is not, removing the partial file on the way out.
 - [ ] 2.3 Best-effort free-space pre-flight per `design.md` Decision 5 — a fast-fail, never
       a promise, and not reachable as a guarantee from any public docstring.
 - [ ] 2.4 Record every spool in `CostReceipt.notes` with its byte count. No diagnostic.
-- [ ] 2.5 Refusal path for the "none" setting, raising whichever error `design.md` Q3
-      settles on. Keep `StreamNotSeekableError` for the non-seekable-source case, extending
-      its message to name the setting.
+- [ ] 2.5 Refusal path for the "none" setting, raising the same `SpoolLimitExceededError` —
+      a limit of none is a limit of zero bytes. Keep `StreamNotSeekableError` for the
+      non-seekable-source case, extending its message to name the setting.
 
 ## 3. Route the existing RAR materialization through it
 
@@ -44,14 +51,19 @@
       limit permits it: spool, then proceed as for a seekable source.
 - [ ] 4.2 When the limit is none, keep raising `StreamNotSeekableError`, with the message
       naming the setting so the error teaches the fix.
-- [ ] 4.3 Settle `design.md` Q4 — does `streaming=True` over a spooled source stream from
-      the spooled file or switch to random access? — and implement it explicitly.
+- [ ] 4.3 `streaming=True` over a spooled source reads forward from the spooled file and
+      does not switch to random access. Implement it explicitly rather than letting it fall
+      out of whether the source happens to be seekable.
 
 ## 5. Tests
 
 - [ ] 5.1 Red-green for the P11 case: a compressed RAR member read from a `BytesIO` records
-      a `CostReceipt.notes` entry, and exceeds a low limit with `ResourceLimitError`. Verify
-      by reverting the fix and watching each fail.
+      a `CostReceipt.notes` entry, and exceeds a low limit with `SpoolLimitExceededError`.
+      Verify by reverting the fix and watching each fail.
+- [ ] 5.1a Drive the **1 GiB default** boundary directly. No corpus archive comes near it
+      (the largest RAR is 188 KiB), so nothing else will catch a wrong default. A sparse or
+      synthesised source keeps this off the corpus.
+- [ ] 5.1b `except ResourceLimitError` catches the spool refusal.
 - [ ] 5.2 Every row of the four delta scenario matrices — spool limit, reporting, timing,
       pre-flight/directory — plus the RAR matrix.
 - [ ] 5.3 Timing specifically: listing a RAR from a stream does **not** spool; the first

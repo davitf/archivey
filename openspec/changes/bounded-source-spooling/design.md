@@ -104,24 +104,63 @@ or recommend later, but which does not belong in the source layer.
 | Natural home | the reader's source handling | a wrapper stream the caller composes |
 | Overlaps | — | Topic 6, and the parked `stream-layering` **Q4** |
 
-## Open questions for the maintainer
+## Decisions the maintainer settled
 
-1. **The default limit.** Every number is arbitrary and this one is load-bearing: it decides
-   which of today's working RAR-from-stream reads start failing. Candidates: a fixed size
-   (1 GiB keeps essentially everything working; 64 MiB makes the bound meaningful);
-   `UNLIMITED` (nothing breaks, and the *reporting* becomes the whole fix — defensible,
-   since unbounded-**and**-unreported is what makes P11 a defect); or `None` (safest, and
-   removes a capability that works today).
-2. **Packaging.** Two flat fields on `ArchiveyConfig` (`spool_limit`, `spool_dir`) or one
-   frozen `SpoolLimits` object with `.UNLIMITED`, matching `ExtractionLimits` /
-   `ListingLimits` exactly. The object matches the family; the flat fields are two lines
-   shorter to use.
-3. **Which error when spooling is refused** — `ArchiveyUsageError` (the caller configured
-   the refusal, so it is their mistake) or `UnsupportedOperationError` (from the reader's
-   side it is an operation the archive cannot provide under this configuration). Note the
-   two sit on opposite sides of the `ArchiveyError` boundary (ADR 0012), so this is not
-   cosmetic. The refusal for a **non-seekable source** stays `StreamNotSeekableError`
-   either way, since that is the existing contract.
-4. **Whether `streaming=True` plus a spooled source streams or seeks.** Spooling makes the
-   source seekable, so the reader could switch to random access, or honour the stated intent
-   and stream from the spooled file. The second is more predictable; the first is faster.
+The four questions this file left open were answered on 2026-09-17. They are recorded here
+with the reasoning, because the reasoning is what a later reader needs; the deltas carry the
+resulting contract.
+
+### Q1 — the default limit is 1 GiB
+
+A fixed byte count, not `UNLIMITED` and not none. It keeps essentially every archive that
+works today working, while making the bound real for the case that motivated the change.
+
+**The consequence is stated rather than hidden:** a RAR read from a stream whose archive
+exceeds 1 GiB starts raising where it succeeds today. Nothing in the repository exercises
+that boundary — the largest corpus RAR is 188 KiB — so **CI will not catch a badly chosen
+default**. The implementation therefore owns a test that drives the boundary directly rather
+than relying on the corpus to reach it.
+
+### Q2 — a frozen `SpoolLimits` with an `UNLIMITED` classvar
+
+Not two flat fields. It matches `ExtractionLimits` (`src/archivey/config.py:97`) and
+`ListingLimits` (`src/archivey/config.py:119`) exactly, so the spool limit reads as the third
+member of a family a caller has already met rather than a new shape to learn. The spool
+directory travels on the same object.
+
+### Q3 — a dedicated error, subclassing `ResourceLimitError`
+
+Neither of the two candidates this file offered. `UnsupportedOperationError` is for what
+*cannot* be done, and a limit the caller can raise is not that; `ArchiveyUsageError` sits
+outside `ArchiveyError` (ADR 0012) and makes a configured bound look like a programming
+mistake. So: a type of its own, `SpoolLimitExceededError`.
+
+**It subclasses `ResourceLimitError`** (`src/archivey/exceptions.py:220`), which already
+means "a configured limit was exceeded" — so `except ResourceLimitError` keeps catching every
+configured-limit trip, and callers who want to distinguish the spool can. That error's
+docstring currently scopes itself to `ExtractionLimits` and `ListingLimits`, and widens to
+say so. Adding a third unrelated limit exception was the alternative, and it splits a
+category that is already coherent.
+
+One type covers both refusals, because they are the same refusal: a limit of none is a
+limit of zero bytes, and any spool exceeds it. The alternative — a second exception for
+"spooling is off" — would make a caller write two `except` clauses to express one intent.
+
+The refusal for a **non-seekable source** stays `StreamNotSeekableError`, which is the
+existing contract.
+
+### Q4 — `streaming=True` streams from the spooled file
+
+It does not switch to random access because the source happened to become seekable.
+
+The reason is cross-format uniformity, and it is the part worth keeping: **if `streaming=True`
+means something different per format, code that is wrong passes its tests on the format the
+author happened to use and breaks in production when another appears.** A caller who wrote
+`streaming=True` stated an intent, and spooling is an implementation detail of reading their
+source, not a revision of that intent.
+
+`openspec/specs/access-mode-and-cost/spec.md:28` is adjacent — under `streaming=True`
+random-access APIs are disabled *uniformly*, independent of any loaded index — but it is
+about disabling APIs regardless of index state, not about cross-format uniformity as such.
+This change therefore **states the rule as contract** in its `access-mode-and-cost` delta
+rather than citing that line as though it already said it.

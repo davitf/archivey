@@ -29,7 +29,7 @@ across all volumes rather than per volume.
 | Stream source, compressed member, within the limit | One spool of the whole archive, recorded in `CostReceipt.notes` |
 | Stream source, solid archive, any member | One spool; the pipe demux requires it |
 | Stream source, second compressed member after the first | No second spool; materialization is once per reader |
-| Stream source, archive larger than the limit | `ResourceLimitError` before writing, since the size is known |
-| Stream source, spooling set to none, compressed member | Typed refusal; no bytes written |
+| Stream source, archive larger than the limit | `SpoolLimitExceededError` before writing, since the size is known |
+| Stream source, spooling set to none, compressed member | `SpoolLimitExceededError`; no bytes written |
 | Multi-volume stream source | One spool set; the limit applies to the total across volumes |
 | Reader closed | Temporary file or directory removed |
