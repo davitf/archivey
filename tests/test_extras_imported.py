@@ -29,7 +29,6 @@ _SRC = _REPO_ROOT / "src"
 _IMPORT_NAME = {
     "lz4": "lz4",
     "backports-zstd": "backports.zstd",
-    "pybcj": "bcj",
 }
 
 # Packages pinned ahead of their implementation phase: the extra is part of the documented
