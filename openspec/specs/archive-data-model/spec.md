@@ -193,6 +193,7 @@ is no `crc32` alias. Sizes, link targets, hashes, and diagnostics MAY be
 completed in place during streaming. `member_id` / `archive_id` preserve source
 identity, convenience properties are derived, and `replace()` creates an edited
 copy. `hashes`, `diagnostics`, and `extra` SHALL be excluded from equality.
+`extra` values SHALL be typed `object`; a caller that uses a key narrows it itself.
 
 `ArchiveMember` SHALL remain unhashable and non-frozen. The `diagnostics` tuple
 itself is immutable, but the library MAY replace it in place for later

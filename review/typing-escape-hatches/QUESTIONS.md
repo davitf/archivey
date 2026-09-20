@@ -21,9 +21,16 @@ each into the other is clean. Private `_raw: Any` is unchanged.
 carries the correct type for every known key, while still allowing unknown keys
 for third-party extensions — on its own PR, not this one.
 
-That is PEP 728 `extra_items`, and it works here. The rest of this section is the
-2026-09-18 reasoning it supersedes. The three costs PR 8 carries are listed once,
-on [`SUMMARY.md`](SUMMARY.md) item 8 — do not keep a second copy here.
+That is PEP 728 `extra_items`, and it works here. The three costs PR 8 carries are
+listed once, on [`SUMMARY.md`](SUMMARY.md) item 8 — do not keep a second copy here.
+
+**Until PR 8 lands, `dict[str, object]` plus the `EXTRA_*` constants (and string
+keys in the format handbooks) is the contract.**
+
+What follows is the 2026-09-18 reasoning the decision supersedes, from "Not one
+*closed* TypedDict" to "Two fields, two key sets" — with two exceptions inside that
+run, both marked and both current: the cross-format-map disposition and the
+paragraph headed "Correction, 2026-09-20".
 
 Not one *closed* TypedDict on `ArchiveMember.extra`.
 
@@ -58,6 +65,3 @@ key, and accepts an unknown key whose value reads back as `object`. The
 item 8 — the question PR 8 settles.
 
 Two fields, two key sets. Do not merge member extras and `ArchiveInfo.extra`.
-
-Until PR 8 lands, `dict[str, object]` plus the `EXTRA_*` constants (and string
-keys in the format handbooks) is the contract.

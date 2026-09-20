@@ -122,12 +122,26 @@ one category.
    - One map across all formats means a RAR key type-checks on a ZIP member.
      Accepted; per-format aliases remain possible on top.
    - `typing_extensions`, where there is no required runtime dependency today
-     (`pyproject.toml` has no `[project] dependencies`). `types.py` already
-     has `from __future__ import annotations` and a `TYPE_CHECKING` block, and
-     nothing in `src/` calls `get_type_hints` or `dataclasses.fields`, so a
-     type-check-only import keeps the zero-dependency install. That trades
-     away users importing the type to annotate their own code, which is the
-     question PR 8 settles.
+     (`pyproject.toml` has no `[project] dependencies`). Keeping the install
+     zero-dep means **the whole `TypedDict` definition sits inside
+     `if TYPE_CHECKING:`, not only the import**: functional syntax makes the
+     declaration an executable assignment, and `from __future__ import
+     annotations` is PEP 563 — it defers annotations, not assignments, so an
+     import-only guard raises `NameError` at import time. Measured 2026-09-20:
+     with the definition inside the block, `types.py`'s shape imports cleanly
+     **with `typing_extensions` absent from the environment**, the annotation
+     reads back as the string `'MemberExtra'`, and both checkers still type the
+     field exactly (known keys, unknown keys, and a rejected wrong-type write).
+     Two consequences. A `TYPE_CHECKING`-only definition is *why* a caller
+     cannot import the type to annotate their own code, so that is this
+     mitigation's price rather than a separate cost — and it is the question PR 8
+     settles, because the other branch makes `typing_extensions` a required
+     runtime dependency of core, which CONTRIBUTING's zero-dep-core rule turns
+     into an optional-extra question. And the field's own default needs a typed
+     factory: `extra: MemberExtra = field(default_factory=dict)` fails pyrefly
+     (`dict[Unknown, Unknown]` is not assignable), while a helper returning
+     `cast("MemberExtra", {})` is clean on both checkers and unchanged at
+     runtime.
 
    Supersedes the per-format-aliases-only note that stood here before.
 
