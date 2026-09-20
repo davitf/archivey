@@ -1,5 +1,10 @@
 # Brief — type-checker escape hatches in `src/`
 
+> **Inventory landed 2026-09-17** against `main` @ `94468bd0`. Read
+> [`SUMMARY.md`](SUMMARY.md) + [`inventory.md`](inventory.md); do not re-count
+> from the census table below (it is the commissioning snapshot). S2/S3 stay
+> closed; S1 and S6 closed in that PR.
+
 Commissioned 2026-09-11 against `main` @ `8e88e4f`. Sibling of
 [`../exception-catchalls/brief.md`](../exception-catchalls/brief.md): that one audits
 blind `except` clauses, this one audits weakened types. The two share a method and run
