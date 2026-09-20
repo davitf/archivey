@@ -160,15 +160,17 @@ behaviour. The complete list is on the two classes.
   stored included: RAR3 copies the `UNP_VER` byte as stored; RAR5 reports `50`.
 - **Glob characters in a stored member name.** `unrar` is told which member to emit with
   an include *mask* built from its name, so a name containing `*` or `?` also matches its
-  siblings — and `unrar` decompresses every match before the one you asked for. Archivey
-  returns the correct bytes, but the earlier members have already been decoded, and
-  nothing bounds that: `ExtractionLimits` apply to extraction, not to `open()` / `read()`.
-  Reading such a member therefore raises `UnsupportedFeatureError`, naming how many bytes
-  it would have cost. Set `ArchiveyConfig.rar_allow_glob_member_concatenation=True` to
-  read it anyway. Two cases are *not* affected: a glob name that matches no other member
-  (the accidental `report*.pdf` beside `report1.pdf`) reads normally with no flag, and a
-  solid `stream_members()` pass reads everything, because it builds no mask at all. A
-  glob in a *directory* component, or a backslash, is refused outright either way.
+  siblings. Names like this are almost always constructed, so reading such a member
+  raises `UnsupportedFeatureError`. On a non-solid archive the extra decode is also
+  unbounded: `ExtractionLimits` apply to extraction, not to `open()` / `read()`, and the
+  error names how many bytes it would have cost. On a solid archive those bytes are
+  already inside `AccessCost.SOLID`, so the error names the flag rather than an
+  avoidable extra decode. Set `ArchiveyConfig.rar_allow_glob_member_concatenation=True`
+  to read it anyway. Two cases are *not* affected: a glob name that matches no other
+  member (the accidental `report*.pdf` beside `report1.pdf`) reads normally with no
+  flag, and a solid `stream_members()` pass reads everything, because it builds no mask
+  at all. A glob in a *directory* component, or a backslash, is refused outright either
+  way.
 - Solid archives: one `unrar p` pipe for the whole of `stream_members()`. A random
   `open()` out of order is a separate `unrar` run that decodes from the start of the
   archive each time, so reading *n* members that way costs *n* full decodes — stream them

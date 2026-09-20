@@ -9,8 +9,10 @@ import os
 import shutil
 import struct
 import subprocess
+import threading
 import time
 import zlib
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -226,6 +228,24 @@ def test_solid_pass_spawns_unrar_only_on_the_first_read(
                 assert stream is not None
                 assert stream.read() == _BASIC_CONTENTS["file1.txt"]
     assert len(spawns) == 1
+
+
+def test_solid_stream_members_of_a_stream_source_writes_nothing_until_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A solid pass nobody reads from must not spool a stream source.
+
+    ``_iter_with_data`` used to call ``_ensure_archive_path()`` at pass start,
+    before the lazy ``_pipe()``. Listing through ``stream_members`` then wrote
+    the whole archive even though no member was read and no ``unrar`` spawned.
+    """
+    created = _rar_temp_artifacts(monkeypatch)
+    data = _fixture("basic_solid__.rar").read_bytes()
+    with open_archive(io.BytesIO(data)) as archive:
+        assert archive.info.is_solid is True
+        for _member, _stream in archive.stream_members():
+            pass
+        assert created == []
 
 
 @requires_binary("unrar")
@@ -1102,6 +1122,82 @@ def test_stream_volume_read_materializes_once(
         assert len(created) == 1
         temp_dir = created[0]
     assert not temp_dir.exists()
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "source_factory",
+    [
+        pytest.param(
+            lambda: io.BytesIO(_fixture("basic_solid__.rar").read_bytes()),
+            id="single-stream",
+        ),
+        pytest.param(
+            lambda: [
+                io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
+                io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+            ],
+            id="stream-volumes",
+        ),
+    ],
+)
+def test_concurrent_stream_materialize_writes_once_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+    source_factory: Callable[[], io.BytesIO | list[io.BytesIO]],
+) -> None:
+    """Two overlapping compressed opens must share one temp copy.
+
+    ``_ensure_archive_path`` used to check-then-write with no lock. Under
+    ``concurrent_members=True`` both threads copied, and close only removed
+    the winner's path, leaking the other into ``/tmp``.
+    """
+    created = _rar_temp_artifacts(monkeypatch)
+
+    def _delay(fn: object) -> object:
+        def delayed(*args: object, **kwargs: object) -> object:
+            time.sleep(0.1)
+            return fn(*args, **kwargs)  # type: ignore[operator]
+
+        return delayed
+
+    monkeypatch.setattr(
+        rar_reader.tempfile, "mkstemp", _delay(rar_reader.tempfile.mkstemp)
+    )
+    monkeypatch.setattr(
+        rar_reader.tempfile, "mkdtemp", _delay(rar_reader.tempfile.mkdtemp)
+    )
+
+    source = source_factory()
+    try:
+        with open_archive(source, concurrent_members=True) as archive:
+            names = [m.name for m in archive.members() if m.is_file]
+            target = names[0]
+            errors: list[BaseException] = []
+            start = threading.Barrier(2)
+
+            def worker() -> None:
+                try:
+                    start.wait(timeout=5)
+                    with archive.open(target) as stream:
+                        stream.read()
+                except BaseException as exc:  # noqa: BLE001 - collect, re-raise below
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+                assert not thread.is_alive()
+            assert errors == []
+            assert len(created) == 1
+        assert not created[0].exists()
+    finally:
+        for path in created:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink(missing_ok=True)
 
 
 def test_incomplete_multi_volume_raises() -> None:
@@ -3230,11 +3326,15 @@ def test_glob_member_with_earlier_matches_is_refused(name: str) -> None:
     ``unrar -n./a*.txt`` decompresses every match and emits them concatenated, so
     reading ``a*.txt`` pays for ``subdir/aY.txt`` first. The skip returns the right
     bytes, but the decode already happened and nothing bounds it: ``ExtractionLimits``
-    do not reach ``open()``/``read()`` and ``AccessCost.DIRECT`` does not predict it.
-    Maintainer (davitf, 2026-09-19): refuse, with the config flag as the escape hatch.
+    do not reach ``open()``/``read()``. Names like this are almost always constructed,
+    so they are refused on solid archives too, where those bytes are already inside
+    ``AccessCost.SOLID``. Maintainer (davitf, 2026-09-19): refuse, with the config
+    flag as the escape hatch.
     """
     with open_archive(_fixture(name)) as archive:
-        with pytest.raises(UnsupportedFeatureError, match="would decompress"):
+        with pytest.raises(
+            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
+        ):
             archive.read("a*.txt")
 
 
@@ -3260,6 +3360,21 @@ def test_glob_concatenation_flag_names_itself_in_the_refusal() -> None:
     message = str(excinfo.value)
     assert "rar_allow_glob_member_concatenation" in message
     assert str(len(_WILDCARD_CONTENTS["subdir/aY.txt"])) in message
+
+
+@requires_binary("unrar")
+def test_solid_glob_refusal_does_not_claim_an_avoidable_decode() -> None:
+    """On a solid archive the glob prefix is already inside ``AccessCost.SOLID``.
+
+    The refusal still fires — the names are constructed — but the message must
+    not describe those bytes as an avoidable extra decode.
+    """
+    with open_archive(_fixture("wildcard_names_solid__.rar")) as archive:
+        with pytest.raises(UnsupportedFeatureError) as excinfo:
+            archive.read("a*.txt")
+    message = str(excinfo.value)
+    assert "rar_allow_glob_member_concatenation" in message
+    assert "would decompress" not in message
 
 
 @requires_binary("unrar")
@@ -3295,10 +3410,13 @@ def test_wildcard_nonsolid_stream_members_hits_the_refusal() -> None:
     the decided behaviour, not a placeholder.
     """
     with open_archive(_fixture("wildcard_names__.rar")) as archive:
-        with pytest.raises(UnsupportedFeatureError, match="would decompress"):
+        with pytest.raises(
+            UnsupportedFeatureError, match="would decompress"
+        ) as excinfo:
             for member, stream in archive.stream_members():
                 if stream is not None:
                     stream.read()
+    assert str(len(_WILDCARD_CONTENTS["subdir/aY.txt"])) in str(excinfo.value)
 
 
 @requires_binary("unrar")

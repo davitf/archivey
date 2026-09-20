@@ -27,10 +27,11 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import zlib
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -90,7 +91,6 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
     SharedSource,
-    SharedView,
     SlicingStream,
     SolidBlockReader,
     is_seekable,
@@ -319,16 +319,6 @@ def _tweaked_hash_key(enc: RarEncryptionInfo, password: str) -> bytes | None:
         except EncryptionError:
             return None
     return rar5_hash_key(password, enc.salt, enc.kdf_count)
-
-
-def _copy_stream_to_path(source: BinaryIO, dest: Path) -> None:
-    pos = source.tell()
-    source.seek(0)
-    try:
-        with dest.open("wb") as out:
-            shutil.copyfileobj(source, out)
-    finally:
-        source.seek(pos)
 
 
 class _UnrarOwnedStream(DelegatingStream):
@@ -680,6 +670,10 @@ class RarReader(BaseArchiveReader):
         self._temp_dir: Path | None = None
         self._owned_concat: ConcatenatedFile | None = None
         self._archive_path: Path | None = None
+        # Guards the check-then-write in ``_ensure_archive_path``: two concurrent
+        # compressed opens used to both see ``None`` and both copy, and close
+        # only removed the winner.
+        self._materialize_lock = threading.Lock()
         self._volume_paths: list[Path] = []
         # Stream volumes, kept unmaterialized until unrar actually needs files.
         self._stream_volume_items: list[Path | BinaryIO] = []
@@ -767,7 +761,11 @@ class RarReader(BaseArchiveReader):
         Stream items are copied through a :class:`SharedSource` view rather than
         read directly, so the copy takes the same lock every other read of these
         volumes takes. ``Path`` items are copied by the filesystem: they are not
-        shared state.
+        shared state. Assignments to ``_archive_path`` / ``_volume_paths`` /
+        ``_temp_dir`` are a different lock: the caller
+        (:meth:`_ensure_archive_path`) holds ``_materialize_lock`` across this
+        method so two concurrent opens cannot each copy and leave the loser's
+        directory behind on ``close()``.
         """
         items = self._stream_volume_items
         ranges = self._stream_volume_ranges()
@@ -831,7 +829,7 @@ class RarReader(BaseArchiveReader):
                 # the concatenation cannot be, so mint one bounded view per
                 # volume over the same source. Views are non-owning and take the
                 # shared lock, so nothing here touches the caller's streams.
-                views: list[SharedView] = []
+                views: list[BinaryIO] = []
                 try:
                     for index, (start, size) in enumerate(self._stream_volume_ranges()):
                         view = self._shared.view(start, size)
@@ -839,7 +837,7 @@ class RarReader(BaseArchiveReader):
                         if index == 0 and self._volume0_parse_origin:
                             view.seek(self._volume0_parse_origin)
                     return parse_rar_volumes(
-                        cast("Sequence[BinaryIO]", views),
+                        views,
                         password=password,
                         max_members=max_members,
                     )
@@ -912,41 +910,49 @@ class RarReader(BaseArchiveReader):
         return None
 
     def _ensure_archive_path(self) -> Path:
-        """Return a filesystem path ``unrar`` can open (materialize streams once)."""
+        """Return a filesystem path ``unrar`` can open (materialize streams once).
+
+        Concurrent compressed ``open()`` calls share one copy: the check-then-write
+        is under ``_materialize_lock``, and ``_close_archive`` takes the same lock
+        so it cannot unlink while a copy is still landing, or miss the loser's
+        directory if two copies raced.
+        """
         if self._archive_path is not None:
             return self._archive_path
-        if self._stream_volume_items:
-            # Stream volumes: unrar needs sibling files on disk, so the whole set
-            # is written, not just the volume holding this member. Nothing before
-            # this point needed them — the listing was parsed from the originals.
-            self._materialize_stream_volumes()
-            assert self._archive_path is not None
-            return self._archive_path
-        # Single stream source: write one temp .rar for unrar.
-        fd, name = tempfile.mkstemp(suffix=".rar")
-        path = Path(name)
-        try:
-            with os.fdopen(fd, "wb") as out:
-                # From the origin, so the temp holds the payload alone. A path source
-                # keeps its own path here and `unrar` sees the stub, which it handles
-                # natively; this branch is the stream case, where making the temp a
-                # plain RAR is both smaller and one less thing to rely on.
-                view = self._shared.view(self._origin)
-                try:
-                    # Keep the 1 MiB chunk: each SharedView read takes the lock
-                    # and seek+reads, so copyfileobj's 64 KiB default is ~16×
-                    # the acquisitions. Do not reuse _copy_stream_to_path — it
-                    # opens dest itself, and this method already holds the
-                    # mkstemp fd.
-                    shutil.copyfileobj(view, out, length=1 << 20)
-                finally:
-                    view.close()
-        except BaseException:
-            path.unlink(missing_ok=True)
-            raise
-        self._temp_path = path
-        self._archive_path = path
-        return path
+        with self._materialize_lock:
+            if self._archive_path is not None:
+                return self._archive_path
+            if self._stream_volume_items:
+                # Stream volumes: unrar needs sibling files on disk, so the whole set
+                # is written, not just the volume holding this member. Nothing before
+                # this point needed them — the listing was parsed from the originals.
+                self._materialize_stream_volumes()
+                assert self._archive_path is not None
+                return self._archive_path
+            # Single stream source: write one temp .rar for unrar.
+            fd, name = tempfile.mkstemp(suffix=".rar")
+            path = Path(name)
+            try:
+                with os.fdopen(fd, "wb") as out:
+                    # From the origin, so the temp holds the payload alone. A path source
+                    # keeps its own path here and `unrar` sees the stub, which it handles
+                    # natively; this branch is the stream case, where making the temp a
+                    # plain RAR is both smaller and one less thing to rely on.
+                    view = self._shared.view(self._origin)
+                    try:
+                        # Keep the 1 MiB chunk: each SharedView read takes the lock
+                        # and seek+reads, so copyfileobj's 64 KiB default is ~16×
+                        # the acquisitions. This method already holds the mkstemp
+                        # fd, so copyfileobj writes to it rather than opening dest.
+                        shutil.copyfileobj(view, out, length=1 << 20)
+                    finally:
+                        view.close()
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+            self._temp_path = path
+            self._archive_path = path
+            return path
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
@@ -1138,7 +1144,6 @@ class RarReader(BaseArchiveReader):
             yield from super()._iter_with_data()
             return
 
-        path = self._ensure_archive_path()
         # Bare ``unrar p`` omits ``-ver`` history from the ALL pipe; pass ``-ver``
         # when any versioned payload FILE is present so demux stays aligned.
         version_control = any(
@@ -1155,10 +1160,12 @@ class RarReader(BaseArchiveReader):
             A caller that iterates the pass without reading any member — listing a
             solid RAR through ``stream_members``, or an extraction whose selector
             matches nothing — never spawns ``unrar`` and is never asked for a
-            password.
+            password. The stream-source copy lives here too, so that caller also
+            writes nothing.
             """
             nonlocal solid
             if solid is None:
+                path = self._ensure_archive_path()
                 proc, stdout = open_unrar_p(
                     path,
                     password=self._unrar_password,
@@ -1464,28 +1471,44 @@ class RarReader(BaseArchiveReader):
         if glob_prefix and not self._config.rar_allow_glob_member_concatenation:
             # unrar decompresses every earlier match before the target and emits
             # them concatenated. The skip below returns the right bytes, but the
-            # decode has already happened, it is not bounded by anything the
-            # caller can set (`ExtractionLimits` do not reach `open()`/`read()`),
-            # and `AccessCost.DIRECT` does not predict it on a nonsolid archive.
-            # Maintainer (davitf, 2026-09-19): refuse it, with the config flag
-            # as the escape hatch. A glob name matching nothing else has
-            # `glob_prefix == 0` and never reaches this -- which also means this
-            # is **not** a guard against a hostile mask as such: a name built to
-            # make a matcher backtrack, with no sibling it can match, has a zero
-            # prefix and still goes to unrar. That is bounded separately, by
-            # narrowing the mask itself. This bounds the payload, not the match.
+            # decode has already happened and ExtractionLimits do not reach
+            # open()/read(). On a nonsolid archive that extra decode is
+            # unadvertised. On a solid archive those matching members are
+            # already inside the solid prefix the read pays anyway, so the
+            # byte count is not an avoidable extra. Refused either way:
+            # names like this are almost always constructed (davitf,
+            # 2026-09-19), with the config flag as the escape hatch. A glob
+            # name matching nothing else has `glob_prefix == 0` and never
+            # reaches this -- which also means this is **not** a guard against
+            # a hostile mask as such: a name built to make a matcher backtrack,
+            # with no sibling it can match, has a zero prefix and still goes
+            # to unrar. That is bounded separately, by narrowing the mask
+            # itself. This bounds the payload, not the match.
             #
             # The predicate is deliberately `_unrar_glob_prefix`'s own answer and
             # not a second walk: which siblings match is decided by the mask
             # actually handed to unrar, which that function owns. Recomputing it
             # from the presented name here would refuse archives that read fine
             # under the mask unrar is given.
+            if self._archive.is_solid:
+                message = (
+                    f"Reading RAR member {quoted(member.name)} is refused: its "
+                    "stored name is an unrar include mask that also matches "
+                    "earlier members. Names like this are almost always "
+                    "constructed. Set "
+                    "ArchiveyConfig.rar_allow_glob_member_concatenation=True "
+                    "to read it anyway."
+                )
+            else:
+                message = (
+                    f"Reading RAR member {quoted(member.name)} would decompress "
+                    f"{glob_prefix} bytes of earlier members first: its stored "
+                    "name is an unrar include mask that also matches them. Set "
+                    "ArchiveyConfig.rar_allow_glob_member_concatenation=True to "
+                    "read it anyway."
+                )
             raise UnsupportedFeatureError(
-                f"Reading RAR member {quoted(member.name)} would decompress "
-                f"{glob_prefix} bytes of earlier members first: its stored name "
-                "is an unrar include mask that also matches them. Set "
-                "ArchiveyConfig.rar_allow_glob_member_concatenation=True to read "
-                "it anyway.",
+                message,
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
@@ -1588,25 +1611,26 @@ class RarReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        self._shared.close()
-        if self._owned_concat is not None:
-            try:
-                self._owned_concat.close()
-            except OSError:
-                pass
-            self._owned_concat = None
-        if self._temp_path is not None:
-            try:
-                self._temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            self._temp_path = None
-        if self._temp_dir is not None:
-            # Single-stream copy (_ensure_archive_path) owns _temp_path;
-            # stream volumes (_materialize_stream_volumes) own _temp_dir.
-            # unlink vs rmtree, so _close_archive unwinds them separately.
-            shutil.rmtree(self._temp_dir, ignore_errors=True)
-            self._temp_dir = None
+        with self._materialize_lock:
+            self._shared.close()
+            if self._owned_concat is not None:
+                try:
+                    self._owned_concat.close()
+                except OSError:
+                    pass
+                self._owned_concat = None
+            if self._temp_path is not None:
+                try:
+                    self._temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self._temp_path = None
+            if self._temp_dir is not None:
+                # Single-stream copy (_ensure_archive_path) owns _temp_path;
+                # stream volumes (_materialize_stream_volumes) own _temp_dir.
+                # unlink vs rmtree, so _close_archive unwinds them separately.
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
+                self._temp_dir = None
 
 
 class RarReadBackend(ReadBackend):
