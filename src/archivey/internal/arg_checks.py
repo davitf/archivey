@@ -1,24 +1,22 @@
 """Type validation for the public arguments that carry an object, not an enum.
 
-The public argument surface is guarded in two modules on this branch, split by which
-arguments they cover rather than by how they answer — both of them **refuse**:
+This module holds the reusable half of the object-argument refusals. The rest live
+beside their arguments:
 
-* :mod:`archivey.internal.format_args` — the ``format=`` arguments, which take an
-  ``ArchiveFormat`` or a ``StreamFormat`` and nothing else. (String spellings are the
-  sibling enum-argument change's business, and it is not on this branch; today
-  ``format="zip"`` is an ``ArchiveyUsageError``.)
-* this module — the arguments that hold an object: ``config=`` and
-  ``ArchiveyConfig``'s own fields, ``limits=`` and the ``*Limits`` fields,
-  ``encoding=``, and the ``on_progress=`` / ``filter=`` callbacks. There is no useful
-  conversion from a wrong-typed one of these, so the answer is an error.
+* :mod:`archivey.internal.format_args` — ``format=``. (String spellings are the
+  sibling enum-argument change's business; today ``format="zip"`` is an
+  ``ArchiveyUsageError``.)
+* :mod:`archivey.config` — ``*Limits`` fields and ``ArchiveyConfig``'s own fields
+* :mod:`archivey.internal.selection` — ``members=``
+* :mod:`archivey.internal.password` — ``password=``
+* :meth:`archivey.reader.ArchiveReader.open` — the member argument (needs the
+  reader to tell "wrong type" from "not this reader's member")
 
-The functions here are the reusable half. The checks that are a single call site's
-business stay at that call site — the member argument to :meth:`ArchiveReader.open`
-is one (it needs the reader to tell "wrong type" from "not this reader's member"),
-and ``password=`` is another (:mod:`archivey.internal.password` already owns the
-several shapes that argument accepts).
+What this module covers: ``config=``, ``limits=``, ``encoding=``, and the
+``on_progress=`` / ``filter=`` callbacks. There is no useful conversion from a
+wrong-typed one of these, so the answer is an error.
 
-Both answer with :class:`~archivey.ArchiveyUsageError`, which sits outside
+Every check answers with :class:`~archivey.ArchiveyUsageError`, which sits outside
 ``ArchiveyError`` (ADR 0012) so a caller's ``except ArchiveyError`` cannot swallow a
 caller bug.
 

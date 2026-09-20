@@ -66,7 +66,7 @@ from archivey.diagnostics import (
     FormatConflictContext,
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
-from archivey.internal.arg_checks import check_config
+from archivey.internal.arg_checks import check_config, check_instance
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
@@ -496,7 +496,18 @@ def _resolve_budget(
         return default_detection_budget()
     if isinstance(budget, DetectionBudgetPreset):
         return DetectionBudget.for_preset(budget)
-    return budget
+    if isinstance(budget, DetectionBudget):
+        return budget
+    # A DetectionBudget is an object argument of the config= shape. Anything else
+    # used to reach PrefixWorkspace and die as
+    # ``AttributeError: 'int' object has no attribute 'max_tail_bytes'``. Preset
+    # *strings* (``budget="balanced"``) are the sibling enum-argument change's
+    # business; until that lands they fall through this same refusal rather than
+    # leaking the field name.
+    check_instance(
+        budget, DetectionBudget, call="detect_format(budget=…)", allow_none=False
+    )
+    raise AssertionError("unreachable")
 
 
 def detect_format(

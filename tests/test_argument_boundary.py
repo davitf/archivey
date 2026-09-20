@@ -56,6 +56,7 @@ from archivey import (
     open_archive,
     open_stream,
 )
+from archivey.detection_cost import DetectionBudgetPreset, default_detection_budget
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 
 # TypeError is permitted only for the arguments named here; see the module docstring.
@@ -176,6 +177,18 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: extract(archive, out(), encoding=b),
             ),
         ]
+
+    # Object shape of budget=, not preset spellings. ``"balanced"`` is a real
+    # DetectionBudgetPreset value and belongs to the sibling enum-argument change.
+    for bad in (0, object(), "x"):
+        rows.append(
+            _case(
+                "detect_format",
+                "budget",
+                bad,
+                lambda b=bad: detect_format(archive, budget=b),
+            )
+        )
 
     for bad in (0, "callback", []):
         rows += [
@@ -423,7 +436,9 @@ def _read_member(archive: Path, member: Any) -> Any:
 
 def _stream_members(archive: Path, members: Any) -> Any:
     with open_archive(archive) as reader:
-        return list(reader.stream_members(members=members))
+        # Do not wrap in list(): a check left inside the generator would still
+        # raise on first next() and look like a call-time refusal.
+        return reader.stream_members(members=members)
 
 
 def _with_config(archive: Path, dest: Path, **field: Any) -> Any:
@@ -488,12 +503,23 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("extract", "policy"): "coerced by the sibling enum-argument change",
     ("extract", "overwrite"): "coerced by the sibling enum-argument change",
     ("extract", "on_error"): "coerced by the sibling enum-argument change",
-    ("extract", "abort_on"): "coerced by the sibling enum-argument change",
+    # Collection[AbortOn], not an enum. A bare string is iterated as characters
+    # (``abort_on="blocked"`` silently disables every abort); a non-iterable is a
+    # raw TypeError. The sibling enum-argument change refuses both via
+    # ``coerce_enum_collection`` (#380, ``tests/test_enum_arguments.py``). This
+    # PR does not add a parallel check — that is the open maintainer question
+    # on this review.
+    ("extract", "abort_on"): (
+        "Collection[AbortOn]; container-shape refusal is coerce_enum_collection "
+        "on the sibling enum-argument branch"
+    ),
     ("extract_all", "policy"): "coerced by the sibling enum-argument change",
     ("extract_all", "overwrite"): "coerced by the sibling enum-argument change",
     ("extract_all", "on_error"): "coerced by the sibling enum-argument change",
-    ("extract_all", "abort_on"): "coerced by the sibling enum-argument change",
-    ("detect_format", "budget"): "coerced by the sibling enum-argument change",
+    ("extract_all", "abort_on"): (
+        "Collection[AbortOn]; container-shape refusal is coerce_enum_collection "
+        "on the sibling enum-argument branch"
+    ),
     ("ArchiveyConfig", "use_rapidgzip"): "coerced by the sibling enum-argument change",
     (
         "ArchiveyConfig",
@@ -626,6 +652,16 @@ def test_valid_arguments_still_work(archive: Path, tmp_path: Path) -> None:
     dest.mkdir()
 
     assert detect_format(archive).format.container.name == "ZIP"
+    assert (
+        detect_format(
+            archive, budget=DetectionBudgetPreset.BALANCED
+        ).format.container.name
+        == "ZIP"
+    )
+    assert (
+        detect_format(archive, budget=default_detection_budget()).format.container.name
+        == "ZIP"
+    )
     assert extract(archive, dest / "a", config=ArchiveyConfig()).results
     assert extract(archive, dest / "b", limits=ExtractionLimits.UNLIMITED).results
     assert extract(archive, dest / "c", encoding="UTF8").results  # an alias, not a name
@@ -653,3 +689,32 @@ def test_unknown_member_name_still_raises_keyerror(archive: Path) -> None:
     with open_archive(archive) as reader:
         with pytest.raises(KeyError):
             reader.open("nope.txt")
+
+
+def test_extract_all_wrong_typed_members_does_not_create_dest(
+    archive: Path, tmp_path: Path
+) -> None:
+    """A members= refusal must not have already created dest (K3)."""
+    dest = tmp_path / "should_not_exist"
+    with open_archive(archive) as reader:
+        with pytest.raises(ArchiveyUsageError):
+            reader.extract_all(dest, members=0)
+    assert not dest.exists()
+
+
+def test_stream_members_wrong_typed_members_raises_at_the_call(archive: Path) -> None:
+    """stream_members(members=0) must refuse before returning a generator (K3)."""
+    with open_archive(archive) as reader:
+        with pytest.raises(ArchiveyUsageError):
+            reader.stream_members(members=0)
+
+
+def test_members_bytes_message_does_not_advise_wrapping(
+    archive: Path, tmp_path: Path
+) -> None:
+    """Pass [b'notes.txt'] is itself a usage error; do not suggest it (K4)."""
+    dest = tmp_path / "b"
+    with open_archive(archive) as reader:
+        with pytest.raises(ArchiveyUsageError) as caught:
+            reader.extract_all(dest, members=b"notes.txt")
+    assert "Pass [" not in str(caught.value)

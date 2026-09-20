@@ -39,8 +39,9 @@ provide an operation — seeking a non-seekable member, a format that can't list
 real `ArchiveyError`: `UnsupportedOperationError`.)
 
 The same applies to an argument that is the wrong type or an unusable value — a
-`config=` that is not an `ArchiveyConfig`, an `encoding=` naming a codec Python does
-not have, a `members=` holding something that is neither a name nor an `ArchiveMember`.
+`config=` that is not an `ArchiveyConfig`, a `budget=` that is not a
+`DetectionBudget`, an `encoding=` naming a codec Python does not have, a
+`members=` holding something that is neither a name nor an `ArchiveMember`.
 Each is refused as `ArchiveyUsageError` at the call that made it, rather than failing
 somewhere further in. The exceptions are the source and destination arguments, where a
 wrong type raises `TypeError` as it would anywhere else in Python, and looking up a

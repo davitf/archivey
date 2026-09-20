@@ -481,9 +481,11 @@ The arguments covered:
 | Entry point | Arguments |
 | --- | --- |
 | `open_archive()`, `open_stream()`, `extract()`, `detect_format()` | `config` |
+| `detect_format()` | `budget` (a `DetectionBudget`; a `DetectionBudgetPreset` is an enum and out of scope) |
 | `open_archive()`, `extract()` | `encoding`, `password` |
 | `extract()`, `ArchiveReader.extract_all()` | `limits`, `on_progress` |
-| `ArchiveReader.extract_all()` | `members`, `filter` |
+| `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
+| `ArchiveReader.extract_all()` | `filter` |
 | `ArchiveReader.open()` / `.read()` | `member` |
 | `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references` |
 | `ExtractionLimits(...)`, `ListingLimits(...)` | every guard field |
@@ -528,6 +530,9 @@ truthiness are not covered, there being no wrong type to find.
 | `extract(src, dest, on_progress=0)` | `ArchiveyUsageError` before any output is written |
 | `extract_all(dest, filter=0)` | `ArchiveyUsageError` before the first member is offered |
 | `extract_all(dest, members="notes.txt")` | `ArchiveyUsageError` naming the list spelling; not a clean extraction of nothing |
+| `extract_all(dest, members=0)` | `ArchiveyUsageError` at the call, before `dest` is created |
+| `stream_members(members=0)` | `ArchiveyUsageError` at the call, not on first `next()` |
+| `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_tail_bytes'` |
 | `reader.open(0)` | `ArchiveyUsageError`; never a message naming `_archive_id` |
 | `reader.open("absent.txt")` | `KeyError` — unchanged, and specified by `archive-reading` |
 | `open_archive(0)` | `TypeError: unsupported source type` — unchanged |

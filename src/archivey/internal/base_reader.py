@@ -1891,10 +1891,19 @@ class BaseArchiveReader(ArchiveReader):
         previous stream before the next pair is produced.
         """
         self._state.require_open("stream_members()")
+        # Validate here rather than inside the generator: a generator body does not
+        # run until the first next(), so a check left there raised at a call site
+        # that did not make the mistake.
+        selector = normalize_member_selector(members)
+        return self._iter_stream_members(selector)
+
+    def _iter_stream_members(
+        self,
+        selector: Callable[[ArchiveMember], bool] | None,
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStream | None = None
         try:
-            selector = normalize_member_selector(members)
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
             for m, stream in self._iter_with_data():
@@ -1934,6 +1943,10 @@ class BaseArchiveReader(ArchiveReader):
         # the extraction is under way; a non-callable there reads as
         # ``TypeError: 'int' object is not callable`` with nothing naming the argument.
         check_callable(filter, call="extract_all(filter=…)")
+        # ``members=`` used to be checked inside the coordinator, after dest was
+        # created. Same reason as filter: a refusal that has already touched the disk
+        # is a side effect of a call the caller got wrong.
+        normalize_member_selector(members)
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.

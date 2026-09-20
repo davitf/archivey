@@ -109,7 +109,7 @@ def _check_limit(
     allow_float: bool = False,
     allow_none: bool = True,
 ) -> None:
-    """Validate one ``*Limits`` field at construction.
+    """Validate one numeric limit field at construction.
 
     The guards these fields drive are all comparisons, so a wrong-typed one is not
     found until something is actually being counted — ``ListingLimits(max_members="x")``

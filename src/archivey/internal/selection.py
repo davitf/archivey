@@ -24,6 +24,13 @@ def normalize_member_selector(
         # and the call reported a clean extraction of nothing. Refused rather than
         # wrapped: guessing that a string meant [string] would make the plural
         # parameter accept a singular, and the caller is one bracket from correct.
+        # bytes gets no list-wrapping advice: Pass [b'notes.txt'] is itself a
+        # usage error (names are str). The str branch is the common slip.
+        if isinstance(members, bytes):
+            raise ArchiveyUsageError(
+                f"members= takes names (str) or ArchiveMembers, but got "
+                f"{describe_value(members)}."
+            )
         raise ArchiveyUsageError(
             f"members= takes a collection of names or members, but got "
             f"{describe_value(members)}. Pass [{members!r}] to select one member."
