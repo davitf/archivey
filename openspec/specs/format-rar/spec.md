@@ -287,7 +287,9 @@ RAR strategy, not an implicit in-memory buffer.
 A non-path stream source SHALL NOT be copied to disk at open. Both stream shapes —
 a single stream and an ordered set of stream volumes — SHALL defer the copy to the
 first member read that `unrar` has to serve, and a caller that only lists SHALL
-write nothing. Listing SHALL be served from the source the caller supplied; for a
+write nothing. An `open()` the reader refuses before spawning `unrar` — a name it
+cannot address through an include mask, or one whose mask would pull in earlier
+members — is not such a read and SHALL write nothing either. Listing SHALL be served from the source the caller supplied; for a
 volume set the reader SHALL read each volume as its own bounded view over that
 source rather than reopening or copying it.
 
@@ -319,6 +321,7 @@ desynchronize sizes).
 | Ordered stream volumes, at open | `ar.cost.notes` warns a compressed read will copy every volume; nothing is written yet |
 | Ordered stream volumes, listing only | No temp directory is created |
 | Ordered stream volumes, first compressed read | The whole set is written once; later reads reuse it; close removes it |
+| Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat |
 
 ### Requirement: Support benchmark-gated small-member optimization

@@ -1032,6 +1032,32 @@ def _rar_volume_temp_dirs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     return created
 
 
+def _rar_temp_artifacts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record every temp file *and* directory the reader creates for ``unrar``.
+
+    ``_rar_volume_temp_dirs`` covers the volume-set shape only; a single stream
+    source spools through ``mkstemp`` instead, so a test that must prove nothing
+    was written needs both.
+    """
+    created: list[Path] = []
+    real_mkdtemp = rar_reader.tempfile.mkdtemp
+    real_mkstemp = rar_reader.tempfile.mkstemp
+
+    def spy_mkdtemp(*args: object, **kwargs: object) -> str:
+        made = real_mkdtemp(*args, **kwargs)  # type: ignore[arg-type]
+        created.append(Path(made))
+        return made
+
+    def spy_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, made = real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+        created.append(Path(made))
+        return fd, made
+
+    monkeypatch.setattr(rar_reader.tempfile, "mkdtemp", spy_mkdtemp)
+    monkeypatch.setattr(rar_reader.tempfile, "mkstemp", spy_mkstemp)
+    return created
+
+
 def test_stream_volume_listing_writes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3351,6 +3377,34 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
             with pytest.raises(UnsupportedFeatureError):
                 archive.read(name)
         assert spawns == before
+
+
+@requires_binary("unrar")
+def test_refused_glob_open_of_a_stream_source_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused ``open()`` must not spool the source to disk on its way to the raise.
+
+    Both refusals in ``_open_member`` — the backslash / directory-glob one and the
+    glob-concatenation one — are decided entirely from the parsed member table, and
+    neither spawns ``unrar``. ``_ensure_archive_path()`` therefore has no reason to
+    run first, and when the source is a stream, running it first copies the whole
+    archive (the whole *set*, for volumes) for a read that never happens. That also
+    put the two halves of this PR at odds: the concatenation refusal exists to stop
+    an unbounded decode, and it was paying an unbounded disk copy to reach the raise.
+    """
+    for fixture, member in (
+        ("wildcard_names__.rar", "a*.txt"),
+        ("wildcard_dirglob__.rar", "d*/x.txt"),
+    ):
+        created = _rar_temp_artifacts(monkeypatch)
+        data = _fixture(fixture).read_bytes()
+        with open_archive(io.BytesIO(data)) as archive:
+            assert member in {m.name for m in archive.members()}
+            assert created == []
+            with pytest.raises(UnsupportedFeatureError):
+                archive.read(member)
+            assert created == []
 
 
 @requires_binary("unrar")

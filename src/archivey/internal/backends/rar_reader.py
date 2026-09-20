@@ -713,7 +713,7 @@ class RarReader(BaseArchiveReader):
             self._origin = 0
         self._archive, self._unrar_password = self._parse_archive()
         if self._archive.is_volume or self._volume_count > 1:
-            self._volume_count = max(self._volume_count, len(self._volume_paths) or 1)
+            self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
             info.comment = self._resolve_rar3_comment(info.comment)
@@ -847,8 +847,9 @@ class RarReader(BaseArchiveReader):
                     for view in views:
                         view.close()
 
-            # Single volume — may still be a ConcatenatedFile of streams that we
-            # already materialized into _volume_paths of length 1, or a lone file.
+            # Single volume: a path source, or a lone stream. Nothing is copied
+            # on this path any more — a stream volume *set* is handled above, from
+            # views over the originals, and the copy waits for a member read.
             if self._volume_paths:
                 with self._volume_paths[0].open("rb") as handle:
                     handle.seek(self._origin)
@@ -1432,7 +1433,6 @@ class RarReader(BaseArchiveReader):
             inner: BinaryIO = self._direct_view(raw)
             return self._wrap_payload_stream(inner, member)
 
-        path = self._ensure_archive_path()
         # unrar addresses the member by its presented name (``path`` or ``path;n``) via a
         # ``-n`` include mask (see open_unrar_p); a history row needs ``-ver``. Do not use
         # the normalized ``member.name`` (may differ on separators).
@@ -1490,6 +1490,10 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
+
+        # Only now: every refusal above is decided from the parsed member table and
+        # spawns nothing, so a stream source must not be spooled to disk to reach one.
+        path = self._ensure_archive_path()
 
         def _spawn() -> BinaryIO:
             proc, stdout = open_unrar_p(
