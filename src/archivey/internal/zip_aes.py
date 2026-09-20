@@ -127,7 +127,8 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
 
     ``source`` must be positioned at the start of the ciphertext (after salt +
     pw_verify) and bounded to ``cipher_len + 10`` (ciphertext + MAC). The HMAC is
-    checked when the stream is fully consumed or closed after a clean EOF.
+    checked when a completing read pulls the trailing MAC. ``close`` is teardown
+    only — it does not drain or authenticate (ADR 0014).
 
     Not :class:`~archivey.internal.streams.crypto.AesDecryptStream` (7z CBC).
     This is CTR, and HMAC covers the whole ciphertext: a random seek would skip
@@ -152,7 +153,6 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._cipher_remaining = cipher_len
         self._mac = b""
         self._mac_needed = _HMAC_LEN
-        self._verified = False
         self._buf = bytearray()
 
     def _pull(self) -> None:
@@ -175,7 +175,6 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
                 raise CorruptionError(
                     "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
                 )
-            self._verified = True
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
@@ -196,17 +195,14 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         return out
 
     def close(self) -> None:
-        if not self.closed:
-            # Drain remaining ciphertext + MAC so a short-read caller still gets HMAC checked.
-            try:
-                while self._cipher_remaining > 0 or self._mac_needed > 0:
-                    self._pull()
-            except CorruptionError:
-                self._source.close()
-                super().close()
-                raise
+        if self.closed:
+            return
+        try:
+            # Do not drain remaining ciphertext for HMAC: close is teardown,
+            # not a verdict (ADR 0014).
             self._source.close()
-        super().close()
+        finally:
+            super().close()
 
 
 def open_winzip_aes_member(

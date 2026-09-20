@@ -79,26 +79,27 @@ walk.
 
 ### Requirement: Bound RAR parser member tables at open
 
-The native RAR header walk SHALL refuse to retain more than `1_048_576` logical
-members (same default as `ListingLimits.max_members`) and raise a typed error
-when that ceiling is crossed. This is defense-in-depth against allocation during
-`open_archive()` for indexed RAR backends that build the full member table up
-front.
+The native RAR header walk SHALL refuse to retain more members than
+`listing_limits.max_members` when that field is not `None`, and SHALL raise
+`ResourceLimitError` at parse (`open_archive`) when the ceiling is crossed.
+`None` (`ListingLimits.UNLIMITED`) disables the bound. The config value is the
+bound at parse because the table is built then; there is no separate
+parser-constant ceiling. `stream_members()` / `streaming=True` are not an
+escape hatch.
 
-Spine `ListingLimits` (`archive-reading`) still apply when members are
-registered into a materialized list and raise `ResourceLimitError` when
-configured caps are exceeded. Archives within the parser ceiling but over the
-reader's `listing_limits` MUST still fail at `members()` / extract-prep
-materialization rather than requiring a separate open-time listing-limits
-failure. Open MAY therefore allocate up to the parser ceiling before listing
-caps are evaluated.
+RAR has no header-size analogue for member count (the walk is sequential), so
+`UNLIMITED` can walk until memory is exhausted. The parse bound is a member
+count, not a byte budget. Spine `ListingLimits.max_metadata_bytes`
+(`archive-reading`) still apply when members are registered into a
+materialized list (`members()`), the same as every other format — not at
+`open_archive`.
 
 #### Scenario: RAR parser bound matrix
 
 | Case | Expected |
 | --- | --- |
-| Hostile archive past the parser member ceiling | Fail during parse / open; no giant member table |
-| Archive within parser bounds but over `listing_limits.max_members` | Open may succeed; `members()` / materialization raises `ResourceLimitError` |
+| Hostile or honest archive over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
+| `listing_limits.max_members is None` (`UNLIMITED`) | No member-count bound at parse; a large honest archive opens |
 | Default limits, typical archive | Open and listing succeed |
 
 ### Requirement: Expose RAR file-version history members

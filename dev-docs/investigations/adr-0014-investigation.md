@@ -194,11 +194,13 @@ never from `close()`**. The **target contract** is uniform across formats:
 backend finalization).
 
 **Today that target is best-effort; the intention is complete parity.** The verifier
-path already meets it. Two known gaps remain and are **debt to close**, not blessed
-carve-outs:
+path already meets it. WinZip AES HMAC-on-close is closed (ARC-45): `close()` is
+teardown only; HMAC still fires from the completing read. Compressed members already
+skipped the drain (S1-F1); removing it made STORED match them rather than wiring
+compressed members to authenticate on close.
 
-- **WinZip AES** drains and verifies its HMAC in its own `close()` — remove
-  (`verification-integrity-mode` Decision 2).
+One known gap remains and is **debt to close**, not a blessed carve-out:
+
 - **`unrar` / subprocess backends** may only surface wrong-password or CRC exit codes
   when the process is reaped. **Eager-finalize on the completing/empty read** (reap
   and map the exit there) is the parity path — #183 does this for
@@ -538,8 +540,9 @@ does neither.
 - **`close()` never raises a content fault — target contract, best-effort today.**
   Cleanup is safe when the target holds; a content error can neither mask nor be masked
   by an exception unwinding a `with` body; safety does not hinge on `close()` running.
-  AES HMAC-on-close remains debt. Unrar eager-finalize on completing/empty read is
-  partially landed in #183; early-stop close suppression is still follow-up.
+  WinZip AES HMAC-on-close is closed (ARC-45). Unrar eager-finalize on
+  completing/empty read is partially landed in #183; early-stop close
+  suppression is still follow-up.
 - **Detection, not prevention, in streaming mode.** Any bounded read returns some bytes
   before the final verdict; the guarantee is "you are told before you can conclude the
   member is complete-and-intact," not "you are told before you touch any bytes."

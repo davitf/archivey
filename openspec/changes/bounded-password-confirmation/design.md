@@ -132,9 +132,13 @@ can be garbage that decrypted under the wrong key. Reproduced on both readers:
 | ZipCrypto STORED, wrong password passing the byte check (found by brute force in ~300 tries, as 1/256 predicts) | **OK, returns garbage** | `CorruptionError: Bad CRC-32` |
 | ZipCrypto DEFLATE, same | **OK, returns garbage** | `CorruptionError: Bad CRC-32` |
 | 7z store+AES, wrong password, confirmation bypassed | **OK, returns garbage** | `CorruptionError: digest mismatch` |
+| WinZip AES AE-2 STORED, wrong password passing 2-byte `pw_verify` (~65k tries, as 2⁻¹⁶ predicts) | **OK, returns garbage** | HMAC mismatch at completing read — AE-2 has no CRC; HMAC is the only full-read check |
+| WinZip AES AE-2 DEFLATE, same | **OK, returns garbage** | HMAC mismatch at completing read |
 
-WinZip AES is clean: `zip_aes.py:195` drains the remaining ciphertext so a short-read
-caller still gets the HMAC checked.
+The AES rows are reasoned from `pw_verify`'s width (this design's §3 table) and
+from HMAC-on-completing-read (ADR 0014 / ARC-45), not brute-forced here. One
+axis is tighter than ZipCrypto (2⁻¹⁶ vs 2⁻⁸); one is worse (AE-2 has no CRC
+behind the HMAC). A short-read then `close()` is quiet, same as CRC members.
 
 `ENCRYPTED_MEMBER_UNVERIFIED` is the answer here, and it is the *cheaper* of the two
 answers. See §7.

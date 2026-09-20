@@ -67,6 +67,6 @@ def test_parse_rar_archive_fuzz_harness() -> None:
     for index, seed in enumerate(_seed_bytes()):
         for mutated in _mutations(seed, str(index)):
             try:
-                parse_rar_archive(io.BytesIO(mutated))
+                parse_rar_archive(io.BytesIO(mutated), max_members=10_000)
             except ArchiveyError:
                 pass

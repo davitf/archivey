@@ -508,8 +508,9 @@ class MemberVerifier:
         from a completing read. ``close`` therefore does **not** read, probe, or
         drain the inner to force a late verdict — a partial read before clean EOF is
         a deliberate abandon with no verdict. A teardown error raised by
-        ``inner.close()`` itself — a subprocess exit code, or an inner stream that
-        authenticates in its own ``close`` (e.g. WinZip AES HMAC) — still propagates.
+        ``inner.close()`` itself (a subprocess exit code, ``OSError``) still
+        propagates. WinZip AES HMAC is a content verdict and fires from the
+        completing read, not from ``close`` (ADR 0014).
         """
         inner.close()
 

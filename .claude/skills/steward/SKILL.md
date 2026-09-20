@@ -31,6 +31,18 @@ This file exists only because a watching agent starts from a generic posture and
 reads a skill it was not asked for. Everything below is a **delta** against that
 posture. Where the two disagree, this file and `address-review-findings` win.
 
+**The bar for adding a rule here: a generic watcher would get it wrong.** Built-in
+watcher postures have grown since this file was written, and they now carry several
+rules it used to be alone in stating. A rule they already cover is not a delta — it is a
+copy that will drift, the way the attribution row did.
+
+**Concurrent with `address-linear-issue`.** That implementing session owns the
+round it commissioned and does not wait for you. If an `address-review-findings`
+disposition is already on this review’s finding IDs (opener names that skill), do not
+start a second round. If none is posted yet, proceed — a simultaneous start is
+the same race as any other review wake. Do not no-op on every agent-reviewed PR,
+and do not look for a label or “in progress” marker that this loop does not write.
+
 ## Where a watcher's defaults differ from this repo
 
 | Default watcher posture | This repo |
@@ -50,8 +62,7 @@ all of these:
 - **The failure is this PR's.** Code the PR touches, a file it added, or anything the
   diff broke — a test that was green on the base branch, a gate the change turned red.
   The *file* does not have to be one the PR already edited; the *failure* has to be one
-  the PR caused. A failure that reproduces on the base branch too is not this PR's: say
-  so once and leave it, rather than widening the diff to fix it here.
+  the PR caused.
 - It implies no change to `openspec/specs/`, `dev-docs/threat-model.md`, a public API
   shape, or a published doc under `docs/`.
 - You **reproduced** it first — a failing test, a red gate, or a traced execution path.
@@ -71,31 +82,18 @@ ruling, or when you substantively disagree with a human reviewer. Meanwhile, do
 everything that does not depend on the answer, and say in the escalation what you have
 already done.
 
-Losing an approval is not a reason to hold a fix. A red or conflicted head is work now,
-whatever the review state.
-
 ## The gate, before every push
 
-```bash
-./scripts/check.sh --fix    # ruff, pyrefly, ty, openspec, docs — runs all, then lists failures
-./scripts/test.sh           # the everyday [all] leg
-```
-
-Run `./scripts/test.sh --all-configs` when behaviour depends on extras or versions —
-that is the `CONTRIBUTING.md` §"Before pushing…" three-config gate. Report which legs
-you ran and what they returned; if you skipped one, say so rather than implying it
-passed.
-
-If this PR finishes an OpenSpec change, archive it — CI checks this. If the design is
-still moving under review, leave the trailing task unchecked and say so in your reply.
+[`address-review-findings` §5](../address-review-findings/SKILL.md) — the two scripts, the
+three-config leg, the cross-platform traps and the OpenSpec archiving step. Do not copy it
+back here: the one thing a generic watcher gets wrong is running `ruff` alone, and the
+defaults table above already carries that, so a second copy of the gate is below this
+file's bar. Report which legs you ran and what they returned; if you skipped one, say so
+rather than implying it passed.
 
 ## Never
 
-- Skip, disable, or `xfail` a test to get green, or delete the test that caught a
+- Skip, disable or delete a test to get green — above all the one that caught the
   finding.
 - "Fix" a finding you could not reproduce, to make the comment go away.
-- Re-run a job hoping it passes — only if it died before any test body ran (checkout,
-  install, lost runner), or the same check is red on the base branch too.
-- Push an empty commit, or close and reopen the PR, to kick CI.
-- Rewrite history on a branch you did not create.
 - Post a comment that is not identifiable as agent-authored.

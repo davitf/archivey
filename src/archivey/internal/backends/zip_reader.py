@@ -165,9 +165,9 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
     98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
 }
 
-# Local-file-header name/extra lengths are uint16; reject values that would push the
-# data region past a sane absolute offset (same absurd-length discipline as native parsers).
-_MAX_LOCAL_NAME_EXTRA = 65_535
+# Local name/extra lengths are uint16; 65535 is the format maximum, so a separate
+# cap cannot fire (S1-F2). Absurd *offsets* are this bound, same discipline as
+# the native parsers.
 _MAX_DATA_OFFSET = 1 << 40
 
 # stdlib exposes no public decoder for a raw LZMA1 property blob → filter dict; zipfile and
@@ -213,9 +213,9 @@ def _closed_archive_error() -> ArchiveyUsageError:
 
 
 # Raw exceptions a ZIP member open/read can raise that _translate_exception maps to typed
-# ArchiveyErrors. Declared once so the catch sites (member open, compressed-confirm decrypt,
-# symlink-target read) cannot drift apart — they previously did (one omitted
-# io.UnsupportedOperation), exactly the bug this constant prevents.
+# ArchiveyErrors. Declared once so the catch sites (member open, compressed-confirm decrypt)
+# cannot drift apart — they previously did (one omitted io.UnsupportedOperation), exactly
+# the bug this constant prevents.
 _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     zipfile.BadZipFile,
     RuntimeError,
@@ -226,9 +226,10 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     UnicodeDecodeError,
     ValueError,
     OSError,
-    # stdlib zipfile raises bare EOFError when a member's local data is truncated
-    # mid-read (e.g. a corrupt symlink target during listing). Must be translated
-    # like the other member-read errors — otherwise it escapes as a raw exception.
+    # stdlib zipfile raises bare EOFError on a truncated member body
+    # (ZipExtFile._read2 / _ZipDecrypter). Live site: compressed-confirm's
+    # prefix read. Must be translated like the other member-read errors —
+    # otherwise it escapes as a raw exception.
     EOFError,
 )
 
@@ -975,8 +976,10 @@ class ZipReader(BaseArchiveReader):
         """Return ``(data_start, compress_size)`` for ``info`` from its local file header.
 
         Parses only the fixed 30-byte local header plus the local name/extra lengths
-        (central-directory extra can differ). Rejects truncated/bad magic headers and
-        absurd name/extra lengths that would push the data offset past a sane bound.
+        (central-directory extra can differ). Rejects truncated/bad magic headers,
+        a local name that disagrees with the CDH, and a data offset past
+        ``_MAX_DATA_OFFSET``. Name/extra lengths are uint16; 65535 is legal, so they
+        are not capped separately.
         """
         zf = self._archive
         with self._zipfile_lock():
@@ -990,13 +993,6 @@ class ZipReader(BaseArchiveReader):
                 if len(fheader) != 30 or fheader[:4] != b"PK\x03\x04":
                     raise zipfile.BadZipFile("Bad magic number for file header")
                 name_len, extra_len = struct.unpack_from("<HH", fheader, 26)
-                if (
-                    name_len > _MAX_LOCAL_NAME_EXTRA
-                    or extra_len > _MAX_LOCAL_NAME_EXTRA
-                ):
-                    raise zipfile.BadZipFile(
-                        f"Absurd local-header name/extra lengths: {name_len}/{extra_len}"
-                    )
                 # General-purpose flag bit 11: UTF-8 filename (APPNOTE).
                 gp_flags = struct.unpack_from("<H", fheader, 6)[0]
                 local_name = read_exact(fp, name_len)
@@ -1450,12 +1446,6 @@ class ZipReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=logger,
             )
-        except _ZIP_MEMBER_READ_ERRORS as exc:
-            # Reading the symlink's target data (raw zipfile stream, not ArchiveStream-wrapped)
-            # can raise any of the member-read errors on a corrupt entry; translate them the
-            # same way rather than letting a raw codec exception escape the listing. (An
-            # EncryptionError is handled by the separate except above and never reaches here.)
-            self._reraise_member_error(exc, info.filename)
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         # The member carries its own ZipInfo (`_raw`), so data access needs no name/id map

@@ -852,21 +852,20 @@ def test_header_encrypted_empty_decoded_header_rejected(
         parse_sevenzip_archive(archive.open("rb"), password=b"secret")
 
 
-@requires("bcj")
 def test_lzma1_bcj_fixture_roundtrip(tmp_path: Path) -> None:
-    """py7zr LZMA1+BCJ archives decode via staged pybcj (not combined liblzma)."""
+    """py7zr LZMA1+BCJ archives decode via a staged BCJ filter (not combined liblzma)."""
     archive = tmp_path / "lzma1-bcj.7z"
     _write_py7zr_archive(archive, _FILES, filters=_filters("X86", "LZMA"))
     _assert_roundtrip(archive, _FILES)
 
 
-@requires("bcj")
 @requires_binary("7z")
 def test_7z_cli_lzma1_bcj_avoids_liblzma_truncation(tmp_path: Path) -> None:
     """7-Zip CLI LZMA1+BCJ can silently truncate under combined liblzma filters.
 
     A ~12800-byte payload with 0xE8 call patterns reproduces the look-ahead flush
-    failure (output 12796 instead of 12800). Staged pybcj must return full bytes.
+    failure (output 12796 instead of 12800). The staged BCJ filter must return
+    full bytes.
     """
     payload = bytearray(os.urandom(12800))
     for offset in range(0, 12800 - 5, 40):
@@ -1141,9 +1140,8 @@ def _folder(method: bytes, properties: bytes | None = None) -> SevenZipFolder:
     )
 
 
-@requires("bcj")
 def test_first_stage_bcj_does_not_close_pack_source() -> None:
-    """A first-stage pybcj BCJ borrows the pack view (Copy+BCJ / BCJ-alone).
+    """A first-stage BCJ stage borrows the pack view (Copy+BCJ / BCJ-alone).
 
     Later BCJ stages wrap a private previous output and pass ``owns_inner=True``.
     Hardcoding True on every ``_BcjStage`` closed a raw ``BytesIO`` here;
@@ -1447,6 +1445,39 @@ def test_filetime_conversion_and_invalid_timestamp_issue() -> None:
     assert issue is not None and issue.field == "created"
 
 
+def _sevenzip_uint64(value: int) -> bytes:
+    """Encode ``value`` as a 7z UINT64. Small values stay one byte; large ones use 0xFF+u64."""
+    if value < 0x80:
+        return bytes([value])
+    return b"\xff" + value.to_bytes(8, "little")
+
+
+def _num_unpack_stream_header(
+    count: int, *, crc_all_defined: bool = False, header_pad: int = 0
+) -> bytes:
+    """HEADER + one COPY folder + ``kNumUnPackStream = count``, no SIZE (S2-F1).
+
+    When ``crc_all_defined`` is set, a ``kCRC`` / all-defined flag follows the count so
+    the ``_load_boolean(..., check_all=True)`` ``[True] * count`` path is the one that
+    would allocate. Remaining bytes after the flag are irrelevant: the count must be
+    rejected before that allocation.
+
+    ``header_pad`` inserts a FILES_INFO DUMMY payload so a legitimate-scale count
+    can sit in a header large enough to pass the O1-style buffer bound.
+    """
+    body = bytearray(bytes.fromhex("0104070b010001000c0a00080d"))
+    body += _sevenzip_uint64(count)
+    if crc_all_defined:
+        body += bytes.fromhex("0a01")
+    else:
+        body += b"\x00"
+    body += b"\x00\x05\x00"  # END streams, FILES_INFO, num_files=0
+    if header_pad:
+        body += bytes([0x19]) + _sevenzip_uint64(header_pad) + (b"\x00" * header_pad)
+    body += b"\x00\x00"  # END files, END header
+    return bytes(body)
+
+
 def test_files_info_count_is_bounded_against_header_size() -> None:
     # A crafted 7z header can declare an absurd file count in a few bytes; the parser must
     # reject it against the header size instead of pre-allocating one object per claimed
@@ -1459,6 +1490,76 @@ def test_files_info_count_is_bounded_against_header_size() -> None:
     cur = _Cursor(b"\xff" + huge)  # a 9-byte "header" claiming 2**40 files
     with pytest.raises(CorruptionError, match="exceeds the .* header"):
         _read_files_info(cur)
+
+
+def test_num_unpack_streams_count_is_bounded() -> None:
+    """``kNumUnPackStream`` is not bounded by remaining header bytes (S2-F1 / O13)."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import (
+        _MAX_NUM_STREAMS,
+        PlainHeader,
+        parse_header_block,
+    )
+
+    ok = parse_header_block(_num_unpack_stream_header(2))
+    assert isinstance(ok, PlainHeader)
+    assert ok.streams.num_unpackstreams_folders == [2]
+    assert ok.streams.digests == [None, None]
+
+    # Above the structural pack/folder cap, but inside a header large enough
+    # for the count — the bound that used to reject this is the F1 regression.
+    above_stream_cap = _MAX_NUM_STREAMS + 1
+    at_scale = parse_header_block(
+        _num_unpack_stream_header(above_stream_cap, header_pad=above_stream_cap)
+    )
+    assert isinstance(at_scale, PlainHeader)
+    assert at_scale.streams.num_unpackstreams_folders == [above_stream_cap]
+    assert len(at_scale.streams.digests) == above_stream_cap
+
+    for count in (above_stream_cap, 1 << 20, 1 << 40):
+        with pytest.raises(CorruptionError, match="unpack stream count .* header"):
+            parse_header_block(_num_unpack_stream_header(count))
+        with pytest.raises(CorruptionError, match="unpack stream count .* header"):
+            parse_header_block(_num_unpack_stream_header(count, crc_all_defined=True))
+
+
+def test_num_unpack_streams_sum_across_folders_is_bounded() -> None:
+    """Per-folder counts under the header-size cap can still sum past it."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import parse_header_block
+
+    # Two COPY folders, counts that each fit in this ~24-byte header (20 < 24)
+    # but sum past it (40 > 24).
+    header = (
+        bytes.fromhex("0104070b0200010001000c0a0a00080d")
+        + _sevenzip_uint64(20)
+        + _sevenzip_uint64(20)
+        + bytes.fromhex("000005000000")
+    )
+    assert 20 < len(header) < 40
+    with pytest.raises(CorruptionError, match="unpack stream count .* header"):
+        parse_header_block(header)
+
+
+def test_member_scaled_counts_respect_max_members() -> None:
+    """Honest counts over ``listing_limits.max_members`` are ResourceLimitError, not corrupt."""
+    from archivey.exceptions import ResourceLimitError
+    from archivey.internal.backends.sevenzip_parser import parse_header_block
+
+    header = _num_unpack_stream_header(200, header_pad=200)
+    parse_header_block(header)
+    parse_header_block(header, max_members=None)
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        parse_header_block(header, max_members=100)
+
+    pack = bytes.fromhex("01040600") + _sevenzip_uint64(200) + (b"\x00" * 200)
+    # Pack streams are a coder-graph quantity (BCJ2 has four per folder), not a
+    # member count — header-size bound only.
+    parse_header_block(pack, max_members=100)
+
+    folders = bytes.fromhex("0104070b") + _sevenzip_uint64(200) + (b"\x00" * 200)
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        parse_header_block(folders, max_members=100)
 
 
 def test_cursor_truncated_property_payload_raises() -> None:
@@ -1600,6 +1701,161 @@ def test_encoded_header_huge_unpack_size_is_typed_corruption() -> None:
         parse_sevenzip_archive(io.BytesIO(blob))
 
 
+def _sevenzip_blob(*, packed: bytes, next_header: bytes) -> bytes:
+    from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
+
+    next_crc = zlib.crc32(next_header) & 0xFFFFFFFF
+    start_header = struct.pack("<QQI", len(packed), len(next_header), next_crc)
+    start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
+    return (
+        MAGIC_7Z
+        + bytes([0, 4])
+        + struct.pack("<I", start_crc)
+        + start_header
+        + packed
+        + next_header
+    )
+
+
+@pytest.mark.timeout(5)
+def test_encoded_header_self_copy_is_typed_corruption() -> None:
+    """COPY encoded header whose packed bytes are itself must not hang (S2-F2 / O14)."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+
+    # 66-byte archive from the S2-F2 trigger: signature + 17-byte COPY payload that
+    # *is* the next-header (kEncodedHeader, one COPY folder, unpack=17).
+    next_header = bytes.fromhex("17060001091100070b010001000c110000")
+    blob = _sevenzip_blob(packed=next_header, next_header=next_header)
+    assert len(blob) == 66
+    with pytest.raises(CorruptionError, match="decoded to another encoded header"):
+        parse_sevenzip_archive(io.BytesIO(blob))
+    with pytest.raises(CorruptionError, match="decoded to another encoded header"):
+        with open_archive(io.BytesIO(blob)):
+            pass
+
+
+def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
+    """Per-folder unpack cap is not enough: two COPY folders can concatenate past it."""
+    from archivey.exceptions import CorruptionError
+    from archivey.internal.backends.sevenzip_parser import _MAX_NEXT_HEADER_SIZE
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+
+    # Two COPY folders, unpack 1 + _MAX_NEXT_HEADER_SIZE. The running total
+    # is the bound; a per-folder check would let the first through.
+    next_header = (
+        bytes.fromhex("1706000209010100070b0200010001000c")
+        + _sevenzip_uint64(1)
+        + _sevenzip_uint64(_MAX_NEXT_HEADER_SIZE)
+        + bytes.fromhex("0000")
+    )
+    blob = _sevenzip_blob(packed=b"\x00\x00", next_header=next_header)
+    with pytest.raises(CorruptionError, match="unpack size|parser limit"):
+        parse_sevenzip_archive(io.BytesIO(blob))
+
+
+@pytest.mark.timeout(120)
+@requires_binary("7z")
+def test_archives_above_stream_cap_still_open(tmp_path: Path) -> None:
+    """Solid and non-solid 7z above ``_MAX_NUM_STREAMS`` must still open.
+
+    That cap is structural (per-folder coders). Applying it to unpack streams
+    rejected ordinary solid 7-Zip output (review F1); applying it to pack
+    streams / folders rejected non-solid output (review F2). ``max_members``
+    is the liftable budget and fires at parse, not after allocating the table.
+    """
+    from archivey.config import ListingLimits
+    from archivey.exceptions import ResourceLimitError
+    from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
+
+    n = _MAX_NUM_STREAMS + 1
+    src = tmp_path / "many"
+    src.mkdir()
+    for i in range(n):
+        d = src / f"d{i // 1000:03d}"
+        d.mkdir(exist_ok=True)
+        (d / f"f{i:05d}.txt").write_bytes(b"x")
+
+    for extra_args, name in (([], "solid"), (["-ms=off"], "nonsolid")):
+        archive = tmp_path / f"{name}.7z"
+        result = subprocess.run(
+            ["7z", "a", "-t7z", *extra_args, str(archive), src.name],
+            cwd=tmp_path,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"7z CLI cannot build {name} fixture: {result.stderr!r}")
+
+        with open_archive(archive) as reader:
+            files = [m for m in reader.members() if m.is_file]
+            assert len(files) == n
+            assert reader.read(files[-1]) == b"x"
+
+        tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            open_archive(archive, config=tight)
+
+        unlimited = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
+        with open_archive(archive, config=unlimited) as reader:
+            assert sum(1 for m in reader.members() if m.is_file) == n
+
+
+@pytest.mark.timeout(30)
+@requires_binary("7z")
+def test_bcj2_nonsolid_pack_streams_are_not_member_scaled(tmp_path: Path) -> None:
+    """Non-solid BCJ2 has four pack streams per folder; max_members must not use that count."""
+    import shutil
+
+    from archivey.config import ListingLimits
+    from archivey.exceptions import ResourceLimitError
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+
+    src = tmp_path / "exes"
+    src.mkdir()
+    sevenz = shutil.which("7z")
+    assert sevenz is not None
+    n_files = 5
+    for i in range(n_files):
+        shutil.copy(sevenz, src / f"prog{i}.exe")
+    archive = tmp_path / "bcj2.7z"
+    result = subprocess.run(
+        [
+            "7z",
+            "a",
+            "-t7z",
+            "-ms=off",
+            "-m0=BCJ2",
+            "-m1=LZMA",
+            "-m2=LZMA",
+            "-m3=LZMA",
+            str(archive),
+            ".",
+        ],
+        cwd=src,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 or not archive.is_file():
+        pytest.skip(f"7z cannot build BCJ2 fixture: {result.stderr!r}")
+
+    with open(archive, "rb") as fh:
+        parsed = parse_sevenzip_archive(fh)
+    with open_archive(archive) as reader:
+        n_members = len(reader.members())
+    assert n_members >= n_files
+    if len(parsed.pack_sizes) <= n_members + 1:
+        pytest.skip("7z did not produce a multi-stream BCJ2 folder")
+    # Pack streams ≈ 4 × files. A budget between member count and pack-stream
+    # count must still open (review F6).
+    mid = ArchiveyConfig(listing_limits=ListingLimits(max_members=n_members + 1))
+    with open_archive(archive, config=mid) as reader:
+        assert len(reader.members()) == n_members
+    tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        open_archive(archive, config=tight)
+
+
 # py7zr's empty.7z: signature + start_header with nextHeaderSize == 0.
 _EMPTY_7Z = bytes.fromhex(
     "377abcaf271c00038d9bd50f0000000000000000000000000000000000000000"
@@ -1664,9 +1920,8 @@ def test_nameless_7z_members_use_archive_stem(tmp_path: Path) -> None:
 
 
 @requires("py7zr")
-@requires("bcj")
 def test_copy_bcj_folder_roundtrip(tmp_path: Path) -> None:
-    """Standalone BCJ (no LZMA) must stage via pybcj, not the liblzma path."""
+    """Standalone BCJ (no LZMA) must be staged on its own, not folded into a chain."""
     payload = bytes(range(256)) * 40
     archive = tmp_path / "copy_bcj.7z"
     _write_py7zr_archive(
@@ -1675,6 +1930,66 @@ def test_copy_bcj_folder_roundtrip(tmp_path: Path) -> None:
         filters=_filters("X86", "COPY"),
     )
     _assert_roundtrip(archive, {"x.bin": payload})
+
+
+# x86-like machine code: dense enough in branch opcodes that every architecture's
+# filter rewrites something, so these round-trips exercise the filter rather than a
+# pass-through.
+_BCJ_CODE_PATTERN = bytes(
+    [0x8B, 0x45, 0xF8, 0xE8, 0x10, 0x20, 0x00, 0x00]
+    + [0x89, 0x45, 0xFC, 0xE9, 0x00, 0x01, 0x00, 0x00]
+)
+
+
+@pytest.mark.parametrize("method", ["IA64", "ARM", "ARMT", "PPC", "SPARC", "BCJ"])
+@requires_binary("7z")
+def test_bcj_member_whose_length_is_not_a_whole_number_of_blocks(
+    tmp_path: Path, method: str
+) -> None:
+    """Every branch filter must return the trailing partial block.
+
+    IA64 is the one that was broken: pybcj's decoder dropped the final incomplete
+    16-byte block, so a 2911-byte member came back as 2896 bytes and archivey
+    raised ``TruncatedError`` on an archive 7-Zip writes and reads back fine
+    (dev-docs/known-issues.md). 2911 is not a multiple of any filter's block size,
+    so the same payload covers the other five through the liblzma path.
+    """
+    payload = (_BCJ_CODE_PATTERN * 200)[:2911]
+    src = tmp_path / "payload.bin"
+    src.write_bytes(payload)
+    archive = tmp_path / f"{method.lower()}.7z"
+    subprocess.run(
+        ["7z", "a", "-t7z", f"-m0={method}", "-m1=LZMA", str(archive), src.name, "-y"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    _assert_roundtrip(archive, {"payload.bin": payload})
+
+
+def test_bcj_decoder_accepts_an_unpack_size_above_two_gib() -> None:
+    """A BCJ member of 2 GiB or more must be decodable.
+
+    pybcj takes the stream size as a C signed ``int``, so ``BCJDecoder(2**31)``
+    raised a bare ``OverflowError`` — not even an ``ArchiveyError`` — before any byte
+    was read, on archives 7-Zip writes with ``-m0=BCJ -m1=LZMA`` and reads back fine
+    (dev-docs/known-issues.md). The declared size no longer reaches the filter at
+    all, so the same bytes decode the same way whatever it says; this pins that
+    without building a 2 GiB fixture.
+    """
+    import lzma
+
+    from archivey.internal.streams.decompress import BcjDecoder
+
+    payload = bytes(range(256)) * 8
+    small = BcjDecoder(lzma_filter_id=lzma.FILTER_X86, unpack_size=len(payload))
+    huge = BcjDecoder(lzma_filter_id=lzma.FILTER_X86, unpack_size=2**31)
+    assert huge.feed(payload).data == small.feed(payload).data
+    # The declared size still decides whether the stream finished, so the 2 GiB
+    # decoder arms the truncation error that the correctly-sized one does not.
+    assert small.flush().data == huge.flush().data
+    assert small.finished and small.pending_error is None
+    assert not huge.finished and isinstance(huge.pending_error, TruncatedError)
 
 
 _LZ4_7Z_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sevenzip" / "lz4.7z"
@@ -1816,19 +2131,27 @@ def test_lz4_without_lz4_package_raises(monkeypatch: pytest.MonkeyPatch) -> None
         )
 
 
-def test_missing_pybcj_hint_names_a_real_extra(monkeypatch: pytest.MonkeyPatch) -> None:
-    """LZMA1+BCJ without pybcj must advise an extra that can actually be installed.
+@requires_binary("7z")
+def test_lzma1_bcj_decodes_without_pybcj_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BCJ decoding must not import ``bcj``: liblzma carries the branch filters now.
 
-    ``sys.modules[name] = None`` makes the guarded ``import bcj`` raise ImportError, so
-    this runs in every dependency leg including the one where pybcj is present.
+    ``sys.modules[name] = None`` makes any ``import bcj`` raise ImportError, so this
+    runs in every dependency leg including the one where pybcj is present.
     """
     import sys
 
-    from archivey.internal.backends import sevenzip_pipeline
+    payload = bytes(range(256)) * 50
+    src = tmp_path / "payload.bin"
+    src.write_bytes(payload)
+    archive = tmp_path / "lzma1-bcj-no-pybcj.7z"
+    subprocess.run(
+        ["7z", "a", "-t7z", "-m0=BCJ", "-m1=LZMA", str(archive), src.name, "-y"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
 
     monkeypatch.setitem(sys.modules, "bcj", None)
-    with pytest.raises(PackageNotInstalledError) as excinfo:
-        sevenzip_pipeline._require_pybcj()
-    message = str(excinfo.value)
-    assert "pybcj" in message
-    assert "archivey[recommended]" in message
+    _assert_roundtrip(archive, {"payload.bin": payload})

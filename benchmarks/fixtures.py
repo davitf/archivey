@@ -94,10 +94,12 @@ class FixtureSet:
     solid_7z: Path | None
     many_7z: Path | None
     nonsolid_7z: Path | None
+    bcj_7z: dict[str, Path]
     solid_rar: Path | None
     many_rar: Path | None
     nonsolid_rar: Path | None
     unpacked_solid_7z: int
+    unpacked_bcj_7z: int
     unpacked_solid_rar: int
     unpacked_zip_aes: int
 
@@ -197,6 +199,81 @@ def build_solid_7z(path: Path, scale: Scale) -> int:
         for name in sorted(files):
             archive.write(src / name, arcname=name)
     return total
+
+
+def _code_payload(i: int, size: int) -> bytes:
+    """x86-like member payload with real CALL/JMP rel32 targets to convert.
+
+    The BCJ branch filter only does work on ``E8``/``E9`` opcodes followed by a
+    32-bit displacement; a text-ish or random payload leaves it converting almost
+    nothing, which would make the BCJ cases measure LZMA and not the filter. This
+    repeats a 16-byte block holding one ``call rel32`` and one ``jmp rel32``, so
+    roughly one branch per eight bytes — dense, but that is what the filter exists
+    for. Same block as ``tests/test_sevenzip_reader.py::_BCJ_CODE_PATTERN``.
+    """
+    block = bytes(
+        [0x8B, 0x45, 0xF8, 0xE8, 0x10, 0x20, 0x00, 0x00]
+        + [0x89, 0x45, 0xFC, 0xE9, 0x00, 0x01, 0x00, 0x00]
+    )
+    header = f"archivey-bench-code-{i}\n".encode()
+    body_len = max(0, size - len(header))
+    reps, rem = divmod(body_len, len(block))
+    return header + block * reps + block[:rem]
+
+
+def build_bcj_7z(path: Path, scale: Scale, *, second_method: str) -> int:
+    """Build a solid BCJ-filtered 7z via the ``7z`` CLI; 0 if unavailable.
+
+    Written with the CLI rather than py7zr on purpose: the LZMA1 variant the CLI
+    emits carries no end-of-stream marker, which is the shape that forces archivey
+    to stage the branch filter separately instead of handing liblzma one combined
+    raw chain. ``second_method`` is ``LZMA2``, ``LZMA`` or ``Copy``; ``Copy`` leaves
+    the branch filter as the whole of the decode cost.
+    """
+    if shutil.which("7z") is None:
+        return 0
+    src = path.parent / f"{path.stem}-src"
+    if src.exists():
+        shutil.rmtree(src)
+    src.mkdir(parents=True)
+    total = 0
+    for i in range(_bcj_members(scale)):
+        data = _code_payload(i, scale.solid_member_size)
+        total += len(data)
+        (src / f"c{i:03d}.bin").write_bytes(data)
+    cmd = [
+        "7z",
+        "a",
+        "-t7z",
+        "-m0=BCJ",
+        f"-m1={second_method}",
+        str(path),
+        str(src / "*"),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        if path.exists():
+            path.unlink()
+        return 0
+    return total if path.exists() else 0
+
+
+def _bcj_members(scale: Scale) -> int:
+    """Members in the BCJ corpora — a quarter of the solid corpus.
+
+    Enough bytes for the filter to show up in wall time, few enough that three
+    extra 7z cases do not dominate a structural run.
+    """
+    return max(2, scale.solid_members // 4)
+
+
+def unpacked_bcj(scale: Scale) -> int:
+    """Unpacked bytes of a BCJ corpus, for a fixture reused from a previous run."""
+    return sum(
+        len(_code_payload(i, scale.solid_member_size))
+        for i in range(_bcj_members(scale))
+    )
 
 
 # Payload size for the tiny-member listing corpora. Public because
@@ -383,6 +460,24 @@ def materialize_fixtures(
         if nonsolid_path.exists() or build_nonsolid_7z(nonsolid_path, scale_obj):
             nonsolid_7z = nonsolid_path
 
+    # BCJ corpora need only the ``7z`` CLI, not py7zr: they are built outside the
+    # py7zr branch so a missing py7zr does not silently drop the branch-filter cases.
+    bcj_7z: dict[str, Path] = {}
+    unpacked_bcj_bytes = 0
+    for label, second_method in (
+        ("lzma2", "LZMA2"),
+        ("lzma1", "LZMA"),
+        ("copy", "Copy"),
+    ):
+        bcj_path = root / f"bcj-{label}.7z"
+        if bcj_path.exists():
+            built = unpacked_bcj(scale_obj)
+        else:
+            built = build_bcj_7z(bcj_path, scale_obj, second_method=second_method)
+        if built > 0 and bcj_path.exists():
+            bcj_7z[label] = bcj_path
+            unpacked_bcj_bytes = built
+
     solid_rar: Path | None = None
     many_rar: Path | None = None
     nonsolid_rar: Path | None = None
@@ -416,10 +511,12 @@ def materialize_fixtures(
         solid_7z=solid_7z,
         many_7z=many_7z,
         nonsolid_7z=nonsolid_7z,
+        bcj_7z=bcj_7z,
         solid_rar=solid_rar,
         many_rar=many_rar,
         nonsolid_rar=nonsolid_rar,
         unpacked_solid_7z=unpacked_7z,
+        unpacked_bcj_7z=unpacked_bcj_bytes,
         unpacked_solid_rar=unpacked_rar,
         unpacked_zip_aes=unpacked_zip_aes,
     )

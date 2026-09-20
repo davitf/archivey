@@ -1,8 +1,8 @@
-# External ZIP fixtures
+# External fixtures
 
-Archives produced by **other** tools, committed because we cannot generate them here.
-Everything else in `tests/fixtures/` is built at test time; these two exist because the
-producer is the point.
+Archives and streams produced by **other** tools, committed because we cannot generate
+them here. Everything else in `tests/fixtures/` is built at test time; these exist
+because the producer is the point.
 
 ## `encoding_infozip_jules.zip`
 
@@ -29,3 +29,33 @@ Python program emitting an AES ZIP in those four years was almost certainly emit
 least 20 bytes.
 
 See [`dev-docs/formats/zip.md`](../../../dev-docs/formats/zip.md) §3.
+
+## `lzma_bpo21872/`
+
+Three real LZMA Alone (`.lzma`) streams from the attachments on CPython's BPO-21872,
+"LZMA library sometimes fails to decompress a file" — files that stdlib `lzma` used to
+decompress *short* while the `xz` utility read them whole. Committed 2026-09-19.
+
+They are a shape nothing on the test image writes: **the declared uncompressed size is
+known and there is no end-of-payload marker**, so a decoder has to stop at the size rather
+than at a marker. stdlib `FORMAT_ALONE` always writes the unknown-size marker instead, and
+`tests/test_single_file.py::test_lzma_alone_size_from_header_when_known` cannot fill the
+gap: it patches the size field into stdlib output, and that contradictory header (size
+*and* end marker) is rejected as corrupt by some liblzma builds, so it must not be read
+back.
+
+| File | Source attachment | Notes |
+| --- | --- | --- |
+| `22h_ticks_bad.bi5` | `Archive.zip` (2014-06-25) | The original report's failing file. Dukascopy tick data. Also shipped as `14_22h_ticks.bi5` in `more_bad_lzma_files.zip` — byte-identical. |
+| `23h_ticks_good.bi5` | `Archive.zip` (2014-06-25) | The control uploaded beside it: same producer, never failed. |
+| `failed_file_01.lzma` | `failed_files_more.zip` (2017-12-24) | A later report, different submitter and three years apart. |
+
+CPython fixed this in 3.7 (PR 14048, the `needs_input` handling in the decompress reader),
+so all three decode correctly today — `tests/test_single_file.py::test_bpo21872_lzma_alone_samples_decode_whole`
+is a regression pin on our own stream layer, which chunks reads differently from
+`lzma.open`, not a live bug hunt. The bug was sensitive to where reads landed relative to
+internal buffer boundaries, so the test reads each file at several chunk sizes, 8192
+among them.
+
+Only three of the nineteen attached files are committed; the rest are the same shape from
+the same two sources.

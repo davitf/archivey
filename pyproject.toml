@@ -73,9 +73,6 @@ recommended = [
     # stdlib. RAR5 BLAKE2sp is native on hashlib (internal/hashing/blake2sp.py) and needs
     # no package at all.
     "cryptography>=45.0.0",
-    # LZMA1+BCJ: liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
-    # (common from the 7-Zip CLI). Stage BCJ via pybcj instead; LZMA2+BCJ stays stdlib.
-    "pybcj>=1.0.6",
     "pycdlib>=1.16.0",
     "tqdm>=4.67.0",
 ]

@@ -213,42 +213,22 @@
   once `sevenzip-aes-tail-key-check` lands, the `Copy` case is O(1) for the ~75% of
   archives with at least 4 padding bytes, leaving `Copy` + short-or-nonstandard padding +
   a multi-member solid folder. Promote with the seekable-stream change rather than alone.
+  A multi-member COPY folder is not constructible with the 7z CLI (every COPY member
+  gets its own folder regardless of `-ms`), so a prefix-over-AES path is uncovered by
+  construction.
 
-- **Read a stored encrypted RAR5 member without `unrar`** — `_can_direct_read`
-  (`rar_reader.py`) already serves stored, non-solid, unsplit members from a direct
-  `SharedView` slice; `not info.is_encrypted` is the only thing excluding the encrypted
-  ones. Everything needed is parsed already: `_parse_rar5_file_encryption` captures
-  per-file salt + IV + check value, and `_rar5_s2k(password, salt, 1 << kdf_count)` *is*
-  the AES key derivation (`rar5_hash_key`'s docstring records the offset scheme; the
-  header path already calls it). Verified on #342: key + IV + `AesDecryptStream` over
-  the slice reproduces `unrar`'s output byte-for-byte at 7 / 3000 / 3001 bytes, and
-  seeks. Wins a dropped subprocess, no `PackageNotInstalledError` for that shape, no
-  temp-file copy for a non-path source, and O(1) seek from the CBC restart. Needs: an
-  ADR [0002](decisions/0002-native-rar-metadata-unrar-data.md) amendment (it scopes
-  native decryption to headers), a wrong-password path from the FILE record's 12-byte
-  PswCheck (`_check_rar5_password` is written for the header block and is untested
-  against a FILE record), and RAR5-only scoping — `rar_parser.py` sets
-  `file_encryption=None` on the RAR3 path, so RAR4's 8-byte `LHD` salt is not parsed.
-  Split/volume-spanning stay excluded by the existing `_can_direct_read` guards.
-  Maintainer decision (davitf, 2026-09-16): yes, follow-up PR.
+- **Read a stored encrypted RAR5 member without `unrar`** — **promoted** to
+  `openspec/changes/rar5-stored-encrypted-native-read/`. Maintainer decision (davitf,
+  2026-09-16): yes, follow-up PR; written up 2026-09-17, not yet scheduled.
 
-- **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** — of the
-  divergences `crypto.py` used to list, ownership is `owns_inner`, `read` already gathers
-  short source reads, and a short last block now raises `TruncatedError` instead of
-  the 7z zero-pad drain. The ciphertext cursor is derivable as `_cipher_start + _pos +
-  len(_buf)` for a full-count source (ADR 0014) once source asks are rounded to a
-  block. What actually blocks it: (a) the
-  header walk binds `header_fd` to *either* the raw archive handle or the decrypt stream
-  and calls `.tell()` on both for `header_offset` / `data_offset`, so `tell()` means
-  *archive offset* — a second method doesn't help while the raw handle is the other arm;
-  (b) the header stream sits on the archive handle mid-file and unbounded, so
-  `AesDecryptStream` would compute `_cipher_len` as "rest of the file" and advertise
-  `seekable()`. Converging means an explicit `archive_offset()` with a thin adapter over
-  the raw handle plus a `length=` bound on the wrapper. The truncation change removed
-  one divergence; the two blockers above are unaffected. Revisit after the
-  stored-encrypted-RAR5 work lands. A multi-member
-  COPY folder is not constructible with the 7z CLI (every COPY member gets its own
-  folder regardless of `-ms`), so a prefix-over-AES path is uncovered by construction.
+- **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** —
+  **promoted**, and split in two after review of
+  [#347](https://github.com/davitf/archivey/pull/347).
+  `openspec/changes/rar-archive-offset-and-aes-cursor/` carries the two halves that are
+  correct on their own terms (an explicit `_archive_offset` accessor, so `header_fd`'s two
+  arms stop overloading `tell()`; gathered source reads and a `cipher_tell()` on
+  `AesDecryptStream`). `openspec/changes/fold-rar-header-decrypt-stream/` is then only the
+  fold and its gate. Neither is scheduled.
 
 - **`stream_members()` seekability leak** — the intended rule is that a sequential pass
   is never seekable (`seekable_members=True` only changes random `open()`). Enforced
@@ -820,20 +800,29 @@
   `tests/fixtures/rar/README.md`. Linux `setup-dev-env.sh` still apt-installs
   `rar`, so these are not dark on a provisioned Linux laptop — only on CI /
   macOS.
-- **Decide what native-codec stress coverage is for.** One of the eight native
-  dependencies (`pyppmd`, `inflate64`, `rapidgzip` + bundled `indexed_bzip2`, `brotli`,
-  `lz4`, `cryptography`, `pycdlib`) has a stress harness, and it exists because of a
-  *specific observed* upstream abort (`known-issues.md` §Intermittent `pyppmd` native
-  aborts). Fuzzing is separate and broader: `tests/atheris_fuzz/targets.py` registers 7
-  required stream codecs plus 4 optional ones, `deflate64` included. So the open question
-  is not "which codec is missing a harness" but **what earns one**: a response to observed
-  evidence, or a standard every native dependency is held to. The honest-looking criterion
-  — *built when an upstream defect is observed, not before* — would resolve
-  [PR #187](https://github.com/davitf/archivey/pull/187) (rapidgzip + inflate64 harnesses)
-  as close-with-criterion-recorded. Worth a short written evaluation because the answer
-  changes what CI runs on every PR; adjacent to the archived Topic 4 (test-suite strategy).
-  Context and today's measured state: [`open-work-inventory.md`](open-work-inventory.md)
-  §Native codec stress coverage.
+- **Decide what native-codec stress coverage is for. Undecided, and now unattached to any
+  PR.** One of the eight native dependencies (`pyppmd`, `inflate64`, `rapidgzip` + bundled
+  `indexed_bzip2`, `brotli`, `lz4`, `cryptography`, `pycdlib`) has a stress harness, and it
+  exists because of a *specific observed* upstream abort (`known-issues.md` §Intermittent
+  `pyppmd` native aborts). Fuzzing is separate and broader: `tests/atheris_fuzz/targets.py`
+  registers 7 required stream codecs plus 4 optional ones, `deflate64` included. So the open
+  question is not "which codec is missing a harness" but **what earns one**: a response to
+  observed evidence, or a standard every native dependency is held to.
+
+  **[PR #187](https://github.com/davitf/archivey/pull/187) (rapidgzip + inflate64 harnesses)
+  was closed on 2026-09-11 without this being answered**, so the decision now has no PR
+  attached to it and nothing forcing it. That is the reason this entry is worth keeping
+  rather than retiring with the PR: the code was declined, the judgement behind declining it
+  was not written down, and the next proposal for a `brotli` or `lz4` harness has nothing to
+  be measured against.
+
+  The candidate criterion is *a native stress harness is built when an upstream defect is
+  observed, not before*. Adopting it would retroactively make #187's closure correct **and
+  recorded**; rejecting it means five more libraries are owed the same treatment `pyppmd`
+  got. Either way the output is a short written evaluation with the criterion stated, because
+  the answer changes what CI runs on every PR. Adjacent to the archived Topic 4 (test-suite
+  strategy). Measured state of the eight libraries:
+  [`open-work-inventory.md`](open-work-inventory.md) §Native codec stress coverage.
 - **Establish that the Windows UnRAR download is rarlab's.** The Windows CI leg
   `Invoke-WebRequest`s `https://www.rarlab.com/rar/unrarw64.exe` and runs the SFX; the
   only integrity checks are a PE sniff and the UNRAR banner. **A pinned SHA-256 is
