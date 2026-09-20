@@ -739,10 +739,24 @@ incompressible is that first member.
 
 The solid extra is a transfer cost of roughly 1 ms/MB: `unrar` still decodes
 the excluded member (the dictionary needs it) and only skips emitting it.
-Nonsolid 23× is decode that would not otherwise happen. The rebuild command,
-the second member's size, and the glob name used were not recorded, and the
-archive is not in `tests/fixtures/` — these timings are the original
-measurement, not a recipe that reproduces them.
+Nonsolid 23× is decode that would not otherwise happen.
+
+**To re-run it**, since §7 parks the ruling for revisiting. Build a two-member
+archive with `rar a -s -m3 arc.rar big.bin target.bin`, where `big.bin` is
+66,000,000 bytes and `target.bin` is 65,536 bytes of `os.urandom`; fill
+`big.bin` from a repeating string for the compressible row and from
+`os.urandom` for the incompressible one, and drop `-s` for the nonsolid row.
+Then time `unrar p -inul -n./target.bin arc.rar` against
+`unrar p -inul -n./*.bin arc.rar`, reading stdout in-process and discarding it
+— a `/dev/null` consumer hides the effect entirely.
+
+Re-run that way on 2026-09-20: 0.053 s → 0.157 s (2.95×), 0.407 s → 0.475 s
+(1.17×), and nonsolid 0.006 s → 0.105 s (16.4×). The absolute times and both
+solid factors reproduce. The nonsolid factor is a ratio of two sub-10 ms
+numbers and swings with load, so read that row as an order of magnitude rather
+than as 23 exactly. The original archive is not in `tests/fixtures/` and the
+glob name it used was not recorded, so the table above stays the original
+measurement and these are a reproduction of it.
 
 ## 7. Open questions
 
