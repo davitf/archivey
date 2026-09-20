@@ -337,6 +337,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
+        slice_mod.SharedView,  # translates remapped offset space; clamp at 0
         verify.VerifyingStream,
     }
     remaps_or_not_on_chain = {
@@ -349,7 +350,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         iso_reader._PyCdlibStream,
         solid._MemberSlice,
         slice_mod.SlicingStream,  # explicit decline of a remapped offset space
-        slice_mod.SharedView,  # same remapped space; locked subclass of SlicingStream
         peekable.PeekableStream,
         streamtools_full_count.FullCountStream,  # source boundary; not on the decompressed chain
         zip_aes.WinZipAesDecryptStream,

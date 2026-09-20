@@ -633,3 +633,46 @@ if caught:
                     t.join(timeout=30)
                 if errors:
                     raise errors[0]
+
+
+class _ResumeInner(io.BytesIO):
+    """Seekable source whose resume offset is injected, not derived."""
+
+    def __init__(self, data: bytes, resume: int) -> None:
+        super().__init__(data)
+        self._resume = resume
+        self.asked: list[int] = []
+
+    def nearest_resume_offset(self, target: int) -> int:
+        self.asked.append(target)
+        return self._resume
+
+
+class TestSharedViewResumeOffset:
+    def test_translates_inner_resume_into_view_space(self) -> None:
+        inner = _ResumeInner(b"x" * 100, resume=40)
+        view = SharedView(inner, start=10, length=50, lock=threading.Lock())
+        assert view.nearest_resume_offset(25) == 30
+        assert inner.asked == [35]
+
+    def test_clamps_inner_resume_before_view_start(self) -> None:
+        inner = _ResumeInner(b"x" * 100, resume=5)
+        view = SharedView(inner, start=10, length=50, lock=threading.Lock())
+        assert view.nearest_resume_offset(20) == 0
+        assert inner.asked == [30]
+
+    def test_no_signal_when_inner_has_no_resume_method(self) -> None:
+        view = SharedView(
+            io.BytesIO(b"x" * 100), start=10, length=50, lock=threading.Lock()
+        )
+        assert view.nearest_resume_offset(20) is None
+
+    def test_no_signal_when_inner_returns_none(self) -> None:
+        class _Declining(io.BytesIO):
+            def nearest_resume_offset(self, target: int) -> None:
+                return None
+
+        view = SharedView(
+            _Declining(b"x" * 100), start=10, length=50, lock=threading.Lock()
+        )
+        assert view.nearest_resume_offset(20) is None

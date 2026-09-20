@@ -304,10 +304,17 @@ class AesDecryptStream(ReadOnlyIOStream):
         if resume is None:
             return block_start
         # Restart at plaintext block k iff the IV block at cs + 16(k-1) is
-        # at or after the inner's resume. Smallest such k:
+        # at or after the inner's resume. Smallest such k for k ≥ 1:
         # P = ceil(q / 16) * 16 + 16, q = resume - cipher_start.
+        # Block 0 is the exception: its IV is the stream's explicit IV, so
+        # q == 0 (inner can resume at or before cipher_start) yields 0.
+        # The +16 shift must not move for q in 1..16 — that still needs the
+        # IV block at cipher_start, which is behind the inner's resume.
         q = max(0, resume - self._cipher_start)
-        composed = -(-q // AES_BLOCK_SIZE) * AES_BLOCK_SIZE + AES_BLOCK_SIZE
+        if q == 0:
+            composed = 0
+        else:
+            composed = -(-q // AES_BLOCK_SIZE) * AES_BLOCK_SIZE + AES_BLOCK_SIZE
         return max(0, min(block_start, composed))
 
     @property
