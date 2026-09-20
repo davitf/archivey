@@ -524,24 +524,33 @@ anything, which makes it the clearest candidate for the next hand-out.
 
 | Review | Population | Character |
 | --- | --- | --- |
-| [`typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 2 `type: ignore`, 26 `cast()`, 37 `Any`, 3 `TypeGuard`, 13 `assert isinstance` | **Excavation.** Its precedent is #324's finding 3: a `TypeGuard` that lied, which the checkers then believed and propagated |
+| [`typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 3 suppressions, 22 `cast()`, 48 `Any`, 3 `TypeGuard`, 12–13 `assert isinstance` | **Excavation.** Its precedent is #324's finding 3: a `TypeGuard` that lied, which the checkers then believed and propagated. The commissioning figures here ("26 casts / 37 `Any`") were a grep; [`inventory.md`](../review/typing-escape-hatches/inventory.md) has the counted ones |
 | [`exception-catchalls/`](../review/exception-catchalls/brief.md) | 30 marked blind `except` sites, in five patterns | **Verification.** Its own brief says recon found no smoking gun and warns against manufacturing severity |
 
-**The typing brief's census is already stale in two rows, because #324 merged after it was
-written.** Worth fixing before anyone starts, so the first hour is not spent rediscovering it:
+**The typing brief's census was stale in three rows, and the inventory in #352 supersedes
+it.** Read [`SUMMARY.md`](../review/typing-escape-hatches/SUMMARY.md) and
+[`inventory.md`](../review/typing-escape-hatches/inventory.md) rather than the brief's
+commissioning table:
 
+- **S1 — the `CONTRIBUTING.md` suppression rule** is **fixed in #352**. The rule used to
+  offer `# type: ignore[attr-defined]` as an example of a *specific* suppression, which it
+  is not here: pyrefly does not validate the bracketed code, so that form silences the whole
+  line. It now names `# pyrefly: ignore[<code>]` / `# ty: ignore[<code>]`, the forms that
+  fail closed.
 - **S2 — "both existing `src/` suppressions are dead, DELETE them"** is **done**. #324's
   `chore(types)` commit removed both; `grep -c "type: ignore" src/` is now 0.
 - **S3 — "two more exist only on #324's branch, sequence after it merges"** has happened.
-  Both are on `main` now (`streamtools/base.py:195`, `streams/peekable.py:86`), already in
-  the `# pyrefly: ignore[bad-override]` form with inline reasons, which is the outcome the
-  brief wanted rather than work it still needs.
+  Both are on `main` now (`streamtools/base.py`, `streams/peekable.py`), already in the
+  `# pyrefly: ignore[bad-override]` form with inline reasons, which is the outcome the brief
+  wanted rather than work it still needs. A third (`full_count.py`) has since joined them,
+  same disposition.
+- **S6 — the twelve hidden pyrefly warnings** are answered: they appear under
+  `--min-severity=warn`, and none is a hidden error.
 
-What survives untouched is the larger half: **26 `cast()` and 37 `Any`**, concentrated in
-`tar_reader` (6 casts), `zip_reader` (5), `streamtools/binaryio.py` (12 `Any`) and
-`iso_reader.py` (8). Plus seed **S1**, which is a `CONTRIBUTING.md` fix rather than an audit
-finding: the rule currently offers `# type: ignore[attr-defined]` as an example of a
-*specific* suppression, and in this repo it is not one.
+What survives is the larger half, and it is now a worklist rather than a population: staged
+fix PRs 1–5 and 7, concentrated in `binaryio.py`, `tar_reader`, `zip_reader`, `iso_reader`
+and `decompress`. Q1 is decided (public `extra` values are `object`) and lands with the
+inventory.
 
 ## OpenSpec changes
 

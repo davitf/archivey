@@ -154,7 +154,7 @@ class ArchiveMember:
     windows_attrs: int | None = None
     hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
     diagnostics: tuple[Diagnostic, ...] = field(default=(), compare=False)
-    extra: dict[str, Any] = field(default_factory=dict, compare=False)
+    extra: dict[str, object] = field(default_factory=dict, compare=False)
 
     @property
     def member_id(self) -> int: ...
@@ -174,7 +174,7 @@ class ArchiveMember:
     def is_junction(self) -> bool: ...
 
     def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
-    def replace(self, **kwargs: Any) -> "ArchiveMember": ...
+    def replace(self, **kwargs: object) -> "ArchiveMember": ...
 ```
 
 `is_anti` SHALL be derived (`type == MemberType.ANTI`); there is no `is_anti` field.
@@ -193,6 +193,7 @@ is no `crc32` alias. Sizes, link targets, hashes, and diagnostics MAY be
 completed in place during streaming. `member_id` / `archive_id` preserve source
 identity, convenience properties are derived, and `replace()` creates an edited
 copy. `hashes`, `diagnostics`, and `extra` SHALL be excluded from equality.
+`extra` values SHALL be typed `object`; a caller that uses a key narrows it itself.
 
 `ArchiveMember` SHALL remain unhashable and non-frozen. The `diagnostics` tuple
 itself is immutable, but the library MAY replace it in place for later
@@ -283,10 +284,11 @@ class ArchiveInfo:
     is_encrypted: bool
     is_multivolume: bool
     cost: CostReceipt
-    extra: dict[str, Any] = field(default_factory=dict, compare=False)
+    extra: dict[str, object] = field(default_factory=dict, compare=False)
 ```
 
 `extra` keys SHALL be namespaced strings and excluded from equality.
+`extra` values SHALL be typed `object`; a caller that uses a key narrows it itself.
 `member_count` SHALL be `None` when computing it requires a full scan.
 
 #### Scenario: archive info matrix
