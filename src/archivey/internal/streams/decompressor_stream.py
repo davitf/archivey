@@ -51,8 +51,12 @@ class SeekPoint:
 
     decompressed_offset: int
     compressed_offset: int = field(compare=False)
-    # Opaque per-codec resume token. XzDecoder.from_point treats a non-None
-    # value as ``_XzBlockBounds``; this module only compares identity / None.
+    # Opaque per-codec resume token. Compared by identity, and by == where a
+    # codec re-emits an equal-valued token for the same offset
+    # (``_resolve_same_offset_collision``). Deliberately Any: object breaks
+    # the assignment of a non-None value to ``_XzBlockBounds`` in
+    # ``XzDecoder.from_point`` (xz.py:598/:605); one Any here vs two casts
+    # there.
     state: Any = field(default=None, compare=False)
 
 
@@ -197,7 +201,8 @@ class _IndexBlock(Protocol):
     ``_B``, not this protocol.
     """
 
-    decompressed_start: int
+    @property
+    def decompressed_start(self) -> int: ...
 
     @property
     def decompressed_end(self) -> int: ...
@@ -206,10 +211,24 @@ class _IndexBlock(Protocol):
 _B = TypeVar("_B", bound=_IndexBlock)
 
 
+class _ScanFn(Protocol[_B]):
+    # First two args are positional-only so a scanner can name the stream
+    # ``stream`` (both call sites do) without matching this module's ``inner``.
+    def __call__(
+        self,
+        stream: BinaryIO,
+        file_size: int,
+        /,
+        *,
+        stop_at: int,
+        start_decompressed_offset: int,
+    ) -> list[_B]: ...
+
+
 def build_index_backwards(
     inner: BinaryIO,
     last_known: SeekPoint,
-    scan_fn: Callable[..., list[_B]],
+    scan_fn: _ScanFn[_B],
     to_point: Callable[[_B], SeekPoint],
     warning_msg: str,
     *,

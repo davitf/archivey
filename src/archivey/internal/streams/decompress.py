@@ -288,7 +288,9 @@ class GzipDecoder(BaseDecoder):
 class _BrotliDecompressor(Protocol):
     """The ``brotli.Decompressor`` methods this adapter calls.
 
-    ``brotli`` is an optional extra with no stubs.
+    ``brotli`` is an optional extra with no stubs. ``can_accept_more_data`` /
+    ``output_buffer_limit`` are brotli ≥1.2.0; the adapter probes for them at
+    runtime (``_supports_output_limit``).
     """
 
     def process(self, data: bytes, output_buffer_limit: int = ...) -> bytes: ...
@@ -403,7 +405,9 @@ _PPMD_QUIESCE_MAX_CALLS = 8
 class _PpmdNativeDecoder(Protocol):
     """The ``pyppmd.Ppmd7Decoder`` / ``Ppmd8Decoder`` methods this adapter calls.
 
-    ``length`` is the library's keyword; ``needs_input`` is read via ``getattr``.
+    ``length`` is the library's keyword. ``needs_input`` is read via ``getattr``
+    as defensive coverage; the pinned floor (``pyppmd>=1.3.1``) exposes it on
+    both decoders, and no known build lacks it.
     """
 
     def decode(self, data: bytearray | bytes | memoryview, length: int) -> bytes: ...
