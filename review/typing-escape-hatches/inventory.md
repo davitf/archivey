@@ -1,15 +1,33 @@
 # Inventory — one row per site
 
 Baseline `main` @ `94468bd0`. Probe: remove the hatch, run both checkers, restore.
+
+**Line numbers are anchors at `94468bd0`, not at this branch's head.** The branch
+later merged `main` in, and the 7z, RAR and ZIP commits that came with it moved a
+lot of them: R2–R4 `rar_reader.py` 1063/1210/1294 → 1071/1218/1302, R5
+`sevenzip_pipeline.py:552` → `:526`, R7–R10 `sevenzip_reader.py` 391/423/694/762 →
+398/430/701/769, R12–R13 `zip_reader.py` 1425/1464 → 1421/1454. **A staged PR should
+locate each site by symbol, not by line.** The hatch population itself is unchanged:
+per-file `Any` and `cast` counts are identical between `94468bd0` and `main`, so no
+disposition moves. The one exception is R6, below.
 `Any` sites were probed by substituting `object`. `TypeGuard[T]` by substituting
 `bool`. Casts by using the value. Asserts by replacing the statement with `None`.
 
 **Checkers** = pyrefly 1.1.1 / ty (dev extra pins). `both-clean` means both exit 0.
 Dispositions: DELETE / FIX-IN-CODE / TIGHTEN / KEEP-WITH-REASON.
 
-Sequence note: several `cast(member._raw)` and `assert isinstance(_raw, …)` are
-`both-clean` only while `_raw: Any`. Tighten `_raw` first and they become the
-narrowing — do not DELETE them in the same PR that changes `_raw`.
+**Sequence note, and it runs one way only.** Several `cast(member._raw)` sites are
+`both-clean` only while `_raw: Any`. **C8 (`tar_reader.py:470`) has no assert to fall
+back on** — the `assert isinstance(info, tarfile.TarInfo)` that R11 records is at
+`tar_reader.py:763`, in `_open_member`, a different function with its own `info`.
+Line 470 sits in the `_open` closure and narrows nothing. So once PR 1 deletes that
+cast, tightening `_raw` to `object` (A25) makes `extractfile(info)` a fresh
+both-checker error, and A25 needs a **new** assert at 470 rather than a kept one.
+
+**A25 is therefore not part of staged PR 2.** It is its own change, after PR 1, and
+it carries the new narrowing at `tar_reader.py:470` with it. Do not DELETE the
+thirteen `assert isinstance` statements in either PR: once `_raw` is `object` they
+are the narrowing.
 
 ## Suppressions (3)
 
@@ -92,7 +110,7 @@ heuristic in the first census pass and are included here.
 | A22 | `binaryio.py:535` | `BinaryIOWrapper.write(data)` | unused body (raises) |
 | A23 | `verify.py:76` | `_algo_key(algorithm)` | better: `HashAlgorithm \| str` (FIX-IN-CODE in PR 5 if not folded here) |
 | A24 | `verify.py:126` | `_make_hasher(algorithm)` | same |
-| A25 | `types.py:457` | `ArchiveMember._raw` | **private**. `object` is honest. Do this *after* or *with* the asserts; not with C8 DELETE |
+| A25 | `types.py:457` | `ArchiveMember._raw` | **private**. `object` is honest. **Not in staged PR 2** — its own change after PR 1, and it must add the missing narrowing at `tar_reader.py:470`. See the sequence note above |
 
 ### Public `Any` — Q1 **DECIDED A** (tightened in this PR)
 
@@ -100,7 +118,7 @@ heuristic in the first census pass and are included here.
 |---|---|---|---|
 | A26 | `types.py:451` | `ArchiveMember.extra` | **done** — `dict[str, object]` |
 | A27 | `types.py:570` | `ArchiveInfo.extra` | **done** — `dict[str, object]` |
-| A28 | `types.py:536` | `ArchiveMember.replace(**kwargs)` | **done** — `**kwargs: object` |
+| A28 | `types.py:536` | `ArchiveMember.replace(**kwargs)` | **done** — `**kwargs: object`. Removes the `Any`, but **checks nothing**: every value was acceptable before and every value is an `object`, so a misspelled field is still only a runtime `TypeError`. Typing the names needs a per-field `TypedDict` (deferred) |
 
 Per-format TypedDict aliases are a later option; not the field type. See [`QUESTIONS.md`](QUESTIONS.md).
 
@@ -129,9 +147,9 @@ Per-format TypedDict aliases are a later option; not the field type. See [`QUEST
 | A47 | `verify.py:68` `_ExpectedHashes = Mapping[Any, bytes]` | callers pass `Mapping[HashAlgorithm, bytes]` | `Mapping[HashAlgorithm \| str, bytes]` |
 | A48 | `verify.py:69` `_DigestTransforms` | same pattern | `Mapping[HashAlgorithm \| str, Callable[[bytes], bytes]]` |
 
-## `assert isinstance` (13)
+## `assert isinstance` (13 at `94468bd0`, 12 at this branch's head)
 
-All thirteen: **both-clean** without the assert. They are runtime checks on
+All of them: **both-clean** without the assert. They are runtime checks on
 backend handles, not checker hatches, given `_raw: Any`.
 
 | ID | Site | Type | Disposition |
@@ -139,7 +157,7 @@ backend handles, not checker hatches, given `_raw: Any`.
 | R1 | `iso_reader.py:478` | `ns_path` is `str` | KEEP — runtime; ISO namespace path |
 | R2–R4 | `rar_reader.py:1063, 1210, 1294` | `RarMemberInfo` | KEEP |
 | R5 | `sevenzip_pipeline.py:552` | `PlainHeader` | KEEP |
-| R6 | `sevenzip_reader.py:302` | `PlainHeader` | KEEP |
+| R6 | ~~`sevenzip_reader.py:302`~~ | `PlainHeader` | **gone** — removed by one of the 7z commits merged in from `main`. Counted in the census below and in `SUMMARY.md`; no longer a site |
 | R7–R10 | `sevenzip_reader.py:391, 423, 694, 762` | `_MemberRaw` | KEEP |
 | R11 | `tar_reader.py:763` | `tarfile.TarInfo` | KEEP — pairs with C8 |
 | R12–R13 | `zip_reader.py:1425, 1464` | `zipfile.ZipInfo` | KEEP |

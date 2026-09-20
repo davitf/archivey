@@ -6,8 +6,14 @@
 the type they expect. TypedDict is a later option, not this change.
 
 Landed as `dict[str, object]` on `ArchiveMember.extra` / `ArchiveInfo.extra` and
-`**kwargs: object` on `replace`. `listing_limits._extra_bytes` followed because
-`dict` is invariant. Private `_raw: Any` is unchanged.
+`**kwargs: object` on `replace`. `listing_limits._extra_bytes` moved with them
+because A5 already dispositioned it as a TIGHTEN on its own merits, and keeping
+the two `extra` annotations in step is the point; it narrows with `isinstance`
+anyway, so `object` costs it nothing. **Not** because `dict` is invariant —
+invariance bites between two static types, and `Any` is consistent with every
+type in both directions, so a `dict[str, object]` argument was always assignable
+to a `dict[str, Any]` parameter. Measured on both checkers 2026-09-20: passing
+each into the other is clean. Private `_raw: Any` is unchanged.
 
 ### TypedDict later?
 

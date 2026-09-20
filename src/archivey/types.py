@@ -451,9 +451,11 @@ class ArchiveMember:
     extra: dict[str, object] = field(default_factory=dict, compare=False)
     """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality.
 
-    Values are ``object``: a caller that uses a key must narrow it. Known keys are
-    the ``EXTRA_*`` constants on this module plus the namespaced ``format.key``
-    strings backends write (see each format handbook).
+    Values are ``object``: a caller that uses a key must narrow it before use. The
+    ``EXTRA_*`` constants on this module name the format-independent keys; backends
+    also write namespaced ``format.key`` strings, some of which are documented in
+    the formats guide. There is no complete published register of keys and their
+    value types, so narrow defensively rather than assuming a key's type.
     """
 
     # Private internal fields (not part of the public contract)
@@ -539,7 +541,13 @@ class ArchiveMember:
         )
 
     def replace(self, **kwargs: object) -> "ArchiveMember":
-        """Return a copy with the given fields changed; never mutates self."""
+        """Return a copy with the given fields changed; never mutates self.
+
+        ``object`` is not a check: neither the keyword names nor the value types are
+        verified statically, so a misspelled field or a wrongly typed value is still
+        a ``TypeError`` from ``dataclasses.replace`` at runtime. Typing the names
+        would need a per-field ``TypedDict``, which is deliberately deferred.
+        """
         return replace(self, **kwargs)
 
 

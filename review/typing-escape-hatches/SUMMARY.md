@@ -14,7 +14,8 @@ the one #324 fixed (`is_stream` vs `TextIOBase`). `is_filename` is honest.
 fail loudly later rather than returning `str` from `read()`.
 
 The live population is **89 sites** (3 checked suppressions, 22 `typing.cast`,
-48 `Any` annotations, 3 `TypeGuard`, 13 `assert isinstance`). The brief's "26
+48 `Any` annotations, 3 `TypeGuard`, 13 `assert isinstance` — 12 once the branch
+merged `main` in and R6 went). The brief's "26
 casts / 38 Any" was a grep: it counted two `memoryview.cast` calls as
 `typing.cast`, and counted `Any` roughly per line rather than per annotation.
 
@@ -48,7 +49,7 @@ default is `error`). Listed under [What is actually fine](#what-is-actually-fine
 | `typing.cast` | 26 | **22** | brief grep included `memoryview.cast` (2) |
 | `Any` annotations | 38 | **48** | counted per parameter / return / alias, not per line |
 | `TypeGuard` | 3 | 3 | |
-| `assert isinstance` | 13 | 13 | |
+| `assert isinstance` | 13 | 13 at `94468bd0`, **12** at this branch's head | R6 (`sevenzip_reader.py:302`) was removed by a 7z commit merged in from `main` |
 
 Method: AST + tokenize over `src/`. Per site: delete the hatch (cast → the
 value; `Any` → `object`; `TypeGuard[…]` → `bool`; drop the assert; drop or
@@ -85,14 +86,21 @@ one category.
    `./scripts/test.sh` is enough.
 2. **TIGHTEN internal `Any` → `object`** where both checkers stayed clean
    (`binaryio.py` helpers, `verify` algorithm params, `ReadOnlyIOStream.write`,
-   ISO getattr/kwargs). `listing_limits` already moved with Q1.
+   ISO getattr/kwargs). `listing_limits` already moved with Q1. **`_raw` is not in
+   this PR** — see 2b.
+2b. **`ArchiveMember._raw: Any` → `object`** (A25), its own change, after PR 1.
+   It must add a narrowing at `tar_reader.py:470` that does not exist today: the
+   assert R11 records is in a different function. The inventory's sequence note
+   has the detail.
 3. **`@overload` on `_track_source_seeks`** — drops four Path/BinaryIO casts in
    `tar_reader` / `zip_reader`.
 4. **TypeGuard predicates** — G2 and G3. Runtime-visible; needs tests.
 5. **Remaining `Any`** — ISO pycdlib Protocol, codec `_decomp` Protocols,
    `ZipFile._lock` as `ContextManager`, `verify.py` `Mapping[HashAlgorithm \| str, …]`.
 6. ~~**Public `Any` on `types.py`**~~ **done (Q1 A).** Per-format TypedDict
-   aliases stay a later option, not the field type.
+   aliases stay a later option, not the field type. `replace(**kwargs: object)`
+   removes the `Any` but adds no checking — the keyword names and value types are
+   still unverified, and the docstring now says so.
 7. **KEEP comments** on surviving typeshed `BinaryIO` casts, and name
    `FullCountStream` next to `PeekableStream` in the `ReadOnlyIOStream.name`
    docstring.
@@ -113,11 +121,12 @@ one category.
   naming `PeekableStream` and not `FullCountStream`.
 - **`is_filename`.** `isinstance(obj, (str, bytes, os.PathLike))` matches the
   `TypeGuard` target. Not a #324.
-- **All 13 `assert isinstance`.** Both checkers stay clean without them
-  *because `member._raw` is `Any`*. They are runtime invariants for backend
-  handles (`ZipInfo`, `TarInfo`, `RarMemberInfo`, `_MemberRaw`, `PlainHeader`),
-  not checker appeasement. Keep them. If `_raw` is later tightened to `object`,
-  they become the narrowing — do not delete them in PR 1.
+- **Every `assert isinstance`** (13 as measured, 12 on the merged tree). Both
+  checkers stay clean without them *because `member._raw` is `Any`*. They are
+  runtime invariants for backend handles (`ZipInfo`, `TarInfo`, `RarMemberInfo`,
+  `_MemberRaw`, `PlainHeader`), not checker appeasement. Keep them. If `_raw` is
+  later tightened to `object`, they become the narrowing — do not delete them in
+  PR 1. Note that `tar_reader.py:470` has **no** assert to become one; PR 2b adds it.
 - **`selection.py:18`.** Pyrefly warns `redundant-cast`; ty still needs the
   cast (`Collection ∩ Callable`). Checker disagreement is data: keep the cast
   for ty, no pyrefly suppression (warnings are not the gate).
