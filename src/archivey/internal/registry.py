@@ -10,6 +10,7 @@ errors, rather than silently dropping a format whose dependency is absent (see
 
 from __future__ import annotations
 
+import functools
 import importlib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -130,8 +131,23 @@ _CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
 # is declared in exactly one place (see ``backend-registry``).
 
 
+@functools.cache
 def _optional(name: str) -> ModuleType | None:
-    """Return the named module, or ``None`` when it (the optional extra) is not installed."""
+    """Return the named module, or ``None`` when it (the optional extra) is not installed.
+
+    Memoized, because Python has no negative import cache: a *present* module is a
+    ``sys.modules`` hit, but a **missing** one re-runs the finders over every
+    ``sys.path`` entry on every call — measured at ~46 µs against ~0.6 µs. That cost
+    lands on the ``open_archive`` path (``reader_for_format`` -> ``format_availability``
+    -> here) and once per format in ``list_supported_formats()``, so an environment that
+    skipped an extra pays it repeatedly for an answer that does not change.
+
+    The accepted trade is that a dependency installed into an already-running
+    interpreter is not picked up; a caller that needs it to be can call
+    ``_optional.cache_clear()``. ``extension_map()`` below is cached on the same
+    argument, and tests that simulate a missing extra replace this function rather than
+    hiding the module, so the memo does not leak between them.
+    """
     try:
         return importlib.import_module(name)
     except ImportError:
