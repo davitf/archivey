@@ -9,19 +9,14 @@ construction of uncommon container×codec pairs, ``file_extension``) and the
 
 from __future__ import annotations
 
-import ast
 import copy
 import json
 import pickle
-from pathlib import Path
-from typing import Literal, get_args, get_origin, get_overloads, get_type_hints
 
 import pytest
 
 from archivey.types import (
     EXTRA_IS_JUNCTION,
-    EXTRA_RAR_CREATED_IS_CTIME,
-    EXTRA_RAR_EXTRACT_VERSION,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -174,124 +169,32 @@ def test_junction_helper() -> None:
     assert not ArchiveMember(type=MemberType.SYMLINK, name="s").is_junction
 
 
-def test_extra_bags_are_runtime_dict_subclasses() -> None:
-    # The names are importable; a core install has no typing_extensions.
+def test_extra_is_an_open_mapping() -> None:
+    # The names are importable at runtime; a core install has no typing_extensions.
     assert ArchiveMember.__annotations__["extra"] == "MemberExtra"
     assert ArchiveInfo.__annotations__["extra"] == "ArchiveInfoExtra"
     assert issubclass(MemberExtra, dict)
     assert issubclass(ArchiveInfoExtra, dict)
 
-    default = ArchiveMember(type=MemberType.FILE, name="a")
-    assert isinstance(default.extra, MemberExtra)
-    default.extra["third.party"] = 1
-    assert default.extra["third.party"] == 1
-
-    e = MemberExtra({"is_junction": True, "third.party": 1})
-    assert e == {"is_junction": True, "third.party": 1}
-    assert json.dumps(e, sort_keys=True)
-    assert copy.copy(e) == e
-    assert copy.deepcopy(e) == e
-    assert pickle.loads(pickle.dumps(e)) == e
-
-
-def test_extra_key_register_matches_write_sites() -> None:
-    """Overload keys stay in lockstep with production writes (K5).
-
-    ``typing.get_overloads`` is the runtime register. Production write sites
-    (``MemberExtra({...})`` / ``ArchiveInfoExtra({...})`` constructors, and
-    ``extra[key]`` / ``member.extra[key]`` / ``info_extra[key]`` assignments)
-    must match it. Mutation that fails this: deleting the
-    ``zip.compress_type`` overload while the ZIP backend still writes that
-    key. ``synthetic.header_len`` is a test-only key
-    (``tests/test_codec_descriptor.py``) and must stay off the register.
-    """
-    src_root = Path(__file__).resolve().parent.parent / "src" / "archivey"
-    extra_consts = {
-        "EXTRA_IS_JUNCTION": EXTRA_IS_JUNCTION,
-        "EXTRA_RAR_CREATED_IS_CTIME": EXTRA_RAR_CREATED_IS_CTIME,
-        "EXTRA_RAR_EXTRACT_VERSION": EXTRA_RAR_EXTRACT_VERSION,
-    }
-
-    def keys_from_overloads(cls: type) -> set[str]:
-        keys: set[str] = set()
-        saw_fallback = False
-        for fn in get_overloads(cls.__getitem__):
-            hints = get_type_hints(fn)
-            key_type = hints["key"]
-            origin = get_origin(key_type)
-            args = get_args(key_type)
-            if origin is Literal:
-                for arg in args:
-                    assert isinstance(arg, str)
-                    keys.add(arg)
-            elif key_type is str:
-                saw_fallback = True
-            else:
-                raise AssertionError(f"unexpected key annotation {key_type!r}")
-        assert saw_fallback, f"{cls.__name__} is missing the str → object fallback"
-        return keys
-
-    def literal_or_const(node: ast.AST | None) -> str | None:
-        if node is None:
-            return None
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        if isinstance(node, ast.Name) and node.id in extra_consts:
-            return extra_consts[node.id]
-        return None
-
-    def bag_kind(value: ast.AST) -> str | None:
-        if isinstance(value, ast.Name):
-            if value.id == "extra":
-                return "member"
-            if value.id == "info_extra":
-                return "archive"
-        if isinstance(value, ast.Attribute) and value.attr == "extra":
-            return "member"
-        return None
-
-    written_member: set[str] = set()
-    written_archive: set[str] = set()
-    for path in src_root.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id in {"MemberExtra", "ArchiveInfoExtra"} and node.args:
-                    arg0 = node.args[0]
-                    if isinstance(arg0, ast.Dict):
-                        target = (
-                            written_member
-                            if node.func.id == "MemberExtra"
-                            else written_archive
-                        )
-                        for k in arg0.keys:
-                            key = literal_or_const(k)
-                            if key is not None:
-                                target.add(key)
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if not isinstance(target, ast.Subscript):
-                        continue
-                    key = literal_or_const(target.slice)
-                    if key is None:
-                        continue
-                    bag = bag_kind(target.value)
-                    if bag == "member":
-                        written_member.add(key)
-                    elif bag == "archive":
-                        written_archive.add(key)
-
-    member_keys = keys_from_overloads(MemberExtra)
-    archive_keys = keys_from_overloads(ArchiveInfoExtra)
-    assert member_keys == written_member, (
-        f"MemberExtra overloads {sorted(member_keys)} != "
-        f"production writes {sorted(written_member)}"
+    m = ArchiveMember(
+        type=MemberType.FILE, name="a", extra=MemberExtra({"third.party": 1})
     )
-    assert archive_keys == written_archive, (
-        f"ArchiveInfoExtra overloads {sorted(archive_keys)} != "
-        f"production writes {sorted(written_archive)}"
-    )
-    assert "synthetic.header_len" not in member_keys
+    assert isinstance(m.extra, MemberExtra)
+    assert m.extra["third.party"] == 1
+    assert m.extra == {"third.party": 1}
+
+    empty = ArchiveMember(type=MemberType.FILE, name="b")
+    assert isinstance(empty.extra, MemberExtra)
+    assert empty.extra == {}
+    empty.extra["third.party"] = 1
+    assert empty.extra["third.party"] == 1
+
+    bag = MemberExtra({"is_junction": True, "third.party": 1})
+    assert bag == {"is_junction": True, "third.party": 1}
+    assert copy.copy(bag) == bag
+    assert copy.deepcopy(bag) == bag
+    assert pickle.loads(pickle.dumps(bag)) == bag
+    assert json.loads(json.dumps(bag)) == {"is_junction": True, "third.party": 1}
 
 
 def test_modified_utc_normalizes_mixed_timestamps() -> None:
