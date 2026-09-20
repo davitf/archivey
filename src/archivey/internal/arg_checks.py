@@ -1,14 +1,16 @@
 """Type validation for the public arguments that carry an object, not an enum.
 
-The public argument surface is guarded in two halves, split by what the argument holds
-rather than by which entry point takes it:
+The public argument surface is guarded in two modules on this branch, split by which
+arguments they cover rather than by how they answer — both of them **refuse**:
 
-* :mod:`archivey.internal.format_args` — the ``format=`` arguments, which are
-  **coerced**: a recognised spelling becomes the member it names.
-* this module — the arguments that hold an object, which are **refused**:
-  ``config=`` and ``ArchiveyConfig``'s own fields, ``limits=`` and the ``*Limits``
-  fields, ``encoding=``, and the ``on_progress=`` / ``filter=`` callbacks. There is no
-  useful conversion from a wrong-typed one of these, so the answer is an error.
+* :mod:`archivey.internal.format_args` — the ``format=`` arguments, which take an
+  ``ArchiveFormat`` or a ``StreamFormat`` and nothing else. (String spellings are the
+  sibling enum-argument change's business, and it is not on this branch; today
+  ``format="zip"`` is an ``ArchiveyUsageError``.)
+* this module — the arguments that hold an object: ``config=`` and
+  ``ArchiveyConfig``'s own fields, ``limits=`` and the ``*Limits`` fields,
+  ``encoding=``, and the ``on_progress=`` / ``filter=`` callbacks. There is no useful
+  conversion from a wrong-typed one of these, so the answer is an error.
 
 The functions here are the reusable half. The checks that are a single call site's
 business stay at that call site — the member argument to :meth:`ArchiveReader.open`
@@ -16,9 +18,9 @@ is one (it needs the reader to tell "wrong type" from "not this reader's member"
 and ``password=`` is another (:mod:`archivey.internal.password` already owns the
 several shapes that argument accepts).
 
-Both halves answer the same way: :class:`~archivey.ArchiveyUsageError`, which sits
-outside ``ArchiveyError`` (ADR 0012) so a caller's ``except ArchiveyError`` cannot
-swallow a caller bug.
+Both answer with :class:`~archivey.ArchiveyUsageError`, which sits outside
+``ArchiveyError`` (ADR 0012) so a caller's ``except ArchiveyError`` cannot swallow a
+caller bug.
 
 What this module is for is narrower than "validate everything". The error contract
 already permits a short list of raw exceptions to reach a caller — ``KeyError`` for
@@ -76,8 +78,10 @@ def check_instance(
 ) -> None:
     """Raise ``ArchiveyUsageError`` unless ``value`` is an ``expected`` instance.
 
-    ``allow_none`` covers the arguments whose default is ``None`` (meaning "use the
-    library default"), which is all of them today.
+    ``allow_none`` covers the arguments whose default is ``None``, meaning "use the
+    library default". It is not the common case any more: ``ArchiveyConfig``'s own
+    fields all have real defaults, so ``None`` there is a wrong value rather than a
+    way of asking for one.
     """
     if isinstance(value, expected) or (value is None and allow_none):
         return
@@ -141,19 +145,21 @@ def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None
             f"{call} takes a codec name as a str"
             f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
         )
+    # The advice has to follow ``allow_none`` too. On a field that refuses ``None``,
+    # telling the caller to pass it sends them from one usage error to the next.
+    advice = "Pass a codec name such as 'utf-8', 'cp437' or 'latin-1'" + (
+        ", or None to let the backend choose." if allow_none else "."
+    )
     try:
         info = codecs.lookup(value)
     except LookupError:
         raise ArchiveyUsageError(
-            f"{call} got {value!r}, which is not a codec Python knows. Pass a codec "
-            f"name such as 'utf-8', 'cp437' or 'latin-1', or None to let the backend "
-            f"choose."
+            f"{call} got {value!r}, which is not a codec Python knows. {advice}"
         ) from None
     if not info._is_text_encoding:
         raise ArchiveyUsageError(
             f"{call} got {value!r}, which is a byte-to-byte transform rather than a "
-            f"character encoding, so it cannot decode a member name. Pass a codec name "
-            f"such as 'utf-8', 'cp437' or 'latin-1', or None to let the backend choose."
+            f"character encoding, so it cannot decode a member name. {advice}"
         )
 
 

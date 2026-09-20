@@ -463,8 +463,11 @@ A corroborated result keeps today's type, message, and `format_unconfirmed=False
 Every public entry point SHALL raise `ArchiveyUsageError` — outside `ArchiveyError`,
 per the misuse requirement above — when a non-enum argument is of a type it cannot
 use, and SHALL do so at the call the caller wrote rather than wherever the value is
-eventually read. Enum-typed parameters are governed by the conversion requirement
-above instead: those are coerced, these are refused.
+eventually read.
+
+Enum-typed parameters are **out of scope of this requirement**, and this requirement
+says nothing about how they behave. It covers the arguments listed below and no
+others.
 
 The refusal is what makes the boundary observable. Deferred to its point of use, a
 wrong-typed argument surfaces as an `AttributeError`, a `TypeError`, or a `LookupError`
