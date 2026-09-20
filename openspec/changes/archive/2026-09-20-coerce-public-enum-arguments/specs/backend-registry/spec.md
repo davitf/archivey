@@ -37,6 +37,14 @@ A `StreamFormat` **object** passed where an `ArchiveFormat` is required SHALL st
 refused rather than widened: accepting `"gz"` as a spelling does not make the codec
 half a valid pair.
 
+A `ContainerFormat` **object** SHALL be refused on the same grounds, and for a reason
+that needs stating because it is easy to get wrong: both component enums mix in `str`,
+so every member passes an `isinstance(value, str)` test and its value is exactly a
+spelling the coercion table keys on. The wrong-type check therefore SHALL run before
+the spelling lookup. Otherwise `format=ContainerFormat.TAR` is completed into
+`ArchiveFormat.TAR` and a healthy `.tar.gz` is read as an uncompressed tar, reporting a
+caller's mistake as damaged input.
+
 The rejection SHALL be a refusal, never a substitute answer: the call MUST NOT fall
 back to auto-detection, return a fabricated record, or let an internal `AttributeError`
 reach the caller.
@@ -62,6 +70,7 @@ a separate table, so a codec added later is named here without a second edit.
 | --- | --- |
 | `format_availability(StreamFormat.ZSTD)` | `ArchiveyUsageError` naming `StreamFormat.ZSTD`, `ArchiveFormat.ZST` and `ArchiveFormat.TAR_ZST` |
 | `format_availability(None)` | `ArchiveyUsageError` — the query has no auto-detect form |
+| `open_archive("a.tar.gz", format=ContainerFormat.TAR)` | `ArchiveyUsageError` naming `ContainerFormat.TAR` and the pairs built on it, never a `TruncatedError` |
 | `open_archive(path, format=StreamFormat.ZSTD)` | `ArchiveyUsageError`, not `AttributeError: 'StreamFormat' object has no attribute 'container'` |
 | `extract(path, dest, format=StreamFormat.ZSTD)` | `ArchiveyUsageError`; nothing written to `dest`, source never read |
 | `open_stream(src, format=object())` | `ArchiveyUsageError`; the source is not read and detection does not run |
