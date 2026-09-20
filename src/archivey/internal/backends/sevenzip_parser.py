@@ -50,7 +50,7 @@ from archivey.internal.backends.sevenzip_methods import (
     is_aes,
     lookup,
 )
-from archivey.internal.sfx import SFX_MAX, scan_for_magic
+from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.streamtools import read_exact
 from archivey.types import CompressionAlgorithm, CompressionMethod
 
@@ -402,24 +402,40 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
     ``limit`` bytes (the shared :data:`~archivey.internal.sfx.SFX_MAX`, the same bound
     the RAR parser and ``detect_format`` use), which is what makes forced
     ``format=SEVEN_Z`` work on a stub the way forced ``format=RAR`` already does.
+    A candidate that fails :func:`~archivey.internal.sevenzip_detect.validate_sevenzip_signature_header`
+    is skipped while a later ``VALID`` hit is sought; if none validate, the first
+    identified candidate is used so a damaged or empty payload still reaches the
+    parser.
 
-    Raises :class:`CorruptionError` on a miss, so a non-7z source fails loudly instead
-    of opening as an empty archive. ``fp`` is restored to its starting position.
+    Raises :class:`CorruptionError` on a miss (no needle, or the rejected-candidate
+    cap). A source with no 7z magic in the window fails loudly rather than opening
+    as an empty archive; a source that has one opens or names its damage.
+    ``fp`` is restored to its starting position.
     """
     start = fp.tell()
     try:
         if fp.read(len(MAGIC_7Z)) == MAGIC_7Z:
             return 0
         fp.seek(start)
-        hit = scan_for_magic(fp, (MAGIC_7Z,), limit=limit)
+        # Imported here: sevenzip_detect imports this module for MAGIC_7Z / CRC.
+        from archivey.internal.sevenzip_detect import (
+            validate_sevenzip_signature_header,
+        )
+
+        scan = scan_for_magic(
+            fp,
+            (MAGIC_7Z,),
+            limit=limit,
+            validator=validate_sevenzip_signature_header,
+        )
     finally:
         fp.seek(start)
-    if hit is None:
+    if scan.hit is None:
         raise CorruptionError(
-            "Not a 7z archive: bad magic bytes (and no 7z signature within the "
-            f"{limit}-byte self-extracting scan window)"
+            "Not a 7z archive: bad magic bytes (and "
+            f"{describe_scan_miss(scan, limit=limit)})"
         )
-    return hit.candidate_origin
+    return scan.hit.candidate_origin
 
 
 def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
