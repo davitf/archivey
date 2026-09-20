@@ -77,6 +77,43 @@ walk.
 | `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
 | Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
 
+### Requirement: Accept a non-zero archive start offset (SFX)
+
+The RAR reader SHALL accept an archive whose marker (`Rar!\x1a\x07\x00` for RAR4
+or `Rar!\x1a\x07\x01\x00` for RAR5) begins at a non-zero byte offset — whether
+supplied as an explicit start offset from detection (`payload_offset`) or
+discovered by a bounded forward scan when the marker is absent at the open
+position (forced `format=RAR` on an SFX stub).
+
+The forced-format scan bound SHALL be the shared `SFX_MAX` constant (same
+binding as the 7z parser and `detect_format`; today 2 MiB). The scan SHALL use
+the same hit validator the detector uses. It SHALL return the earliest VALID
+match, or if none validate the earliest identified candidate, so a damaged
+payload still reaches the parser. After `MAX_VALIDATED_CANDIDATES` (256)
+rejected candidates the scan SHALL stop and raise `CorruptionError` naming the
+cap. That bound is structural (a real SFX stub does not carry hundreds of
+format magics, and the parser has no `DetectionBudget`) and is not a
+`ListingLimits` knob. A miss with no candidate SHALL raise `CorruptionError`
+naming that there was no match.
+
+Scanning both markers rather than their shared `Rar!\x1a\x07` prefix SHALL
+resolve the version by which marker matched first.
+
+Member and header offsets SHALL be relative to the resolved origin. The system
+SHALL read in place and SHALL NOT copy the archive to a temporary file solely
+to strip a stub.
+
+#### Scenario: RAR SFX / start-offset matrix
+
+| Case | Expected |
+| --- | --- |
+| Marker at open origin (offset 0) | Unchanged success path; version from the marker read |
+| Forced `format=RAR`, marker at N within `SFX_MAX`, header validates | Scan finds N; members listed |
+| Forced `format=RAR`, marker at N, header does not validate, no later VALID hit | Scan falls back to N; the parser reports the damage |
+| Forced `format=RAR`, decoy magic then a VALID payload within `SFX_MAX` | Earliest VALID wins |
+| Forced `format=RAR`, no marker within `SFX_MAX` | `CorruptionError` naming that there was no match |
+| Forced `format=RAR`, `MAX_VALIDATED_CANDIDATES` (256) candidates rejected, none VALID | `CorruptionError` naming that the candidate cap was reached |
+
 ### Requirement: Bound RAR parser member tables at open
 
 The native RAR header walk SHALL refuse to retain more members than

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -819,7 +821,7 @@ def test_the_trigger_is_anchored_in_the_pattern_not_only_in_the_call() -> None:
 def test_the_head_branch_comes_back_so_the_ping_can_be_addressed() -> None:
     """The workflow asks the branch who is fixing, and reads it off the gate.
 
-    `@cursor` used to be hardcoded in the findings ping, which is right only while
+    A Cursor mention used to be hardcoded in the findings ping, which is right only while
     Cursor is the implementer. When Claude implements and Cursor reviews, that comment
     handed the fixes to the agent that had just written them up. The branch prefix is
     the same signal the gate already uses to enrol a new pull request, so it comes out
@@ -847,3 +849,91 @@ def test_the_head_branch_comes_back_so_the_ping_can_be_addressed() -> None:
     bare = event(labels=["loop:round-1"])
     del bare["head_ref"]
     assert gate.decide(bare).head_ref == ""
+
+
+# --- the findings ping's two addressees ---------------------------------------------
+#
+# These read the workflow file rather than a copy of it, because the thing being
+# pinned is one shell block in `.github/workflows/review-loop.yml` and a copy would
+# drift silently — which is the exact failure they exist to catch.
+
+WORKFLOW = (
+    Path(__file__).resolve().parents[1] / ".github" / "workflows" / "review-loop.yml"
+)
+
+#: `run: |` blocks in this file are indented ten spaces, so stripping that gives the
+#: shell back verbatim, heredoc bodies included.
+_BLOCK_INDENT = " " * 10
+
+
+def _shell_between(first: str, last: str) -> str:
+    """Lift one shell fragment out of the workflow, dedented enough to run."""
+    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == first)
+    end = next(i for i in range(start, len(lines)) if lines[i].strip() == last)
+    return "\n".join(
+        line[len(_BLOCK_INDENT) :] if line.startswith(_BLOCK_INDENT) else line
+        for line in lines[start : end + 1]
+    )
+
+
+def _bash(script: str) -> str:
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - Windows runners without a shell
+        pytest.skip("no bash to run the workflow fragment with")
+    result = subprocess.run(  # noqa: S603 - fixed argv, fragment comes from the repo
+        [bash, "-c", script],
+        text=True,
+        capture_output=True,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "entry": "the `/address-review` command",
+            "ROUND": "1",
+            "next": "2",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+@pytest.mark.parametrize(
+    ("head_ref", "github_handle", "linear_handle"),
+    [
+        ("cursor/delegating-stream-flags-8161", "@cursoragent", "@cursor"),
+        ("claude/project-thread-o03uuf", "@claude", "@claude"),
+    ],
+)
+def test_the_ping_is_addressed_differently_on_the_two_surfaces(
+    head_ref: str, github_handle: str, linear_handle: str
+) -> None:
+    """Cursor answers to `@cursoragent` on GitHub and `@cursor` on Linear.
+
+    Neither spelling works on the other surface: on GitHub `cursor` is the company's
+    organization account, so the ping notified an org and woke no agent for as long as
+    it said that, and `@cursoragent` on Linear mentions nobody at all. One handle used
+    twice is wrong whichever one is picked, which is why there are two variables.
+    """
+    picked = _bash(
+        f"HEAD_REF={head_ref!r}\n"
+        + _shell_between('case "$HEAD_REF" in', "esac")
+        + '\nprintf "%s %s" "$fixer" "$linear_fixer"'
+    )
+    assert picked == f"{github_handle} {linear_handle}"
+
+
+def test_both_surfaces_get_the_same_ping_text() -> None:
+    """The bodies must differ in the handle and in nothing else.
+
+    They were one file copied to both surfaces until the GitHub handle was corrected,
+    at which point the Linear copy silently started mentioning nobody. Emitting the
+    heredoc twice would let the texts drift instead; one function, called twice, is
+    what stops both.
+    """
+    func = _shell_between("ping_body() {", "}")
+    github = _bash(f'{func}\nping_body "@cursoragent"')
+    linear = _bash(f'{func}\nping_body "@cursor"')
+
+    assert github.startswith("@cursoragent Please work through")
+    assert linear.startswith("@cursor Please work through")
+    assert "@cursoragent" not in linear
+    assert github.split("\n", 1)[1] == linear.split("\n", 1)[1]

@@ -1,0 +1,70 @@
+# Check that the review loop can still reach Linear, without spending a review round.
+#
+# The findings ping is the loop's delivery hop to a Cursor implementer whose session has
+# ended (`scripts/linear_ping.py` has the measurements). It runs inside a review round,
+# which is an expensive and infrequent thing to wait for, and it is deliberately built
+# never to fail the run — so a broken credential or a renamed API field would show up
+# only as a warning nobody is reading, on a round that already went past.
+#
+# This runs the same script by hand against the live API, resolves the issue for a pull
+# request, and prints what it would have posted without posting it. Run it after the
+# `LINEAR_API_KEY` secret is set or rotated, and after any change to the lookup.
+name: Linear ping check
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to resolve the Linear issue for"
+        required: true
+        type: string
+      post:
+        description: "Actually post the comment, instead of only printing it"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the issue and report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          PR: ${{ inputs.pr }}
+          POST: ${{ inputs.post }}
+        run: |
+          set -euo pipefail
+          pr_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$PR"
+          : > /tmp/pr-body.md
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
+            > /tmp/pr-body.md || :
+          cat > /tmp/ping.md <<EOF
+          Connectivity check from the review loop, triggered by hand. No action needed.
+
+          The pull request: $pr_url
+          EOF
+
+          # The script exits 0 on every failure path by design, so a green job here does
+          # not mean the credential works. What proves it is the line in the job
+          # summary: either "resolved the issue this pull request is attached to" or a
+          # warning naming what broke.
+          #
+          # No line names the issue. This repository is public, so this log and this
+          # summary are public too, and a tracker key in them is the same leak the
+          # pull request footer was removed for. To see which issue answered, open the
+          # one the pull request is attached to on Linear.
+          dry=( --dry-run )
+          if [ "$POST" = "true" ]; then dry=(); fi
+          python3 scripts/linear_ping.py \
+            --pr-url "$pr_url" \
+            --pr-body-file /tmp/pr-body.md \
+            --body-file /tmp/ping.md \
+            "${dry[@]}"
