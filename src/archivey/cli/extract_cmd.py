@@ -38,6 +38,11 @@ from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
 
 
+def _cli_spelling(value: str) -> str:
+    """Render an enum value the way this CLI's ``--help`` prints it."""
+    return value.replace("_", "-")
+
+
 def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
     """Stem used for the smart enclosing directory.
 
@@ -492,15 +497,31 @@ def run_extract(
     # own --help advertises: ``enum_args`` treats ``-`` and ``_`` as the same, so the
     # hand-rolled ``.replace("-", "_")`` this used to carry is gone. Converted here
     # rather than passed through as strings so the CLI's own helpers below stay typed.
+    # ``spell=`` so a refusal lists the spelling ``--help`` advertises: the library's
+    # values use underscores and the CLI prints dashes, and a user who typo'd a dash
+    # form should not be shown three underscore forms with no way to tell which half
+    # was their mistake. Both are accepted either way.
     policy_enum = coerce_enum(
-        policy, ExtractionPolicy, call="archivey extract", param="--policy"
+        policy,
+        ExtractionPolicy,
+        call="archivey extract",
+        param="--policy",
+        spell=_cli_spelling,
     )
     overwrite_enum = coerce_enum(
-        overwrite, OverwritePolicy, call="archivey extract", param="--overwrite"
+        overwrite,
+        OverwritePolicy,
+        call="archivey extract",
+        param="--overwrite",
+        spell=_cli_spelling,
     )
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
     abort_on_enum = coerce_enum_collection(
-        abort_on, AbortOn, call="archivey extract", param="--abort-on"
+        abort_on,
+        AbortOn,
+        call="archivey extract",
+        param="--abort-on",
+        spell=_cli_spelling,
     )
     archive_path = Path(archive)
 

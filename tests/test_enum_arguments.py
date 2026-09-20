@@ -37,7 +37,7 @@ from archivey import (
     OverwritePolicy,
     extract,
 )
-from archivey.config import AcceleratorMode, AcceleratorModeStr, ArchiveyConfig
+from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.enum_args import (
@@ -330,7 +330,6 @@ LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
     (OverwritePolicy, OverwritePolicyStr),
     (OnError, OnErrorStr),
     (AbortOn, AbortOnStr),
-    (AcceleratorMode, AcceleratorModeStr),
     (DetectionBudgetPreset, DetectionBudgetPresetStr),
 )
 

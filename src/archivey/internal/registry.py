@@ -144,9 +144,12 @@ def _optional(name: str) -> ModuleType | None:
 
     The accepted trade is that a dependency installed into an already-running
     interpreter is not picked up; a caller that needs it to be can call
-    ``_optional.cache_clear()``. ``extension_map()`` below is cached on the same
-    argument, and tests that simulate a missing extra replace this function rather than
-    hiding the module, so the memo does not leak between them.
+    ``_optional.cache_clear()``. That is a real difference from ``extension_map()``
+    below, which is also cached but *invalidated* — ``register_reader`` drops its cache
+    so a registration after first use cannot be missed. Nothing invalidates this one,
+    because a registration can happen mid-process and an install cannot. Tests that
+    simulate a missing extra replace this function rather than hiding the module, so the
+    memo does not leak between them.
     """
     try:
         return importlib.import_module(name)
@@ -401,9 +404,11 @@ def get_registry() -> BackendRegistry:
 def format_availability(fmt: ArchiveFormat | str) -> FormatAvailability:
     """Public query: the tri-state support level of ``fmt`` and its missing components.
 
-    ``fmt`` must be an :class:`~archivey.ArchiveFormat` — the ``(container, stream)``
-    pair. Anything else, a :class:`~archivey.StreamFormat` included, raises
-    :class:`~archivey.ArchiveyUsageError` rather than answering.
+    ``fmt`` is an :class:`~archivey.ArchiveFormat` — the ``(container, stream)`` pair —
+    or that format spelled as a string, such as ``"zip"`` or ``"tar.gz"``. Anything
+    else, a :class:`~archivey.StreamFormat` or a :class:`~archivey.ContainerFormat`
+    included, raises :class:`~archivey.ArchiveyUsageError` rather than answering: each
+    is half of the pair, not a format.
     """
     # A non-ArchiveFormat used to fall through to a fabricated record — NONE with an
     # empty ``missing``, indistinguishable from a legitimate unsupported answer, and a

@@ -42,9 +42,9 @@ stream)`` pair), so its own spellings live in :mod:`archivey.internal.format_arg
 from __future__ import annotations
 
 import functools
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Iterable
 from enum import Enum
-from typing import Literal, TypeVar, overload
+from typing import TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
 
@@ -90,51 +90,38 @@ def _takes(enum_cls: type[Enum], also_accepts: str | None) -> str:
     return f"a {enum_cls.__name__}"
 
 
-def _accepted(enum_cls: type[Enum]) -> str:
-    """The valid spellings, for the error message. Values where there are values."""
+def _accepted(enum_cls: type[Enum], spell: Callable[[str], str] | None = None) -> str:
+    """The valid spellings, for the error message. Values where there are values.
+
+    ``spell`` re-renders each one for the caller's own surface. The CLI passes the
+    underscore-to-dash swap, because ``--abort-on`` advertises ``blocked-member`` in
+    ``--help`` and a refusal listing ``blocked_member`` leaves the user unable to tell
+    whether the underscore was their mistake. The library accepts both either way; this
+    only decides which one the message recommends.
+    """
     spellings = [str(m.value) if isinstance(m.value, str) else m.name for m in enum_cls]
+    if spell is not None:
+        spellings = [spell(s) for s in spellings]
     return ", ".join(repr(s) for s in spellings)
 
 
-@overload
 def coerce_enum(
     value: object,
     enum_cls: type[E],
     *,
     call: str,
     param: str,
-    allow_none: Literal[False] = False,
     also_accepts: str | None = None,
-) -> E: ...
-
-
-@overload
-def coerce_enum(
-    value: object,
-    enum_cls: type[E],
-    *,
-    call: str,
-    param: str,
-    allow_none: Literal[True],
-    also_accepts: str | None = None,
-) -> E | None: ...
-
-
-def coerce_enum(
-    value: object,
-    enum_cls: type[E],
-    *,
-    call: str,
-    param: str,
-    allow_none: bool = False,
-    also_accepts: str | None = None,
-) -> E | None:
+    spell: Callable[[str], str] | None = None,
+) -> E:
     """Return ``value`` as a member of ``enum_cls``, or raise ``ArchiveyUsageError``.
 
     A member of the class passes through untouched. A string is matched against the
     spellings described in the module docstring. Anything else — including a member of a
     *different* enum, which is the mistake a type checker would have caught — is
-    refused. ``allow_none`` covers the parameters whose default is ``None``.
+    refused. No caller passes ``None``: the one parameter that defaults to it,
+    ``detect_format(budget=)``, handles ``None`` in ``_resolve_budget`` before reaching
+    here, so there is no ``allow_none`` arm to maintain.
 
     ``also_accepts`` names a further type the *caller's* parameter takes but this helper
     does not handle, so the wrong-type message stays true to the signature the caller
@@ -142,8 +129,6 @@ def coerce_enum(
     as well as a preset, and a message naming only the preset reads as a denial that the
     object is allowed.
     """
-    if value is None and allow_none:
-        return None
     if isinstance(value, enum_cls):
         return value
     if isinstance(value, Enum):
@@ -154,7 +139,7 @@ def coerce_enum(
         raise ArchiveyUsageError(
             f"{call} takes {_takes(enum_cls, also_accepts)} for {param}, but got "
             f"{type(value).__name__}.{value.name}. "
-            f"Accepted: {_accepted(enum_cls)}."
+            f"Accepted: {_accepted(enum_cls, spell)}."
         )
     if isinstance(value, str):
         member = _lookup(enum_cls).get(normalize_spelling(value))
@@ -167,7 +152,7 @@ def coerce_enum(
     raise ArchiveyUsageError(
         f"{call} takes {_takes(enum_cls, also_accepts)} (or its name as a string) for "
         f"{param}, but got {value!r} ({type(value).__name__}). "
-        f"Accepted: {_accepted(enum_cls)}."
+        f"Accepted: {_accepted(enum_cls, spell)}."
     )
 
 
@@ -177,6 +162,7 @@ def coerce_enum_collection(
     *,
     call: str,
     param: str,
+    spell: Callable[[str], str] | None = None,
 ) -> frozenset[E]:
     """Return a collection argument as a ``frozenset`` of ``enum_cls`` members.
 
@@ -192,11 +178,12 @@ def coerce_enum_collection(
             f"{call} takes a collection of {enum_cls.__name__} for {param}, but got "
             f"the bare string {values!r}. Pass a list or set, e.g. [{values!r}]."
         )
-    if not isinstance(values, (Collection, Iterable)):
+    if not isinstance(values, Iterable):
         raise ArchiveyUsageError(
             f"{call} takes a collection of {enum_cls.__name__} for {param}, but got "
             f"{values!r} ({type(values).__name__})."
         )
     return frozenset(
-        coerce_enum(item, enum_cls, call=call, param=param) for item in values
+        coerce_enum(item, enum_cls, call=call, param=param, spell=spell)
+        for item in values
     )

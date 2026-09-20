@@ -41,7 +41,8 @@ an understandable mistake and one message should end it.
 from __future__ import annotations
 
 import functools
-from typing import Literal, overload
+from enum import Enum
+from typing import Literal, NoReturn, overload
 
 from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.enum_args import normalize_spelling
@@ -79,8 +80,17 @@ def _stream_format_spellings() -> dict[str, StreamFormat]:
 
 
 def _accepted_archive_formats() -> str:
+    """The spellings worth recommending, for a refusal message.
+
+    Extensions only, and lowercased. ``DIRECTORY`` and ``UNKNOWN`` have no extension and
+    are still accepted by the table, but neither opens anything — ``format="unknown"``
+    raises ``UnsupportedFormatError`` and ``format="directory"`` an ``OSError`` — so a
+    message offering them as repairs would be sending the caller somewhere worse.
+    Lowercasing keeps the list from implying that case is significant, in a message
+    whose subject is a spelling that ignores it.
+    """
     spellings = sorted(
-        fmt.file_extension() or name for fmt, name in _FORMAT_NAMES.items()
+        fmt.file_extension().lower() for fmt in _FORMAT_NAMES if fmt.file_extension()
     )
     return ", ".join(repr(s) for s in spellings)
 
@@ -109,10 +119,19 @@ def coerce_archive_format(
         return None
     if isinstance(value, ArchiveFormat):
         return value
-    # Before the string branch: StreamFormat mixes in ``str``, and it earns its own
-    # message rather than being reported as an unrecognised spelling.
+    # Before the string branch, and this ordering is the point: several of our enums mix
+    # in ``str``, so a member of one is *also* a ``str`` whose value is often exactly an
+    # extension spelling. Without this, ``ContainerFormat.TAR`` coerced to
+    # ``ArchiveFormat.TAR`` — the caller's half-specified assertion silently completed
+    # with an ``UNCOMPRESSED`` stream, so ``open_archive("a.tar.gz",
+    # format=ContainerFormat.TAR)`` failed as ``TruncatedError`` on a healthy archive:
+    # a caller bug reported as damaged input, inside the tree ``except ArchiveyError``
+    # catches. ``coerce_enum`` orders its branches the same way for the same reason.
     if isinstance(value, StreamFormat):
+        # Earns its own message: it is half of the pair, so naming the pairs ends it.
         _reject_stream_format(value, call=call)
+    if isinstance(value, Enum):
+        _reject_wrong_enum(value, call=call, expected="an ArchiveFormat")
     if isinstance(value, str):
         fmt = _archive_format_spellings().get(normalize_spelling(value))
         if fmt is not None:
@@ -135,6 +154,14 @@ def coerce_stream_or_archive_format(
         return None
     if isinstance(value, (ArchiveFormat, StreamFormat)):
         return value
+    # As in ``coerce_archive_format``: a ``str``-mixin member of a third enum would
+    # otherwise be read as a spelling. ``ContainerFormat.ZIP`` survived here only
+    # because ``_resolve_stream_format`` refuses container formats later, for an
+    # unrelated reason and with an unrelated message.
+    if isinstance(value, Enum):
+        _reject_wrong_enum(
+            value, call=call, expected="a StreamFormat or an ArchiveFormat"
+        )
     if isinstance(value, str):
         spelling = normalize_spelling(value)
         fmt = _archive_format_spellings().get(spelling)
@@ -150,7 +177,36 @@ def coerce_stream_or_archive_format(
     )
 
 
-def _reject_stream_format(value: StreamFormat, *, call: str) -> None:
+def _reject_wrong_enum(value: Enum, *, call: str, expected: str) -> NoReturn:
+    """Refuse a member of an enum that is not a format type, as a *type* error.
+
+    Reported as the wrong type rather than as an unrecognised spelling, which is what it
+    is: ``ContainerFormat.TAR`` is not a misspelling of anything, it is half of the pair
+    the parameter wants.
+    """
+    hint = ""
+    if isinstance(value, ContainerFormat):
+        hint = (
+            " A ContainerFormat is only the container half of an ArchiveFormat's "
+            "(container, stream) pair; pass the pair instead"
+            + _container_pair_hint(value)
+        )
+    raise ArchiveyUsageError(
+        f"{call} takes {expected}, but got {type(value).__name__}.{value.name}.{hint}"
+    )
+
+
+def _container_pair_hint(container: ContainerFormat) -> str:
+    """Name the predefined pairs built on this container, read off ``_FORMAT_NAMES``."""
+    pairs = [fmt for fmt in _FORMAT_NAMES if fmt.container is container]
+    if not pairs:
+        return ""
+    shown = [f"ArchiveFormat.{fmt.display_name}" for fmt in pairs[:4]]
+    tail = ", …" if len(pairs) > 4 else ""
+    return ": " + " or ".join(shown) + tail
+
+
+def _reject_stream_format(value: StreamFormat, *, call: str) -> NoReturn:
     raise ArchiveyUsageError(
         f"{call} takes an ArchiveFormat, but got {_describe(value)}. A StreamFormat is "
         f"only the codec half of an ArchiveFormat's (container, stream) pair"

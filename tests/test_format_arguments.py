@@ -41,10 +41,11 @@ from archivey import (
 )
 from archivey.internal.enum_args import normalize_spelling
 from archivey.internal.format_args import (
+    _accepted_archive_formats,
     coerce_archive_format,
     coerce_stream_or_archive_format,
 )
-from archivey.types import _FORMAT_NAMES
+from archivey.types import _FORMAT_NAMES, ContainerFormat
 
 CONTENT = b"the quick brown fox jumps over the lazy dog\n"
 
@@ -310,6 +311,65 @@ def test_an_unknown_spelling_names_the_ones_that_work(call) -> None:  # type: ig
         call()
 
     assert "'zip'" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "container",
+    list(ContainerFormat),
+    ids=lambda c: c.name,
+)
+def test_a_container_format_object_is_refused_rather_than_completed(
+    container: ContainerFormat,
+) -> None:
+    """The other half of the pair, and the one the string branch used to swallow.
+
+    ``ContainerFormat`` mixes in ``str`` and its values are the extension spellings, so
+    before the wrong-enum check every member coerced to the ``ArchiveFormat`` of the
+    same name — silently completing the caller's half-specified assertion with an
+    ``UNCOMPRESSED`` stream. ``open_archive("a.tar.gz", format=ContainerFormat.TAR)``
+    then failed as ``TruncatedError`` on a healthy archive: a caller bug reported as
+    damaged input, inside the tree ``except ArchiveyError`` catches.
+    """
+    with pytest.raises(ArchiveyUsageError) as exc_info:
+        coerce_archive_format(container, call="t()")
+
+    message = str(exc_info.value)
+    assert f"ContainerFormat.{container.name}" in message
+
+    with pytest.raises(ArchiveyUsageError):
+        coerce_stream_or_archive_format(container, call="t()")
+
+
+def test_a_container_format_does_not_reach_the_backend(tmp_path: Path) -> None:
+    """End-to-end: the refusal happens at the call, not as a decode failure later."""
+    import gzip
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo("hello.txt")
+        info.size = len(CONTENT)
+        tf.addfile(info, io.BytesIO(CONTENT))
+    path = tmp_path / "a.tar.gz"
+    path.write_bytes(gzip.compress(buf.getvalue()))
+
+    with pytest.raises(ArchiveyUsageError):
+        open_archive(path, format=ContainerFormat.TAR)  # type: ignore[arg-type]
+
+
+def test_the_accepted_list_only_recommends_spellings_that_open_something() -> None:
+    """``DIRECTORY`` and ``UNKNOWN`` are accepted but open nothing, so they are not advice.
+
+    The list is repair advice appended to every refusal; offering a spelling that leads
+    to ``UnsupportedFormatError`` or an ``OSError`` sends the caller somewhere worse.
+    """
+    accepted = _accepted_archive_formats()
+
+    assert "unknown" not in accepted.lower()
+    assert "directory" not in accepted.lower()
+    assert accepted == accepted.lower(), "mixed case implies case is significant"
+    assert "'zip'" in accepted and "'tar.gz'" in accepted
 
 
 def test_a_stream_format_object_is_still_refused_rather_than_widened() -> None:
