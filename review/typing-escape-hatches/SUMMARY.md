@@ -87,11 +87,11 @@ one category.
 2. **TIGHTEN internal `Any` → `object`** where both checkers stayed clean
    (`binaryio.py` helpers, `verify` algorithm params, `ReadOnlyIOStream.write`,
    ISO getattr/kwargs). `listing_limits` already moved with Q1. **`_raw` is not in
-   this PR** — see 2b.
-2b. **`ArchiveMember._raw: Any` → `object`** (A25), its own change, after PR 1.
-   It must add a narrowing at `tar_reader.py:470` that does not exist today: the
-   assert R11 records is in a different function. The inventory's sequence note
-   has the detail.
+   this PR** — see the nested item.
+   - **Staged PR 2b — `ArchiveMember._raw: Any` → `object`** (A25), its own
+     change, after PR 1. It must add a narrowing at `tar_reader.py:470` that
+     does not exist today: the assert R11 records is in a different function.
+     The inventory's sequence note has the detail.
 3. **`@overload` on `_track_source_seeks`** — drops four Path/BinaryIO casts in
    `tar_reader` / `zip_reader`.
 4. **TypeGuard predicates** — G2 and G3. Runtime-visible; needs tests.
@@ -114,11 +114,22 @@ one category.
    `extra_items=object` so third-party keys stay legal and read back as `object`.
    **Measured 2026-09-20 on pyrefly 1.1.1 and ty 0.0.60 at the 3.11 floor:** both
    type known keys exactly, both reject a wrong-type write to a known key, both
-   allow an unknown key and give it `object`. Two costs the PR has to carry — a
-   `TypedDict` is assignable to neither `dict[str, object]` nor back (both
-   checkers, both directions), and one map across all formats means a RAR key
-   type-checks on a ZIP member. Supersedes the per-format-aliases-only note that
-   stood here before; per-format aliases remain possible on top.
+   allow an unknown key and give it `object`. Three costs the PR has to carry:
+
+   - A `TypedDict` is assignable to neither `dict[str, object]` nor back (both
+     checkers, both directions). Backends build plain dicts today, so this is
+     the real work, not the declaration.
+   - One map across all formats means a RAR key type-checks on a ZIP member.
+     Accepted; per-format aliases remain possible on top.
+   - `typing_extensions`, where there is no required runtime dependency today
+     (`pyproject.toml` has no `[project] dependencies`). `types.py` already
+     has `from __future__ import annotations` and a `TYPE_CHECKING` block, and
+     nothing in `src/` calls `get_type_hints` or `dataclasses.fields`, so a
+     type-check-only import keeps the zero-dependency install. That trades
+     away users importing the type to annotate their own code, which is the
+     question PR 8 settles.
+
+   Supersedes the per-format-aliases-only note that stood here before.
 
 ## What is actually fine
 
@@ -170,4 +181,4 @@ one category.
 | `CONTRIBUTING.md` describes forms that are actually specific | **yes** | |
 | "12 warnings not shown" answered | **yes** | |
 | `SUMMARY.md` records what is fine | **yes** | |
-| Staged fix PRs | 6 done (Q1) | 1–5, 7 |
+| Staged fix PRs | 6 done (Q1) | 1, 2, 2b, 3, 4, 5, 7, 8 |
