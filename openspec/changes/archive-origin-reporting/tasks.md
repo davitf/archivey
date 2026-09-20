@@ -44,6 +44,11 @@
 - [ ] 2.5 Decide `find_signature_offset`'s fate on the evidence of what still imports it
       (`tests/test_sfx.py`, the fuzz harness) — keep as a wrapper or delete with callers
       updated, not left as an unexplained alias
+- [x] 2.6 Reconcile the `format-7z` and `format-rar` SFX deltas against #375 before
+      archive: validator, earliest VALID else earliest identified,
+      `MAX_VALIDATED_CANDIDATES`, two miss reasons. RAR is `MODIFIED` not `ADDED` (the
+      requirement already exists after #375). Archiving must be a no-op on that
+      contract.
 
 ## 3. Reporting the origin back
 

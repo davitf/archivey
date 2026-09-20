@@ -39,9 +39,11 @@ def validate_sevenzip_signature_header(
 
     An empty next-header (``NextHeaderSize == 0``) is not an SFX payload —
     nobody ships a self-extractor with no files — so that is
-    :attr:`HitOutcome.NOT_THIS_FORMAT` even when the CRC is valid. This
-    validator is the scan path only: a genuine empty ``.7z`` is claimed by
-    near magic at offset 0 and never reaches here.
+    :attr:`HitOutcome.NOT_THIS_FORMAT` even when the CRC is valid. Detection
+    skips it. The parser scan may still fall back to this candidate when
+    nothing ``VALID`` is found, so a stub plus an empty archive still opens
+    under forced ``format=SEVEN_Z``. A genuine empty ``.7z`` at offset 0 is
+    claimed by near magic and never reaches here.
 
     Exact-EOF versus trailing bytes is not a reject: some SFX tools append
     configuration after the payload. Earliest CRC-valid hit still wins;

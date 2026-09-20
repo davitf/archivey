@@ -50,6 +50,25 @@ _BLOCKING_READ_MESSAGE = (
 )
 
 
+def ask_resume_offset(inner: object | None, target: int) -> int | None:
+    """Ask ``inner`` for the decompressed offset a seek to ``target`` would resume from.
+
+    Named ``ask_`` so this is a query of the inner, not a forward (SEEK_CUR) seek.
+    ``None`` means the inner cannot answer (no method, or a non-int result), which
+    the caller treats as "no cost signal" rather than "free".
+
+    The method name ``nearest_resume_offset`` is archivey-specific; this helper
+    is generic ``getattr`` plumbing and may move out of ``streamtools`` later.
+    """
+    if inner is None:
+        return None
+    ask = getattr(inner, "nearest_resume_offset", None)
+    if ask is None:
+        return None
+    offset = ask(target)
+    return offset if isinstance(offset, int) else None
+
+
 def try_readinto(stream: object, b: "WriteableBuffer") -> int | None:
     """Call ``stream.readinto(b)`` when it is a real implementation.
 
