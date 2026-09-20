@@ -116,7 +116,7 @@ class _DequeGuardedCollections:
         self._real = real
         self.deque = deque_cls
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         # Reached only for attributes not set in __init__ (i.e. everything but ``deque``).
         return getattr(self._real, name)
 
@@ -166,7 +166,7 @@ def _install_pycdlib_directory_cycle_guard() -> None:
                 if isinstance(item, dr_mod.DirectoryRecord)
             }
 
-        def append(self, dir_record: Any) -> None:
+        def append(self, dir_record: object) -> None:
             if isinstance(dir_record, dr_mod.DirectoryRecord):
                 extent = dir_record.extent_location()
                 if extent in self._visited_extents:
@@ -419,7 +419,7 @@ class IsoReader(BaseArchiveReader):
         return member
 
     def _timestamps(
-        self, record: Any, rr: Any
+        self, record: object, rr: Any
     ) -> tuple[datetime | None, datetime | None, datetime | None]:
         modified = _dr_date_to_datetime(getattr(record, "date", None))
         accessed: datetime | None = None

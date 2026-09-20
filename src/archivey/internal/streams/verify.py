@@ -73,7 +73,7 @@ _DigestTransforms = Mapping[Any, Callable[[bytes], bytes]]
 _SIZED_DRAIN_CHUNK = 65536
 
 
-def _algo_key(algorithm: Any) -> str:
+def _algo_key(algorithm: HashAlgorithm | str) -> str:
     """Normalize a hash key to a lowercase algorithm name.
 
     ``str(HashAlgorithm.CRC32)`` is ``"HashAlgorithm.CRC32"``; use the enum value
@@ -123,7 +123,9 @@ class _Adler32Hasher:
         return (self._value & 0xFFFFFFFF).to_bytes(self.digest_size, "big")
 
 
-def _make_hasher(algorithm: Any) -> Callable[[], _IncrementalHasher] | None:
+def _make_hasher(
+    algorithm: HashAlgorithm | str,
+) -> Callable[[], _IncrementalHasher] | None:
     """Return a zero-arg factory for an incremental hasher, or ``None`` if unavailable."""
     name = _algo_key(algorithm)
     if name == "crc32":
