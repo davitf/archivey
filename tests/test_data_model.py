@@ -191,10 +191,18 @@ def test_extra_is_an_open_mapping() -> None:
 
     bag = MemberExtra({"is_junction": True, "third.party": 1})
     assert bag == {"is_junction": True, "third.party": 1}
-    assert copy.copy(bag) == bag
-    assert copy.deepcopy(bag) == bag
-    assert pickle.loads(pickle.dumps(bag)) == bag
     assert json.loads(json.dumps(bag)) == {"is_junction": True, "third.party": 1}
+
+    # Equality alone would pass on a plain dict, so assert the class survives too:
+    # a round trip that degraded to dict would keep the data and silently lose the
+    # declared key types for anything re-annotating the result.
+    for roundtripped in (
+        copy.copy(bag),
+        copy.deepcopy(bag),
+        pickle.loads(pickle.dumps(bag)),
+    ):
+        assert roundtripped == bag
+        assert isinstance(roundtripped, MemberExtra)
 
 
 def test_modified_utc_normalizes_mixed_timestamps() -> None:
