@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
 from enum import Enum, Flag, auto
-from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Mapping, NamedTuple, cast
 
 if TYPE_CHECKING:
     from typing_extensions import TypedDict
@@ -336,7 +336,9 @@ class CreateSystem(Enum):
 # Key in ArchiveMember.extra marking a member as a Windows NTFS junction. Junctions
 # are a cross-format concept (ZIP, 7z and RAR can all carry them), so this key is
 # deliberately NOT namespaced under a single format like "zip.".
-EXTRA_IS_JUNCTION = "is_junction"
+# Final keeps a TypedDict subscript with this constant a literal key; without it
+# a checker that widens the assignment to str rejects the write.
+EXTRA_IS_JUNCTION: Final = "is_junction"
 
 # Key in ArchiveMember.extra: True when this RAR member's ``created`` is Unix
 # ``st_ctime`` (inode-change), False when the writer OS stores a birth time
@@ -345,20 +347,24 @@ EXTRA_IS_JUNCTION = "is_junction"
 # promote this to a cross-format ``created_meaning`` field — do not infer that
 # meaning from ``create_system`` (7z hardcodes UNIX while reading a FILETIME
 # birth time; ZIP splits by extra source, not OS).
-EXTRA_RAR_CREATED_IS_CTIME = "rar.created_is_ctime"
+EXTRA_RAR_CREATED_IS_CTIME: Final = "rar.created_is_ctime"
 
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
 # because RAR5 records no per-file unpack version. Lives here, not on
 # CompressionMethod.level, which is the M1–M5 method-byte offset.
-EXTRA_RAR_EXTRACT_VERSION = "rar.extract_version"
+EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
 
 
 # The whole TypedDict lives under TYPE_CHECKING, not only the import: functional
 # syntax is an assignment, and ``from __future__ import annotations`` defers
 # annotations, not assignments. An import-only guard raises NameError at import
-# time. Keeping the definition here is what lets a core install stay
-# zero-dependency (no ``typing_extensions`` at runtime). Callers therefore cannot
-# import the type to annotate their own code — that is this mitigation's price.
+# time. That is why the definition is here — a core install stays zero-dep
+# (no ``typing_extensions`` at runtime).
+#
+# The name is unbound at runtime on purpose. An ``else: MemberExtra = dict``
+# alias would make it importable with no runtime dependency; that is not
+# withheld because it would pull in ``typing_extensions``. Binding the name
+# would make it public API (a later key is then a visible contract change).
 if TYPE_CHECKING:
     MemberExtra = TypedDict(
         "MemberExtra",

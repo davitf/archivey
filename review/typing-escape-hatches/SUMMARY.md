@@ -107,12 +107,13 @@ one category.
 8. **The `extra` key map as a PEP 728 `TypedDict`** (maintainer, 2026-09-20) —
    **this PR.**
    Q1 made every `extra` value an `object` a caller must narrow, and narrowing
-   correctly needs to know which key holds what. `docs/formats.md` documents 4 of
-   ~17 keys and the complete table is in `QUESTIONS.md`, which this review
-   archives. The map therefore moves into the type: one `TypedDict` per bag
-   (member extras and `ArchiveInfo.extra` stay separate), functional syntax
-   because most keys are dotted, `total=False` because every key is optional, and
-   `extra_items=object` so third-party keys stay legal and read back as `object`.
+   correctly needs to know which key holds what. The map is now the two
+   TypedDicts in `types.py`; `docs/formats.md` points at them. (Before this PR
+   that page documented 4 of ~17 keys and the complete table lived in
+   `QUESTIONS.md`.) One `TypedDict` per bag (member extras and
+   `ArchiveInfo.extra` stay separate), functional syntax because most keys are
+   dotted, `total=False` because every key is optional, and `extra_items=object`
+   so third-party keys stay legal and read back as `object`.
    **Measured 2026-09-20 on pyrefly 1.1.1 and ty 0.0.60 at the 3.11 floor:** both
    type known keys exactly, both reject a wrong-type write to a known key, both
    allow an unknown key and give it `object`. Three costs the PR has to carry:
@@ -133,12 +134,10 @@ one category.
      **with `typing_extensions` absent from the environment**, the annotation
      reads back as the string `'MemberExtra'`, and both checkers still type the
      field exactly (known keys, unknown keys, and a rejected wrong-type write).
-     Two consequences. A `TYPE_CHECKING`-only definition is *why* a caller
-     cannot import the type to annotate their own code, so that is this
-     mitigation's price rather than a separate cost — and it is the question PR 8
-     settles, because the other branch makes `typing_extensions` a required
-     runtime dependency of core, which CONTRIBUTING's zero-dep-core rule turns
-     into an optional-extra question. And the field's own default needs a typed
+     The name is unbound at runtime on purpose. An `else: MemberExtra = dict`
+     alias would make it importable with no runtime dependency; that is not
+     withheld because it would pull in `typing_extensions`. Binding the name
+     would make it public API. And the field's own default needs a typed
      factory: `extra: MemberExtra = field(default_factory=dict)` fails pyrefly
      (`dict[Unknown, Unknown]` is not assignable), while a helper returning
      `cast("MemberExtra", {})` is clean on both checkers and unchanged at

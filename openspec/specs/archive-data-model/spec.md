@@ -154,7 +154,7 @@ class ArchiveMember:
     windows_attrs: int | None = None
     hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
     diagnostics: tuple[Diagnostic, ...] = field(default=(), compare=False)
-    extra: MemberExtra = field(default_factory=dict, compare=False)
+    extra: MemberExtra = field(compare=False)
 
     @property
     def member_id(self) -> int: ...
@@ -288,7 +288,7 @@ class ArchiveInfo:
     is_encrypted: bool
     is_multivolume: bool
     cost: CostReceipt
-    extra: ArchiveInfoExtra = field(default_factory=dict, compare=False)
+    extra: ArchiveInfoExtra = field(compare=False)
 ```
 
 `extra` keys SHALL be namespaced strings and excluded from equality.

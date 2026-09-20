@@ -18,7 +18,7 @@ class ArchiveInfo:
     cost: CostReceipt
     prefix_kind: PrefixKind | None = PrefixKind.NONE
     payload_offset: int | None = 0
-    extra: ArchiveInfoExtra = field(default_factory=dict, compare=False)
+    extra: ArchiveInfoExtra = field(compare=False)
 ```
 
 `extra` keys SHALL be namespaced strings and excluded from equality.

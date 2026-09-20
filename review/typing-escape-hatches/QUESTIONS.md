@@ -61,8 +61,9 @@ pyrefly 1.1.1 and ty 0.0.60, both with `python_version = "3.11"`: a
 `total=False, extra_items=object` TypedDict types known keys exactly (including
 dotted keys via the functional syntax), rejects a wrong-type write to a known
 key, and accepts an unknown key whose value reads back as `object`. The
-`typing_extensions` import that measurement needs, and whether it stays behind
-`TYPE_CHECKING` so the install stays zero-dep, is the third cost on SUMMARY.md
-item 8 — the question PR 8 settles.
+`typing_extensions` import that measurement needs, and whether the definition
+stays behind `TYPE_CHECKING` so the install stays zero-dep, is the third cost
+on SUMMARY.md item 8. Binding the name at runtime (`else: MemberExtra = dict`)
+would not pull in that dependency; it would make the name public API.
 
 Two fields, two key sets. Do not merge member extras and `ArchiveInfo.extra`.
