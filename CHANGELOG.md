@@ -43,11 +43,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
-- **`ArchiveMember.extra` and `ArchiveInfo.extra` are typed mapping classes.**
-  They are `MemberExtra` / `ArchiveInfoExtra` (`dict[str, object]` subclasses):
-  a subscript of a known key carries that key's type. Assign a `MemberExtra(...)`
-  rather than a bare dict; mutating the bag in place is unchanged. Unknown keys
-  stay legal.
+- **`ArchiveMember.extra` / `ArchiveInfo.extra` are `MemberExtra` / `ArchiveInfoExtra`.**
+  Known keys narrow on a subscript read. Assign a `MemberExtra({...})` rather than a
+  bare dict; mutating the existing bag in place is unchanged.
 - **`password=` no longer raises on a format with no encryption.** All three forms — a
   single value, a list of candidates, a `PasswordProvider` — are now accepted, never
   consulted, and recorded as a `PASSWORD_ARGUMENT_UNUSED` diagnostic. Previously a

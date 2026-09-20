@@ -12,6 +12,10 @@ Matching is by constructor, not local name: a ``MemberExtra()`` bound to
 ``info.extra[...]`` on an ``ArchiveInfo`` parameter is an archive-info write.
 A ``MemberExtra(...)`` / ``ArchiveInfoExtra(...)`` whose first argument is not
 a dict literal raises, rather than skipping the site.
+
+The ``Known keys:`` bullets in each class docstring are the published copy
+(``docs/formats.md`` points at them). Those keys and type strings must match
+the overload register; adding an overload without its bullet turns it red.
 """
 
 from __future__ import annotations
@@ -111,7 +115,12 @@ def _docstring_key_types(mapping_cls: type) -> dict[str, str]:
         )
     found: dict[str, str] = {}
     for match in _KNOWN_KEY_BULLET.finditer(doc[idx + len(marker) :]):
-        found[match.group("key")] = match.group("type")
+        key = match.group("key")
+        if key in found:
+            raise AssertionError(f"{mapping_cls.__name__} docstring repeats {key!r}")
+        found[key] = match.group("type")
+    if not found:
+        raise AssertionError(f"{mapping_cls.__name__} Known keys: section is empty")
     return found
 
 

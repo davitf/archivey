@@ -373,9 +373,8 @@ class MemberExtra(dict[str, object]):
 
     Writes are not type-checked: a wrong-type assignment to a known key falls
     through to the ``str → object`` fallback, same as an unknown key. ``.get()``
-    returns ``object`` for every key. A plain ``dict`` is not assignable to
-    ``ArchiveMember.extra``: construct a :class:`MemberExtra`, or mutate the
-    bag in place.
+    returns ``object`` for every key. Assign a ``MemberExtra({...})`` (or mutate
+    the existing bag); a bare dict is not assignable to the field.
 
     Known keys:
 
