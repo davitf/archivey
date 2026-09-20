@@ -276,8 +276,11 @@ def first_volume_for_stub(path: Path) -> Path | None:
     return None
 
 
-# Interleaved SharedView reads across a volume boundary reuse these. Not a refusal
-# bound: a 100-part set still reads, it just keeps this many Path descriptors.
+# LRU of open Path volume handles. Two or three absorb SharedView pairs that
+# straddle a part boundary (concurrent_members=True). Not a refusal: a 100-part
+# set still reads. Past this many distinct Path volumes in the working set, each
+# cache miss is an open()+close() on that read. Growing the cache to the volume
+# count would hold one descriptor per part again.
 _PATH_HANDLE_CACHE_SIZE = 3
 
 
@@ -291,6 +294,18 @@ def _fd_limit_text() -> str:
     return f"the process file-descriptor limit is {soft}"
 
 
+def _volume_open_error(path: Path, exc: OSError) -> OpenError:
+    if exc.errno in (errno.EMFILE, errno.ENFILE):
+        return OpenError(
+            f"Too many open files to open volume; {_fd_limit_text()}",
+            archive_name=path.as_posix(),
+        )
+    return OpenError(
+        "Cannot open volume",
+        archive_name=path.as_posix(),
+    )
+
+
 @dataclass
 class _CachedPathHandle:
     stream: BinaryIO
@@ -301,9 +316,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     """Seekable read-only concatenation of volume streams.
 
     Path volumes are sized with ``stat`` and opened lazily into a small LRU of
-    handles (``_PATH_HANDLE_CACHE_SIZE``). Bytes are sampled at ``open()`` /
-    ``read()``, not pinned by a construction-time descriptor: replacing a part
-    after construction is visible on the next open of that part.
+    handles (``_PATH_HANDLE_CACHE_SIZE``). Sequential drains and a pair of
+    alternating views stay inside that cache; a working set larger than the
+    constant evicts on every miss, and those reads pay ``open``+``close``.
+    Bytes are sampled at ``open()`` / ``read()``, not pinned by a
+    construction-time descriptor: replacing a part after construction is
+    visible on the next open of that part.
     Caller-supplied streams stay open, are never closed here, and are re-seeked
     before every read (the caller may have moved them).
     """
@@ -324,7 +342,10 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             if isinstance(source, Path):
                 # No handle: a 100-part set must not hold 100 descriptors from
                 # construction, and sizing does not need one.
-                st = os.stat(source)
+                try:
+                    st = os.stat(source)
+                except OSError as exc:
+                    raise _volume_open_error(source, exc) from exc
                 if not stat.S_ISREG(st.st_mode):
                     raise OpenError(
                         "volume is not a regular file",
@@ -394,15 +415,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         try:
             return open(path, "rb")
         except OSError as exc:
-            if exc.errno in (errno.EMFILE, errno.ENFILE):
-                raise OpenError(
-                    f"Too many open files to open volume; {_fd_limit_text()}",
-                    archive_name=path.as_posix(),
-                ) from exc
-            raise OpenError(
-                "Cannot open volume",
-                archive_name=path.as_posix(),
-            ) from exc
+            raise _volume_open_error(path, exc) from exc
 
     def _recompute_cursor(self) -> None:
         """Set volume index/offset from ``_pos``. Sequential ``read`` advances instead."""
@@ -428,6 +441,9 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             self._vol_index += 1
         cached = self._path_handles.get(self._vol_index)
         if cached is not None:
+            # Sequential advance into a cached volume: the handle still sits
+            # wherever the last user left it. Clear synced so the next read
+            # seeks it; do not assume it is at 0 just because we did not seek.
             cached.synced = False
 
     def _ensure_current_stream(self) -> BinaryIO:
@@ -485,28 +501,38 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             n = self._size - self._pos
         else:
             n = min(n, self._size - self._pos)
+        # A raise discards ``out``. Put ``_pos`` back so a retry re-delivers
+        # the prefix instead of skipping it.
+        start_pos = self._pos
         out = bytearray()
-        while n > 0 and self._pos < self._size:
-            vol_end = self._offsets[self._vol_index + 1]
-            available = vol_end - self._pos
-            to_read = min(n, available)
-            stream = self._ensure_current_stream()
-            self._seek_current_stream(stream)
-            chunk = stream.read(to_read)
-            if not chunk:
-                source = self._volume_items[self._vol_index]
-                archive_name = source.as_posix() if isinstance(source, Path) else None
-                raise TruncatedError(
-                    "volume ended before its recorded size",
-                    archive_name=archive_name,
-                )
-            got = len(chunk)
-            out.extend(chunk)
-            self._pos += got
-            self._vol_offset += got
-            n -= got
-            if self._pos >= vol_end:
-                self._advance_volume()
+        try:
+            while n > 0 and self._pos < self._size:
+                vol_end = self._offsets[self._vol_index + 1]
+                available = vol_end - self._pos
+                to_read = min(n, available)
+                stream = self._ensure_current_stream()
+                self._seek_current_stream(stream)
+                chunk = stream.read(to_read)
+                if not chunk:
+                    source = self._volume_items[self._vol_index]
+                    archive_name = (
+                        source.as_posix() if isinstance(source, Path) else None
+                    )
+                    raise TruncatedError(
+                        "volume ended before its recorded size",
+                        archive_name=archive_name,
+                    )
+                got = len(chunk)
+                out.extend(chunk)
+                self._pos += got
+                self._vol_offset += got
+                n -= got
+                if self._pos >= vol_end:
+                    self._advance_volume()
+        except Exception:  # noqa: BLE001 - restore cursor; the original error re-raises
+            self._pos = start_pos
+            self._recompute_cursor()
+            raise
         return bytes(out)
 
     def close(self) -> None:
