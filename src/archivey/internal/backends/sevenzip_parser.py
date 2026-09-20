@@ -408,7 +408,8 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
     parser.
 
     Raises :class:`CorruptionError` on a miss (no needle, or the rejected-candidate
-    cap), so a non-7z source fails loudly instead of opening as an empty archive.
+    cap). A source with no 7z magic in the window fails loudly rather than opening
+    as an empty archive; a source that has one opens or names its damage.
     ``fp`` is restored to its starting position.
     """
     start = fp.tell()

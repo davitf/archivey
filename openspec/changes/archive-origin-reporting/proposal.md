@@ -47,8 +47,10 @@ shapes with different return types (`int` vs `tuple[version, offset]`) and diffe
 messages, plus a third format that does not participate at all. That is also why the
 answer has nowhere to go: there is no one place that produces it.
 
-`format-7z` specifies its SFX/start-offset behaviour; `format-rar` specifies none, despite
-the RAR parser having carried the same scan longer.
+`format-7z` and `format-rar` both specify SFX/start-offset behaviour (validator, earliest
+VALID else earliest identified, `MAX_VALIDATED_CANDIDATES`, two miss reasons — landed in
+#375). This change restates both against the shared resolver and adds the reporting
+obligation; it must not overwrite that contract on archive.
 
 ## What Changes
 
@@ -72,9 +74,9 @@ the RAR parser having carried the same scan longer.
   forced path report the same `payload_offset` and `prefix_kind` as the detected one. A
   forced open classifies the prefix from one short read of the source's leading bytes — the
   same pure function detection applies — so the two doors agree on both fields.
-- **`format-rar` gets the SFX/start-offset requirement it never had**, stated as the same
-  contract `format-7z` already carries, so the two are specified as one behaviour rather
-  than two coincidences.
+- **`format-rar` SFX requirement is restated**, not added: #375 already landed it.
+  This change is `MODIFIED` — shared resolver plus origin reporting — so archiving
+  does not drop the validator, fallback, cap, or miss reasons.
 - **Every format that can receive a `start_offset` reports one**, not just ZIP / 7z / RAR.
   Sequencing this after `prefixed-archive-detection` means TAR and the single-file codecs
   become prefix-capable (a makeself `.run` detects as `TAR_GZ` at the gzip offset), so a
@@ -99,8 +101,8 @@ detection answer.
   reporting obligation.
 - `format-zip` — a prefixed ZIP's origin is reported on both open paths, derived from the
   central directory the reader already parsed; not-established only for an empty archive.
-- `format-rar` — gains an explicit start-offset / SFX requirement, matching `format-7z`.
-  The capability already exists; only the requirement is new.
+- `format-rar` — the SFX requirement (already on `main` after #375) is restated against
+  the shared resolver and gains the reporting obligation.
 
 ## Decisions
 

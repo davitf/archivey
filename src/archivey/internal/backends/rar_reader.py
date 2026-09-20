@@ -689,10 +689,9 @@ class RarReader(BaseArchiveReader):
         # identified candidate if none validate), but pinning volume 1 to that
         # origin still avoids a second scan, and still matters for a CRC-valid
         # decoy that would win as first-VALID. ConcatenatedFile + parser ``tell()``
-        # offsets
-        # are file-absolute (each volume contributes its full size, stub included),
-        # so stored reads must not also shift by ``_origin`` — that is why a
-        # discovered multi-volume set zeroes it after copying it to
+        # offsets are file-absolute (each volume contributes its full size, stub
+        # included), so stored reads must not also shift by ``_origin`` — that is
+        # why a discovered multi-volume set zeroes it after copying it to
         # ``_volume0_parse_origin``.
         self._origin = start_offset
         self._shared = self._open_shared_source(source)

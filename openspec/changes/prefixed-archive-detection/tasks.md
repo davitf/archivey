@@ -186,7 +186,7 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
       path (`scan_for_magic` + `HitValidator`) landed in #375: earliest VALID, else
       earliest identified (maintainer ruling on that PR, option A). Cap of
       `MAX_VALIDATED_CANDIDATES` is parser-scan only; the iterating detector path is
-      still uncapped (pre-existing superlinear scan, tracked separately).
+      still uncapped (pre-existing superlinear scan, ARC-81 / threat-model O11).
 - [x] 2.5a ~~**Prerequisite for 2.6–2.8: a bounded candidate-relative read.**~~ — shipped by `#273` as `PrefixWorkspace.peek_range` / `candidate_view` and `ScanNeedle` / `MagicHit.candidate_origin`. Nothing to invent here.
 - [ ] 2.5b **(Block 4)** Report `payload_offset` as the **candidate origin**, not the needle hit. A TAR hit reported at `H` rather than `H - 257` is wrong by 257 bytes and hands the backend a misaligned source; add a red–green for exactly that off-by-257. **Waits on 2.6**, which waits on the ledger.
 - [x] 2.6 ~~**Deferred to `detection-evidence-ledger`.** Do not add TAR's `ustar` as a container needle here — five bytes with no checksum is a false-positive risk inside a PE/ELF stub, and that change already specifies the checksum validator that would make the needle safe.~~

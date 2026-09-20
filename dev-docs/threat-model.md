@@ -405,12 +405,18 @@ of successful decoding — 683-fold amplification**. Memory is not the problem (
 candidate's output is discarded); time is. A per-candidate decode cap cannot bound the
 aggregate.
 
+The candidate *search* is superlinear independently of decoding: `iter_magic_in_prefix`
+re-runs `bytes.find` per needle per hit. Measured on `83ed2ba` with an `MZ` stub and
+back-to-back RAR5 decoys: **29 s at 1 MiB**, minutes at `SFX_MAX` (2 MiB); a denser
+packing put 4.92 s of a 5.86 s run inside `bytes.find` (161k `_find_earliest` calls).
+No decode is involved. Tracked as ARC-81.
+
 `detection-prefix-workspace` ships the `DetectionBudget` / `DetectionCostReceipt` and a
 fuzz assertion that aggregate detection cost stays inside the declared budget. The bound
 itself — and whether limits are per-detection aggregates or per-candidate — belongs to
 `detection-evidence-ledger`, which owns the scan tiers where candidates multiply. Until
-that lands, a hostile prefix can still force unbounded decode work under the default
-budget's scan path once those tiers are enabled.
+that lands, a hostile prefix can still force unbounded decode *or search* work under the
+default budget's scan path once those tiers are enabled.
 
 ### O12. 7z password confirmation decoded the whole folder into RAM — memory mitigated
 

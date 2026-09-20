@@ -45,6 +45,7 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.rar_detect import validate_rar_main_header
 from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
 from archivey.internal.sfx import (
+    _SCAN_CHUNK,  # noqa: SLF001 — chunk-boundary test needs the real trim size
     MAX_VALIDATED_CANDIDATES,
     SFX_MAX,
     ExecutableCue,
@@ -339,11 +340,59 @@ def test_scan_does_not_return_a_magic_pulled_past_the_limit() -> None:
 
 
 def test_scan_does_not_drop_a_shorter_needle_that_still_fits() -> None:
-    # limit=10: LONSHRTC at 3 ends at 11 (past); SHRT at 6 ends at 10 (fits).
-    data = b"\x00" * 3 + b"LONSHRTC"
-    assert scan_for_magic(
-        io.BytesIO(data), (b"LONSHRTC", b"SHRT"), limit=10
-    ).hit == MagicHit(6, b"SHRT", 0)
+    # The ``abs_pos + len(needle) > limit`` skip only fires when the window already
+    # holds bytes past ``limit``. The main read loop never stores those; only a
+    # validator peek does. LONG at 34 ends at 44 (past 40); the SHRT inside it at
+    # 36 ends at 40 (fits). The first SHRT at 0 is rejected and peeks 100 bytes
+    # so LONG is visible. Stopping on the straddling needle would return the
+    # fallback at 0 instead of 36.
+    long, short, limit = b"AASHRTAAAA", b"SHRT", 40
+    data = bytearray(b"\x90" * 200)
+    data[0:4] = short
+    data[34:44] = long
+    offered = 0
+
+    def reject_first_then_accept(
+        peek: Callable[[int], bytes], _remaining: int | None
+    ) -> HitOutcome:
+        nonlocal offered
+        offered += 1
+        if offered == 1:
+            peek(100)
+            return HitOutcome.NOT_THIS_FORMAT
+        return HitOutcome.VALID
+
+    result = scan_for_magic(
+        io.BytesIO(bytes(data)),
+        (long, short),
+        limit=limit,
+        validator=reject_first_then_accept,
+    )
+    assert result.hit == MagicHit(36, short, 0)
+    assert result.rejected_count == 1
+
+
+def test_scan_does_not_double_count_a_candidate_on_a_chunk_boundary() -> None:
+    # overlap = max(len) - 1 = 7. A 7-byte needle at _SCAN_CHUNK - 7 sits wholly
+    # in the retained overlap and would be validated twice if the next pass
+    # searched the overlap from 0 again. Mid-chunk markers cannot catch this.
+    long, short = b"A" * 8, b"B" * 7
+    origin = _SCAN_CHUNK - len(short)
+    data = bytearray(b"\x00" * (_SCAN_CHUNK + 64))
+    data[origin : origin + len(short)] = short
+    calls = 0
+
+    def reject_all(_peek: Callable[[int], bytes], _remaining: int | None) -> HitOutcome:
+        nonlocal calls
+        calls += 1
+        return HitOutcome.NOT_THIS_FORMAT
+
+    result = scan_for_magic(
+        io.BytesIO(bytes(data)), (long, short), validator=reject_all
+    )
+    assert result.hit == MagicHit(origin, short, 0)
+    assert result.rejected_count == 1
+    assert calls == 1
 
 
 def test_scan_probes_source_size_once_per_scan(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -55,8 +55,9 @@ SFX_MAX = 2 * 1024 * 1024
 # :func:`iter_magic_in_prefix` is left uncapped on purpose. The detector's candidate
 # walk is superlinear in planted decoys (``bytes.find`` per needle per hit), so the
 # byte window is not a time bound — a 1 MiB decoy-packed prefix is tens of seconds,
-# ``SFX_MAX`` is minutes. That is a pre-existing detector bug, not this scan's to
-# widen into. Do not copy this cap onto that path as a silent extra in the same diff.
+# ``SFX_MAX`` is minutes. That is a pre-existing detector bug (threat-model O11),
+# not this scan's to widen into. Do not copy this cap onto that path as a silent
+# extra in the same diff.
 MAX_VALIDATED_CANDIDATES = 256
 
 # Read granularity for the forward scan. Large enough that a full 2 MiB window is 32
@@ -186,8 +187,11 @@ class ScanMiss(Enum):
 
     ``NO_MATCH`` — no needle in the window.
     ``CAPPED`` — :data:`MAX_VALIDATED_CANDIDATES` rejections, none ``VALID``.
-    A window that contains only rejected candidates is not a miss: those become
-    the fallback origin (earliest identified), so the parser can name the damage.
+    ``CAPPED`` discards the fallback on purpose: 256 rejections is evidence that
+    none of them is the payload, so the scan returns no origin rather than the
+    first decoy. An uncapped window of rejected candidates is not a miss: those
+    become the fallback origin (earliest identified), so the parser can name
+    the damage.
     """
 
     NO_MATCH = "no_match"
@@ -388,9 +392,9 @@ def _find_earliest(
 ) -> tuple[int, ScanNeedle] | None:
     """The earliest needle occurrence at or after ``start``, as ``(index, needle)``.
 
-    ``searched`` is how far a previous growing peek already covered. A shorter
+    ``searched`` is how far a previous pass already covered. A shorter
     needle that fitted entirely in that prefix must not be re-found in the overlap
-    kept for a longer sibling (RAR5's 8 bytes vs ZIP's 4).
+    kept for a longer sibling (RAR5's 8 bytes vs RAR4's 7, or ZIP's 4).
     """
     best: tuple[int, ScanNeedle] | None = None
     for needle in needles:
@@ -479,6 +483,11 @@ def scan_for_magic(
     window_start = 0
     consumed = 0
     search_from = 0
+    # Window-relative end of the previous pass. A shorter needle wholly inside
+    # the retained overlap must not be re-found (and re-counted) after the trim;
+    # ``_find_earliest(..., searched=)`` is the same skip ``iter_magic_in_prefix``
+    # already uses.
+    searched = 0
     rejected = 0
     fallback: MagicHit | None = None
     scan_start = _scan_start_position(source) if validator is not None else None
@@ -524,7 +533,7 @@ def scan_for_magic(
         window.extend(chunk)
 
         while True:
-            hit = _find_earliest(window, normalized, search_from)
+            hit = _find_earliest(window, normalized, search_from, searched=searched)
             if hit is None:
                 break
             index, needle = hit
@@ -532,6 +541,13 @@ def scan_for_magic(
             if abs_pos + len(needle.magic) > limit:
                 # This needle does not fit. A later shorter one still might
                 # (needles of different lengths), so skip rather than stop.
+                # Reached only when a validator peek has already pulled the
+                # window past ``limit``; the main read loop never stores those
+                # bytes. Two needles matching at the *same* index are a
+                # different case: ``_find_earliest`` returns one of them and
+                # ``search_from = index + 1`` skips the other even if the
+                # shorter would have fitted. Unreachable for (RAR5, RAR4):
+                # byte 6 differs, so they cannot match at one index.
                 search_from = index + 1
                 continue
             origin = candidate_origin_for_hit(abs_pos, needle.offset)
@@ -557,6 +573,7 @@ def scan_for_magic(
         if len(window) > overlap:
             window_start += len(window) - overlap
             del window[: len(window) - overlap]
+        searched = len(window)
 
     return finish()
 
