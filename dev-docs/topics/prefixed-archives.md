@@ -154,10 +154,12 @@ that make its stored offsets differ — and why `payload_offset` is defined as t
 rather than as the EOCD adjustment — are on [`formats/zip.md`](../formats/zip.md) §3.
 
 **7z and RAR need the offset.** Their native parsers accept a start offset and read in place
-with no copy. The parser scan (`scan_for_magic`) now takes the same hit validator the
-detector uses, so an invalid decoy is skipped rather than opened. A CRC-valid decoy that
-is `VALID` still wins as first-valid and then fails loudly at parse — that is the
-unlanded exact-EOF ranking, not a scan miss.
+with no copy. The parser scan (`scan_for_magic`) takes the same hit validator the
+detector uses, so an invalid decoy is skipped rather than opened; if nothing
+validates, the first identified candidate is the origin so a damaged payload still
+reaches the parser. A CRC-valid decoy that is `VALID` still wins as first-valid
+and then fails loudly at parse — that is the unlanded exact-EOF ranking, not a
+scan miss.
 
 **Compressed streams are a different search.** A makeself-style `.run` wraps a compressed
 *stream*, not a container, so there is no container magic to find — the needle has to be a
@@ -186,7 +188,7 @@ produced a confidently wrong one.
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | One shared `SFX_MAX` for the detector and both native parsers | Separate bounds drift into a file that opens under `format=` and fails under auto-detect | A bound per call site |
-| `scan_for_magic` takes an optional `HitValidator` (same `(peek_more, remaining)` shape as the detector) and caps rejected candidates at 256 | Parser scans had no hook, so a decoy ahead of the real payload made forced `format=` fail. Peek is served from the scan window (forward-only; source need not be seekable). The iterating detector path is left uncapped — its cost is already the byte window | Seeking back to the origin to validate; applying the 256 cap to `iter_magic_in_prefix` in the same diff |
+| `scan_for_magic` takes an optional `HitValidator` (same `(peek_more, remaining)` shape as the detector), returns earliest VALID else earliest identified, and caps rejected candidates at 256 | Parser scans had no hook, so a decoy ahead of the real payload made forced `format=` fail. Peek is served from the scan window (forward-only; source need not be seekable). The iterating detector path is left uncapped: its candidate walk is superlinear in planted decoys, a pre-existing detector bug tracked separately, not a reason to copy the parser cap into this diff | Seeking back to the origin to validate; applying the 256 cap to `iter_magic_in_prefix` in the same diff |
 | Cue is a cost gate; validators are the correctness gate | Keeps two different questions from being answered by one mechanism, which is how the gate got reasoned about as false-positive defence | Treating the cue as the filter and skipping validation |
 | Two-tier cue, with `STRONG` suppressing content probes | `MZ` is two bytes; a real Brotli stream may start with it. Only a structurally confirmed executable is strong enough to overrule a probe | One boolean cue |
 | Mach-O raises no weak cue | `ca fe ba be` is Java class-file magic; a weak cue would scan every `.class` | Treating the magic as a weak cue like `MZ` |
@@ -218,7 +220,8 @@ behaviour a test holds.
 | Magic bytes quoted in script *text* are not a hit | `::test_shebang_script_mentioning_7z_magic_is_not_seven_z`, `::test_shebang_script_mentioning_rar_magic_is_not_rar` |
 | The scan continues past a failed validation rather than giving up on the source | `::test_a_decoy_7z_needle_is_skipped_for_the_real_payload`, `::test_a_decoy_zip_needle_is_skipped_for_the_real_payload`, `::test_crc_valid_empty_7z_decoy_is_skipped_for_the_real_payload`, `::test_elf_zero_filled_zip_decoy_skips_to_the_real_payload` |
 | Forced `format=7z` / `format=RAR` skip an invalid decoy the same way | `::test_forced_format_skips_a_decoy_7z_needle`, `::test_forced_format_skips_a_decoy_rar_needle`, `::test_find_signature_offset_skips_a_decoy_magic` |
-| `scan_for_magic` validator: decoy then valid; reject-all; cap; no-validator unchanged | `::test_scan_skips_a_rejected_decoy_for_a_later_valid_hit`, `::test_scan_returns_none_when_every_candidate_is_rejected`, `::test_scan_stops_after_the_rejected_candidate_cap`, `::test_scan_without_a_validator_matches_a_validator_that_accepts_the_first` |
+| `scan_for_magic` validator: decoy then valid; fallback on reject-all; cap; no-validator unchanged | `::test_scan_skips_a_rejected_decoy_for_a_later_valid_hit`, `::test_scan_falls_back_to_the_first_rejected_candidate`, `::test_scan_stops_after_the_rejected_candidate_cap`, `::test_scan_without_a_validator_matches_a_validator_that_accepts_the_first` |
+| Forced-format scan falls back to a damaged or empty payload so the parser names the damage | `::test_forced_format_truncated_7z_names_the_truncation`, `::test_forced_format_crc_damaged_7z_names_the_crc`, `::test_forced_format_empty_7z_behind_a_stub_opens`, `::test_forced_format_crc_damaged_rar4_names_the_crc`, `::test_forced_format_crc_damaged_rar5_names_the_crc` |
 | 7z's declared end is checked against the source length, not the peek window, and costs one 32-byte peek | `::test_sevenzip_sfx_declared_end_uses_source_remaining_not_the_scan_window`, `::test_sevenzip_validator_peeks_only_the_signature_header`, `::test_mz_7z_declared_end_overrun_is_not_claimed` |
 | A peek shortened by the budget is not evidence against the format | `::test_zip_clamped_name_extra_peek_is_valid_when_remaining_is_known`, `::test_rar_clamped_header_peek_is_valid_when_remaining_is_known`, `::test_budget_truncated_zip_header_still_detects_when_remaining_is_known` |
 | ZIP self-corrects from the tail, so a decoy hit does not move the answer (§5) | `::test_a_stub_carrying_a_decoy_zip_header_does_not_move_the_answer` |

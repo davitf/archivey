@@ -75,14 +75,27 @@ to a temporary file solely to strip a stub. The forced-format scan bound SHALL b
 the shared `SFX_MAX` constant (same binding as the RAR parser and
 `detect_format`; today 2 MiB).
 
+The forced-format scan SHALL skip a candidate whose signature header does not
+validate and continue, returning the earliest VALID match. If none validate, it
+SHALL fall back to the earliest identified candidate so a damaged or empty
+payload still reaches the parser. After `MAX_VALIDATED_CANDIDATES` (256)
+rejected candidates the scan SHALL stop and raise `CorruptionError` naming the
+cap. That bound is structural (a real SFX stub does not carry hundreds of
+format magics, and the parser has no `DetectionBudget`) and is not a
+`ListingLimits` knob. A miss with no candidate SHALL raise `CorruptionError`
+naming that there was no match.
+
 #### Scenario: 7z SFX / start-offset matrix
 
 | Case | Expected |
 | --- | --- |
 | Magic at open origin (offset 0) | Unchanged success path |
 | Explicit start offset N with magic at N | Signature parsed at N; members listed |
-| Forced `format=SEVEN_Z`, `MZ` stub, magic at N within `SFX_MAX` | Scan finds magic; open succeeds |
-| Forced `format=SEVEN_Z`, no magic within `SFX_MAX` | `CorruptionError` (not a silent empty archive) |
+| Forced `format=SEVEN_Z`, `MZ` stub, magic at N within `SFX_MAX`, header validates | Scan finds N; open succeeds |
+| Forced `format=SEVEN_Z`, `MZ` stub, magic at N, header does not validate, no later VALID hit | Scan falls back to N; the parser reports the damage (truncated or CRC-broken) or opens (empty archive, `NextHeaderSize` 0) |
+| Forced `format=SEVEN_Z`, decoy magic then a VALID payload within `SFX_MAX` | Earliest VALID wins |
+| Forced `format=SEVEN_Z`, no magic within `SFX_MAX` | `CorruptionError` naming that there was no match |
+| Forced `format=SEVEN_Z`, `MAX_VALIDATED_CANDIDATES` (256) candidates rejected, none VALID | `CorruptionError` naming that the candidate cap was reached |
 | Packed streams after an SFX signature | Pack/header seeks use signature origin; members readable |
 
 ### Requirement: Bound 7z header count fields before allocation

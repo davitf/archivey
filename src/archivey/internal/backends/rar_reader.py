@@ -685,9 +685,11 @@ class RarReader(BaseArchiveReader):
 
         # Where the RAR proper starts inside ``source``: detection's payload_offset
         # for a self-extracting file, 0 otherwise. The parser scan skips invalid
-        # decoys the same way detection does, but pinning volume 1 to that origin
-        # still avoids a second scan, and still matters for a CRC-valid decoy that
-        # would win as first-VALID. ConcatenatedFile + parser ``tell()`` offsets
+        # decoys the same way detection does (then falls back to the first
+        # identified candidate if none validate), but pinning volume 1 to that
+        # origin still avoids a second scan, and still matters for a CRC-valid
+        # decoy that would win as first-VALID. ConcatenatedFile + parser ``tell()``
+        # offsets
         # are file-absolute (each volume contributes its full size, stub included),
         # so stored reads must not also shift by ``_origin`` — that is why a
         # discovered multi-volume set zeroes it after copying it to
