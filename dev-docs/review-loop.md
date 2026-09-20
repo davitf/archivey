@@ -397,15 +397,19 @@ opening a comment on it with `@claude review`.
   the user `cursoragent`. Fixed in
   [the ping section above](#the-roles-run-both-ways-round) on 2026-09-20 (davitf spotted
   it). This also undercuts the measurement the Linear hop below was built on: #374's
-  sixty-six minutes of silence were after a ping that mentioned nobody. A human comment
-  reading `@cursoragent please review` on #372 got "Taking a look!" from `cursor[bot]`
-  seven seconds later, so the handle alone may be the whole of it. What is still
-  untested is the right handle from a bot account, and the next `cursor/*` round
-  measures it.
+  sixty-six minutes of silence were after a ping that reached an organization and no
+  agent. A human comment reading `@cursoragent please review` on #372 got "Taking a
+  look!" from `cursor[bot]` seven seconds later, so the handle alone may be the whole of
+  it. What is still untested is the right handle from a bot account, and no ordinary
+  round can settle it: the GitHub comment and the Linear hop fire seconds apart in the
+  same step, so an agent that wakes says nothing about which reached it. Settling it
+  takes a round run with the hop deliberately off, which is tracked internally and is
+  not worth spending while the loop is still being shaken out.
 - **The findings ping has a Linear hop as its fallback**, needing the `LINEAR_API_KEY`
   secret, set on 2026-09-20. It stays until the line above is settled: it is cheap, it
   never fails the run, and posting on the Linear issue is the one path measured to wake
-  an agent whose session had ended. Without the secret, every `cursor/*` round ends with
+  an agent whose session had ended. It is insurance on an open question, not the fix —
+  the handle was the fix. Without the secret, every `cursor/*` round ends with
   a warning in the job summary and a pull request nobody has told the implementer about;
   the manual workaround is to post the findings summary as a `@cursor` comment on the
   Linear issue by hand — `@cursor` is right *there*, which is where the wrong GitHub
