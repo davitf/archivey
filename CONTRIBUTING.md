@@ -170,7 +170,10 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   **not** use mypy or pyright. What gives *users* correct checks and IDE autocompletion
   is the typed public API plus the `py.typed` marker (PEP 561), independent of which
   checker CI runs; keeping two modern checkers green guards us against either one's
-  blind spots.
+  blind spots. That guarantee holds only while the source also *parses* under the
+  checkers CI does not run — a comment whose first token is `type:` is a type comment
+  to mypy, and prose there makes the file unparseable in the consumer's own run.
+  `tests/test_no_stray_type_comments.py` is what keeps that true.
 - **Coverage is reported, never gated.** `pytest-cov` produces a report you can eyeball;
   there is no `fail_under` threshold. Aim for meaningful coverage through the tests
   below, not a number.
