@@ -12,6 +12,7 @@ import sys
 import threading
 import zipfile
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -648,33 +649,46 @@ class _ResumeInner(io.BytesIO):
         return self._resume
 
 
-class TestSharedViewResumeOffset:
-    def test_translates_inner_resume_into_view_space(self) -> None:
+def _slicing(inner: io.BytesIO, start: int = 10, length: int = 50) -> SlicingStream:
+    return SlicingStream(inner, start=start, length=length)
+
+
+def _shared(inner: io.BytesIO, start: int = 10, length: int = 50) -> SharedView:
+    return SharedView(inner, start=start, length=length, lock=threading.Lock())
+
+
+_MakeView = Callable[[io.BytesIO], SlicingStream]
+
+
+class TestSliceResumeOffset:
+    """``SlicingStream.nearest_resume_offset``, also inherited by ``SharedView``."""
+
+    @pytest.mark.parametrize("make", [_slicing, _shared], ids=["slicing", "shared"])
+    def test_translates_inner_resume_into_view_space(self, make: _MakeView) -> None:
         inner = _ResumeInner(b"x" * 100, resume=40)
-        view = SharedView(inner, start=10, length=50, lock=threading.Lock())
+        view = make(inner)
         assert view.nearest_resume_offset(25) == 30
         assert inner.asked == [35]
 
-    def test_clamps_inner_resume_before_view_start(self) -> None:
+    @pytest.mark.parametrize("make", [_slicing, _shared], ids=["slicing", "shared"])
+    def test_clamps_inner_resume_before_view_start(self, make: _MakeView) -> None:
         inner = _ResumeInner(b"x" * 100, resume=5)
-        view = SharedView(inner, start=10, length=50, lock=threading.Lock())
+        view = make(inner)
         assert view.nearest_resume_offset(20) == 0
         assert inner.asked == [30]
 
-    def test_no_signal_when_inner_has_no_resume_method(self) -> None:
-        view = SharedView(
-            io.BytesIO(b"x" * 100), start=10, length=50, lock=threading.Lock()
-        )
+    @pytest.mark.parametrize("make", [_slicing, _shared], ids=["slicing", "shared"])
+    def test_no_signal_when_inner_has_no_resume_method(self, make: _MakeView) -> None:
+        view = make(io.BytesIO(b"x" * 100))
         assert view.nearest_resume_offset(20) is None
 
-    def test_no_signal_when_inner_returns_none(self) -> None:
+    @pytest.mark.parametrize("make", [_slicing, _shared], ids=["slicing", "shared"])
+    def test_no_signal_when_inner_returns_none(self, make: _MakeView) -> None:
         class _Declining(io.BytesIO):
             def nearest_resume_offset(self, target: int) -> None:
                 return None
 
-        view = SharedView(
-            _Declining(b"x" * 100), start=10, length=50, lock=threading.Lock()
-        )
+        view = make(_Declining(b"x" * 100))
         assert view.nearest_resume_offset(20) is None
 
     def test_non_seekable_view_has_no_origin_to_translate(self) -> None:
@@ -684,3 +698,43 @@ class TestSharedViewResumeOffset:
 
         sliced = SlicingStream(_Inner(b"x" * 20), length=10)
         assert sliced.nearest_resume_offset(4) is None
+
+    @pytest.mark.parametrize("make", [_slicing, _shared], ids=["slicing", "shared"])
+    def test_closed_view_raises(self, make: _MakeView) -> None:
+        inner = _ResumeInner(b"x" * 100, resume=40)
+        view = make(inner)
+        view.close()
+        with pytest.raises(ValueError, match="closed file"):
+            view.nearest_resume_offset(25)
+
+    def test_poisoned_shared_view_raises(self) -> None:
+        def boom() -> None:
+            raise ValueError("source closed")
+
+        inner = _ResumeInner(b"x" * 100, resume=40)
+        view = SharedView(
+            inner, start=10, length=50, lock=threading.Lock(), check_open=boom
+        )
+        with pytest.raises(ValueError, match="source closed"):
+            view.nearest_resume_offset(25)
+
+    def test_shared_view_queries_inner_under_the_lock(self) -> None:
+        class _RecordingLock:
+            def __init__(self) -> None:
+                self.entered = 0
+                self._lock = threading.Lock()
+
+            def __enter__(self) -> threading.Lock:
+                self.entered += 1
+                self._lock.__enter__()
+                return self._lock
+
+            def __exit__(self, *args: object) -> None:
+                self._lock.__exit__(*args)
+
+        lock = _RecordingLock()
+        inner = _ResumeInner(b"x" * 100, resume=40)
+        view = SharedView(inner, start=10, length=50, lock=lock)
+        constructed = lock.entered
+        assert view.nearest_resume_offset(25) == 30
+        assert lock.entered == constructed + 1

@@ -291,12 +291,13 @@ class AesDecryptStream(ReadOnlyIOStream):
         return self._seekable
 
     def nearest_resume_offset(self, target: int) -> int:
-        """Earliest plaintext offset this stream can genuinely restart at.
+        """Plaintext offset the composed stack must restart from to reach ``target``.
 
         Block-aligned, and reachable from the inner's nearest resume point
-        without seeking behind it. Callers may **act** on this — "to reach X,
-        resume from Y, so read forward from Y" — so an answer earlier than the
-        true restart point costs them replay. Never round it down.
+        without seeking behind it. The answer is at or before ``target``, often
+        well before it — ``min(block_start, composed)`` keeps it from claiming
+        a restart the inner cannot supply. A caller that acts on it reads
+        forward from the answer.
         """
         block_start = target - (target % AES_BLOCK_SIZE)
         iv_off = self._cipher_start + max(block_start - AES_BLOCK_SIZE, 0)

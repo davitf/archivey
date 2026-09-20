@@ -27,6 +27,7 @@ from typing import BinaryIO, Callable, ContextManager
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import (
+    ask_resume_offset,
     is_seekable,
     read_exact,
     source_byte_size,
@@ -267,18 +268,21 @@ class SlicingStream(ReadOnlyIOStream):
         still needs decoding — the inner's resume point may lie behind
         ``start``. ``None`` when the inner has no signal, or when this view
         has no origin to translate (non-seekable: ``_start`` is unset).
+
+        Named exception to this package's no-archivey-concepts rule: the
+        translation is generic contiguous-window offset arithmetic, not the
+        seek-point table (that still lives outside ``streamtools``). The
+        method name is archivey-specific; this may move later if the package
+        is lifted out.
         """
+        self._raise_if_closed()
         start = self._start
         if start is None:
             return None
-        # Same shape as ``ask_resume_offset``: missing method or a non-int
-        # result is "no signal". Inlined because streamtools must not import
-        # the rest of archivey (``resume`` lives outside this package).
-        ask = getattr(self._stream, "nearest_resume_offset", None)
-        if ask is None:
-            return None
-        inner = ask(start + target)
-        if not isinstance(inner, int):
+        with self._io_guard:
+            self._raise_if_closed()
+            inner = ask_resume_offset(self._stream, start + target)
+        if inner is None:
             return None
         return max(0, inner - start)
 
