@@ -7,11 +7,12 @@ type itself keeps the register complete. This test is that guard:
 ``zip.compress_type``) turns it red. Test-only keys (``synthetic.header_len``)
 stay on an allowlist.
 
-Matching is by constructor, not local name: a ``MemberExtra()`` bound to
-``bag`` then ``bag["zip.foo"] = 1`` is a member write, and
-``info.extra[...]`` on an ``ArchiveInfo`` parameter is an archive-info write.
-A ``MemberExtra(...)`` / ``ArchiveInfoExtra(...)`` whose first argument is not
-a dict literal raises, rather than skipping the site.
+Matching is by constructor, not local name, including constructors nested in
+``if`` / ``for`` / ``with`` / ``try`` and functions defined inside those
+blocks: a ``MemberExtra()`` bound to ``bag`` then ``bag["zip.foo"] = 1`` is a
+member write, and ``info.extra[...]`` on an ``ArchiveInfo`` parameter is an
+archive-info write. A ``MemberExtra(...)`` / ``ArchiveInfoExtra(...)`` whose
+first argument is not a dict literal raises, rather than skipping the site.
 
 The ``Known keys:`` bullets in each class docstring are the published copy
 (``docs/formats.md`` points at them). Those keys and type strings must match
@@ -171,12 +172,7 @@ def _value_kind(node: ast.AST) -> str | None:
     return None
 
 
-def _walk_skip_nested_scopes(node: ast.AST) -> typing.Iterator[ast.AST]:
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
-        yield child
-        yield from _walk_skip_nested_scopes(child)
+_NESTED_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
 def _bind_stmt(stmt: ast.stmt, bound: dict[str, str]) -> None:
@@ -271,6 +267,20 @@ def _fn_arg_bound(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
     return bound
 
 
+def _bind_tree(node: ast.AST, bound: dict[str, str]) -> None:
+    """Bind constructor names in this node, skipping nested function/class scopes."""
+    if isinstance(node, ast.stmt):
+        _bind_stmt(node, bound)
+    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+        kind = _value_kind(node.value)
+        if kind is not None:
+            bound[node.target.id] = kind
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, _NESTED_SCOPE):
+            continue
+        _bind_tree(child, bound)
+
+
 def _written_keys_from_tree(tree: ast.AST, path: Path) -> tuple[set[str], set[str]]:
     member: set[str] = set()
     info: set[str] = set()
@@ -281,24 +291,28 @@ def _written_keys_from_tree(tree: ast.AST, path: Path) -> tuple[set[str], set[st
     def scan_scope(body: list[ast.stmt], bound: dict[str, str]) -> None:
         local = dict(bound)
         for stmt in body:
-            _bind_stmt(stmt, local)
-        for stmt in body:
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                scan_scope(stmt.body, {**local, **_fn_arg_bound(stmt)})
-            elif isinstance(stmt, ast.ClassDef):
-                scan_scope(stmt.body, local)
-            else:
-                for inner in _walk_skip_nested_scopes(stmt):
-                    if not isinstance(inner, ast.Subscript):
-                        continue
-                    key = _key_from_slice(inner.slice)
-                    if key is None:
-                        continue
-                    bucket = _bucket_for_subscript(inner.value, local)
+            _bind_tree(stmt, local)
+
+        def walk_writes(node: ast.AST) -> None:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scan_scope(node.body, {**local, **_fn_arg_bound(node)})
+                return
+            if isinstance(node, ast.ClassDef):
+                scan_scope(node.body, local)
+                return
+            if isinstance(node, ast.Subscript):
+                key = _key_from_slice(node.slice)
+                if key is not None:
+                    bucket = _bucket_for_subscript(node.value, local)
                     if bucket == "info":
                         info.add(key)
                     elif bucket == "member":
                         member.add(key)
+            for child in ast.iter_child_nodes(node):
+                walk_writes(child)
+
+        for stmt in body:
+            walk_writes(stmt)
 
     if isinstance(tree, ast.Module):
         scan_scope(tree.body, {})
@@ -377,6 +391,23 @@ def test_inventory_sees_renamed_local() -> None:
     )
     assert member == {"zip.foo"}
     assert not info
+
+
+def test_inventory_sees_bind_inside_block() -> None:
+    # K16: a bag constructed inside if/for/with/try was invisible because
+    # _bind_stmt only ran on the top-level statements of a scope.
+    probes = (
+        "def f(x):\n    if x:\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n",
+        "def f():\n    for _ in ():\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n",
+        "def f():\n    with open(__file__):\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n",
+        "def f():\n    try:\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n    except Exception:\n        pass\n",
+        "if True:\n    def f():\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n",
+        "if (bag := MemberExtra()):\n    bag['zip.nested'] = 1\n",
+    )
+    for source in probes:
+        member, info = _written_keys_from_source(source, Path("probe.py"))
+        assert member == {"zip.nested"}, source
+        assert not info, source
 
 
 def test_inventory_classifies_archive_info_attribute() -> None:
