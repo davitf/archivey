@@ -2968,6 +2968,9 @@ def test_unrar_mask_match_windows_fold_does_not_change_wildcard_length(
     per character via ``toupperw`` and still emits the member. The skip
     would land one member short. Folding inside the per-character walk keeps
     the lengths aligned.
+
+    The ``AXB.TXT`` assertions pin the fold itself: literals that differ only
+    in case. The three ``ß`` checks stay green if ``.upper()`` is deleted.
     """
     from archivey.internal.backends import rar_unrar
     from archivey.internal.backends.rar_unrar import _unrar_mask_match
@@ -2976,6 +2979,11 @@ def test_unrar_mask_match_windows_fold_does_not_change_wildcard_length(
     assert _unrar_mask_match("aßb.txt", "a?b.txt")
     assert _unrar_mask_match("aßb.txt", "aßb.txt")
     assert not _unrar_mask_match("aßb.txt", "a??b.txt")
+    # Literals that differ only in case: the per-character fold, not the
+    # length check. Deleting ``.upper()`` leaves the three assertions above
+    # green and fails these.
+    assert _unrar_mask_match("AXB.TXT", "a?b.txt")
+    assert not _unrar_mask_match("AXB.TXT", "a?c.txt")
 
 
 def test_unrar_glob_mask_is_linear_on_a_hostile_member_name() -> None:
