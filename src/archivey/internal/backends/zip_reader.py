@@ -34,7 +34,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, BinaryIO, Iterator, Mapping, NoReturn, cast
+from typing import IO, TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, NoReturn, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -118,6 +118,9 @@ from archivey.types import (
     MemberType,
     crc32_digest,
 )
+
+if TYPE_CHECKING:
+    from archivey.types import ArchiveInfoExtra, MemberExtra
 
 # Comment decoding: try UTF-8 first, else fall back to cp437 (the ZIP appnote default,
 # which maps every byte and therefore never fails — no further fallbacks are reachable).
@@ -713,7 +716,7 @@ class ZipReader(BaseArchiveReader):
         if member_type in (MemberType.FILE, MemberType.SYMLINK):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
-        extra: dict[str, object] = {"zip.compress_type": info.compress_type}
+        extra: MemberExtra = {"zip.compress_type": info.compress_type}
         if aes_info is not None:
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength
@@ -1471,6 +1474,7 @@ class ZipReader(BaseArchiveReader):
             stream_capability=StreamCapability.SEEKABLE,
             solid_block_count=None,
         )
+        info_extra: ArchiveInfoExtra = {"zip.volume_count": self._volume_count}
         return ArchiveInfo(
             format=ArchiveFormat.ZIP,
             format_version=None,
@@ -1483,7 +1487,7 @@ class ZipReader(BaseArchiveReader):
             # about the ZIP structure — the join is a plain single-disk archive.
             is_multivolume=self._volume_count > 1,
             cost=cost,
-            extra={"zip.volume_count": self._volume_count},
+            extra=info_extra,
         )
 
     def _close_archive(self) -> None:

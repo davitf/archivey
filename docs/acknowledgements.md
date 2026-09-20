@@ -94,5 +94,6 @@ Declared in the PEP 735 `dev` / `docs` / `fuzz` groups (not user-facing extras):
 | [hypothesis](https://github.com/HypothesisWorks/hypothesis) | Property tests for safety logic |
 | [pytest](https://github.com/pytest-dev/pytest), [pytest-cov](https://github.com/pytest-dev/pytest-cov), [pytest-timeout](https://github.com/pytest-dev/pytest-timeout), [coverage](https://github.com/nedbat/coveragepy) | Test runner / coverage |
 | [ruff](https://github.com/astral-sh/ruff), [pyrefly](https://github.com/facebook/pyrefly), [ty](https://github.com/astral-sh/ty), [pre-commit](https://github.com/pre-commit/pre-commit) | Lint and type-check |
+| [typing_extensions](https://github.com/python/typing_extensions) | PEP 728 TypedDict (`extra_items`) for type checkers; not a runtime dep |
 | [mkdocs](https://github.com/mkdocs/mkdocs), [mkdocs-material](https://github.com/squidfunk/mkdocs-material), [mkdocstrings](https://github.com/mkdocstrings/mkdocstrings), … | Docs site (`docs` group) |
 | [atheris](https://github.com/google/atheris) | Coverage-guided fuzz (`fuzz` group; CI-only) |

@@ -30,7 +30,7 @@ import tempfile
 import zlib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -103,8 +103,12 @@ from archivey.types import (
     MagicSignature,
     MemberStreams,
     MemberType,
+    _empty_member_extra,
     crc32_digest,
 )
+
+if TYPE_CHECKING:
+    from archivey.types import ArchiveInfoExtra, MemberExtra
 
 _STREAM_SINGLE_DISK_COPY_NOTE = (
     "Reading a compressed member will copy the whole archive to disk so "
@@ -261,9 +265,9 @@ def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
 
 def _rar_member_extra_and_link(
     info: RarMemberInfo,
-) -> tuple[dict[str, object], str | None]:
+) -> tuple[MemberExtra, str | None]:
     """Build ``ArchiveMember.extra`` and the symlink/junction target."""
-    extra: dict[str, object] = {}
+    extra = _empty_member_extra()
     link_target: str | None = None
     if info.file_redir is not None:
         link_target = info.file_redir[2]
@@ -1413,6 +1417,9 @@ class RarReader(BaseArchiveReader):
         )
         archive_comment = self._archive.comment
         assert not isinstance(archive_comment, _Rar3Comment)
+        info_extra: ArchiveInfoExtra = {
+            "rar.volume_count": max(self._volume_count, len(self._volume_paths))
+        }
         return ArchiveInfo(
             format=ArchiveFormat.RAR,
             format_version=str(self._archive.version),
@@ -1422,9 +1429,7 @@ class RarReader(BaseArchiveReader):
             is_encrypted=self._archive.has_header_encryption or any_encrypted,
             is_multivolume=is_multivolume,
             cost=cost,
-            extra={
-                "rar.volume_count": max(self._volume_count, len(self._volume_paths))
-            },
+            extra=info_extra,
         )
 
     def _close_archive(self) -> None:

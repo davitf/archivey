@@ -14,6 +14,7 @@ import pytest
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     ArchiveFormat,
+    ArchiveInfo,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
@@ -160,6 +161,20 @@ def test_junction_helper() -> None:
     )
     assert junction.is_junction
     assert not ArchiveMember(type=MemberType.SYMLINK, name="s").is_junction
+
+
+def test_extra_typeddict_is_type_checking_only() -> None:
+    import archivey.types as types_mod
+
+    # Functional-syntax TypedDict is an assignment, so the whole definition sits
+    # under TYPE_CHECKING; the stored annotation is the name, not a runtime type.
+    assert ArchiveMember.__annotations__["extra"] == "MemberExtra"
+    assert ArchiveInfo.__annotations__["extra"] == "ArchiveInfoExtra"
+    assert not hasattr(types_mod, "MemberExtra")
+    assert not hasattr(types_mod, "ArchiveInfoExtra")
+    m = ArchiveMember(type=MemberType.FILE, name="a", extra={"third.party": 1})
+    assert m.extra["third.party"] == 1
+    assert m.extra == {"third.party": 1}
 
 
 def test_modified_utc_normalizes_mixed_timestamps() -> None:

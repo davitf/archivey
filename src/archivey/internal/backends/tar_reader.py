@@ -34,7 +34,7 @@ import threading
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO, Iterator, Literal, Mapping, cast
+from typing import TYPE_CHECKING, BinaryIO, Iterator, Literal, Mapping, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -91,6 +91,9 @@ from archivey.types import (
     MemberType,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.types import MemberExtra
 
 # Read size for the strict trailing-bytes scan. The tail past the trailer is unbounded
 # (a concatenated archive, a padded record, arbitrary junk), so it is consumed in chunks
@@ -699,7 +702,7 @@ class TarReader(BaseArchiveReader):
             else ()
         )
 
-        extra: dict[str, object] = {"tar.type": info.type}
+        extra: MemberExtra = {"tar.type": info.type}
         if info.pax_headers:
             extra["tar.pax_headers"] = dict(info.pax_headers)
         if info.isdev():

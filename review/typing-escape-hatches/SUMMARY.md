@@ -104,7 +104,8 @@ one category.
 7. **KEEP comments** on surviving typeshed `BinaryIO` casts, and name
    `FullCountStream` next to `PeekableStream` in the `ReadOnlyIOStream.name`
    docstring.
-8. **The `extra` key map as a PEP 728 `TypedDict`** (maintainer, 2026-09-20).
+8. **The `extra` key map as a PEP 728 `TypedDict`** (maintainer, 2026-09-20) —
+   **this PR.**
    Q1 made every `extra` value an `object` a caller must narrow, and narrowing
    correctly needs to know which key holds what. `docs/formats.md` documents 4 of
    ~17 keys and the complete table is in `QUESTIONS.md`, which this review
@@ -195,4 +196,4 @@ one category.
 | `CONTRIBUTING.md` describes forms that are actually specific | **yes** | |
 | "12 warnings not shown" answered | **yes** | |
 | `SUMMARY.md` records what is fine | **yes** | |
-| Staged fix PRs | 6 done (Q1) | 1, 2, 2b, 3, 4, 5, 7, 8 |
+| Staged fix PRs | 6 done (Q1); 8 this PR | 1, 2, 2b, 3, 4, 5, 7 |

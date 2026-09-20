@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
 from enum import Enum, Flag, auto
-from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple, cast
 
 if TYPE_CHECKING:
+    from typing_extensions import TypedDict
+
     from archivey.cost import CostReceipt
     from archivey.diagnostics import Diagnostic
 
@@ -351,6 +353,59 @@ EXTRA_RAR_CREATED_IS_CTIME = "rar.created_is_ctime"
 EXTRA_RAR_EXTRACT_VERSION = "rar.extract_version"
 
 
+# The whole TypedDict lives under TYPE_CHECKING, not only the import: functional
+# syntax is an assignment, and ``from __future__ import annotations`` defers
+# annotations, not assignments. An import-only guard raises NameError at import
+# time. Keeping the definition here is what lets a core install stay
+# zero-dependency (no ``typing_extensions`` at runtime). Callers therefore cannot
+# import the type to annotate their own code — that is this mitigation's price.
+if TYPE_CHECKING:
+    MemberExtra = TypedDict(
+        "MemberExtra",
+        {
+            "is_junction": bool,
+            "rar.created_is_ctime": bool,
+            "rar.extract_version": int,
+            "rar.file_version": int,
+            "rar.tweaked_crc32": int,
+            "rar.tweaked_blake2sp": bytes,
+            "zip.compress_type": int,
+            "zip.aes_vendor_version": int,
+            "zip.aes_strength": int,
+            "zip.aes_actual_method": int,
+            "tar.type": bytes,
+            "tar.pax_headers": dict[str, str],
+            "tar.devmajor": int,
+            "tar.devminor": int,
+            "gzip.original_filename": str,
+        },
+        total=False,
+        extra_items=object,
+    )
+    ArchiveInfoExtra = TypedDict(
+        "ArchiveInfoExtra",
+        {
+            "iso.namespace": str,
+            "zip.volume_count": int,
+            "rar.volume_count": int,
+            "7z.volume_count": int,
+        },
+        total=False,
+        extra_items=object,
+    )
+
+
+def _empty_member_extra() -> MemberExtra:
+    # ``default_factory=dict`` is not assignable to MemberExtra (pyrefly:
+    # dict[Unknown, Unknown]). MemberExtra is TYPE_CHECKING-only, so it cannot
+    # be the factory either.
+    return cast("MemberExtra", {})
+
+
+def _empty_archive_info_extra() -> ArchiveInfoExtra:
+    return cast("ArchiveInfoExtra", {})
+
+
 @dataclass(slots=True)
 class ArchiveMember:
     """One archive entry.
@@ -448,15 +503,14 @@ class ArchiveMember:
     """
 
     # compare=False: format-specific bags must not affect logical identity.
-    extra: dict[str, object] = field(default_factory=dict, compare=False)
+    extra: MemberExtra = field(default_factory=_empty_member_extra, compare=False)
     """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality.
 
-    Values are ``object``: a caller that uses a key must narrow it before use. The
-    ``EXTRA_*`` constants on this module name some of those keys, format-independent
-    and namespaced alike; backends also write further ``format.key`` strings, some
-    of which are documented in the formats guide. There is no complete published
-    register of keys and their value types, so narrow defensively rather than
-    assuming a key's type.
+    Known keys and their value types are ``MemberExtra`` in this module. Unknown
+    keys (third-party or future) stay legal and read as ``object``. ``MemberExtra``
+    exists only for type checkers — a core install stays zero-dependency — so it
+    is not importable at runtime. The ``EXTRA_*`` constants on this module remain
+    the names for the keys they cover.
     """
 
     # Private internal fields (not part of the public contract)
@@ -581,8 +635,12 @@ class ArchiveInfo:
     cost: "CostReceipt"
     """Listing/access cost receipt for the archive (see the ``access-mode-and-cost`` capability)."""
 
-    extra: dict[str, object] = field(default_factory=dict, compare=False)
+    extra: ArchiveInfoExtra = field(
+        default_factory=_empty_archive_info_extra, compare=False
+    )
     """Format-specific archive-level metadata, keyed by namespaced strings (mirrors
     ``ArchiveMember.extra``). For example the ISO backend records the auto-selected
-    namespace as ``extra["iso.namespace"]``. Excluded from ``__eq__``. Values are
-    ``object``; a caller that uses a key must narrow it."""
+    namespace as ``extra["iso.namespace"]``. Excluded from ``__eq__``. Known keys
+    and their value types are ``ArchiveInfoExtra`` in this module; unknown keys
+    stay legal and read as ``object``. The type is type-checkers only, matching
+    ``MemberExtra``."""

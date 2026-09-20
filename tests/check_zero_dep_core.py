@@ -33,6 +33,8 @@ FORBIDDEN = (
     "brotli",
     "rapidgzip",
     "indexed_bzip2",
+    # TYPE_CHECKING-only in archivey.types; a core install must not pull it in.
+    "typing_extensions",
 )
 present = []
 for mod in FORBIDDEN:

@@ -28,6 +28,18 @@ Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[se
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
 Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledgements.md).
 
+## The `extra` bags
+
+`ArchiveMember.extra` and `ArchiveInfo.extra` are open, per-format maps. The
+authoritative key list and value types are `MemberExtra` and `ArchiveInfoExtra` in
+`archivey.types` — PEP 728 TypedDicts that type checkers see and a core install
+does not import (no `typing_extensions` at runtime). Unknown keys stay legal and
+read as `object`. The `EXTRA_*` constants on that module are still the names for
+the keys that have constants.
+
+The format sections below mention a key only when it is part of that format's
+behaviour. They are not the complete list.
+
 ## ZIP
 
 - Stdlib ``zipfile`` for **central-directory parsing / listing**; member **data** decodes

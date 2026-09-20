@@ -24,8 +24,9 @@ for third-party extensions — on its own PR, not this one.
 That is PEP 728 `extra_items`, and it works here. The three costs PR 8 carries are
 listed once, on [`SUMMARY.md`](SUMMARY.md) item 8 — do not keep a second copy here.
 
-**Until PR 8 lands, `dict[str, object]` plus the `EXTRA_*` constants (and string
-keys in the format handbooks) is the contract.**
+**The contract is now the TypedDict** (`MemberExtra` / `ArchiveInfoExtra` under
+`TYPE_CHECKING`; the `EXTRA_*` constants remain the names). Unknown keys stay
+legal and read as `object`.
 
 What follows is the 2026-09-18 reasoning the decision supersedes, from "Not one
 *closed* TypedDict" to "Two fields, two key sets" — with two exceptions inside that

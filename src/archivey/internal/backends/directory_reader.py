@@ -43,6 +43,7 @@ from archivey.types import (
     MagicSignature,
     MemberStreams,
     MemberType,
+    _empty_member_extra,
 )
 
 
@@ -248,7 +249,7 @@ class DirectoryReader(BaseArchiveReader):
             uname=self._lookup_uname(uid),
             gname=self._lookup_gname(gid),
             link_target=link_target,
-            extra={EXTRA_IS_JUNCTION: True} if is_junction else {},
+            extra=({EXTRA_IS_JUNCTION: True} if is_junction else _empty_member_extra()),
         )
 
     def _lookup_uname(self, uid: int) -> str | None:

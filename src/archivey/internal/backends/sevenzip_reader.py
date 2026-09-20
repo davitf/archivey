@@ -28,7 +28,7 @@ import zlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -106,6 +106,9 @@ from archivey.types import (
     MemberType,
     crc32_digest,
 )
+
+if TYPE_CHECKING:
+    from archivey.types import ArchiveInfoExtra
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
@@ -816,6 +819,7 @@ class SevenZipReader(BaseArchiveReader):
             stream_capability=StreamCapability.SEEKABLE,
             solid_block_count=solid_blocks if self._archive.is_solid else None,
         )
+        info_extra: ArchiveInfoExtra = {"7z.volume_count": self._volume_count}
         return ArchiveInfo(
             format=ArchiveFormat.SEVEN_Z,
             format_version=f"{self._archive.major_version}.{self._archive.minor_version}",
@@ -826,7 +830,7 @@ class SevenZipReader(BaseArchiveReader):
             or self._archive.has_encrypted_folders,
             is_multivolume=self._volume_count > 1,
             cost=cost,
-            extra={"7z.volume_count": self._volume_count},
+            extra=info_extra,
         )
 
     def _close_archive(self) -> None:
