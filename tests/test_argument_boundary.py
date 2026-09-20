@@ -497,9 +497,22 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("open_archive", "format"): "refused by format_args; test_format_arguments.py",
     ("open_stream", "format"): "refused by format_args; test_format_arguments.py",
     ("extract", "format"): "refused by format_args; test_format_arguments.py",
-    # The policy enums. The sibling enum-argument change **coerces** these — a
-    # recognised spelling becomes the member — so a refusal here would contradict it.
-    # Its own test module owns them; this one must not assert the opposite.
+    # The arguments the sibling enum-argument change owns, which **coerces** them: a
+    # recognised spelling becomes the member, so a refusal here would contradict it.
+    # Its own test module asserts what they do; this one must not assert the opposite.
+    #
+    # READ THIS BEFORE TRUSTING A GREEN RUN. That branch is not merged, so on *this*
+    # tree these arguments are unguarded, and one of them escapes silently:
+    # ``extract(abort_on="blocked")`` iterates the string into characters and
+    # disables every abort, reporting a clean run. An exemption records who *owns* an
+    # argument, never that it is safe today, and neither test above can tell the two
+    # apart — a wrong exemption is live rather than stale, which is the blind spot
+    # left here once ``test_not_swept_entries_are_all_live`` has done its half.
+    #
+    # Verified against that branch's head rather than assumed, at pr380 on
+    # 2026-09-20: ``abort_on="blocked"`` and ``abort_on=0`` both answer
+    # ``ArchiveyUsageError`` there, through ``coerce_enum_collection``. Re-check on
+    # merge; anything that turns out not to be covered belongs in _cases, not here.
     ("extract", "policy"): "coerced by the sibling enum-argument change",
     ("extract", "overwrite"): "coerced by the sibling enum-argument change",
     ("extract", "on_error"): "coerced by the sibling enum-argument change",
