@@ -54,10 +54,11 @@ is the same loop in both directions; two things had to stop assuming who was who
 workflow asks the implementing agent to work through them, and that comment used to say
 `@cursor` unconditionally — which, in the reversed direction, handed the fixes to the
 agent that had just written them up. It now reads `@cursoragent` on a `cursor/*` branch
-and `@claude` on anything else. **The GitHub handle is `@cursoragent`**: there is no
-GitHub user called `cursor`, the app posts as `cursor[bot]` and a bot login cannot be
-mentioned, so `@cursor` on GitHub addresses nobody at all. On Linear the handle is
-`@cursor`, which is where the wrong one came from. The prefix is the signal the gate already uses to decide
+and `@claude` on anything else. **The GitHub handle is `@cursoragent`**: on GitHub
+`cursor` is the company's organization account, the app posts as `cursor[bot]` and a
+bot login cannot be mentioned, so `@cursor` there notifies an org and wakes no agent.
+On Linear the handle is `@cursor`, which is where the wrong one came from, and the hop
+addresses its own copy of the ping accordingly. The prefix is the signal the gate already uses to decide
 enrolment, so there is no new piece of state, and `head_ref` comes out of the gate
 alongside the sha the round is reviewing.
 
@@ -390,9 +391,10 @@ opening a comment on it with `@claude review`.
   is worth splitting one so the workflow edit is small and separable. Observed on #379
   (2026-09-20). The same rule is why a new `workflow_dispatch` workflow cannot be run
   before it merges: GitHub only dispatches workflows present on the default branch.
-- **The findings ping was addressed to a GitHub user that does not exist.** It said
-  `@cursor`; the app posts as `cursor[bot]`, a bot login cannot be mentioned, and the
-  mentionable account is `cursoragent`. Fixed in
+- **The findings ping was addressed to an organization rather than an agent.** It said
+  `@cursor`, which on GitHub is the company's org account; the app posts as
+  `cursor[bot]`, a bot login cannot be mentioned, and the account an agent answers to is
+  the user `cursoragent`. Fixed in
   [the ping section above](#the-roles-run-both-ways-round) on 2026-09-20 (davitf spotted
   it). This also undercuts the measurement the Linear hop below was built on: #374's
   sixty-six minutes of silence were after a ping that mentioned nobody. A human comment

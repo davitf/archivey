@@ -460,12 +460,13 @@ jobs:
               # entrypoint it actually has: `/address-review` is Cursor's slash
               # command, while a Claude Code session lands in the skill.
               #
-              # **`@cursoragent`, not `@cursor`.** There is no GitHub user named
-              # `cursor` — the app posts as `cursor[bot]`, which cannot be mentioned,
-              # and the account that can is `cursoragent`. This said `@cursor` from
-              # the day it was written, so every `cursor/*` findings ping so far has
-              # mentioned nobody. On Linear the handle really is `@cursor`, which is
-              # where the wrong one came from; the two are deliberately different.
+              # **`@cursoragent`, not `@cursor`.** On GitHub `cursor` is the
+              # company's *organization* account, the app posts as `cursor[bot]`,
+              # which cannot be mentioned, and the account an agent answers to is
+              # the user `cursoragent`. This said `@cursor` from the day it was
+              # written, so every `cursor/*` findings ping so far notified an org
+              # and woke no agent. On Linear the handle really is `@cursor`, which
+              # is where the wrong one came from; the two are deliberately different.
               case "$HEAD_REF" in
                 cursor/*) fixer="@cursoragent"; linear_fixer="@cursor"; who="Cursor"
                           entry="the \`/address-review\` command" ;;

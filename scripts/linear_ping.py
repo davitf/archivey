@@ -15,10 +15,12 @@ Fourteen minutes against sixty-six of silence, and slowness is not the explanati
 the same agent went from Linear delegation to a finished pull request in about seven
 minutes earlier that night.
 
-**What that measurement does not prove.** The GitHub ping said `@cursor`, and there is
-no GitHub user by that name: the app posts as `cursor[bot]`, a bot login cannot be
-mentioned, and the account that can is `cursoragent`. So the comment mentioned nobody,
-and the silence has a simpler explanation than "a bot comment does not wake Cursor".
+**What that measurement does not prove.** The GitHub ping said `@cursor`, which on
+GitHub is the company's *organization* account (id 126759922), not an agent: the app
+posts as `cursor[bot]`, a bot login cannot be mentioned, and the account an agent
+answers to is the user `cursoragent` (id 199161495). So the comment notified an
+organization and reached no agent, and the silence has a simpler explanation than
+"a bot comment does not wake Cursor".
 Contrast, same repository, 2026-09-20 03:46:35 — a human comment reading
 `@cursoragent please review` on #372 got "Taking a look!" from `cursor[bot]` seven
 seconds later. The handle is fixed in the workflow now.

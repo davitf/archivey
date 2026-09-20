@@ -908,10 +908,10 @@ def test_the_ping_is_addressed_differently_on_the_two_surfaces(
 ) -> None:
     """Cursor answers to `@cursoragent` on GitHub and `@cursor` on Linear.
 
-    Neither spelling works on the other surface: there is no GitHub user called
-    `cursor`, so the ping addressed nobody for as long as it said that, and
-    `@cursoragent` on Linear mentions nobody either. One handle used twice is wrong
-    whichever one is picked, which is why the workflow carries two variables.
+    Neither spelling works on the other surface: on GitHub `cursor` is the company's
+    organization account, so the ping notified an org and woke no agent for as long as
+    it said that, and `@cursoragent` on Linear mentions nobody at all. One handle used
+    twice is wrong whichever one is picked, which is why there are two variables.
     """
     picked = _bash(
         f"HEAD_REF={head_ref!r}\n"
