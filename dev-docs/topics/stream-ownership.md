@@ -111,11 +111,18 @@ would collide with the wrapper vocabulary for no call-site gain.
 
 `ConcatenatedFile` is the same split: Path volumes are owned, caller streams are
 borrowed. Path parts are sized with `os.stat()` and opened on the first read
-that needs that part; at most one Path handle is held, and it is closed when
-the cursor leaves the volume (including `close()` with none open). A missing
+that needs that part, into a small LRU (three handles) so a caller that
+alternates across a volume boundary (two `SharedView`s under
+`concurrent_members=True`) does not open-and-close on every read. `close()`
+releases every cached Path handle and is safe when none are open. A missing
 file still fails at construction via `stat()`. A permission error on `open()`
-surfaces on the first read of that part — opening every Path at construction
-just to fail-fast would put the descriptors back.
+surfaces on the first read of that part as `OpenError` chaining the `OSError`
+— opening every Path at construction just to fail-fast would put the
+descriptors back. Volume bytes are sampled at read time, not pinned by a
+construction-time fd: replacing a part after construction is visible on the
+next open of that part. A borrowed `BinaryIO` volume is re-seeked before every
+read; a Path handle is seeked only when the cursor lands on it from a seek or
+from first open.
 
 `readinto_passthrough` shares `DelegatingStream.__init__` and is not ownership.
 

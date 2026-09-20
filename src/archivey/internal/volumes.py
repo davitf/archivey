@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import bisect
+import errno
 import io
 import os
 import re
+import stat
+from bisect import bisect_right
+from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +17,7 @@ from typing import BinaryIO, TypeGuard
 from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyUsageError,
+    OpenError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -272,12 +276,36 @@ def first_volume_for_stub(path: Path) -> Path | None:
     return None
 
 
+# Interleaved SharedView reads across a volume boundary reuse these. Not a refusal
+# bound: a 100-part set still reads, it just keeps this many Path descriptors.
+_PATH_HANDLE_CACHE_SIZE = 3
+
+
+def _fd_limit_text() -> str:
+    try:
+        import resource
+
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ImportError, AttributeError, OSError, ValueError):
+        return "the process file-descriptor limit"
+    return f"the process file-descriptor limit is {soft}"
+
+
+@dataclass
+class _CachedPathHandle:
+    stream: BinaryIO
+    synced: bool = False
+
+
 class ConcatenatedFile(io.RawIOBase, BinaryIO):
     """Seekable read-only concatenation of volume streams.
 
-    Path volumes are sized with ``stat`` and opened lazily: at most one Path
-    handle is held, closed when the read position leaves that part.
-    Caller-supplied streams stay open and are never closed here.
+    Path volumes are sized with ``stat`` and opened lazily into a small LRU of
+    handles (``_PATH_HANDLE_CACHE_SIZE``). Bytes are sampled at ``open()`` /
+    ``read()``, not pinned by a construction-time descriptor: replacing a part
+    after construction is visible on the next open of that part.
+    Caller-supplied streams stay open, are never closed here, and are re-seeked
+    before every read (the caller may have moved them).
     """
 
     def __init__(self, sources: Sequence[Path | BinaryIO]) -> None:
@@ -296,7 +324,13 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             if isinstance(source, Path):
                 # No handle: a 100-part set must not hold 100 descriptors from
                 # construction, and sizing does not need one.
-                size = os.stat(source).st_size
+                st = os.stat(source)
+                if not stat.S_ISREG(st.st_mode):
+                    raise OpenError(
+                        "volume is not a regular file",
+                        archive_name=source.as_posix(),
+                    )
+                size = st.st_size
             else:
                 try:
                     pos = source.tell()
@@ -318,9 +352,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         self.volume_count = len(sources)
         self._vol_index = 0
         self._vol_offset = 0
-        self._path_stream: BinaryIO | None = None
-        self._path_index: int | None = None
-        self._handle_synced = False
+        self._path_handles: OrderedDict[int, _CachedPathHandle] = OrderedDict()
         self._recompute_cursor()
 
     @property
@@ -349,66 +381,88 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         return True
 
     def tell(self) -> int:
+        self._checkClosed()
         return self._pos
 
-    def _close_owned_path(self) -> None:
-        stream = self._path_stream
-        if stream is None:
-            return
-        self._path_stream = None
-        self._path_index = None
-        stream.close()
+    def _close_all_path_handles(self) -> None:
+        handles = list(self._path_handles.values())
+        self._path_handles.clear()
+        for handle in handles:
+            handle.stream.close()
 
-    def _release_path_unless_index(self, index: int) -> None:
-        if self._path_index is not None and self._path_index != index:
-            self._close_owned_path()
+    def _open_path_volume(self, path: Path) -> BinaryIO:
+        try:
+            return open(path, "rb")
+        except OSError as exc:
+            if exc.errno in (errno.EMFILE, errno.ENFILE):
+                raise OpenError(
+                    f"Too many open files to open volume; {_fd_limit_text()}",
+                    archive_name=path.as_posix(),
+                ) from exc
+            raise OpenError(
+                "Cannot open volume",
+                archive_name=path.as_posix(),
+            ) from exc
 
     def _recompute_cursor(self) -> None:
         """Set volume index/offset from ``_pos``. Sequential ``read`` advances instead."""
         if self._pos >= self._size:
-            self._close_owned_path()
             self._vol_index = self.volume_count
             self._vol_offset = 0
-            self._handle_synced = False
             return
-        index = bisect.bisect_right(self._offsets, self._pos) - 1
-        self._release_path_unless_index(index)
+        index = bisect_right(self._offsets, self._pos) - 1
         self._vol_index = index
         self._vol_offset = self._pos - self._offsets[index]
-        self._handle_synced = False
+        cached = self._path_handles.get(index)
+        if cached is not None:
+            cached.synced = False
 
     def _advance_volume(self) -> None:
-        if self._path_index == self._vol_index:
-            self._close_owned_path()
         self._vol_index += 1
         self._vol_offset = 0
-        self._handle_synced = False
         n = self.volume_count
         while (
             self._vol_index < n
             and self._offsets[self._vol_index + 1] == self._offsets[self._vol_index]
         ):
             self._vol_index += 1
+        cached = self._path_handles.get(self._vol_index)
+        if cached is not None:
+            cached.synced = False
 
     def _ensure_current_stream(self) -> BinaryIO:
         source = self._volume_items[self._vol_index]
+        if not isinstance(source, Path):
+            # Caller-owned: never close it. ``_path_handles`` is Path-only, so a
+            # mixed set can keep a Path handle cached while this stream is current.
+            return source
+        cached = self._path_handles.get(self._vol_index)
+        if cached is not None:
+            self._path_handles.move_to_end(self._vol_index)
+            return cached.stream
+        while len(self._path_handles) >= _PATH_HANDLE_CACHE_SIZE:
+            _old_index, old = self._path_handles.popitem(last=False)
+            old.stream.close()
+        stream = self._open_path_volume(source)
+        self._path_handles[self._vol_index] = _CachedPathHandle(stream)
+        return stream
+
+    def _seek_current_stream(self, stream: BinaryIO) -> None:
+        source = self._volume_items[self._vol_index]
         if isinstance(source, Path):
-            owned = self._path_stream
-            if self._path_index == self._vol_index and owned is not None:
-                return owned
-            self._close_owned_path()
-            owned = open(source, "rb")
-            self._path_stream = owned
-            self._path_index = self._vol_index
-            self._handle_synced = False
-            return owned
-        # Caller-owned: never close it, but drop a Path handle we have left.
-        if self._path_index is not None:
-            self._close_owned_path()
-            self._handle_synced = False
-        return source
+            cached = self._path_handles[self._vol_index]
+            if cached.synced:
+                return
+            stream.seek(self._vol_offset)
+            cached.synced = True
+            return
+        # Borrowed: the caller may have moved it. Seek every time, as we did
+        # when every volume was an already-open handle. ``synced`` is Path-only
+        # because that invariant is not enforceable on a stream we do not own.
+        stream.seek(self._vol_offset)
 
     def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        self._checkClosed()
         if whence == os.SEEK_SET:
             new_pos = offset
         elif whence == os.SEEK_CUR:
@@ -424,6 +478,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         return self._pos
 
     def read(self, n: int = -1) -> bytes:
+        self._checkClosed()
         if self._pos >= self._size:
             return b""
         if n is None or n < 0:
@@ -434,17 +489,17 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         while n > 0 and self._pos < self._size:
             vol_end = self._offsets[self._vol_index + 1]
             available = vol_end - self._pos
-            if available <= 0:
-                self._advance_volume()
-                continue
             to_read = min(n, available)
             stream = self._ensure_current_stream()
-            if not self._handle_synced:
-                stream.seek(self._vol_offset)
-                self._handle_synced = True
+            self._seek_current_stream(stream)
             chunk = stream.read(to_read)
             if not chunk:
-                break
+                source = self._volume_items[self._vol_index]
+                archive_name = source.as_posix() if isinstance(source, Path) else None
+                raise TruncatedError(
+                    "volume ended before its recorded size",
+                    archive_name=archive_name,
+                )
             got = len(chunk)
             out.extend(chunk)
             self._pos += got
@@ -458,7 +513,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         if self.closed:
             return
         try:
-            self._close_owned_path()
+            self._close_all_path_handles()
         finally:
             super().close()
 
