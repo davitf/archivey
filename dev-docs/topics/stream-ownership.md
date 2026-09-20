@@ -109,6 +109,14 @@ the way `lock=None` used to. A second class for that is `SharedView` already.
 already encodes the answer at construction. Renaming them to `owns_inner`
 would collide with the wrapper vocabulary for no call-site gain.
 
+`ConcatenatedFile` is the same split: Path volumes are owned, caller streams are
+borrowed. Path parts are sized with `os.stat()` and opened on the first read
+that needs that part; at most one Path handle is held, and it is closed when
+the cursor leaves the volume (including `close()` with none open). A missing
+file still fails at construction via `stat()`. A permission error on `open()`
+surfaces on the first read of that part — opening every Path at construction
+just to fail-fast would put the descriptors back.
+
 `readinto_passthrough` shares `DelegatingStream.__init__` and is not ownership.
 
 ## 5. Leak oracle
@@ -130,6 +138,6 @@ before committing.
 ```bash
 uv run --no-sync pytest tests/test_stream_bases.py tests/test_slice.py \
     tests/test_leak_oracle.py tests/test_codecs.py tests/test_rar_reader.py \
-    tests/test_sevenzip_reader.py::test_first_stage_bcj_does_not_close_pack_source \
+    tests/test_volumes.py tests/test_sevenzip_reader.py::test_first_stage_bcj_does_not_close_pack_source \
     tests/test_sevenzip_reader.py::test_copy_bcj_folder_roundtrip -q --no-cov
 ```

@@ -273,14 +273,17 @@ def first_volume_for_stub(path: Path) -> Path | None:
 
 
 class ConcatenatedFile(io.RawIOBase, BinaryIO):
-    """Seekable read-only concatenation of volume streams."""
+    """Seekable read-only concatenation of volume streams.
+
+    Path volumes are sized with ``stat`` and opened lazily: at most one Path
+    handle is held, closed when the read position leaves that part.
+    Caller-supplied streams stay open and are never closed here.
+    """
 
     def __init__(self, sources: Sequence[Path | BinaryIO]) -> None:
         super().__init__()
         if not sources:
             raise ArchiveyUsageError("at least one volume is required")
-        self._streams: list[BinaryIO] = []
-        self._owned: list[BinaryIO] = []
         # Retained so format-specific openers (RAR) can recover real volume paths —
         # unrar needs sibling files on disk, not a concatenated byte stream.
         self._volume_paths: list[Path] = [
@@ -291,28 +294,34 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         total = 0
         for source in sources:
             if isinstance(source, Path):
-                stream = open(source, "rb")
-                self._owned.append(stream)
+                # No handle: a 100-part set must not hold 100 descriptors from
+                # construction, and sizing does not need one.
+                size = os.stat(source).st_size
             else:
-                stream = source
-            try:
-                pos = stream.tell()
-                size = stream.seek(0, os.SEEK_END)
-                stream.seek(pos)
-            except (OSError, AttributeError, io.UnsupportedOperation) as exc:
-                # Same refusal as a non-seekable *single* source, so it gets the same
-                # type: a volume set is concatenated by offset and cannot be joined
-                # from a forward-only stream.
-                raise StreamNotSeekableError(
-                    "all volume streams must be seekable"
-                ) from exc
-            self._streams.append(stream)
+                try:
+                    pos = source.tell()
+                    size = source.seek(0, os.SEEK_END)
+                    source.seek(pos)
+                except (OSError, AttributeError, io.UnsupportedOperation) as exc:
+                    # Same refusal as a non-seekable *single* source, so it gets the same
+                    # type: a volume set is concatenated by offset and cannot be joined
+                    # from a forward-only stream. Paths are always seekable; this check
+                    # is for caller-supplied streams only.
+                    raise StreamNotSeekableError(
+                        "all volume streams must be seekable"
+                    ) from exc
             total += size
             offsets.append(total)
         self._offsets = offsets
         self._size = total
         self._pos = 0
         self.volume_count = len(sources)
+        self._vol_index = 0
+        self._vol_offset = 0
+        self._path_stream: BinaryIO | None = None
+        self._path_index: int | None = None
+        self._handle_synced = False
+        self._recompute_cursor()
 
     @property
     def volume_paths(self) -> list[Path]:
@@ -342,6 +351,63 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     def tell(self) -> int:
         return self._pos
 
+    def _close_owned_path(self) -> None:
+        stream = self._path_stream
+        if stream is None:
+            return
+        self._path_stream = None
+        self._path_index = None
+        stream.close()
+
+    def _release_path_unless_index(self, index: int) -> None:
+        if self._path_index is not None and self._path_index != index:
+            self._close_owned_path()
+
+    def _recompute_cursor(self) -> None:
+        """Set volume index/offset from ``_pos``. Sequential ``read`` advances instead."""
+        if self._pos >= self._size:
+            self._close_owned_path()
+            self._vol_index = self.volume_count
+            self._vol_offset = 0
+            self._handle_synced = False
+            return
+        index = bisect.bisect_right(self._offsets, self._pos) - 1
+        self._release_path_unless_index(index)
+        self._vol_index = index
+        self._vol_offset = self._pos - self._offsets[index]
+        self._handle_synced = False
+
+    def _advance_volume(self) -> None:
+        if self._path_index == self._vol_index:
+            self._close_owned_path()
+        self._vol_index += 1
+        self._vol_offset = 0
+        self._handle_synced = False
+        n = self.volume_count
+        while (
+            self._vol_index < n
+            and self._offsets[self._vol_index + 1] == self._offsets[self._vol_index]
+        ):
+            self._vol_index += 1
+
+    def _ensure_current_stream(self) -> BinaryIO:
+        source = self._volume_items[self._vol_index]
+        if isinstance(source, Path):
+            owned = self._path_stream
+            if self._path_index == self._vol_index and owned is not None:
+                return owned
+            self._close_owned_path()
+            owned = open(source, "rb")
+            self._path_stream = owned
+            self._path_index = self._vol_index
+            self._handle_synced = False
+            return owned
+        # Caller-owned: never close it, but drop a Path handle we have left.
+        if self._path_index is not None:
+            self._close_owned_path()
+            self._handle_synced = False
+        return source
+
     def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
         if whence == os.SEEK_SET:
             new_pos = offset
@@ -354,6 +420,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         if new_pos < 0:
             raise ValueError("Negative seek position")
         self._pos = new_pos
+        self._recompute_cursor()
         return self._pos
 
     def read(self, n: int = -1) -> bytes:
@@ -365,26 +432,33 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             n = min(n, self._size - self._pos)
         out = bytearray()
         while n > 0 and self._pos < self._size:
-            index = bisect.bisect_right(self._offsets, self._pos) - 1
-            stream = self._streams[index]
-            volume_offset = self._pos - self._offsets[index]
-            available = self._offsets[index + 1] - self._pos
+            vol_end = self._offsets[self._vol_index + 1]
+            available = vol_end - self._pos
+            if available <= 0:
+                self._advance_volume()
+                continue
             to_read = min(n, available)
-            stream.seek(volume_offset)
+            stream = self._ensure_current_stream()
+            if not self._handle_synced:
+                stream.seek(self._vol_offset)
+                self._handle_synced = True
             chunk = stream.read(to_read)
             if not chunk:
                 break
+            got = len(chunk)
             out.extend(chunk)
-            self._pos += len(chunk)
-            n -= len(chunk)
+            self._pos += got
+            self._vol_offset += got
+            n -= got
+            if self._pos >= vol_end:
+                self._advance_volume()
         return bytes(out)
 
     def close(self) -> None:
         if self.closed:
             return
         try:
-            for stream in self._owned:
-                stream.close()
+            self._close_owned_path()
         finally:
             super().close()
 
