@@ -25,6 +25,7 @@ import struct
 import zipfile
 from enum import Enum
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
@@ -36,13 +37,19 @@ from archivey import (
     OverwritePolicy,
     extract,
 )
-from archivey.config import AcceleratorMode, ArchiveyConfig
-from archivey.detection_cost import DetectionBudgetPreset
+from archivey.config import AcceleratorMode, AcceleratorModeStr, ArchiveyConfig
+from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.enum_args import (
     coerce_enum,
     coerce_enum_collection,
     normalize_spelling,
+)
+from archivey.internal.extraction_types import (
+    AbortOnStr,
+    ExtractionPolicyStr,
+    OnErrorStr,
+    OverwritePolicyStr,
 )
 
 # Every enum reachable from a public argument.
@@ -313,3 +320,60 @@ def test_a_wrong_typed_budget_message_names_every_type_it_accepts(
     message = str(exc_info.value)
     assert "DetectionBudget or a DetectionBudgetPreset" in message
     assert "its name as a string" in message
+
+
+# --- the Literal aliases track their enums ------------------------------------------
+
+#: Each public enum and the ``Literal`` alias that spells it for a type checker.
+LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
+    (ExtractionPolicy, ExtractionPolicyStr),
+    (OverwritePolicy, OverwritePolicyStr),
+    (OnError, OnErrorStr),
+    (AbortOn, AbortOnStr),
+    (AcceleratorMode, AcceleratorModeStr),
+    (DetectionBudgetPreset, DetectionBudgetPresetStr),
+)
+
+
+def _expected_literal_spellings(enum_cls: type[Enum]) -> set[str]:
+    """Every spelling the alias beside ``enum_cls`` is supposed to carry.
+
+    The canonical ``value``, plus the dash form wherever a value has an underscore —
+    that one is what the CLI's ``--help`` prints, so a caller pasting from it must not
+    be type-errored for using the spelling we advertise.
+    """
+    spellings: set[str] = set()
+    for member in enum_cls:
+        value = member.value
+        assert isinstance(value, str), f"{enum_cls.__name__}.{member.name} is not a str"
+        spellings.add(value)
+        if "_" in value:
+            spellings.add(value.replace("_", "-"))
+    return spellings
+
+
+@pytest.mark.parametrize(
+    ("enum_cls", "alias"), LITERAL_ALIASES, ids=lambda x: getattr(x, "__name__", "")
+)
+def test_the_literal_alias_matches_its_enum(
+    enum_cls: type[Enum], alias: object
+) -> None:
+    """The guard that makes the hand-maintained alias safe to hand-maintain.
+
+    A ``Literal`` cannot be generated from an enum, so it is written out and can go
+    stale: a member added later is accepted at runtime and rejected by a type checker,
+    which is the worst of both. This fails the moment the two disagree, so the cost of
+    the alias is paid here rather than by a caller.
+    """
+    assert set(get_args(alias)) == _expected_literal_spellings(enum_cls)
+
+
+@pytest.mark.parametrize(
+    ("enum_cls", "alias"), LITERAL_ALIASES, ids=lambda x: getattr(x, "__name__", "")
+)
+def test_every_literal_spelling_actually_coerces(
+    enum_cls: type[Enum], alias: object
+) -> None:
+    """The alias promises a type checker what the runtime must then accept."""
+    for spelling in get_args(alias):
+        assert coerce_enum(spelling, enum_cls, call="t()", param="p=") in list(enum_cls)

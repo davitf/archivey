@@ -54,6 +54,7 @@ from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
 from archivey.detection_cost import (
     DetectionBudget,
     DetectionBudgetPreset,
+    DetectionBudgetPresetStr,
     DetectionCapability,
     DetectionCostReceipt,
     TierSkip,
@@ -489,7 +490,7 @@ def _scan_for_sfx_payload(
 
 
 def _resolve_budget(
-    budget: DetectionBudget | DetectionBudgetPreset | str | None,
+    budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr | None,
 ) -> DetectionBudget:
     """Normalize the ``budget=`` argument, refusing anything that is neither.
 
@@ -518,7 +519,10 @@ def detect_format(
     *,
     config: ArchiveyConfig | None = None,
     collector: DiagnosticCollector | None = None,
-    budget: DetectionBudget | DetectionBudgetPreset | str | None = None,
+    budget: DetectionBudget
+    | DetectionBudgetPreset
+    | DetectionBudgetPresetStr
+    | None = None,
     follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.

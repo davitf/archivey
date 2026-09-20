@@ -61,12 +61,16 @@ from archivey.internal.enum_args import (
 )
 from archivey.internal.extraction_types import (
     AbortOn,
+    AbortOnStr,
     ExtractionPolicy,
+    ExtractionPolicyStr,
     ExtractionProgress,
     MemberFilter,
     MemberSelectorArg,
     OnError,
+    OnErrorStr,
     OverwritePolicy,
+    OverwritePolicyStr,
 )
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
@@ -1904,10 +1908,10 @@ class BaseArchiveReader(ArchiveReader):
         *,
         members: MemberSelectorArg = None,
         filter: MemberFilter | None = None,
-        policy: ExtractionPolicy | str = ExtractionPolicy.STRICT,
-        overwrite: OverwritePolicy | str = OverwritePolicy.ERROR,
-        on_error: OnError | str = OnError.STOP,
-        abort_on: Collection[AbortOn | str] = (),
+        policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
+        overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
+        on_error: OnError | OnErrorStr = OnError.STOP,
+        abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,

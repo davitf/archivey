@@ -11,11 +11,15 @@ from archivey.cost import CostReceipt
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
 from archivey.internal.extraction_types import (
     AbortOn,
+    AbortOnStr,
     ExtractionPolicy,
+    ExtractionPolicyStr,
     ExtractionProgress,
     MemberFilter,
     OnError,
+    OnErrorStr,
     OverwritePolicy,
+    OverwritePolicyStr,
 )
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember
 
@@ -178,10 +182,10 @@ class ArchiveReader(ABC):
         *,
         members: MemberSelector = None,
         filter: MemberFilter | None = None,
-        policy: ExtractionPolicy | str = ExtractionPolicy.STRICT,
-        overwrite: OverwritePolicy | str = OverwritePolicy.ERROR,
-        on_error: OnError | str = OnError.STOP,
-        abort_on: Collection[AbortOn | str] = (),
+        policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
+        overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
+        on_error: OnError | OnErrorStr = OnError.STOP,
+        abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,

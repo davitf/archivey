@@ -45,10 +45,14 @@ from archivey.internal.enum_args import (
 )
 from archivey.internal.extraction_types import (
     AbortOn,
+    AbortOnStr,
     ExtractionPolicy,
+    ExtractionPolicyStr,
     ExtractionProgress,
     OnError,
+    OnErrorStr,
     OverwritePolicy,
+    OverwritePolicyStr,
 )
 from archivey.internal.format_args import (
     coerce_archive_format,
@@ -674,10 +678,10 @@ def extract(
     source: OpenSourceInput,
     dest: str | Path,
     *,
-    policy: ExtractionPolicy | str = ExtractionPolicy.STRICT,
-    overwrite: OverwritePolicy | str = OverwritePolicy.ERROR,
-    on_error: OnError | str = OnError.STOP,
-    abort_on: Collection[AbortOn | str] = (),
+    policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
+    overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
+    on_error: OnError | OnErrorStr = OnError.STOP,
+    abort_on: Collection[AbortOn | AbortOnStr] = (),
     format: ArchiveFormat | str | None = None,
     password: PasswordInput = None,
     encoding: str | None = None,
