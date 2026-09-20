@@ -58,6 +58,23 @@ agent that had just written them up. It now reads `@cursor` on a `cursor/*` bran
 enrolment, so there is no new piece of state, and `head_ref` comes out of the gate
 alongside the sha the round is reviewing.
 
+**A `cursor/*` ping also goes to the Linear issue, because the GitHub comment alone
+does not arrive.** The workflow posts with `GITHUB_TOKEN`, so the ping comes from
+`github-actions[bot]`, and a Cursor background agent whose session has already ended
+does not wake for it. Measured on #374 (2026-09-20): sixty-six minutes of silence after
+the GitHub ping, then fourteen minutes from the same ask posted on the Linear issue to
+a push with every finding fixed. The quiet-period fallback cannot rescue this — the
+branch is quiet *because* the implementer never learned there was anything to do — so
+without the second hop the pull request sits at `loop:round-1` until a person notices.
+[`scripts/linear_ping.py`](../scripts/linear_ping.py) is that hop: it recovers the
+issue identifier from the `Linear Issue:` line Cursor writes into every pull request
+body, so the loop stores nothing new, and it posts the same comment there with the pull
+request's URL appended. It needs a `LINEAR_API_KEY` repository secret. Without one it
+warns, names the issue nobody commented on, and exits 0 — the findings are already on
+the pull request by then, and failing a round over a delivery convenience would be
+worse than the gap. The `@claude` direction needs none of this: that comment is read by
+whatever session is subscribed to the pull request's activity, not by a workflow.
+
 **Cursor hands an approval back for a pass from zero** (davitf, 2026-09-19). When
 Cursor's verdict is ✅ Approve and Claude implemented, `.cursor/commands/code-review.md`
 tells it to post one last comment starting `@claude review`. That is an ordinary round,
@@ -348,12 +365,17 @@ opening a comment on it with `@claude review`.
 
 ## Known rough edges
 
-- **Whether either agent answers the findings ping** has not been observed yet. The
-  workflow posts it with `GITHUB_TOKEN`, so it arrives from `github-actions[bot]`. If
-  Cursor turns out to ignore bot comments, the fallback is the same comment from a
-  personal access token, or a `@Cursor` comment on the Linear issue instead. The
-  `@claude` form has a different path: it is read by whatever session is subscribed to
-  the pull request's activity, not by `claude.yml`, which ignores bots by design.
+- **The findings ping needs the Linear hop to reach Cursor**, and that hop needs a
+  secret this repository may not have set. Observed on #374 (2026-09-20) and fixed in
+  [the ping section above](#the-roles-run-both-ways-round): a GitHub comment from
+  `github-actions[bot]` does not wake a Cursor agent whose session has ended. Until
+  `LINEAR_API_KEY` exists, every `cursor/*` round ends with a warning in the job
+  summary and a pull request nobody has told the implementer about; the manual
+  workaround is to post the findings summary as a `@cursor` comment on the Linear issue
+  by hand. Carry the findings in that comment rather than pointing at the pull request.
+  The other route considered — posting the GitHub comment from a personal access token
+  so it arrives from a human account — is cheaper to wire, but it does not match the
+  path that was actually observed to work, and it spends a token.
 - **Thirty minutes is a guess**, and it started as ten. It only matters when an agent
   does not send the signal. The change (davitf, 2026-09-19) was about which way to be
   wrong: a premature round spends one of three on half-written code, while a late one
@@ -372,9 +394,10 @@ opening a comment on it with `@claude review`.
   still. Checking every ten minutes keeps the fallback responsive once a branch does
   qualify; it costs nothing, because a tick that finds nothing eligible is the gate
   declining in seconds with no model call.
-- **Whether Cursor actually sends the signal** has not been observed yet. If it turns
-  out to ignore the instruction, the quiet period is what catches it, which is why the
-  timer stays.
+- **Cursor does send the signal.** Observed on #374 (2026-09-20), three rounds out of
+  three: it pushed, posted its dispositions, and commented `@claude review` within
+  fifteen seconds each time, and the round started on that comment rather than on the
+  timer. The quiet period stays as the floor, but it has not had to catch anything yet.
 - **Every scheduled tick shares one concurrency group**, `scan`, and a round can take
   the full 45-minute timeout. So a scheduled round blocks every later scheduled tick
   until it finishes, including ticks for other pull requests, and GitHub keeps only the
