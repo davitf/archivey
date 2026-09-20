@@ -49,6 +49,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
+    _MAX_SKIPPED_HEADER_RECORDS,
     RAR5_ID,
     RAR_ID,
     RarArchive,
@@ -993,6 +994,34 @@ class RarReader(BaseArchiveReader):
                     record=record,
                     record_id=record_id,
                     reason=reason,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
+        if info.skipped_header_records_truncated:
+            # One diagnostic saying the header was abandoned, rather than one per
+            # record past the cap — emitting per record is the cost the cap exists
+            # to avoid. Without this a caller sees the capped list and cannot tell
+            # it is the whole story. ``list_truncated`` is what they read.
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"More than {_MAX_SKIPPED_HEADER_RECORDS} RAR5 extra records of "
+                    f"this member were malformed, so the rest of its header was not "
+                    f"read; it is listed from what was read before that."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    record="",
+                    record_id=None,
+                    reason=(
+                        f"more than {_MAX_SKIPPED_HEADER_RECORDS} malformed records; "
+                        f"the rest of the header was not read"
+                    ),
+                    list_truncated=True,
                 ),
                 member=member,
                 attach_to_member=True,

@@ -302,6 +302,10 @@ class RarMemberInfo:
     # area cannot retain one tuple per attacker byte. The reader turns each entry
     # into a ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
     skipped_header_records: tuple[tuple[str, int | None, str], ...] = ()
+    # True when the cap stopped the walk with extra area still unread, so the list
+    # above is what was read rather than all there was. There is no count of the
+    # rest: counting it would mean walking it, which is the cost the cap avoids.
+    skipped_header_records_truncated: bool = False
 
     def needs_password(self) -> bool:
         return self.is_encrypted
@@ -2221,6 +2225,8 @@ def _parse_rar5_file_block(
     atime: datetime | None = None
     skipped_records: list[tuple[str, int | None, str]] = []
 
+    skipped_truncated = False
+
     def _skip(record: str, record_id: int | None, reason: str) -> bool:
         skipped_records.append((record, record_id, reason))
         return len(skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS
@@ -2243,6 +2249,10 @@ def _parse_rar5_file_block(
                 # skip, and continuing would retain one tuple per remaining
                 # extra byte.
                 if _skip("unknown", None, raw_message_of(exc)):
+                    # Only truncated if the cap cut the walk short of the area's
+                    # end; a member whose last bad record is the sixteenth lost
+                    # nothing, and must not claim it did.
+                    skipped_truncated = pos < len(hdata) - 1
                     break
                 continue
             try:
@@ -2291,6 +2301,7 @@ def _parse_rar5_file_block(
                 if _skip(
                     _RAR5_XNAMES.get(xtype, "unknown"), xtype, raw_message_of(exc)
                 ):
+                    skipped_truncated = pos < len(hdata) - 1
                     break
 
     is_symlink = False
@@ -2339,6 +2350,7 @@ def _parse_rar5_file_block(
         split_after=split_after,
         file_version=file_version,
         skipped_header_records=tuple(skipped_records),
+        skipped_header_records_truncated=skipped_truncated,
     )
 
 

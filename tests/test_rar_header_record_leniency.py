@@ -323,8 +323,49 @@ def test_a_zeroed_extra_area_does_not_retain_one_skip_per_byte(tmp_path: Path) -
 
     with open_archive(path) as archive:
         (member,) = archive.members()
-    assert 1 <= len(member.diagnostics) <= _MAX_SKIPPED_HEADER_RECORDS
+    # The cap, plus the one stand-in saying the rest of the header went unread.
+    assert 1 <= len(member.diagnostics) <= _MAX_SKIPPED_HEADER_RECORDS + 1
     assert all(
         d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         for d in member.diagnostics
     )
+
+
+def test_stopping_the_walk_early_is_reported_rather_than_silent(
+    tmp_path: Path,
+) -> None:
+    """A capped listing must not look like a complete one.
+
+    Reaching the cap stops the extra area being read, so the records named are what
+    was read and not all there was. Without a signal for that, a caller sees sixteen
+    drops and cannot tell whether the seventeenth record was fine or never looked at
+    — and deciding how far to trust a member's metadata turns on exactly that.
+    """
+    data = (_FIXTURES / "blake2sp.rar").read_bytes()
+    path = tmp_path / "zero_extra_truncated.rar"
+    path.write_bytes(_zero_extra_area(data))
+
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+
+    assert member._raw.skipped_header_records_truncated
+    stand_ins = [d for d in member.diagnostics if d.context.list_truncated]
+    assert len(stand_ins) == 1, (
+        "abandoning the header is reported once, not once per record past the cap"
+    )
+    assert not stand_ins[0].context.record, (
+        "the stand-in names no record; it reports that reading stopped"
+    )
+    named = [d for d in member.diagnostics if not d.context.list_truncated]
+    assert len(named) == _MAX_SKIPPED_HEADER_RECORDS
+
+
+def test_a_complete_listing_does_not_claim_it_was_cut_short(
+    short_hash_archive: Path,
+) -> None:
+    """The ordinary case the spec scenario pins: one bad record, one diagnostic,
+    and nothing claiming the header was abandoned."""
+    with open_archive(short_hash_archive) as archive:
+        (member,) = archive.members()
+    assert not member._raw.skipped_header_records_truncated
+    assert [d.context.list_truncated for d in member.diagnostics] == [False]

@@ -503,7 +503,9 @@ a caller who wants the archive refused instead SHALL get that from
 A crafted extra area SHALL NOT retain one skipped record per attacker byte. The number of
 dropped records retained per member is a structural cap (a handful of extras is every
 well-formed FILE; more cannot be useful diagnostics). After the cap the extra-area walk
-for that member stops.
+for that member stops, and stopping SHALL be reported: a caller SHALL be able to tell a
+member whose records were all read from one whose header was abandoned part-way, because
+how far to trust that member's metadata turns on it.
 
 #### Scenario: A one-byte-short checksum record lists the member without a digest
 
@@ -532,6 +534,8 @@ for that member stops.
   be at most the structural skip cap
 - **AND** this cap exists because `xsize == 0` is one attacker byte per skip, which
   `max_members` cannot see
+- **AND** exactly one of those diagnostics SHALL report that the walk stopped with the
+  extra area unread, distinguishing it from a member whose records were all read
 
 ### Requirement: A malformed RAR5 encryption record SHALL remain fatal
 

@@ -259,6 +259,11 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     the record as the format calls it (a RAR5 extra area's ``hash``, ``time``,
     ``redir``, ``version``); ``record_id`` is its numeric type where the format has
     one, so an unnamed record is still identifiable.
+
+    A member header is attacker-sized, so how many records one member may drop is
+    capped and reaching the cap stops the header being read. ``list_truncated`` is
+    true on exactly one diagnostic per member, the one reporting that; ``record``
+    names nothing on that one. Everywhere else it is false.
     """
 
     kind: Literal["member_header_record"] = "member_header_record"
@@ -268,6 +273,7 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     record: str = ""
     record_id: int | None = None
     reason: str = ""
+    list_truncated: bool = False
 
 
 @dataclass(frozen=True)
