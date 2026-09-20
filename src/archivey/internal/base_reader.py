@@ -55,6 +55,10 @@ from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
 )
+from archivey.internal.enum_args import (
+    coerce_enum,
+    coerce_enum_collection,
+)
 from archivey.internal.extraction_types import (
     AbortOn,
     ExtractionPolicy,
@@ -1900,15 +1904,29 @@ class BaseArchiveReader(ArchiveReader):
         *,
         members: MemberSelectorArg = None,
         filter: MemberFilter | None = None,
-        policy: ExtractionPolicy = ExtractionPolicy.STRICT,
-        overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-        on_error: OnError = OnError.STOP,
-        abort_on: Collection[AbortOn] = (),
+        policy: ExtractionPolicy | str = ExtractionPolicy.STRICT,
+        overwrite: OverwritePolicy | str = OverwritePolicy.ERROR,
+        on_error: OnError | str = OnError.STOP,
+        abort_on: Collection[AbortOn | str] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
     ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
+        # At the boundary, not on use: the coordinator tests these with ``is``, so an
+        # unrecognised value is not refused there, it silently takes the other branch.
+        policy = coerce_enum(
+            policy, ExtractionPolicy, call="extract_all()", param="policy="
+        )
+        overwrite = coerce_enum(
+            overwrite, OverwritePolicy, call="extract_all()", param="overwrite="
+        )
+        on_error = coerce_enum(
+            on_error, OnError, call="extract_all()", param="on_error="
+        )
+        abort_on = coerce_enum_collection(
+            abort_on, AbortOn, call="extract_all()", param="abort_on="
+        )
         self._state.require_open("extract_all()")
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives

@@ -71,6 +71,7 @@ from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
 )
+from archivey.internal.enum_args import coerce_enum
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
 from archivey.internal.sfx import (
@@ -488,13 +489,24 @@ def _scan_for_sfx_payload(
 
 
 def _resolve_budget(
-    budget: DetectionBudget | DetectionBudgetPreset | None,
+    budget: DetectionBudget | DetectionBudgetPreset | str | None,
 ) -> DetectionBudget:
+    """Normalize the ``budget=`` argument, refusing anything that is neither.
+
+    A ``DetectionBudget`` passes through. Anything else is read as a preset, including
+    its name as a string — ``budget="fast"`` is the mistake to expect, because
+    ``DetectionBudgetPreset.FAST.value`` *is* ``"fast"``. Before this, an unrecognised
+    value was returned unchanged and failed several frames down with a bare
+    ``AttributeError`` naming a budget field.
+    """
     if budget is None:
         return default_detection_budget()
-    if isinstance(budget, DetectionBudgetPreset):
-        return DetectionBudget.for_preset(budget)
-    return budget
+    if isinstance(budget, DetectionBudget):
+        return budget
+    preset = coerce_enum(
+        budget, DetectionBudgetPreset, call="detect_format()", param="budget="
+    )
+    return DetectionBudget.for_preset(preset)
 
 
 def detect_format(
@@ -502,7 +514,7 @@ def detect_format(
     *,
     config: ArchiveyConfig | None = None,
     collector: DiagnosticCollector | None = None,
-    budget: DetectionBudget | DetectionBudgetPreset | None = None,
+    budget: DetectionBudget | DetectionBudgetPreset | str | None = None,
     follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.

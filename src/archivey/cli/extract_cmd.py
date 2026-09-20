@@ -33,6 +33,7 @@ from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
+from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
 
@@ -487,12 +488,19 @@ def run_extract(
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
     pred = member_predicate(patterns, exclude)
-    policy_enum = ExtractionPolicy(policy)
-    overwrite_enum = OverwritePolicy(overwrite)
+    # One shared vocabulary with the library, including the dash spelling the CLI's
+    # own --help advertises: ``enum_args`` treats ``-`` and ``_`` as the same, so the
+    # hand-rolled ``.replace("-", "_")`` this used to carry is gone. Converted here
+    # rather than passed through as strings so the CLI's own helpers below stay typed.
+    policy_enum = coerce_enum(
+        policy, ExtractionPolicy, call="archivey extract", param="--policy"
+    )
+    overwrite_enum = coerce_enum(
+        overwrite, OverwritePolicy, call="archivey extract", param="--overwrite"
+    )
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
-    # CLI spells the events with dashes; the enum values use underscores.
-    abort_on_enum = frozenset(
-        AbortOn(name.replace("-", "_")) for name in (abort_on or ())
+    abort_on_enum = coerce_enum_collection(
+        abort_on, AbortOn, call="archivey extract", param="--abort-on"
     )
     archive_path = Path(archive)
 

@@ -39,6 +39,10 @@ from archivey.exceptions import (
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.diagnostics_collector import collector_from_config
+from archivey.internal.enum_args import (
+    coerce_enum,
+    coerce_enum_collection,
+)
 from archivey.internal.extraction_types import (
     AbortOn,
     ExtractionPolicy,
@@ -47,8 +51,8 @@ from archivey.internal.extraction_types import (
     OverwritePolicy,
 )
 from archivey.internal.format_args import (
-    check_archive_format,
-    check_stream_or_archive_format,
+    coerce_archive_format,
+    coerce_stream_or_archive_format,
 )
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.open_site import capture_open_site
@@ -226,7 +230,7 @@ def _follow_stub_volume(
 def open_archive(
     source: OpenSourceInput,
     *,
-    format: ArchiveFormat | None = None,
+    format: ArchiveFormat | str | None = None,
     streaming: bool = False,
     seekable_members: bool = False,
     concurrent_members: bool = False,
@@ -308,7 +312,7 @@ def open_archive(
 
     open_site = capture_open_site()
 
-    check_archive_format(format, call="open_archive(format=…)")
+    format = coerce_archive_format(format, call="open_archive(format=…)")
 
     if streaming and concurrent_members:
         raise ArchiveyUsageError(
@@ -535,7 +539,7 @@ def open_archive(
 def open_stream(
     source: str | Path | BinaryIO,
     *,
-    format: StreamFormat | ArchiveFormat | None = None,
+    format: StreamFormat | ArchiveFormat | str | None = None,
     seekable: bool = False,
     config: ArchiveyConfig | None = None,
 ) -> ArchiveStream:
@@ -562,7 +566,7 @@ def open_stream(
 
     # Before any I/O: a value of neither format type used to fall through to
     # auto-detection, which silently discards the caller's assertion.
-    check_stream_or_archive_format(format, call="open_stream(format=…)")
+    format = coerce_stream_or_archive_format(format, call="open_stream(format=…)")
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     collector = collector_from_config(effective_config)
@@ -637,8 +641,9 @@ def _resolve_stream_format(
     """Map open_stream's ``format=`` argument (or auto-detect) to a StreamFormat.
 
     Only ``None`` reaches the detection branch below: ``open_stream`` has already
-    refused a value of neither format type (``check_stream_or_archive_format``), so
-    falling through here means the caller asked for auto-detection.
+    converted a string spelling and refused a value of neither format type
+    (``coerce_stream_or_archive_format``), so falling through here means the caller
+    asked for auto-detection.
     """
     if isinstance(format, StreamFormat):
         return format
@@ -669,11 +674,11 @@ def extract(
     source: OpenSourceInput,
     dest: str | Path,
     *,
-    policy: ExtractionPolicy = ExtractionPolicy.STRICT,
-    overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-    on_error: OnError = OnError.STOP,
-    abort_on: Collection[AbortOn] = (),
-    format: ArchiveFormat | None = None,
+    policy: ExtractionPolicy | str = ExtractionPolicy.STRICT,
+    overwrite: OverwritePolicy | str = OverwritePolicy.ERROR,
+    on_error: OnError | str = OnError.STOP,
+    abort_on: Collection[AbortOn | str] = (),
+    format: ArchiveFormat | str | None = None,
     password: PasswordInput = None,
     encoding: str | None = None,
     on_progress: Callable[[ExtractionProgress], None] | None = None,
@@ -702,10 +707,18 @@ def extract(
     Returns an :class:`~archivey.ExtractionReport` whose diagnostic summary spans
     detection, open, and extraction for this call.
     """
-    # Checked here rather than left to open_archive below, so a wrong-typed argument is
-    # refused before the source is resolved and peeked, and the message names the call
-    # the caller actually made.
-    check_archive_format(format, call="extract(format=…)")
+    # Converted here rather than left to open_archive and extract_all below, so a
+    # wrong-typed argument is refused before the source is resolved and peeked, and the
+    # message names the call the caller actually made.
+    format = coerce_archive_format(format, call="extract(format=…)")
+    policy = coerce_enum(policy, ExtractionPolicy, call="extract()", param="policy=")
+    overwrite = coerce_enum(
+        overwrite, OverwritePolicy, call="extract()", param="overwrite="
+    )
+    on_error = coerce_enum(on_error, OnError, call="extract()", param="on_error=")
+    abort_on = coerce_enum_collection(
+        abort_on, AbortOn, call="extract()", param="abort_on="
+    )
 
     # Peek only to choose access mode; open_archive re-resolves ``source`` (cheap).
     peek_target = resolve_source(source).open_source

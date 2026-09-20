@@ -173,6 +173,37 @@ class ArchiveyConfig:
     max_retained_diagnostic_references: int = 256
     on_diagnostic: OnDiagnostic | None = None
 
+    def __post_init__(self) -> None:
+        """Convert the accelerator fields once, at construction.
+
+        The consumers test these with ``is`` (:meth:`AcceleratorMode.enabled_for`), so a
+        string that survived construction would not be refused on use — it would read as
+        "neither ON nor OFF" and silently take the AUTO path. Converting here means the
+        field always holds a member, and a bad spelling names itself at the call site
+        that wrote it rather than during some later stream open.
+
+        The fields are annotated ``AcceleratorMode`` rather than ``AcceleratorMode |
+        str`` because that is what they hold once constructed, and it keeps every
+        consumer honest. A string is still accepted at construction — a type checker
+        flags it, which is the right answer for a typed caller who has the enum
+        imported anyway, and an untyped script gets the conversion.
+        """
+        # Local import: ``enum_args`` pulls in ``exceptions``, and this module is
+        # imported early by almost everything.
+        from archivey.internal.enum_args import coerce_enum
+
+        for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
+            object.__setattr__(
+                self,
+                field_name,
+                coerce_enum(
+                    getattr(self, field_name),
+                    AcceleratorMode,
+                    call="ArchiveyConfig()",
+                    param=f"{field_name}=",
+                ),
+            )
+
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()
 
