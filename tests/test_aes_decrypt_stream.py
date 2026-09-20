@@ -329,8 +329,12 @@ def _resume_answer(cipher_start: int, target: int, resume: int) -> int:
         # Inner can resume at the IV block we ask for: composed answer equals
         # block_start (the + AES_BLOCK_SIZE un-shift). Without it: 399_984.
         (0, 400_000, lambda t: t, 400_000),
-        # Single-block xz: inner always resumes at origin.
-        (0, 400_000, lambda t: 0, 16),
+        # Inner at or before cipher_start: plaintext block 0 uses the stream IV,
+        # so the first resume point is 0, not 16.
+        (0, 400_000, lambda t: 0, 0),
+        # q in 1..16 still needs the IV block at cipher_start, which is behind
+        # the inner's resume, so the answer steps to 32.
+        (0, 400_000, lambda t: 1, 32),
         (0, 400_000, lambda t: 200_000, 200_016),
         # Inner codec block not AES-aligned: round UP so the IV block
         # does not precede the inner's seek point.
@@ -339,12 +343,13 @@ def _resume_answer(cipher_start: int, target: int, resume: int) -> int:
         (0, 400_000, lambda t: 200_001, 200_032),
         (0, 7, lambda t: t, 0),
         (100, 400_000, lambda t: t, 400_000),
-        # Production SharedView declines; composition is a no-op.
+        # Inner declines (no method / None); composition is a no-op.
         (0, 400_000, None, 400_000),
     ],
     ids=(
         "inner_free",
         "inner_origin",
+        "inner_one_byte",
         "inner_midway",
         "inner_unaligned",
         "inner_unaligned_below",
@@ -374,10 +379,15 @@ def test_nearest_resume_offset_steps_at_a_ciphertext_block(
 ) -> None:
     """The answer is a step function of the inner's resume point.
 
-    An inner that resumes exactly at the IV block ``cs + 16m`` yields
-    ``16m + 16``. One byte later needs a new IV block, so the answer is
+    An inner that resumes exactly at the IV block ``cs + 16m`` for ``m ≥ 1``
+    yields ``16m + 16``. One byte later needs a new IV block, so the answer is
     exactly one AES block later; one byte earlier is still inside the same
     block, so it must not move; a full block earlier must step down.
+
+    ``m == 0`` is the exception: plaintext block 0 uses the stream IV, so
+    resuming at ``cipher_start`` yields 0. One byte later (``q`` in 1..16)
+    still needs the IV block at ``cipher_start``, which is behind that
+    resume, so the answer is 32.
 
     ``target`` sits well above the IV block so ``min(block_start, …)`` never
     caps — the cap is covered by the ``inner_free`` row of the table test.
@@ -386,6 +396,11 @@ def test_nearest_resume_offset_steps_at_a_ciphertext_block(
     target = iv_block + 10 * AES_BLOCK_SIZE
 
     at = _resume_answer(cipher_start, target, cipher_start + iv_block)
+    if block_index == 0:
+        assert at == 0
+        above = _resume_answer(cipher_start, target, cipher_start + 1)
+        assert above == 2 * AES_BLOCK_SIZE
+        return
     assert at == iv_block + AES_BLOCK_SIZE
 
     above = _resume_answer(cipher_start, target, cipher_start + iv_block + 1)
@@ -393,15 +408,15 @@ def test_nearest_resume_offset_steps_at_a_ciphertext_block(
         "one byte past the IV block must restart exactly one AES block later"
     )
 
-    if block_index >= 1:
-        # Below 16 there is no lower step: plaintext block 0 uses the stored IV
-        # and needs no IV block, so 16 is the floor whenever the inner answers.
-        same = _resume_answer(cipher_start, target, cipher_start + iv_block - 1)
-        assert same == at, "the answer must be flat across a ciphertext block"
-        below = _resume_answer(
-            cipher_start, target, cipher_start + iv_block - AES_BLOCK_SIZE
-        )
-        assert below < at
+    # One byte earlier stays in the same ciphertext block. A full block
+    # earlier must step down; at m=1 that lower step is 0 (plaintext
+    # block 0), not 16.
+    same = _resume_answer(cipher_start, target, cipher_start + iv_block - 1)
+    assert same == at, "the answer must be flat across a ciphertext block"
+    below = _resume_answer(
+        cipher_start, target, cipher_start + iv_block - AES_BLOCK_SIZE
+    )
+    assert below < at
 
 
 if given is not None:

@@ -1,9 +1,10 @@
 """The review loop's gate, exercised without GitHub.
 
-`scripts/review_loop_gate.py` decides whether an automated review round runs and which
-round number it is. Everything it needs arrives as JSON, so the interesting cases —
-the round cap, the parked labels, a fork, a stranger asking for a review — are testable
-here instead of by pushing to a pull request and watching what happens.
+`scripts/review_loop_gate.py` decides whether an automated review round runs, on which
+pull request, and which round number it is. Everything it needs arrives as JSON, so the
+interesting cases — the round cap, the quiet period, the parked labels, a fork, a
+stranger asking for a review — are testable here instead of by pushing to a pull request
+and watching what happens.
 
 The cases that matter most are the ones where the answer must be *no*: a gate that
 over-fires spends review credits on pull requests nobody enrolled, and one that ignores
@@ -30,22 +31,48 @@ gate = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
+NOW = "2026-09-19T12:00:00Z"
+LONG_AGO = "2026-09-19T11:00:00Z"  # an hour before NOW: quiet
+JUST_NOW = "2026-09-19T11:59:00Z"  # a minute before NOW: still being pushed to
+
 
 def event(**overrides) -> dict:
-    """A push to an enrolled, non-draft, in-repo pull request — the common case."""
+    """A pull request being marked ready for review — the common single event."""
     base = {
         "event_name": "pull_request",
-        "action": "synchronize",
+        "action": "ready_for_review",
+        "number": 365,
+        "head_sha": "a" * 40,
         "labels": ["loop:round-1"],
-        "draft": False,
         "head_ref": "cursor/some-fix-1234",
         "cross_repository": False,
         "comment_body": "",
         "comment_author_association": "",
+        "comment_author_login": "",
         "is_pull_request": False,
         "force": False,
     }
     return base | overrides
+
+
+def candidate(**overrides) -> dict:
+    """An enrolled pull request that has gone quiet — the common scan candidate."""
+    base = {
+        "number": 365,
+        "labels": ["loop:round-1"],
+        "head_ref": "cursor/some-fix-1234",
+        "cross_repository": False,
+        "head_sha": "a" * 40,
+        "head_committed_at": LONG_AGO,
+        "last_reviewed_sha": "b" * 40,
+    }
+    return base | overrides
+
+
+def scan(*candidates: dict, now: str = NOW) -> gate.Decision:
+    return gate.decide(
+        {"event_name": "schedule", "now": now, "candidates": list(candidates)}
+    )
 
 
 # --- counting rounds ---------------------------------------------------------------
@@ -60,17 +87,127 @@ def test_round_label_is_the_only_state() -> None:
     assert gate.current_round(["loop:round-x", "loop:roundup"]) == 0
 
 
-def test_each_push_advances_one_round() -> None:
-    assert gate.decide(event(labels=["loop:round-1"])).round == 2
-    assert gate.decide(event(labels=["loop:round-2"])).round == 3
+def test_each_round_advances_one() -> None:
+    assert scan(candidate(labels=["loop:round-1"])).round == 2
+    assert scan(candidate(labels=["loop:round-2"])).round == 3
 
 
 def test_the_cap_is_three_rounds() -> None:
-    decision = gate.decide(event(labels=["loop:round-3"]))
+    decision = scan(candidate(labels=["loop:round-3"]))
     assert not decision.run
-    assert decision.cap_reached
+    # Nothing was eligible, so the scan reports on the tick rather than on one PR.
+    assert decision.reason == "no pull request is waiting for a round"
+
+    # The PR-level answer is the one that carries the cap.
+    parked = gate._scheduled(
+        candidate(labels=["loop:round-3"]), gate.parse_time(NOW), gate.timedelta(0)
+    )
+    assert not parked.run
+    assert parked.cap_reached
     # The round stays at what was actually done, so the hand-back message can say "3".
-    assert decision.round == 3
+    assert parked.round == 3
+
+
+def test_the_round_before_the_cap_announces_itself_as_the_last() -> None:
+    # Round 3 has to say so as it posts: there is no round 4 to discover it later.
+    assert scan(candidate(labels=["loop:round-2"])).final
+    assert not scan(candidate(labels=["loop:round-1"])).final
+
+
+# --- the quiet period ----------------------------------------------------------------
+
+
+def test_a_branch_still_being_pushed_to_is_left_alone() -> None:
+    """The reason the loop is scheduled rather than push-driven.
+
+    Four commits landed on the first pull request the loop saw inside thirteen minutes.
+    A round per push would have spent the whole cap on half-written work.
+    """
+    decision = scan(candidate(head_committed_at=JUST_NOW))
+    assert not decision.run
+
+    per_pr = gate._scheduled(
+        candidate(head_committed_at=JUST_NOW),
+        gate.parse_time(NOW),
+        gate.timedelta(minutes=gate.QUIET_MINUTES),
+    )
+    assert not per_pr.run
+    assert "quiet" in per_pr.reason
+
+
+def test_the_quiet_period_is_measured_from_the_last_commit() -> None:
+    """Pin the boundary to `QUIET_MINUTES` itself, so raising it cannot drift silently.
+
+    The threshold moved from ten minutes to thirty on 2026-09-19 because ten was short
+    enough that an ordinary pause mid-task — a long test run, a slow tool call — read
+    as "the implementer has finished" and spent a round on half-written code. The two
+    cases below are a minute either side of whatever the constant now says.
+    """
+    now = gate.parse_time(NOW)
+    quiet = gate.timedelta(minutes=gate.QUIET_MINUTES)
+
+    def at(minutes_ago: int) -> str:
+        return (now - gate.timedelta(minutes=minutes_ago)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
+    just_short = gate._scheduled(
+        candidate(head_committed_at=at(gate.QUIET_MINUTES - 1)), now, quiet
+    )
+    assert not just_short.run
+    assert "quiet" in just_short.reason
+
+    assert gate._scheduled(
+        candidate(head_committed_at=at(gate.QUIET_MINUTES + 1)), now, quiet
+    ).run
+
+
+def test_the_same_commit_is_not_reviewed_twice() -> None:
+    """The scan runs every few minutes; without this it would re-review on every tick."""
+    decision = scan(candidate(last_reviewed_sha="a" * 40))
+    assert not decision.run
+
+    # A push moves the head, and the round is due again.
+    assert scan(candidate(head_sha="c" * 40, last_reviewed_sha="a" * 40)).run
+
+
+def test_a_commit_with_no_timestamp_is_skipped_rather_than_reviewed() -> None:
+    assert not scan(candidate(head_committed_at="")).run
+    assert not scan(candidate(head_committed_at="not a date")).run
+
+
+def test_an_unknown_scan_time_fails_closed() -> None:
+    """Not knowing the time is not the same as knowing the branch is quiet.
+
+    The workflow always passes `date -u`, so this is about which way the gate falls
+    over when it does not: the wrong direction spends a review on a branch that is
+    still being written.
+    """
+    assert not scan(candidate(), now="").run
+    assert not scan(candidate(), now="not a date").run
+
+
+def test_one_pull_request_per_tick_longest_waiting_first() -> None:
+    decision = scan(
+        candidate(number=400, head_committed_at="2026-09-19T11:50:00Z"),
+        candidate(number=365, head_committed_at="2026-09-19T09:00:00Z"),
+        candidate(number=380, head_committed_at="2026-09-19T10:00:00Z"),
+    )
+    assert decision.run
+    assert decision.pr == 365
+
+
+def test_ties_break_on_the_pull_request_number() -> None:
+    # Two agents finishing in the same second must not make the choice arbitrary: a
+    # retried tick has to pick the same pull request as the one it is retrying.
+    decision = scan(candidate(number=400), candidate(number=365))
+    assert decision.pr == 365
+
+
+def test_an_empty_scan_says_so_without_naming_a_pull_request() -> None:
+    decision = scan()
+    assert not decision.run
+    assert decision.pr == 0
 
 
 # --- stopping ----------------------------------------------------------------------
@@ -78,11 +215,16 @@ def test_the_cap_is_three_rounds() -> None:
 
 @pytest.mark.parametrize("label", ["loop:decision", "loop:hold", "loop:done"])
 def test_parked_labels_stop_an_automatic_round(label: str) -> None:
-    decision = gate.decide(event(labels=["loop:round-1", label]))
-    assert not decision.run
-    assert label in decision.reason
+    assert not scan(candidate(labels=["loop:round-1", label])).run
+
+    per_pr = gate._scheduled(
+        candidate(labels=["loop:round-1", label]),
+        gate.parse_time(NOW),
+        gate.timedelta(0),
+    )
+    assert label in per_pr.reason
     assert (
-        not decision.cap_reached
+        not per_pr.cap_reached
     )  # not the cap — a different "no", and a different message
 
 
@@ -97,52 +239,66 @@ def test_loop_off_beats_even_an_explicit_request() -> None:
         )
     )
     assert not decision.run
-
-
-def test_a_draft_is_left_alone_until_it_is_ready() -> None:
-    assert not gate.decide(event(draft=True)).run
-    # ...and reviewed the moment it is, without waiting for another push.
-    assert gate.decide(event(draft=True, action="ready_for_review", labels=[])).run
+    assert not scan(candidate(labels=["loop:round-1", "loop:off"])).run
 
 
 def test_a_fork_never_runs() -> None:
     # A fork's `pull_request` run has no secrets, so this would fail rather than review.
     assert not gate.decide(event(cross_repository=True)).run
+    assert not scan(candidate(cross_repository=True)).run
 
 
 # --- enrolment ---------------------------------------------------------------------
 
 
-def test_a_cursor_branch_enrols_itself_at_open() -> None:
+def test_opening_a_cursor_branch_enrols_it_without_reviewing_it() -> None:
     decision = gate.decide(
         event(action="opened", labels=[], head_ref="cursor/fix-1234")
     )
-    assert decision.run
-    assert decision.round == 1
+    # Nothing to review yet: the agent that opened it is still pushing.
+    assert not decision.run
+    assert decision.enrol
 
 
 def test_any_other_new_branch_needs_the_opt_in_label() -> None:
     assert not gate.decide(
         event(action="opened", labels=[], head_ref="claude/some-work")
-    ).run
+    ).enrol
     assert gate.decide(
         event(action="opened", labels=["loop:on"], head_ref="claude/some-work")
-    ).run
+    ).enrol
+
+
+def test_ready_for_review_does_not_wait_for_the_quiet_period() -> None:
+    """An explicit "this is finished" is the signal the quiet period exists to infer."""
+    decision = gate.decide(event(action="ready_for_review", labels=[]))
+    assert decision.run
+    assert decision.round == 1
+    assert decision.enrol  # and it joins the loop, so later rounds are scanned for
+
+
+def test_a_push_is_not_an_event_the_loop_acts_on() -> None:
+    decision = gate.decide(event(action="synchronize"))
+    assert not decision.run
+    assert not decision.enrol
 
 
 def test_pull_requests_that_predate_the_loop_stay_out_of_it() -> None:
-    """The guard that keeps this from firing on every PR already open.
+    """The guard that keeps this from firing on every `cursor/*` pull request.
 
-    Enrolment happens at `opened`. A push to a long-open pull request carries no round
-    label, so it is refused until someone adds `loop:on` deliberately.
+    The branch prefix enrols a pull request once, when it opens. The scan reads only
+    the label, so a pull request that was already open when the loop landed is never
+    picked up until someone adds `loop:on` deliberately.
     """
-    decision = gate.decide(
-        event(action="synchronize", labels=[], head_ref="cursor/old")
+    decision = gate._scheduled(
+        candidate(labels=[], head_ref="cursor/old"),
+        gate.parse_time(NOW),
+        gate.timedelta(0),
     )
     assert not decision.run
     assert "not enrolled" in decision.reason
 
-    assert gate.decide(event(action="synchronize", labels=["loop:on"])).run
+    assert scan(candidate(labels=["loop:on"], head_ref="cursor/old")).run
 
 
 # --- asking for a round by hand -----------------------------------------------------
@@ -154,7 +310,7 @@ def test_a_collaborator_can_restart_a_parked_loop() -> None:
             event_name="issue_comment",
             labels=["loop:round-1", "loop:decision"],
             is_pull_request=True,
-            comment_body="Answered below — option B. @claude review please",
+            comment_body="@claude review please\n\nAnswered below — option B.",
             comment_author_association="OWNER",
         )
     )
@@ -175,6 +331,228 @@ def test_a_comment_can_buy_a_fourth_round() -> None:
     )
     assert decision.run
     assert decision.round == 4
+    # And it is still past the automatic cap. This assertion used to read `not final`,
+    # on the reasoning that whoever asked could ask again — true, and beside the point:
+    # `final` is what puts `loop:done` back after the verdict step clears the stale
+    # parks, so leaving it false took the label off a pull request the scan and the
+    # bots both refuse. `test_a_bought_round_past_the_cap_is_still_the_last_automatic_one`
+    # covers the consequence.
+    assert decision.final
+
+
+@pytest.mark.parametrize("login", ["cursor[bot]", "claude[bot]"])
+def test_the_implementing_agent_can_say_it_has_finished(login: str) -> None:
+    """The explicit signal, preferred over waiting out the quiet period.
+
+    Neither bot is a repository collaborator — GitHub reports `NONE` — so they get
+    here on their login rather than on their association. Both hosts matter:
+    `address-review-findings` §7 tells whichever of them holds the branch to send
+    this, so a gate that knew only one would make the instruction a lie on the other.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=["loop:round-1"],
+            is_pull_request=True,
+            comment_body="@claude review\n\nFindings addressed and pushed.",
+            comment_author_association="NONE",
+            comment_author_login=login,
+        )
+    )
+    assert decision.run
+    assert decision.round == 2
+    # Not forced: an agent saying it is done cannot reach past a park or the cap.
+    assert not decision.forced
+
+
+@pytest.mark.parametrize(
+    ("labels", "why"),
+    [
+        (["loop:round-3"], "the cap"),
+        (["loop:round-1", "loop:decision"], "a maintainer decision"),
+        (["loop:round-1", "loop:hold"], "a hold"),
+        ([], "never having been enrolled, on a branch that predates the loop"),
+    ],
+)
+def test_the_agent_cannot_talk_its_way_past_a_stop(labels: list[str], why: str) -> None:
+    """The whole difference between the bot path and the human one.
+
+    A person asking for a round is asking past the cap and past the park they set
+    themselves. An agent reporting that it has stopped pushing is not asking for
+    anything, so every stop still holds — otherwise an agent that fixes, comments,
+    fixes and comments could run the loop indefinitely.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=labels,
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="NONE",
+            comment_author_login="cursor[bot]",
+        )
+    )
+    assert not decision.run, why
+
+
+def test_the_reviewers_hand_back_enrols_a_branch_that_never_did() -> None:
+    """Cursor approving a Claude branch has to be able to start the pass from zero.
+
+    Only `cursor/*` auto-enrols, so a `claude/*` pull request reaches this comment
+    with no loop label at all and the hand-back used to be refused with nothing
+    posted to say so. The request itself is the enrolment signal here; the branch
+    prefix is what enrols the other direction.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=[],
+            head_ref="claude/project-thread-blk7eo",
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="NONE",
+            comment_author_login="cursor[bot]",
+        )
+    )
+    assert decision.run
+    assert decision.enrol
+    assert decision.round == 1
+    # Enrolling is not the same as forcing: the cap and the parks still apply.
+    assert not decision.forced
+
+
+def test_a_park_stops_the_hand_back_before_it_can_enrol() -> None:
+    """Order matters in the bot branch, and nothing else pins it.
+
+    Enrolment now has an escape hatch, so the parks have to be read first — a
+    pull request parked on a maintainer decision must not be restarted by an
+    agent's comment just because it carries no `loop:on`.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=["loop:decision"],
+            head_ref="claude/project-thread-blk7eo",
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="NONE",
+            comment_author_login="cursor[bot]",
+        )
+    )
+    assert not decision.run
+    assert not decision.enrol
+
+
+def test_a_fork_cannot_buy_a_round_by_commenting() -> None:
+    """The comment path is the only one where a fork round would really start.
+
+    `pull_request` and the scan both refuse a fork earlier, and the recorded reason
+    for the `pull_request` guard — a fork run has no secrets, so the review fails
+    anyway — is not true here: an `issue_comment` run is on the base repository.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=["loop:on"],
+            cross_repository=True,
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="OWNER",
+        )
+    )
+    assert not decision.run
+    assert "fork" in decision.reason
+
+
+def test_marking_a_parked_pull_request_ready_leaves_its_status_alone() -> None:
+    """`enrol` is what runs the step that rewrites the status comment.
+
+    On a parked pull request that comment is the only thing saying why nothing is
+    happening — the maintainer's question, or why a round died. Setting `enrol` on a
+    refusal replaced it with "a review starts by itself once the branch goes quiet",
+    a promise nothing would honour. A parked pull request is already enrolled anyway.
+    """
+    for park in ("loop:decision", "loop:hold", "loop:done"):
+        decision = gate.decide(event(labels=["loop:round-1", park]))
+        assert not decision.run
+        assert not decision.enrol, park
+
+
+def test_a_refusal_names_the_threshold_that_produced_it() -> None:
+    """The reason strings interpolated the constant while the rule used the argument.
+
+    Nothing asserted on them, so the two could drift into a message that described a
+    rule it was not produced by.
+    """
+    decision = gate._scheduled(
+        candidate(head_committed_at=JUST_NOW),
+        gate.parse_time(NOW),
+        gate.timedelta(minutes=5),
+    )
+    assert not decision.run
+    assert "under 5m" in decision.reason
+
+    ran = gate._scheduled(
+        candidate(head_committed_at=JUST_NOW),
+        gate.parse_time(NOW),
+        gate.timedelta(0),
+    )
+    assert ran.run
+    assert "for 0 minutes" in ran.reason
+
+
+def test_an_unknown_bot_is_still_a_stranger() -> None:
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            labels=["loop:round-1"],
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="NONE",
+            comment_author_login="dependabot[bot]",
+        )
+    )
+    assert not decision.run
+
+
+def test_no_comment_runs_forever_however_entitled_the_commenter() -> None:
+    """The ceiling the forced path needs because a forced round ignores every stop.
+
+    An agent posting through the maintainer's account is `OWNER` like the maintainer,
+    and `address-review-findings` §7 tells it to send this phrase after every round.
+    Without a ceiling that is fix-comment-fix-comment at full review cost, forever.
+    """
+    owner = {
+        "event_name": "issue_comment",
+        "is_pull_request": True,
+        "comment_body": "@claude review",
+        "comment_author_association": "OWNER",
+        "comment_author_login": "davitf",
+    }
+    assert gate.decide(event(labels=["loop:round-5"], **owner)).run  # round 6: fine
+    spent = gate.decide(event(labels=["loop:round-6"], **owner))
+    assert not spent.run
+    assert spent.cap_reached
+
+    # A bot is bounded long before this, by the ordinary cap.
+    assert not gate.decide(
+        event(
+            labels=["loop:round-5"],
+            **(
+                owner
+                | {
+                    "comment_author_login": "cursor[bot]",
+                    "comment_author_association": "NONE",
+                }
+            ),
+        )
+    ).run
+
+    # The deliberate override survives, because a button in the GitHub UI is not
+    # something an agent presses.
+    assert gate.decide(
+        event(event_name="workflow_dispatch", labels=["loop:round-9"], force=True)
+    ).run
 
 
 def test_a_stranger_cannot_spend_review_credits() -> None:
@@ -221,15 +599,16 @@ def test_a_comment_on_an_issue_is_not_a_pull_request() -> None:
     assert not decision.run
 
 
-def test_the_trigger_phrase_agrees_with_the_other_workflow() -> None:
+def test_the_trigger_phrase_never_fires_both_workflows() -> None:
     """The two `issue_comment` workflows must partition comments, not overlap.
 
     `.github/workflows/claude.yml` runs the general-purpose assistant on any comment
     containing `@claude`, and skips the ones containing `@claude review` so this loop
     can have them. That skip is a GitHub `contains()` — a case-insensitive substring
-    test, with no regex available. So this gate's phrase has to be the same plain
-    substring: anything it matches more loosely fires both workflows on one comment,
-    and anything it matches more strictly fires neither.
+    test, with no regex available — so the gate must never accept a comment that
+    `contains()` would let through to the assistant. The gate being the stricter of
+    the two is fine and deliberate: a comment that merely writes about the phrase
+    then runs neither workflow, which is the outcome this loop wants.
     """
 
     def github_contains(body: str) -> bool:
@@ -239,15 +618,63 @@ def test_the_trigger_phrase_agrees_with_the_other_workflow() -> None:
     for body in [
         "@claude review",
         "@Claude Review please",
+        "\n@claude review",
         "answered — option B. @claude review",
         "@claude  review",  # two spaces: contains() says no, so the gate must too
-        "@claude reviewer",  # contains() says yes, so the gate must too
+        "@claude reviewer",
         "@claude what do you think?",
         "thanks @claude",
         "nothing to see here",
         "",
     ]:
-        assert bool(gate.COMMENT_TRIGGER.search(body)) == github_contains(body), body
+        if gate.COMMENT_TRIGGER.match(body):
+            assert github_contains(body), body
+
+
+def test_writing_about_the_trigger_is_not_asking_for_a_round() -> None:
+    """The loop's own paperwork quotes its trigger phrase, and must not trip on it.
+
+    All four bodies below are real shapes: the workflow's hand-back comments, a
+    reviewer's maintainer question, a dispositions comment, and this module's own
+    docstrings. The first three are posted on the pull request the loop is running
+    on, by accounts the gate trusts. Before the phrase was anchored, a dispositions
+    comment on #369 spent a forced round on the pull request that was fixing the loop.
+    """
+
+    for body in [
+        "Round 3 of 3 is spent. Comment `@claude review` to buy another round.",
+        "Options\n - A — treat a comment carrying `@claude review` as ordinary.",
+        "C3 — fixed in 3f24fa8. The gate now accepts `@claude review` from claude[bot].",
+        "I answered above; no need to re-run. (Not writing the trigger phrase here.)",
+    ]:
+        assert not gate.decide(
+            event(
+                event_name="issue_comment",
+                is_pull_request=True,
+                comment_body=body,
+                comment_author_association="OWNER",
+            )
+        ).run, body
+
+
+def test_asking_for_a_round_still_works_at_the_top_of_a_comment() -> None:
+    """The anchor must not cost the escape hatch it is guarding."""
+
+    for body in [
+        "@claude review",
+        "  @claude review\n\nanswered option B above.",
+        "@Claude Review — the decision is settled, carry on.",
+    ]:
+        decision = gate.decide(
+            event(
+                event_name="issue_comment",
+                is_pull_request=True,
+                comment_body=body,
+                comment_author_association="OWNER",
+            )
+        )
+        assert decision.run, body
+        assert decision.forced, body
 
 
 def test_manual_dispatch_respects_the_cap_unless_forced() -> None:
@@ -257,6 +684,18 @@ def test_manual_dispatch_respects_the_cap_unless_forced() -> None:
 
 
 # --- the wiring the workflow depends on ---------------------------------------------
+
+
+def test_every_answer_names_the_pull_request_it_is_about() -> None:
+    """The workflow reads the pull request number back off the gate, not off the event.
+
+    A scheduled tick has no pull request in its event payload at all, so the gate is
+    the only thing that knows which one the rest of the job is acting on.
+    """
+    assert gate.decide(event(number=365)).pr == 365
+    assert gate.decide(event(number=365)).head_sha == "a" * 40
+    assert scan(candidate(number=380, head_sha="d" * 40)).pr == 380
+    assert scan(candidate(number=380, head_sha="d" * 40)).head_sha == "d" * 40
 
 
 def test_the_script_reads_stdin_and_writes_json() -> None:
@@ -269,6 +708,142 @@ def test_the_script_reads_stdin_and_writes_json() -> None:
     )
     payload = json.loads(result.stdout)
     # The workflow reads exactly these keys out with `jq`.
-    assert payload.keys() == {"run", "round", "reason", "cap_reached", "forced"}
+    assert payload.keys() == {
+        "run",
+        "round",
+        "reason",
+        "pr",
+        "head_sha",
+        "head_ref",
+        "cap_reached",
+        "forced",
+        "enrol",
+        "final",
+    }
     assert payload["run"] is True
     assert payload["round"] == 2
+    assert payload["pr"] == 365
+
+
+def test_a_bought_round_past_the_cap_is_still_the_last_automatic_one() -> None:
+    """`final` means the automatic loop is spent, not that nobody can buy another.
+
+    A forced round used to leave `final` false on the reasoning that whoever bought it
+    could buy another. But the workflow clears every stale park as a round runs and
+    re-adds `loop:done` only when `final` is set, so a bought round 4 with findings took
+    `loop:done` off and never put it back: the scan refuses it (`nxt > MAX_ROUNDS`), a
+    bot's comment refuses it, and the status comment promised a round that could not
+    come. `loop:done` marks the end of the *automatic* loop, which round 4 is past by
+    definition however it was bought.
+    """
+    for event_name, extra in [
+        ("issue_comment", {"comment_author_association": "OWNER"}),
+        ("workflow_dispatch", {"force": True}),
+    ]:
+        decision = gate.decide(
+            event(
+                event_name=event_name,
+                is_pull_request=True,
+                comment_body="@claude review",
+                labels=["loop:round-3", "loop:done"],
+                **extra,
+            )
+        )
+        assert decision.run, event_name
+        assert decision.round == 4, event_name
+        assert decision.forced, event_name
+        assert decision.final, event_name
+
+    # Below the cap a bought round is genuinely not the last one.
+    early = gate.decide(
+        event(
+            event_name="issue_comment",
+            is_pull_request=True,
+            comment_body="@claude review",
+            labels=["loop:round-1"],
+            comment_author_association="OWNER",
+        )
+    )
+    assert early.run and early.forced and not early.final
+
+
+def test_a_stranger_cannot_move_the_labels_by_naming_the_ceiling() -> None:
+    """The forced ceiling binds the forced path only, and nothing before it.
+
+    `cap_reached` is not an inert field: the workflow's hand-back step keys on it, adds
+    `loop:done` and rewrites the status comment. Checking the ceiling ahead of the trust
+    tests handed that write to anyone who could comment. A stranger has to fall through
+    to the same refusal they get at every other round.
+    """
+    decision = gate.decide(
+        event(
+            event_name="issue_comment",
+            is_pull_request=True,
+            comment_body="@claude review",
+            labels=["loop:round-6"],
+            comment_author_association="NONE",
+            comment_author_login="dependabot[bot]",
+        )
+    )
+    assert not decision.run
+    assert not decision.cap_reached
+    assert "collaborator" in decision.reason
+
+    # The ceiling still binds the path it was written for.
+    spent = gate.decide(
+        event(
+            event_name="issue_comment",
+            is_pull_request=True,
+            comment_body="@claude review",
+            labels=[f"loop:round-{gate.MAX_FORCED_ROUNDS}"],
+            comment_author_association="OWNER",
+        )
+    )
+    assert not spent.run
+    assert spent.cap_reached
+    assert "ceiling" in spent.reason
+
+
+def test_the_trigger_is_anchored_in_the_pattern_not_only_in_the_call() -> None:
+    """The anchor must survive someone swapping `.match` for `.search`.
+
+    Relying on the call site made the paperwork-quoting bug one substitution away from
+    returning, and nothing at the call site says so.
+    """
+    quoting = "C3 fixed. Use @claude review from bots."
+    assert not gate.COMMENT_TRIGGER.search(quoting)
+    assert not gate.COMMENT_TRIGGER.match(quoting)
+    assert gate.COMMENT_TRIGGER.search("@claude review")
+
+
+def test_the_head_branch_comes_back_so_the_ping_can_be_addressed() -> None:
+    """The workflow asks the branch who is fixing, and reads it off the gate.
+
+    `@cursor` used to be hardcoded in the findings ping, which is right only while
+    Cursor is the implementer. When Claude implements and Cursor reviews, that comment
+    handed the fixes to the agent that had just written them up. The branch prefix is
+    the same signal the gate already uses to enrol a new pull request, so it comes out
+    of the gate rather than being fetched again in bash.
+    """
+    ready = gate.decide(
+        event(
+            event_name="pull_request",
+            action="ready_for_review",
+            head_ref="cursor/delegating-stream-flags-8161",
+            labels=["loop:on"],
+        )
+    )
+    assert ready.run
+    assert ready.head_ref == "cursor/delegating-stream-flags-8161"
+
+    # The scan carries it too, since a scheduled round posts the same ping.
+    assert (
+        scan(candidate(head_ref="claude/project-thread-blk7eo")).head_ref
+        == "claude/project-thread-blk7eo"
+    )
+
+    # Absent from the payload is the empty string, never None: the workflow interpolates
+    # it into a `case`, where a null would read as the literal "null".
+    bare = event(labels=["loop:round-1"])
+    del bare["head_ref"]
+    assert gate.decide(bare).head_ref == ""

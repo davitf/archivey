@@ -1,34 +1,24 @@
 # PR Review Template
 
-Copy and use this template for code reviews in this repo.
-Matches [addendum §0 output shape](../reference/archivey-review-addendum.md).
-
-Brevity fence: keep blocks 1 and 3 skim-friendly; put full evidence and fix direction in
-block 2. Do not drop real pause-and-ask items to leave section 3 empty.
+The fill-in form for a review in this repo. **The rules are not here** — they are in
+[addendum §0](../reference/archivey-review-addendum.md) (output shape, verdicts, round
+budget, severity × confidence) and §10 (posting, IDs, re-reviews). This file is a shape to
+copy, and is deliberately not a second copy of §0.
 
 ---
 
 ## 1. Maintainer briefing (read this first)
 
-**What this change is** — *once per PR, not once per reviewer: if any review on this PR
-already carries one, delete this heading and open with the status table over the existing
-IDs instead (addendum §0, §10)*
+**What this change is** — *once per PR, not once per round and not once per reviewer (§0)*
 
 [2–4 sentences: intent, areas touched, behaviour delta — readable without the diff]
 
 **Snapshot**
 
 - **PR size:** [Small/Medium/Large] (~X lines)
-- **Review scope:** [`main...HEAD` on a first round; `<last-reviewed-sha>..HEAD` from
-  round 2 on — addendum §10 "Re-reviews"]
+- **Review scope:** [`main...HEAD`, or `<last-reviewed-sha>..HEAD` from round 2 on]
 - **Gates (CI status, not re-run):** [ruff / pyrefly / ty / pytest — or `CI pending`]
 - **Verdict:** [✅ Approve / ✅ Approve conditional on <your-prefix><n>, … / 💬 Comment / 🔄 Request Changes]
-  - “Only nits left” is not an approval — addendum §0 Verdicts. Nits get fixed on this PR,
-    or the verdict is the conditional approval, naming the IDs it is conditioned on.
-  - Round 3 or later with only 🟢 nits open → the conditional approval, and stop reviewing;
-    do not open another round to confirm wording (addendum §0 Round budget).
-  - Posting through the maintainer's account? Submit as `COMMENT`; GitHub blocks
-    self-approval (addendum §10). The verdict line *is* the verdict.
 
 **Main points**
 
@@ -44,9 +34,6 @@ IDs instead (addendum §0, §10)*
 ## 2. Implementor handoff (goes on the PR)
 
 **Context:** [PR # / branch / scope — so this block stands alone once §10 splits it]
-
-Finding IDs carry your own initial (`K1`, `K2`, … from Claude Code; `C1`, `C2`, … from
-Cursor) and keep counting up across your rounds on this PR — addendum §10.
 
 ### Required changes
 
@@ -74,9 +61,7 @@ Cursor) and keep counting up across your rounds on this PR — addendum §10.
 
 ### Minor / suggestions
 
-Nits are small, not optional: they are fixed on this PR (addendum §0 Verdicts).
-
-🟢 **[nit]** [Suggestion — small, fix before merge]
+🟢 **[nit]** [Suggestion — small, and fixed on this PR]
 
 💡 **[suggestion]** [Alternative approach]
 
@@ -84,12 +69,12 @@ Nits are small, not optional: they are fixed on this PR (addendum §0 Verdicts).
 
 🎉 **[praise]** [Specific strength worth keeping]
 
-**Verdict:** [✅ Approve / ✅ Approve conditional on <your-prefix><n>, … / 💬 Comment / 🔄 Request Changes]
+**Verdict:** [as above]
 
 ### Measured this round
 
 One line per command you ran, with its result, so the next round inherits it instead of
-re-deriving it (addendum §10). Ran nothing? `None.`
+re-deriving it (§10). Ran nothing? `None.`
 
 - `[command]` → [result]
 
@@ -97,8 +82,8 @@ re-deriving it (addendum §10). Ran nothing? `None.`
 
 ## 3. Maintainer decisions (your attention)
 
-Numbered items that need a **human call** only. Each must be decidable without reading
-the briefing, handoff, or diff. If none: `None.`
+Numbered items that need a **human call** only. Each must be decidable without reading the
+briefing, handoff, or diff. If none: `None.`
 
 1. **[Decision]** — [yes/no or A vs B]
    - **Why you:** [spec/VISION conflict, product trade-off, pause-and-ask, …]
@@ -107,9 +92,9 @@ the briefing, handoff, or diff. If none: `None.`
 
 ---
 
-## Quick Copy Templates
+## Quick copy blocks
 
-### Blocking Issue
+### Blocking issue
 ```
 🔴 **[blocking]** `CONFIRMED` — [Title]
 
@@ -125,7 +110,7 @@ the briefing, handoff, or diff. If none: `None.`
 **Trigger:** [input/state → failure]
 ```
 
-### Important Suggestion
+### Important suggestion
 ```
 🟡 **[important]** `PLAUSIBLE` — [Title]
 
@@ -138,7 +123,7 @@ the briefing, handoff, or diff. If none: `None.`
 - Option B: [description]
 ```
 
-### Minor Suggestion
+### Minor suggestion
 ```
 🟢 **[nit]** [Suggestion]
 

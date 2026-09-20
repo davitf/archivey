@@ -260,6 +260,23 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   later caller and turns a detectable error into wrong bytes. Raise, with a message that
   says which invariant was violated. Where `streamtools` cannot raise an `ArchiveyError`,
   `ValueError` is the right type (maintainer decision on #326).
+- **Subprocess calls pass an argument list.** `unrar`, the fixture `7z`, and anything
+  else spawned from this codebase take a list of arguments, never a single string with
+  `shell=True`. Archive member names are attacker-controlled: a name is a value passed to
+  the process, never text interpolated into a command line.
+- **Secrets stay out of logs, `repr` and exception messages.** A password or key is
+  handled, never displayed. An exception raised on a wrong password says that the password
+  was wrong, not what was tried — the message ends up in a caller's log.
+- **The public / `internal/` boundary is a contract, not a layout.** Code outside
+  `internal/` is frozen surface; `__all__` is grown deliberately, one export at a time,
+  with the reason in the PR. The CLI reaching into `internal/` is a signal that the public
+  API has a gap — fix the gap rather than widening the reach.
+- **Cost signals stay honest, and nothing silently re-decompresses.** `ListingCost` and
+  `AccessCost` are promises a caller plans against, so a change that makes a path more
+  expensive updates them. Reading two members out of one solid block must not decode the
+  block twice without the cost signal saying so: a tiny fixture hides it, and the caller
+  pays in production. Claims about speed cite bytes decompressed and seeks, or an existing
+  `benchmarks/` run — not wall time on one machine.
 - **Picking an exception type means checking what catches it.** In this codebase an
   exception type is control flow: `TruncatedError` from the wrong layer aborts
   password-candidate iteration, and a `CorruptionError` where a wrong-password error was
