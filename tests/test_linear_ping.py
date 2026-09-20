@@ -99,26 +99,31 @@ def _run(tmp_path, monkeypatch, pr_body, *, key=None):
     return ping.main()
 
 
+def _attached(*issues):
+    """The shape `attachmentsForURL` returns."""
+    return {"attachmentsForURL": {"nodes": [{"issue": i} for i in issues]}}
+
+
 def test_a_pr_no_issue_can_be_found_for_exits_clean_and_says_so(
     tmp_path, monkeypatch, capsys
 ):
-    """Neither route finds anything: no attachment, and no footer in the body."""
-    monkeypatch.setattr(ping, "call", lambda *_a, **_k: {"issues": {"nodes": []}})
+    """Neither route finds anything: nothing attached, and no footer in the body."""
+    monkeypatch.setattr(ping, "call", lambda *_a, **_k: _attached())
     assert _run(tmp_path, monkeypatch, "no issue here", key="lin_api_x") == 0
     err = capsys.readouterr().err
     assert "no Linear issue is attached" in err
     assert PR_URL in err
 
 
-def test_the_attachment_route_is_tried_before_the_body(tmp_path, monkeypatch, capsys):
+def test_the_attachment_route_is_tried_before_the_body(tmp_path, monkeypatch):
     """The body footer is the fallback, so a PR that still has one must not be read
     when Linear already knows which issue the pull request belongs to."""
     seen = []
 
     def fake_call(query, variables, _key):
         seen.append(variables)
-        if "IssueByAttachment" in query:
-            return {"issues": {"nodes": [{"id": "uuid-1", "identifier": "TEAM-1"}]}}
+        if "IssueByAttachmentUrl" in query:
+            return _attached({"id": "uuid-1", "identifier": "TEAM-1"})
         if "IssueByNumber" in query:
             raise AssertionError("the body route must not be reached")
         return {"commentCreate": {"success": True}}
@@ -129,13 +134,49 @@ def test_the_attachment_route_is_tried_before_the_body(tmp_path, monkeypatch, ca
     assert seen[1]["issueId"] == "uuid-1"  # posted straight to the attached issue
 
 
+def test_a_rejected_attachment_query_falls_through_to_the_other_spelling(
+    tmp_path, monkeypatch
+):
+    """Which of the two spellings Linear accepts could not be checked offline, so a
+    rejection of the first must not end the lookup. `call` returns None on a GraphQL
+    error, which is what this stands in for."""
+    tried = []
+
+    def fake_call(query, _variables, _key):
+        if "IssueByAttachmentUrl" in query:
+            tried.append("url")
+            return None  # e.g. "Cannot query field attachmentsForURL"
+        if "IssueByAttachmentFilter" in query:
+            tried.append("filter")
+            return {"issues": {"nodes": [{"id": "uuid-3", "identifier": "TEAM-3"}]}}
+        return {"commentCreate": {"success": True}}
+
+    monkeypatch.setattr(ping, "call", fake_call)
+    assert _run(tmp_path, monkeypatch, "no footer here", key="lin_api_x") == 0
+    assert tried == ["url", "filter"]
+
+
+def test_an_empty_answer_does_not_ask_the_same_question_twice(tmp_path, monkeypatch):
+    """A query that worked and found nothing is an answer, not a failure."""
+    tried = []
+
+    def fake_call(query, _variables, _key):
+        if "IssueByAttachment" in query:
+            tried.append(query)
+        return _attached()
+
+    monkeypatch.setattr(ping, "call", fake_call)
+    assert _run(tmp_path, monkeypatch, "no footer here", key="lin_api_x") == 0
+    assert len(tried) == 1
+
+
 def test_the_body_footer_still_works_when_nothing_is_attached(tmp_path, monkeypatch):
     """Pull requests opened before the footer was dropped must keep resolving."""
     posted = {}
 
     def fake_call(query, variables, _key):
         if "IssueByAttachment" in query:
-            return {"issues": {"nodes": []}}
+            return _attached()
         if "IssueByNumber" in query:
             assert variables == {"team": "TEAM", "number": 123.0}
             return {"issues": {"nodes": [{"id": "uuid-2", "identifier": "TEAM-123"}]}}

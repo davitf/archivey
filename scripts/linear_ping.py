@@ -79,15 +79,38 @@ query IssueByNumber($team: String!, $number: Float!) {
 
 #: The primary lookup. Linear attaches the pull request to the issue it delegated, so
 #: the issue is reachable from the URL alone and the public body needs no tracker line.
+#:
+#: Two spellings are tried, in this order, because the schema could not be checked from
+#: the machine this was written on: ``attachmentsForURL`` is Linear's purpose-built
+#: query for "what is this link attached to", and filtering ``issues`` by attachment URL
+#: is the same question asked the other way round. Whichever answers, the run log says
+#: so by name — **delete the other once a real run has named the winner.** A wrong guess
+#: here is not silent: an unknown field is a GraphQL error, which `call` reports.
+#:
 #: ``first: 2`` rather than 1 on purpose: two issues claiming one pull request is a
 #: state worth naming in the log rather than silently picking the first of.
-ISSUE_BY_ATTACHMENT_QUERY = """
-query IssueByAttachment($url: String!) {
+ATTACHMENT_QUERIES = (
+    (
+        "attachmentsForURL",
+        """
+query IssueByAttachmentUrl($url: String!) {
+  attachmentsForURL(url: $url, first: 2) {
+    nodes { issue { id identifier } }
+  }
+}
+""",
+    ),
+    (
+        "issues(filter: attachments)",
+        """
+query IssueByAttachmentFilter($url: String!) {
   issues(filter: { attachments: { url: { eq: $url } } }, first: 2) {
     nodes { id identifier }
   }
 }
-"""
+""",
+    ),
+)
 
 COMMENT_MUTATION = """
 mutation AddComment($issueId: String!, $body: String!) {
@@ -152,22 +175,36 @@ def call(query: str, variables: dict[str, object], key: str) -> dict | None:
     return body.get("data")
 
 
+def _attached_issues(data: dict) -> list[dict]:
+    """Pull the issues out of either attachment query's shape."""
+    if "attachmentsForURL" in data:
+        nodes = data.get("attachmentsForURL", {}).get("nodes") or []
+        return [n["issue"] for n in nodes if n.get("issue")]
+    return data.get("issues", {}).get("nodes") or []
+
+
 def issue_by_attachment(pr_url: str, key: str) -> tuple[str, str] | None:
     """Return the ``(id, identifier)`` of the issue this pull request is attached to."""
-    data = call(ISSUE_BY_ATTACHMENT_QUERY, {"url": pr_url}, key)
-    if data is None:
-        return None
-    nodes = data.get("issues", {}).get("nodes") or []
-    if not nodes:
-        return None
-    if len(nodes) > 1:
-        # Not fatal, but it means two issues claim this pull request, and whichever one
-        # is commented on, the other is the one someone is waiting on.
-        note(
-            "Linear ping: more than one issue is attached to this pull request "
-            f"({', '.join(n['identifier'] for n in nodes)}); using the first."
-        )
-    return nodes[0]["id"], nodes[0]["identifier"]
+    for name, query in ATTACHMENT_QUERIES:
+        data = call(query, {"url": pr_url}, key)
+        if data is None:
+            continue
+        issues = _attached_issues(data)
+        if not issues:
+            # The query worked and the answer is "nothing is attached". Asking the same
+            # question a second way would only get the same answer.
+            print(f"Linear ping: {name} found no issue for {pr_url}.", file=sys.stderr)
+            return None
+        if len(issues) > 1:
+            # Not fatal, but two issues claim this pull request, and whichever one is
+            # commented on, the other is the one someone is waiting on.
+            note(
+                "Linear ping: more than one issue is attached to this pull request "
+                f"({', '.join(i['identifier'] for i in issues)}); using the first."
+            )
+        print(f"Linear ping: resolved via {name}.", file=sys.stderr)
+        return issues[0]["id"], issues[0]["identifier"]
+    return None
 
 
 def issue_by_body(pr_body: str, key: str) -> tuple[str, str] | None:
