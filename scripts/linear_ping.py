@@ -24,9 +24,18 @@ Contrast, same repository, 2026-09-20 03:46:35 — a human comment reading
 seconds later. The handle is fixed in the workflow now.
 
 Which leaves one cell of the table untested: the right handle, from a bot account. That
-is why this hop stays. It is cheap, it never fails the run, and it is the one path
-measured to work; if a `cursor/*` round shows `@cursoragent` from `github-actions[bot]`
-waking the agent by itself, this becomes redundant and can go.
+is why this hop stays — it is cheap, it cannot fail the run, and posting on the issue
+is the one route measured to wake an agent whose session had ended. It is insurance on
+an open question, not the fix; the handle was the fix.
+
+**It also makes that question harder to close, and there is no way around it here.** The
+GitHub comment and this hop run seconds apart in the same workflow step, so a Cursor
+agent that wakes proves only that one of the two reached it. Settling which would take a
+round run with this hop deliberately off, and until someone chooses to spend a round
+that way, "the corrected handle is enough on its own" stays unproven rather than
+disproven. Not stalling a pull request is worth more than the measurement today
+(Cursor, C8 on #379); when the loop has run cleanly for a while, the experiment is one
+round and the hop either goes or has earned its place.
 
 This break is worse than it sounds, because the thirty-minute quiet period cannot
 rescue it: the branch is quiet precisely because the implementer never learned there
