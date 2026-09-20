@@ -66,6 +66,9 @@ if TYPE_CHECKING:
 # Keys are ``HashAlgorithm`` (``member.hashes``). Values are digest ``bytes``
 # (CRC-32 as four big-endian bytes). Mapping's key parameter is invariant, so
 # this matches every typed caller rather than ``HashAlgorithm | str``.
+# Name strings still work at runtime (``_algo_key`` / hashlib lookup) but sit
+# outside the typed contract; ``algorithms_available`` is also how a future
+# enum member gets a hasher for free.
 _ExpectedHashes = Mapping[HashAlgorithm, bytes]
 _DigestTransforms = Mapping[HashAlgorithm, Callable[[bytes], bytes]]
 
