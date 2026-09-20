@@ -676,3 +676,11 @@ class TestSharedViewResumeOffset:
             _Declining(b"x" * 100), start=10, length=50, lock=threading.Lock()
         )
         assert view.nearest_resume_offset(20) is None
+
+    def test_non_seekable_view_has_no_origin_to_translate(self) -> None:
+        class _Inner(NonSeekableBytesIO):
+            def nearest_resume_offset(self, target: int) -> int:
+                return 7
+
+        sliced = SlicingStream(_Inner(b"x" * 20), length=10)
+        assert sliced.nearest_resume_offset(4) is None

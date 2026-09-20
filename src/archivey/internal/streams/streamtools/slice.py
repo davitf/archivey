@@ -257,15 +257,30 @@ class SlicingStream(ReadOnlyIOStream):
         self._raise_if_closed()
         return self._pos
 
-    def nearest_resume_offset(self, target: int) -> None:
-        """Decline the rewind-cost question: this view has its own offset space.
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """Earliest view-relative offset this view can resume at.
 
-        Offsets here are relative to ``start``, while an inner seek-point table is in
-        the inner's space, so forwarding would report a distance against the wrong
-        origin. ``None`` means "no cost signal". Kept as an explicit decline so a
-        future slice-like wrapper does not quietly acquire forwarding.
+        Asks the inner about ``start + target`` and translates the answer back
+        into this view's space, clamped at 0 — not a bare forward, because
+        offsets here are relative to ``start`` while an inner seek-point table
+        is in the inner's space. A 0 can hide that data before that position
+        still needs decoding — the inner's resume point may lie behind
+        ``start``. ``None`` when the inner has no signal, or when this view
+        has no origin to translate (non-seekable: ``_start`` is unset).
         """
-        return
+        start = self._start
+        if start is None:
+            return None
+        # Same shape as ``ask_resume_offset``: missing method or a non-int
+        # result is "no signal". Inlined because streamtools must not import
+        # the rest of archivey (``resume`` lives outside this package).
+        ask = getattr(self._stream, "nearest_resume_offset", None)
+        if ask is None:
+            return None
+        inner = ask(start + target)
+        if not isinstance(inner, int):
+            return None
+        return max(0, inner - start)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_closed()
@@ -391,30 +406,6 @@ class SharedView(SlicingStream):
             source_size=source_size,
             probe_source_size=probe_source_size,
         )
-
-    def nearest_resume_offset(self, target: int) -> int | None:
-        """Earliest view-relative offset this view can resume at.
-
-        Asks the inner about ``start + target`` and translates the answer back
-        into this view's space, clamped at 0. A 0 can hide that data before
-        that position still needs decoding — the inner's resume point may lie
-        behind ``start``. ``None`` when the inner has no signal, or when this
-        view has no origin to translate (``_start`` unset: non-seekable
-        construction is refused, so that arm is defensive).
-        """
-        start = self._start
-        if start is None:
-            return None
-        # Same shape as ``ask_resume_offset``: missing method or a non-int
-        # result is "no signal". Inlined because streamtools must not import
-        # the rest of archivey (``resume`` lives outside this package).
-        ask = getattr(self._stream, "nearest_resume_offset", None)
-        if ask is None:
-            return None
-        inner = ask(start + target)
-        if not isinstance(inner, int):
-            return None
-        return max(0, inner - start)
 
     def independent_view(self) -> SharedView:
         assert self._start is not None
