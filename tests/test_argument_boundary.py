@@ -106,9 +106,10 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
     d = iter(range(10_000))
 
     def out() -> Path:
-        sub = dest / f"d{next(d)}"
-        sub.mkdir()
-        return sub
+        # Do not create the directory. extract / extract_all used to check
+        # members= only after dest existed, and a helper that mkdir'd first
+        # made any "refusal must not touch the disk" assertion dead on arrival.
+        return dest / f"d{next(d)}"
 
     rows: list[_Case] = []
 
