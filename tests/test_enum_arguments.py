@@ -287,3 +287,29 @@ def test_detect_format_refuses_an_unknown_budget_without_an_attribute_error(
         detect_format(archive, budget="turbo")
 
     assert "'fast'" in str(exc_info.value)
+
+
+def test_detect_format_still_takes_a_budget_object(archive: Path) -> None:
+    """The preset arm is an addition, not a replacement."""
+    from archivey.detection_cost import default_detection_budget
+    from archivey.internal.detection import detect_format
+
+    assert detect_format(archive, budget=default_detection_budget()).format is not None
+
+
+def test_a_wrong_typed_budget_message_names_every_type_it_accepts(
+    archive: Path,
+) -> None:
+    """``budget=`` takes three shapes, so a message naming two reads as a denial.
+
+    A caller holding a ``DetectionBudget`` who mistypes the argument would otherwise
+    be told the parameter takes a preset, and conclude their object is not allowed.
+    """
+    from archivey.internal.detection import detect_format
+
+    with pytest.raises(ArchiveyUsageError) as exc_info:
+        detect_format(archive, budget=0)
+
+    message = str(exc_info.value)
+    assert "DetectionBudget or a DetectionBudgetPreset" in message
+    assert "its name as a string" in message

@@ -83,6 +83,13 @@ def _lookup(enum_cls: type[E]) -> dict[str, E]:
     return table
 
 
+def _takes(enum_cls: type[Enum], also_accepts: str | None) -> str:
+    """The types the caller's parameter accepts, for a wrong-type message."""
+    if also_accepts:
+        return f"a {also_accepts} or a {enum_cls.__name__}"
+    return f"a {enum_cls.__name__}"
+
+
 def _accepted(enum_cls: type[Enum]) -> str:
     """The valid spellings, for the error message. Values where there are values."""
     spellings = [str(m.value) if isinstance(m.value, str) else m.name for m in enum_cls]
@@ -97,6 +104,7 @@ def coerce_enum(
     call: str,
     param: str,
     allow_none: Literal[False] = False,
+    also_accepts: str | None = None,
 ) -> E: ...
 
 
@@ -108,6 +116,7 @@ def coerce_enum(
     call: str,
     param: str,
     allow_none: Literal[True],
+    also_accepts: str | None = None,
 ) -> E | None: ...
 
 
@@ -118,6 +127,7 @@ def coerce_enum(
     call: str,
     param: str,
     allow_none: bool = False,
+    also_accepts: str | None = None,
 ) -> E | None:
     """Return ``value`` as a member of ``enum_cls``, or raise ``ArchiveyUsageError``.
 
@@ -125,6 +135,12 @@ def coerce_enum(
     spellings described in the module docstring. Anything else — including a member of a
     *different* enum, which is the mistake a type checker would have caught — is
     refused. ``allow_none`` covers the parameters whose default is ``None``.
+
+    ``also_accepts`` names a further type the *caller's* parameter takes but this helper
+    does not handle, so the wrong-type message stays true to the signature the caller
+    read. ``detect_format(budget=)`` is the case: it takes a ``DetectionBudget`` object
+    as well as a preset, and a message naming only the preset reads as a denial that the
+    object is allowed.
     """
     if value is None and allow_none:
         return None
@@ -136,7 +152,7 @@ def coerce_enum(
         # is a string too, and would otherwise be reported as a bad spelling rather
         # than as the wrong type — which is what it is.
         raise ArchiveyUsageError(
-            f"{call} takes a {enum_cls.__name__} for {param}, but got "
+            f"{call} takes {_takes(enum_cls, also_accepts)} for {param}, but got "
             f"{type(value).__name__}.{value.name}. "
             f"Accepted: {_accepted(enum_cls)}."
         )
@@ -149,8 +165,8 @@ def coerce_enum(
             f"{enum_cls.__name__} value. Accepted: {_accepted(enum_cls)}."
         )
     raise ArchiveyUsageError(
-        f"{call} takes a {enum_cls.__name__} (or its name as a string) for {param}, "
-        f"but got {value!r} ({type(value).__name__}). "
+        f"{call} takes {_takes(enum_cls, also_accepts)} (or its name as a string) for "
+        f"{param}, but got {value!r} ({type(value).__name__}). "
         f"Accepted: {_accepted(enum_cls)}."
     )
 

@@ -504,7 +504,11 @@ def _resolve_budget(
     if isinstance(budget, DetectionBudget):
         return budget
     preset = coerce_enum(
-        budget, DetectionBudgetPreset, call="detect_format()", param="budget="
+        budget,
+        DetectionBudgetPreset,
+        call="detect_format()",
+        param="budget=",
+        also_accepts="DetectionBudget",
     )
     return DetectionBudget.for_preset(preset)
 
