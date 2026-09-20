@@ -11,8 +11,11 @@ Matching is by constructor, not local name, including constructors nested in
 ``if`` / ``for`` / ``with`` / ``try`` and functions defined inside those
 blocks: a ``MemberExtra()`` bound to ``bag`` then ``bag["zip.foo"] = 1`` is a
 member write, and ``info.extra[...]`` on an ``ArchiveInfo`` parameter is an
-archive-info write. A ``MemberExtra(...)`` / ``ArchiveInfoExtra(...)`` whose
-first argument is not a dict literal raises, rather than skipping the site.
+archive-info write. An unannotated ``.extra`` (``some_info.extra[...]``) is
+known to name a bag but not which one: those keys are checked against both
+registers together, not guessed as member. A ``MemberExtra(...)`` /
+``ArchiveInfoExtra(...)`` whose first argument is not a dict literal raises,
+rather than skipping the site.
 
 The ``Known keys:`` bullets in each class docstring are the published copy
 (``docs/formats.md`` points at them). Those keys and type strings must match
@@ -252,9 +255,10 @@ def _bucket_for_subscript(target: ast.AST, bound: dict[str, str]) -> str | None:
                 return "info"
             if kind in {"member", "member_obj"}:
                 return "member"
-        # ``member.extra`` on an unannotated name is the member bag: every
-        # in-place archive-info write in src/ goes through ArchiveInfoExtra(...).
-        return "member"
+        # Unannotated ``.extra`` names a bag; we do not guess which. Checked
+        # against both registers together so a valid archive-info key is not
+        # reported as an undeclared member write.
+        return "either"
     return None
 
 
@@ -281,9 +285,12 @@ def _bind_tree(node: ast.AST, bound: dict[str, str]) -> None:
         _bind_tree(child, bound)
 
 
-def _written_keys_from_tree(tree: ast.AST, path: Path) -> tuple[set[str], set[str]]:
+def _written_keys_from_tree(
+    tree: ast.AST, path: Path
+) -> tuple[set[str], set[str], set[str]]:
     member: set[str] = set()
     info: set[str] = set()
+    either: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             _collect_ctor_keys(node, path, member, info)
@@ -308,6 +315,8 @@ def _written_keys_from_tree(tree: ast.AST, path: Path) -> tuple[set[str], set[st
                         info.add(key)
                     elif bucket == "member":
                         member.add(key)
+                    elif bucket == "either":
+                        either.add(key)
             for child in ast.iter_child_nodes(node):
                 walk_writes(child)
 
@@ -316,46 +325,68 @@ def _written_keys_from_tree(tree: ast.AST, path: Path) -> tuple[set[str], set[st
 
     if isinstance(tree, ast.Module):
         scan_scope(tree.body, {})
-    return member, info
+    return member, info, either
 
 
-def _written_keys_from_source(source: str, path: Path) -> tuple[set[str], set[str]]:
+def _written_keys_from_source(
+    source: str, path: Path
+) -> tuple[set[str], set[str], set[str]]:
     return _written_keys_from_tree(ast.parse(source), path)
 
 
-def _written_keys(root: Path) -> tuple[set[str], set[str]]:
+def _written_keys(root: Path) -> tuple[set[str], set[str], set[str]]:
     member: set[str] = set()
     info: set[str] = set()
+    either: set[str] = set()
     for path in root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        written_member, written_info = _written_keys_from_tree(tree, path)
+        written_member, written_info, written_either = _written_keys_from_tree(
+            tree, path
+        )
         member |= written_member
         info |= written_info
-    return member, info
+        either |= written_either
+    return member, info, either
+
+
+def _assert_overloads_match_writes(
+    mapping_cls: type, written: set[str], either: set[str]
+) -> None:
+    declared = _literal_keys(mapping_cls)
+    no_overload = written - declared
+    unused = declared - written - (either & declared)
+    if no_overload or unused:
+        raise AssertionError(
+            f"{mapping_cls.__name__}: writes with no overload "
+            f"{sorted(no_overload)}; unused overloads {sorted(unused)}"
+        )
 
 
 def test_member_extra_overloads_match_src_writers() -> None:
-    declared = _literal_keys(MemberExtra)
-    written, _ = _written_keys(REPO_SRC)
-    assert written == declared, (
-        f"undeclared writes {sorted(written - declared)}; "
-        f"unused overloads {sorted(declared - written)}"
-    )
+    written, _, either = _written_keys(REPO_SRC)
+    _assert_overloads_match_writes(MemberExtra, written, either)
 
 
 def test_archive_info_extra_overloads_match_src_writers() -> None:
-    declared = _literal_keys(ArchiveInfoExtra)
-    _, written = _written_keys(REPO_SRC)
-    assert written == declared, (
-        f"undeclared writes {sorted(written - declared)}; "
-        f"unused overloads {sorted(declared - written)}"
-    )
+    _, written, either = _written_keys(REPO_SRC)
+    _assert_overloads_match_writes(ArchiveInfoExtra, written, either)
+
+
+def test_unannotated_extra_keys_are_in_some_register() -> None:
+    declared = _literal_keys(MemberExtra) | _literal_keys(ArchiveInfoExtra)
+    _, _, either = _written_keys(REPO_SRC)
+    unknown = either - declared
+    assert not unknown, f"unknown - declared {sorted(unknown)}"
 
 
 def test_tests_do_not_invent_undeclared_extra_keys() -> None:
     declared = _literal_keys(MemberExtra) | _literal_keys(ArchiveInfoExtra)
-    written_member, written_info = _written_keys(REPO_TESTS)
-    unexpected = (written_member | written_info) - declared - _TEST_ONLY_MEMBER_KEYS
+    written_member, written_info, written_either = _written_keys(REPO_TESTS)
+    unexpected = (
+        (written_member | written_info | written_either)
+        - declared
+        - _TEST_ONLY_MEMBER_KEYS
+    )
     assert not unexpected, (
         f"test-only extra keys missing from allowlist: {sorted(unexpected)}"
     )
@@ -378,19 +409,21 @@ def test_docstring_guard_fails_if_bullet_missing() -> None:
 
 
 def test_inventory_sees_renamed_local() -> None:
-    member, info = _written_keys_from_source(
+    member, info, either = _written_keys_from_source(
         "bag = MemberExtra()\nbag['zip.foo'] = 1\n",
         Path("probe.py"),
     )
     assert member == {"zip.foo"}
     assert not info
+    assert not either
 
-    member, info = _written_keys_from_source(
+    member, info, either = _written_keys_from_source(
         "def f() -> None:\n    bag = MemberExtra()\n    bag['zip.foo'] = 1\n",
         Path("probe.py"),
     )
     assert member == {"zip.foo"}
     assert not info
+    assert not either
 
 
 def test_inventory_sees_bind_inside_block() -> None:
@@ -405,18 +438,40 @@ def test_inventory_sees_bind_inside_block() -> None:
         "if (bag := MemberExtra()):\n    bag['zip.nested'] = 1\n",
     )
     for source in probes:
-        member, info = _written_keys_from_source(source, Path("probe.py"))
+        member, info, either = _written_keys_from_source(source, Path("probe.py"))
         assert member == {"zip.nested"}, source
         assert not info, source
+        assert not either, source
 
 
 def test_inventory_classifies_archive_info_attribute() -> None:
-    member, info = _written_keys_from_source(
+    member, info, either = _written_keys_from_source(
         "def f(info: ArchiveInfo) -> None:\n    info.extra['7z.volume_count'] = 1\n",
         Path("probe.py"),
     )
     assert info == {"7z.volume_count"}
     assert "7z.volume_count" not in member
+    assert not either
+
+
+def test_inventory_unannotated_extra_is_either_bag() -> None:
+    member, info, either = _written_keys_from_source(
+        "some_info.extra['7z.volume_count'] = 1\n",
+        Path("probe.py"),
+    )
+    assert either == {"7z.volume_count"}
+    assert "7z.volume_count" not in member
+    assert not info
+
+    declared = _literal_keys(MemberExtra) | _literal_keys(ArchiveInfoExtra)
+    member, info, either = _written_keys_from_source(
+        "whatever.extra['bogus.key'] = 1\n",
+        Path("probe.py"),
+    )
+    assert either == {"bogus.key"}
+    assert either - declared == {"bogus.key"}
+    assert not member
+    assert not info
 
 
 def test_inventory_rejects_non_literal_ctor() -> None:
