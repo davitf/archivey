@@ -18,27 +18,40 @@ one edit here for all three.
 Two scan entry points, because the callers differ in what they may do to the source.
 A parser owns its handle and reads forward (:func:`scan_for_magic`); the detector must
 not consume anything, so it works from growing peeks (:func:`iter_magic_in_prefix`).
-Both keep the window bounded and neither buffers the whole of it.
+Both keep the window bounded and neither buffers the whole of it. Both can skip a
+decoy: the iterating path yields every structural match so the detector's caller can
+reject it, and :func:`scan_for_magic` takes an optional :class:`HitValidator` so the
+parser path has the same "earliest *valid* match" rule.
 
 :func:`executable_cue` is a **cost gate, not a correctness gate**. Its purpose is to
 avoid reading up to :data:`SFX_MAX` from every source a caller opens — not to keep
-false matches out. Hit validators (ZIP local-header sanity, later 7z/RAR self-checks)
-are what reject a decoy. Widening the cue is therefore a cost decision: ``MZ``, ELF,
-a ``#!`` shebang, or a Mach-O header that parses. The gate is deliberately two-tiered
-— see :class:`ExecutableCue`.
+false matches out. Hit validators (ZIP local-header sanity, 7z StartHeaderCRC, RAR
+main-header CRC) are what reject a decoy. Widening the cue is therefore a cost
+decision: ``MZ``, ELF, a ``#!`` shebang, or a Mach-O header that parses. The gate is
+deliberately two-tiered — see :class:`ExecutableCue`.
 """
 
 from __future__ import annotations
 
+import io
 import struct
 from collections.abc import Iterator
 from enum import Enum
 from typing import BinaryIO, Callable, NamedTuple, Protocol, Sequence
 
+from archivey.internal.streams.streamtools import source_byte_size
+
 # How far past the start of a source the archive magic may sit before we stop looking.
 # 2 MiB comfortably covers real stubs (a `rar a -sfx` ELF stub is ~250 KB, and Windows
 # installer stubs are of the same order) while keeping a miss cheap and bounded.
 SFX_MAX = 2 * 1024 * 1024
+
+# Rejected-candidate cap for :func:`scan_for_magic` when a validator is passed. A 2 MiB
+# window of planted 6-byte decoys is otherwise an unbounded validation loop. This is
+# structural, not a ``ListingLimits`` / ``DetectionBudget`` knob: a real SFX stub does
+# not carry hundreds of format magics, and the native parsers that call this have no
+# detection budget. 256 is a starting value; raise it here if a real archive needs more.
+MAX_VALIDATED_CANDIDATES = 256
 
 # Read granularity for the forward scan. Large enough that a full 2 MiB window is 32
 # reads, small enough that a match near the front stops early.
@@ -337,11 +350,37 @@ def _find_earliest(
     return best
 
 
+def _remaining_from_origin(
+    source: BinaryIO, scan_start: int | None, origin: int
+) -> int | None:
+    """Provable bytes from ``origin`` (relative to the scan start) to source EOF.
+
+    ``None`` when the start position or the total size is unknown. Computed from a
+    cheap size probe that does not move the handle — never a ``SEEK_END`` on a
+    decompressor.
+    """
+    if scan_start is None:
+        return None
+    total = source_byte_size(source)
+    if total is None:
+        return None
+    remaining = total - scan_start - origin
+    return remaining if remaining >= 0 else None
+
+
+def _scan_start_position(source: BinaryIO) -> int | None:
+    try:
+        return source.tell()
+    except (OSError, ValueError, AttributeError, io.UnsupportedOperation):
+        return None
+
+
 def scan_for_magic(
     source: BinaryIO,
     needles: Sequence[bytes | ScanNeedle],
     *,
     limit: int = SFX_MAX,
+    validator: HitValidator | None = None,
 ) -> MagicHit | None:
     """The earliest ``needles`` match within ``limit`` bytes, as a :class:`MagicHit`.
 
@@ -350,6 +389,24 @@ def scan_for_magic(
     the first ``limit`` bytes, so the bound is a promise about the whole magic and not
     just its first byte. A hit whose computed candidate origin would be negative is
     discarded and the scan continues.
+
+    ``validator``, when given, is the same :class:`HitValidator` shape the detector
+    uses: a candidate-relative ``peek_more(n)`` plus known remaining from that origin.
+    Anything other than :attr:`HitOutcome.VALID` is skipped and the scan resumes just
+    past the needle, so this path has the same "earliest *valid* match" rule as
+    :func:`iter_magic_in_prefix`. With no validator the first structural match wins,
+    as before.
+
+    ``peek_more`` is served from the scan window and may pull extra bytes *forward*
+    if the header extends past what has been read. It does not seek back. The source
+    does not have to be seekable; a candidate whose origin has already been trimmed
+    from the window (a non-zero :class:`ScanNeedle` offset after overlap trim) sees a
+    short peek and will typically be rejected. ``remaining`` is filled from a cheap
+    size probe when both the scan-start ``tell()`` and the total size are known,
+    otherwise ``None``.
+
+    After :data:`MAX_VALIDATED_CANDIDATES` rejections the scan stops and returns
+    ``None``. The cap does not apply when no validator is passed.
 
     ``source`` is left wherever the scan stopped reading — callers reposition it from
     the returned origin. Overlapping needles are resolved by earliest start, not by
@@ -367,6 +424,30 @@ def scan_for_magic(
     window_start = 0
     consumed = 0
     search_from = 0
+    rejected = 0
+    scan_start = _scan_start_position(source) if validator is not None else None
+
+    def peek_more(n: int, *, origin: int) -> bytes:
+        nonlocal consumed
+        if n <= 0:
+            return b""
+        origin_in_window = origin - window_start
+        if origin_in_window < 0:
+            return b""
+        need = origin_in_window + n
+        while len(window) < need:
+            chunk = source.read(min(_SCAN_CHUNK, need - len(window)))
+            if not chunk:
+                break
+            window.extend(chunk)
+            consumed += len(chunk)
+        return bytes(window[origin_in_window : origin_in_window + n])
+
+    def bind_view(bound_origin: int) -> Callable[[int], bytes]:
+        def view(n: int) -> bytes:
+            return peek_more(n, origin=bound_origin)
+
+        return view
 
     while consumed < limit:
         chunk = source.read(min(_SCAN_CHUNK, limit - consumed))
@@ -381,10 +462,24 @@ def scan_for_magic(
                 break
             index, needle = hit
             abs_pos = window_start + index
+            if abs_pos + len(needle.magic) > limit:
+                # Validation may have pulled bytes past the scan bound; those are
+                # not candidates. The earliest remaining hit is already past it.
+                return None
             origin = candidate_origin_for_hit(abs_pos, needle.offset)
-            if origin is not None:
+            if origin is None:
+                # Negative origin — not a candidate; resume just past this decoy.
+                search_from = index + 1
+                continue
+            if validator is None:
                 return MagicHit(origin, needle.magic, needle.offset)
-            # Negative origin — not a candidate; resume just past this decoy.
+            remaining = _remaining_from_origin(source, scan_start, origin)
+            outcome = validator(bind_view(origin), remaining)
+            if outcome is HitOutcome.VALID:
+                return MagicHit(origin, needle.magic, needle.offset)
+            rejected += 1
+            if rejected >= MAX_VALIDATED_CANDIDATES:
+                return None
             search_from = index + 1
 
         search_from = 0
@@ -443,7 +538,8 @@ def find_magic_in_prefix(
 ) -> MagicHit | None:
     """:func:`scan_for_magic` for a source that must not be consumed.
 
-    Returns the earliest hit. Prefer :func:`iter_magic_in_prefix` when a validator
-    may reject a decoy and the scan must continue.
+    Returns the earliest structural hit, with no validator. Prefer
+    :func:`iter_magic_in_prefix` when a caller may reject a decoy, or
+    :func:`scan_for_magic` with ``validator=`` when the source may be consumed.
     """
     return next(iter_magic_in_prefix(peek_more, needles, limit=limit), None)

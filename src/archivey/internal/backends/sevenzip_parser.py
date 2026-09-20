@@ -402,6 +402,8 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
     ``limit`` bytes (the shared :data:`~archivey.internal.sfx.SFX_MAX`, the same bound
     the RAR parser and ``detect_format`` use), which is what makes forced
     ``format=SEVEN_Z`` work on a stub the way forced ``format=RAR`` already does.
+    A candidate that fails :func:`~archivey.internal.sevenzip_detect.validate_sevenzip_signature_header`
+    is skipped; the scan continues to the next one.
 
     Raises :class:`CorruptionError` on a miss, so a non-7z source fails loudly instead
     of opening as an empty archive. ``fp`` is restored to its starting position.
@@ -411,7 +413,17 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
         if fp.read(len(MAGIC_7Z)) == MAGIC_7Z:
             return 0
         fp.seek(start)
-        hit = scan_for_magic(fp, (MAGIC_7Z,), limit=limit)
+        # Imported here: sevenzip_detect imports this module for MAGIC_7Z / CRC.
+        from archivey.internal.sevenzip_detect import (
+            validate_sevenzip_signature_header,
+        )
+
+        hit = scan_for_magic(
+            fp,
+            (MAGIC_7Z,),
+            limit=limit,
+            validator=validate_sevenzip_signature_header,
+        )
     finally:
         fp.seek(start)
     if hit is None:
