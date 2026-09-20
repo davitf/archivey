@@ -115,13 +115,13 @@ def test_equality_excludes_hashes_and_extra() -> None:
         type=MemberType.FILE,
         name="a.txt",
         hashes={HashAlgorithm.CRC32: crc32_digest(1)},
-        extra=MemberExtra({"x": 1}),
+        extra=MemberExtra({"third.party": 1}),
     )
     b = ArchiveMember(
         type=MemberType.FILE,
         name="a.txt",
         hashes={HashAlgorithm.CRC32: crc32_digest(2)},
-        extra=MemberExtra({"y": 2}),
+        extra=MemberExtra({"third.party": 2}),
     )
     assert a == b
 
