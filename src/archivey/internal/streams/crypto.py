@@ -293,11 +293,13 @@ class AesDecryptStream(ReadOnlyIOStream):
     def nearest_resume_offset(self, target: int) -> int:
         """Plaintext offset the composed stack must restart from to reach ``target``.
 
-        Block-aligned, and reachable from the inner's nearest resume point
-        without seeking behind it. The answer is at or before ``target``, often
-        well before it — ``min(block_start, composed)`` keeps it from claiming
-        a restart the inner cannot supply. A caller that acts on it reads
-        forward from the answer.
+        Block-aligned. ``composed`` is where the inner's resume point forces
+        the stack to restart; ``block_start`` is where this stream alone
+        could. The answer is the earlier of the two — the stack restarts at
+        whichever constraint is deeper. For an inner that answered above the
+        offset it was asked, the ``min`` also caps the result at
+        ``block_start <= target``. A caller that acts on it reads forward
+        from the answer.
         """
         block_start = target - (target % AES_BLOCK_SIZE)
         iv_off = self._cipher_start + max(block_start - AES_BLOCK_SIZE, 0)

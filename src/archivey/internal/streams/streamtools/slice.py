@@ -274,6 +274,10 @@ class SlicingStream(ReadOnlyIOStream):
         seek-point table (that still lives outside ``streamtools``). The
         method name is archivey-specific; this may move later if the package
         is lifted out.
+
+        A closed or poisoned view raises rather than answering ``None``: the
+        view is unusable, so "no cost signal" would be a lie. Callers reach a
+        closed view through a translated ``seek`` first.
         """
         self._raise_if_closed()
         start = self._start

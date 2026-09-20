@@ -406,6 +406,17 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         "classified as inheriting SlicingStream's contiguous-window translation "
         f"but overrides it or does not inherit that method: {wrong_inherit}"
     )
+    wrong_remap = [
+        cls.__name__
+        for cls in remaps_or_not_on_chain
+        if getattr(cls, "nearest_resume_offset", None)
+        is slice_mod.SlicingStream.nearest_resume_offset
+    ]
+    assert wrong_remap == [], (
+        "classified as remaps / not on the chain but inherits "
+        "SlicingStream.nearest_resume_offset (a contiguous-window translation; "
+        f"that class belongs in inherits_contiguous_translation): {wrong_remap}"
+    )
 
 
 def _delegating_stream_subclasses() -> set[type]:

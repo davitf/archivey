@@ -491,10 +491,12 @@ archivey concepts — from inside the package whose docstring says nothing here 
 rest of archivey, and `DelegatingStream` forwarded it by default so every wrapper inherited it.
 Parcel A ([#326](https://github.com/davitf/archivey/pull/326)) took the forwarding off the base
 class. The seek-point table still lives outside `streamtools`: the implementations sit on the
-streams that actually own one (`decompressor_stream.py:390`, `codecs.py:204` and `:747`,
-`crypto.py:293`, `verify.py:599`, `counting.py:91`, `archive_stream.py:423`). The duck-typing
-helper `ask_resume_offset` is generic `getattr` plumbing, so it lives in
-`streamtools/binaryio.py` and is re-exported from `streams/resume.py`.
+streams that actually own one (`decompressor_stream.py:390`, `codecs.py:204`) or preserve
+that offset space (`codecs.py:747`, `verify.py:600`, `counting.py:91`,
+`archive_stream.py:423`). Two more translate the offset space rather than preserving it:
+`crypto.py:293` (ciphertext to plaintext) and `slice.py:261` (contiguous window;
+`SharedView` inherits it). The duck-typing helper `ask_resume_offset` is generic `getattr`
+plumbing, so it lives in `streamtools/binaryio.py` and is re-exported from `streams/resume.py`.
 `slice.py:261` is a named exception: it translates a contiguous window (`start + target` in,
 clamp at 0 out). That is generic offset arithmetic, not the table. The exception is written
 down in `streamtools/__init__.py` because the import linter cannot see a concept leak —

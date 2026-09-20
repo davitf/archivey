@@ -1,11 +1,15 @@
 """Rewind-cost query used by ``ArchiveStream._maybe_warn_rewind``.
 
 This is an archivey concept — seek-point tables on decompressing streams.
-The table implementations live on the streams that own one
-(``DecompressorStream``, ``_AcceleratorStream``) and on wrappers that preserve
-that offset space (``ArchiveStream``, ``OutputCountingStream``,
-``VerifyingStream``, ``_GzipTruncationCheckStream``). ``DelegatingStream``
-does not grow it.
+Implementations:
+
+- own a table — ``DecompressorStream``, ``_AcceleratorStream``
+- preserve that offset space — ``ArchiveStream``, ``OutputCountingStream``,
+  ``VerifyingStream``, ``_GzipTruncationCheckStream``
+- translate the offset space — ``AesDecryptStream`` (ciphertext to plaintext),
+  ``SlicingStream`` (contiguous window; ``SharedView`` inherits it)
+
+``DelegatingStream`` does not grow it.
 
 The duck-typing helper itself is generic ``getattr`` plumbing, so it lives in
 :mod:`archivey.internal.streams.streamtools.binaryio` and this module
