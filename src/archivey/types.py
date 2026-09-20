@@ -373,11 +373,14 @@ class MemberExtra(dict[str, object]):
 
     Writes are not type-checked: a wrong-type assignment to a known key falls
     through to the ``str → object`` fallback, same as an unknown key. ``.get()``
-    returns ``object`` for every key.
+    returns ``object`` for every key. A plain ``dict`` is not assignable to
+    ``ArchiveMember.extra``: construct a :class:`MemberExtra`, or mutate the
+    bag in place.
 
     Known keys:
 
-    * ``is_junction`` (``bool``) — ZIP, 7z, RAR
+    * ``is_junction`` (``bool``) — directory, RAR. Cross-format by design (ZIP
+      and 7z can carry junctions); other backends may start setting it.
     * ``rar.created_is_ctime`` (``bool``)
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
@@ -393,6 +396,8 @@ class MemberExtra(dict[str, object]):
     * ``tar.devminor`` (``int``)
     * ``gzip.original_filename`` (``str``)
     """
+
+    __slots__ = ()
 
     # Overloaded ``__getitem__``, not a PEP 728 TypedDict: mypy rejects
     # ``extra_items=`` and then treats the TypedDict as having no keys, so every
@@ -453,6 +458,8 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``rar.volume_count`` (``int``)
     * ``7z.volume_count`` (``int``)
     """
+
+    __slots__ = ()
 
     @overload
     def __getitem__(self, key: Literal["iso.namespace"], /) -> str: ...

@@ -6,13 +6,22 @@ type itself keeps the register complete. This test is that guard:
 ``src/archivey/``. Deleting one known-key overload (the check used
 ``zip.compress_type``) turns it red. Test-only keys (``synthetic.header_len``)
 stay on an allowlist.
+
+Matching is by constructor, not local name: a ``MemberExtra()`` bound to
+``bag`` then ``bag["zip.foo"] = 1`` is a member write, and
+``info.extra[...]`` on an ``ArchiveInfo`` parameter is an archive-info write.
+A ``MemberExtra(...)`` / ``ArchiveInfoExtra(...)`` whose first argument is not
+a dict literal raises, rather than skipping the site.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 import typing
 from pathlib import Path
+
+import pytest
 
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -35,9 +44,36 @@ _CONST_KEYS = {
 # (`synthetic.header_len`) and tests/test_data_model.py (open-bag example).
 _TEST_ONLY_MEMBER_KEYS = frozenset({"synthetic.header_len", "third.party"})
 
+_CTOR_KIND = {"MemberExtra": "member", "ArchiveInfoExtra": "info"}
+_ANN_KIND = {
+    "MemberExtra": "member",
+    "ArchiveInfoExtra": "info",
+    "ArchiveMember": "member_obj",
+    "ArchiveInfo": "info_obj",
+}
+
+_KNOWN_KEY_BULLET = re.compile(
+    r"^\s*\* ``(?P<key>[^`]+)`` \(``(?P<type>[^`]+)``\)",
+    re.MULTILINE,
+)
+
 
 def _literal_keys(mapping_cls: type) -> set[str]:
-    keys: set[str] = set()
+    return set(_overload_key_types(mapping_cls))
+
+
+def _type_as_doc(ann: object) -> str:
+    origin = typing.get_origin(ann)
+    if origin is dict:
+        key_t, val_t = typing.get_args(ann)
+        return f"dict[{_type_as_doc(key_t)}, {_type_as_doc(val_t)}]"
+    if isinstance(ann, type):
+        return ann.__name__
+    return str(ann)
+
+
+def _overload_key_types(mapping_cls: type) -> dict[str, str]:
+    keys: dict[str, str] = {}
     saw_fallback = False
     for fn in typing.get_overloads(mapping_cls.__getitem__):
         hints = typing.get_type_hints(fn)
@@ -50,17 +86,106 @@ def _literal_keys(mapping_cls: type) -> set[str]:
             raise AssertionError(
                 f"{mapping_cls.__name__} has unexpected key annotation {key_ann!r}"
             )
+        ret = hints.get("return")
+        if ret is None:
+            raise AssertionError(
+                f"{mapping_cls.__name__} overload for {key_ann!r} has no return type"
+            )
+        doc_type = _type_as_doc(ret)
         for arg in typing.get_args(key_ann):
             if isinstance(arg, str):
-                keys.add(arg)
+                keys[arg] = doc_type
     assert saw_fallback, f"{mapping_cls.__name__} is missing the str → object fallback"
     return keys
 
 
-def _is_extra_target(node: ast.AST) -> bool:
-    if isinstance(node, ast.Name) and node.id in {"extra", "info_extra"}:
-        return True
-    return isinstance(node, ast.Attribute) and node.attr == "extra"
+def _docstring_key_types(mapping_cls: type) -> dict[str, str]:
+    doc = mapping_cls.__doc__
+    if doc is None:
+        raise AssertionError(f"{mapping_cls.__name__} has no docstring")
+    marker = "Known keys:"
+    idx = doc.find(marker)
+    if idx < 0:
+        raise AssertionError(
+            f"{mapping_cls.__name__} docstring has no Known keys section"
+        )
+    found: dict[str, str] = {}
+    for match in _KNOWN_KEY_BULLET.finditer(doc[idx + len(marker) :]):
+        found[match.group("key")] = match.group("type")
+    return found
+
+
+def _assert_doc_matches_overloads(mapping_cls: type) -> None:
+    declared = _overload_key_types(mapping_cls)
+    documented = _docstring_key_types(mapping_cls)
+    if documented != declared:
+        missing = sorted(set(declared) - set(documented))
+        extra = sorted(set(documented) - set(declared))
+        drifted = sorted(
+            k for k in set(declared) & set(documented) if declared[k] != documented[k]
+        )
+        raise AssertionError(
+            f"{mapping_cls.__name__} docstring keys != overloads; "
+            f"missing bullets {missing}; extra bullets {extra}; "
+            f"type drift {[(k, documented[k], declared[k]) for k in drifted]}"
+        )
+
+
+def _name_or_attr(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _call_ctor(func: ast.AST) -> str | None:
+    name = _name_or_attr(func)
+    return name if name in _CTOR_KIND else None
+
+
+def _annotation_kind(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    name = _name_or_attr(node)
+    return _ANN_KIND.get(name) if name is not None else None
+
+
+def _value_kind(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Call):
+        ctor = _call_ctor(node.func)
+        return _CTOR_KIND.get(ctor) if ctor is not None else None
+    if isinstance(node, ast.IfExp):
+        body = _value_kind(node.body)
+        orelse = _value_kind(node.orelse)
+        return body if body == orelse else body or orelse
+    return None
+
+
+def _walk_skip_nested_scopes(node: ast.AST) -> typing.Iterator[ast.AST]:
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        yield child
+        yield from _walk_skip_nested_scopes(child)
+
+
+def _bind_stmt(stmt: ast.stmt, bound: dict[str, str]) -> None:
+    if isinstance(stmt, ast.Assign):
+        kind = _value_kind(stmt.value)
+        if kind is None:
+            return
+        for target in stmt.targets:
+            if isinstance(target, ast.Name):
+                bound[target.id] = kind
+    elif (
+        isinstance(stmt, ast.AnnAssign)
+        and isinstance(stmt.target, ast.Name)
+        and stmt.value is not None
+    ):
+        kind = _annotation_kind(stmt.annotation) or _value_kind(stmt.value)
+        if kind is not None:
+            bound[stmt.target.id] = kind
 
 
 def _key_from_slice(node: ast.AST) -> str | None:
@@ -83,30 +208,106 @@ def _keys_from_dict(node: ast.Dict) -> set[str]:
     return keys
 
 
+def _collect_ctor_keys(
+    node: ast.Call, path: Path, member: set[str], info: set[str]
+) -> None:
+    ctor = _call_ctor(node.func)
+    if ctor is None:
+        return
+    bucket = member if ctor == "MemberExtra" else info
+    if not node.args:
+        if node.keywords:
+            raise AssertionError(
+                f"{path.as_posix()}: {ctor}(...) uses keyword arguments; "
+                "the inventory guard cannot see its keys"
+            )
+        return
+    arg0 = node.args[0]
+    if not isinstance(arg0, ast.Dict) or node.keywords:
+        raise AssertionError(
+            f"{path.as_posix()}: {ctor}(...) first argument is not a dict "
+            "literal; the inventory guard cannot see its keys"
+        )
+    bucket |= _keys_from_dict(arg0)
+
+
+def _bucket_for_subscript(target: ast.AST, bound: dict[str, str]) -> str | None:
+    if isinstance(target, ast.Name):
+        kind = bound.get(target.id)
+        if kind in {"member", "member_obj"}:
+            return "member"
+        if kind in {"info", "info_obj"}:
+            return "info"
+        return None
+    if isinstance(target, ast.Attribute) and target.attr == "extra":
+        owner = target.value
+        if isinstance(owner, ast.Name):
+            kind = bound.get(owner.id)
+            if kind in {"info", "info_obj"}:
+                return "info"
+            if kind in {"member", "member_obj"}:
+                return "member"
+        # ``member.extra`` on an unannotated name is the member bag: every
+        # in-place archive-info write in src/ goes through ArchiveInfoExtra(...).
+        return "member"
+    return None
+
+
+def _fn_arg_bound(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
+    bound: dict[str, str] = {}
+    for arg in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs):
+        kind = _annotation_kind(arg.annotation)
+        if kind is not None:
+            bound[arg.arg] = kind
+    return bound
+
+
+def _written_keys_from_tree(tree: ast.AST, path: Path) -> tuple[set[str], set[str]]:
+    member: set[str] = set()
+    info: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            _collect_ctor_keys(node, path, member, info)
+
+    def scan_scope(body: list[ast.stmt], bound: dict[str, str]) -> None:
+        local = dict(bound)
+        for stmt in body:
+            _bind_stmt(stmt, local)
+        for stmt in body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scan_scope(stmt.body, {**local, **_fn_arg_bound(stmt)})
+            elif isinstance(stmt, ast.ClassDef):
+                scan_scope(stmt.body, local)
+            else:
+                for inner in _walk_skip_nested_scopes(stmt):
+                    if not isinstance(inner, ast.Subscript):
+                        continue
+                    key = _key_from_slice(inner.slice)
+                    if key is None:
+                        continue
+                    bucket = _bucket_for_subscript(inner.value, local)
+                    if bucket == "info":
+                        info.add(key)
+                    elif bucket == "member":
+                        member.add(key)
+
+    if isinstance(tree, ast.Module):
+        scan_scope(tree.body, {})
+    return member, info
+
+
+def _written_keys_from_source(source: str, path: Path) -> tuple[set[str], set[str]]:
+    return _written_keys_from_tree(ast.parse(source), path)
+
+
 def _written_keys(root: Path) -> tuple[set[str], set[str]]:
     member: set[str] = set()
     info: set[str] = set()
     for path in root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Subscript) and _is_extra_target(node.value):
-                key = _key_from_slice(node.slice)
-                if key is None:
-                    continue
-                if isinstance(node.value, ast.Name) and node.value.id == "info_extra":
-                    info.add(key)
-                else:
-                    member.add(key)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if not node.args:
-                    continue
-                arg0 = node.args[0]
-                if not isinstance(arg0, ast.Dict):
-                    continue
-                if node.func.id == "MemberExtra":
-                    member |= _keys_from_dict(arg0)
-                elif node.func.id == "ArchiveInfoExtra":
-                    info |= _keys_from_dict(arg0)
+        written_member, written_info = _written_keys_from_tree(tree, path)
+        member |= written_member
+        info |= written_info
     return member, info
 
 
@@ -135,3 +336,49 @@ def test_tests_do_not_invent_undeclared_extra_keys() -> None:
     assert not unexpected, (
         f"test-only extra keys missing from allowlist: {sorted(unexpected)}"
     )
+
+
+def test_docstring_keys_match_overloads() -> None:
+    _assert_doc_matches_overloads(MemberExtra)
+    _assert_doc_matches_overloads(ArchiveInfoExtra)
+
+
+def test_docstring_guard_fails_if_bullet_missing() -> None:
+    original = MemberExtra.__doc__
+    assert original is not None
+    MemberExtra.__doc__ = original.replace("* ``zip.compress_type`` (``int``)\n", "")
+    try:
+        with pytest.raises(AssertionError, match="zip.compress_type"):
+            _assert_doc_matches_overloads(MemberExtra)
+    finally:
+        MemberExtra.__doc__ = original
+
+
+def test_inventory_sees_renamed_local() -> None:
+    member, info = _written_keys_from_source(
+        "bag = MemberExtra()\nbag['zip.foo'] = 1\n",
+        Path("probe.py"),
+    )
+    assert member == {"zip.foo"}
+    assert not info
+
+    member, info = _written_keys_from_source(
+        "def f() -> None:\n    bag = MemberExtra()\n    bag['zip.foo'] = 1\n",
+        Path("probe.py"),
+    )
+    assert member == {"zip.foo"}
+    assert not info
+
+
+def test_inventory_classifies_archive_info_attribute() -> None:
+    member, info = _written_keys_from_source(
+        "def f(info: ArchiveInfo) -> None:\n    info.extra['7z.volume_count'] = 1\n",
+        Path("probe.py"),
+    )
+    assert info == {"7z.volume_count"}
+    assert "7z.volume_count" not in member
+
+
+def test_inventory_rejects_non_literal_ctor() -> None:
+    with pytest.raises(AssertionError, match="not a dict literal"):
+        _written_keys_from_source("MemberExtra(collected)\n", Path("probe.py"))

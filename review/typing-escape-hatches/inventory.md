@@ -90,7 +90,7 @@ heuristic in the first census pass and are included here.
 | A2 | `iso_reader.py:422` | `record` | unused-as-typed; `rr` on the same line is A-iso |
 | A3 | `iso_reader.py:158` | `**kwargs` | signature should match `deque` instead (see A-iso-init) |
 | A4 | `iso_reader.py:169` | `dir_record` | runtime `isinstance` to `DirectoryRecord` |
-| A5 | `listing_limits.py:24` | `extra: dict[str, Any]` | **done** — `dict[str, object]` with Q1; **`Mapping[str, object]` in staged PR 8** (the extra bag is a `dict` subclass, not assignable to `dict`) |
+| A5 | `listing_limits.py:24` | `extra: dict[str, Any]` | **done** — `dict[str, object]` with Q1; **`Mapping[str, object]` in staged PR 8** (the function only iterates `.values()`, so a read-only view is the right parameter) |
 | A6 | `streamtools/base.py:76` | `write(b)` | typeshed `IO.write` takes `Any`; `object` works |
 | A7 | `binaryio.py:53` | `try_readinto(stream)` | getattr-only |
 | A8 | `binaryio.py:180` | `_is_fifo_or_chardev(stream)` | getattr-only |

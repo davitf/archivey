@@ -170,11 +170,17 @@ def test_junction_helper() -> None:
 
 
 def test_extra_is_an_open_mapping() -> None:
-    # The names are importable at runtime; a core install has no typing_extensions.
+    # The names are importable at runtime.
     assert ArchiveMember.__annotations__["extra"] == "MemberExtra"
     assert ArchiveInfo.__annotations__["extra"] == "ArchiveInfoExtra"
     assert issubclass(MemberExtra, dict)
     assert issubclass(ArchiveInfoExtra, dict)
+    # ``__slots__ = ()`` drops the per-instance ``__dict__``; the contract is the
+    # key space, so an attribute write must not silently succeed.
+    with pytest.raises(AttributeError):
+        setattr(MemberExtra(), "not_a_key", True)
+    with pytest.raises(AttributeError):
+        setattr(ArchiveInfoExtra(), "not_a_key", True)
 
     m = ArchiveMember(
         type=MemberType.FILE, name="a", extra=MemberExtra({"third.party": 1})
