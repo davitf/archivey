@@ -1477,27 +1477,21 @@ class RarReader(BaseArchiveReader):
             #
             # On a solid archive it is neither. Those members are inside the
             # solid prefix the read pays anyway, so what the mask adds is only
-            # the *emit* -- unrar pipes us bytes we then discard. Measured on a
-            # two-member solid archive whose first member unpacks to 66 MB
-            # (unrar 7.00, `p -inul -n./`, output read and dropped, median of
-            # 15 runs): the no-glob read costs 0.035 s when that member is
-            # highly compressible and 0.380 s when it is incompressible, and
-            # the glob mask adds 0.074 s and 0.052 s on top. So the extra is a
-            # transfer cost of roughly 1 ms/MB -- 3.1x the read in the first
-            # case, 1.14x in the second, against 23x for the same pair
-            # nonsolid, where none of that decode would otherwise happen at
-            # all. A bounded factor on work already owed, not new work.
+            # the *emit* -- unrar pipes us bytes we then discard. That extra is
+            # a bounded transfer cost, roughly 1 ms/MB
+            # (dev-docs/formats/rar.md §6), not new work.
             #
-            # Refused on both shapes anyway. Maintainer (davi, 2026-09-20):
-            # "I lean towards always rejecting, for consistency internally and
-            # to keep the meaning of the config option". Two arguments of his
-            # cut the other way and are recorded in rar.md section 7 as a
-            # question to revisit: an attacker can simply make the archive
-            # solid to sidestep the sharp case, and an out-of-order read of any
-            # solid archive already decodes everything ahead of it, glob or
-            # not. Names like this are almost always constructed (davitf,
-            # 2026-09-19), with the config flag as the escape hatch. A glob
-            # name matching nothing else has `glob_prefix == 0` and never
+            # Refused on both shapes anyway. Maintainer (davitf, #372,
+            # 2026-09-20): "I lean towards always rejecting, for consistency
+            # internally and to keep the meaning of the config option". Two
+            # arguments of his cut the other way and are recorded in rar.md
+            # section 7 as a question to revisit: an attacker can simply make
+            # the archive solid to sidestep the sharp case, and an
+            # out-of-order read of any solid archive already decodes
+            # everything ahead of it, glob or not. Names like this are almost
+            # always constructed (davitf, 2026-09-19), with the config flag as
+            # the escape hatch. A glob name matching nothing else has
+            # `glob_prefix == 0` and never
             # reaches this -- which also means this is **not** a guard against
             # a hostile mask as such: a name built to make a matcher backtrack,
             # with no sibling it can match, has a zero prefix and still goes

@@ -49,6 +49,7 @@ desynchronize sizes).
 | Single non-path stream, at open | `ar.cost.notes` warns a compressed read will copy to disk; nothing is written yet |
 | Ordered stream volumes, at open | `ar.cost.notes` warns a compressed read will copy every volume; nothing is written yet |
 | Ordered stream volumes, listing only | No temp directory is created |
+| Solid `stream_members()` pass, no member read | Nothing is written, even from a stream source |
 | Ordered stream volumes, first compressed read | The whole set is written once; later reads reuse it; close removes it |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat |

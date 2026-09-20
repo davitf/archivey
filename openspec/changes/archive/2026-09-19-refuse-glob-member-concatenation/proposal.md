@@ -42,8 +42,10 @@ Recorded as `dev-docs/formats/rar.md` §10 #19, raised on
 ## What Changes
 
 - Opening a member whose mask also matches **earlier** members raises
-  `UnsupportedFeatureError` naming the byte count and the flag. The message is the
-  whole escape route, so a caller who hits it does not have to read the source.
+  `UnsupportedFeatureError`. On a non-solid archive the error names the byte count
+  and the flag; on a solid archive it names the flag and does not describe those
+  bytes as an avoidable extra decode. The message is the whole escape route, so a
+  caller who hits it does not have to read the source.
 - `ArchiveyConfig.rar_allow_glob_member_concatenation` (default `False`) restores the
   previous behaviour. The skip machinery is unchanged and still correct; the flag only
   decides whether the read is attempted.
@@ -64,10 +66,11 @@ malicious, not worth the DOS risk. config is an escape hatch."
 - A **non-solid** `stream_members()` pass takes the named route, so it is refused too.
   Measured: `_iter_with_data` falls through to per-member named opens for nonsolid, so
   a streaming pass builds the same mask a random `open()` does — and decodes the
-  prefix member twice, once as itself and once inside the target's pipe. Whether that
-  path should be exempt is open with the maintainer;
-  `test_wildcard_nonsolid_stream_members_hits_the_refusal` pins today's answer and
-  says which way it flips.
+  prefix member twice, once as itself and once inside the target's pipe.
+  Maintainer (davitf, 2026-09-19), asked whether iteration should be exempted:
+  "right now don't exempt iteration, it can fail as the other modes."
+  `test_wildcard_nonsolid_stream_members_hits_the_refusal` pins that. The 2026-09-20
+  ruling was about carving *solid* `open()`/`read()` out of the refusal, not this path.
 - `UnsupportedFeatureError` is reused rather than a new type, matching the
   backslash/directory-glob refusal a few lines above it in `_open_member`: from the
   caller's side both mean "this member's stored name means archivey will not read it

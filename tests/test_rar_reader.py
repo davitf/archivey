@@ -1153,10 +1153,10 @@ def test_concurrent_stream_materialize_writes_once_and_cleans_up(
     """
     created = _rar_temp_artifacts(monkeypatch)
 
-    def _delay(fn: object) -> object:
+    def _delay(fn: Callable[..., object]) -> Callable[..., object]:
         def delayed(*args: object, **kwargs: object) -> object:
             time.sleep(0.1)
-            return fn(*args, **kwargs)  # type: ignore[operator]
+            return fn(*args, **kwargs)
 
         return delayed
 
@@ -1180,7 +1180,7 @@ def test_concurrent_stream_materialize_writes_once_and_cleans_up(
                     start.wait(timeout=5)
                     with archive.open(target) as stream:
                         stream.read()
-                except BaseException as exc:  # noqa: BLE001 - collect, re-raise below
+                except BaseException as exc:  # noqa: BLE001 - collect; asserted empty below
                     errors.append(exc)
 
             threads = [threading.Thread(target=worker) for _ in range(2)]

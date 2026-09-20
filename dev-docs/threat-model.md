@@ -58,8 +58,8 @@ general gap stands — and that refusal is narrower against it than it looks. An
 out-of-order `open()` of any **solid** member decodes everything ahead of it
 with no glob involved, so an attacker wanting a large decode for one small read
 does not need a glob name at all — solidity alone does it, on a name nobody
-would refuse. Measured, the glob adds 23× on a nonsolid archive and only
-1.14–3.1× on a solid one
+would refuse. On a nonsolid archive the glob adds unbounded extra decode; on a
+solid one it adds only a bounded transfer cost
 ([`formats/rar.md`](formats/rar.md) §6). Whether the refusal earns its keep is
 therefore tied to this gap rather than to glob names, and is parked as such
 ([`formats/rar.md`](formats/rar.md) §7).
