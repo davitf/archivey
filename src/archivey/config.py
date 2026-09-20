@@ -8,6 +8,8 @@ from enum import Enum
 from typing import TYPE_CHECKING, ClassVar
 
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
+from archivey.exceptions import ArchiveyUsageError
+from archivey.internal.arg_checks import describe_value
 
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
@@ -93,6 +95,50 @@ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 1 * 1024 * 1024
 REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
 
 
+def _check_limit(
+    value: object,
+    *,
+    cls: str,
+    field_name: str,
+    allow_float: bool = False,
+) -> None:
+    """Validate one ``*Limits`` field at construction.
+
+    The guards these fields drive are all comparisons, so a wrong-typed one is not
+    found until something is actually being counted — ``ListingLimits(max_members="x")``
+    built fine and then failed mid-listing as ``TypeError: '>' not supported between
+    instances of 'int' and 'str'``, naming neither the field nor the class. A limit is
+    a promise about a future operation; checking it where the caller wrote it is the
+    only place the message can still name what they wrote.
+
+    ``bool`` is refused explicitly: it is an ``int`` subclass, so ``max_members=True``
+    would otherwise pass and cap the listing at one member. The type test is spelled
+    out per branch rather than parameterised, because a parameterised ``isinstance``
+    narrows nothing and leaves the comparison below unprovable.
+    """
+    if value is None:
+        return
+    if isinstance(value, bool):
+        number: int | float | None = None
+    elif isinstance(value, int):
+        number = value
+    elif allow_float and isinstance(value, float):
+        number = value
+    else:
+        number = None
+
+    if number is None:
+        raise ArchiveyUsageError(
+            f"{cls}.{field_name} takes {'a number' if allow_float else 'an int'} "
+            f"or None, but got {describe_value(value)}."
+        )
+    if number < 0:
+        raise ArchiveyUsageError(
+            f"{cls}.{field_name} cannot be negative, but got {value!r}. Pass None to "
+            f"disable this guard."
+        )
+
+
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for :func:`archivey.extract` / :meth:`extract_all`.
@@ -106,6 +152,19 @@ class ExtractionLimits:
     max_entries: int | None = 1_048_576
 
     UNLIMITED: ClassVar[ExtractionLimits]
+
+    def __post_init__(self) -> None:
+        cls = "ExtractionLimits"
+        _check_limit(
+            self.max_extracted_bytes, cls=cls, field_name="max_extracted_bytes"
+        )
+        _check_limit(self.max_ratio, cls=cls, field_name="max_ratio", allow_float=True)
+        _check_limit(
+            self.ratio_activation_threshold,
+            cls=cls,
+            field_name="ratio_activation_threshold",
+        )
+        _check_limit(self.max_entries, cls=cls, field_name="max_entries")
 
 
 ExtractionLimits.UNLIMITED = ExtractionLimits(
@@ -130,6 +189,11 @@ class ListingLimits:
     max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
 
     UNLIMITED: ClassVar[ListingLimits]
+
+    def __post_init__(self) -> None:
+        cls = "ListingLimits"
+        _check_limit(self.max_members, cls=cls, field_name="max_members")
+        _check_limit(self.max_metadata_bytes, cls=cls, field_name="max_metadata_bytes")
 
 
 ListingLimits.UNLIMITED = ListingLimits(

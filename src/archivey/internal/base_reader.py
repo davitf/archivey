@@ -51,6 +51,12 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     UnsupportedOperationError,
 )
+from archivey.internal.arg_checks import (
+    check_callable,
+    check_config,
+    check_extraction_limits,
+    describe_value,
+)
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
@@ -1763,6 +1769,17 @@ class BaseArchiveReader(ArchiveReader):
                     raise KeyError(f"Member {member!r} not found")
                 member = found
             else:
+                # Checked before the identity comparison below, which reads a private
+                # attribute: without this, `open(0)` failed as
+                # `AttributeError: 'int' object has no attribute '_archive_id'` —
+                # a private field name crossing the public boundary in place of an
+                # answer. `in` raises TypeError here (a spec'd escape for the operator
+                # protocol); this is an ordinary argument, so it takes the usage error.
+                if not isinstance(member, ArchiveMember):
+                    raise ArchiveyUsageError(
+                        f"reader.open() takes a member name (str) or an ArchiveMember "
+                        f"yielded by this reader, but got {describe_value(member)}."
+                    )
                 # A member object must have been yielded by THIS reader (same identity rule
                 # as `member in reader`). Without this check, a member from another archive
                 # resolves against the wrong offsets/paths and can silently return the wrong
@@ -1910,6 +1927,9 @@ class BaseArchiveReader(ArchiveReader):
     ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
         self._state.require_open("extract_all()")
+        check_config(config, call="extract_all(config=…)")
+        check_extraction_limits(limits, call="extract_all(limits=…)")
+        check_callable(on_progress, call="extract_all(on_progress=…)")
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.

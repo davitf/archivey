@@ -54,6 +54,8 @@ from archivey.internal.streams.streamtools.binaryio import (
     raise_if_text_stream,
     read_exact,
     readinto_via_read,
+    reject_source,
+    require_source,
     source_byte_size,
     source_name,
 )
@@ -93,6 +95,8 @@ __all__ = [
     "is_seekable",
     "is_stream",
     "raise_if_text_stream",
+    "reject_source",
+    "require_source",
     "read_exact",
     "readinto_via_read",
     "skip_forward",
