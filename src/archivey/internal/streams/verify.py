@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import hashlib
 import zlib
-from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
 from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
@@ -63,17 +63,21 @@ from archivey.types import HashAlgorithm
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
 
-# Keys: ``HashAlgorithm`` or algorithm name string (``hashlib`` / legacy). Values are
-# digest ``bytes`` (CRC-32 as four big-endian bytes).
-_ExpectedHashes = Mapping[Any, bytes]
-_DigestTransforms = Mapping[Any, Callable[[bytes], bytes]]
+# Keys are ``HashAlgorithm`` (``member.hashes``). Values are digest ``bytes``
+# (CRC-32 as four big-endian bytes). Mapping's key parameter is invariant, so
+# this matches every typed caller rather than ``HashAlgorithm | str``.
+# Name strings still work at runtime (``_algo_key`` / hashlib lookup) but sit
+# outside the typed contract; ``algorithms_available`` is also how a future
+# enum member gets a hasher for free.
+_ExpectedHashes = Mapping[HashAlgorithm, bytes]
+_DigestTransforms = Mapping[HashAlgorithm, Callable[[bytes], bytes]]
 
 # Bounded drain step for sized ``read(-1)``. Must not use ``inner.read(-1)`` on the
 # sized branch: ``expected_size`` is a decompression-bomb cap.
 _SIZED_DRAIN_CHUNK = 65536
 
 
-def _algo_key(algorithm: Any) -> str:
+def _algo_key(algorithm: HashAlgorithm | str) -> str:
     """Normalize a hash key to a lowercase algorithm name.
 
     ``str(HashAlgorithm.CRC32)`` is ``"HashAlgorithm.CRC32"``; use the enum value
@@ -123,7 +127,9 @@ class _Adler32Hasher:
         return (self._value & 0xFFFFFFFF).to_bytes(self.digest_size, "big")
 
 
-def _make_hasher(algorithm: Any) -> Callable[[], _IncrementalHasher] | None:
+def _make_hasher(
+    algorithm: HashAlgorithm | str,
+) -> Callable[[], _IncrementalHasher] | None:
     """Return a zero-arg factory for an incremental hasher, or ``None`` if unavailable."""
     name = _algo_key(algorithm)
     if name == "crc32":

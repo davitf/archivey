@@ -69,7 +69,7 @@ def ask_resume_offset(inner: object | None, target: int) -> int | None:
     return offset if isinstance(offset, int) else None
 
 
-def try_readinto(stream: Any, b: "WriteableBuffer") -> int | None:
+def try_readinto(stream: object, b: "WriteableBuffer") -> int | None:
     """Call ``stream.readinto(b)`` when it is a real implementation.
 
     Returns the filled-byte count, or ``None`` if ``stream`` has no usable
@@ -196,7 +196,7 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     return b"".join(chunks)
 
 
-def _is_fifo_or_chardev(stream: Any) -> bool:
+def _is_fifo_or_chardev(stream: object) -> bool:
     """Whether ``stream`` is backed by an OS pipe/FIFO or character device.
 
     Such objects are never randomly seekable, yet some lie about it (see
@@ -217,7 +217,7 @@ def _is_fifo_or_chardev(stream: Any) -> bool:
 _BUFFER_TYPES = (io.BufferedReader, io.BufferedRandom)
 
 
-def is_seekable(stream: Any) -> bool:
+def is_seekable(stream: object) -> bool:
     """Whether ``stream`` can actually seek.
 
     Unwraps ``BufferedReader`` / ``BufferedRandom`` so a detached buffer
@@ -292,12 +292,12 @@ _IO_METHODS = (
 )
 
 
-def is_filename(obj: Any) -> TypeGuard[str | bytes | os.PathLike]:
+def is_filename(obj: object) -> TypeGuard[str | bytes | os.PathLike]:
     """Whether ``obj`` is a path-like (str / bytes / ``os.PathLike``)."""
     return isinstance(obj, (str, bytes, os.PathLike))
 
 
-def source_name(source: Any) -> str | None:
+def source_name(source: object) -> str | None:
     """Best-effort human-readable name for a source, for error messages and metadata.
 
     A path-like source yields its string form; a file-like stream yields its ``name``
@@ -316,7 +316,7 @@ def source_name(source: Any) -> str | None:
     return None
 
 
-def _peel_passthrough(stream: Any) -> Any:
+def _peel_passthrough(stream: object) -> object:
     """Walk opt-in pass-through wrappers so a seek counter does not hide cheap size.
 
     Only wrappers that set ``peel_for_source_size`` are unwrapped. Transforming
@@ -338,7 +338,7 @@ def _peel_passthrough(stream: Any) -> Any:
     return stream
 
 
-def _metadata_end_size(stream: Any) -> int | None:
+def _metadata_end_size(stream: object) -> int | None:
     """Byte size from metadata that does not move the handle, else ``None``.
 
     ``BufferedRandom`` is excluded: only ``SEEK_END`` flushes a pending write, so
@@ -371,7 +371,7 @@ def _metadata_end_size(stream: Any) -> int | None:
     return None
 
 
-def _seek_end_is_cheap(stream: Any) -> bool:
+def _seek_end_is_cheap(stream: object) -> bool:
     """Whether ``SEEK_END`` on ``stream`` is O(1) — never a decompression or scan.
 
     Whitelist only: ``BytesIO``, ``FileIO``, ``mmap``, and those under a buffer.
@@ -387,7 +387,7 @@ def _seek_end_is_cheap(stream: Any) -> bool:
     return False
 
 
-def _under_buffer(stream: Any) -> Any:
+def _under_buffer(stream: object) -> object:
     """The stream a ``BufferedReader``/``BufferedRandom`` wraps, for metadata probes.
 
     A buffer forwards the I/O methods and nothing else, so a wrapped stream's ``size`` /
@@ -468,7 +468,7 @@ def source_byte_size(source: Any) -> int | None:
     return None
 
 
-def is_stream(obj: Any) -> TypeGuard[BinaryIO]:
+def is_stream(obj: object) -> TypeGuard[BinaryIO]:
     """Whether ``obj`` already satisfies the ``BinaryIO`` interface we rely on.
 
     ``io.RawIOBase`` / ``io.BufferedIOBase`` instances qualify directly.
@@ -487,7 +487,7 @@ def is_stream(obj: Any) -> TypeGuard[BinaryIO]:
     return hasattr(obj, "closed")
 
 
-def raise_if_text_stream(obj: Any) -> None:
+def raise_if_text_stream(obj: object) -> None:
     """Raise :class:`TypeError` if ``obj`` is a text-mode stream (``io.TextIOBase``).
 
     Public openers call this *before* the generic "unsupported source type" path so
@@ -551,7 +551,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
             return n
         return readinto_via_read(self, b)
 
-    def write(self, data: Any, /) -> int:
+    def write(self, data: object, /) -> int:
         # Must exist and raise UnsupportedOperation: io.RawIOBase.write raises
         # NotImplementedError, which is the wrong exception for a read-only stream.
         raise io.UnsupportedOperation("write")
@@ -647,7 +647,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         return f"BinaryIOWrapper({self._raw!r})"
 
 
-def ensure_binaryio(obj: Any) -> BinaryIO:
+def ensure_binaryio(obj: object) -> BinaryIO:
     """Return ``obj`` as a ``BinaryIO``, wrapping it only if it doesn't already qualify.
 
     The result is a valid ``BinaryIO`` but not necessarily an ``io.RawIOBase`` (an
@@ -695,7 +695,7 @@ class _NonClosingBufferedReader(io.BufferedReader):
         return getattr(self, "_detached", False) or self.raw is None or super().closed
 
 
-def ensure_bufferedio(obj: Any) -> io.BufferedIOBase:
+def ensure_bufferedio(obj: object) -> io.BufferedIOBase:
     """Return ``obj`` as a buffered reader, without taking ownership of it.
 
     An already-buffered stream is returned unchanged; otherwise it is wrapped in a
