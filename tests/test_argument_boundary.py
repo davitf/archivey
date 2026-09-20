@@ -150,6 +150,15 @@ def _cases(archive: Path, dest: Path) -> list[tuple[str, str, Callable[[], Any]]
             )
         )
 
+    for bad in (0, object(), [0], [None], 1.5):
+        rows.append(
+            (
+                f"open_archive(password={bad!r})",
+                "password",
+                lambda b=bad: open_archive(archive, password=b),
+            )
+        )
+
     for bad in (0, object(), b"PK\x03\x04", None, io.StringIO("x")):
         rows += [
             (f"open_archive({bad!r})", "source", lambda b=bad: open_archive(b)),
