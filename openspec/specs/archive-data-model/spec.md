@@ -154,7 +154,7 @@ class ArchiveMember:
     windows_attrs: int | None = None
     hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
     diagnostics: tuple[Diagnostic, ...] = field(default=(), compare=False)
-    extra: MemberExtra = field(compare=False)
+    extra: MemberExtra = field(default_factory=MemberExtra, compare=False)
 
     @property
     def member_id(self) -> int: ...
@@ -193,11 +193,12 @@ is no `crc32` alias. Sizes, link targets, hashes, and diagnostics MAY be
 completed in place during streaming. `member_id` / `archive_id` preserve source
 identity, convenience properties are derived, and `replace()` creates an edited
 copy. `hashes`, `diagnostics`, and `extra` SHALL be excluded from equality.
-`extra` SHALL be a `MemberExtra` TypedDict (`total=False`, `extra_items=object`):
-known keys carry their declared types; unknown keys (third-party or future) remain
-legal and read as `object`. The type SHALL be defined under `TYPE_CHECKING` only so
-a core install stays zero-dependency. The `EXTRA_*` constants remain the names for
-the keys they cover. A caller that uses an unknown key narrows it.
+`extra` SHALL be a `MemberExtra` mapping (`dict[str, object]` subclass) whose
+`__getitem__` is overloaded once per known key: a subscript of a known key SHALL
+narrow to that key's declared type; unknown keys (third-party or future) remain
+legal and read as `object`. `MemberExtra` SHALL be a runtime type. The `EXTRA_*`
+constants remain the names for the keys they cover. A caller that uses an unknown
+key narrows it.
 
 `ArchiveMember` SHALL remain unhashable and non-frozen. The `diagnostics` tuple
 itself is immutable, but the library MAY replace it in place for later
@@ -288,15 +289,14 @@ class ArchiveInfo:
     is_encrypted: bool
     is_multivolume: bool
     cost: CostReceipt
-    extra: ArchiveInfoExtra = field(compare=False)
+    extra: ArchiveInfoExtra = field(default_factory=ArchiveInfoExtra, compare=False)
 ```
 
 `extra` keys SHALL be namespaced strings and excluded from equality.
-`extra` SHALL be an `ArchiveInfoExtra` TypedDict (`total=False`,
-`extra_items=object`), a separate key set from `MemberExtra` and not merged with
-it. Known keys carry their declared types; unknown keys remain legal and read as
-`object`. The type SHALL be defined under `TYPE_CHECKING` only, matching
-`MemberExtra`.
+`extra` SHALL be an `ArchiveInfoExtra` mapping (`dict[str, object]` subclass), a
+separate key set from `MemberExtra` and not merged with it. Known keys narrow on
+a subscript read; unknown keys remain legal and read as `object`. `ArchiveInfoExtra`
+SHALL be a runtime type, matching `MemberExtra`.
 `member_count` SHALL be `None` when computing it requires a full scan.
 
 #### Scenario: archive info matrix

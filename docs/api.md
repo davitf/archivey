@@ -25,6 +25,8 @@ contracts: `openspec/specs/`.
 
 ::: archivey.ArchiveMember
 ::: archivey.ArchiveInfo
+::: archivey.MemberExtra
+::: archivey.ArchiveInfoExtra
 ::: archivey.ArchiveFormat
 ::: archivey.ContainerFormat
 ::: archivey.StreamFormat

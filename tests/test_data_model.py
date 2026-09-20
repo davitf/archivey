@@ -14,7 +14,6 @@ import pytest
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     ArchiveFormat,
-    ArchiveInfo,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
@@ -163,18 +162,30 @@ def test_junction_helper() -> None:
     assert not ArchiveMember(type=MemberType.SYMLINK, name="s").is_junction
 
 
-def test_extra_typeddict_is_type_checking_only() -> None:
-    import archivey.types as types_mod
+def test_extra_is_an_open_mapping() -> None:
+    import copy
+    import json
+    import pickle
 
-    # Functional-syntax TypedDict is an assignment, so the whole definition sits
-    # under TYPE_CHECKING; the stored annotation is the name, not a runtime type.
-    assert ArchiveMember.__annotations__["extra"] == "MemberExtra"
-    assert ArchiveInfo.__annotations__["extra"] == "ArchiveInfoExtra"
-    assert not hasattr(types_mod, "MemberExtra")
-    assert not hasattr(types_mod, "ArchiveInfoExtra")
-    m = ArchiveMember(type=MemberType.FILE, name="a", extra={"third.party": 1})
+    import archivey.types as types_mod
+    from archivey.types import ArchiveInfoExtra, MemberExtra
+
+    assert types_mod.MemberExtra is MemberExtra
+    assert types_mod.ArchiveInfoExtra is ArchiveInfoExtra
+    m = ArchiveMember(
+        type=MemberType.FILE, name="a", extra=MemberExtra({"third.party": 1})
+    )
+    assert isinstance(m.extra, MemberExtra)
     assert m.extra["third.party"] == 1
     assert m.extra == {"third.party": 1}
+    empty = ArchiveMember(type=MemberType.FILE, name="b")
+    assert isinstance(empty.extra, MemberExtra)
+    assert empty.extra == {}
+    bag = MemberExtra({"is_junction": True, "third.party": 1})
+    assert copy.copy(bag) == bag
+    assert copy.deepcopy(bag) == bag
+    assert pickle.loads(pickle.dumps(bag)) == bag
+    assert json.loads(json.dumps(bag)) == {"is_junction": True, "third.party": 1}
 
 
 def test_modified_utc_normalizes_mixed_timestamps() -> None:

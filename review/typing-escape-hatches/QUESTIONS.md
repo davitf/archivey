@@ -15,18 +15,20 @@ type in both directions, so a `dict[str, object]` argument was always assignable
 to a `dict[str, Any]` parameter. Measured on both checkers 2026-09-20: passing
 each into the other is clean. Private `_raw: Any` is unchanged.
 
-### TypedDict later? ✅ **DECIDED 2026-09-20: yes, as staged PR 8**
+### TypedDict later? ✅ **DECIDED 2026-09-20: yes, as staged PR 8** — **shape corrected the same day: overloaded mapping, not PEP 728**
 
-**Maintainer (2026-09-20):** make `extra` a `TypedDict` whose definition already
+**Maintainer (2026-09-20):** make `extra` a type whose definition already
 carries the correct type for every known key, while still allowing unknown keys
 for third-party extensions — on its own PR, not this one.
 
-That is PEP 728 `extra_items`, and it works here. The three costs PR 8 carries are
-listed once, on [`SUMMARY.md`](SUMMARY.md) item 8 — do not keep a second copy here.
-
-**The contract is now the TypedDict** (`MemberExtra` / `ArchiveInfoExtra` under
-`TYPE_CHECKING`; the `EXTRA_*` constants remain the names). Unknown keys stay
-legal and read as `object`.
+PEP 728 TypedDicts were the first attempt. mypy rejects `extra_items=` and then
+treats the TypedDict as having no keys, so that shape was dropped. The contract
+is now two runtime `dict[str, object]` subclasses (`MemberExtra` /
+`ArchiveInfoExtra`) whose `__getitem__` is overloaded once per known key. The
+`EXTRA_*` constants remain the names. Unknown keys stay legal and read as
+`object`. The three accepted costs (writes unchecked, `.get()` stays `object`,
+plain dict not assignable) are listed once on [`SUMMARY.md`](SUMMARY.md)
+item 8 — do not keep a second copy here.
 
 What follows is the 2026-09-18 reasoning the decision supersedes, from "Not one
 *closed* TypedDict" to "Two fields, two key sets" — with two exceptions inside that
@@ -60,10 +62,9 @@ the line here previously said it "needs Python 3.13+; the library floor is
 pyrefly 1.1.1 and ty 0.0.60, both with `python_version = "3.11"`: a
 `total=False, extra_items=object` TypedDict types known keys exactly (including
 dotted keys via the functional syntax), rejects a wrong-type write to a known
-key, and accepts an unknown key whose value reads back as `object`. The
-`typing_extensions` import that measurement needs, and whether the definition
-stays behind `TYPE_CHECKING` so the install stays zero-dep, is the third cost
-on SUMMARY.md item 8. Binding the name at runtime (`else: MemberExtra = dict`)
-would not pull in that dependency; it would make the name public API.
+key, and accepts an unknown key whose value reads back as `object`. That
+measurement still holds for the TypedDict shape; it is not the shape that
+shipped. The overloaded mapping needs no `typing_extensions` and is a runtime
+type; SUMMARY.md item 8 lists its three accepted costs.
 
 Two fields, two key sets. Do not merge member extras and `ArchiveInfo.extra`.

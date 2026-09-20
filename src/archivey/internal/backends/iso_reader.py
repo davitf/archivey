@@ -71,6 +71,7 @@ from archivey.internal.streams.streamtools import DelegatingStream, LockedStream
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
+    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
@@ -79,9 +80,6 @@ from archivey.types import (
     MemberType,
     MissingComponent,
 )
-
-if TYPE_CHECKING:
-    from archivey.types import ArchiveInfoExtra
 
 _PYCDLIB_REQUIREMENT = MissingComponent(
     "pycdlib", "pip install archivey[recommended]", ("iso",)
@@ -505,7 +503,7 @@ class IsoReader(BaseArchiveReader):
         pvd = self._iso.pvd
         volume_id = pvd.volume_identifier.decode("ascii", errors="replace").rstrip()
         interchange_level = getattr(self._iso, "interchange_level", None)
-        info_extra: ArchiveInfoExtra = {"iso.namespace": self._namespace}
+        info_extra = ArchiveInfoExtra({"iso.namespace": self._namespace})
         return ArchiveInfo(
             format=self._format,
             format_version=str(interchange_level) if interchange_level else None,
