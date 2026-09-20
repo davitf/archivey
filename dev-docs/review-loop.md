@@ -53,8 +53,11 @@ is the same loop in both directions; two things had to stop assuming who was who
 **The findings ping is addressed by branch prefix.** After a round of findings the
 workflow asks the implementing agent to work through them, and that comment used to say
 `@cursor` unconditionally — which, in the reversed direction, handed the fixes to the
-agent that had just written them up. It now reads `@cursor` on a `cursor/*` branch and
-`@claude` on anything else. The prefix is the signal the gate already uses to decide
+agent that had just written them up. It now reads `@cursoragent` on a `cursor/*` branch
+and `@claude` on anything else. **The GitHub handle is `@cursoragent`**: there is no
+GitHub user called `cursor`, the app posts as `cursor[bot]` and a bot login cannot be
+mentioned, so `@cursor` on GitHub addresses nobody at all. On Linear the handle is
+`@cursor`, which is where the wrong one came from. The prefix is the signal the gate already uses to decide
 enrolment, so there is no new piece of state, and `head_ref` comes out of the gate
 alongside the sha the round is reviewing.
 
@@ -383,14 +386,25 @@ opening a comment on it with `@claude review`.
   is worth splitting one so the workflow edit is small and separable. Observed on #379
   (2026-09-20). The same rule is why a new `workflow_dispatch` workflow cannot be run
   before it merges: GitHub only dispatches workflows present on the default branch.
-- **The findings ping needs the Linear hop to reach Cursor**, and that hop needs the
-  `LINEAR_API_KEY` secret, set on 2026-09-20. Observed on #374 (2026-09-20) and fixed in
-  [the ping section above](#the-roles-run-both-ways-round): a GitHub comment from
-  `github-actions[bot]` does not wake a Cursor agent whose session has ended. Without
-  the secret, every `cursor/*` round ends with a warning in the job summary and a pull
-  request nobody has told the implementer about; the manual workaround is to post the
-  findings summary as a `@cursor` comment on the Linear issue by hand. Carry the
-  findings in that comment rather than pointing at the pull request.
+- **The findings ping was addressed to a GitHub user that does not exist.** It said
+  `@cursor`; the app posts as `cursor[bot]`, a bot login cannot be mentioned, and the
+  mentionable account is `cursoragent`. Fixed in
+  [the ping section above](#the-roles-run-both-ways-round) on 2026-09-20 (davitf spotted
+  it). This also undercuts the measurement the Linear hop below was built on: #374's
+  sixty-six minutes of silence were after a ping that mentioned nobody. A human comment
+  reading `@cursoragent please review` on #372 got "Taking a look!" from `cursor[bot]`
+  seven seconds later, so the handle alone may be the whole of it. What is still
+  untested is the right handle from a bot account, and the next `cursor/*` round
+  measures it.
+- **The findings ping has a Linear hop as its fallback**, needing the `LINEAR_API_KEY`
+  secret, set on 2026-09-20. It stays until the line above is settled: it is cheap, it
+  never fails the run, and posting on the Linear issue is the one path measured to wake
+  an agent whose session had ended. Without the secret, every `cursor/*` round ends with
+  a warning in the job summary and a pull request nobody has told the implementer about;
+  the manual workaround is to post the findings summary as a `@cursor` comment on the
+  Linear issue by hand — `@cursor` is right *there*, which is where the wrong GitHub
+  handle came from. Carry the findings in that comment rather than pointing at the pull
+  request.
   The other route considered — posting the GitHub comment from a personal access token
   so it arrives from a human account — is cheaper to wire, but it does not match the
   path that was actually observed to work, and it spends a token.

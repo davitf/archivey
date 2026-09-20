@@ -1,20 +1,32 @@
 """Deliver the review loop's findings ping to Cursor, through Linear.
 
 `dev-docs/review-loop.md` listed this as an unobserved rough edge: the workflow posts
-the `@cursor` ping with `GITHUB_TOKEN`, so it arrives from `github-actions[bot]`, and
+the findings ping with `GITHUB_TOKEN`, so it arrives from `github-actions[bot]`, and
 nobody had checked whether a Cursor background agent whose session has already ended
-wakes up for a bot's GitHub comment. It does not. Measured on #374 (2026-09-20):
+wakes up for it. Measured on #374 (2026-09-20):
 
     00:14  Cursor's agent reports finished; its session ends.
-    00:21  the workflow posts the `@cursor` ping on the pull request.
+    00:21  the workflow posts the ping on the pull request.
     ------ 66 minutes. No push, no comment, no new agent.
     01:27  the same ask, posted as a `@cursor` comment on the Linear issue.
     01:41  Cursor pushes all seven findings fixed, and asks for the next round.
 
 Fourteen minutes against sixty-six of silence, and slowness is not the explanation —
 the same agent went from Linear delegation to a finished pull request in about seven
-minutes earlier that night. The delegation path is Linear-native, so that is where the
-wake-up has to land.
+minutes earlier that night.
+
+**What that measurement does not prove.** The GitHub ping said `@cursor`, and there is
+no GitHub user by that name: the app posts as `cursor[bot]`, a bot login cannot be
+mentioned, and the account that can is `cursoragent`. So the comment mentioned nobody,
+and the silence has a simpler explanation than "a bot comment does not wake Cursor".
+Contrast, same repository, 2026-09-20 03:46:35 — a human comment reading
+`@cursoragent please review` on #372 got "Taking a look!" from `cursor[bot]` seven
+seconds later. The handle is fixed in the workflow now.
+
+Which leaves one cell of the table untested: the right handle, from a bot account. That
+is why this hop stays. It is cheap, it never fails the run, and it is the one path
+measured to work; if a `cursor/*` round shows `@cursoragent` from `github-actions[bot]`
+waking the agent by itself, this becomes redundant and can go.
 
 This break is worse than it sounds, because the thirty-minute quiet period cannot
 rescue it: the branch is quiet precisely because the implementer never learned there

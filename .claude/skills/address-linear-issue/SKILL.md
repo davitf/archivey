@@ -118,7 +118,7 @@ this session writes is not a second opinion whatever it is labelled.
 
 ## 4. Address the findings
 
-The review lands on the pull request, and the loop posts an `@cursor` comment
+The review lands on the pull request, and the loop posts an `@cursoragent` comment
 asking for it to be addressed through
 [`address-review-findings`](../address-review-findings/SKILL.md) — ledger,
 reproduce-before-fix, gates, one decision packet at a time, replies on the PR.

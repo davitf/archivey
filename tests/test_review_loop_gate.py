@@ -819,7 +819,7 @@ def test_the_trigger_is_anchored_in_the_pattern_not_only_in_the_call() -> None:
 def test_the_head_branch_comes_back_so_the_ping_can_be_addressed() -> None:
     """The workflow asks the branch who is fixing, and reads it off the gate.
 
-    `@cursor` used to be hardcoded in the findings ping, which is right only while
+    A Cursor mention used to be hardcoded in the findings ping, which is right only while
     Cursor is the implementer. When Claude implements and Cursor reviews, that comment
     handed the fixes to the agent that had just written them up. The branch prefix is
     the same signal the gate already uses to enrol a new pull request, so it comes out
