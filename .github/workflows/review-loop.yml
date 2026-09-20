@@ -517,15 +517,20 @@ jobs:
               # would be worse than the gap it closes. It is loud about every skip.
               case "$HEAD_REF" in
                 cursor/*)
+                  pr_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$PR"
+                  # Linear holds this pull request as an attachment on the issue it was
+                  # delegated from, so the URL is enough to find it. The body is passed
+                  # only as a fallback for pull requests opened before the tracker
+                  # footer was dropped; nothing here wants that footer back.
                   gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
                     > /tmp/pr-body.md
                   # Read from Linear, "this pull request" names nothing, so say which.
                   {
                     cat /tmp/ping.md
-                    printf '\nThe pull request: %s/%s/pull/%s\n' \
-                      "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$PR"
+                    printf '\nThe pull request: %s\n' "$pr_url"
                   } > /tmp/linear-ping.md
                   python3 scripts/linear_ping.py \
+                    --pr-url "$pr_url" \
                     --pr-body-file /tmp/pr-body.md \
                     --body-file /tmp/linear-ping.md
                   ;;

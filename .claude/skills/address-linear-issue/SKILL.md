@@ -73,6 +73,14 @@ continue there instead of opening a second one.
 After the PR exists, post a Linear comment on the issue with the PR URL
 (`save_comment`). Do not change Linear status unless the user asked.
 
+**Keep the tracker out of the pull request body.** This repository is public and
+the tracker is not, so no issue key and no tracker URL belongs in PR text —
+`AGENTS.md` §"Nothing from the internal tracker goes into PR text" is the rule,
+and a tool that appends a `Linear Issue:` footer for you needs that footer turned
+off (davitf, 2026-09-20). Nothing depends on it any more: the review loop finds
+the issue by asking Linear which one holds this pull request as an attachment,
+which the comment you just posted is enough to create.
+
 ## 3. Hand the pull request to the review loop
 
 Once the PR is up and the fix is on the remote, put it in the loop and stop.

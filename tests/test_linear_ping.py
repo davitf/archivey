@@ -4,10 +4,12 @@
 forever because the implementer never learned there were findings. Two things about it
 are worth pinning, and neither needs the network:
 
-1. **It finds the issue in a real Cursor pull request body.** The identifier is the
-   loop's only link back to the delegation that started the work, and it is recovered
-   by parsing rather than stored, so a change in how Cursor writes that line breaks the
-   hop quietly.
+1. **It finds the issue.** The primary route asks Linear which issue holds this pull
+   request as an attachment; the body footer is a fallback for pull requests opened
+   before that footer was dropped. Both are recovered rather than stored, so a change
+   at either end breaks the hop quietly. The body parsing is pinned here; the
+   attachment query needs the network and is checked by the `Linear ping check`
+   workflow instead.
 2. **Every way it can fail ends in exit 0 with something said.** The findings are
    already on the pull request by the time this runs. A non-zero exit here would mark
    the round failed and, through `loop:hold`, stop the loop over a convenience hop —
@@ -67,6 +69,9 @@ def test_no_issue_is_not_an_error(body):
     assert ping.find_issue(body) is None
 
 
+PR_URL = "https://github.com/davitf/archivey/pull/999"
+
+
 def _run(tmp_path, monkeypatch, pr_body, *, key=None):
     pr_file = tmp_path / "pr.md"
     pr_file.write_text(pr_body, encoding="utf-8")
@@ -83,6 +88,8 @@ def _run(tmp_path, monkeypatch, pr_body, *, key=None):
         "argv",
         [
             "linear_ping.py",
+            "--pr-url",
+            PR_URL,
             "--pr-body-file",
             str(pr_file),
             "--body-file",
@@ -92,11 +99,52 @@ def _run(tmp_path, monkeypatch, pr_body, *, key=None):
     return ping.main()
 
 
-def test_a_pr_with_no_linear_issue_exits_clean_and_says_so(
+def test_a_pr_no_issue_can_be_found_for_exits_clean_and_says_so(
     tmp_path, monkeypatch, capsys
 ):
+    """Neither route finds anything: no attachment, and no footer in the body."""
+    monkeypatch.setattr(ping, "call", lambda *_a, **_k: {"issues": {"nodes": []}})
     assert _run(tmp_path, monkeypatch, "no issue here", key="lin_api_x") == 0
-    assert "names no Linear issue" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "no Linear issue is attached" in err
+    assert PR_URL in err
+
+
+def test_the_attachment_route_is_tried_before_the_body(tmp_path, monkeypatch, capsys):
+    """The body footer is the fallback, so a PR that still has one must not be read
+    when Linear already knows which issue the pull request belongs to."""
+    seen = []
+
+    def fake_call(query, variables, _key):
+        seen.append(variables)
+        if "IssueByAttachment" in query:
+            return {"issues": {"nodes": [{"id": "uuid-1", "identifier": "TEAM-1"}]}}
+        if "IssueByNumber" in query:
+            raise AssertionError("the body route must not be reached")
+        return {"commentCreate": {"success": True}}
+
+    monkeypatch.setattr(ping, "call", fake_call)
+    assert _run(tmp_path, monkeypatch, CURSOR_BODY, key="lin_api_x") == 0
+    assert seen[0] == {"url": PR_URL}
+    assert seen[1]["issueId"] == "uuid-1"  # posted straight to the attached issue
+
+
+def test_the_body_footer_still_works_when_nothing_is_attached(tmp_path, monkeypatch):
+    """Pull requests opened before the footer was dropped must keep resolving."""
+    posted = {}
+
+    def fake_call(query, variables, _key):
+        if "IssueByAttachment" in query:
+            return {"issues": {"nodes": []}}
+        if "IssueByNumber" in query:
+            assert variables == {"team": "TEAM", "number": 123.0}
+            return {"issues": {"nodes": [{"id": "uuid-2", "identifier": "TEAM-123"}]}}
+        posted.update(variables)
+        return {"commentCreate": {"success": True}}
+
+    monkeypatch.setattr(ping, "call", fake_call)
+    assert _run(tmp_path, monkeypatch, CURSOR_BODY, key="lin_api_x") == 0
+    assert posted["issueId"] == "uuid-2"
 
 
 def test_a_missing_api_key_exits_clean_and_names_the_issue(
@@ -106,7 +154,8 @@ def test_a_missing_api_key_exits_clean_and_names_the_issue(
     err = capsys.readouterr().err
     assert "LINEAR_API_KEY is not set" in err
     # Naming the issue is what makes the warning actionable: a person reading the run
-    # can post the comment by hand, which is the documented workaround.
+    # can post the comment by hand, which is the documented workaround. Without the key
+    # the attachment lookup cannot run, so the body is the only name available.
     assert "TEAM-123" in err
 
 
