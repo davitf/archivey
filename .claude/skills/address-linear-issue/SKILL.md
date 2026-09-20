@@ -70,16 +70,26 @@ Gates **before pushing**:
 Then push a branch and open a PR. If the issue already names a PR or branch,
 continue there instead of opening a second one.
 
-After the PR exists, post a Linear comment on the issue with the PR URL
-(`save_comment`). Do not change Linear status unless the user asked.
+After the PR exists, do two things on the Linear issue. Do not change its status
+unless the user asked.
+
+1. **Attach the pull request to the issue** — `save_issue` with
+   `links: [{url: "<the PR URL>", title: "<the PR title>"}]`. Do not skip this.
+   It is what the review loop's findings ping looks the issue up by, and nothing
+   else here creates it: Linear's GitHub integration links a pull request from
+   the branch name, the title or the description, and none of those may carry a
+   tracker key on this repository. A Linear comment containing the URL does not
+   create an attachment either.
+2. **Post a comment on the issue with the PR URL** (`save_comment`), so a person
+   reading the issue can see where the work went.
 
 **Keep the tracker out of the pull request body.** This repository is public and
 the tracker is not, so no issue key and no tracker URL belongs in PR text —
 `AGENTS.md` §"Nothing from the internal tracker goes into PR text" is the rule,
 and a tool that appends a `Linear Issue:` footer for you needs that footer turned
-off (davitf, 2026-09-20). Nothing depends on it any more: the review loop finds
-the issue by asking Linear which one holds this pull request as an attachment,
-which the comment you just posted is enough to create.
+off (davitf, 2026-09-20). That footer used to be what made Linear link the pull
+request, which is why step 1 now has to be done deliberately. If it is missed,
+the findings ping warns in the job summary and the implementer is never woken.
 
 ## 3. Hand the pull request to the review loop
 

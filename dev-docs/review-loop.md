@@ -71,12 +71,16 @@ branch is quiet *because* the implementer never learned there was anything to do
 without the second hop the pull request sits at `loop:round-1` until a person notices.
 [`scripts/linear_ping.py`](../scripts/linear_ping.py) is that hop: it asks Linear which
 issue holds this pull request as an attachment, so the loop stores nothing new, and it
-posts the same comment there with the pull request's URL appended. Cursor used to write
-a `Linear Issue:` footer into every body it opened, and the script still reads it when
-no attachment answers — but that footer published a private tracker link on a public
-repository, which `AGENTS.md` forbids, so it was dropped on 2026-09-20 and nothing here
-wants it back. The hop needs a `LINEAR_API_KEY` repository secret. Without one it warns,
-names the issue nobody commented on if the body happens to say, and exits 0 — the
+posts the same comment there with the pull request's URL appended. **That attachment is
+created deliberately**, by the agent that opened the pull request, as
+[`address-linear-issue`](../.claude/skills/address-linear-issue/SKILL.md) §2 requires;
+Linear's own GitHub integration links a pull request from the branch name, title or
+description, and none of those may carry a tracker key here. Cursor used to write a
+`Linear Issue:` footer into every body it opened, which is what linked them before, and
+the script still reads it when no attachment answers — but that footer published a
+private tracker link on a public repository, which `AGENTS.md` forbids, so it was
+dropped on 2026-09-20 and nothing here wants it back. The hop needs a `LINEAR_API_KEY`
+repository secret. Without one it warns and exits 0 — the
 findings are already on the pull request by then, and failing a round over a delivery
 convenience would be worse than the gap. To check the credential without spending a
 round, run the `Linear ping check` workflow: it resolves the issue for a pull request

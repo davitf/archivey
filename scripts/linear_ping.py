@@ -37,13 +37,26 @@ and on a `claude/*` branch it is also the delivery mechanism — a Claude Code s
 subscribed to the pull request's activity does see it. This script is the extra hop for
 `cursor/*` branches only.
 
-**Finding the issue.** Linear records the pull request as an *attachment* on the issue
-it was delegated from, so the issue is looked up by the pull request's own URL. The
-pull request body is only a fallback: Cursor used to append a `Linear Issue: [KEY](url)`
-footer to every body it opened, which published a private tracker link on a public
-repository — `AGENTS.md` forbids exactly that, and the maintainer ruled on 2026-09-20
-that the footer goes. Bodies opened before that still carry it, and the fallback reads
-them; nothing here depends on the footer coming back.
+**Finding the issue.** The issue is the one holding this pull request as an
+*attachment*, looked up by the pull request's own URL. That attachment has to be
+created deliberately — `.claude/skills/address-linear-issue/SKILL.md` §2 tells the
+agent to attach the pull request to the issue as soon as it exists, which is one API
+call. It is **not** enough to have posted a Linear comment containing the URL: Linear's
+GitHub integration links a pull request from the branch name, the title, or the
+description, and none of those may carry a tracker key here, the repository being
+public. That was the flaw in this change's first draft (Cursor, C1 on #379), which
+assumed the comment was sufficient.
+
+The pull request body is a fallback for bodies opened before 2026-09-20, when Cursor
+appended a `Linear Issue: [KEY](url)` footer to every one — the very thing that made
+Linear link them, and also a private tracker link published on a public repository,
+which `AGENTS.md` forbids. The maintainer ruled the footer goes. Nothing here depends
+on it coming back.
+
+A third route was considered and not taken: finding the issue by a Linear comment whose
+body contains the pull request URL. It would cover an agent that forgets to attach, but
+it costs a query on every round, the filter field is unverified, and a missed
+attachment is already loud rather than silent.
 
 **Nothing here is allowed to break the loop.** A pull request no issue can be found for,
 a missing API key, or a Linear outage all end in a warning and exit 0: the findings are
@@ -55,9 +68,15 @@ Usage, from the loop workflow:
 
     scripts/linear_ping.py --pr-url https://github.com/o/r/pull/1 --body-file ping.md
 
-`--dry-run` resolves the issue against the live API and prints what it would post
+`--dry-run` resolves the issue against the live API and reports what it would post
 without posting it, which is how to check the credential without spending a round.
 `LINEAR_API_KEY` comes from the environment.
+
+**Nothing printed here names a tracker issue.** This repository is public, so its
+Actions logs and job summaries are public too, and an issue key in them is the same
+leak the pull request footer was removed for. The output says whether an issue was
+found and whether the comment landed; which issue it was is readable on Linear, from
+the attachment the lookup just used.
 """
 
 from __future__ import annotations
@@ -72,10 +91,14 @@ import urllib.request
 
 LINEAR_API = "https://api.linear.app/graphql"
 
-#: Cursor writes this line into every pull request body it opens, which is what makes
-#: the issue recoverable without the loop carrying a second piece of per-PR state:
+#: A legacy footer. Cursor used to append this line to every pull request body it
+#: opened, until the maintainer ruled it off on 2026-09-20 for publishing a private
+#: tracker link on a public repository:
 #:
 #:     Linear Issue: [TEAM-123](https://linear.app/archivey/issue/TEAM-123/…)
+#:
+#: Pull requests opened before then still carry it and this still reads them; new ones
+#: do not, and are found by attachment instead.
 #:
 #: Matched on the identifier in the link text rather than on the URL, because the URL
 #: carries a slug that changes when the issue is renamed while the identifier does not.
@@ -89,40 +112,22 @@ query IssueByNumber($team: String!, $number: Float!) {
 }
 """
 
-#: The primary lookup. Linear attaches the pull request to the issue it delegated, so
-#: the issue is reachable from the URL alone and the public body needs no tracker line.
-#:
-#: Two spellings are tried, in this order, because the schema could not be checked from
-#: the machine this was written on: ``attachmentsForURL`` is Linear's purpose-built
-#: query for "what is this link attached to", and filtering ``issues`` by attachment URL
-#: is the same question asked the other way round. Whichever answers, the run log says
-#: so by name — **delete the other once a real run has named the winner.** A wrong guess
-#: here is not silent: an unknown field is a GraphQL error, which `call` reports.
+#: The primary lookup: the issue this pull request is attached to. `attachmentsForURL`
+#: is Linear's purpose-built "what is this link attached to" query, and the replacement
+#: named in the deprecation of `attachmentIssue`. Filtering `issues` by
+#: `attachments.url` asks the same question the other way round and is equally valid;
+#: this shipped both while the schema was unverified, and keeps only this one now that
+#: Cursor checked it against `schema.graphql` (C4 on #379).
 #:
 #: ``first: 2`` rather than 1 on purpose: two issues claiming one pull request is a
 #: state worth naming in the log rather than silently picking the first of.
-ATTACHMENT_QUERIES = (
-    (
-        "attachmentsForURL",
-        """
+ATTACHMENT_QUERY = """
 query IssueByAttachmentUrl($url: String!) {
   attachmentsForURL(url: $url, first: 2) {
     nodes { issue { id identifier } }
   }
 }
-""",
-    ),
-    (
-        "issues(filter: attachments)",
-        """
-query IssueByAttachmentFilter($url: String!) {
-  issues(filter: { attachments: { url: { eq: $url } } }, first: 2) {
-    nodes { id identifier }
-  }
-}
-""",
-    ),
-)
+"""
 
 COMMENT_MUTATION = """
 mutation AddComment($issueId: String!, $body: String!) {
@@ -188,35 +193,41 @@ def call(query: str, variables: dict[str, object], key: str) -> dict | None:
 
 
 def _attached_issues(data: dict) -> list[dict]:
-    """Pull the issues out of either attachment query's shape."""
-    if "attachmentsForURL" in data:
-        nodes = data.get("attachmentsForURL", {}).get("nodes") or []
-        return [n["issue"] for n in nodes if n.get("issue")]
-    return data.get("issues", {}).get("nodes") or []
+    """Pull the issues out of the attachment query's answer, tolerating any shape.
+
+    `data.attachmentsForURL` can be null, a node's `issue` can be null, and a
+    hypothetical issue could arrive without an `identifier`. None of those is worth
+    failing a review round over, so each reads as "nothing found" (Cursor, C2 on #379).
+    """
+    if not isinstance(data, dict):
+        return []
+    container = data.get("attachmentsForURL")
+    nodes = (container or {}).get("nodes") or []
+    issues = []
+    for node in nodes:
+        issue = (node or {}).get("issue")
+        if isinstance(issue, dict) and issue.get("id") and issue.get("identifier"):
+            issues.append(issue)
+    return issues
 
 
 def issue_by_attachment(pr_url: str, key: str) -> tuple[str, str] | None:
     """Return the ``(id, identifier)`` of the issue this pull request is attached to."""
-    for name, query in ATTACHMENT_QUERIES:
-        data = call(query, {"url": pr_url}, key)
-        if data is None:
-            continue
-        issues = _attached_issues(data)
-        if not issues:
-            # The query worked and the answer is "nothing is attached". Asking the same
-            # question a second way would only get the same answer.
-            print(f"Linear ping: {name} found no issue for {pr_url}.", file=sys.stderr)
-            return None
-        if len(issues) > 1:
-            # Not fatal, but two issues claim this pull request, and whichever one is
-            # commented on, the other is the one someone is waiting on.
-            note(
-                "Linear ping: more than one issue is attached to this pull request "
-                f"({', '.join(i['identifier'] for i in issues)}); using the first."
-            )
-        print(f"Linear ping: resolved via {name}.", file=sys.stderr)
-        return issues[0]["id"], issues[0]["identifier"]
-    return None
+    data = call(ATTACHMENT_QUERY, {"url": pr_url}, key)
+    if data is None:
+        return None
+    issues = _attached_issues(data)
+    if not issues:
+        print("Linear ping: no issue holds this pull request.", file=sys.stderr)
+        return None
+    if len(issues) > 1:
+        # Not fatal, but two issues claim this pull request, and whichever one is
+        # commented on, the other is the one someone is waiting on.
+        note(
+            "Linear ping: more than one issue is attached to this pull request; "
+            "using the first. Which ones they are is on Linear, not in this log."
+        )
+    return issues[0]["id"], issues[0]["identifier"]
 
 
 def issue_by_body(pr_body: str, key: str) -> tuple[str, str] | None:
@@ -228,11 +239,68 @@ def issue_by_body(pr_body: str, key: str) -> tuple[str, str] | None:
     data = call(ISSUE_QUERY, {"team": team, "number": float(number)}, key)
     if data is None:
         return None
-    nodes = data.get("issues", {}).get("nodes") or []
+    nodes = (data.get("issues") or {}).get("nodes") or []
     if not nodes:
-        note(f"Linear ping: no issue {team}-{number} is visible to this API key.")
+        note(
+            "Linear ping: the pull request body names an issue that is not visible to "
+            "this API key."
+        )
         return None
-    return nodes[0]["id"], nodes[0]["identifier"]
+    first = nodes[0]
+    if not (first.get("id") and first.get("identifier")):
+        return None
+    return first["id"], first["identifier"]
+
+
+def _run(args: argparse.Namespace) -> None:
+    """Resolve the issue and post the comment, saying which case it was either way."""
+    comment = open(args.body_file, encoding="utf-8").read()
+
+    key = os.environ.get("LINEAR_API_KEY", "").strip()
+    if not key:
+        # No key means no lookup of any kind, so a person doing this by hand has to
+        # find the issue themselves — it is the one the pull request is attached to.
+        # The old wording named the issue out of the body footer, which published a
+        # tracker key into a public Actions log (Cursor, C6 on #379).
+        note(
+            "Linear ping: LINEAR_API_KEY is not set, so no Linear issue was commented "
+            "on and the findings ping was posted only on the pull request. To do it by "
+            "hand, open the issue this pull request is attached to."
+        )
+        return
+
+    issue = issue_by_attachment(args.pr_url, key)
+    if issue is None and args.pr_body_file:
+        issue = issue_by_body(open(args.pr_body_file, encoding="utf-8").read(), key)
+    if issue is None:
+        note(
+            f"Linear ping: no Linear issue holds {args.pr_url} as an attachment, and "
+            "its body names none either, so the findings ping was posted only on the "
+            "pull request. If the implementer is a Cursor agent whose session has "
+            "ended, it will not see it. Attaching the pull request to its issue is "
+            "what this looks for."
+        )
+        return
+    issue_id, _identifier = issue
+
+    if args.dry_run:
+        # Through `note`, not `print`: the check workflow tells a person to read the
+        # job summary, and a line that only reaches stdout is not there (C3 on #379).
+        note(
+            "Linear ping: resolved the issue this pull request is attached to. "
+            "Not posted, this being a dry run. The comment would have been:\n\n"
+            f"{comment}"
+        )
+        return
+
+    result = call(COMMENT_MUTATION, {"issueId": issue_id, "body": comment}, key)
+    if result is None:
+        return
+    if not (result.get("commentCreate") or {}).get("success"):
+        note("Linear ping: Linear declined the comment.")
+        return
+
+    note("Linear ping: delivered to the issue this pull request is attached to.")
 
 
 def main() -> int:
@@ -253,54 +321,21 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="resolve the issue against the live API and print what would be posted, "
+        help="resolve the issue against the live API and report what would be posted, "
         "without posting it",
     )
     args = parser.parse_args()
 
-    comment = open(args.body_file, encoding="utf-8").read()
-
-    key = os.environ.get("LINEAR_API_KEY", "").strip()
-    if not key:
-        # Name the issue if the body happens to carry one: a person reading the run can
-        # then post the comment by hand, which is the documented workaround. Without the
-        # key the attachment lookup cannot run, so this is the only name available.
-        named = ""
-        if args.pr_body_file:
-            found = find_issue(open(args.pr_body_file, encoding="utf-8").read())
-            if found is not None:
-                named = f" The pull request body names {found[0]}-{found[1]}."
-        note(
-            "Linear ping: LINEAR_API_KEY is not set, so no Linear issue was commented "
-            "on and the findings ping was posted only on the pull request." + named
-        )
-        return 0
-
-    issue = issue_by_attachment(args.pr_url, key)
-    if issue is None and args.pr_body_file:
-        issue = issue_by_body(open(args.pr_body_file, encoding="utf-8").read(), key)
-    if issue is None:
-        note(
-            f"Linear ping: no Linear issue is attached to {args.pr_url}, and its body "
-            "names none either, so the findings ping was posted only on the pull "
-            "request. If the implementer is a Cursor agent whose session has ended, it "
-            "will not see it."
-        )
-        return 0
-    issue_id, identifier = issue
-
-    if args.dry_run:
-        print(f"Linear ping: would comment on {identifier}:\n\n{comment}")
-        return 0
-
-    result = call(COMMENT_MUTATION, {"issueId": issue_id, "body": comment}, key)
-    if result is None:
-        return 0
-    if not result.get("commentCreate", {}).get("success"):
-        note(f"Linear ping: Linear declined the comment on {identifier}.")
-        return 0
-
-    print(f"Linear ping: delivered to {identifier}.", file=sys.stderr)
+    try:
+        _run(args)
+    except Exception as exc:  # noqa: BLE001 - deliberately total; see the module header
+        # The module header promises this hop cannot fail a review round, and until now
+        # that held only for the failures `call` already mapped to None — a null field,
+        # a missing key in a response, an undecodable body would each have exited
+        # non-zero, killing the step before `loop-status.sh` ran and leaving the labels
+        # flipped with no status comment (Cursor, C2 on #379). The promise is the point,
+        # so it is enforced here rather than enumerated.
+        note(f"Linear ping: unexpected {type(exc).__name__}; ping not delivered.")
     return 0
 
 

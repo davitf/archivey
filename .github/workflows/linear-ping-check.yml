@@ -43,8 +43,9 @@ jobs:
         run: |
           set -euo pipefail
           pr_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$PR"
+          : > /tmp/pr-body.md
           gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
-            > /tmp/pr-body.md
+            > /tmp/pr-body.md || :
           cat > /tmp/ping.md <<EOF
           Connectivity check from the review loop, triggered by hand. No action needed.
 
@@ -52,9 +53,14 @@ jobs:
           EOF
 
           # The script exits 0 on every failure path by design, so a green job here does
-          # not mean the credential works. What proves it is the line it prints: either
-          # "would comment on KEY" / "delivered to KEY", or a warning naming what broke.
-          # Both land in the job summary as well as the log.
+          # not mean the credential works. What proves it is the line in the job
+          # summary: either "resolved the issue this pull request is attached to" or a
+          # warning naming what broke.
+          #
+          # No line names the issue. This repository is public, so this log and this
+          # summary are public too, and a tracker key in them is the same leak the
+          # pull request footer was removed for. To see which issue answered, open the
+          # one the pull request is attached to on Linear.
           dry=( --dry-run )
           if [ "$POST" = "true" ]; then dry=(); fi
           python3 scripts/linear_ping.py \

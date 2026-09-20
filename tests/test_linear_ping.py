@@ -34,7 +34,9 @@ sys.modules[_spec.name] = ping
 _spec.loader.exec_module(ping)
 
 
-# The shape Cursor writes into every pull request body it opens.
+# The shape Cursor used to write into every pull request body it opened, until the
+# maintainer ruled the footer off on 2026-09-20. Pull requests opened before then
+# still carry it, which is the only reason the fallback exists.
 CURSOR_BODY = """\
 <!-- CURSOR_AGENT_PR_BODY_BEGIN -->
 `ConcatenatedFile` used to open every Path volume at construction.
@@ -76,7 +78,7 @@ def _run(tmp_path, monkeypatch, pr_body, *, key=None):
     pr_file = tmp_path / "pr.md"
     pr_file.write_text(pr_body, encoding="utf-8")
     body_file = tmp_path / "ping.md"
-    body_file.write_text("@cursor please address the findings", encoding="utf-8")
+    body_file.write_text("@cursoragent please address the findings", encoding="utf-8")
 
     if key is None:
         monkeypatch.delenv("LINEAR_API_KEY", raising=False)
@@ -111,8 +113,9 @@ def test_a_pr_no_issue_can_be_found_for_exits_clean_and_says_so(
     monkeypatch.setattr(ping, "call", lambda *_a, **_k: _attached())
     assert _run(tmp_path, monkeypatch, "no issue here", key="lin_api_x") == 0
     err = capsys.readouterr().err
-    assert "no Linear issue is attached" in err
+    assert "no Linear issue holds" in err
     assert PR_URL in err
+    assert "TEAM" not in err
 
 
 def test_the_attachment_route_is_tried_before_the_body(tmp_path, monkeypatch):
@@ -134,29 +137,39 @@ def test_the_attachment_route_is_tried_before_the_body(tmp_path, monkeypatch):
     assert seen[1]["issueId"] == "uuid-1"  # posted straight to the attached issue
 
 
-def test_a_rejected_attachment_query_falls_through_to_the_other_spelling(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"attachmentsForURL": None},
+        {"attachmentsForURL": {"nodes": None}},
+        {"attachmentsForURL": {"nodes": [{"issue": None}]}},
+        {"attachmentsForURL": {"nodes": [{"issue": {"id": "uuid-1"}}]}},
+        {},
+        None,
+    ],
+)
+def test_an_odd_shaped_answer_reads_as_nothing_found(data):
+    """A null field is a shape Linear can return, and it used to be an `AttributeError`
+    that killed the step before the loop's status comment was written — labels already
+    flipped, nothing on the pull request saying so. Every one of these is "no issue"."""
+    assert ping._attached_issues(data) == []
+
+
+def test_an_unexpected_failure_anywhere_still_exits_clean(
+    tmp_path, monkeypatch, capsys
 ):
-    """Which of the two spellings Linear accepts could not be checked offline, so a
-    rejection of the first must not end the lookup. `call` returns None on a GraphQL
-    error, which is what this stands in for."""
-    tried = []
+    """The catch-all behind the module's promise, exercised through a route that has
+    no specific handler: `call` itself raising rather than returning None."""
 
-    def fake_call(query, _variables, _key):
-        if "IssueByAttachmentUrl" in query:
-            tried.append("url")
-            return None  # e.g. "Cannot query field attachmentsForURL"
-        if "IssueByAttachmentFilter" in query:
-            tried.append("filter")
-            return {"issues": {"nodes": [{"id": "uuid-3", "identifier": "TEAM-3"}]}}
-        return {"commentCreate": {"success": True}}
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("something nobody enumerated")
 
-    monkeypatch.setattr(ping, "call", fake_call)
-    assert _run(tmp_path, monkeypatch, "no footer here", key="lin_api_x") == 0
-    assert tried == ["url", "filter"]
+    monkeypatch.setattr(ping, "call", explode)
+    assert _run(tmp_path, monkeypatch, CURSOR_BODY, key="lin_api_x") == 0
+    assert "unexpected RuntimeError" in capsys.readouterr().err
 
 
-def test_an_empty_answer_does_not_ask_the_same_question_twice(tmp_path, monkeypatch):
+def test_the_attachment_is_asked_for_exactly_once(tmp_path, monkeypatch):
     """A query that worked and found nothing is an answer, not a failure."""
     tried = []
 
@@ -188,16 +201,21 @@ def test_the_body_footer_still_works_when_nothing_is_attached(tmp_path, monkeypa
     assert posted["issueId"] == "uuid-2"
 
 
-def test_a_missing_api_key_exits_clean_and_names_the_issue(
+def test_a_missing_api_key_exits_clean_without_naming_the_issue(
     tmp_path, monkeypatch, capsys
 ):
+    """The warning has to be actionable without being a leak.
+
+    It used to name the issue out of the body footer, so a person could post the
+    comment by hand. This repository is public, so Actions logs and job summaries are
+    public, and a tracker key in one is the same leak the footer was removed for. The
+    warning now points at the attachment instead, which is on Linear.
+    """
     assert _run(tmp_path, monkeypatch, CURSOR_BODY) == 0
     err = capsys.readouterr().err
     assert "LINEAR_API_KEY is not set" in err
-    # Naming the issue is what makes the warning actionable: a person reading the run
-    # can post the comment by hand, which is the documented workaround. Without the key
-    # the attachment lookup cannot run, so the body is the only name available.
-    assert "TEAM-123" in err
+    assert "attached" in err
+    assert "TEAM-123" not in err
 
 
 def test_an_unreachable_api_exits_clean_and_says_so(tmp_path, monkeypatch, capsys):
@@ -217,3 +235,57 @@ def test_the_warning_also_lands_in_the_job_summary(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     assert _run(tmp_path, monkeypatch, CURSOR_BODY) == 0
     assert "LINEAR_API_KEY is not set" in summary.read_text(encoding="utf-8")
+
+
+def test_a_dry_run_reports_through_the_job_summary(tmp_path, monkeypatch):
+    """`Linear ping check` tells a person to read the job summary, and for the one
+    path it actually runs — a successful dry run — nothing used to get there. A blank
+    summary and a green job are indistinguishable from a credential that works."""
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(
+        ping, "call", lambda *_a, **_k: _attached({"id": "u", "identifier": "TEAM-7"})
+    )
+
+    pr_file = tmp_path / "pr.md"
+    pr_file.write_text("no footer here", encoding="utf-8")
+    body_file = tmp_path / "ping.md"
+    body_file.write_text("please address the findings", encoding="utf-8")
+    monkeypatch.setenv("LINEAR_API_KEY", "lin_api_x")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "linear_ping.py",
+            "--pr-url",
+            PR_URL,
+            "--pr-body-file",
+            str(pr_file),
+            "--body-file",
+            str(body_file),
+            "--dry-run",
+        ],
+    )
+
+    assert ping.main() == 0
+    written = summary.read_text(encoding="utf-8")
+    assert "resolved the issue" in written
+    assert "please address the findings" in written
+    assert "TEAM-7" not in written
+
+
+def test_a_delivery_reports_through_the_job_summary(tmp_path, monkeypatch):
+    """Same reason as the dry run: a success nobody can see proves nothing."""
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+    def fake_call(query, _variables, _key):
+        if "IssueByAttachment" in query:
+            return _attached({"id": "u", "identifier": "TEAM-7"})
+        return {"commentCreate": {"success": True}}
+
+    monkeypatch.setattr(ping, "call", fake_call)
+    assert _run(tmp_path, monkeypatch, "no footer here", key="lin_api_x") == 0
+    written = summary.read_text(encoding="utf-8")
+    assert "delivered" in written
+    assert "TEAM-7" not in written

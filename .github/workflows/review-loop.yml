@@ -529,8 +529,14 @@ jobs:
                   # delegated from, so the URL is enough to find it. The body is passed
                   # only as a fallback for pull requests opened before the tracker
                   # footer was dropped; nothing here wants that footer back.
+                  # `|| :` because this runs under `set -e` after the GitHub comment
+                  # has already been posted, and a hiccup fetching a fallback most
+                  # pull requests no longer need must not fail the round. An empty
+                  # file is a valid input. The same `set -e` trap bit this workflow
+                  # once already, a few hundred lines up.
+                  : > /tmp/pr-body.md
                   gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
-                    > /tmp/pr-body.md
+                    > /tmp/pr-body.md || :
                   # Read from Linear, "this pull request" names nothing, so say which.
                   {
                     cat /tmp/ping.md
