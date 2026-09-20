@@ -97,13 +97,28 @@ one category.
 4. **TypeGuard predicates** — G2 and G3. Runtime-visible; needs tests.
 5. **Remaining `Any`** — ISO pycdlib Protocol, codec `_decomp` Protocols,
    `ZipFile._lock` as `ContextManager`, `verify.py` `Mapping[HashAlgorithm \| str, …]`.
-6. ~~**Public `Any` on `types.py`**~~ **done (Q1 A).** Per-format TypedDict
-   aliases stay a later option, not the field type. `replace(**kwargs: object)`
+6. ~~**Public `Any` on `types.py`**~~ **done (Q1 A).** `replace(**kwargs: object)`
    removes the `Any` but adds no checking — the keyword names and value types are
-   still unverified, and the docstring now says so.
+   still unverified, and the docstring now says so. The key → type map that Q1's
+   contract now needs is PR 8.
 7. **KEEP comments** on surviving typeshed `BinaryIO` casts, and name
    `FullCountStream` next to `PeekableStream` in the `ReadOnlyIOStream.name`
    docstring.
+8. **The `extra` key map as a PEP 728 `TypedDict`** (maintainer, 2026-09-20).
+   Q1 made every `extra` value an `object` a caller must narrow, and narrowing
+   correctly needs to know which key holds what. `docs/formats.md` documents 4 of
+   ~17 keys and the complete table is in `QUESTIONS.md`, which this review
+   archives. The map therefore moves into the type: one `TypedDict` per bag
+   (member extras and `ArchiveInfo.extra` stay separate), functional syntax
+   because most keys are dotted, `total=False` because every key is optional, and
+   `extra_items=object` so third-party keys stay legal and read back as `object`.
+   **Measured 2026-09-20 on pyrefly 1.1.1 and ty 0.0.60 at the 3.11 floor:** both
+   type known keys exactly, both reject a wrong-type write to a known key, both
+   allow an unknown key and give it `object`. Two costs the PR has to carry — a
+   `TypedDict` is assignable to neither `dict[str, object]` nor back (both
+   checkers, both directions), and one map across all formats means a RAR key
+   type-checks on a ZIP member. Supersedes the per-format-aliases-only note that
+   stood here before; per-format aliases remain possible on top.
 
 ## What is actually fine
 
