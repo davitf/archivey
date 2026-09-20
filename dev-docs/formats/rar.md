@@ -815,7 +815,7 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   archive fed to libarchive instead, to drop the `unrar` requirement entirely. Bounding this
   copy is also what `openspec/changes/bounded-source-spooling` ([PR
   #251](https://github.com/davitf/archivey/pull/251)) would put under one configured limit.
-  Maintainer (davitf, 2026-09-20), asked whether to build the synthetic archive now: leave it
+  Maintainer (davitf, [#372](https://github.com/davitf/archivey/pull/372), 2026-09-20), asked whether to build the synthetic archive now: leave it
   for later. Tracked internally, and worth building alongside the same machinery
   [`IDEAS.md`](../IDEAS.md) wants for decoding every RAR3 compressed comment in one `unrar`
   call — one synthetic writer would serve both.

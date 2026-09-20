@@ -1486,17 +1486,16 @@ class RarReader(BaseArchiveReader):
             # internally and to keep the meaning of the config option". Two
             # arguments of his cut the other way and are recorded in rar.md
             # section 7 as a question to revisit: an attacker can simply make
-            # the archive solid to sidestep the sharp case, and an
-            # out-of-order read of any solid archive already decodes
-            # everything ahead of it, glob or not. Names like this are almost
-            # always constructed (davitf, 2026-09-19), with the config flag as
-            # the escape hatch. A glob name matching nothing else has
-            # `glob_prefix == 0` and never
-            # reaches this -- which also means this is **not** a guard against
-            # a hostile mask as such: a name built to make a matcher backtrack,
-            # with no sibling it can match, has a zero prefix and still goes
-            # to unrar. That is bounded separately, by narrowing the mask
-            # itself. This bounds the payload, not the match.
+            # the archive solid to sidestep the sharp case, and an out-of-order
+            # read of any solid archive already decodes everything ahead of
+            # it, glob or not. Names like this are almost always constructed
+            # (davitf, 2026-09-19), with the config flag as the escape hatch.
+            # A glob name matching nothing else has `glob_prefix == 0` and
+            # never reaches this -- which also means this is **not** a guard
+            # against a hostile mask as such: a name built to make a matcher
+            # backtrack, with no sibling it can match, has a zero prefix and
+            # still goes to unrar. That is bounded separately, by narrowing
+            # the mask itself. This bounds the payload, not the match.
             #
             # The predicate is deliberately `_unrar_glob_prefix`'s own answer and
             # not a second walk: which siblings match is decided by the mask
