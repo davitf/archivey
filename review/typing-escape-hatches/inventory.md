@@ -90,7 +90,7 @@ heuristic in the first census pass and are included here.
 | A2 | `iso_reader.py:422` | `record` | unused-as-typed; `rr` on the same line is A-iso |
 | A3 | `iso_reader.py:158` | `**kwargs` | signature should match `deque` instead (see A-iso-init) |
 | A4 | `iso_reader.py:169` | `dir_record` | runtime `isinstance` to `DirectoryRecord` |
-| A5 | `listing_limits.py:24` | `extra: dict[str, Any]` | **done** — `dict[str, object]` with Q1; **`Mapping[str, object]` in staged PR 8** (TypedDict is not assignable to `dict`) |
+| A5 | `listing_limits.py:24` | `extra: dict[str, Any]` | **done** — `dict[str, object]` with Q1; **`Mapping[str, object]` in staged PR 8** (the extra bag is a `dict` subclass, not assignable to `dict`) |
 | A6 | `streamtools/base.py:76` | `write(b)` | typeshed `IO.write` takes `Any`; `object` works |
 | A7 | `binaryio.py:53` | `try_readinto(stream)` | getattr-only |
 | A8 | `binaryio.py:180` | `_is_fifo_or_chardev(stream)` | getattr-only |
@@ -116,11 +116,11 @@ heuristic in the first census pass and are included here.
 
 | ID | Site | Where | Notes |
 |---|---|---|---|
-| A26 | `types.py:451` | `ArchiveMember.extra` | **done** — `dict[str, object]` in the inventory PR; **TypedDict (`MemberExtra`) in staged PR 8** |
-| A27 | `types.py:570` | `ArchiveInfo.extra` | **done** — `dict[str, object]` in the inventory PR; **TypedDict (`ArchiveInfoExtra`) in staged PR 8** |
+| A26 | `types.py:451` | `ArchiveMember.extra` | **done** — `dict[str, object]` in the inventory PR; **overloaded `MemberExtra` subclass in staged PR 8** |
+| A27 | `types.py:570` | `ArchiveInfo.extra` | **done** — `dict[str, object]` in the inventory PR; **overloaded `ArchiveInfoExtra` subclass in staged PR 8** |
 | A28 | `types.py:536` | `ArchiveMember.replace(**kwargs)` | **done** — `**kwargs: object`. Removes the `Any`, but **checks nothing**: every value was acceptable before and every value is an `object`, so a misspelled field is still only a runtime `TypeError`. Typing the names needs a per-field `TypedDict` (deferred) |
 
-Per-format TypedDict aliases are a later option; not the field type. See [`QUESTIONS.md`](QUESTIONS.md).
+Per-format aliases are a later option; not the field type. See [`QUESTIONS.md`](QUESTIONS.md).
 
 ### FIX-IN-CODE (both-error with `object`) — staged PR 5
 

@@ -30,15 +30,19 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 
 ## The `extra` bags
 
-`ArchiveMember.extra` and `ArchiveInfo.extra` are open, per-format maps. The
-authoritative key list and value types are `MemberExtra` and `ArchiveInfoExtra` in
-`archivey.types` — PEP 728 TypedDicts that type checkers see and a core install
-does not import (no `typing_extensions` at runtime). Unknown keys stay legal and
-read as `object`. The `EXTRA_*` constants on that module are still the names for
+`ArchiveMember.extra` is a [`MemberExtra`](api.md#extra-bags) and
+`ArchiveInfo.extra` is an [`ArchiveInfoExtra`](api.md#extra-bags).
+Both are `dict[str, object]` subclasses: a subscript of a known key
+(`extra["zip.compress_type"]`) carries that key's type, and unknown keys
+(third-party or future) stay legal and read as `object`. The names are
+importable. The `EXTRA_*` constants on `archivey.types` remain the names for
 the keys that have constants.
 
+Writes are not type-checked — a wrong-type assignment to a known key is
+accepted, same as an unknown key. `.get()` returns `object` for every key.
+
 The format sections below mention a key only when it is part of that format's
-behaviour. They are not the complete list.
+behaviour. The complete list is on the two classes.
 
 ## ZIP
 

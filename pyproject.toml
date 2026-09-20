@@ -136,10 +136,6 @@ dev = [
     "ruff==0.15.22",
     "pre-commit>=4.0.0",
     "coverage[toml]>=7.6.0",
-    # PEP 728 `extra_items` on TypedDict. Used only under TYPE_CHECKING in
-    # `archivey.types` so a core install stays zero-dep; the floor is the
-    # version that shipped the final `extra_items=` keyword (4.13.0).
-    "typing_extensions>=4.13.0",
     "py7zr>=1.0.0",
     "rarfile>=4.2",
     # libarchive-c is a dev-only cross-validation oracle for optional corpus tests

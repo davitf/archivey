@@ -68,7 +68,6 @@ dev = [
     { name = "ruff" },
     { name = "tqdm" },
     { name = "ty" },
-    { name = "typing-extensions" },
     { name = "urllib3" },
 ]
 docs = [
@@ -125,7 +124,6 @@ dev = [
     { name = "ruff", specifier = "==0.15.22" },
     { name = "tqdm", specifier = ">=4.67.0" },
     { name = "ty", specifier = "==0.0.60" },
-    { name = "typing-extensions", specifier = ">=4.13.0" },
     { name = "urllib3", specifier = ">=2.0.0" },
 ]
 docs = [

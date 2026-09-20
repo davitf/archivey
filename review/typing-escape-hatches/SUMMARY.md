@@ -104,46 +104,31 @@ one category.
 7. **KEEP comments** on surviving typeshed `BinaryIO` casts, and name
    `FullCountStream` next to `PeekableStream` in the `ReadOnlyIOStream.name`
    docstring.
-8. **The `extra` key map as a PEP 728 `TypedDict`** (maintainer, 2026-09-20) —
-   **this PR.**
+8. **The `extra` key map as an overloaded `dict` subclass** (maintainer,
+   2026-09-20, revised the same day on #384 K1) — **this PR.**
    Q1 made every `extra` value an `object` a caller must narrow, and narrowing
-   correctly needs to know which key holds what. The map is now the two
-   TypedDicts in `types.py`; `docs/formats.md` points at them. (Before this PR
-   that page documented 4 of ~17 keys and the complete table lived in
-   `QUESTIONS.md`.) One `TypedDict` per bag (member extras and
-   `ArchiveInfo.extra` stay separate), functional syntax because most keys are
-   dotted, `total=False` because every key is optional, and `extra_items=object`
-   so third-party keys stay legal and read back as `object`.
-   **Measured 2026-09-20 on pyrefly 1.1.1 and ty 0.0.60 at the 3.11 floor:** both
-   type known keys exactly, both reject a wrong-type write to a known key, both
-   allow an unknown key and give it `object`. Three costs the PR has to carry:
+   correctly needs to know which key holds what. The map is now two
+   `dict[str, object]` subclasses (`MemberExtra`, `ArchiveInfoExtra`) whose
+   `__getitem__` is overloaded once per known key, with a `str → object`
+   fallback. `docs/formats.md` and `docs/api.md` point at them. (Before this
+   PR that page documented 4 of ~17 keys and the complete table lived in
+   `QUESTIONS.md`.) PEP 728 was the first attempt; mypy does not support
+   `extra_items` at all (the TypedDict then has zero keys), and pyright flags
+   a subscript read of a `total=False` key. The overloaded class was measured
+   clean on pyright 1.1.414, mypy 1.19.1, pyrefly 1.1.1 and ty 0.0.60 with no
+   suppressions, no `typing_extensions`, and no `TYPE_CHECKING` wrap.
+   `field(default_factory=MemberExtra)` is writable directly. Three costs:
 
-   - A `TypedDict` is assignable to neither `dict[str, object]` nor back (both
-     checkers, both directions). Backends build plain dicts today, so this is
-     the real work, not the declaration.
+   - Writes and `.get()` are not type-checked (the fallback unknown keys need
+     also accepts a wrong-type write; the four checkers disagree on
+     `dict.get`'s signature).
+   - A plain dict is no longer assignable to the field. Construction sites
+     wrap with `MemberExtra({...})`.
    - One map across all formats means a RAR key type-checks on a ZIP member.
      Accepted; per-format aliases remain possible on top.
-   - `typing_extensions`, where there is no required runtime dependency today
-     (`pyproject.toml` has no `[project] dependencies`). Keeping the install
-     zero-dep means **the whole `TypedDict` definition sits inside
-     `if TYPE_CHECKING:`, not only the import**: functional syntax makes the
-     declaration an executable assignment, and `from __future__ import
-     annotations` is PEP 563 — it defers annotations, not assignments, so an
-     import-only guard raises `NameError` at import time. Measured 2026-09-20:
-     with the definition inside the block, `types.py`'s shape imports cleanly
-     **with `typing_extensions` absent from the environment**, the annotation
-     reads back as the string `'MemberExtra'`, and both checkers still type the
-     field exactly (known keys, unknown keys, and a rejected wrong-type write).
-     The name is unbound at runtime on purpose. An `else: MemberExtra = dict`
-     alias would make it importable with no runtime dependency; that is not
-     withheld because it would pull in `typing_extensions`. Binding the name
-     would make it public API. And the field's own default needs a typed
-     factory: `extra: MemberExtra = field(default_factory=dict)` fails pyrefly
-     (`dict[Unknown, Unknown]` is not assignable), while a helper returning
-     `cast("MemberExtra", {})` is clean on both checkers and unchanged at
-     runtime.
 
-   Supersedes the per-format-aliases-only note that stood here before.
+   Supersedes the per-format-aliases-only note that stood here before, and
+   the PEP 728 TypedDict shape that this item described earlier the same day.
 
 ## What is actually fine
 
