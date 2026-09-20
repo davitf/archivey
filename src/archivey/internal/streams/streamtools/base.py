@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import abc
 import io
-from typing import TYPE_CHECKING, Any, BinaryIO, Never
+from typing import TYPE_CHECKING, BinaryIO, Never
 
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
@@ -73,7 +73,7 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
     def writable(self) -> bool:
         return False
 
-    def write(self, b: Any, /) -> int:
+    def write(self, b: object, /) -> int:
         raise io.UnsupportedOperation("write")
 
     @property
