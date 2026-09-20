@@ -12,7 +12,7 @@ from __future__ import annotations
 import lzma
 import os
 import zlib
-from typing import Any, BinaryIO
+from typing import BinaryIO, Protocol
 
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -285,6 +285,17 @@ class GzipDecoder(BaseDecoder):
         return True
 
 
+class _BrotliDecompressor(Protocol):
+    """The ``brotli.Decompressor`` methods this adapter calls.
+
+    ``brotli`` is an optional extra with no stubs.
+    """
+
+    def process(self, data: bytes, output_buffer_limit: int = ...) -> bytes: ...
+    def can_accept_more_data(self) -> bool: ...
+    def is_finished(self) -> bool: ...
+
+
 class BrotliDecoder(BaseDecoder):
     """Decode a raw Brotli stream via the ``brotli`` package's incremental decompressor.
 
@@ -301,7 +312,7 @@ class BrotliDecoder(BaseDecoder):
     def __init__(self) -> None:
         import brotli
 
-        self._decomp: Any = brotli.Decompressor()
+        self._decomp: _BrotliDecompressor = brotli.Decompressor()
         self._pending = b""
         # True while a prior budgeted process may still have output to drain via
         # process(b"", output_buffer_limit=…).
@@ -387,6 +398,18 @@ _PPMD_EXTRA_NUL_MAX_OUTPUT = 64
 # parked worker only needs the range coder's few-byte tail lookahead satisfied to
 # reach its 1-symbol budget and exit; 8 is a safe cushion over the observed need.
 _PPMD_QUIESCE_MAX_CALLS = 8
+
+
+class _PpmdNativeDecoder(Protocol):
+    """The ``pyppmd.Ppmd7Decoder`` / ``Ppmd8Decoder`` methods this adapter calls.
+
+    ``length`` is the library's keyword; ``needs_input`` is read via ``getattr``.
+    """
+
+    def decode(self, data: bytearray | bytes | memoryview, length: int) -> bytes: ...
+
+    @property
+    def eof(self) -> bool: ...
 
 
 class PpmdDecoder(BaseDecoder):
@@ -478,7 +501,9 @@ class PpmdDecoder(BaseDecoder):
         self._nul_injected = False
         self._compressed_eof = False
         if variant == 8:
-            self._decomp: Any = pyppmd.Ppmd8Decoder(order, mem_size, restore_method)
+            self._decomp: _PpmdNativeDecoder = pyppmd.Ppmd8Decoder(
+                order, mem_size, restore_method
+            )
         else:
             self._decomp = pyppmd.Ppmd7Decoder(order, mem_size)
 
@@ -768,7 +793,7 @@ class BcjDecoder(BaseDecoder):
         self._unpack_size = unpack_size
         self._produced = 0
         self._framer = _Lzma2Framer()
-        self._decomp: Any = lzma.LZMADecompressor(
+        self._decomp: lzma.LZMADecompressor = lzma.LZMADecompressor(
             format=lzma.FORMAT_RAW,
             filters=[{"id": lzma_filter_id}, {"id": lzma.FILTER_LZMA2}],
         )
@@ -814,6 +839,18 @@ class BcjDecoder(BaseDecoder):
         return not self._pending
 
 
+class _Inflate64Inflater(Protocol):
+    """The ``inflate64.Inflater`` methods this adapter calls.
+
+    Declared here because ``inflate64`` is an optional extra with no stubs.
+    """
+
+    def inflate(self, data: bytes) -> bytes: ...
+
+    @property
+    def eof(self) -> bool: ...
+
+
 class Deflate64Decoder(BaseDecoder):
     """Decode a Deflate64 stream via ``inflate64.Inflater``.
 
@@ -835,7 +872,7 @@ class Deflate64Decoder(BaseDecoder):
     def __init__(self) -> None:
         import inflate64
 
-        self._decomp: Any = inflate64.Inflater()
+        self._decomp: _Inflate64Inflater = inflate64.Inflater()
         self._pending = b""
         self._pending_out = b""
 

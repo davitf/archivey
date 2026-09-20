@@ -27,6 +27,7 @@ from typing import (
     Callable,
     Protocol,
     Sequence,
+    TypeVar,
     cast,
 )
 
@@ -50,6 +51,8 @@ class SeekPoint:
 
     decompressed_offset: int
     compressed_offset: int = field(compare=False)
+    # Opaque per-codec resume token. XzDecoder.from_point treats a non-None
+    # value as ``_XzBlockBounds``; this module only compares identity / None.
     state: Any = field(default=None, compare=False)
 
 
@@ -186,17 +189,34 @@ def _compressed_feed_size(max_length: int) -> int:
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
 
 
+class _IndexBlock(Protocol):
+    """Fields ``build_index_backwards`` reads on a scanned block.
+
+    Codec-specific extras (XZ ``uncompressed_size``, lzip CRC) stay on the
+    concrete block type; ``include_block`` / ``to_point`` see that type via
+    ``_B``, not this protocol.
+    """
+
+    decompressed_start: int
+
+    @property
+    def decompressed_end(self) -> int: ...
+
+
+_B = TypeVar("_B", bound=_IndexBlock)
+
+
 def build_index_backwards(
     inner: BinaryIO,
     last_known: SeekPoint,
-    scan_fn: Callable[..., list[Any]],
-    to_point: Callable[[Any], SeekPoint],
+    scan_fn: Callable[..., list[_B]],
+    to_point: Callable[[_B], SeekPoint],
     warning_msg: str,
     *,
     codec_name: str = "",
     collector: DiagnosticCollector | None = None,
     scan: str = "backwards_index",
-    include_block: Callable[[Any], bool] | None = None,
+    include_block: Callable[[_B], bool] | None = None,
 ) -> tuple[list[SeekPoint], int | None]:
     """Backward scan → seek points + total decompressed size.
 
