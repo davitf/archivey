@@ -93,7 +93,7 @@ ZIP declares three magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x
 archive) and `PK\x07\x08` (spanned marker) — and six extensions: `.zip`, `.jar`, `.pyz`,
 `.whl`, `.apk`, `.cbz`. Comic-book aliases: `.cbr` → RAR, `.cbz` → ZIP, `.cbt` → TAR,
 `.cb7` → 7z. Magic wins; a ZIP named `.cbr` emits `FORMAT_EXTENSION_CONFLICT` (see
-[`rar.md`](rar.md) §10 #17).
+[`rar.md`](rar.md) §2.1).
 
 When searching a prefixed archive for a ZIP, archivey looks only for the local header
 (`PK\x03\x04`). The other two magics are not useful search targets: `PK\x05\x06` would

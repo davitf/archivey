@@ -14,6 +14,20 @@
 
 ## Backends & format coverage
 
+- **Port `unrar`'s member-mask matcher faithfully, instead of probing it** — a RAR member's
+  stored name is handed to `unrar` as an include mask (`-n./<name>`), so archivey has to
+  predict which *other* members that mask will also match in order to skip their bytes back
+  out of the pipe. `_unrar_mask_match` is derived from probing unrar 7.00, not from its
+  source, and it over-matches on directory-component globs. That is why a glob in a
+  directory component, and a literal backslash in a stored name, are refused outright today
+  rather than demuxed — a basename glob with no backslash is the only shape we trust
+  (`formats/rar.md` §2.3, §5). Closing it means reading `strfn.cpp` / `match.cpp` in the
+  `unrar` source and replacing the matcher with a faithful port, plus an oracle test that
+  compares predicted skip bytes against a real `unrar p -n<mask>` across the fixture corpus.
+  **Very low priority:** the names this would unlock are adversarial ones, and a wrong port
+  is worse than a refusal, because it silently returns the wrong member's bytes. Tracked
+  internally.
+
 - **Native streaming ZIP reader** — a native parser that does what stdlib `zipfile`
   can't: read from **non-seekable** streams (pipes/sockets) and **truncated / no-EOCD**
   archives by walking local file headers forward, plus better coverage of data

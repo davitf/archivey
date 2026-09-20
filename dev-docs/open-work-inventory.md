@@ -624,9 +624,9 @@ prefixed-archive-detection (31/68) ──> detection-evidence-ledger ──> det
                                                  │                          └──> #274 archive-origin-reporting
                                                  └──> 4 IDEAS.md §API entries retire
 
-#251 design Q1-Q4 (maintainer) ──> bounded-source-spooling ──> rar §10 #6 layer 2
-                                                          └──> rar §10 #21
+#251 design Q1-Q4 (maintainer) ──> bounded-source-spooling ──> bound the rar stream copy
                                                           └──> open-issues P11 closed
+                                          (the rar stream-volume copy is already lazy)
 
 Topic 8 (docs content) ∥ Topic 10 (catalogue) ──> Topic 6 (perf) ──> Topic 7 (capstone, last)
         │

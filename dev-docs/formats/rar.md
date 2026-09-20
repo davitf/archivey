@@ -23,7 +23,7 @@ Registers keep the status — this page states the behaviour and links the row.
 random reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every
 out-of-order solid `open()` is its own whole-archive decode (§2.4). RARLAB `rar`
 (the trialware writer) is accepted when `unrar` is missing; `unrar` wins when both
-exist. Reads still spawn only `p` (§3, §10 #20).
+exist. Reads still spawn only `p` (§3).
 
 The 6.0 floor is the **banner probe**, not archive open. Missing or too-old `unrar`
 does not fail `open_archive` or stored reads; compressed old-style comments stay
@@ -75,7 +75,7 @@ Everything about that boundary is a consequence:
   subprocess (§2.3).
 - **`unrar` seeks the archive, so it cannot be piped one** — which is why a stream source
   is copied to a temp file the first time a member cannot be read directly, the whole
-  archive. `CostReceipt.notes` states that caveat at open (§10 #6 layer 1). There is no
+  archive. `CostReceipt.notes` states that caveat at open. There is no
   "stream it through" option and never was; the only question a stream source poses is
   *where* the seekable copy lives and *how much* of the archive it holds (§2.3, §7).
 - **A member name becomes an argv token**, which makes the name a parsing surface for a
@@ -420,7 +420,8 @@ never starts `unrar` and is never asked for a password.
   payload matches (omitting `-ver` history rows unless the target is one), then stop at
   the target's size so the fused overrun probe does not see the next match. Stored
   members never take this path. A glob confined to the basename, with no `\`, is the
-  demuxed set; everything else stays refused until §10 #18.
+  demuxed set; everything else stays refused until the matcher is an exact port of
+  `unrar`'s own (§5).
 - **`-ver` is added** when the target is a history row, or when a solid pass contains any
   versioned payload FILE, because the mask excludes history rows otherwise and the demux
   would go out of alignment.
@@ -450,7 +451,7 @@ multi-volume (§2.2); bounding the copy rather than relocating it is §7.
 
 So the first member that cannot be read directly triggers a copy of the **entire archive**
 to `tempfile.mkstemp(suffix=".rar")` — mode `0600`, removed on reader close. For a
-non-path stream, `CostReceipt.notes` states that caveat **at open** (§10 #6 layer 1) —
+non-path stream, `CostReceipt.notes` states that caveat **at open** (§7) —
 including when only stored members are read and the copy never happens. There is still
 no diagnostic. The copy itself is per-member, so a stored member costs nothing and the
 next compressed member in the same archive costs a full copy.
@@ -529,7 +530,7 @@ refused rather than merely discouraged. RARLAB `rar` (the trialware writer) is t
 `unrar` and does not put `unrar` on `PATH`, so `apt install rar` alone used to miss.
 On 7.00, `rar p` matched `unrar p` on the extract argv; the finder now accepts a
 `RAR x.yy … Alexander Roshal` banner when `unrar` is missing or unusable, still
-preferring `unrar`, still spawning only `p` (§10 #20). Windows `Rar.exe` banner is
+preferring `unrar`, still spawning only `p`. Windows `Rar.exe` banner is
 unmeasured. Measured across the other candidates
 ([`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)):
 
@@ -664,7 +665,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 - **A stream source materializes the archive to disk.** The temp file is `0600` and the temp
   volume directory `0700`, and both are removed on close; the exposure is disk space and
   lifetime, not readability by other users. `CostReceipt.notes` carries the caveat at open
-  (§10 #6 layer 1).
+  (§7).
 - **The password is kept off the process table** by going to `unrar`'s stdin (§2.3), which is
   otherwise inherent to delegating to a CLI.
 - **Encrypted members expose no plaintext digest**, by design of the format rather than by
@@ -689,7 +690,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_members=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ConcurrentAccessError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
 | A compressed RAR 1.5 / 2.x old-style comment is `None` without RARLAB `unrar` | **archivey** | Listing and stored old-style comments stay native; the proprietary compressed blob is decoded only when the optional binary is available (§2.2) |
-| Opening a compressed member whose stored name has a glob in a directory component, or a backslash, raises `UnsupportedFeatureError` | **archivey** | The include-mask matcher over-matches directory globs against unrar 7.00, and Windows `unrar` treats `\` as a separator so a Linux literal-backslash name emits nothing. Basename globs without `\` still demux. Exact fidelity is §10 #18 |
+| Opening a compressed member whose stored name has a glob in a directory component, or a backslash, raises `UnsupportedFeatureError` | **archivey** | The include-mask matcher over-matches directory globs against unrar 7.00, and Windows `unrar` treats `\` as a separator so a Linux literal-backslash name emits nothing. Basename globs without `\` still demux. Exact fidelity wants a faithful port of `unrar`'s own matcher rather than the probe-derived one we have; that is tracked internally at low priority, and [`IDEAS.md`](../IDEAS.md) carries what it would take |
 | Opening a glob-named member whose mask also matches **earlier** members raises `UnsupportedFeatureError` | **archivey** | `unrar -n./a*.txt` decompresses every match and concatenates them, so the read costs the earlier ones too — unbounded, and outside `ExtractionLimits`, which do not reach `open()`/`read()`. Refused by default; `ArchiveyConfig.rar_allow_glob_member_concatenation=True` reads it anyway, and the error names the flag. A glob name matching nothing else is unaffected. A solid `stream_members()` pass builds no mask, so it is unaffected — a **nonsolid** one takes the named route and is refused like any other mode, which is deliberate (§2.3, §6) |
 
 ## 6. Decisions
@@ -732,7 +733,7 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
 - **Can the stream-source copy be made small, rather than just moved?** Layer 1 of P11
   shipped: a non-path stream gets an open-time `CostReceipt.notes` caveat. What remains
   is bounding the copy to one compressed member via a synthetic single-member archive
-  rather than relocating the whole archive (§10 #6 layer 2). The sibling cost — an
+  rather than relocating the whole archive. The sibling cost — an
   out-of-order solid `open()` being a whole decode each time — is **already decided**:
   [`open-issues.md`](../open-issues.md) P9 says not a diagnostic, because `access_cost`
   already carries it, and only a once-per-reader `warnings.warn` is still parked.
@@ -752,6 +753,10 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   archive fed to libarchive instead, to drop the `unrar` requirement entirely. Bounding this
   copy is also what `openspec/changes/bounded-source-spooling` ([PR
   #251](https://github.com/davitf/archivey/pull/251)) would put under one configured limit.
+  Maintainer (davitf, 2026-09-20), asked whether to build the synthetic archive now: leave it
+  for later. Tracked internally, and worth building alongside the same machinery
+  [`IDEAS.md`](../IDEAS.md) wants for decoding every RAR3 compressed comment in one `unrar`
+  call — one synthetic writer would serve both.
 
 - **Does `ListingCost.INDEXED` mean "cheap" or "already paid"?** With a usable RAR5 `QO`,
   listing reads a real index region (§1.1). Without one, RAR still walks header-to-header
@@ -904,48 +909,3 @@ need `-qo+` or live AUTO; the gap and what would close it are in
 - User-facing: [`docs/formats.md`](../../docs/formats.md#rar) ·
   [`docs/install.md`](../../docs/install.md#getting-rarlab-unrar-or-rar) ·
   [`docs/gotchas.md`](../../docs/gotchas.md)
-
-## 10. To fix — temporary
-
-**Delete this section once it is empty** — stays on this page until then, not moved to
-`open-issues.md`. Everything here is a code change this page's writing turned up, parked
-so it is not re-derived. A row that ships moves into the page proper (or vanishes); a row
-that is decided against becomes a §6 decision or a §7 question. Rows with a register ID
-keep their status there.
-
-Ordered by what I would do first, not by size. **Numbers are stable** — a row that ships is
-deleted and its number is not reused, so the gaps are the record and the references from the
-rest of the page keep resolving. Closed so far: **#1** the RAR3 name-decode bound
-([#292](https://github.com/davitf/archivey/pull/292)); **#2** `seekable_members=True`
-respawns named `unrar` on a backward seek; **#3** wildcard member names whose globs are
-confined to the basename (no backslash) read via the `-n` mask plus a skip of other
-matches — directory-component globs and backslash names stay refused, carried by **#18**;
-**#4** solid link emission per generation ([#301](https://github.com/davitf/archivey/pull/301)); **#5** RAR5 `QO` listing via MAIN locator when the record is stored and unencrypted, skipping FILE headers already in QO ([#311](https://github.com/davitf/archivey/pull/311)); **#9** compressed members report `CompressionAlgorithm.RAR` with M1–M5 in `level` and extract version in `extra["rar.extract_version"]` ([#308](https://github.com/davitf/archivey/pull/308)); **#10** RAR5/RAR3 `accessed`/`created` from the time extra ([#300](https://github.com/davitf/archivey/pull/300)); **#13** `close()` chaining and **#14**
-shared FILETIME ([#291](https://github.com/davitf/archivey/pull/291)); and **#15** `_live_unrar`,
-deleted outright when [#293](https://github.com/davitf/archivey/pull/293) moved the
-single-live-stream gate ahead of the spawn it was a backstop for; **#12** member
-comments mapped from RAR3 CMT SERVICE and RAR 1.5 / 2.x old-style blocks, stored natively
-and compressed through `unrar` when present; **#16** `unrar` probe caching —
-`which` every call, banner verdict keyed on the resolved path plus stat identity,
-transient execute failures not cached; **#17** registered `.cbr` / `.cbz` / `.cbt` /
-`.cb7` and kept `FORMAT_EXTENSION_CONFLICT` on a cross-container comic
-([#307](https://github.com/davitf/archivey/pull/307)). Sibling discovery now joins SFX
-first members (`vol.exe.001`, `rv.part1.sfx`); **#11** a stub-only `vol.exe` follows
-the split first volume beside it (`vol.exe.001`, `vol.7z.001`, or `vol.zip.001`);
-old-scheme SFX first volumes (`name.exe` / `name.sfx` + `.r00`) are discovered as
-volume 1 of that set; **#7** `unrar` version floor **6.0**, parsed from the
-identification banner and cached with the probe; and **#20** RARLAB `rar` accepted
-when `unrar` is missing (`unrar` preferred; banner `RAR x.yy`; still `p` only;
-Windows `Rar.exe` banner unmeasured); **#21** stream volumes materialize from
-`_ensure_archive_path()` rather than the constructor, so listing a stream-volume set
-writes nothing (§2.3, §6); and **#19** a glob name whose mask also matches earlier
-members is refused, with `rar_allow_glob_member_concatenation` as the escape hatch
-(§5, §6). **#8** amortize solid random reads via
-`unrar x` into a managed temp directory — **rejected** (`VISION.md`: cost must stay
-visible and honest; caching whole decodes behind later `open()` calls hides work the
-caller cannot query — see §6).
-
-| # | Change | Why now | Where it bites on this page |
-| --- | --- | --- | --- |
-| 6 | **Signal the stream-source copy** (P11) — **layer 1 shipped** (`CostReceipt.notes` at open for any non-path stream). **Layer 2 open:** bound it to one compressed member via a synthetic single-member archive (§7) | Layer 1 closes P11's signal gap; layer 2 is the size bound | §5, §7 |
-| 18 | **Match `unrar`'s member-mask semantics exactly**, by reading the `unrar` source (`strfn.cpp` / `match.cpp`) rather than probing, and replacing `_unrar_mask_match` with a faithful port plus an oracle that compares predicted skip bytes against real `unrar p -n<mask>` over the corpus | Closes the #3 narrowing: directory-component globs and backslash names are refused today because the matcher over-matches. Very low priority — remaining names are adversarial | §2.3, §5 |
