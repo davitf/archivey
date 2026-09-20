@@ -9,8 +9,9 @@ ignores a record whose type it does not recognise. A record whose type it *does*
 recognise but whose body it cannot parse SHALL be treated the same way: the record is
 dropped, the member is listed, and the walk continues with the next record.
 
-The enclosing header's CRC has already matched when the extra area is walked, so the
-record boundaries are trusted and only the one malformed record is lost.
+CRC-32 on the enclosing header is an integrity check, not an authenticity one. A
+well-formed extra still drops only the one malformed record; a crafted extra that
+CRC-matches can produce one skip per byte, which is why the walk is capped below.
 
 A dropped record SHALL leave the field it would have populated **absent, never wrong**.
 Each record's parse SHALL commit its value only once every byte it needs has been read,
@@ -22,6 +23,11 @@ Dropping a record SHALL NOT be silent: the reader SHALL emit
 parse failure, attached to the member. Because that code is in `ARCHIVE_INTEGRITY_CODES`,
 a caller who wants the archive refused instead SHALL get that from
 `DiagnosticPolicy.strict()`.
+
+A crafted extra area SHALL NOT retain one skipped record per attacker byte. The number of
+dropped records retained per member is a structural cap (a handful of extras is every
+well-formed FILE; more cannot be useful diagnostics). After the cap the extra-area walk
+for that member stops.
 
 #### Scenario: A one-byte-short checksum record lists the member without a digest
 
@@ -40,6 +46,16 @@ a caller who wants the archive refused instead SHALL get that from
 - **THEN** the member SHALL be listed and **no** diagnostic SHALL be emitted
 - **AND** this leniency SHALL NOT turn the pre-existing tolerance for unknown records
   into a diagnostic, or every archive written by a newer RAR would report one
+
+#### Scenario: A zero-filled extra area does not retain one skip per byte
+
+- **GIVEN** a RAR5 FILE extra area filled with zero bytes and a valid enclosing header CRC
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the member SHALL be listed
+- **AND** the number of `MEMBER_HEADER_RECORD_SKIPPED` diagnostics attached to it SHALL
+  be at most the structural skip cap
+- **AND** this cap exists because `xsize == 0` is one attacker byte per skip, which
+  `max_members` cannot see
 
 ### Requirement: A malformed RAR5 encryption record SHALL remain fatal
 

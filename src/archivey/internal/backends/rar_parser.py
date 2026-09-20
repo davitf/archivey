@@ -87,6 +87,13 @@ RAR5_ID = b"Rar!\x1a\x07\x01\x00"
 _RAR_MAX_PASSWORD = 127
 _RAR_MAX_KDF_SHIFT = 24
 _RAR5_MAX_HEADER = 2 * 1024 * 1024
+# Most FILE extras are a handful of records (encryption, hash, time, version,
+# redir, owner). Each skipped record is one retained tuple plus one diagnostic,
+# and ``max_members`` cannot see that — it is one member. After this many the
+# extra area is junk and the walk stops. Structural, not a ListingLimits
+# field: listing limits stay out of this parser, and a caller cannot usefully
+# raise a "more skipped extras" budget.
+_MAX_SKIPPED_HEADER_RECORDS = 16
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
 # Same default as ListingLimits.max_members. None is the explicit UNLIMITED opt-out.
@@ -291,8 +298,9 @@ class RarMemberInfo:
     # ``(record_name, record_type, reason)``. Empty for every well-formed archive,
     # and the shared empty tuple keeps that case at one slot rather than an object:
     # the listing bound is expressed in members, so per-member retained bytes are
-    # load-bearing. The reader turns each entry into a
-    # ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
+    # load-bearing. Capped at ``_MAX_SKIPPED_HEADER_RECORDS`` so a crafted extra
+    # area cannot retain one tuple per attacker byte. The reader turns each entry
+    # into a ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
     skipped_header_records: tuple[tuple[str, int | None, str], ...] = ()
 
     def needs_password(self) -> bool:
@@ -2213,6 +2221,10 @@ def _parse_rar5_file_block(
     atime: datetime | None = None
     skipped_records: list[tuple[str, int | None, str]] = []
 
+    def _skip(record: str, record_id: int | None, reason: str) -> bool:
+        skipped_records.append((record, record_id, reason))
+        return len(skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS
+
     if extra_size:
         # Walk extras until near end (allow 1 byte of padding like rarfile).
         while pos < len(hdata) - 1:
@@ -2226,10 +2238,12 @@ def _parse_rar5_file_block(
             try:
                 xtype, xpos = load_vint(xdata, 0)
             except CorruptionError as exc:
-                # A record too short to name itself. The enclosing header's CRC
-                # already matched, so its length is trusted and the next record
-                # starts where ``pos`` says; only this one is lost.
-                skipped_records.append(("unknown", None, raw_message_of(exc)))
+                # A record too short to name itself. Stop the walk once the
+                # skip cap is hit: ``xsize == 0`` is one attacker byte per
+                # skip, and continuing would retain one tuple per remaining
+                # extra byte.
+                if _skip("unknown", None, raw_message_of(exc)):
+                    break
                 continue
             try:
                 if xtype == _RAR5_XFILE_TIME:
@@ -2274,9 +2288,10 @@ def _parse_rar5_file_block(
                 # being the default. Whatever the record would have set keeps the
                 # value it had; nothing half-written is committed, because each
                 # branch assigns only on its own last statement.
-                skipped_records.append(
-                    (_RAR5_XNAMES.get(xtype, "unknown"), xtype, raw_message_of(exc))
-                )
+                if _skip(
+                    _RAR5_XNAMES.get(xtype, "unknown"), xtype, raw_message_of(exc)
+                ):
+                    break
 
     is_symlink = False
     is_hardlink_or_copy = False

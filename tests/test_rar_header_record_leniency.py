@@ -26,7 +26,10 @@ from archivey import (
     open_archive,
 )
 from archivey.exceptions import CorruptionError
-from archivey.internal.backends.rar_parser import load_vint
+from archivey.internal.backends.rar_parser import (
+    _MAX_SKIPPED_HEADER_RECORDS,
+    load_vint,
+)
 from archivey.types import HashAlgorithm, MemberType
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
 
@@ -282,3 +285,46 @@ def test_a_short_version_record_does_not_promote_a_stale_revision(
         )
         damaged = next(m for m in members if m.diagnostics)
         assert damaged.name == "file.txt" and not damaged.is_current
+
+
+def _zero_extra_area(data: bytes) -> bytes:
+    """Replace every FHEXTRA record body with zeros, header CRC recomputed.
+
+    Each zero byte is an ``xsize == 0`` record: one attacker byte, one skip.
+    """
+    records = _extra_records(data)
+    assert records, "fixture must have an extra area to zero"
+    start = records[0].size_at
+    last = records[-1]
+    end = last.body_at + last.size
+    buf = bytearray(data)
+    buf[start:end] = b"\x00" * (end - start)
+    return fixup_rar_header_crcs(bytes(buf), broken=False)
+
+
+def test_a_zeroed_extra_area_does_not_retain_one_skip_per_byte(tmp_path: Path) -> None:
+    """Leniency is not a listing-cost bomb: the extra-area walk stops.
+
+    ``blake2sp.rar``'s extra area is 46 bytes. Filling it with zeros used to
+    retain 45 skipped records — one per byte — because ``xsize == 0`` advances
+    ``pos`` by one and records a skip. ``max_members`` cannot see that: it is
+    one member. The cap is the bound; the one-bad-record tests above stay at
+    exactly one diagnostic.
+    """
+    data = (_FIXTURES / "blake2sp.rar").read_bytes()
+    records = _extra_records(data)
+    extra_bytes = (records[-1].body_at + records[-1].size) - records[0].size_at
+    assert extra_bytes > _MAX_SKIPPED_HEADER_RECORDS, (
+        "the fixture extra area must be larger than the cap, or this test "
+        "cannot fail against an unbounded walk"
+    )
+    path = tmp_path / "zero_extra.rar"
+    path.write_bytes(_zero_extra_area(data))
+
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+    assert 1 <= len(member.diagnostics) <= _MAX_SKIPPED_HEADER_RECORDS
+    assert all(
+        d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        for d in member.diagnostics
+    )
