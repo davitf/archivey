@@ -1056,6 +1056,22 @@ def test_concatenated_file_truncated_borrowed_stream_raises() -> None:
     joined.close()
 
 
+def test_concatenated_file_keyboardinterrupt_restores_read_position() -> None:
+    class Boom(io.BytesIO):
+        def read(self, n: int | None = -1) -> bytes:
+            raise KeyboardInterrupt
+
+    joined = ConcatenatedFile([io.BytesIO(b"AAAA"), Boom(b"BBBB")])
+    try:
+        joined.read(8)
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("expected KeyboardInterrupt from the second volume")
+    assert joined.tell() == 0
+    joined.close()
+
+
 def test_concatenated_file_zero_length_volumes() -> None:
     cases = (
         ([b"", b"AB"], b"AB"),

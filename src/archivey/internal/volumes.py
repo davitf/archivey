@@ -345,6 +345,10 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 try:
                     st = os.stat(source)
                 except OSError as exc:
+                    # A path the caller listed is an open failure. A numbering
+                    # gap among paths that exist is TruncatedError in
+                    # _validate_numbered_volume_sequence — discovery expected a
+                    # part that is not in the set.
                     raise _volume_open_error(source, exc) from exc
                 if not stat.S_ISREG(st.st_mode):
                     raise OpenError(
@@ -529,7 +533,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 n -= got
                 if self._pos >= vol_end:
                     self._advance_volume()
-        except Exception:  # noqa: BLE001 - restore cursor; the original error re-raises
+        except BaseException:  # noqa: BLE001 - restore cursor; the original error re-raises
             self._pos = start_pos
             self._recompute_cursor()
             raise
