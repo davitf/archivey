@@ -170,7 +170,7 @@ def test_junction_helper() -> None:
 
 
 def test_extra_is_an_open_mapping() -> None:
-    # The names are importable at runtime; a core install has no typing_extensions.
+    # The names are importable at runtime.
     assert ArchiveMember.__annotations__["extra"] == "MemberExtra"
     assert ArchiveInfo.__annotations__["extra"] == "ArchiveInfoExtra"
     assert issubclass(MemberExtra, dict)
@@ -192,6 +192,8 @@ def test_extra_is_an_open_mapping() -> None:
     bag = MemberExtra({"is_junction": True, "third.party": 1})
     assert bag == {"is_junction": True, "third.party": 1}
     assert json.loads(json.dumps(bag)) == {"is_junction": True, "third.party": 1}
+    with pytest.raises(AttributeError):
+        setattr(bag, "not_a_key", 1)
 
     # Equality alone would pass on a plain dict, so assert the class survives too:
     # a round trip that degraded to dict would keep the data and silently lose the

@@ -40,6 +40,8 @@ the keys that have constants.
 
 Writes are not type-checked — a wrong-type assignment to a known key is
 accepted, same as an unknown key. `.get()` returns `object` for every key.
+Assign a `MemberExtra(...)` / `ArchiveInfoExtra(...)` rather than a bare dict;
+mutating the existing bag in place is unchanged.
 
 The format sections below mention a key only when it is part of that format's
 behaviour. The complete list is on the two classes.
