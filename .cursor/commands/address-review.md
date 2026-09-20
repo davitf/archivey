@@ -29,6 +29,12 @@ disposition. The full process lives in the skill:
    into chat; that stays on the PR. Shape: `dev-docs/pair-workflow.md` and skill §6.
 7. **Reply in the thread the finding came from, and resolve what you resolved.** Report
    gates honestly. Attribution footer on every comment.
+8. **Say you have finished** — after the last push, post a comment on the PR that
+   *starts* with `@claude review`. That starts the next review round straight away
+   instead of waiting for the loop to notice the branch has gone quiet. The phrase only
+   counts at the top of a comment, so this is its own comment, phrase first; quoting it
+   mid-sentence elsewhere does nothing. Last action, after everything else, since a
+   commit pushed afterwards will not be in what gets reviewed.
 
 ## Scope
 

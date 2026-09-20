@@ -148,6 +148,7 @@ often they turn out to be the right place:
 | Is this a known defect / upstream bug? | `dev-docs/known-issues.md`, `dev-docs/investigations/` |
 | Is this a known unfixed gap? | `dev-docs/threat-model.md` (`O*` register), `dev-docs/open-issues.md` |
 | Has this already been reviewed? | `review/STATUS.md`, then the archive tables under `review/archive/` |
+| Has this *file* been swept? | The `SWEPT` markers on [#315](https://github.com/davitf/archivey/pull/315) — one per file read end to end, findings or not. `scripts/sweep_coverage.py` counts them; [`review/sweep/`](../review/sweep/README.md) is the brief shape |
 | Was this deliberately deferred? | `review/backlog.md`, `dev-docs/IDEAS.md` |
 | What is open right now, and in what order? | `dev-docs/open-work-inventory.md` — a dated snapshot across every register; the registers themselves stay authoritative |
 | Was this discussed but not settled? | `dev-docs/discussions/` |

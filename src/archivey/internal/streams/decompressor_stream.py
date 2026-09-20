@@ -253,7 +253,7 @@ class DecompressorStream(ReadOnlyIOStream):
 
     A stream ``path`` is borrowed by default (``owns_inner=False``): the archive
     handle / ``SharedView`` stays with the caller. Pipeline stages that wrap a
-    *private* inner (a later 7z pybcj BCJ stage over the previous coder's
+    *private* inner (a later 7z ``_BcjStage`` over the previous coder's
     output, including the LZMA1 cap ``SlicingStream(owns_inner=True)``) pass
     ``owns_inner=True`` so that inner is closed with this stream. A first-stage
     BCJ (Copy+BCJ, BCJ-alone) leaves the default: the pack view is borrowed.

@@ -263,11 +263,15 @@ def test_delegating_stream_does_not_forward_resume_offset() -> None:
 
 def test_ask_resume_offset_helper() -> None:
     from archivey.internal.streams.resume import ask_resume_offset
+    from archivey.internal.streams.streamtools.binaryio import (
+        ask_resume_offset as from_binaryio,
+    )
 
     class _Inner:
         def nearest_resume_offset(self, target: int) -> int:
             return target // 2
 
+    assert ask_resume_offset is from_binaryio
     assert ask_resume_offset(_Inner(), 10) == 5
     assert ask_resume_offset(io.BytesIO(b"x"), 10) is None
     assert ask_resume_offset(None, 10) is None
@@ -332,7 +336,8 @@ def _readonly_stream_subclasses() -> set[type]:
 
 
 def test_readonly_stream_resume_offset_inventory() -> None:
-    """Every ReadOnlyIOStream subclass is classified: forwards/owns, or not on the chain.
+    """Every ReadOnlyIOStream subclass is classified: forwards/owns, inherits a
+    contiguous-window translation, or remaps / is not on the decompressed chain.
 
     Forwarding is opt-in. A new wrapper that sits between ArchiveStream and a
     seek-point table and forgets nearest_resume_offset becomes a silent
@@ -368,7 +373,15 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
+        slice_mod.SlicingStream,  # translates remapped offset space; clamp at 0
         verify.VerifyingStream,
+    }
+    # SharedView's window is the same contiguous shift as SlicingStream, so
+    # inheriting that translation is correct. A future SlicingStream subclass
+    # whose window is not a contiguous shift must decline or override — it
+    # must not park here, and leftover will fail until it is classified.
+    inherits_contiguous_translation = {
+        slice_mod.SharedView,
     }
     remaps_or_not_on_chain = {
         locked.LockedStream,
@@ -379,8 +392,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         rar_reader._UnrarRespawnStream,
         iso_reader._PyCdlibStream,
         solid._MemberSlice,
-        slice_mod.SlicingStream,  # explicit decline of a remapped offset space
-        slice_mod.SharedView,  # same remapped space; locked subclass of SlicingStream
         peekable.PeekableStream,
         streamtools_full_count.FullCountStream,  # source boundary; not on the decompressed chain
         zip_aes.WinZipAesDecryptStream,
@@ -388,12 +399,20 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     }
 
     found = _readonly_stream_subclasses()
-    leftover = found - forwards_or_owns - remaps_or_not_on_chain
+    leftover = (
+        found
+        - forwards_or_owns
+        - remaps_or_not_on_chain
+        - inherits_contiguous_translation
+    )
     assert leftover == set(), (
         "new ReadOnlyIOStream subclass needs a nearest_resume_offset decision "
-        f"(forwards/owns a table, or remaps / not on the decompressed chain): {leftover}"
+        f"(forwards/owns a table, inherits a contiguous-window translation, "
+        f"or remaps / not on the decompressed chain): {leftover}"
     )
-    extra_classified = (forwards_or_owns | remaps_or_not_on_chain) - found
+    extra_classified = (
+        forwards_or_owns | remaps_or_not_on_chain | inherits_contiguous_translation
+    ) - found
     assert extra_classified == set(), (
         "classified a class the walk did not find (typo or it is no longer "
         f"a ReadOnlyIOStream): {extra_classified}"
@@ -406,6 +425,28 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     assert missing_method == [], (
         "classified as forwards/owns but does not define nearest_resume_offset: "
         f"{missing_method}"
+    )
+    wrong_inherit = [
+        cls.__name__
+        for cls in inherits_contiguous_translation
+        if cls.__dict__.get("nearest_resume_offset") is not None
+        or getattr(cls, "nearest_resume_offset", None)
+        is not slice_mod.SlicingStream.nearest_resume_offset
+    ]
+    assert wrong_inherit == [], (
+        "classified as inheriting SlicingStream's contiguous-window translation "
+        f"but overrides it or does not inherit that method: {wrong_inherit}"
+    )
+    wrong_remap = [
+        cls.__name__
+        for cls in remaps_or_not_on_chain
+        if getattr(cls, "nearest_resume_offset", None)
+        is slice_mod.SlicingStream.nearest_resume_offset
+    ]
+    assert wrong_remap == [], (
+        "classified as remaps / not on the chain but inherits "
+        "SlicingStream.nearest_resume_offset (a contiguous-window translation; "
+        f"that class belongs in inherits_contiguous_translation): {wrong_remap}"
     )
 
 

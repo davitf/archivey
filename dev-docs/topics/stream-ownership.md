@@ -13,7 +13,7 @@ decoder means "do not close the inner." Silence on a `DelegatingStream` means
 | --- | --- | --- |
 | `SlicingStream` | borrow | `owns_inner=True` (4 production sites) |
 | `SharedView` | borrow, hardcoded | none — Parcel B split this class so `lock=` could not switch modes |
-| `DecompressorStream` | borrow | `owns_inner=True` on later pybcj BCJ stages (first-stage Copy+BCJ / BCJ-alone borrows the pack view) |
+| `DecompressorStream` | borrow | `owns_inner=True` on later staged BCJ filters (first-stage Copy+BCJ / BCJ-alone borrows the pack view) |
 | `DelegatingStream` | **own** | `subclass_closes_inner=True` is *who* closes, not *whether* |
 | `AesDecryptStream` | borrow | `owns_inner=True` — 7z AES-CBC pull stream; default matches other transform wrappers. Production 7z borrows the pack `SharedView`. |
 | `_HeaderDecryptStream` | borrow, hardcoded | none — RAR header cursor must not close the archive; ciphertext `tell`, not a member stream |
@@ -83,7 +83,7 @@ accelerator / unrar pipe, or force a new oracle key that is easy to forget.
 ## 3. What is left of mandatory-explicit keywords
 
 Not much. The unusual direction is already spelled at the call site
-(`owns_inner=True` on the four owning slices; later pybcj BCJ stages derive
+(`owns_inner=True` on the four owning slices; later staged BCJ filters derive
 `owns_inner=(stage_index > 0)` in `open_folder_pipeline`, and only that
 branch reads the flag). Making `owns_inner` required on every
 `SlicingStream` would add `False` noise to the borrow sites the type

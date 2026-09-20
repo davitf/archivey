@@ -973,6 +973,40 @@ def run_cases(
             ),
         )
 
+    # --- 7z BCJ branch filter (x86) ---
+    # archivey stages branch filters through liblzma rather than through pybcj
+    # (see dev-docs/known-issues.md). liblzma refuses a raw chain whose only filter
+    # is a branch filter, so a separately-staged BCJ reframes its input as LZMA2
+    # uncompressed chunks; these cases are what makes that reframing cost visible.
+    # ``copy`` isolates the filter, ``lzma1`` is the shape that forces the staging
+    # (the 7-Zip CLI writes LZMA1 without an end-of-stream marker), and ``lzma2``
+    # is the common executable-archive shape, where liblzma runs the whole chain
+    # itself and no reframing happens at all — the control.
+    _BCJ_NOTES = {
+        "lzma2": "BCJ+LZMA2: one liblzma chain, no reframing (control)",
+        "lzma1": "BCJ+LZMA1 (no EOS): BCJ staged separately, reframed as LZMA2 chunks",
+        "copy": "BCJ+Copy: branch filter is the whole decode cost",
+    }
+    for label in ("lzma2", "lzma1", "copy"):
+        bcj_path = fixtures.bcj_7z.get(label)
+        if bcj_path is None:
+            continue
+        wall, (bdec, seeks, _unpacked) = timed_with_optional_warmup(
+            lambda p=bcj_path: _op_read_all(p)
+        )
+        results.append(
+            CaseResult(
+                f"sevenzip_bcj_{label}_read_all",
+                "7z",
+                "read_all_sequential",
+                wall,
+                bdec,
+                seeks,
+                unpacked_bytes=fixtures.unpacked_bcj_7z,
+                notes=_BCJ_NOTES[label],
+            )
+        )
+
     # --- RAR open_list vs rarfile ---
     # Committed fixtures so CI (unrar only, no ``rar`` writer) still runs the many-
     # member listing guard. On-demand builders remain for realistic-scale regenerations.

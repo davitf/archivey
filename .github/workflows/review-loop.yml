@@ -5,23 +5,45 @@ name: Review loop
 #
 # The loop has three actors and this workflow is only one of them:
 #
-#   Cursor   implements, and addresses findings. Triggered from a Linear issue to
-#            start, and by an `@cursor` comment this workflow posts after each round.
-#   Claude   reviews, using the repo's own `code-review-skill`. That is this file.
-#   davitf   answers the questions a review cannot answer for itself.
+#   an agent   implements, and addresses findings. Cursor from a Linear issue, on a
+#              `cursor/*` branch; a Claude Code session from this project's threads,
+#              on a `claude/*` one. Either is pinged by a comment this workflow posts
+#              after each round, addressed by the branch prefix.
+#   a reviewer reviews, using the repo's own `code-review-skill`. This file runs the
+#              Claude one; Cursor reviews from its own entrypoint and hands an
+#              approval back here for a pass from zero.
+#   davitf     answers the questions a review cannot answer for itself.
+#
+# So do not assume Cursor implements and Claude reviews — the roles run both ways
+# round, and `dev-docs/review-loop.md` has the section on what that changes.
+#
+# **A round starts when the branch goes quiet, not when it is pushed to.** An agent
+# working a ticket pushes several times in a few minutes, and a round per push would
+# spend the cap on half-written work. So pushes are not a trigger at all: a schedule
+# scans the pull requests in the loop and reviews the one that has been finished
+# longest. `scripts/review_loop_gate.py` makes that choice, and is unit tested.
 #
 # Round state is kept in `loop:*` labels on the pull request, so it is visible in the
-# GitHub UI and a human can stop or restart the loop by editing a label. Whether to
-# run at all is decided by `scripts/review_loop_gate.py`, which is unit tested; this
-# file collects the facts for it and acts on the answer.
+# GitHub UI and a human can stop or restart the loop by editing a label.
 #
 # `dev-docs/review-loop.md` is the prose version, including what this does not do.
 
 on:
+  # Enrolment only — see the gate. A new pull request has nothing finished to review.
   pull_request:
-    types: [opened, ready_for_review, synchronize]
+    types: [opened, ready_for_review]
   issue_comment:
     types: [created]
+  schedule:
+    # Every ten minutes, which is how often the state is *checked* — not how long a
+    # branch must be quiet before it is eligible. That is `QUIET_MINUTES` in the gate,
+    # and the two are deliberately different: checking often keeps the fallback
+    # responsive once a branch does qualify, while the longer quiet period is what
+    # stops an ordinary pause mid-task from reading as "finished".
+    #
+    # GitHub runs these late under load, which costs nothing here: the gate re-reads
+    # the state each tick, so a late tick is a correct tick.
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       pr:
@@ -42,7 +64,7 @@ permissions:
 # Never cancel a review in flight: a half-posted review leaves inline threads with no
 # body to read them against, which costs the next round more than a duplicate run.
 concurrency:
-  group: review-loop-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+  group: review-loop-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr || 'scan' }}
   cancel-in-progress: false
 
 jobs:
@@ -51,6 +73,13 @@ jobs:
     # The gate refuses an unrelated comment anyway, but only after a runner has
     # started and checked the repository out. `issue_comment` fires on every comment
     # in the repository, so that is a runner per comment. Screen them here instead.
+    #
+    # Deliberately looser than the gate, which takes the phrase only at the top of a
+    # comment. `contains` has no anchor and no regex, and a body with a blank first
+    # line would fail `startsWith`, so a real trigger would be dropped here with
+    # nothing to say why. Let those through and let the tested gate refuse them: the
+    # cost of a comment that only quotes the phrase is a runner for a few seconds and
+    # no model tokens, because the review step sits behind `steps.gate.outputs.run`.
     if: >-
       github.event_name != 'issue_comment' ||
       contains(github.event.comment.body, '@claude review')
@@ -63,8 +92,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Collect the facts
-        id: facts
+      - name: Collect the facts — one pull request
+        if: github.event_name != 'schedule'
         # Untrusted values (a comment body, written by anyone who can comment) reach
         # the shell through the environment, never through `${{ }}` interpolation into
         # a command line.
@@ -75,6 +104,7 @@ jobs:
           FORCE_INPUT: ${{ inputs.force || false }}
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_ASSOC: ${{ github.event.comment.author_association }}
+          COMMENT_LOGIN: ${{ github.event.comment.user.login }}
           IS_PR_COMMENT: ${{ github.event.issue.pull_request != null }}
         run: |
           set -euo pipefail
@@ -83,31 +113,120 @@ jobs:
             issue_comment)  pr="${{ github.event.issue.number }}" ;;
             *)              pr="$PR_INPUT" ;;
           esac
-          echo "pr=$pr" >> "$GITHUB_OUTPUT"
 
-          gh pr view "$pr" --repo "$GITHUB_REPOSITORY" \
-            --json labels,isDraft,headRefName,isCrossRepository > /tmp/pr.json
+          # `issue_comment` fires on plain issues too, where `$pr` is an issue number
+          # and `gh pr view` exits non-zero — which under `set -e` killed the step, so
+          # the run went red and the gate's own "comment is not on a pull request"
+          # refusal could never execute. Hand it the empty shape instead and let it
+          # answer.
+          if [ "$EVENT_NAME" = "issue_comment" ] && [ "$IS_PR_COMMENT" != "true" ]; then
+            echo '{"labels":[],"headRefName":"","headRefOid":"","isCrossRepository":false}' \
+              > /tmp/pr.json
+          else
+            gh pr view "$pr" --repo "$GITHUB_REPOSITORY" \
+              --json labels,headRefName,headRefOid,isCrossRepository > /tmp/pr.json
+          fi
 
           jq -n \
             --arg event_name "$EVENT_NAME" \
             --arg action "$EVENT_ACTION" \
             --arg comment_body "$COMMENT_BODY" \
             --arg assoc "$COMMENT_ASSOC" \
+            --arg login "$COMMENT_LOGIN" \
+            --argjson number "$pr" \
             --argjson is_pr "$IS_PR_COMMENT" \
             --argjson force "$FORCE_INPUT" \
             --slurpfile pr /tmp/pr.json \
             '{
               event_name: $event_name,
               action: $action,
+              number: $number,
               comment_body: $comment_body,
               comment_author_association: $assoc,
+              comment_author_login: $login,
               is_pull_request: $is_pr,
               force: $force,
               labels: [$pr[0].labels[].name],
-              draft: $pr[0].isDraft,
               head_ref: $pr[0].headRefName,
+              head_sha: $pr[0].headRefOid,
               cross_repository: $pr[0].isCrossRepository
             }' > /tmp/gate-input.json
+
+      - name: Collect the facts — every pull request in the loop
+        if: github.event_name == 'schedule'
+        run: |
+          set -euo pipefail
+
+          # Only pull requests carrying a loop label are candidates. The `cursor/`
+          # branch prefix enrols a *new* pull request, in the gate, at `opened`;
+          # honouring it here would sweep in every `cursor/*` branch that was already
+          # open when the loop landed.
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json number,labels,headRefName,headRefOid,isCrossRepository \
+            | jq -c '[ .[]
+                     | {number,
+                        head_ref: .headRefName,
+                        head_sha: .headRefOid,
+                        cross_repository: .isCrossRepository,
+                        labels: [.labels[].name]}
+                     | select(any(.labels[];
+                         . == "loop:on" or startswith("loop:round-"))) ]' \
+            > /tmp/candidates.json
+
+          # Two facts the list endpoint does not carry, fetched only for the handful of
+          # pull requests in the loop: when the head commit was **committed**, which is
+          # what the quiet period is measured from (`QUIET_MINUTES` in the gate says
+          # what that costs — it is the committer's clock, not the push), and which
+          # commit the last round read, which the status comment records so a tick does
+          # not review the same commit twice.
+          #
+          # Both fetches are allowed to fail on purpose. This loop runs under `set -e`,
+          # and its inputs came from a separate `gh pr list` moments earlier, so a head
+          # that 404s after a force-push, a rate limit, or a fork head the base
+          # repository declines to resolve would abort the step — and the tick would
+          # then review nothing at all, for every enrolled pull request. This scan is
+          # the floor the rest of the design leans on, and it runs unwatched, so a bad
+          # candidate drops out of this tick instead. The skip goes in the run summary
+          # so a candidate that fails every tick is visible rather than silent.
+          #
+          # `first // empty`, not `first // ""`. `--jq` runs once per *page* and the
+          # output is concatenated, so `// ""` emits a blank line for every page
+          # holding no status comment and `seen` comes back as "\n\n<sha>", which never
+          # equals the head sha. That made the same-commit guard silently inert on any
+          # pull request whose status comment sat past the first page of 30 comments,
+          # and the scan would then spend the whole cap re-reviewing one commit.
+          # `.github/scripts/loop-status.sh` gets this right; this did not.
+          : > /tmp/candidates.jsonl
+          for n in $(jq -r '.[].number' /tmp/candidates.json); do
+            sha="$(jq -r --argjson n "$n" \
+              '.[] | select(.number == $n) | .head_sha' /tmp/candidates.json)"
+            if ! when="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" \
+              --jq '.commit.committer.date')"; then
+              echo "Scan: skipped #$n — could not read its head commit" \
+                >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            # Tested by exit status rather than by emptiness, because empty is a
+            # legitimate answer here — a pull request in its first round has no status
+            # comment yet — and taking a failed fetch for "never reviewed" would spend
+            # a round re-reviewing a commit the loop had already read.
+            if ! seen="$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" \
+              --paginate --jq '[.[].body
+                     | select(startswith("<!-- archivey-review-loop-status"))
+                     | capture("sha=(?<s>[0-9a-f]+)").s] | first // empty')"; then
+              echo "Scan: skipped #$n — could not read its comments" \
+                >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            jq -c --argjson n "$n" --arg when "$when" --arg seen "$seen" \
+              '.[] | select(.number == $n)
+                   | . + {head_committed_at: $when, last_reviewed_sha: $seen}' \
+              /tmp/candidates.json >> /tmp/candidates.jsonl
+          done
+
+          jq -n --slurpfile c /tmp/candidates.jsonl \
+                --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{event_name: "schedule", now: $now, candidates: $c}' > /tmp/gate-input.json
 
       - name: Decide whether to run
         id: gate
@@ -117,14 +236,22 @@ jobs:
           cat /tmp/gate.json
           {
             echo "run=$(jq -r .run /tmp/gate.json)"
+            echo "pr=$(jq -r .pr /tmp/gate.json)"
             echo "round=$(jq -r .round /tmp/gate.json)"
+            echo "head_sha=$(jq -r .head_sha /tmp/gate.json)"
+            echo "head_ref=$(jq -r .head_ref /tmp/gate.json)"
             echo "cap_reached=$(jq -r .cap_reached /tmp/gate.json)"
+            echo "enrol=$(jq -r .enrol /tmp/gate.json)"
+            echo "final=$(jq -r .final /tmp/gate.json)"
           } >> "$GITHUB_OUTPUT"
-          jq -r '"Gate: run=\(.run) round=\(.round) — \(.reason)"' /tmp/gate.json \
+          jq -r '"Gate: run=\(.run) pr=\(.pr) round=\(.round) — \(.reason)"' /tmp/gate.json \
             >> "$GITHUB_STEP_SUMMARY"
 
       - name: Ensure the loop labels exist
-        if: steps.gate.outputs.run == 'true' || steps.gate.outputs.cap_reached == 'true'
+        if: >-
+          steps.gate.outputs.run == 'true' ||
+          steps.gate.outputs.enrol == 'true' ||
+          steps.gate.outputs.cap_reached == 'true'
         run: |
           set -euo pipefail
           # Create, or correct one that already exists. A `loop:*` label can be made
@@ -149,12 +276,28 @@ jobs:
           ensure "loop:on"       "1d76db" "Review loop: opt this PR in"
           ensure "loop:off"      "cccccc" "Review loop: never run on this PR"
 
+      - name: Enrol this pull request
+        if: steps.gate.outputs.enrol == 'true'
+        env:
+          PR: ${{ steps.gate.outputs.pr }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "loop:on"
+          cat > /tmp/status.md <<'EOF'
+          **This pull request is in the review loop.** A review starts by itself once the
+          branch has gone thirty minutes without a new commit, so pushing again simply moves
+          the review later rather than spending a round on unfinished work.
+
+          Up to three rounds run. Adding `loop:off` takes this pull request out for good.
+          EOF
+          .github/scripts/loop-status.sh "$PR" /tmp/status.md
+
       # The cap being spent is the one "no" worth announcing: the PR is a human's
       # problem now, and nothing else on it will say so.
       - name: Hand back — round cap spent
         if: steps.gate.outputs.cap_reached == 'true'
         env:
-          PR: ${{ steps.facts.outputs.pr }}
+          PR: ${{ steps.gate.outputs.pr }}
         run: |
           set -euo pipefail
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "loop:done"
@@ -162,7 +305,8 @@ jobs:
           **The loop has stopped here.** Three review rounds are done and findings are still
           open, so this needs a person rather than another round.
 
-          Comment `@claude review` to run one more round anyway.
+          To run one more round anyway, comment `@claude review` — those two words first,
+          at the top of the comment.
           EOF
           .github/scripts/loop-status.sh "$PR" /tmp/status.md
 
@@ -173,11 +317,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Every automatic trigger of this loop is a bot: Cursor's agent pushes and
+          # opens pull requests as `cursor[bot]`, and an agent working in this
+          # repository marks them ready as `claude[bot]`. The action refuses a
+          # bot-initiated run unless the bot is named here, which is what made the
+          # first real round fail two seconds in. Named rather than `*` — the point of
+          # the setting is that an unexpected bot cannot spend review credits, and the
+          # gate's own guards (forks, enrolment, the cap) sit behind it, not in front.
+          # The action reports the actor with and without the `[bot]` suffix depending
+          # on the code path, so both spellings are listed.
+          # `github-actions[bot]` is here for the scheduled scan, whose actor is
+          # documented as whoever last edited the cron but is not worth betting the
+          # fallback on: if GitHub attributes it to the Actions bot instead, the floor
+          # this workflow relies on dies exactly the way round 1 on #365 did, and
+          # silently. It cannot be abused to spend a review either way — GitHub does
+          # not raise workflow events from `GITHUB_TOKEN` writes in the first place.
+          allowed_bots: "cursor,cursor[bot],claude,claude[bot],github-actions,github-actions[bot]"
           claude_args: |
             --model claude-opus-5
             --allowedTools Read,Grep,Glob,WebFetch,Bash
           prompt: |
-            Review pull request #${{ steps.facts.outputs.pr }} in ${{ github.repository }}.
+            Review pull request #${{ steps.gate.outputs.pr }} in ${{ github.repository }}.
             This is round ${{ steps.gate.outputs.round }} of an automated review loop that
             stops after 3 rounds.
 
@@ -214,11 +374,19 @@ jobs:
             block 2 is empty. If you posted more than one block-3 packet, put the most
             consequential one in `question`; the rest stay on the PR.
 
+      # `always()` is load-bearing. Without it a failing review step skips this one,
+      # and the "did not finish" branch below — the only thing that parks a pull
+      # request whose review died — can never run. That is exactly what happened the
+      # first time a review failed: labels created, no status comment, no hold, and
+      # nothing on the pull request saying anything had been attempted.
       - name: Act on the verdict
-        if: steps.gate.outputs.run == 'true'
+        if: always() && steps.gate.outputs.run == 'true'
         env:
-          PR: ${{ steps.facts.outputs.pr }}
+          PR: ${{ steps.gate.outputs.pr }}
           ROUND: ${{ steps.gate.outputs.round }}
+          FINAL: ${{ steps.gate.outputs.final }}
+          HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          HEAD_REF: ${{ steps.gate.outputs.head_ref }}
         run: |
           set -euo pipefail
 
@@ -228,8 +396,12 @@ jobs:
           **Round $ROUND did not finish.** The review stopped before it reached a verdict, so
           nothing was asked of Cursor and no round was counted.
 
-          Comment \`@claude review\` to try again.
+          To try again, comment \`@claude review\` — those two words first, at the top of
+          the comment.
           EOF
+            # No sha: nothing was reviewed, so the scan must be free to try this
+            # commit again once the hold is cleared. Passing one here would record it
+            # as read and the same-commit guard would skip this head for good.
             .github/scripts/loop-status.sh "$PR" /tmp/status.md
             exit 0
           fi
@@ -241,6 +413,14 @@ jobs:
 
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "loop:round-$ROUND"
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "loop:on" || true
+
+          # Every park that predates this round is now stale, and the branches below
+          # set the real state. Without this the loop restarts exactly once: answering
+          # a `loop:decision` and opening a comment with `@claude review` runs the round, but the
+          # label survives it, so the next round is refused and nothing says why.
+          for stale in "loop:decision" "loop:hold" "loop:done"; do
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$stale" || true
+          done
 
           case "$verdict" in
             clean)
@@ -261,27 +441,59 @@ jobs:
 
           The options, and what each one costs, are in the review above. Nothing further happens
           on this pull request until this is answered. Answer it in the review thread, then
-          comment \`@claude review\` to restart the loop.
+          comment \`@claude review\` to restart the loop — those two words first, at the top
+          of the comment.
           EOF
               ;;
 
             *)
-              cat > /tmp/status.md <<EOF
+              # Who holds the branch, not who usually does. Cursor is the implementer
+              # on a `cursor/*` branch, but the roles run the other way round too —
+              # Claude implements, Cursor reviews, Claude passes from zero after the
+              # approval — and there this comment used to hand the fixes back to the
+              # agent that had just written them up. The branch prefix is the same
+              # signal the gate uses to enrol a new pull request. Each agent gets the
+              # entrypoint it actually has: `/address-review` is Cursor's slash
+              # command, while a Claude Code session lands in the skill.
+              case "$HEAD_REF" in
+                cursor/*) fixer="@cursor"; who="Cursor"
+                          entry="the \`/address-review\` command" ;;
+                *)        fixer="@claude"; who="Claude"
+                          entry="the \`address-review-findings\` skill" ;;
+              esac
+              # The last round says so as it posts. There is no round 4 to notice the
+              # cap later, because a push is no longer an event this workflow sees.
+              if [ "$FINAL" = "true" ]; then
+                gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "loop:done"
+                cat > /tmp/status.md <<EOF
+          **Round $ROUND posted findings, and that was the last automatic round.** $summary
+
+          $who has been asked to work through them, but nothing will review the result: the
+          loop is finished and this is a person's from here.
+
+          To buy another round, comment \`@claude review\` — those two words first, at the
+          top of the comment.
+          EOF
+              else
+                cat > /tmp/status.md <<EOF
           **Round $ROUND posted findings.** $summary
 
-          Cursor has been asked to work through them. Round $next starts by itself when it
-          pushes. The loop stops after round 3.
+          $who has been asked to work through them. Round $next starts as soon as it says it
+          has finished, or by itself once its commits stop for thirty minutes. The loop stops
+          after round 3.
           EOF
+              fi
               cat > /tmp/ping.md <<EOF
-          @cursor Please work through the review findings on this pull request.
+          $fixer Please work through the review findings on this pull request.
 
-          Use the \`/address-review\` command (\`.cursor/commands/address-review.md\`) and follow
-          it: every finding gets an explicit disposition, nothing is called fixed without being
-          reproduced first, and anything needing a maintainer ruling is escalated rather than
-          guessed at.
+          Use $entry and follow it: every finding gets an explicit disposition, nothing is
+          called fixed without being reproduced first, and anything needing a maintainer
+          ruling is escalated rather than guessed at.
 
-          This is round $ROUND of 3. Push to this branch when you are done and the next review
-          starts on its own.
+          This is round $ROUND of 3. When you are done, push first, then say so in a comment
+          whose first two words are \`@claude review\` — that starts round $next straight
+          away. Nothing is lost if you do not: the round comes anyway once this branch has
+          been quiet for thirty minutes, which is the fallback rather than the mechanism.
 
           ---
           _Generated by [Claude Code](https://claude.ai/code)_
@@ -290,4 +502,4 @@ jobs:
               ;;
           esac
 
-          .github/scripts/loop-status.sh "$PR" /tmp/status.md
+          .github/scripts/loop-status.sh "$PR" /tmp/status.md "$HEAD_SHA"

@@ -685,14 +685,15 @@ class RarReader(BaseArchiveReader):
             )
 
         # Where the RAR proper starts inside ``source``: detection's payload_offset
-        # for a self-extracting file, 0 otherwise. Detection validates the main
-        # header at that offset; the parser's own ``_find_sfx_header`` takes the
-        # first raw magic hit, so a stub carrying ``Rar!\x1a\x07`` would win if we
-        # re-scanned. Pin volume 1 to the validated origin. ConcatenatedFile +
-        # parser ``tell()`` offsets are file-absolute (each volume contributes its
-        # full size, stub included), so stored reads must not also shift by
-        # ``_origin`` — that is why a discovered multi-volume set zeroes it after
-        # copying it to ``_volume0_parse_origin``.
+        # for a self-extracting file, 0 otherwise. The parser scan skips invalid
+        # decoys the same way detection does (then falls back to the first
+        # identified candidate if none validate), but pinning volume 1 to that
+        # origin still avoids a second scan, and still matters for a CRC-valid
+        # decoy that would win as first-VALID. ConcatenatedFile + parser ``tell()``
+        # offsets are file-absolute (each volume contributes its full size, stub
+        # included), so stored reads must not also shift by ``_origin`` — that is
+        # why a discovered multi-volume set zeroes it after copying it to
+        # ``_volume0_parse_origin``.
         self._origin = start_offset
         self._shared = self._open_shared_source(source)
         if self._origin and len(self._volume_paths) > 1:
