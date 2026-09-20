@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from typing import Protocol, TextIO, cast
+from typing import Protocol, TextIO
 
 from archivey import ExtractionProgress
 from archivey.cli.format import escape_member_name
@@ -109,4 +109,4 @@ def make_progress_callback(
     except ImportError:
         return None
 
-    return ProgressCallback(cast(Callable[..., _TqdmBar], tqdm), display)
+    return ProgressCallback(tqdm, display)

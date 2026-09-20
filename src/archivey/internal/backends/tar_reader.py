@@ -467,7 +467,7 @@ class TarReader(BaseArchiveReader):
             def _open(member: ArchiveMember) -> ArchiveStream | None:
                 if not member.is_file:
                     return None
-                info = cast("tarfile.TarInfo", member._raw)
+                info = member._raw
                 with self._handle_guard():
                     raw = self._tar.extractfile(info)
                 if raw is None:
@@ -767,9 +767,7 @@ class TarReader(BaseArchiveReader):
         # shared-fileobj lock is held.
         with self._translated_errors(member.name):
             with self._handle_guard():
-                extracted = self._tar.extractfile(info)
-        # tarfile stubs ``extractfile`` as ``IO[bytes] | None``; we need BinaryIO.
-        raw = cast(BinaryIO | None, extracted)
+                raw = self._tar.extractfile(info)
         if raw is None:
             # Only FILE members reach here (the base follows links/skips non-data members),
             # so a None stream means a zero-length or special entry; present an empty stream.

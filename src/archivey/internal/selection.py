@@ -16,10 +16,9 @@ def normalize_member_selector(
         return None
     if callable(members):
         return cast("Callable[[ArchiveMember], bool]", members)
-    collection = cast("Collection[str | ArchiveMember]", members)
     names: set[str] = set()
     identities: set[tuple[str, int]] = set()
-    for entry in collection:
+    for entry in members:
         if isinstance(entry, ArchiveMember):
             # Match by (archive_id, member_id) identity. A member that carries no ids
             # (never registered by a reader — e.g. hand-built) is deliberately dropped:
