@@ -73,8 +73,11 @@ continue there instead of opening a second one.
 After the PR exists, do two things on the Linear issue. Do not change its status
 unless the user asked.
 
-1. **Attach the pull request to the issue** — `save_issue` with
-   `links: [{url: "<the PR URL>", title: "<the PR title>"}]`. Do not skip this.
+1. **Attach the pull request to the issue** — `save_issue` with `id` set to this
+   issue's identifier and
+   `links: [{url: "<the PR URL>", title: "<the PR title>"}]`. The `id` is what
+   makes it an update: without it `save_issue` *creates* a new issue and the
+   attachment never reaches the one the ping will query. Do not skip this.
    It is what the review loop's findings ping looks the issue up by, and nothing
    else here creates it: Linear's GitHub integration links a pull request from
    the branch name, the title or the description, and none of those may carry a
