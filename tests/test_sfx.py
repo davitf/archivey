@@ -44,11 +44,17 @@ from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.rar_detect import validate_rar_main_header
 from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
+
+# Chunk-boundary tests need the real trim size.
 from archivey.internal.sfx import (
+    _SCAN_CHUNK,
+    MAX_VALIDATED_CANDIDATES,
     SFX_MAX,
     ExecutableCue,
     HitOutcome,
     MagicHit,
+    ScanMiss,
+    ScanNeedle,
     executable_cue,
     scan_for_magic,
 )
@@ -61,7 +67,7 @@ from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.internal.zip_detect import validate_zip_local_header
 from archivey.types import ArchiveFormat
 from tests.conftest import requires, requires_binary
-from tests.streams_util import brotli_compressed_metablock_header
+from tests.streams_util import NonSeekableBytesIO, brotli_compressed_metablock_header
 from tests.test_detection_workspace import InstrumentedBytesIO
 
 # The stub shape from Topic 8 A-34: `MZ` plus low-entropy filler. Deliberately the
@@ -112,11 +118,15 @@ def _sfx(tmp_path: Path, name: str, *, header_encryption: bool = False) -> Path:
 
 def test_scan_finds_magic_at_offset() -> None:
     data = b"stub" * 100 + MAGIC_7Z + b"rest"
-    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == MagicHit(400, MAGIC_7Z, 0)
+    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)).hit == MagicHit(
+        400, MAGIC_7Z, 0
+    )
 
 
 def test_scan_returns_none_when_absent() -> None:
-    assert scan_for_magic(io.BytesIO(b"\x00" * 10_000), (MAGIC_7Z,)) is None
+    result = scan_for_magic(io.BytesIO(b"\x00" * 10_000), (MAGIC_7Z,))
+    assert result.hit is None
+    assert result.miss is ScanMiss.NO_MATCH
 
 
 def test_scan_finds_magic_straddling_a_chunk_boundary() -> None:
@@ -125,7 +135,7 @@ def test_scan_finds_magic_straddling_a_chunk_boundary() -> None:
     for split in range(1, len(MAGIC_7Z)):
         offset = 65536 - split
         data = b"\x00" * offset + MAGIC_7Z + b"\x00" * 128
-        assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)) == MagicHit(
+        assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,)).hit == MagicHit(
             offset, MAGIC_7Z, 0
         )
 
@@ -133,7 +143,7 @@ def test_scan_finds_magic_straddling_a_chunk_boundary() -> None:
 def test_scan_returns_the_earliest_of_several_needles() -> None:
     data = b"\x00" * 50 + b"SECOND" + b"\x00" * 50 + b"FIRST"
     # Earliest position wins, not the order the needles were passed in.
-    assert scan_for_magic(io.BytesIO(data), (b"FIRST", b"SECOND")) == MagicHit(
+    assert scan_for_magic(io.BytesIO(data), (b"FIRST", b"SECOND")).hit == MagicHit(
         50, b"SECOND", 0
     )
 
@@ -142,14 +152,273 @@ def test_scan_requires_the_whole_magic_inside_the_limit() -> None:
     data = b"\x00" * 10 + MAGIC_7Z
     assert scan_for_magic(
         io.BytesIO(data), (MAGIC_7Z,), limit=10 + len(MAGIC_7Z)
-    ) == MagicHit(10, MAGIC_7Z, 0)
+    ).hit == MagicHit(10, MAGIC_7Z, 0)
     # One byte short: the magic starts inside the window but does not fit in it.
-    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,), limit=15) is None
+    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,), limit=15).hit is None
 
 
 def test_scan_stops_at_the_limit() -> None:
     data = b"\x00" * 5000 + MAGIC_7Z
-    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,), limit=1000) is None
+    assert scan_for_magic(io.BytesIO(data), (MAGIC_7Z,), limit=1000).hit is None
+
+
+_NEEDLE = b"NEEDLE"
+
+
+def _reject(_peek: Callable[[int], bytes], _remaining: int | None) -> HitOutcome:
+    return HitOutcome.NOT_THIS_FORMAT
+
+
+def _accept(_peek: Callable[[int], bytes], _remaining: int | None) -> HitOutcome:
+    return HitOutcome.VALID
+
+
+def test_scan_skips_a_rejected_decoy_for_a_later_valid_hit() -> None:
+    data = b"xxxx" + _NEEDLE + b"yy" + _NEEDLE
+    offered = 0
+
+    def second_valid(
+        _peek: Callable[[int], bytes], _remaining: int | None
+    ) -> HitOutcome:
+        nonlocal offered
+        offered += 1
+        return HitOutcome.VALID if offered == 2 else HitOutcome.NOT_THIS_FORMAT
+
+    assert scan_for_magic(io.BytesIO(data), (_NEEDLE,), validator=second_valid).hit == (
+        MagicHit(4 + len(_NEEDLE) + 2, _NEEDLE, 0)
+    )
+    assert offered == 2
+
+
+def test_scan_falls_back_to_the_first_rejected_candidate() -> None:
+    data = b"xxxx" + _NEEDLE + b"yy" + _NEEDLE
+    result = scan_for_magic(io.BytesIO(data), (_NEEDLE,), validator=_reject)
+    assert result.hit == MagicHit(4, _NEEDLE, 0)
+    assert result.miss is None
+    assert result.rejected_count == 2
+
+
+def test_scan_falls_back_to_a_damaged_candidate_when_nothing_validates() -> None:
+    def damaged(_peek: Callable[[int], bytes], _remaining: int | None) -> HitOutcome:
+        return HitOutcome.DAMAGED
+
+    result = scan_for_magic(
+        io.BytesIO(b"xxxx" + _NEEDLE), (_NEEDLE,), validator=damaged
+    )
+    assert result.hit == MagicHit(4, _NEEDLE, 0)
+    assert result.miss is None
+
+
+def test_scan_stops_after_the_rejected_candidate_cap() -> None:
+    n = MAX_VALIDATED_CANDIDATES
+    data = _NEEDLE * (n + 1)
+    offered = 0
+
+    def last_would_pass(
+        _peek: Callable[[int], bytes], _remaining: int | None
+    ) -> HitOutcome:
+        nonlocal offered
+        offered += 1
+        return HitOutcome.VALID if offered > n else HitOutcome.NOT_THIS_FORMAT
+
+    result = scan_for_magic(io.BytesIO(data), (_NEEDLE,), validator=last_would_pass)
+    assert result.hit is None
+    assert result.miss is ScanMiss.CAPPED
+    assert result.rejected_count == n
+    assert offered == n
+
+
+def test_scan_without_a_validator_does_not_apply_the_candidate_cap() -> None:
+    data = _NEEDLE * (MAX_VALIDATED_CANDIDATES + 5)
+    assert scan_for_magic(io.BytesIO(data), (_NEEDLE,)).hit == MagicHit(0, _NEEDLE, 0)
+
+
+def test_scan_without_a_validator_matches_a_validator_that_accepts_the_first() -> None:
+    data = b"xxxx" + _NEEDLE + b"yy" + _NEEDLE
+    bare = scan_for_magic(io.BytesIO(data), (_NEEDLE,))
+    accepted = scan_for_magic(io.BytesIO(data), (_NEEDLE,), validator=_accept)
+    assert bare.hit == accepted.hit == MagicHit(4, _NEEDLE, 0)
+
+
+def test_scan_without_a_validator_does_not_seek() -> None:
+    data = b"xxxx" + _NEEDLE
+    src = InstrumentedBytesIO(data)
+    assert scan_for_magic(src, (_NEEDLE,)).hit == MagicHit(4, _NEEDLE, 0)
+    assert src.forward_seeks == 0
+    assert src.backward_seeks == 0
+
+
+def test_scan_skips_damaged_the_same_as_not_this_format() -> None:
+    data = b"xxxx" + _NEEDLE + b"yy" + _NEEDLE
+    offered = 0
+
+    def first_damaged(
+        _peek: Callable[[int], bytes], _remaining: int | None
+    ) -> HitOutcome:
+        nonlocal offered
+        offered += 1
+        return HitOutcome.DAMAGED if offered == 1 else HitOutcome.VALID
+
+    assert scan_for_magic(
+        io.BytesIO(data), (_NEEDLE,), validator=first_damaged
+    ).hit == (MagicHit(4 + len(_NEEDLE) + 2, _NEEDLE, 0))
+
+
+def test_scan_validator_does_not_seek_the_source() -> None:
+    data = b"xxxx" + _NEEDLE
+    src = InstrumentedBytesIO(data)
+    assert scan_for_magic(src, (_NEEDLE,), validator=_accept).hit == MagicHit(
+        4, _NEEDLE, 0
+    )
+    assert src.forward_seeks == 0
+    assert src.backward_seeks == 0
+
+
+def test_scan_validator_works_on_a_non_seekable_source() -> None:
+    data = b"xxxx" + _NEEDLE + b"yy" + _NEEDLE
+    offered = 0
+
+    def second_valid(
+        _peek: Callable[[int], bytes], _remaining: int | None
+    ) -> HitOutcome:
+        nonlocal offered
+        offered += 1
+        return HitOutcome.VALID if offered == 2 else HitOutcome.NOT_THIS_FORMAT
+
+    src = NonSeekableBytesIO(data)
+    assert scan_for_magic(src, (_NEEDLE,), validator=second_valid).hit == MagicHit(
+        4 + len(_NEEDLE) + 2, _NEEDLE, 0
+    )
+
+
+def test_scan_passes_remaining_from_origin_when_size_is_known() -> None:
+    data = b"xxxx" + _NEEDLE + b"yyyy"
+    seen: list[int | None] = []
+
+    def record(_peek: Callable[[int], bytes], remaining: int | None) -> HitOutcome:
+        seen.append(remaining)
+        return HitOutcome.VALID
+
+    assert scan_for_magic(io.BytesIO(data), (_NEEDLE,), validator=record).hit == (
+        MagicHit(4, _NEEDLE, 0)
+    )
+    assert seen == [len(data) - 4]
+
+
+def test_scan_validator_can_peek_past_the_current_chunk() -> None:
+    offset = 65536 - 3
+    header = _NEEDLE + b"X" * 100
+    data = b"\x00" * offset + header
+    seen: list[bytes] = []
+
+    def need_header(peek: Callable[[int], bytes], _remaining: int | None) -> HitOutcome:
+        got = peek(len(header))
+        seen.append(got)
+        return HitOutcome.VALID if got == header else HitOutcome.NOT_THIS_FORMAT
+
+    assert scan_for_magic(io.BytesIO(data), (_NEEDLE,), validator=need_header).hit == (
+        MagicHit(offset, _NEEDLE, 0)
+    )
+    assert seen == [header]
+
+
+def test_scan_does_not_return_a_magic_pulled_past_the_limit() -> None:
+    """A validator peek may read past ``limit``; those bytes are not candidates."""
+    limit = 20
+    data = b"\x00" * 14 + _NEEDLE + _NEEDLE
+
+    def peek_far(peek: Callable[[int], bytes], _remaining: int | None) -> HitOutcome:
+        peek(100)
+        return HitOutcome.NOT_THIS_FORMAT
+
+    result = scan_for_magic(
+        io.BytesIO(data), (_NEEDLE,), limit=limit, validator=peek_far
+    )
+    # First needle ends at 20 (inside); second starts at 20 (past the bound).
+    # Nothing VALID, so the in-window candidate is the fallback. The past-limit
+    # needle was never offered.
+    assert result.hit == MagicHit(14, _NEEDLE, 0)
+    assert result.rejected_count == 1
+
+
+def test_scan_does_not_drop_a_shorter_needle_that_still_fits() -> None:
+    # The ``abs_pos + len(needle) > limit`` skip only fires when the window already
+    # holds bytes past ``limit``. The main read loop never stores those; only a
+    # validator peek does. LONG at 34 ends at 44 (past 40); the SHRT inside it at
+    # 36 ends at 40 (fits). The first SHRT at 0 is rejected and peeks 100 bytes
+    # so LONG is visible. Stopping on the straddling needle would return the
+    # fallback at 0 instead of 36.
+    long, short, limit = b"AASHRTAAAA", b"SHRT", 40
+    data = bytearray(b"\x90" * 200)
+    data[0:4] = short
+    data[34:44] = long
+    offered = 0
+
+    def reject_first_then_accept(
+        peek: Callable[[int], bytes], _remaining: int | None
+    ) -> HitOutcome:
+        nonlocal offered
+        offered += 1
+        if offered == 1:
+            peek(100)
+            return HitOutcome.NOT_THIS_FORMAT
+        return HitOutcome.VALID
+
+    result = scan_for_magic(
+        io.BytesIO(bytes(data)),
+        (long, short),
+        limit=limit,
+        validator=reject_first_then_accept,
+    )
+    assert result.hit == MagicHit(36, short, 0)
+    assert result.rejected_count == 1
+
+
+def test_scan_does_not_double_count_a_candidate_on_a_chunk_boundary() -> None:
+    # overlap = max(len) - 1 = 7. A 7-byte needle at _SCAN_CHUNK - 7 sits wholly
+    # in the retained overlap and would be validated twice if the next pass
+    # searched the overlap from 0 again. Mid-chunk markers cannot catch this.
+    long, short = b"A" * 8, b"B" * 7
+    origin = _SCAN_CHUNK - len(short)
+    data = bytearray(b"\x00" * (_SCAN_CHUNK + 64))
+    data[origin : origin + len(short)] = short
+    calls = 0
+
+    def reject_all(_peek: Callable[[int], bytes], _remaining: int | None) -> HitOutcome:
+        nonlocal calls
+        calls += 1
+        return HitOutcome.NOT_THIS_FORMAT
+
+    result = scan_for_magic(
+        io.BytesIO(bytes(data)), (long, short), validator=reject_all
+    )
+    assert result.hit == MagicHit(origin, short, 0)
+    assert result.rejected_count == 1
+    assert calls == 1
+
+
+def test_scan_probes_source_size_once_per_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    from archivey.internal.streams.streamtools import source_byte_size as real_size
+
+    calls = {"n": 0}
+
+    def counting(source: object) -> int | None:
+        calls["n"] += 1
+        return real_size(source)
+
+    monkeypatch.setattr("archivey.internal.sfx.source_byte_size", counting)
+    data = _NEEDLE * 10
+    scan_for_magic(io.BytesIO(data), (_NEEDLE,), validator=_reject)
+    assert calls["n"] == 1
+
+
+def test_scan_rejects_a_nonzero_needle_offset_with_a_validator() -> None:
+    with pytest.raises(ValueError, match="offset-0 needles"):
+        scan_for_magic(
+            io.BytesIO(_NEEDLE),
+            (ScanNeedle(_NEEDLE, 1),),
+            validator=_accept,
+        )
 
 
 # --- 7z: signature at a nonzero origin -------------------------------------------------
@@ -162,14 +431,80 @@ def test_find_signature_offset_fast_path_and_restore() -> None:
 
 
 def test_find_signature_offset_scans_and_restores() -> None:
+    # next_size=10 needs 10 bytes after the 32-byte signature or remaining-known
+    # sources grade the hit DAMAGED (declared end past EOF).
+    payload = _sevenzip_signature(next_size=10) + b"\x00" * 10
+    fp = io.BytesIO(_STUB + payload)
+    assert find_signature_offset(fp) == len(_STUB)
+    assert fp.tell() == 0
+
+
+def test_find_signature_offset_skips_a_decoy_magic() -> None:
+    payload = _sevenzip_signature(next_size=10) + b"\x00" * 10
+    fp = io.BytesIO(b"MZ" + MAGIC_7Z + b"\x90" * 40 + payload)
+    assert find_signature_offset(fp) == 2 + len(MAGIC_7Z) + 40
+    assert fp.tell() == 0
+
+
+def test_find_signature_offset_falls_back_to_a_truncated_magic() -> None:
+    # Six bytes of magic, no signature header: not VALID, and the only candidate.
     fp = io.BytesIO(_STUB + MAGIC_7Z)
     assert find_signature_offset(fp) == len(_STUB)
     assert fp.tell() == 0
 
 
 def test_find_signature_offset_reports_the_scan_window_on_a_miss() -> None:
-    with pytest.raises(CorruptionError, match="self-extracting scan window"):
+    with pytest.raises(CorruptionError, match="no signature within the 1000-byte"):
         find_signature_offset(io.BytesIO(b"\x90" * 1000), limit=1000)
+
+
+def test_find_signature_offset_names_the_candidate_cap() -> None:
+    data = MAGIC_7Z * (MAX_VALIDATED_CANDIDATES + 1)
+    with pytest.raises(CorruptionError, match="stopped after 256 rejected candidates"):
+        find_signature_offset(io.BytesIO(b"MZ" + data), limit=2 + len(data))
+
+
+def test_forced_format_truncated_7z_names_the_truncation() -> None:
+    payload = _sevenzip_signature(next_size=100) + b"\x00" * 10
+    with pytest.raises(
+        CorruptionError, match="Truncated 7z next header: expected 100 bytes"
+    ):
+        open_archive(io.BytesIO(_STUB + payload), format=ArchiveFormat.SEVEN_Z)
+
+
+def test_forced_format_crc_damaged_7z_names_the_crc() -> None:
+    with pytest.raises(CorruptionError, match="7z signature header CRC mismatch"):
+        open_archive(
+            io.BytesIO(_STUB + _crc_damaged_sevenzip_signature()),
+            format=ArchiveFormat.SEVEN_Z,
+        )
+
+
+def test_forced_format_empty_7z_behind_a_stub_opens() -> None:
+    with open_archive(
+        io.BytesIO(_STUB + _sevenzip_signature()), format=ArchiveFormat.SEVEN_Z
+    ) as archive:
+        assert list(archive.members()) == []
+        assert archive.info.member_count == 0
+
+
+def test_forced_format_crc_damaged_rar4_names_the_crc() -> None:
+    payload = bytearray((_RAR_FIXTURES / "basic_nonsolid__rar4.rar").read_bytes())
+    payload[len(RAR_ID)] ^= 0xFF
+    with pytest.raises(CorruptionError, match="RAR3 MAIN header CRC mismatch"):
+        open_archive(io.BytesIO(_STUB + bytes(payload)), format=ArchiveFormat.RAR)
+
+
+def test_forced_format_crc_damaged_rar5_names_the_crc() -> None:
+    payload = bytearray((_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes())
+    payload[len(RAR5_ID)] ^= 0xFF
+    with pytest.raises(CorruptionError, match="RAR5 header CRC mismatch"):
+        open_archive(io.BytesIO(_STUB + bytes(payload)), format=ArchiveFormat.RAR)
+
+
+def test_forced_format_rar_miss_names_the_scan_window() -> None:
+    with pytest.raises(CorruptionError, match="no signature within the"):
+        open_archive(io.BytesIO(b"MZ" + b"\x90" * 1000), format=ArchiveFormat.RAR)
 
 
 @requires("py7zr")
@@ -182,6 +517,28 @@ def test_forced_format_opens_a_7z_behind_a_stub(tmp_path: Path) -> None:
         assert set(members) == set(_FILES)
         for name, expected in _FILES.items():
             assert archive.read(members[name]) == expected
+
+
+@requires("py7zr")
+def test_forced_format_skips_a_decoy_7z_needle(tmp_path: Path) -> None:
+    stub = b"MZ" + b"\x90" * 512 + MAGIC_7Z + b"\x90" * 3576
+    path = tmp_path / "decoy-forced.exe"
+    path.write_bytes(stub + _7z_bytes(tmp_path))
+    with open_archive(path, format=ArchiveFormat.SEVEN_Z) as archive:
+        members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
+    assert members == _FILES
+
+
+def test_forced_format_skips_a_decoy_rar_needle(tmp_path: Path) -> None:
+    payload = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
+    stub = b"MZ" + b"\x90" * 32 + RAR_ID + b"\x90" * 32
+    path = tmp_path / "decoy-forced.rar.exe"
+    path.write_bytes(stub + payload)
+    with open_archive(_RAR_FIXTURES / "stored_m0.rar") as expected:
+        want = {m.name for m in expected.members() if m.is_file}
+    with open_archive(path, format=ArchiveFormat.RAR) as archive:
+        got = {m.name for m in archive.members() if m.is_file}
+    assert got == want
 
 
 @requires("py7zr")
@@ -254,14 +611,17 @@ def test_start_offset_on_a_path_equals_an_offset_view_on_a_stream(
 
 @requires("py7zr")
 def test_start_offset_is_believed_rather_than_rescanned(tmp_path: Path) -> None:
-    """A decoy magic in the stub separates "opened at the offset" from "scanned again".
+    """A CRC-valid decoy in the stub separates "opened at the offset" from "scanned again".
 
     With the offset supplied the decoy sits behind the origin and is invisible; without
-    it the forced-format scan finds the decoy first and fails on its header.
+    it the forced-format scan accepts the first VALID signature — the decoy — and fails
+    parsing its header. An invalid decoy (bare magic) is skipped, so it cannot make
+    this distinction.
     """
     inner = tmp_path / "decoy-inner.7z"
     _write_7z(inner)
-    stub = b"MZ" + b"\x90" * 512 + MAGIC_7Z + b"\x90" * 3576
+    decoy = _sevenzip_signature(next_offset=100, next_size=10)
+    stub = b"MZ" + b"\x90" * 512 + decoy + b"\x90" * 3576
     path = tmp_path / "decoy.exe"
     path.write_bytes(stub + inner.read_bytes())
 

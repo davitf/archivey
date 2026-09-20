@@ -18,14 +18,18 @@ one edit here for all three.
 Two scan entry points, because the callers differ in what they may do to the source.
 A parser owns its handle and reads forward (:func:`scan_for_magic`); the detector must
 not consume anything, so it works from growing peeks (:func:`iter_magic_in_prefix`).
-Both keep the window bounded and neither buffers the whole of it.
+Both keep the window bounded and neither buffers the whole of it. Both can skip a
+decoy: the iterating path yields every structural match so the detector's caller can
+reject it, and :func:`scan_for_magic` takes an optional :class:`HitValidator` so the
+parser path returns the earliest *valid* match, falling back to the earliest identified
+candidate when none validate.
 
 :func:`executable_cue` is a **cost gate, not a correctness gate**. Its purpose is to
 avoid reading up to :data:`SFX_MAX` from every source a caller opens — not to keep
-false matches out. Hit validators (ZIP local-header sanity, later 7z/RAR self-checks)
-are what reject a decoy. Widening the cue is therefore a cost decision: ``MZ``, ELF,
-a ``#!`` shebang, or a Mach-O header that parses. The gate is deliberately two-tiered
-— see :class:`ExecutableCue`.
+false matches out. Hit validators (ZIP local-header sanity, 7z StartHeaderCRC, RAR
+main-header CRC) are what reject a decoy. Widening the cue is therefore a cost
+decision: ``MZ``, ELF, a ``#!`` shebang, or a Mach-O header that parses. The gate is
+deliberately two-tiered — see :class:`ExecutableCue`.
 """
 
 from __future__ import annotations
@@ -35,10 +39,26 @@ from collections.abc import Iterator
 from enum import Enum
 from typing import BinaryIO, Callable, NamedTuple, Protocol, Sequence
 
+from archivey.internal.streams.streamtools import source_byte_size
+
 # How far past the start of a source the archive magic may sit before we stop looking.
 # 2 MiB comfortably covers real stubs (a `rar a -sfx` ELF stub is ~250 KB, and Windows
 # installer stubs are of the same order) while keeping a miss cheap and bounded.
 SFX_MAX = 2 * 1024 * 1024
+
+# Rejected-candidate cap for :func:`scan_for_magic` when a validator is passed. A 2 MiB
+# window of planted 6-byte decoys is otherwise an unbounded validation loop. This is
+# structural, not a ``ListingLimits`` / ``DetectionBudget`` knob: a real SFX stub does
+# not carry hundreds of format magics, and the native parsers that call this have no
+# detection budget. 256 is a starting value; raise it here if a real archive needs more.
+#
+# :func:`iter_magic_in_prefix` is left uncapped on purpose. The detector's candidate
+# walk is superlinear in planted decoys (``bytes.find`` per needle per hit), so the
+# byte window is not a time bound — a 1 MiB decoy-packed prefix is tens of seconds,
+# ``SFX_MAX`` is minutes. That is a pre-existing detector bug (threat-model O11),
+# not this scan's to widen into. Do not copy this cap onto that path as a silent
+# extra in the same diff.
+MAX_VALIDATED_CANDIDATES = 256
 
 # Read granularity for the forward scan. Large enough that a full 2 MiB window is 32
 # reads, small enough that a match near the front stops early.
@@ -81,10 +101,13 @@ class HitOutcome(Enum):
     ``NOT_THIS_FORMAT`` — identity never held (decoy magic, unparseable header).
     ``VALID`` — identity and cheap structure both hold.
     ``DAMAGED`` — identity holds, structure does not (a 7z whose ``StartHeaderCRC``
-    fails, or whose declared end overruns the source). This change's first-match
-    scan treats ``DAMAGED`` like ``NOT_THIS_FORMAT`` (skip, continue). The later
-    evidence-ledger scheduler may treat ``DAMAGED`` as a still-identified candidate
-    without changing this enum.
+    fails, or whose declared end overruns the source). A validated
+    :func:`scan_for_magic` skips both non-``VALID`` grades while looking for a
+    later ``VALID`` hit, then falls back to the first of them if none validate
+    (so a damaged payload still reaches the parser). :func:`iter_magic_in_prefix`
+    yields every structural match and lets the caller grade it. The later
+    evidence-ledger scheduler may treat ``DAMAGED`` as a still-identified
+    candidate without changing this enum.
     """
 
     NOT_THIS_FORMAT = "not_this_format"
@@ -157,6 +180,51 @@ class MagicHit(NamedTuple):
     candidate_origin: int
     needle: bytes
     needle_offset: int
+
+
+class ScanMiss(Enum):
+    """Why :func:`scan_for_magic` returned no :class:`MagicHit`.
+
+    ``NO_MATCH`` — no needle in the window.
+    ``CAPPED`` — :data:`MAX_VALIDATED_CANDIDATES` rejections, none ``VALID``.
+    ``CAPPED`` discards the fallback on purpose: 256 rejections is evidence that
+    none of them is the payload, so the scan returns no origin rather than the
+    first decoy. An uncapped window of rejected candidates is not a miss: those
+    become the fallback origin (earliest identified), so the parser can name
+    the damage.
+    """
+
+    NO_MATCH = "no_match"
+    CAPPED = "capped"
+
+
+class MagicScan(NamedTuple):
+    """Outcome of :func:`scan_for_magic`.
+
+    ``hit`` is the earliest ``VALID`` candidate, or — when none validate — the
+    earliest identified (non-``VALID``) one. ``None`` only when there was nothing
+    to fall back to: no needle, or the rejected-candidate cap fired.
+
+    ``miss`` is set iff ``hit`` is ``None``.
+    """
+
+    hit: MagicHit | None
+    miss: ScanMiss | None
+    rejected_count: int
+
+
+def describe_scan_miss(scan: MagicScan, *, limit: int) -> str:
+    """One clause for why a validated scan returned no hit.
+
+    Callers prefix this with their format name. ``limit`` is the scan bound they
+    passed, so the message names the window the caller actually used.
+    """
+    if scan.miss is ScanMiss.CAPPED:
+        return (
+            f"stopped after {MAX_VALIDATED_CANDIDATES} rejected candidates "
+            f"within the {limit}-byte self-extracting scan window"
+        )
+    return f"no signature within the {limit}-byte self-extracting scan window"
 
 
 def executable_cue(prefix: bytes) -> ExecutableCue:
@@ -324,9 +392,9 @@ def _find_earliest(
 ) -> tuple[int, ScanNeedle] | None:
     """The earliest needle occurrence at or after ``start``, as ``(index, needle)``.
 
-    ``searched`` is how far a previous growing peek already covered. A shorter
+    ``searched`` is how far a previous pass already covered. A shorter
     needle that fitted entirely in that prefix must not be re-found in the overlap
-    kept for a longer sibling (RAR5's 8 bytes vs ZIP's 4).
+    kept for a longer sibling (RAR5's 8 bytes vs RAR4's 7, or ZIP's 4).
     """
     best: tuple[int, ScanNeedle] | None = None
     for needle in needles:
@@ -337,19 +405,62 @@ def _find_earliest(
     return best
 
 
+def _remaining_from_origin(
+    scan_start: int | None, origin: int, total: int | None
+) -> int | None:
+    """Provable bytes from ``origin`` (relative to the scan start) to source EOF.
+
+    ``None`` when the start position or the total size is unknown. ``total`` is
+    the scan-start size probe — callers compute it once, because it cannot
+    change during a forward scan.
+    """
+    if scan_start is None or total is None:
+        return None
+    remaining = total - scan_start - origin
+    return remaining if remaining >= 0 else None
+
+
+def _scan_start_position(source: BinaryIO) -> int | None:
+    try:
+        return source.tell()
+    except (OSError, ValueError):
+        # Closed file: ValueError. Pipe/FIFO: OSError. io.UnsupportedOperation
+        # subclasses both, so it does not need its own arm.
+        return None
+
+
 def scan_for_magic(
     source: BinaryIO,
     needles: Sequence[bytes | ScanNeedle],
     *,
     limit: int = SFX_MAX,
-) -> MagicHit | None:
-    """The earliest ``needles`` match within ``limit`` bytes, as a :class:`MagicHit`.
+    validator: HitValidator | None = None,
+) -> MagicScan:
+    """The earliest ``needles`` match within ``limit`` bytes, as a :class:`MagicScan`.
 
     The scan starts at ``source``'s **current position** and the returned candidate
     origin is relative to it. A needle counts as found only when it lies wholly inside
     the first ``limit`` bytes, so the bound is a promise about the whole magic and not
     just its first byte. A hit whose computed candidate origin would be negative is
     discarded and the scan continues.
+
+    ``validator``, when given, is the same :class:`HitValidator` shape the detector
+    uses: a candidate-relative ``peek_more(n)`` plus known remaining from that origin.
+    Non-``VALID`` candidates are skipped while a later ``VALID`` hit is sought; if
+    none validate, the first of them is returned so a damaged payload still reaches
+    the parser. With no validator the first structural match wins, as before.
+
+    ``peek_more`` is served from the scan window and may pull extra bytes *forward*
+    if the header extends past what has been read. It does not seek back. The source
+    does not have to be seekable. A non-zero :class:`ScanNeedle` offset together with
+    a validator is an error — the origin can sit behind the overlap trim, and a short
+    peek would silently mis-grade it. ``remaining`` is filled from a size probe taken
+    once at scan start when both ``tell()`` and the total size are known, otherwise
+    ``None``.
+
+    After :data:`MAX_VALIDATED_CANDIDATES` rejections the scan stops with
+    :attr:`ScanMiss.CAPPED` (no fallback). The cap does not apply when no validator
+    is passed. A window with no needle is :attr:`ScanMiss.NO_MATCH`.
 
     ``source`` is left wherever the scan stopped reading — callers reposition it from
     the returned origin. Overlapping needles are resolved by earliest start, not by
@@ -358,7 +469,12 @@ def scan_for_magic(
     """
     normalized = _normalize_needles(needles)
     if not normalized:
-        return None
+        return MagicScan(None, ScanMiss.NO_MATCH, 0)
+    if validator is not None and any(needle.offset != 0 for needle in normalized):
+        raise ValueError(
+            "scan_for_magic(validator=...) requires offset-0 needles; "
+            "a non-zero ScanNeedle.offset leaves the origin behind the window"
+        )
     # Bytes carried between chunks so a magic straddling a chunk boundary still matches.
     overlap = max(len(needle.magic) for needle in normalized) - 1
 
@@ -367,6 +483,51 @@ def scan_for_magic(
     window_start = 0
     consumed = 0
     search_from = 0
+    # Window-relative end of the previous pass. The skip is per needle: a shorter
+    # needle wholly inside the retained overlap is not re-found after the trim.
+    # A *longer* sibling that was not fully inside the previous window is still
+    # searched, so the same candidate origin can be validated twice — once via
+    # the short needle, once via the long. Unreachable for the needle sets in
+    # the tree today (7z is one needle; RAR5/RAR4 differ at byte 6).
+    # ``_find_earliest(..., searched=)`` is the same skip ``iter_magic_in_prefix``
+    # already uses.
+    searched = 0
+    rejected = 0
+    fallback: MagicHit | None = None
+    scan_start = _scan_start_position(source) if validator is not None else None
+    # One probe: the total cannot change during a forward scan, and repeating it
+    # inside the candidate loop is 256 metadata reads (or 512 seeks on an
+    # unflushed r+b handle) for a capped scan.
+    total = source_byte_size(source) if scan_start is not None else None
+
+    def peek_more(n: int, *, origin: int) -> bytes:
+        nonlocal consumed
+        if n <= 0:
+            return b""
+        origin_in_window = origin - window_start
+        if origin_in_window < 0:
+            return b""
+        need = origin_in_window + n
+        while len(window) < need:
+            chunk = source.read(min(_SCAN_CHUNK, need - len(window)))
+            if not chunk:
+                break
+            window.extend(chunk)
+            consumed += len(chunk)
+        return bytes(window[origin_in_window : origin_in_window + n])
+
+    def bind_view(bound_origin: int) -> Callable[[int], bytes]:
+        def view(n: int) -> bytes:
+            return peek_more(n, origin=bound_origin)
+
+        return view
+
+    def finish(*, capped: bool = False) -> MagicScan:
+        if capped:
+            return MagicScan(None, ScanMiss.CAPPED, rejected)
+        if fallback is not None:
+            return MagicScan(fallback, None, rejected)
+        return MagicScan(None, ScanMiss.NO_MATCH, rejected)
 
     while consumed < limit:
         chunk = source.read(min(_SCAN_CHUNK, limit - consumed))
@@ -376,23 +537,49 @@ def scan_for_magic(
         window.extend(chunk)
 
         while True:
-            hit = _find_earliest(window, normalized, search_from)
+            hit = _find_earliest(window, normalized, search_from, searched=searched)
             if hit is None:
                 break
             index, needle = hit
             abs_pos = window_start + index
+            if abs_pos + len(needle.magic) > limit:
+                # This needle does not fit. A later shorter one still might
+                # (needles of different lengths), so skip rather than stop.
+                # Reached only when a validator peek has already pulled the
+                # window past ``limit``; the main read loop never stores those
+                # bytes. Two needles matching at the *same* index are a
+                # different case: ``_find_earliest`` returns one of them and
+                # ``search_from = index + 1`` skips the other even if the
+                # shorter would have fitted. Unreachable for (RAR5, RAR4):
+                # byte 6 differs, so they cannot match at one index.
+                search_from = index + 1
+                continue
             origin = candidate_origin_for_hit(abs_pos, needle.offset)
-            if origin is not None:
-                return MagicHit(origin, needle.magic, needle.offset)
-            # Negative origin — not a candidate; resume just past this decoy.
+            if origin is None:
+                # Negative origin — not a candidate; resume just past this decoy.
+                search_from = index + 1
+                continue
+            found = MagicHit(origin, needle.magic, needle.offset)
+            if validator is None:
+                return MagicScan(found, None, 0)
+            remaining = _remaining_from_origin(scan_start, origin, total)
+            outcome = validator(bind_view(origin), remaining)
+            if outcome is HitOutcome.VALID:
+                return MagicScan(found, None, rejected)
+            if fallback is None:
+                fallback = found
+            rejected += 1
+            if rejected >= MAX_VALIDATED_CANDIDATES:
+                return finish(capped=True)
             search_from = index + 1
 
         search_from = 0
         if len(window) > overlap:
             window_start += len(window) - overlap
             del window[: len(window) - overlap]
+        searched = len(window)
 
-    return None
+    return finish()
 
 
 def iter_magic_in_prefix(
@@ -443,7 +630,9 @@ def find_magic_in_prefix(
 ) -> MagicHit | None:
     """:func:`scan_for_magic` for a source that must not be consumed.
 
-    Returns the earliest hit. Prefer :func:`iter_magic_in_prefix` when a validator
-    may reject a decoy and the scan must continue.
+    Returns the earliest structural hit, with no validator. Prefer
+    :func:`iter_magic_in_prefix` when a caller may reject a decoy, or
+    :func:`scan_for_magic` with ``validator=`` when the source may be consumed
+    (that path returns a :class:`MagicScan`).
     """
     return next(iter_magic_in_prefix(peek_more, needles, limit=limit), None)
