@@ -27,6 +27,7 @@ from typing import BinaryIO, Callable, ContextManager
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import (
+    ask_resume_offset,
     is_seekable,
     read_exact,
     source_byte_size,
@@ -257,15 +258,37 @@ class SlicingStream(ReadOnlyIOStream):
         self._raise_if_closed()
         return self._pos
 
-    def nearest_resume_offset(self, target: int) -> None:
-        """Decline the rewind-cost question: this view has its own offset space.
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """Earliest view-relative offset this view can resume at.
 
-        Offsets here are relative to ``start``, while an inner seek-point table is in
-        the inner's space, so forwarding would report a distance against the wrong
-        origin. ``None`` means "no cost signal". Kept as an explicit decline so a
-        future slice-like wrapper does not quietly acquire forwarding.
+        Asks the inner about ``start + target`` and translates the answer back
+        into this view's space, clamped at 0 — not a bare forward, because
+        offsets here are relative to ``start`` while an inner seek-point table
+        is in the inner's space. A 0 can hide that data before that position
+        still needs decoding — the inner's resume point may lie behind
+        ``start``. ``None`` when the inner has no signal, or when this view
+        has no origin to translate (non-seekable: ``_start`` is unset).
+
+        Named exception to this package's no-archivey-concepts rule: the
+        translation is generic contiguous-window offset arithmetic, not the
+        seek-point table (that still lives outside ``streamtools``). The
+        method name is archivey-specific; this may move later if the package
+        is lifted out.
+
+        A closed or poisoned view raises rather than answering ``None``: the
+        view is unusable, so "no cost signal" would be a lie. Callers reach a
+        closed view through a translated ``seek`` first.
         """
-        return
+        self._raise_if_closed()
+        start = self._start
+        if start is None:
+            return None
+        with self._io_guard:
+            self._raise_if_closed()
+            inner = ask_resume_offset(self._stream, start + target)
+        if inner is None:
+            return None
+        return max(0, inner - start)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_closed()

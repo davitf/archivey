@@ -57,7 +57,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     raw_message_of,
 )
-from archivey.internal.sfx import SFX_MAX, scan_for_magic
+from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
 from archivey.internal.timestamps import filetime_to_datetime
@@ -500,7 +500,10 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
 
     Scanning both ids rather than their shared ``Rar!\x1a\x07`` prefix lets the shared
     scanner resolve the version by which id matched first, so a stub containing the bare
-    prefix (without a valid version byte) no longer needs a rescan loop here.
+    prefix (without a valid version byte) no longer needs a rescan loop here. A
+    candidate that fails :func:`~archivey.internal.rar_detect.validate_rar_main_header`
+    is skipped while a later ``VALID`` hit is sought; if none validate, the first
+    identified candidate is used so a damaged payload still reaches the parser.
     """
     source.seek(start)
     # Fast path: magic at current position.
@@ -511,11 +514,21 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
         return 4, 0
 
     source.seek(start)
-    hit = scan_for_magic(source, (RAR5_ID, RAR_ID), limit=SFX_MAX)
-    if hit is not None:
-        return (5 if hit.needle == RAR5_ID else 4), hit.candidate_origin
+    # Imported here: rar_detect imports this module for the ids / CRC helpers.
+    from archivey.internal.rar_detect import validate_rar_main_header
 
-    raise CorruptionError("Not a RAR archive: magic not found within SFX scan limit")
+    scan = scan_for_magic(
+        source,
+        (RAR5_ID, RAR_ID),
+        limit=SFX_MAX,
+        validator=validate_rar_main_header,
+    )
+    if scan.hit is not None:
+        return (5 if scan.hit.needle == RAR5_ID else 4), scan.hit.candidate_origin
+
+    raise CorruptionError(
+        "Not a RAR archive: " + describe_scan_miss(scan, limit=SFX_MAX)
+    )
 
 
 # ---------------------------------------------------------------------------
