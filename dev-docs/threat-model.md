@@ -407,9 +407,9 @@ aggregate.
 
 The candidate *search* is superlinear independently of decoding: `iter_magic_in_prefix`
 re-runs `bytes.find` per needle per hit. Measured on `83ed2ba` with an `MZ` stub and
-back-to-back RAR5 decoys: **29 s at 1 MiB**, minutes at `SFX_MAX` (2 MiB); a denser
-packing put 4.92 s of a 5.86 s run inside `bytes.find` (161k `_find_earliest` calls).
-No decode is involved. Tracked as ARC-81.
+back-to-back RAR5 decoys: **29 s at 1 MiB**, minutes at `SFX_MAX` (2 MiB); at 512 KiB
+the same packing spends 4.92 s of a 5.86 s profiled run inside `bytes.find` (161k
+`_find_earliest` calls). No decode is involved. Tracked as ARC-81.
 
 `detection-prefix-workspace` ships the `DetectionBudget` / `DetectionCostReceipt` and a
 fuzz assertion that aggregate detection cost stays inside the declared budget. The bound

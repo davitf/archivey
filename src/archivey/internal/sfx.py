@@ -483,8 +483,12 @@ def scan_for_magic(
     window_start = 0
     consumed = 0
     search_from = 0
-    # Window-relative end of the previous pass. A shorter needle wholly inside
-    # the retained overlap must not be re-found (and re-counted) after the trim;
+    # Window-relative end of the previous pass. The skip is per needle: a shorter
+    # needle wholly inside the retained overlap is not re-found after the trim.
+    # A *longer* sibling that was not fully inside the previous window is still
+    # searched, so the same candidate origin can be validated twice — once via
+    # the short needle, once via the long. Unreachable for the needle sets in
+    # the tree today (7z is one needle; RAR5/RAR4 differ at byte 6).
     # ``_find_earliest(..., searched=)`` is the same skip ``iter_magic_in_prefix``
     # already uses.
     searched = 0

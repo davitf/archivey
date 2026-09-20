@@ -44,8 +44,10 @@ from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.rar_detect import validate_rar_main_header
 from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
+
+# Chunk-boundary tests need the real trim size.
 from archivey.internal.sfx import (
-    _SCAN_CHUNK,  # noqa: SLF001 — chunk-boundary test needs the real trim size
+    _SCAN_CHUNK,
     MAX_VALIDATED_CANDIDATES,
     SFX_MAX,
     ExecutableCue,
