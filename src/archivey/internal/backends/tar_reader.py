@@ -468,6 +468,9 @@ class TarReader(BaseArchiveReader):
                 if not member.is_file:
                     return None
                 info = member._raw
+                assert isinstance(info, tarfile.TarInfo), (
+                    "TAR member is missing its TarInfo handle"
+                )
                 with self._handle_guard():
                     raw = self._tar.extractfile(info)
                 if raw is None:

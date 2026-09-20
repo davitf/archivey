@@ -15,6 +15,8 @@ def normalize_member_selector(
     if members is None:
         return None
     if callable(members):
+        # ty cannot exclude a callable Collection from this union; pyrefly's
+        # redundant-cast warning is not the gate.
         return cast("Callable[[ArchiveMember], bool]", members)
     names: set[str] = set()
     identities: set[tuple[str, int]] = set()
