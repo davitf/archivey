@@ -371,17 +371,32 @@ opening a comment on it with `@claude review`.
 
 ## Known rough edges
 
-- **The findings ping needs the Linear hop to reach Cursor**, and that hop needs a
-  secret this repository may not have set. Observed on #374 (2026-09-20) and fixed in
+- **The loop cannot review a change to its own workflow file.**
+  `anthropics/claude-code-action` refuses to run when the workflow calling it differs
+  from the copy on the default branch — "the workflow file must exist and have
+  identical content to the version on the repository's default branch" — so a pull
+  request that edits `.github/workflows/review-loop.yml` gets an action that skips
+  without a verdict. The loop then does the right thing with that: no round is counted,
+  `loop:hold` parks the pull request, and the status comment says the review did not
+  finish. But `@claude review` cannot rescue it, because the next attempt fails
+  identically. Such a pull request has to be reviewed by Cursor or by a person, and it
+  is worth splitting one so the workflow edit is small and separable. Observed on #379
+  (2026-09-20). The same rule is why a new `workflow_dispatch` workflow cannot be run
+  before it merges: GitHub only dispatches workflows present on the default branch.
+- **The findings ping needs the Linear hop to reach Cursor**, and that hop needs the
+  `LINEAR_API_KEY` secret, set on 2026-09-20. Observed on #374 (2026-09-20) and fixed in
   [the ping section above](#the-roles-run-both-ways-round): a GitHub comment from
-  `github-actions[bot]` does not wake a Cursor agent whose session has ended. Until
-  `LINEAR_API_KEY` exists, every `cursor/*` round ends with a warning in the job
-  summary and a pull request nobody has told the implementer about; the manual
-  workaround is to post the findings summary as a `@cursor` comment on the Linear issue
-  by hand. Carry the findings in that comment rather than pointing at the pull request.
+  `github-actions[bot]` does not wake a Cursor agent whose session has ended. Without
+  the secret, every `cursor/*` round ends with a warning in the job summary and a pull
+  request nobody has told the implementer about; the manual workaround is to post the
+  findings summary as a `@cursor` comment on the Linear issue by hand. Carry the
+  findings in that comment rather than pointing at the pull request.
   The other route considered — posting the GitHub comment from a personal access token
   so it arrives from a human account — is cheaper to wire, but it does not match the
   path that was actually observed to work, and it spends a token.
+  **The hop is written but not yet exercised**, for the reason in the bullet above: the
+  `Linear ping check` workflow that would prove the credential end to end cannot be
+  dispatched until it is on the default branch.
 - **Thirty minutes is a guess**, and it started as ten. It only matters when an agent
   does not send the signal. The change (davitf, 2026-09-19) was about which way to be
   wrong: a premature round spends one of three on half-written code, while a late one
