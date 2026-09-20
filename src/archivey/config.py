@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -9,7 +10,12 @@ from typing import TYPE_CHECKING, ClassVar
 
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
 from archivey.exceptions import ArchiveyUsageError
-from archivey.internal.arg_checks import describe_value
+from archivey.internal.arg_checks import (
+    check_callable,
+    check_encoding,
+    check_instance,
+    describe_value,
+)
 
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
@@ -101,6 +107,7 @@ def _check_limit(
     cls: str,
     field_name: str,
     allow_float: bool = False,
+    allow_none: bool = True,
 ) -> None:
     """Validate one ``*Limits`` field at construction.
 
@@ -115,9 +122,25 @@ def _check_limit(
     would otherwise pass and cap the listing at one member. The type test is spelled
     out per branch rather than parameterised, because a parameterised ``isinstance``
     narrows nothing and leaves the comparison below unprovable.
+
+    Two further shapes are refused for the same reason the wrong type is, namely that
+    they switch a guard off silently rather than loudly:
+
+    * ``allow_none=False`` for a field that is not ``| None``. ``None`` reads as
+      "disable this guard" on every other field, but ``ratio_activation_threshold``
+      is read unconditionally, so a ``None`` there is a ``TypeError`` during the
+      extraction rather than a disabled guard.
+    * a NaN or an infinity on a float field. Every comparison against a NaN is false
+      and nothing ever exceeds an infinity, so ``max_ratio=float("nan")`` constructs,
+      extracts, and enforces nothing. ``None`` is the way to say that on purpose.
     """
     if value is None:
-        return
+        if allow_none:
+            return
+        raise ArchiveyUsageError(
+            f"{cls}.{field_name} is not optional and takes "
+            f"{'a number' if allow_float else 'an int'}, but got None."
+        )
     if isinstance(value, bool):
         number: int | float | None = None
     elif isinstance(value, int):
@@ -129,13 +152,20 @@ def _check_limit(
 
     if number is None:
         raise ArchiveyUsageError(
-            f"{cls}.{field_name} takes {'a number' if allow_float else 'an int'} "
-            f"or None, but got {describe_value(value)}."
+            f"{cls}.{field_name} takes {'a number' if allow_float else 'an int'}"
+            f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
+        )
+    if isinstance(number, float) and not math.isfinite(number):
+        raise ArchiveyUsageError(
+            f"{cls}.{field_name} takes a finite number, but got {value!r}. A NaN "
+            f"compares false against everything and an infinity is never exceeded, so "
+            f"either one would leave this guard switched off without saying so; pass "
+            f"None if that is what you want."
         )
     if number < 0:
         raise ArchiveyUsageError(
-            f"{cls}.{field_name} cannot be negative, but got {value!r}. Pass None to "
-            f"disable this guard."
+            f"{cls}.{field_name} cannot be negative, but got {value!r}."
+            + (" Pass None to disable this guard." if allow_none else "")
         )
 
 
@@ -159,10 +189,13 @@ class ExtractionLimits:
             self.max_extracted_bytes, cls=cls, field_name="max_extracted_bytes"
         )
         _check_limit(self.max_ratio, cls=cls, field_name="max_ratio", allow_float=True)
+        # Not ``| None``: the ratio guard reads it unconditionally, so a None here
+        # does not disable anything, it fails the comparison mid-extraction.
         _check_limit(
             self.ratio_activation_threshold,
             cls=cls,
             field_name="ratio_activation_threshold",
+            allow_none=False,
         )
         _check_limit(self.max_entries, cls=cls, field_name="max_entries")
 
@@ -236,6 +269,52 @@ class ArchiveyConfig:
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
     max_retained_diagnostic_references: int = 256
     on_diagnostic: OnDiagnostic | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the fields at construction, for the same reason the limits are.
+
+        A config field is read wherever it is needed, which is never where it was
+        written: ``ArchiveyConfig(extraction_limits="none")`` builds fine and then
+        fails part-way through an extraction as ``AttributeError: 'str' object has no
+        attribute 'max_extracted_bytes'`` — a private attribute name, and no mention of
+        the argument the caller actually got wrong. Checking ``config=`` at the entry
+        points does not reach this: the object passed there *is* an ``ArchiveyConfig``,
+        and the wrong type is one field in.
+
+        ``strict_archive_eof`` is deliberately not checked. It is a flag read for its
+        truthiness, so there is no wrong type to find — every value means something.
+        The two accelerator fields hold enums and are handled separately.
+        """
+        check_instance(
+            self.extraction_limits,
+            ExtractionLimits,
+            call="ArchiveyConfig(extraction_limits=…)",
+            allow_none=False,
+        )
+        check_instance(
+            self.listing_limits,
+            ListingLimits,
+            call="ArchiveyConfig(listing_limits=…)",
+            allow_none=False,
+        )
+        check_instance(
+            self.diagnostic_policy,
+            DiagnosticPolicy,
+            call="ArchiveyConfig(diagnostic_policy=…)",
+            allow_none=False,
+        )
+        check_callable(self.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
+        check_encoding(
+            self.zip_unflagged_fallback_encoding,
+            call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+            allow_none=False,
+        )
+        _check_limit(
+            self.max_retained_diagnostic_references,
+            cls="ArchiveyConfig",
+            field_name="max_retained_diagnostic_references",
+            allow_none=False,
+        )
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()

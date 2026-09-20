@@ -1,18 +1,24 @@
 """Type validation for the public arguments that carry an object, not an enum.
 
-Three modules now guard the public argument surface, split by what the argument
-holds rather than by which entry point takes it:
+The public argument surface is guarded in two halves, split by what the argument holds
+rather than by which entry point takes it:
 
-* :mod:`archivey.internal.format_args` — the ``format=`` arguments.
-* :mod:`archivey.internal.enum_args` — the policy enums (``policy=``, ``overwrite=``,
-  ``on_error=``, ``abort_on=``, ``budget=``, and ``ArchiveyConfig``'s fields).
-* this module — ``config=``, ``limits=``, ``encoding=``, the progress callback, and
-  the member argument to :meth:`ArchiveReader.open`.
+* :mod:`archivey.internal.format_args` — the ``format=`` arguments, which are
+  **coerced**: a recognised spelling becomes the member it names.
+* this module — the arguments that hold an object, which are **refused**:
+  ``config=`` and ``ArchiveyConfig``'s own fields, ``limits=`` and the ``*Limits``
+  fields, ``encoding=``, and the ``on_progress=`` / ``filter=`` callbacks. There is no
+  useful conversion from a wrong-typed one of these, so the answer is an error.
 
-All three answer the same way: :class:`~archivey.ArchiveyUsageError`, which sits
+The functions here are the reusable half. The checks that are a single call site's
+business stay at that call site — the member argument to :meth:`ArchiveReader.open`
+is one (it needs the reader to tell "wrong type" from "not this reader's member"),
+and ``password=`` is another (:mod:`archivey.internal.password` already owns the
+several shapes that argument accepts).
+
+Both halves answer the same way: :class:`~archivey.ArchiveyUsageError`, which sits
 outside ``ArchiveyError`` (ADR 0012) so a caller's ``except ArchiveyError`` cannot
-swallow a caller bug. Consolidating them into one module is a reasonable later
-tidy-up; they are apart today because each wants a different message.
+swallow a caller bug.
 
 What this module is for is narrower than "validate everything". The error contract
 already permits a short list of raw exceptions to reach a caller — ``KeyError`` for
@@ -112,7 +118,7 @@ def check_callable(value: object, *, call: str) -> None:
     )
 
 
-def check_encoding(value: object, *, call: str) -> None:
+def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None:
     """Raise ``ArchiveyUsageError`` unless ``value`` names a usable byte codec.
 
     This is the one check here that is about a *value* rather than a type, and it is
@@ -128,12 +134,12 @@ def check_encoding(value: object, *, call: str) -> None:
     later accepts. The ``_is_text_encoding`` flag is what ``bytes.decode`` itself tests
     — a codec without it transforms text and cannot decode a member name.
     """
-    if value is None:
+    if value is None and allow_none:
         return
     if not isinstance(value, str):
         raise ArchiveyUsageError(
-            f"{call} takes a codec name as a str or None, but got "
-            f"{describe_value(value)}."
+            f"{call} takes a codec name as a str"
+            f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
         )
     try:
         info = codecs.lookup(value)

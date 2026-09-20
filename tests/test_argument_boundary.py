@@ -34,6 +34,8 @@ every one of them here named a private attribute of ours in the message, which i
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import io
 import zipfile
 from pathlib import Path
@@ -42,7 +44,9 @@ from typing import Any, Callable
 import pytest
 
 from archivey import (
+    ArchiveReader,
     ArchiveyConfig,
+    DiagnosticPolicy,
     ExtractionLimits,
     ListingLimits,
     detect_format,
@@ -171,6 +175,15 @@ def _cases(archive: Path, dest: Path) -> list[tuple[str, str, Callable[[], Any]]
             (f"extract(dest={bad!r})", "dest", lambda b=bad: extract(archive, b))
         )
 
+    for bad in (0, "callback", []):
+        rows.append(
+            (
+                f"extract_all(filter={bad!r})",
+                "filter",
+                lambda b=bad: _extract_all(archive, out(), None, filter=b),
+            )
+        )
+
     for bad in ("x", -1, True, 1.5):
         rows += [
             (
@@ -179,11 +192,99 @@ def _cases(archive: Path, dest: Path) -> list[tuple[str, str, Callable[[], Any]]
                 lambda b=bad: ListingLimits(max_members=b),
             ),
             (
+                f"ListingLimits(max_metadata_bytes={bad!r})",
+                "max_metadata_bytes",
+                lambda b=bad: ListingLimits(max_metadata_bytes=b),
+            ),
+            (
                 f"ExtractionLimits(max_extracted_bytes={bad!r})",
                 "max_extracted_bytes",
                 lambda b=bad: ExtractionLimits(max_extracted_bytes=b),
             ),
+            (
+                f"ExtractionLimits(max_entries={bad!r})",
+                "max_entries",
+                lambda b=bad: ExtractionLimits(max_entries=b),
+            ),
         ]
+
+    # ``ratio_activation_threshold`` is the one limit field that is not ``| None``, so
+    # None belongs in its bad set: it disables nothing, it breaks the comparison.
+    for bad in ("x", -1, True, 1.5, None):
+        rows.append(
+            (
+                f"ExtractionLimits(ratio_activation_threshold={bad!r})",
+                "ratio_activation_threshold",
+                lambda b=bad: ExtractionLimits(ratio_activation_threshold=b),
+            )
+        )
+
+    # A NaN compares false against everything and nothing exceeds an infinity, so
+    # either one silently switches the ratio guard off. Only the float fields can
+    # carry them.
+    for bad in ("x", -1, True, float("nan"), float("inf"), float("-inf")):
+        rows.append(
+            (
+                f"ExtractionLimits(max_ratio={bad!r})",
+                "max_ratio",
+                lambda b=bad: ExtractionLimits(max_ratio=b),
+            )
+        )
+
+    # ``config=`` is checked at the entry points, but the object it names has fields of
+    # its own, and those are read wherever they are needed rather than at the boundary.
+    for bad in ("none", 0, ExtractionLimits, None):
+        rows.append(
+            (
+                f"ArchiveyConfig(extraction_limits={bad!r})",
+                "extraction_limits",
+                lambda b=bad: _with_config(archive, out(), extraction_limits=b),
+            )
+        )
+    for bad in ("x", 0, ListingLimits, None):
+        rows.append(
+            (
+                f"ArchiveyConfig(listing_limits={bad!r})",
+                "listing_limits",
+                lambda b=bad: _with_config(archive, out(), listing_limits=b),
+            )
+        )
+    for bad in ("x", 0, DiagnosticPolicy, None):
+        rows.append(
+            (
+                f"ArchiveyConfig(diagnostic_policy={bad!r})",
+                "diagnostic_policy",
+                lambda b=bad: _with_config(archive, out(), diagnostic_policy=b),
+            )
+        )
+    for bad in ("x", -1, True, 1.5, None):
+        rows.append(
+            (
+                f"ArchiveyConfig(max_retained_diagnostic_references={bad!r})",
+                "max_retained_diagnostic_references",
+                lambda b=bad: _with_config(
+                    archive, out(), max_retained_diagnostic_references=b
+                ),
+            )
+        )
+    for bad in (0, "callback", []):
+        rows.append(
+            (
+                f"ArchiveyConfig(on_diagnostic={bad!r})",
+                "on_diagnostic",
+                lambda b=bad: _with_config(archive, out(), on_diagnostic=b),
+            )
+        )
+    for bad in ("not-a-codec", "rot13", b"cp437", 0, None):
+        rows.append(
+            (
+                f"ArchiveyConfig(zip_unflagged_fallback_encoding={bad!r})",
+                "zip_unflagged_fallback_encoding",
+                lambda b=bad: _with_config(
+                    archive, out(), zip_unflagged_fallback_encoding=b
+                ),
+            )
+        )
 
     return rows
 
@@ -193,9 +294,19 @@ def _open_member(archive: Path, member: Any) -> Any:
         return reader.open(member)
 
 
-def _extract_all(archive: Path, dest: Path, members: Any) -> Any:
+def _extract_all(archive: Path, dest: Path, members: Any, **kwargs: Any) -> Any:
     with open_archive(archive) as reader:
-        return reader.extract_all(dest, members=members)
+        return reader.extract_all(dest, members=members, **kwargs)
+
+
+def _with_config(archive: Path, dest: Path, **field: Any) -> Any:
+    """Build a config with one bad field and put it through a full extraction.
+
+    Construction is where the refusal should happen, but the call is what proves it:
+    every one of these fields used to survive construction and fail somewhere inside
+    the extraction instead, naming a private attribute.
+    """
+    return extract(archive, dest, config=ArchiveyConfig(**field))
 
 
 def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
@@ -205,12 +316,22 @@ def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
 
     offenders: list[str] = []
     for label, argument, call in _cases(archive, dest):
+        lenient = argument in _TYPE_ERROR_OK
         try:
             call()
-        except (ArchiveyUsageError, ArchiveyError):
+        except ArchiveyUsageError:
             continue
+        except ArchiveyError as exc:
+            # Only the source rows may answer this way, and only because a wrong-typed
+            # source can also be a real one that fails to open (``b"PK\x03\x04"`` is a
+            # truncated ZIP, not a type error). Everywhere else an ``ArchiveyError``
+            # means the wrong argument was taken for archive data.
+            if not lenient:
+                offenders.append(
+                    f"{label}: {type(exc).__name__} (want ArchiveyUsageError): {exc}"
+                )
         except TypeError as exc:
-            if argument not in _TYPE_ERROR_OK:
+            if not lenient:
                 offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 — the point is to catch everything
             offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
@@ -219,6 +340,107 @@ def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
 
     assert not offenders, "raw exceptions escaped the public API:\n" + "\n".join(
         offenders
+    )
+
+
+# Arguments the sweep deliberately does not cover, and why. Anything not listed here
+# and not exercised by a row in :func:`_cases` fails
+# :func:`test_every_public_argument_is_swept` — which is the half of this file that can
+# notice an argument nobody thought about.
+_NOT_SWEPT: dict[tuple[str, str], str] = {
+    # Enums, coerced rather than refused, guarded by ``internal/enum_args`` and its own
+    # test module. Kept out of here so the two do not disagree about the answer.
+    ("open_archive", "format"): "enum; internal/enum_args",
+    ("open_stream", "format"): "enum; internal/enum_args",
+    ("extract", "format"): "enum; internal/enum_args",
+    ("extract", "policy"): "enum; internal/enum_args",
+    ("extract", "overwrite"): "enum; internal/enum_args",
+    ("extract", "on_error"): "enum; internal/enum_args",
+    ("extract", "abort_on"): "enum; internal/enum_args",
+    ("extract_all", "policy"): "enum; internal/enum_args",
+    ("extract_all", "overwrite"): "enum; internal/enum_args",
+    ("extract_all", "on_error"): "enum; internal/enum_args",
+    ("extract_all", "abort_on"): "enum; internal/enum_args",
+    ("detect_format", "budget"): "enum/preset; internal/enum_args",
+    ("ArchiveyConfig", "use_rapidgzip"): "enum; internal/enum_args",
+    ("ArchiveyConfig", "use_indexed_bzip2"): "enum; internal/enum_args",
+    # Flags read for their truthiness. There is no wrong type to find: every value
+    # means something, and ``streaming="no"`` opening in streaming mode is Python
+    # behaving as written, not a leak.
+    ("open_archive", "streaming"): "truthiness flag",
+    ("open_archive", "seekable_members"): "truthiness flag",
+    ("open_archive", "concurrent_members"): "truthiness flag",
+    ("open_stream", "seekable"): "truthiness flag",
+    ("detect_format", "follow_stub_volumes"): "truthiness flag",
+    ("ArchiveyConfig", "strict_archive_eof"): "truthiness flag",
+    # An internal type, accepted so a caller can thread one detection's diagnostics
+    # into the reader that follows. A wrong one fails on its own methods, inside code
+    # the caller reached for deliberately.
+    ("detect_format", "collector"): "internal type, deliberate hand-off",
+    # ``read`` resolves its member through ``open``, so the ``reader.open`` rows cover
+    # both; a separate set would assert the same guard twice.
+    ("read", "member"): "same guard as reader.open",
+}
+
+
+def _public_surface() -> list[tuple[str, list[str]]]:
+    """(name, argument names) for every public entry point this file is about."""
+    surface: list[tuple[str, list[str]]] = []
+    for func in (open_archive, open_stream, extract, detect_format):
+        surface.append((func.__name__, list(inspect.signature(func).parameters)))
+    for method in ("open", "read", "extract_all"):
+        names = list(inspect.signature(getattr(ArchiveReader, method)).parameters)
+        surface.append((method, [n for n in names if n != "self"]))
+    for cls in (ArchiveyConfig, ExtractionLimits, ListingLimits):
+        surface.append((cls.__name__, [f.name for f in dataclasses.fields(cls)]))
+    return surface
+
+
+def test_every_public_argument_is_swept(archive: Path, tmp_path: Path) -> None:
+    """A public argument added without a row fails here.
+
+    This is the half of the file that can fail for something *absent*.
+    :func:`test_no_raw_exception_escapes` only ever checks the rows it was given, so on
+    its own it goes quiet exactly when a new argument arrives unguarded — the failure
+    mode of every "we swept it once" claim in this repo. Reading the signatures back
+    means the table has to keep up with the API or say in :data:`_NOT_SWEPT` why not.
+    """
+    dest = tmp_path / "covered"
+    dest.mkdir()
+    swept = {argument for _label, argument, _call in _cases(archive, dest)}
+
+    missing: list[str] = []
+    for name, arguments in _public_surface():
+        for argument in arguments:
+            if argument in swept or (name, argument) in _NOT_SWEPT:
+                continue
+            missing.append(f"{name}({argument}=…)")
+
+    assert not missing, (
+        "public arguments with no row in _cases() and no entry in _NOT_SWEPT:\n"
+        + "\n".join(missing)
+    )
+
+
+def test_not_swept_entries_are_all_live(archive: Path, tmp_path: Path) -> None:
+    """:data:`_NOT_SWEPT` does not outlive the arguments it excuses.
+
+    An exemption for an argument that no longer exists is how an exclusion list turns
+    into a place to hide one: the name stays, a real argument is added with it later,
+    and nothing notices.
+    """
+    live = {
+        (name, argument)
+        for name, arguments in _public_surface()
+        for argument in arguments
+    }
+    stale = sorted(
+        f"{name}({argument}=…)"
+        for name, argument in _NOT_SWEPT
+        if (name, argument) not in live
+    )
+    assert not stale, "_NOT_SWEPT names arguments that no longer exist:\n" + "\n".join(
+        stale
     )
 
 

@@ -1930,6 +1930,10 @@ class BaseArchiveReader(ArchiveReader):
         check_config(config, call="extract_all(config=…)")
         check_extraction_limits(limits, call="extract_all(limits=…)")
         check_callable(on_progress, call="extract_all(on_progress=…)")
+        # ``filter`` is not consulted until the first member is offered, by which point
+        # the extraction is under way; a non-callable there reads as
+        # ``TypeError: 'int' object is not callable`` with nothing naming the argument.
+        check_callable(filter, call="extract_all(filter=…)")
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.
