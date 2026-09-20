@@ -36,6 +36,7 @@ import re
 import stat
 import struct
 import threading
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -155,7 +156,9 @@ def _install_pycdlib_directory_cycle_guard() -> None:
     class _ExtentGuardedDeque(real_deque):
         """A ``deque`` that drops a directory record whose extent it has already scheduled."""
 
-        def __init__(self, iterable: Any = (), *args: Any, **kwargs: Any) -> None:
+        def __init__(
+            self, iterable: Iterable[object] = (), *args: Any, **kwargs: Any
+        ) -> None:
             items = list(iterable)
             super().__init__(items, *args, **kwargs)
             # Seed from the initial contents (which bypass ``append``) so a cycle back to a
@@ -418,6 +421,8 @@ class IsoReader(BaseArchiveReader):
         )
         return member
 
+    # rr stays Any: dr_entries / ce_entries (and symlink_path) are real
+    # attribute access, not getattr. Same at _posix_metadata and _symlink_target.
     def _timestamps(
         self, record: object, rr: Any
     ) -> tuple[datetime | None, datetime | None, datetime | None]:

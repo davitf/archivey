@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import hashlib
 import zlib
-from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
 from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
@@ -63,10 +63,11 @@ from archivey.types import HashAlgorithm
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
 
-# Keys: ``HashAlgorithm`` or algorithm name string (``hashlib`` / legacy). Values are
-# digest ``bytes`` (CRC-32 as four big-endian bytes).
-_ExpectedHashes = Mapping[Any, bytes]
-_DigestTransforms = Mapping[Any, Callable[[bytes], bytes]]
+# Keys are ``HashAlgorithm`` (``member.hashes``). Values are digest ``bytes``
+# (CRC-32 as four big-endian bytes). Mapping's key parameter is invariant, so
+# this matches every typed caller rather than ``HashAlgorithm | str``.
+_ExpectedHashes = Mapping[HashAlgorithm, bytes]
+_DigestTransforms = Mapping[HashAlgorithm, Callable[[bytes], bytes]]
 
 # Bounded drain step for sized ``read(-1)``. Must not use ``inner.read(-1)`` on the
 # sized branch: ``expected_size`` is a decompression-bomb cap.
