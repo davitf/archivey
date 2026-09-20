@@ -2958,6 +2958,26 @@ def test_unrar_mask_match_treats_brackets_as_literal() -> None:
     assert _unrar_mask_match("a/b1.txt", r"a\b?.txt")
 
 
+def test_unrar_mask_match_windows_fold_does_not_change_wildcard_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``?`` is length-sensitive; ``str.casefold()`` is not length-preserving.
+
+    ``ß`` casefolds to ``ss``. Whole-string folding then makes ``aßb.txt``
+    (7) miss mask ``a?b.txt`` (7) on Windows, while Windows ``unrar`` folds
+    per character via ``toupperw`` and still emits the member. The skip
+    would land one member short. Folding inside the per-character walk keeps
+    the lengths aligned.
+    """
+    from archivey.internal.backends import rar_unrar
+    from archivey.internal.backends.rar_unrar import _unrar_mask_match
+
+    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
+    assert _unrar_mask_match("aßb.txt", "a?b.txt")
+    assert _unrar_mask_match("aßb.txt", "aßb.txt")
+    assert not _unrar_mask_match("aßb.txt", "a??b.txt")
+
+
 def test_unrar_glob_mask_is_linear_on_a_hostile_member_name() -> None:
     """A hostile member name must not make either matcher backtrack.
 

@@ -361,6 +361,11 @@ def _unrar_component_match(name: str, mask: str) -> bool:
     A ``*`` in the mask would mean :func:`_unrar_mask_for` was bypassed and the skip
     is about to be sized against a mask ``unrar`` never saw, so it is a bug rather
     than something to match.
+
+    On Windows the comparison folds case per character. Whole-string
+    ``str.casefold()`` is not length-preserving (``ß`` → ``ss``), and ``?`` is
+    length-sensitive, so folding the strings first would desync the skip from
+    Windows ``unrar``, which folds via ``toupperw`` one character at a time.
     """
     if "*" in mask:
         raise AssertionError(
@@ -368,6 +373,8 @@ def _unrar_component_match(name: str, mask: str) -> bool:
         )
     if len(name) != len(mask):
         return False
+    if sys.platform == "win32":
+        return all(m == "?" or m.upper() == n.upper() for n, m in zip(name, mask))
     return all(m == "?" or m == n for n, m in zip(name, mask))
 
 
@@ -386,20 +393,19 @@ def _unrar_mask_match(name: str, mask: str) -> bool:
     Linux literal backslash with a separator. Callers must refuse those names
     via :func:`_unrar_glob_demux_ok` before using this to size a skip.
 
-    One more divergence is Windows-only and not guarded: ``?`` is length-sensitive,
-    and Windows ``unrar`` counts UTF-16 code units where Python counts code points,
-    so a sibling holding a non-BMP character can be counted a match here and not
-    there. It needs a glob member name and an astral sibling of exactly the wrong
-    length; the CRC check is the net.
+    Exact (no-wildcard) names still whole-string ``casefold`` on Windows, where
+    a length change cannot desync a ``?``. Wildcard components fold per
+    character inside :func:`_unrar_component_match` so ``ß`` vs ``?`` stays
+    one-to-one. Non-BMP vs UTF-16 code-unit counting remains a residual; the
+    CRC check is the net.
     """
     if mask.startswith("./"):
         mask = mask[2:]
     name = name.replace("\\", "/")
     mask = mask.replace("\\", "/")
-    if sys.platform == "win32":
-        name = name.casefold()
-        mask = mask.casefold()
     if "*" not in mask and "?" not in mask:
+        if sys.platform == "win32":
+            return name.casefold() == mask.casefold()
         return name == mask
     mask_dir, mask_base = mask.rsplit("/", 1) if "/" in mask else ("", mask)
     name_base = name.rsplit("/", 1)[-1]
@@ -409,6 +415,9 @@ def _unrar_mask_match(name: str, mask: str) -> bool:
         return True
     if "*" not in mask_dir and "?" not in mask_dir:
         name_dir = name.rsplit("/", 1)[0] if "/" in name else ""
+        if sys.platform == "win32":
+            name_dir = name_dir.casefold()
+            mask_dir = mask_dir.casefold()
         return name_dir == mask_dir or name_dir.startswith(mask_dir + "/")
     return True
 
