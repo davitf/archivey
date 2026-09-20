@@ -187,6 +187,10 @@ class ArchiveyConfig:
         consumer honest. A string is still accepted at construction — a type checker
         flags it, which is the right answer for a typed caller who has the enum
         imported anyway, and an untyped script gets the conversion.
+
+        The assignment goes through ``object.__setattr__`` because the dataclass is
+        frozen and this *rewrites* the field rather than only inspecting it. A check
+        that merely rejects a bad value needs no such thing; converting one does.
         """
         # Local import: ``enum_args`` pulls in ``exceptions``, and this module is
         # imported early by almost everything.
