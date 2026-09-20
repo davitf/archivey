@@ -490,15 +490,21 @@ three items to one.
 archivey concepts — from inside the package whose docstring says nothing here knows about the
 rest of archivey, and `DelegatingStream` forwarded it by default so every wrapper inherited it.
 Parcel A ([#326](https://github.com/davitf/archivey/pull/326)) took the forwarding off the base
-class. The concept now lives in `streams/resume.py`, which asks the inner engine by `getattr`,
-and the implementations sit on the streams that actually own a seek-point table
-(`decompressor_stream.py:390`, `codecs.py:204` and `:747`, `crypto.py:293`, `verify.py:599`,
-`counting.py:91`, `archive_stream.py:423`). The only thing left under `streamtools/` is
-`slice.py:260`, which declines it. **The thread's real point holds and is the reason to keep
-this paragraph:** the rule that gets enforced by tooling is the one that was never violated,
-and the import linter could not see this leak at any point.
+class. The seek-point table still lives outside `streamtools`: the implementations sit on the
+streams that actually own one (`decompressor_stream.py:390`, `codecs.py:204`) or preserve
+that offset space (`codecs.py:747`, `verify.py:600`, `counting.py:91`,
+`archive_stream.py:423`). Two more translate the offset space rather than preserving it:
+`crypto.py:293` (ciphertext to plaintext) and `slice.py:261` (contiguous window;
+`SharedView` inherits it). The duck-typing helper `ask_resume_offset` is generic `getattr`
+plumbing, so it lives in `streamtools/binaryio.py` and is re-exported from `streams/resume.py`.
+`slice.py:261` is a named exception: it translates a contiguous window (`start + target` in,
+clamp at 0 out). That is generic offset arithmetic, not the table. The exception is written
+down in `streamtools/__init__.py` because the import linter cannot see a concept leak —
+which is the thread's real point, and why the exception is named rather than left for the
+next reader to discover. The helper and the translation are archivey-specific at the
+method name; they may move out of `streamtools` later if the package is lifted.
 [#343](https://github.com/davitf/archivey/pull/343) has since pinned the behaviour as a
-Hypothesis property.
+Hypothesis property. The translation itself is [#373](https://github.com/davitf/archivey/pull/373).
 
 **`src/` still has zero `# type: ignore`**, six days and twenty-two merges later. #324 deleted
 both dead ones and expressed the two live suppressions as `# pyrefly: ignore[bad-override]`

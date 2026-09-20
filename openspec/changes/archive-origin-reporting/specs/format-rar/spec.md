@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
@@ -11,6 +11,14 @@ This is the same contract `format-7z` states for its signature header, and SHALL
 implemented through the same shared resolver in `internal/sfx.py`: a fast-path read at the
 open position, a bounded forward scan on a miss, and `CorruptionError` past the bound. The
 scan bound SHALL be the shared `SFX_MAX` constant.
+
+The scan SHALL use the same hit validator the detector uses. It SHALL return the earliest
+VALID match, or if none validate the earliest identified candidate, so a damaged payload
+still reaches the parser. After `MAX_VALIDATED_CANDIDATES` (256) rejected candidates the
+scan SHALL stop and raise `CorruptionError` naming the cap. That bound is structural (a
+real SFX stub does not carry hundreds of format magics, and the parser has no
+`DetectionBudget`) and is not a `ListingLimits` knob. A miss with no candidate SHALL raise
+`CorruptionError` naming that there was no match.
 
 Resolution SHALL yield the RAR **version** alongside the offset, from whichever marker
 matched, so version determination is not a second search. Scanning for both markers rather
@@ -47,10 +55,13 @@ forced-format path.
 | --- | --- |
 | Marker at open origin (offset 0) | Unchanged success path; version from the marker read |
 | Detection supplies `payload_offset == N` | Opens at N; no forward scan performed |
-| Forced `format=RAR`, RAR5 marker at N within `SFX_MAX` | Bounded scan finds N; version 5; members listed |
-| Forced `format=RAR`, RAR4 marker at N within `SFX_MAX` | Bounded scan finds N; version 4; members listed |
+| Forced `format=RAR`, RAR5 marker at N within `SFX_MAX`, header validates | Bounded scan finds N; version 5; members listed |
+| Forced `format=RAR`, RAR4 marker at N within `SFX_MAX`, header validates | Bounded scan finds N; version 4; members listed |
 | Stub contains bare `Rar!\x1a\x07` without a valid version byte, real marker later | Resolves to the real marker, not the decoy |
-| Forced `format=RAR`, no marker within `SFX_MAX` | `CorruptionError`, not an empty archive |
+| Forced `format=RAR`, marker at N, header does not validate, no later VALID hit | Scan falls back to N; the parser reports the damage |
+| Forced `format=RAR`, decoy magic then a VALID payload within `SFX_MAX` | Earliest VALID wins |
+| Forced `format=RAR`, no marker within `SFX_MAX` | `CorruptionError` naming that there was no match |
+| Forced `format=RAR`, `MAX_VALIDATED_CANDIDATES` (256) candidates rejected, none VALID | `CorruptionError` naming that the candidate cap was reached |
 | Non-zero start offset with a multi-volume set | `UnsupportedFeatureError` |
 | Forced `format=RAR` on a self-extracting first volume of a multi-volume set | `UnsupportedFeatureError` — the guard sees the resolved origin, not the supplied `0` |
 | Either path, marker at N | `info.payload_offset == N`, measured from the start of `source` |
