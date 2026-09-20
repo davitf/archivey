@@ -77,28 +77,66 @@ walk.
 | `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
 | Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
 
+### Requirement: Accept a non-zero archive start offset (SFX)
+
+The RAR reader SHALL accept an archive whose marker (`Rar!\x1a\x07\x00` for RAR4
+or `Rar!\x1a\x07\x01\x00` for RAR5) begins at a non-zero byte offset — whether
+supplied as an explicit start offset from detection (`payload_offset`) or
+discovered by a bounded forward scan when the marker is absent at the open
+position (forced `format=RAR` on an SFX stub).
+
+The forced-format scan bound SHALL be the shared `SFX_MAX` constant (same
+binding as the 7z parser and `detect_format`; today 2 MiB). The scan SHALL use
+the same hit validator the detector uses. It SHALL return the earliest VALID
+match, or if none validate the earliest identified candidate, so a damaged
+payload still reaches the parser. After `MAX_VALIDATED_CANDIDATES` (256)
+rejected candidates the scan SHALL stop and raise `CorruptionError` naming the
+cap. That bound is structural (a real SFX stub does not carry hundreds of
+format magics, and the parser has no `DetectionBudget`) and is not a
+`ListingLimits` knob. A miss with no candidate SHALL raise `CorruptionError`
+naming that there was no match.
+
+Scanning both markers rather than their shared `Rar!\x1a\x07` prefix SHALL
+resolve the version by which marker matched first.
+
+Member and header offsets SHALL be relative to the resolved origin. The system
+SHALL read in place and SHALL NOT copy the archive to a temporary file solely
+to strip a stub.
+
+#### Scenario: RAR SFX / start-offset matrix
+
+| Case | Expected |
+| --- | --- |
+| Marker at open origin (offset 0) | Unchanged success path; version from the marker read |
+| Forced `format=RAR`, marker at N within `SFX_MAX`, header validates | Scan finds N; members listed |
+| Forced `format=RAR`, marker at N, header does not validate, no later VALID hit | Scan falls back to N; the parser reports the damage |
+| Forced `format=RAR`, decoy magic then a VALID payload within `SFX_MAX` | Earliest VALID wins |
+| Forced `format=RAR`, no marker within `SFX_MAX` | `CorruptionError` naming that there was no match |
+| Forced `format=RAR`, `MAX_VALIDATED_CANDIDATES` (256) candidates rejected, none VALID | `CorruptionError` naming that the candidate cap was reached |
+
 ### Requirement: Bound RAR parser member tables at open
 
-The native RAR header walk SHALL refuse to retain more than `1_048_576` logical
-members (same default as `ListingLimits.max_members`) and raise a typed error
-when that ceiling is crossed. This is defense-in-depth against allocation during
-`open_archive()` for indexed RAR backends that build the full member table up
-front.
+The native RAR header walk SHALL refuse to retain more members than
+`listing_limits.max_members` when that field is not `None`, and SHALL raise
+`ResourceLimitError` at parse (`open_archive`) when the ceiling is crossed.
+`None` (`ListingLimits.UNLIMITED`) disables the bound. The config value is the
+bound at parse because the table is built then; there is no separate
+parser-constant ceiling. `stream_members()` / `streaming=True` are not an
+escape hatch.
 
-Spine `ListingLimits` (`archive-reading`) still apply when members are
-registered into a materialized list and raise `ResourceLimitError` when
-configured caps are exceeded. Archives within the parser ceiling but over the
-reader's `listing_limits` MUST still fail at `members()` / extract-prep
-materialization rather than requiring a separate open-time listing-limits
-failure. Open MAY therefore allocate up to the parser ceiling before listing
-caps are evaluated.
+RAR has no header-size analogue for member count (the walk is sequential), so
+`UNLIMITED` can walk until memory is exhausted. The parse bound is a member
+count, not a byte budget. Spine `ListingLimits.max_metadata_bytes`
+(`archive-reading`) still apply when members are registered into a
+materialized list (`members()`), the same as every other format — not at
+`open_archive`.
 
 #### Scenario: RAR parser bound matrix
 
 | Case | Expected |
 | --- | --- |
-| Hostile archive past the parser member ceiling | Fail during parse / open; no giant member table |
-| Archive within parser bounds but over `listing_limits.max_members` | Open may succeed; `members()` / materialization raises `ResourceLimitError` |
+| Hostile or honest archive over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
+| `listing_limits.max_members is None` (`UNLIMITED`) | No member-count bound at parse; a large honest archive opens |
 | Default limits, typical archive | Open and listing succeed |
 
 ### Requirement: Expose RAR file-version history members

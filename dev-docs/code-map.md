@@ -141,12 +141,14 @@ often they turn out to be the right place:
 | Question | Look in |
 |---|---|
 | How should we work this change? | `dev-docs/pair-workflow.md` |
+| Why did a review appear on this PR by itself? | `dev-docs/review-loop.md` |
 | What is true *here* for a format / topic? | `dev-docs/formats/<format>.md` / `dev-docs/topics/<topic>.md` when present; else code-map + threat model + ADRs/investigations — create the handbook page in the PR that needs it ([`pair-workflow.md`](pair-workflow.md)) |
 | What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |
 | Why was this chosen? (legacy / repo-wide) | `dev-docs/decisions/` (ADR log, `index.md` first); new answers prefer handbook pages |
 | Is this a known defect / upstream bug? | `dev-docs/known-issues.md`, `dev-docs/investigations/` |
 | Is this a known unfixed gap? | `dev-docs/threat-model.md` (`O*` register), `dev-docs/open-issues.md` |
 | Has this already been reviewed? | `review/STATUS.md`, then the archive tables under `review/archive/` |
+| Has this *file* been swept? | The `SWEPT` markers on [#315](https://github.com/davitf/archivey/pull/315) — one per file read end to end, findings or not. `scripts/sweep_coverage.py` counts them; [`review/sweep/`](../review/sweep/README.md) is the brief shape |
 | Was this deliberately deferred? | `review/backlog.md`, `dev-docs/IDEAS.md` |
 | What is open right now, and in what order? | `dev-docs/open-work-inventory.md` — a dated snapshot across every register; the registers themselves stay authoritative |
 | Was this discussed but not settled? | `dev-docs/discussions/` |

@@ -222,10 +222,13 @@
   2026-09-16): yes, follow-up PR; written up 2026-09-17, not yet scheduled.
 
 - **Delete `_HeaderDecryptStream` and wrap RAR headers in `AesDecryptStream`** —
-  **promoted** to `openspec/changes/fold-rar-header-decrypt-stream/`, which carries the
-  two blockers (the overloaded `tell()` on `header_fd`'s two arms, and the unbounded
-  mid-file wrapper) and an explicit bar for abandoning the fold. Written up 2026-09-17,
-  not yet scheduled.
+  **promoted**, and split in two after review of
+  [#347](https://github.com/davitf/archivey/pull/347).
+  `openspec/changes/rar-archive-offset-and-aes-cursor/` carries the two halves that are
+  correct on their own terms (an explicit `_archive_offset` accessor, so `header_fd`'s two
+  arms stop overloading `tell()`; gathered source reads and a `cipher_tell()` on
+  `AesDecryptStream`). `openspec/changes/fold-rar-header-decrypt-stream/` is then only the
+  fold and its gate. Neither is scheduled.
 
 - **`stream_members()` seekability leak** — the intended rule is that a sequential pass
   is never seekable (`seekable_members=True` only changes random `open()`). Enforced
@@ -797,20 +800,29 @@
   `tests/fixtures/rar/README.md`. Linux `setup-dev-env.sh` still apt-installs
   `rar`, so these are not dark on a provisioned Linux laptop — only on CI /
   macOS.
-- **Decide what native-codec stress coverage is for.** One of the eight native
-  dependencies (`pyppmd`, `inflate64`, `rapidgzip` + bundled `indexed_bzip2`, `brotli`,
-  `lz4`, `cryptography`, `pycdlib`) has a stress harness, and it exists because of a
-  *specific observed* upstream abort (`known-issues.md` §Intermittent `pyppmd` native
-  aborts). Fuzzing is separate and broader: `tests/atheris_fuzz/targets.py` registers 7
-  required stream codecs plus 4 optional ones, `deflate64` included. So the open question
-  is not "which codec is missing a harness" but **what earns one**: a response to observed
-  evidence, or a standard every native dependency is held to. The honest-looking criterion
-  — *built when an upstream defect is observed, not before* — would resolve
-  [PR #187](https://github.com/davitf/archivey/pull/187) (rapidgzip + inflate64 harnesses)
-  as close-with-criterion-recorded. Worth a short written evaluation because the answer
-  changes what CI runs on every PR; adjacent to the archived Topic 4 (test-suite strategy).
-  Context and today's measured state: [`open-work-inventory.md`](open-work-inventory.md)
-  §Native codec stress coverage.
+- **Decide what native-codec stress coverage is for. Undecided, and now unattached to any
+  PR.** One of the eight native dependencies (`pyppmd`, `inflate64`, `rapidgzip` + bundled
+  `indexed_bzip2`, `brotli`, `lz4`, `cryptography`, `pycdlib`) has a stress harness, and it
+  exists because of a *specific observed* upstream abort (`known-issues.md` §Intermittent
+  `pyppmd` native aborts). Fuzzing is separate and broader: `tests/atheris_fuzz/targets.py`
+  registers 7 required stream codecs plus 4 optional ones, `deflate64` included. So the open
+  question is not "which codec is missing a harness" but **what earns one**: a response to
+  observed evidence, or a standard every native dependency is held to.
+
+  **[PR #187](https://github.com/davitf/archivey/pull/187) (rapidgzip + inflate64 harnesses)
+  was closed on 2026-09-11 without this being answered**, so the decision now has no PR
+  attached to it and nothing forcing it. That is the reason this entry is worth keeping
+  rather than retiring with the PR: the code was declined, the judgement behind declining it
+  was not written down, and the next proposal for a `brotli` or `lz4` harness has nothing to
+  be measured against.
+
+  The candidate criterion is *a native stress harness is built when an upstream defect is
+  observed, not before*. Adopting it would retroactively make #187's closure correct **and
+  recorded**; rejecting it means five more libraries are owed the same treatment `pyppmd`
+  got. Either way the output is a short written evaluation with the criterion stated, because
+  the answer changes what CI runs on every PR. Adjacent to the archived Topic 4 (test-suite
+  strategy). Measured state of the eight libraries:
+  [`open-work-inventory.md`](open-work-inventory.md) §Native codec stress coverage.
 - **Establish that the Windows UnRAR download is rarlab's.** The Windows CI leg
   `Invoke-WebRequest`s `https://www.rarlab.com/rar/unrarw64.exe` and runs the SFX; the
   only integrity checks are a PE sniff and the UNRAR banner. **A pinned SHA-256 is

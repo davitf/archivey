@@ -7,7 +7,7 @@ Module split:
 - :mod:`.sevenzip_pipeline` — folder coder plan/execute + encoded-header decode
 - this module — passwords, member list, solid-folder demux, CRC/encryption mapping
 
-Open path: signature → ``parse_header_block`` → (decode ``EncodedHeader`` loop) →
+Open path: signature → ``parse_header_block`` → (one encoded-header layer) →
 ``materialize_archive`` → list members. Member open folds the folder's packed
 slice through :func:`open_folder_pipeline`; solid folders use
 :class:`~archivey.internal.streams.streamtools.solid.SolidBlockReader` so one
@@ -46,7 +46,6 @@ from archivey.exceptions import (
 from archivey.internal.backends.sevenzip_methods import is_aes
 from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
-    PlainHeader,
     SevenZipArchive,
     SevenZipFileRecord,
     SevenZipFolder,
@@ -63,6 +62,7 @@ from archivey.internal.backends.sevenzip_pipeline import (
     decode_folder_to_bytes,
     encoded_header_needs_password,
     open_folder_pipeline,
+    unwrap_encoded_header,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
@@ -284,22 +284,29 @@ class SevenZipReader(BaseArchiveReader):
         if not signature.header_data:
             return empty_archive(signature)
 
-        block = parse_header_block(signature.header_data)
-        header_encrypted = False
-        while isinstance(block, EncodedHeader):
-            header_encrypted = header_encrypted or encoded_header_needs_password(block)
-            try:
-                decoded = self._decode_encoded_header_block(fp, block)
-                block = parse_header_block(decoded)
-            except (UnsupportedFeatureError, CorruptionError) as exc:
-                # AES header decrypt has no MAC: a wrong password yields garbage that
-                # fails property parsing rather than raising EncryptionError in decrypt.
-                if header_encrypted and self._passwords.has_static_candidates():
-                    raise EncryptionError(
-                        "Password(s) rejected for the 7z header"
-                    ) from exc
-                raise
-        assert isinstance(block, PlainHeader)
+        max_members = self._config.listing_limits.max_members
+        block = parse_header_block(signature.header_data, max_members=max_members)
+        # Computed before the try: on the exception path the tuple assignment
+        # below never runs, and the handler needs this to translate a wrong
+        # password (D8).
+        header_encrypted = isinstance(
+            block, EncodedHeader
+        ) and encoded_header_needs_password(block)
+        try:
+            # Nested-header reject after a wrong-password AES decrypt still
+            # becomes EncryptionError (D8). Unencrypted self-copy re-raises
+            # CorruptionError because header_encrypted is False.
+            block, header_encrypted = unwrap_encoded_header(
+                block,
+                lambda encoded: self._decode_encoded_header_block(fp, encoded),
+                max_members=max_members,
+            )
+        except (UnsupportedFeatureError, CorruptionError) as exc:
+            # AES header decrypt has no MAC: a wrong password yields garbage that
+            # fails property parsing rather than raising EncryptionError in decrypt.
+            if header_encrypted and self._passwords.has_static_candidates():
+                raise EncryptionError("Password(s) rejected for the 7z header") from exc
+            raise
         # O8: 7zAES has no password check value. Wrong-key garbage occasionally
         # LZMA-decodes into a header that parses with zero file records (py7zr
         # omits the encoded-header folder CRC). Legitimate writers never encrypt

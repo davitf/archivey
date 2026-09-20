@@ -37,6 +37,26 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#353 F18 — 7z parser helpers still default `max_members=None`.**
+  Out of scope for the RAR PR. `sevenzip_parser.py` public `parse_header_block`
+  and internals (`_parse_plain_header`, `_read_streams_info`, `_read_unpack_info`,
+  `_read_substreams_info`, `_read_files_info`) default to `None` (UNLIMITED).
+  RAR's equivalent internals now require the keyword (#353 F13). A forgotten 7z
+  kwarg silently disables the bound. Follow-up on the 7z parser.
+
+- **#353 F12 — RAR3 per-member compressed comments expand at open, outside the parse-time count bound.**
+  Pre-existing; #353 neither causes it nor claims to fix it. RAR 1.5/2.x FILE
+  COMMENT subblocks unpack in `rar_reader.py` after parse (`_resolve_rar3_comment`
+  per member), via `unrar` for the compressed form. Per comment is uint16-bounded
+  (64 KiB); across members that is `max_members` × 64 KiB. Fork cost dominates;
+  without `unrar` comments are dropped. **Decided (maintainer, 2026-09-19):** bound it
+  in that reader loop against `max_metadata_bytes`, raising `ResourceLimitError` — not in
+  `rar_parser` (maintainer, #353 F6: no parse-time byte budget). `_Rar3Comment` carries
+  each comment's `unpacked_size` from the header, so this can be a pre-check over the sum
+  and refuse a hostile archive before any `unrar` fork. Decoding every comment through a
+  single synthetic RAR, rather than one subprocess each, is tracked separately and does
+  not block this. Handbook: [`formats/rar.md`](../dev-docs/formats/rar.md) §4, §6.
+
 - **#344 D4 — AES+PPMd wrong-key `MemoryError` aborts password iteration.**
   Pre-existing on `main`. A wrong AES key into a complete PPMd pack can
   `MemoryError` inside `pyppmd.Ppmd7Decoder.decode` during confirm's empty

@@ -112,6 +112,48 @@ workload reproduced ~0.88× / ~0.50× vs stdlib — direction holds, absolute
 multipliers do not. At **ci** (tiny) scale accel_on is often *slower* than
 accel_off (indexing / thread-pool startup dominates).
 
+### 7z BCJ branch filters — liblzma staging vs `pybcj`
+
+`sevenzip_bcj_{lzma2,lzma1,copy}_read_all` were added with the change that moved
+branch filters off `pybcj` and onto liblzma (`dev-docs/known-issues.md`). liblzma
+refuses a raw chain whose only filter is a branch filter, so a BCJ stage standing
+outside the folder's main chain reframes its input as LZMA2 *uncompressed* chunks;
+these cases are what makes that reframing cost visible.
+
+Corpus: 16×256 KiB of x86-like code (one `call rel32` and one `jmp rel32` per
+16 bytes, so the filter converts about one branch per eight bytes) = 4 MiB.
+Method: the harness's own A/B recipe — `--mode structural --scale realistic`,
+sides alternated A,B,B,A,…, per-case minimum over 16 rounds each, sign test over
+the per-round pairs, plus a null control (same SHA on both sides, 10 rounds).
+Both sides ran the identical harness; only `src/` was swapped.
+
+New = `a50f01a` (liblzma), old = `13ffd75` (`pybcj`). 4-core Intel Xeon (KVM).
+
+| Case | new | old | new/old | rounds new was faster | sign p |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `sevenzip_bcj_copy_read_all` | 9.95 ms | 7.64 ms | **1.30×** | 0/16 | 0.000 |
+| `sevenzip_bcj_lzma1_read_all` | 38.15 ms | 35.79 ms | **1.07×** | 0/16 | 0.000 |
+| `sevenzip_bcj_lzma2_read_all` | 34.94 ms | 34.99 ms | 1.00× | 9/16 | 0.804 |
+
+The null control puts the floor at 1% or better on all three (1.000, 0.995,
+0.991; no case worse than 8/10 signs), and none of the other 25 harness cases
+shows a consistent sign — so the two significant rows are the change, not the
+host.
+
+Reading them:
+
+- **BCJ+Copy is the worst case by construction** — the branch filter is the whole
+  decode, so the 1.30× is the reframing cost undiluted: ~420 MiB/s against
+  ~550 MiB/s. Nothing else in the suite is that filter-dominated.
+- **BCJ+LZMA1 is the shape that actually forces the staging** (the 7-Zip CLI
+  writes LZMA1 without an end-of-stream marker, so BCJ cannot join the chain).
+  Diluted by LZMA1 decode, the same cost is 1.07×.
+- **BCJ+LZMA2 is the control and does not move**: liblzma already ran that whole
+  chain itself before the change, `pybcj` was never on that path.
+
+Framing overhead is 3 bytes per 64 KiB of payload (0.005%), so the cost is the
+extra pass through liblzma's LZMA2 chunk layer, not the bytes.
+
 ### Structural / solid
 
 | Check | Result |

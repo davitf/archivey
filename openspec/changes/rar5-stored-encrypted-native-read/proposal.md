@@ -39,10 +39,14 @@ non-path source, and O(1) seek from the CBC restart instead of a respawn-and-rep
 
 ## Impact
 
-- Capabilities: `format-rar`, `packaging-and-extras`.
-- Code: `internal/backends/rar_reader.py` (`_can_direct_read`, `_direct_view`),
-  `internal/backends/rar_parser.py` (a file-data key helper beside `_tweaked_hash_key`).
-  No new stream machinery — `AesDecryptStream` already does the work.
+- Capabilities: `format-rar` (5 requirements, including the temp-copy caveat whose
+  wording names compression where it means "needs the spawn"), `packaging-and-extras`.
+- Code: `internal/backends/rar_reader.py` (`_can_direct_read`, `_direct_view`, and the
+  `_open_member` call site, which is where the "neither route available" error is
+  re-raised naming both — `rar_unrar.py`'s `_NOT_INSTALLED_MSG` stays RARLAB-only and
+  learns nothing about `cryptography`), `internal/backends/rar_parser.py` (a file-data key
+  helper beside `_tweaked_hash_key`). No new stream machinery — `AesDecryptStream` plus
+  `SlicingStream` already do the work.
 - **Amends ADR [0002](../../../dev-docs/decisions/0002-native-rar-metadata-unrar-data.md)**,
   which scopes native decryption to *headers*. That amendment is part of this change, not a
   side effect of it.

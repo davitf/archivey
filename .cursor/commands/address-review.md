@@ -13,7 +13,9 @@ disposition. The full process lives in the skill:
    post through the maintainer's account, so a `davitf` comment *without* an agent
    attribution footer is the human.
 2. **Ledger first, edits second.** Every finding gets an ID and exactly one disposition:
-   fix / disproven / escalate / defer-with-a-written-home. Nothing is dropped silently.
+   fix / disproven / escalate / defer-with-a-written-home. Nothing is dropped silently,
+   and **defer is never available for a 🟢 nit** — a nit is fixed here or waived by the
+   maintainer.
 3. **Verify before acting.** Reproduce the finding. Automated reviewers here do produce
    false positives, and real findings are often narrower and sharper than described.
 4. **Fix the cause, red–green, specs and docs move with the contract.** If an ad-hoc
@@ -27,6 +29,12 @@ disposition. The full process lives in the skill:
    into chat; that stays on the PR. Shape: `dev-docs/pair-workflow.md` and skill §6.
 7. **Reply in the thread the finding came from, and resolve what you resolved.** Report
    gates honestly. Attribution footer on every comment.
+8. **Say you have finished** — after the last push, post a comment on the PR that
+   *starts* with `@claude review`. That starts the next review round straight away
+   instead of waiting for the loop to notice the branch has gone quiet. The phrase only
+   counts at the top of a comment, so this is its own comment, phrase first; quoting it
+   mid-sentence elsewhere does nothing. Last action, after everything else, since a
+   commit pushed afterwards will not be in what gets reviewed.
 
 ## Scope
 

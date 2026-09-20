@@ -57,8 +57,8 @@ codecs, encryption, ISO, seeking accelerators, and the CLI.
 
 | Extra | Pulls in | Enables |
 | --- | --- | --- |
-| *(none)* | stdlib only + native parsers | ZIP, TAR + stdlib compressed TAR variants including `.tar.Z`, GZ, BZ2, XZ, Z (unix-compress), directory, 7z read for common codecs (including LZMA2+BCJ), RAR metadata/listing; RAR data still needs RARLAB `unrar` |
-| `[recommended]` | `pyppmd`, `inflate64`, `brotli`, `lz4`, `pybcj`, `backports.zstd` on Python <3.14, `cryptography`, `pycdlib`, `tqdm` | Every format and codec that installs everywhere: PPMd, Deflate64, Zstd, Brotli, LZ4, LZMA1+BCJ, AES/crypto (7z, RAR headers, WinZip AES ZIP), ISO, CLI progress |
+| *(none)* | stdlib only + native parsers | ZIP, TAR + stdlib compressed TAR variants including `.tar.Z`, GZ, BZ2, XZ, Z (unix-compress), directory, 7z read for common codecs (including every BCJ branch filter), RAR metadata/listing; RAR data still needs RARLAB `unrar` |
+| `[recommended]` | `pyppmd`, `inflate64`, `brotli`, `lz4`, `backports.zstd` on Python <3.14, `cryptography`, `pycdlib`, `tqdm` | Every format and codec that installs everywhere: PPMd, Deflate64, Zstd, Brotli, LZ4, AES/crypto (7z, RAR headers, WinZip AES ZIP), ISO, CLI progress |
 | `[seekable]` | `rapidgzip` | Faster gzip/bzip2 decompression and random access via rapidgzip / bundled `IndexedBzip2File` |
 | `[free-threaded]` | `pycdlib`, `lz4`, `tqdm`, `backports.zstd` on Python <3.14, `cryptography` on Python >=3.14 | The subset that keeps the GIL **disabled** on free-threaded builds |
 | `[all]` | `[recommended]` + `[seekable]` | Everything |

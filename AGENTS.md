@@ -336,7 +336,30 @@ See `openspec/specs/format-7z/spec.md`, `format-rar/spec.md`,
 
 ## Review workflow (two agents, two skills)
 
-PR review here is a **handoff between two agents**, and each half has a skill:
+PR review here is a **handoff between two agents**, and each half has a skill.
+
+**Each rule has one home, and the other places link to it.** Restating a rule in five
+files is what produced #351's duplicate findings and the #354/#355 pair, where the same
+defect was fixed twice. The split is by *reader*:
+
+| Reader | Reads | Holds |
+|--------|-------|-------|
+| Implementer | `CONTRIBUTING.md` | Every coding and testing rule — typing, exceptions, comments, config bounds, red–green, the three-config gate |
+| Implementer | `address-review-findings/SKILL.md` | How a finding gets dispositioned |
+| Reviewer | `CONTRIBUTING.md` + the review addendum | The addendum is review-only: finding discipline and output shape (§0), what to check (§3–§5, citing CONTRIBUTING rather than repeating it), review order (§8), posting (§10) |
+| Reviewer, sometimes | `code-review-skill/reference/reviewing-proposals.md`, `…/deep-reviews.md` | Opened only for what they name — a proposal or delta spec, a commissioned `review/` brief. A contract-moving code PR opens the first for its values check alone. Addendum §6 and §9 are stubs pointing here |
+| Autopilot | `steward/SKILL.md` | Only where this repo differs from a generic watcher |
+
+`SKILL.md`, `.cursor/commands/*.md` and this section are **entrypoints**. An entrypoint
+routes: it names a concern and points at the file the rule lives in, and it may bind
+host-specific facts — which finding-ID prefix *this* host uses, which command name lands
+where. It does **not** restate the rule, because the restatement is the copy that drifts.
+`SKILL.md` owns one thing outright and says so: the ≤1-minute logistics list, which
+addendum §8 points at.
+
+Adding a rule means editing one file — if you find yourself editing a second, the rule is
+in the wrong place.
+
 
 1. **A separate agent reviews** the PR with **`/code-review-skill`** — not a bare
    `/code-review`, which is a *builtin* skill in both Claude Code and Cursor and is not
@@ -344,11 +367,12 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    `/code-review` land correctly there. It posts the **full** findings to the PR (blocks
    1–2 for the implementor; block 3 packets for the maintainer). When also chatting with
    the maintainer, send **decision packets only** unless they ask for the full handoff
-   ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet). Rules are
-   in `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`; **§10
-   covers posting** — stable finding IDs (`F1`, `F2`, … kept across re-reviews), located
-   findings as inline comments so they can be resolved individually, blocks 1 and 3 in the
-   body, and a status table over the previous IDs when re-reviewing.
+   ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet). The review
+   rules live in `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`
+   and only there: **§0** is the output shape and the verdicts, **§3–§5** are what to check
+   (against `CONTRIBUTING.md`, which holds the rules themselves), and **§10** is posting —
+   stable finding IDs carrying the reviewer's own initial, inline comments, and a status
+   table over the previous IDs when re-reviewing.
 2. **The implementing agent works through them** with `address-review-findings`
    (Cursor: `/address-review`). Every finding gets an explicit disposition — fixed,
    disproven, escalated, or deferred-with-a-written-home. Nothing is dropped silently, and
@@ -369,6 +393,47 @@ PR review here is a **handoff between two agents**, and each half has a skill:
    reproduced, no contract or docs move, gate clean) and where it must stop and ask. Why
    the two skills stay separate rather than merging into one review-and-fix mode: ADR
    [0018](dev-docs/decisions/0018-review-and-address-stay-separate-skills.md).
+
+4. **Linear issues** use `.claude/skills/address-linear-issue/SKILL.md` (Cursor:
+   `/address-linear-issue`). Same two skills, sequenced: the implementing agent reads
+   the ticket, fixes it, opens the PR and enrols it in the
+   [review loop](dev-docs/review-loop.md), which runs `code-review-skill` in a separate
+   Claude session and posts to the PR; whoever holds the branch then runs
+   `address-review-findings`. **Say when you have finished** — take the PR out of draft
+   after implementing, and post a comment *starting* with `@claude review` after
+   addressing a round — as the last action, after the final push; that is what starts
+   each round. The phrase counts only at the top of a comment, so writing about it
+   elsewhere starts nothing. Do not review your own
+   diff, and do not spawn a reviewer of your own — the loop is the second opinion. Maintainer decision (davitf,
+   2026-09-19): Claude reviews PRs started from a Linear issue, replacing the fresh
+   Cursor Grok subagent this step used to spawn.
+
+**Nothing from the internal tracker goes into PR text.** This repository is public; the
+tracker is not. Three rules, and they are about the *internal tracker* only:
+
+- **Never** an internal-tracker URL, anywhere — PR title or body, review or inline
+  comment, commit message, or a file in the repo.
+- **Not** an internal-tracker key (`ARC-123`) in a PR title or body, a review or inline
+  comment, or a commit message. Write "tracked internally" instead: the reader cannot open
+  the ticket, so the key is dead weight to them and it publishes the internal layout.
+- **GitHub `#nnn` is the public record and is always fine** — in PR text, commits,
+  comments and repo files alike. This rule does not touch it.
+
+**Inside `dev-docs/` and `openspec/changes/`, a bare key may mark tracked work — never
+cite one as a source.** Maintainer decision (davitf, 2026-09-19): the data lives in the
+repo and the PRs, so a key says *where this work is tracked*, not *where the reason is
+written*. "The dedup is ARC-54, not this change's job" is fine. "See ARC-54 for the
+measurement" is not — put the measurement here. Test it by deleting the key: if the
+sentence still says everything a reader needs, it was a tracking tag; if the sentence
+now has a hole, the content is in the wrong place. The existing citations in
+`threat-model.md`, `investigations/adr-0014-investigation.md` and two
+`openspec/changes/` files all pass that test, so this is a rule for new writing, not a
+sweep.
+
+Where a finding deserves a durable in-repo home, that is `review/backlog.md` under
+"Parked from PR reviews", with the reasoning in the format handbook
+(`dev-docs/formats/<fmt>.md` §6). The cross-reference runs one way only: put the PR URL on
+the tracker item, never the reverse.
 
 Two things about this repo make the handoff sharper than it looks:
 

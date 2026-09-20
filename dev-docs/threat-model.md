@@ -22,13 +22,25 @@ when members are registered into a materialized / resolved list (`members()`,
 `scan_members()`, extract-prep materialization). Crossing a cap raises
 `ResourceLimitError`. Defaults match extract `max_entries` on the count side
 (`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
-`stream_members()` / forward-only iteration remain unguarded by design (O(1) escape
-hatch). Format-local parser bounds (e.g. 7z `num_files` vs header size →
-`CorruptionError`; RAR member-count ceiling at parse) stay as defense-in-depth.
-RAR5 QO records that are not FILE never reach `_append_member`; their bound is
-`_RAR5_QO_PAYLOAD_MAX` (16 MiB), and parse of that payload is linear (PR #311).
-Indexed formats (7z/RAR) may still allocate up to those parser ceilings during
-`open_archive()` before spine listing caps apply. `max_metadata_bytes` budgets
+`stream_members()` / `streaming=True` / forward-only iteration remain unguarded by
+design (O(1) escape hatch). 7z applies `listing_limits.max_members` at
+`open_archive` (folders, unpack streams, `num_files`) and an over-limit
+archive fails at open — `stream_members()` / `streaming=True` are not an
+escape hatch for 7z. Pack streams are a coder-graph quantity (BCJ2 has four
+per folder) and keep the header-size bound only. RAR applies
+`listing_limits.max_members` while parsing the member table at
+`open_archive`, so an over-limit archive fails at open —
+`stream_members()` / `streaming=True` are not an escape hatch for RAR. ZIP
+still caps at `members()`. `None` (`ListingLimits.UNLIMITED`) disables that
+bound. `max_metadata_bytes` remains a materialization guard on every format,
+including 7z and RAR. Format-local parser bounds (e.g. 7z count fields vs
+header size → `CorruptionError`; 7z per-folder coder/in-out counts at
+`_MAX_NUM_STREAMS`) stay as defense-in-depth. RAR no longer has a separate
+`_MAX_ARCHIVE_MEMBERS` parser constant. RAR5 QO records that are not FILE
+never reach `_append_member`; their bound is `_RAR5_QO_PAYLOAD_MAX` (16 MiB),
+and parse of that payload is linear (PR #311). 7z may still allocate up to
+its header-size ceilings during `open_archive()` (`max_members` or header
+size, whichever is tighter). `max_metadata_bytes` budgets
 *retained* member metadata; it does not see a transient decode buffer discarded
 before any member exists. RAR3 compressed Unicode names used to expand ~100×
 that way (listing-time CPU at the `uint16` `name_size` ceiling, not unbounded
@@ -393,12 +405,18 @@ of successful decoding — 683-fold amplification**. Memory is not the problem (
 candidate's output is discarded); time is. A per-candidate decode cap cannot bound the
 aggregate.
 
+The candidate *search* is superlinear independently of decoding: `iter_magic_in_prefix`
+re-runs `bytes.find` per needle per hit. Measured on `83ed2ba` with an `MZ` stub and
+back-to-back RAR5 decoys: **29 s at 1 MiB**, minutes at `SFX_MAX` (2 MiB); at 512 KiB
+the same packing spends 4.92 s of a 5.86 s profiled run inside `bytes.find` (161k
+`_find_earliest` calls). No decode is involved. Tracked as ARC-81.
+
 `detection-prefix-workspace` ships the `DetectionBudget` / `DetectionCostReceipt` and a
 fuzz assertion that aggregate detection cost stays inside the declared budget. The bound
 itself — and whether limits are per-detection aggregates or per-candidate — belongs to
 `detection-evidence-ledger`, which owns the scan tiers where candidates multiply. Until
-that lands, a hostile prefix can still force unbounded decode work under the default
-budget's scan path once those tiers are enabled.
+that lands, a hostile prefix can still force unbounded decode *or search* work under the
+default budget's scan path once those tiers are enabled.
 
 ### O12. 7z password confirmation decoded the whole folder into RAM — memory mitigated
 
@@ -443,6 +461,48 @@ byte-cap (first-member CRC rather than a hard ceiling, so a legitimate huge
 folder still opens) or routing confirm through `ExtractionLimits` /
 `_track_decompressed` would close that; neither is in this change. Found on
 PR #315; tracked from PR #318.
+
+### O13. 7z `NumUnpackStreams` allocated an unbounded list — closed
+
+`num_files` is bounded against header size (O1 / L1). Pack-stream count was
+bounded by `_MAX_NUM_STREAMS` (65536). `kNumUnPackStream` was not.
+
+When `kSize` and `kCRC` are absent, `_read_substreams_info` did
+`digests.extend([None] * count)` with `count` taken verbatim from the archive.
+No remaining-bytes check can save it: no per-stream bytes are read. The CRC
+`all_defined != 0` path is the same bomb one step earlier:
+`_load_boolean(..., check_all=True)` does `[True] * count` before it tries to
+read any CRC words. Measured: N = 2²⁰ allocated 1,048,576 entries in 0.016 s;
+N = 2⁴⁰ dies on untranslated `MemoryError`. Applying `_MAX_NUM_STREAMS` to
+unpack streams then rejected ordinary solid 7z archives over 65,536 files;
+the same cap already rejected non-solid archives on pack-stream and folder
+counts.
+
+*Closed:* member-scaled counts (folders, unpack streams and their sum,
+`num_files`) reject against the header buffer size (`CorruptionError`) and
+against `listing_limits.max_members` (`ResourceLimitError`; `None` disables).
+Pack streams keep the header-size bound only — a BCJ2 folder has four, so
+`max_members` would refuse a legitimate non-solid BCJ2 archive. `_MAX_NUM_STREAMS`
+stays on per-folder coder graphs (coders, in/out streams). Found on PR #315
+(S2-F1); Linear ARC-50.
+
+### O14. 7z encoded-header decode had no nesting limit — closed
+
+`while isinstance(block, EncodedHeader)` re-parsed whatever
+`decode_encoded_header` returned. A COPY encoded header whose packed bytes
+*are* that same header decodes to itself. A 66-byte archive hung
+`open_archive` / `parse_sevenzip_archive`; `7z l` 23.01 reports "Headers Error"
+in ~0.2 s. Blast radius is `open_archive`, not a fuzz helper —
+`SevenZipReader._load_archive` ran the same loop.
+
+Related cap in the same function: unpack size was capped at
+`_MAX_NEXT_HEADER_SIZE` **per folder**, so two COPY folders at 40 MiB
+concatenated to 80 MiB past the signature next-header cap.
+
+*Closed:* one encoded layer unrolled (no nesting counter); `CorruptionError`
+if the decoded blob is still `EncodedHeader`. Running
+total of folder unpack sizes is capped at `_MAX_NEXT_HEADER_SIZE` before
+concatenation. Found on PR #315 (S2-F2); Linear ARC-50.
 
 ## OPEN gaps — compatibility
 

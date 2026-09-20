@@ -21,7 +21,9 @@ readers. It follows the `archivey-dev` `sevenzip-native-reader` exploration.
 | `compressed-streams` | Decoder composition, CRC verification, optional codec backends |
 | `packaging-and-extras` | `[recommended]` extra |
 | `testing-contract` | Native parser coverage and `py7zr` oracle checks |
+
 ## Requirements
+
 ### Requirement: Declare 7-Zip format properties
 
 The 7-Zip backend SHALL expose these properties:
@@ -73,14 +75,27 @@ to a temporary file solely to strip a stub. The forced-format scan bound SHALL b
 the shared `SFX_MAX` constant (same binding as the RAR parser and
 `detect_format`; today 2 MiB).
 
+The forced-format scan SHALL skip a candidate whose signature header does not
+validate and continue, returning the earliest VALID match. If none validate, it
+SHALL fall back to the earliest identified candidate so a damaged or empty
+payload still reaches the parser. After `MAX_VALIDATED_CANDIDATES` (256)
+rejected candidates the scan SHALL stop and raise `CorruptionError` naming the
+cap. That bound is structural (a real SFX stub does not carry hundreds of
+format magics, and the parser has no `DetectionBudget`) and is not a
+`ListingLimits` knob. A miss with no candidate SHALL raise `CorruptionError`
+naming that there was no match.
+
 #### Scenario: 7z SFX / start-offset matrix
 
 | Case | Expected |
 | --- | --- |
 | Magic at open origin (offset 0) | Unchanged success path |
 | Explicit start offset N with magic at N | Signature parsed at N; members listed |
-| Forced `format=SEVEN_Z`, `MZ` stub, magic at N within `SFX_MAX` | Scan finds magic; open succeeds |
-| Forced `format=SEVEN_Z`, no magic within `SFX_MAX` | `CorruptionError` (not a silent empty archive) |
+| Forced `format=SEVEN_Z`, `MZ` stub, magic at N within `SFX_MAX`, header validates | Scan finds N; open succeeds |
+| Forced `format=SEVEN_Z`, `MZ` stub, magic at N, header does not validate, no later VALID hit | Scan falls back to N; the parser reports the damage (truncated or CRC-broken) or opens (empty archive, `NextHeaderSize` 0) |
+| Forced `format=SEVEN_Z`, decoy magic then a VALID payload within `SFX_MAX` | Earliest VALID wins |
+| Forced `format=SEVEN_Z`, no magic within `SFX_MAX` | `CorruptionError` naming that there was no match |
+| Forced `format=SEVEN_Z`, `MAX_VALIDATED_CANDIDATES` (256) candidates rejected, none VALID | `CorruptionError` naming that the candidate cap was reached |
 | Packed streams after an SFX signature | Pack/header seeks use signature origin; members readable |
 
 ### Requirement: Bound 7z header count fields before allocation
@@ -97,19 +112,27 @@ stream): any field or property read whose length exceeds the bytes remaining in
 the header SHALL raise `CorruptionError` at parse, never read past the buffer or
 return a short value.
 
-Spine `ListingLimits` (`archive-reading`) still apply when members are
-registered into a materialized list and raise `ResourceLimitError` when
-configured caps are exceeded. Parser bounds are defense-in-depth against
-allocation before Python `ArchiveMember` objects exist; they MUST NOT be
-implemented by reusing `ExtractionLimits.max_entries`.
+Spine `ListingLimits` (`archive-reading`) still apply. For 7z they are
+enforced at header parse — folders, unpack streams, and `num_files` —
+because the whole index is resident at `open_archive`. Pack streams are a
+coder-graph quantity (a BCJ2 folder has four) and keep the header-size
+bound only. A folder, unpack-stream, or file count over
+`listing_limits.max_members` (when not `None`) SHALL raise
+`ResourceLimitError` at parse, before per-entry allocation. `None`
+(`ListingLimits.UNLIMITED`) disables that bound; header-size
+`CorruptionError` remains. Parser bounds MUST NOT be implemented by reusing
+`ExtractionLimits.max_entries`.
 
 #### Scenario: 7z header bound matrix
 
 | Case | Expected |
 | --- | --- |
 | `num_files` greater than header buffer size | `CorruptionError` at parse; no giant pre-allocation |
+| `NumUnpackStreams` (or the sum across folders) greater than the header buffer size | `CorruptionError` at parse; no giant `* count` allocation |
+| Pack-stream, folder, unpack-stream, or file count greater than the header buffer size | `CorruptionError` at parse |
 | Legitimate archive whose header is large enough for its file count | Parse succeeds; listing still subject to `ListingLimits` |
-| Archive within parser bounds but over `listing_limits.max_members` | Parse may succeed; `members()` / materialization raises `ResourceLimitError` |
+| Folder, unpack-stream, or file count over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` |
+| `listing_limits.max_members is None` (`UNLIMITED`) | Header-size bound only; a large honest archive opens |
 
 #### Scenario: in-header read stays within the buffer
 
@@ -118,6 +141,22 @@ implemented by reusing `ExtractionLimits.max_entries`.
 | Property payload claims more bytes than remain in the header | `CorruptionError`; no read past the buffer |
 | A fixed-width field (uint32 / real-uint64 / byte) read at end-of-buffer | `CorruptionError`; never a short/zero-padded value |
 | Well-formed header exactly consumed to its end | Parse succeeds; no residual-bytes error |
+
+### Requirement: Bound encoded-header decode work
+
+The system SHALL decode at most one encoded-header layer (7-Zip writes one). A
+decoded blob that is itself `kEncodedHeader` SHALL raise `CorruptionError`.
+Unpack sizes across folders of one encoded header SHALL be summed against the
+next-header size cap (`_MAX_NEXT_HEADER_SIZE`) before concatenation, not only
+per folder.
+
+#### Scenario: encoded-header decode bound matrix
+
+| Case | Expected |
+| --- | --- |
+| COPY encoded header whose packed bytes are that same header | `CorruptionError` at open; no hang |
+| Two encoded-header folders whose unpack sizes each fit the cap but sum past it | `CorruptionError` at decode; no concatenated buffer past the next-header cap |
+| Legitimate single-layer encoded header (including header-encrypted) | Decode once; parse the resulting plain HEADER |
 
 ### Requirement: 7z anti-items are MemberType.ANTI
 
@@ -149,7 +188,7 @@ verification stage as data is read.
 | STORED | `0x00` | pass-through | core |
 | LZMA1 / LZMA2 | `0x030101` / `0x21` | `lzma` `FORMAT_RAW` | core |
 | Delta | `0x03` | `lzma.FILTER_DELTA` | core |
-| BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`-`0x09`, `0x03030103`... | `lzma` BCJ filters (LZMA2+BCJ); `pybcj` for LZMA1+BCJ | core for LZMA2+BCJ; `[recommended]` for LZMA1+BCJ |
+| BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`-`0x09`, `0x03030103`... | `lzma` BCJ filters | core |
 | Deflate | `0x040108` | raw `zlib` | core |
 | BZip2 | `0x040202` | `bz2` | core |
 | Zstd | `0x04f71101` | stdlib `compression.zstd` / `backports.zstd` | core on 3.14+; otherwise `[recommended]` |
@@ -161,21 +200,20 @@ verification stage as data is read.
 | BCJ2 | `0x0303011B` | none | unsupported |
 
 The `[recommended]` extra SHALL provide PPMd, Deflate64, Zstd on Python versions without
-stdlib zstd, Brotli, LZ4, AES, and LZMA1+BCJ (`pybcj`) support in one install.
+stdlib zstd, Brotli, LZ4, and AES support in one install.
 
 LZMA1+BCJ folders SHALL NOT be decoded via a single combined `lzma` `FORMAT_RAW`
 filter chain: liblzma can silently truncate the final BCJ look-ahead bytes when
 LZMA1 lacks an end-of-stream marker. The reader MUST stage LZMA1 (and any non-BCJ
 `lzma` filters such as Delta) through stdlib `lzma`, then apply each BCJ stage
-through `pybcj`. LZMA2+BCJ remains a single stdlib filter chain in core.
+separately. LZMA2+BCJ remains a single stdlib filter chain.
 
 #### Scenario: coder-chain matrix
 
 | Case | Expected |
 | --- | --- |
 | BCJ + LZMA2 folder | Shared `lzma` raw filter chain returns original bytes |
-| BCJ + LZMA1 folder with `pybcj` (`[recommended]`) | Staged LZMA1 then `pybcj` returns original bytes |
-| BCJ + LZMA1 folder without `pybcj` | `PackageNotInstalledError` names `pybcj` and the `[recommended]` extra |
+| BCJ + LZMA1 folder | Staged LZMA1 then a staged liblzma BCJ returns original bytes |
 | Member with stored CRC32 | Terminal verification raises `CorruptionError` on mismatch |
 | PPMd without `pyppmd` | `PackageNotInstalledError` names `pyppmd` and the `[recommended]` extra |
 | AES + LZMA2 folder | Crypto stage decrypts before LZMA2 decompression |
@@ -188,7 +226,7 @@ The system SHALL raise `UnsupportedFeatureError` naming the codec or method ID
 when a folder uses a coder with no available backend. This includes BCJ2, newer
 branch filters absent from installed liblzma, and unrecognized method IDs. The
 reader MUST NOT return garbage and MUST NOT fall back to `py7zr` or another
-third-party reader. PPMd, Deflate64, and LZMA1+BCJ are optional-supported via
+third-party reader. PPMd and Deflate64 are optional-supported via
 `[recommended]`, and multi-volume 7z is supported by volume joining.
 
 #### Scenario: unsupported-codec matrix
@@ -198,7 +236,7 @@ third-party reader. PPMd, Deflate64, and LZMA1+BCJ are optional-supported via
 | Folder uses BCJ2 | `UnsupportedFeatureError` names BCJ2; no output bytes |
 | Folder uses unknown method ID | `UnsupportedFeatureError` names the method ID |
 | Folder uses PPMd with `pyppmd` installed | Member is decoded, not rejected |
-| Folder uses LZMA1+BCJ with `pybcj` installed | Member is decoded via staged `pybcj`, not rejected |
+| Folder uses LZMA1+BCJ | Member is decoded via a staged BCJ filter, not rejected |
 
 ### Requirement: Support multi-volume 7z by ordered concatenation
 
@@ -340,21 +378,38 @@ at list time; destination collisions are an extraction/`OverwritePolicy` concern
 | Open nameless 7z from an anonymous stream | Member name `data` |
 | Open a 7z that stores NAME normally | Stored names unchanged; no stem synthesis |
 
-### Requirement: Stage LZMA1+BCJ through pybcj under `[recommended]`
+### Requirement: Decode BCJ branch filters through liblzma
 
-The system SHALL decode linear folders whose coder chain includes both LZMA1 and
-at least one BCJ branch filter (x86/ARM/ARMT/PPC/SPARC/IA64) by composing
-stdlib LZMA1 decompression with `pybcj` BCJ filters. The reader MUST NOT feed
-LZMA1 and BCJ into one `lzma.LZMADecompressor` `FORMAT_RAW` filter list. When
-`pybcj` is absent, opening such a member SHALL raise `PackageNotInstalledError`
-naming `pybcj` and `pip install archivey[recommended]`. BCJ2 remains unsupported.
+The system SHALL decode every 7z BCJ branch filter (x86/ARM/ARMT/PPC/SPARC/IA64,
+method IDs `0x04`-`0x09` and their long aliases) using liblzma's branch filters, in
+core, for every folder shape. No optional package SHALL be required for BCJ.
 
-#### Scenario: LZMA1+BCJ matrix
+A BCJ coder that sits inside an LZMA2 filter chain SHALL be folded into that chain.
+A BCJ coder staged on its own — after LZMA1, after a non-LZMA codec, or alone —
+SHALL run as a raw liblzma chain of that branch filter followed by `FILTER_LZMA2`,
+with its input framed as LZMA2 *uncompressed* chunks; liblzma rejects a raw chain
+whose only filter is a branch filter, and uncompressed chunks supply the required
+trailing compression filter without compressing anything.
+
+The coder's declared unpack size SHALL NOT be passed to the branch filter. It
+determines only whether the stream finished, so a member of 2 GiB or more decodes
+like any other, and a member whose length is not a whole number of the filter's
+blocks SHALL return its trailing partial block.
+
+LZMA1+BCJ folders SHALL still NOT be decoded via a single combined `lzma`
+`FORMAT_RAW` filter chain: liblzma can silently truncate the final BCJ look-ahead
+bytes when LZMA1 lacks an end-of-stream marker (BPO-21872). The reader MUST stage
+LZMA1 (and any non-BCJ `lzma` filters such as Delta) through stdlib `lzma`, then
+apply each BCJ stage separately. BCJ2 (`0x0303011B`) remains unsupported.
+
+#### Scenario: BCJ decode matrix
 
 | Case | Expected |
 | --- | --- |
-| 7-Zip CLI `-m0=BCJ -m1=LZMA` fixture + `pybcj` | Round-trip bytes match; no silent truncation |
-| py7zr `FILTER_X86`+`FILTER_LZMA` fixture + `pybcj` | Round-trip bytes match |
-| Same fixtures without `pybcj` | `PackageNotInstalledError` for `pybcj` / `[recommended]` |
-| LZMA2+BCJ without `pybcj` | Still works in core via stdlib filters |
-
+| BCJ + LZMA2 folder | One shared `lzma` raw filter chain returns original bytes |
+| 7-Zip CLI `-m0=BCJ -m1=LZMA` fixture | Staged LZMA1 then a staged BCJ returns original bytes; no silent truncation |
+| py7zr `FILTER_X86`+`FILTER_LZMA` fixture | Round-trip bytes match |
+| BCJ with PPMd, BZip2, Deflate or Copy | Codec stage then a staged BCJ returns original bytes |
+| Any BCJ folder with `bcj` unimportable | Decodes normally; no `PackageNotInstalledError` |
+| BCJ member of 2 GiB or more | Decodes; no `OverflowError` reaches the caller |
+| IA64 member whose length is not a multiple of 16 | Trailing partial block returned; no `TruncatedError` |

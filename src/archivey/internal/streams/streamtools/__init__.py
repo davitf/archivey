@@ -8,10 +8,18 @@ tooling enforces; concept leaks count too. Do not put archivey types, the error
 hierarchy, or codec internals in the *API* of this package (call-site examples in
 "when to use" comments can stay).
 
+Named exception: ``SlicingStream.nearest_resume_offset`` translates a
+contiguous window into the inner's offset space, and ``ask_resume_offset`` in
+``binaryio`` is the duck-typing helper it uses. That is generic offset
+arithmetic, not the seek-point table — the table stays outside this package.
+The method name is archivey-specific; this may move later if the package is
+lifted out.
+
 Module map:
 
 - :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
 - :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
+  plus ``ask_resume_offset`` (duck-typed resume query; see the named exception above)
 - :mod:`.full_count` — ``FullCountStream`` / ``ensure_full_count_reads`` (source-boundary full-count)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)

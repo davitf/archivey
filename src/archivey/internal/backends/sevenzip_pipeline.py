@@ -11,8 +11,8 @@ Decode order (packed → unpacked)::
 not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
 
 - LZMA2 ± Delta ± BCJ → one stdlib ``lzma`` raw filter chain
-- LZMA1 + BCJ → capped LZMA1 stages + separate ``pybcj`` (BPO-21872 truncation)
-- BCJ alone → ``pybcj`` stages
+- LZMA1 + BCJ → capped LZMA1 stages + separate BCJ stages (BPO-21872 truncation)
+- BCJ alone → BCJ stages
 - BCJ2 (``0x0303011B``) → ``UnsupportedFeatureError`` (never garbage output)
 
 Two phases: :func:`plan_folder` resolves stages (pure — no I/O); then
@@ -32,7 +32,6 @@ from typing import BinaryIO
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
-    PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -50,11 +49,17 @@ from archivey.internal.backends.sevenzip_methods import (
 from archivey.internal.backends.sevenzip_parser import (
     _MAX_NEXT_HEADER_SIZE,
     EncodedHeader,
+    HeaderBlock,
+    PlainHeader,
     SevenZipArchive,
     SevenZipCoder,
     SevenZipFolder,
+    empty_archive,
     encoded_folder_slices,
     folder_is_encrypted,
+    materialize_archive,
+    parse_header_block,
+    read_signature_and_next_header,
 )
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -62,13 +67,6 @@ from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stre
 from archivey.internal.streams.crypto import SevenZipKeyCache, open_aes_decrypt_stream
 from archivey.internal.streams.decompress import BcjFilterStream
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
-from archivey.types import MissingComponent
-
-# pybcj only stages BCJ for LZMA1 folders; LZMA2+BCJ folds the filter into the liblzma
-# chain and needs nothing installed.
-_PYBCJ_REQUIREMENT = MissingComponent(
-    "pybcj", "pip install archivey[recommended]", ("bcj",)
-)
 
 # stdlib exposes no public decoder for a raw LZMA1/LZMA2 property blob → filter dict;
 # py7zr relies on the same private `lzma._decode_filter_properties`. Bind once at import.
@@ -135,9 +133,13 @@ class _LzmaChainStage:
 
 @dataclass
 class _BcjStage:
-    """A single BCJ branch filter staged through pybcj (LZMA1+BCJ / BCJ-alone)."""
+    """A single BCJ branch filter staged on its own (LZMA1+BCJ / BCJ-alone).
 
-    pybcj_attr: str
+    ``lzma_filter_id`` is the liblzma branch-filter id; :class:`BcjDecoder` runs it
+    outside the folder's main chain, over its own LZMA2 framing.
+    """
+
+    lzma_filter_id: int
     unpack_size: int
 
 
@@ -216,7 +218,7 @@ def _plan_lzma_family(
         )
 
     if has_bcj and not has_lzma1 and not has_lzma2:
-        # BCJ alone (or after COPY / Deflate / …): each BCJ is its own pybcj stage.
+        # BCJ alone (or after COPY / Deflate / …): each BCJ is its own stage.
         stages: list[_Stage] = []
         for coder, size in zip(run, unpack_sizes, strict=True):
             if not is_bcj(coder.method):
@@ -230,7 +232,7 @@ def _plan_lzma_family(
     if has_lzma1 and has_bcj:
         # liblzma can silently truncate BCJ look-ahead when LZMA1 lacks EOS
         # (BPO-21872). Stage each stdlib LZMA1 (+ Delta, …) run capped to its output
-        # size, then each BCJ through pybcj — never one combined liblzma chain.
+        # size, then each BCJ separately — never one combined liblzma chain.
         staged: list[_Stage] = []
         index = 0
         while index < len(run):
@@ -258,15 +260,6 @@ def _check_linear_coder_chain(folder: SevenZipFolder) -> None:
         )
 
 
-def _require_pybcj() -> None:
-    try:
-        import bcj  # noqa: F401
-    except ImportError as exc:
-        raise PackageNotInstalledError(
-            _PYBCJ_REQUIREMENT.message("LZMA1+BCJ 7z folders")
-        ) from exc
-
-
 def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
     if coder.properties is None:
         return {"id": filter_id}
@@ -289,7 +282,7 @@ def _lzma_filter(coder: SevenZipCoder) -> dict:
         if len(coder.properties) != 1:
             raise CorruptionError("Malformed 7z Delta coder properties")
         return {"id": lzma.FILTER_DELTA, "dist": coder.properties[0] + 1}
-    if method.lzma_filter_id is not None and method.pybcj_attr is not None:
+    if method.lzma_filter_id is not None and is_bcj(coder.method):
         return {"id": method.lzma_filter_id}
     raise UnsupportedFeatureError(
         f"Unsupported 7z LZMA-family coder {_method_hex(coder.method)}"
@@ -316,11 +309,11 @@ def _open_aes_stage(
 
 def _bcj_stage(coder: SevenZipCoder, unpack_size: int) -> _BcjStage:
     method = require(coder.method)
-    if method.pybcj_attr is None:
+    if method.lzma_filter_id is None or not is_bcj(coder.method):
         raise UnsupportedFeatureError(
             f"Unsupported 7z BCJ coder {_method_hex(coder.method)}"
         )
-    return _BcjStage(method.pybcj_attr, unpack_size)
+    return _BcjStage(method.lzma_filter_id, unpack_size)
 
 
 def _lzma_chain_stage(
@@ -383,7 +376,7 @@ def _execute_stage(
         return out
     return BcjFilterStream(
         stream,
-        decoder_attr=stage.pybcj_attr,
+        lzma_filter_id=stage.lzma_filter_id,
         unpack_size=stage.unpack_size,
         seekable=seekable,
         owns_inner=(stage_index > 0),
@@ -403,7 +396,7 @@ def open_folder_pipeline(
     """Compose a folder's coder chain into a single pull stream (plan, then fold).
 
     ``source`` is a borrowed pack view. Each stage wraps the previous output.
-    Only a pybcj ``_BcjStage`` takes ``owns_inner``: True when it is not first
+    Only a ``_BcjStage`` takes ``owns_inner``: True when it is not first
     (``stage_index > 0``), so it closes the previous stage's output — the LZMA1
     cap slice, or an ``AesDecryptStream`` on ``[AES, BCJ]``. Other follow-on
     stages do not close their input: ``[AES, LZMA]`` (the common encrypted
@@ -414,10 +407,6 @@ def open_folder_pipeline(
     """
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
     stages = plan_folder(folder)
-    # Fail fast before opening any stream if a pybcj-staged BCJ filter is needed but
-    # absent (LZMA2+BCJ folds BCJ into the liblzma chain and emits no _BcjStage).
-    if any(isinstance(stage, _BcjStage) for stage in stages):
-        _require_pybcj()
     stream: BinaryIO = source
     for i, stage in enumerate(stages):
         stream = _execute_stage(
@@ -476,17 +465,23 @@ def decode_encoded_header(
 ) -> bytes:
     """Materialize an ENCODED_HEADER's packed folders to plaintext header bytes."""
     decoded = bytearray()
+    claimed = 0
     for (
         folder,
         absolute_offset,
         compressed_size,
         uncompressed_size,
     ) in encoded_folder_slices(encoded):
-        # Hostile archives can claim a multi-EiB folder unpack size. Cap before
-        # ``read_exact`` / codec buffers allocate (Atheris: raw MemoryError).
-        if uncompressed_size > _MAX_NEXT_HEADER_SIZE:
+        # Hostile archives can claim a multi-EiB folder unpack size. Cap the
+        # running total before ``read_exact`` / codec buffers allocate
+        # (Atheris: raw MemoryError). Per-folder is redundant: unpack sizes
+        # are non-negative, so a single folder over the cap fails the total
+        # on the same iteration. Two COPY folders at 40 MiB concatenate past
+        # the 64 MiB next-header cap (S2-F2) — that is why the total matters.
+        claimed += uncompressed_size
+        if claimed > _MAX_NEXT_HEADER_SIZE:
             raise CorruptionError(
-                f"Encoded 7z header unpack size {uncompressed_size} exceeds the "
+                f"Encoded 7z header unpack size {claimed} exceeds the "
                 f"{_MAX_NEXT_HEADER_SIZE}-byte parser limit"
             )
         source = SlicingStream(archive_fp, absolute_offset, compressed_size)
@@ -510,6 +505,28 @@ def encoded_header_needs_password(encoded: EncodedHeader) -> bool:
     return any(folder_is_encrypted(folder) for folder in folders)
 
 
+def unwrap_encoded_header(
+    block: HeaderBlock,
+    decode: Callable[[EncodedHeader], bytes],
+    *,
+    max_members: int | None = None,
+) -> tuple[PlainHeader, bool]:
+    """Decode at most one encoded-header layer. 7-Zip writes one.
+
+    Returns the plain header and whether that layer used 7zAES.
+    """
+    header_encrypted = False
+    if isinstance(block, EncodedHeader):
+        header_encrypted = encoded_header_needs_password(block)
+        decoded = decode(block)
+        block = parse_header_block(decoded, max_members=max_members)
+        if isinstance(block, EncodedHeader):
+            # A second EncodedHeader is hostile (COPY payload that is itself; O14).
+            raise CorruptionError("Encoded 7z header decoded to another encoded header")
+    assert isinstance(block, PlainHeader)
+    return block, header_encrypted
+
+
 def parse_sevenzip_archive(
     fp: BinaryIO,
     *,
@@ -517,39 +534,32 @@ def parse_sevenzip_archive(
     key_cache: SevenZipKeyCache | None = None,
     stream_config: StreamConfig | None = None,
     collector: DiagnosticCollector | None = None,
+    max_members: int | None = None,
 ) -> SevenZipArchive:
     """Parse a 7z archive end-to-end (plain or encoded header).
 
     Used by fuzz harnesses and tests. The reader uses the same two-phase flow with
     password-candidate prompting instead of a single ``password``.
+    ``max_members`` is omitted by fuzz helpers (header-size still bounds bombs).
     """
-    from archivey.internal.backends.sevenzip_parser import (
-        PlainHeader,
-        empty_archive,
-        materialize_archive,
-        parse_header_block,
-        read_signature_and_next_header,
-    )
-
     cache = key_cache if key_cache is not None else SevenZipKeyCache()
     signature = read_signature_and_next_header(fp)
     if not signature.header_data:
         return empty_archive(signature)
 
-    block = parse_header_block(signature.header_data)
-    header_encrypted = False
-    while isinstance(block, EncodedHeader):
-        header_encrypted = header_encrypted or encoded_header_needs_password(block)
-        decoded = decode_encoded_header(
+    block = parse_header_block(signature.header_data, max_members=max_members)
+    block, header_encrypted = unwrap_encoded_header(
+        block,
+        lambda encoded: decode_encoded_header(
             fp,
-            block,
+            encoded,
             password=password,
             key_cache=cache,
             stream_config=stream_config,
             collector=collector,
-        )
-        block = parse_header_block(decoded)
-    assert isinstance(block, PlainHeader)
+        ),
+        max_members=max_members,
+    )
     # O8: encrypted headers never legitimately decode to zero file records.
     # Without this, ~0.3% of wrong-password py7zr salts slip through as empty.
     if header_encrypted and not block.files:
