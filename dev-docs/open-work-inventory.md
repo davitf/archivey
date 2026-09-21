@@ -124,12 +124,14 @@ and cost nothing.
 
 **There is now a net.** [`.github/workflows/review-hub-watchdog.yml`](../.github/workflows/review-hub-watchdog.yml)
 reopens the hub when it finds it closed and comments saying which surface did it, reading the
-last `closed` event's `commit_id` exactly as the diagnosis above does. It runs on every pull
-request close, which is the only moment a closing keyword can fire, with a six-hourly schedule
-behind it for a close by hand or an event GitHub drops. It is recovery rather than prevention:
-a pre-merge check cannot see the squash body, because that body is editable at merge time and
-what GitHub parses is what was actually merged. The escape hatch is the `hub:closed-on-purpose`
-label, which the job honours.
+last `closed` event's `commit_id` exactly as the diagnosis above does. It runs on every push to
+`main`, which is what a closing keyword needs to fire whether it arrives as a squash, a merge
+commit or a commit pushed straight to the branch, with a six-hourly schedule behind it for a
+close by hand or an event GitHub drops. It is recovery rather than prevention: a pull request
+body could be checked before the merge, but a squash body could not — it is editable at merge
+time and what GitHub parses is what was actually merged — so a pre-merge check would cover one
+surface and miss the other. The escape hatch is the `hub:closed-on-purpose` label, which the
+job honours and which was created on the repository when this landed.
 
 **#382 and #380 were two halves of one sweep and they collided; #380 merged on 2026-09-21 and
 resolved it.** Both refuse or coerce wrong-typed public arguments — #382 the object and numeric

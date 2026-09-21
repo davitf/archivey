@@ -457,8 +457,10 @@ Two things about this repo make the handoff sharper than it looks:
   red. [`dev-docs/open-work-inventory.md`](dev-docs/open-work-inventory.md) has both
   incidents. There is a net under this —
   [`review-hub-watchdog.yml`](.github/workflows/review-hub-watchdog.yml) reopens the hub
-  and says which surface closed it — but it is recovery, not prevention: neither surface
-  can be checked before the merge, because the squash body can be edited at merge time.
+  and says which surface closed it — but it is recovery, not prevention. A pull request
+  body could be checked before the merge; a squash body could not, because whoever merges
+  can edit it at merge time and GitHub parses what was actually merged. So a pre-merge
+  check would cover one surface and miss the other, and the watchdog covers both after.
 - **Escalate one decision packet at a time.** Shape and fields:
   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet (canonical).
   Do not dump the full finding list into chat — that stays on the PR. A batched list of

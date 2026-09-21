@@ -13,29 +13,33 @@
 # unaffected, nothing goes red), and neither closure was noticed from GitHub — both were
 # found by hand, hours apart.
 #
-# What it does NOT do: stop the close. Neither surface can be checked before the fact,
-# because whoever merges can edit the squash body at merge time and GitHub parses what
-# was actually merged. So this is recovery, not prevention: it puts the hub back and says
-# which surface did it.
+# What it does NOT do: stop the close. The pull request body *could* be checked before the
+# merge — it is readable from `github.event.pull_request.body`, and it is the surface that
+# caused the second closure — but the squash body could not, because whoever merges can
+# edit it at merge time and GitHub parses what was actually merged. So a pre-merge check
+# would cover one surface and miss the other. This covers both, after the fact: it puts
+# the hub back and says which surface did it.
 name: Review hub watchdog
 
 on:
-  # The moment the risk materialises: a closing keyword only fires when the pull request
-  # carrying it merges. Note this fires for the *merging* pull request, not for the hub —
-  # the hub's own `closed` event would look for this file on `empty-base`, an orphan
-  # branch with no workflows, so it would run nothing.
-  pull_request:
-    types: [closed]
-  # Backstop, for what that event does not cover: a fork's pull request (whose token is
-  # read-only), a close by hand, or an event GitHub drops.
+  # Every push to the default branch, which is what a closing keyword actually needs to
+  # fire — whether it arrives as a squash, a merge commit, a rebase, or a commit pushed
+  # straight to `main`. `pull_request: [closed]` was the obvious trigger and is the wrong
+  # one twice over: it fires for unmerged closes, which cannot close the hub at all, and
+  # it misses a direct push, which can and is how the first closure of all happened.
+  push:
+    branches: [main]
+  # Backstop, for what a push does not cover: a close by hand, and an event GitHub drops.
   schedule:
     - cron: "17 */6 * * *"
   workflow_dispatch:
 
-# The timeline that says *how* the hub closed is the issues API, not the pull-requests
-# one, so both scopes are needed.
+# `pull-requests: write` is what reopens the hub and posts the comment: `gh pr comment`
+# goes through `/issues/{n}/comments`, but a pull request's comments are governed by the
+# pull-requests scope. `issues: read` is separate and genuinely needed — the timeline that
+# says *how* the hub closed is only on the issues API.
 permissions:
-  issues: write
+  issues: read
   pull-requests: write
 
 concurrency:
@@ -56,11 +60,11 @@ jobs:
           set -euo pipefail
           repo="$GITHUB_REPOSITORY"
 
-          # A merge and the close it causes are not one atomic event, and the close can
-          # land after the merging pull request's own `closed` webhook. Give it a minute
-          # before believing an OPEN reading on that trigger.
+          # A push and the close it causes are not one atomic event, and the close can
+          # land after the push webhook. Give it a minute before believing an OPEN
+          # reading on that trigger.
           attempts=1
-          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then attempts=6; fi
+          if [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then attempts=6; fi
 
           state=""
           for i in $(seq 1 "$attempts"); do
@@ -92,11 +96,16 @@ jobs:
           # commit; one driven by a merged pull request's body carries no commit at all.
           # That is the only way to tell the two apart after the fact, and it is what the
           # second incident turned on.
+          #
+          # The filter emits one line per `closed` event and `tail` takes the newest,
+          # rather than `| last` inside the jq program: `--paginate` runs `--jq` once per
+          # page, so a program ending in `last` returns one answer per page and the hub's
+          # timeline is six pages.
           commit=$(gh api "repos/$repo/issues/$HUB/timeline?per_page=100" --paginate \
             -H "Accept: application/vnd.github+json" \
-            --jq '[.[] | select(.event == "closed")] | last | .commit_id // "none"')
+            --jq '.[] | select(.event == "closed") | .commit_id // "none"' | tail -n 1)
 
-          case "$commit" in
+          case "${commit:-none}" in
             none|null|"") surface="a merged pull request's **body** (its \`closed\` event carries no commit)" ;;
             *)            surface="a **commit message**, \`$commit\`" ;;
           esac
@@ -105,9 +114,11 @@ jobs:
 
           workflow_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/.github/workflows/review-hub-watchdog.yml"
 
-          # Written to a file rather than inlined: an indented heredoc would indent every
-          # line of the body, and four spaces of indent is a Markdown code block.
-          cat > /tmp/hub-reopened.md <<EOF
+          # Written to a file because the body is long and multi-paragraph, and
+          # `--body-file` keeps it out of the shell's quoting. YAML's block scalar has
+          # already stripped this block's common indentation, so the heredoc body and its
+          # terminator reach bash at column 0 and any indentation below is the author's.
+          cat > "$RUNNER_TEMP/hub-reopened.md" <<EOF
           Reopened automatically. This pull request is the review hub, and it has to stay open.
 
           It was closed by $surface.
@@ -122,10 +133,6 @@ jobs:
           _Posted by [\`review-hub-watchdog.yml\`]($workflow_url)._
           EOF
 
-          # Strip the indentation the heredoc kept. No line of that body starts with
-          # meaningful whitespace, so this is safe and keeps the script readable.
-          sed -i 's/^[[:space:]]*//' /tmp/hub-reopened.md
-
-          gh pr comment "$HUB" --repo "$repo" --body-file /tmp/hub-reopened.md
+          gh pr comment "$HUB" --repo "$repo" --body-file "$RUNNER_TEMP/hub-reopened.md"
 
           echo "Reopened hub #$HUB, closed by $surface." >> "$GITHUB_STEP_SUMMARY"
