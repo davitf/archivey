@@ -432,6 +432,16 @@ def read_within_reach(
     bytes than the header promised and raises its own error on the spot, which the
     backend translates; the alternative is a ``MemoryError`` from outside the
     ``ArchiveyError`` hierarchy, or a multi-gigabyte allocation that succeeds.
+
+    What ``remaining`` promises is therefore stricter than what a cost estimate needs.
+    Everywhere a source's length was consulted before, a wrong answer degraded a
+    guess — bomb accounting, a cost signal, whether a cheap path was available. Here a
+    length that *understates* the stream silently clamps a legitimate read, and the
+    archive surfaces as truncated rather than as a bad length. Pass ``None`` for
+    anything short of a fact: :func:`source_byte_size`'s probe 2 trusts any integer
+    ``size`` attribute a source carries (the fsspec convention, duck-typed and
+    unverified), so a caller-supplied stream is the one population with no floor under
+    it. Stepping an unknown length costs a join copy; guessing one costs correctness.
     """
     if size <= 0:
         # Negative is read-to-EOF, which allocates as the data arrives; zero must not
