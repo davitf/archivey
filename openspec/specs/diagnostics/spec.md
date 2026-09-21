@@ -16,6 +16,7 @@ detection, readers, streams, and extraction.
 | `access-mode-and-cost` | Runtime events must not mutate `CostReceipt` |
 | `logging` | WARNING projection; handlers run unlocked |
 | `reader-concurrency` | Callbacks / providers hold no Archivey locks |
+
 ## Requirements
 
 ### Requirement: Immutable diagnostic values with stable codes and safe typed context
@@ -46,6 +47,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker`, `expected_bytes`, `observed_bytes`, `observed_kind` |
 | `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker="zeros_to_eof"`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
 | `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field`, `source`, `value_repr` |
+| `MEMBER_HEADER_RECORD_SKIPPED` | `MemberHeaderRecordContext`: `kind="member_header_record"`, `archive_name`, `member_name`, `member_id`, `record`, `record_id`, `reason`, `list_truncated` |
 | `SYMLINK_TARGET_UNAVAILABLE` | `SymlinkTargetContext`: `kind="symlink_target"`, `archive_name`, `member_name`, `member_id`, `reason` |
 | `DIGEST_UNVERIFIABLE` | `DigestContext`: `kind="digest"`, `archive_name`, `member_name`, `member_id`, `algorithm`, `reason` |
 | `SEEK_INDEX_DEGRADED` | `SeekIndexContext`: `kind="seek_index"`, `archive_name`, `member_name`, `member_id`, `codec`, `scan`, `error_type` |
@@ -108,6 +110,18 @@ and cross-run id stability are not promised.
 | Probe + `.br` (`PROBABLE`) read raises | No `PROBE_FORMAT_UNCONFIRMED` — the format was corroborated, and corroboration is still what matters |
 | Probe hit upgraded to `TAR_*` by the inner-TAR probe, read raises | No `PROBE_FORMAT_UNCONFIRMED` — the upgrade is independent corroboration |
 | Probe-only read succeeds | No diagnostic |
+
+#### Scenario: A malformed optional member-header record is reported, not raised
+
+- **WHEN** a backend drops an optional metadata record inside a member header because it
+  could not be parsed, and lists the member without it
+- **THEN** it SHALL emit `MEMBER_HEADER_RECORD_SKIPPED` with `MemberHeaderRecordContext`,
+  attached to that member
+- **AND** `record` SHALL name the record as the format names it, and `record_id` SHALL
+  carry the format's numeric type where it has one, so a record the backend cannot name is
+  still identifiable
+- **AND** the field the record would have populated SHALL be absent rather than partially
+  written: a dropped record never changes a value, it only fails to set one
 
 ### Requirement: Exact bounded diagnostic summaries
 
@@ -373,7 +387,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `MEMBER_TIMESTAMP_INVALID`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED` |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED` |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
@@ -416,6 +430,15 @@ remains a breaking change.
 | --- | --- |
 | `PROBE_FORMAT_UNCONFIRMED in ARCHIVE_INTEGRITY_CODES` | False |
 | `DiagnosticPolicy.strict()` disposition for that code | COLLECT (via default) |
+
+#### Scenario: Strictness keeps the refuse-the-archive behaviour a lenient parse gives up
+
+- **GIVEN** a backend that drops a malformed optional member-header record and lists the
+  member, emitting `MEMBER_HEADER_RECORD_SKIPPED`
+- **WHEN** the caller passes `DiagnosticPolicy.strict()`
+- **THEN** the listing SHALL raise, because the code is in `ARCHIVE_INTEGRITY_CODES`
+- **AND** this is why a backend MAY become lenient about such a record without removing
+  the strict outcome: leniency moves the default, the policy keeps the choice
 
 ### Requirement: Diagnostic messages are inert for terminal display
 

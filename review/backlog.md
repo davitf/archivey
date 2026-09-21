@@ -37,6 +37,13 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#384 K17 — ZIP (and 7z) junction detection, `extra["is_junction"]`.**
+  **Maintainer decision (davitf, 2026-09-21, [K17](https://github.com/davitf/archivey/pull/384#discussion_r4058819322)):** option B — implement ZIP junction detection; the `archive-data-model` matrix row at `:79` stands. Not this typing PR: the published register ("directory, RAR") is true of the tree today and moves when the producers do. Tracked internally.
+
+  Writers today: `directory_reader.py:253` (`os.DirEntry.is_junction()`, Windows / 3.12+) and `rar_reader.py:273` (RAR5 `file_redir`). `zip_reader.py` never sets the key. 7z already maps `FILE_ATTRIBUTE_REPARSE_POINT` (`0x400`) to `MemberType.SYMLINK` (`sevenzip_reader.py:585`); what is missing is the flag, not the type. That bit is shared by a Windows symlink and a junction; the tag that distinguishes them (`IO_REPARSE_TAG_MOUNT_POINT` `0xA0000003` vs `IO_REPARSE_TAG_SYMLINK` `0xA000000C`) lives in the reparse buffer 7-Zip stores as member *content*. So for 7z — and for ZIP if Windows tools store it the same way — `is_junction` is a listing-time flag sourced from a read-time stream. That design question, and the fixtures, belong on the implementing change. Temporary Windows CI to produce both ZIP and 7z junction fixtures is allowed.
+
+  Handbook: [`formats/rar.md`](../dev-docs/formats/rar.md) already documents the RAR path; ZIP/7z notes land with that PR (`formats/zip.md`; create `formats/7z.md` with the first real 7z change that needs it).
+
 - **#353 F18 — 7z parser helpers still default `max_members=None`.**
   Out of scope for the RAR PR. `sevenzip_parser.py` public `parse_header_block`
   and internals (`_parse_plain_header`, `_read_streams_info`, `_read_unpack_info`,

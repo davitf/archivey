@@ -73,6 +73,7 @@ class DiagnosticCode(str, Enum):
     ARCHIVE_EOF_MARKER_MISSING = "archive_eof_marker_missing"
     ARCHIVE_TRAILING_DATA = "archive_trailing_data"
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
+    MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
@@ -250,6 +251,32 @@ class MemberTimestampContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class MemberHeaderRecordContext(_JsonSafeContext):
+    """An optional metadata record inside a member header was unreadable.
+
+    The record was dropped and the member listed without whatever it carried, so
+    the field it would have populated is absent rather than wrong. ``record`` names
+    the record as the format calls it (a RAR5 extra area's ``hash``, ``time``,
+    ``redir``, ``version``); ``record_id`` is its numeric type where the format has
+    one, so an unnamed record is still identifiable.
+
+    A member header is attacker-sized, so how many records one member may drop is
+    capped and reaching the cap stops the header being read. ``list_truncated`` is
+    true on exactly one diagnostic per member, the one reporting that; ``record``
+    names nothing on that one. Everywhere else it is false.
+    """
+
+    kind: Literal["member_header_record"] = "member_header_record"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    record: str = ""
+    record_id: int | None = None
+    reason: str = ""
+    list_truncated: bool = False
+
+
+@dataclass(frozen=True)
 class SymlinkTargetContext(_JsonSafeContext):
     """Symlink/hardlink target could not be resolved inside the archive."""
 
@@ -310,6 +337,7 @@ DiagnosticContext = (
     | ScanRaceContext
     | ArchiveEofContext
     | MemberTimestampContext
+    | MemberHeaderRecordContext
     | SymlinkTargetContext
     | DigestContext
     | SeekIndexContext
@@ -333,6 +361,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: "archive_eof",
         DiagnosticCode.ARCHIVE_TRAILING_DATA: "archive_eof",
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID: "member_timestamp",
+        DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
@@ -353,6 +382,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+        DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
         DiagnosticCode.DIGEST_UNVERIFIABLE,
         DiagnosticCode.SEEK_INDEX_DEGRADED,

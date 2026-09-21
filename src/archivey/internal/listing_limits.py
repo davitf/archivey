@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 from archivey.config import ListingLimits
 from archivey.exceptions import ResourceLimitError
@@ -21,7 +21,7 @@ def _str_retained_bytes(value: str) -> int:
     return n if value.isascii() else n * 4
 
 
-def _extra_bytes(extra: dict[str, Any]) -> int:
+def _extra_bytes(extra: Mapping[str, object]) -> int:
     """Sum retained ``str``/``bytes`` lengths in ``extra`` (one-level nested dicts)."""
     total = 0
     for value in extra.values():

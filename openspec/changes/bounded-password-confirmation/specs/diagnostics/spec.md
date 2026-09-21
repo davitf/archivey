@@ -128,6 +128,18 @@ caller already knows, which the admission clause refuses.
 | Encrypted member read to EOF | No diagnostic; the digest decides |
 | Unencrypted member, stream closed before EOF | No diagnostic |
 
+#### Scenario: A malformed optional member-header record is reported, not raised
+
+- **WHEN** a backend drops an optional metadata record inside a member header because it
+  could not be parsed, and lists the member without it
+- **THEN** it SHALL emit `MEMBER_HEADER_RECORD_SKIPPED` with `MemberHeaderRecordContext`,
+  attached to that member
+- **AND** `record` SHALL name the record as the format names it, and `record_id` SHALL
+  carry the format's numeric type where it has one, so a record the backend cannot name is
+  still identifiable
+- **AND** the field the record would have populated SHALL be absent rather than partially
+  written: a dropped record never changes a value, it only fails to set one
+
 ### Requirement: Named diagnostic policy presets and taxonomy-growth contract
 
 The system SHALL provide named `DiagnosticPolicy` constructors so a caller can express
@@ -195,3 +207,12 @@ remains a breaking change.
 | --- | --- |
 | `PROBE_FORMAT_UNCONFIRMED in ARCHIVE_INTEGRITY_CODES` | False |
 | `DiagnosticPolicy.strict()` disposition for that code | COLLECT (via default) |
+
+#### Scenario: Strictness keeps the refuse-the-archive behaviour a lenient parse gives up
+
+- **GIVEN** a backend that drops a malformed optional member-header record and lists the
+  member, emitting `MEMBER_HEADER_RECORD_SKIPPED`
+- **WHEN** the caller passes `DiagnosticPolicy.strict()`
+- **THEN** the listing SHALL raise, because the code is in `ARCHIVE_INTEGRITY_CODES`
+- **AND** this is why a backend MAY become lenient about such a record without removing
+  the strict outcome: leniency moves the default, the policy keeps the choice

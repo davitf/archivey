@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterable
 from typing import cast
 
+from archivey.exceptions import ArchiveyUsageError
+from archivey.internal.arg_checks import describe_value
 from archivey.types import ArchiveMember
 
 
@@ -18,6 +20,28 @@ def normalize_member_selector(
         # ty cannot exclude a callable Collection from this union; pyrefly's
         # redundant-cast warning is not the gate.
         return cast("Callable[[ArchiveMember], bool]", members)
+    if isinstance(members, (str, bytes)):
+        # A str is a Collection of one-character strings, so `members="notes.txt"`
+        # selected the set {"n", "o", "t", "e", "s", ".", "x"} — no member matched,
+        # and the call reported a clean extraction of nothing. Refused rather than
+        # wrapped: guessing that a string meant [string] would make the plural
+        # parameter accept a singular, and the caller is one bracket from correct.
+        # bytes gets no list-wrapping advice: Pass [b'notes.txt'] is itself a
+        # usage error (names are str). The str branch is the common slip.
+        if isinstance(members, bytes):
+            raise ArchiveyUsageError(
+                f"members= takes names (str) or ArchiveMembers, but got "
+                f"{describe_value(members)}."
+            )
+        raise ArchiveyUsageError(
+            f"members= takes a collection of names or members, but got "
+            f"{describe_value(members)}. Pass [{members!r}] to select one member."
+        )
+    if not isinstance(members, Iterable):
+        raise ArchiveyUsageError(
+            f"members= takes a collection of names or members, a predicate, or None, "
+            f"but got {describe_value(members)}."
+        )
     names: set[str] = set()
     identities: set[tuple[str, int]] = set()
     for entry in members:
@@ -27,8 +51,17 @@ def normalize_member_selector(
             # it can't correspond to any real member, so it silently matches nothing.
             if entry._archive_id is not None and entry._member_id is not None:
                 identities.add((entry._archive_id, entry._member_id))
-        else:
+        elif isinstance(entry, str):
             names.add(entry)
+        else:
+            # Anything else used to land in ``names``, where it could never equal a
+            # member name, so the entry was dropped and the call still reported
+            # success. A selector that silently selects nothing is the one outcome
+            # a caller cannot distinguish from an archive that has nothing.
+            raise ArchiveyUsageError(
+                f"members= takes names (str) or ArchiveMembers, but one entry was "
+                f"{describe_value(entry)}."
+            )
 
     def predicate(member: ArchiveMember) -> bool:
         if member.name in names:

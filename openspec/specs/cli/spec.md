@@ -248,7 +248,7 @@ install hints when support is not full.
 
 The system SHALL accept `--salvage` on `list`, `test`, and `extract` (and on
 future `hash` / `convert` when those verbs exist) but MUST NOT implement salvage
-semantics in this change. Passing `--salvage` SHALL fail fast with a clear
+semantics. Passing `--salvage` SHALL fail fast with a clear
 not-implemented message so callers cannot assume best-effort reads.
 
 #### Scenario: salvage reserved

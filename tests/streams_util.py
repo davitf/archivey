@@ -123,8 +123,9 @@ class ShortReadNonSeekable(ShortReadBytesIO):
     which is why the non-seekable half of the source-boundary contract went untested.
 
     ``tell()`` still answers, matching :class:`NonSeekableBytesIO`:
-    ``ConcatenatedFile`` probes it before ``seek()``, so a double that raised on
-    both would test a different refusal path.
+    ``ConcatenatedFile`` probes ``tell()`` then ``seek()`` on ``BinaryIO``
+    volumes, so a double that raised on both would test a different refusal
+    path. Path volumes are sized with ``stat`` and are not probed.
     """
 
     def __init__(
