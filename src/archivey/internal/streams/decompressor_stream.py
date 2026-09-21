@@ -55,8 +55,8 @@ class SeekPoint:
     # codec re-emits an equal-valued token for the same offset
     # (``_resolve_same_offset_collision``). Deliberately Any: object breaks
     # the assignment of a non-None value to ``_XzBlockBounds`` in
-    # ``XzDecoder.from_point`` (xz.py:598/:605); one Any here vs two casts
-    # there.
+    # ``XzDecoder.from_point`` — the start block, and the list it feeds to
+    # ``_XzBlockChain``; one Any here vs two casts there.
     state: Any = field(default=None, compare=False)
 
 
@@ -212,8 +212,13 @@ _B = TypeVar("_B", bound=_IndexBlock)
 
 
 class _ScanFn(Protocol[_B]):
-    # First two args are positional-only so a scanner can name the stream
-    # ``stream`` (both call sites do) without matching this module's ``inner``.
+    """The backward index/trailer scan ``build_index_backwards`` calls.
+
+    Parameter names in a callback protocol bind every implementation, so the
+    first two are positional-only: a scanner may call them whatever it likes.
+    This module only ever passes them positionally.
+    """
+
     def __call__(
         self,
         stream: BinaryIO,
