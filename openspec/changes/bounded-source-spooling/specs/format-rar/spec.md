@@ -7,11 +7,14 @@
 The system SHALL serve non-solid random reads by invoking `unrar` for the target
 member **with that member's path as the sole path argument**, doing O(member_size)
 data work. For solid random reads, the system SHALL decode from archive start to
-the target member (named `unrar p … <member>`) or extract once with `unrar x`
-into an explicitly managed temporary directory and serve later reads from disk;
-that directory is cleaned up on reader close. `extract_all()` MAY use one
-`unrar x` to a temporary directory. Any temp materialization SHALL be a declared
-RAR strategy, not an implicit in-memory buffer.
+the target member (named `unrar p … <member>`). Each such read is its own
+decode: the reader SHALL NOT amortize repeated solid reads by extracting members
+into a temporary directory and serving later reads from disk. `extract_all()`
+SHALL be served by the same `stream_members()` pass as any other caller — one
+unnamed `unrar p` pipe on a solid archive, per-member named opens on a non-solid
+one. Any temp materialization SHALL be a declared RAR strategy, not an implicit
+in-memory buffer; the one the reader declares is copying a non-path archive
+*source* to disk so `unrar` can seek it.
 
 **Materializing the archive source is subject to the configured spool limit**
 (`access-mode-and-cost`) and SHALL NOT be exempt from it on the grounds that the source
@@ -45,8 +48,8 @@ desynchronize sizes).
 | Stream source, spool limit set to none, compressed member | Refused; nothing is written |
 | Stream source, second compressed member after the first | No second spool; materialization is once per reader |
 | Multi-volume stream source | One spool set; the limit applies to the total across volumes |
-| Repeated random opens in solid RAR | Backend may use one tempdir extraction and remove it on close |
-| `extract_all()` | Backend may use one-shot `unrar x` |
+| Repeated random opens in solid RAR | Each open is its own `unrar p` decode from archive start; no tempdir cache, and the re-decode is reported as `RewindWarning.min_redecode_bytes` |
+| `extract_all()` | The same `stream_members()` pass as any other caller; no `unrar x` |
 | Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
 | Single non-path stream, at open | `ar.cost.notes` warns a compressed read will copy to disk, naming the limit that bounds it |
 | Ordered stream volumes, at open | `ar.cost.notes` states volumes were copied at open |

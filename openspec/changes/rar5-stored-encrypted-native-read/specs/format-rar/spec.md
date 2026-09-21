@@ -116,11 +116,14 @@ capability’s initial implementation. Hardlink / file-copy members are never na
 The system SHALL serve non-solid random reads by invoking `unrar` for the target
 member **with that member's path as the sole path argument**, doing O(member_size)
 data work. For solid random reads, the system SHALL decode from archive start to
-the target member (named `unrar p … <member>`) or extract once with `unrar x`
-into an explicitly managed temporary directory and serve later reads from disk;
-that directory is cleaned up on reader close. `extract_all()` MAY use one
-`unrar x` to a temporary directory. Any temp materialization SHALL be a declared
-RAR strategy, not an implicit in-memory buffer. When the archive is opened from a
+the target member (named `unrar p … <member>`). Each such read is its own
+decode: the reader SHALL NOT amortize repeated solid reads by extracting members
+into a temporary directory and serving later reads from disk. `extract_all()`
+SHALL be served by the same `stream_members()` pass as any other caller — one
+unnamed `unrar p` pipe on a solid archive, per-member named opens on a non-solid
+one. Any temp materialization SHALL be a declared RAR strategy, not an implicit
+in-memory buffer; the one the reader declares is copying a non-path archive
+*source* to disk so `unrar` can seek it. When the archive is opened from a
 non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
 caveat **at open** (path sources SHALL NOT): a single stream source SHALL warn
 that reading **a member that requires the RARLAB spawn** will copy the whole archive to
@@ -142,8 +145,8 @@ too.
 | Case | Expected |
 | --- | --- |
 | Random `open()` in non-solid RAR | `unrar p … <archive> <member>`; work is O(member_size) |
-| Repeated random opens in solid RAR | Backend may use one tempdir extraction and remove it on close |
-| `extract_all()` | Backend may use one-shot `unrar x` |
+| Repeated random opens in solid RAR | Each open is its own `unrar p` decode from archive start; no tempdir cache, and the re-decode is reported as `RewindWarning.min_redecode_bytes` |
+| `extract_all()` | The same `stream_members()` pass as any other caller; no `unrar x` |
 | Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
 | Single non-path stream, at open | `ar.cost.notes` warns a spawned read will copy to disk |
 | Ordered stream volumes, at open | `ar.cost.notes` states volumes were copied at open |
