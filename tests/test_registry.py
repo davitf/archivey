@@ -8,9 +8,11 @@ Stage 4 with the real ISO backend.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import io
 import operator
+import types
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -452,3 +454,97 @@ def test_stream_capability_is_ordered_weakest_first() -> None:
 def test_stream_capability_does_not_compare_against_foreign_types() -> None:
     with pytest.raises(TypeError):
         operator.lt(StreamCapability.SEEKABLE, "seekable")
+
+
+# ---------------------------------------------------------------------------
+# Optional-dependency lookups are memoized
+# ---------------------------------------------------------------------------
+
+
+def test_missing_optional_dependency_is_looked_up_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed import is not repeated: Python has no negative import cache.
+
+    The present-module case is a cheap ``sys.modules`` hit either way; the missing one
+    re-walks every ``sys.path`` entry, and it lands on the ``open_archive`` path through
+    ``reader_for_format``. Asserting the call count rather than a timing is what keeps
+    this from silently regressing when someone inlines the lookup.
+    """
+    from archivey.internal import registry as registry_module
+
+    calls: list[str] = []
+    real_import = importlib.import_module
+
+    def counting_import(name: str, *args: object, **kwargs: object) -> object:
+        calls.append(name)
+        return real_import(name, *args, **kwargs)  # pyrefly: ignore[bad-argument-type]
+
+    registry_module._optional.cache_clear()
+    monkeypatch.setattr(registry_module.importlib, "import_module", counting_import)
+    try:
+        missing = "a_package_that_does_not_exist_xyz"
+        assert registry_module._optional(missing) is None
+        assert registry_module._optional(missing) is None
+        assert registry_module._optional(missing) is None
+        assert calls.count(missing) == 1
+
+        present = registry_module._optional("io")
+        assert present is not None
+        assert registry_module._optional("io") is present
+        assert calls.count("io") == 1
+    finally:
+        registry_module._optional.cache_clear()
+
+
+def test_availability_of_a_missing_extra_does_not_reimport_per_call(
+    registry: BackendRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``list_supported_formats()`` over N formats must not pay N failed imports."""
+    from archivey.internal import registry as registry_module
+
+    calls: list[str] = []
+    real_import = importlib.import_module
+
+    def counting_import(name: str, *args: object, **kwargs: object) -> object:
+        calls.append(name)
+        return real_import(name, *args, **kwargs)  # pyrefly: ignore[bad-argument-type]
+
+    registry_module._optional.cache_clear()
+    monkeypatch.setattr(registry_module.importlib, "import_module", counting_import)
+    try:
+        for _ in range(5):
+            registry.list_supported_formats()
+            registry.format_availability(ArchiveFormat.ISO)
+        assert calls.count("a_package_that_does_not_exist_xyz") == 1
+    finally:
+        registry_module._optional.cache_clear()
+
+
+def test_cache_clear_picks_up_a_dependency_installed_later(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented escape hatch for the one thing memoizing gives up."""
+    from archivey.internal import registry as registry_module
+
+    name = "a_package_that_does_not_exist_xyz"
+    installed = types.ModuleType(name)
+    visible = False
+
+    def fake_import(module_name: str, *args: object, **kwargs: object) -> object:
+        if module_name == name:
+            if not visible:
+                raise ImportError(name)
+            return installed
+        return importlib.import_module(module_name, *args, **kwargs)  # pyrefly: ignore[bad-argument-type]
+
+    registry_module._optional.cache_clear()
+    monkeypatch.setattr(registry_module.importlib, "import_module", fake_import)
+    try:
+        assert registry_module._optional(name) is None
+        visible = True
+        assert registry_module._optional(name) is None  # still the memoized answer
+        registry_module._optional.cache_clear()
+        assert registry_module._optional(name) is installed
+    finally:
+        registry_module._optional.cache_clear()

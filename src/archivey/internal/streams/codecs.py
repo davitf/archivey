@@ -688,6 +688,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
     A caller ``seek`` off the sequential frontier disarms both checks.
     """
 
+    # Side-effecting read() (byte-total + EOF truncation check); disable
+    # passthrough so readinto does not skip it.
+    readinto_passthrough = False
+
     def __init__(
         self,
         inner: BinaryIO,
@@ -697,9 +701,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
         source_len: int | None,
         fallback_path: str | None,
     ) -> None:
-        # readinto_passthrough=False routes readinto through this class's read(), so the
-        # byte-total tracking and the EOF truncation check still run on readinto-driven reads.
-        super().__init__(inner, readinto_passthrough=False)
+        super().__init__(inner)
         self._reopen = reopen
         self._isize = isize
         self._source_len = source_len
