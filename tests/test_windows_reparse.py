@@ -11,12 +11,15 @@ ones the format would allow.
 from __future__ import annotations
 
 import struct
+import tarfile
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from archivey import open_archive
+from archivey.diagnostics import DiagnosticCode
+from archivey.exceptions import LinkTargetNotFoundError
 from archivey.internal.windows_reparse import (
     FILE_ATTRIBUTE_REPARSE_POINT,
     IO_REPARSE_TAG_MOUNT_POINT,
@@ -95,6 +98,27 @@ def test_junction_falls_back_to_the_substitute_name_without_its_nt_prefix() -> N
 def test_non_link_buffers_are_declined(data: bytes) -> None:
     """Anything that is not a link buffer parses to None rather than a made-up path."""
     assert parse_reparse_data(data) is None
+
+
+@pytest.mark.parametrize("which", ["substitute", "print"])
+def test_an_odd_name_length_is_declined_rather_than_raising(which: str) -> None:
+    """A name length is a byte count over UTF-16 code units, so an odd one is malformed.
+
+    `errors=` does not cover a trailing half code unit — `surrogatepass` raises on it
+    too — so an unguarded decode sends `UnicodeDecodeError` out of `members()` from a
+    crafted archive. `test_truncated_payload_does_not_raise` cannot reach this: cutting
+    the buffer leaves the declared offsets out of bounds, so the bounds guard
+    short-circuits before any decode runs. The length has to be odd *and* in bounds.
+    """
+    subst_length, print_length = (3, 0) if which == "substitute" else (0, 3)
+    body = struct.pack("<HHHH", 0, subst_length, 0, print_length) + b"abcd"
+    data = struct.pack("<IHH", IO_REPARSE_TAG_MOUNT_POINT, len(body), 0) + body
+    parsed = parse_reparse_data(data)
+    assert parsed is not None
+    assert parsed.is_junction
+    # Declined, not decoded to the even prefix: reporting half a path as the target
+    # would be inventing one.
+    assert parsed.target == ""
 
 
 def test_truncated_payload_does_not_raise() -> None:
@@ -207,10 +231,38 @@ def test_a_stored_junction_buffer_sets_the_flag(tmp_path: Path) -> None:
         assert member.link_target == "C:/tree/target"
 
 
-def test_a_reparse_member_whose_data_is_not_a_link_keeps_no_target(
+def test_a_nameless_junction_buffer_still_sets_the_flag(tmp_path: Path) -> None:
+    """The tag is the buffer's first field, so it survives a buffer that names nothing.
+
+    Dropping the flag because a *different* field was empty would throw away the one
+    thing the tag established, and `ReparsePoint.target` documents `""` as a legitimate
+    value.
+    """
+    archive = tmp_path / "nameless_junction.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="tree/junction_dir/",
+        attributes=_FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT,
+        data=struct.pack("<IHH", IO_REPARSE_TAG_MOUNT_POINT, 8, 0)
+        + struct.pack("<HHHH", 0, 0, 0, 0),
+    )
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.type is MemberType.SYMLINK
+        assert member.is_junction
+        assert member.link_target is None
+
+
+def test_a_reparse_member_whose_data_is_not_a_link_keeps_its_content(
     tmp_path: Path,
 ) -> None:
-    """The attribute bit alone is not enough to invent a target from."""
+    """The bit is a candidate; the data decides, and here the data is a file's content.
+
+    Windows sets `FILE_ATTRIBUTE_REPARSE_POINT` for deduplication stubs, cloud
+    placeholders and WSL entries too. Typing on the bit alone would make this member a
+    link with no target, so `open()` on it would raise and its real content — the one
+    thing we know is in the archive — would be unreachable.
+    """
     archive = tmp_path / "odd_reparse.zip"
     _zip_with_reparse_member(
         archive,
@@ -220,6 +272,91 @@ def test_a_reparse_member_whose_data_is_not_a_link_keeps_no_target(
     )
     with open_archive(archive) as opened:
         (member,) = opened.members()
-        assert member.type is MemberType.SYMLINK
+        assert member.type is MemberType.FILE
         assert member.link_target is None
         assert not member.is_junction
+        with opened.open(member) as stream:
+            assert stream.read() == b"not a reparse buffer"
+
+
+def test_a_directory_reparse_point_with_no_data_stays_a_link(tmp_path: Path) -> None:
+    """The other side of the rule: nothing to reinterpret, so the link type stands."""
+    archive = tmp_path / "empty_reparse.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="tree/junction_dir/",
+        attributes=_FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT,
+        data=b"",
+    )
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.type is MemberType.SYMLINK
+        assert member.link_target is None
+
+
+def test_the_reparse_bit_is_read_only_from_a_dos_creator(tmp_path: Path) -> None:
+    """`0x400` in the low word is a Win32 attribute only for a DOS/Windows creator.
+
+    Every other creator puts its own platform's bits there, so the bit is a
+    coincidence. A directory is the case where that is observable: it carries no data
+    for the parser to overrule the type with, so a widened creator test turns an
+    ordinary Macintosh-created directory into a link with no target — and drops its
+    trailing slash on the way.
+    """
+    archive = tmp_path / "mac_creator.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("tree/plain/")
+        info.create_system = 7  # MACINTOSH
+        info.external_attr = _FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
+        zf.writestr(info, b"")
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.type is MemberType.DIRECTORY
+        assert member.name == "tree/plain/"
+        assert member.link_target is None
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        pytest.param("junction_7zip_snl.zip", id="zip"),
+        pytest.param("junction_7zip_snl.7z", id="7z"),
+    ],
+)
+def test_a_missing_target_is_reported_once_per_member(fixture: str) -> None:
+    """Looking for a target that is not there must not repeat on every access.
+
+    Nothing the lookup can learn changes between two calls, so a second one only
+    re-reads the member and emits the same diagnostic again — counting one targetless
+    link as two in `DiagnosticSummary.counts`.
+    """
+    code = DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+    with open_archive(_JUNCTION_DIR / fixture) as archive:
+        members = archive.members()
+        assert archive.diagnostics.counts.get(code) == 2
+        for member in members:
+            if member.type is MemberType.SYMLINK and member.link_target is None:
+                with pytest.raises(LinkTargetNotFoundError):
+                    archive.open(member)
+        assert archive.diagnostics.counts.get(code) == 2
+
+
+def test_a_tar_symlink_spelled_as_a_directory_is_still_reported(tmp_path: Path) -> None:
+    """The ZIP suppression must not reach a backend that never asked for it.
+
+    A ZIP directory reparse point is *stored* with the directory convention's trailing
+    slash, so dropping it is the format's spelling rather than an author override. A TAR
+    `SYMTYPE` entry named `link/` is an anomaly, and `MEMBER_NAME_NORMALIZED` is an
+    archive-integrity code, so suppressing it there would silently stop a strict policy
+    refusing that archive.
+    """
+    archive = tmp_path / "slashed_symlink.tar"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("link/")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "target.txt"
+        tf.addfile(info)
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.name == "link"
+        assert opened.diagnostics.counts.get(DiagnosticCode.MEMBER_NAME_NORMALIZED) == 1

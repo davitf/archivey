@@ -582,10 +582,16 @@ class SevenZipReader(BaseArchiveReader):
                 if stat.S_ISDIR(unix_mode):
                     return MemberType.DIRECTORY
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+                # Provisional. The bit says the entry was a reparse point on the source
+                # filesystem, not that the tag named a link — the tag is in the member's
+                # data, so `_ensure_link_target` reads it and reverts to the type below
+                # when the data turns out not to be a link buffer.
                 return MemberType.SYMLINK
-        if record.is_directory:
-            return MemberType.DIRECTORY
-        return MemberType.FILE
+        return self._member_type_ignoring_reparse(record)
+
+    def _member_type_ignoring_reparse(self, record: SevenZipFileRecord) -> MemberType:
+        """What the entry is by everything except the reparse-point attribute bit."""
+        return MemberType.DIRECTORY if record.is_directory else MemberType.FILE
 
     def _folder_pack_view(self, folder_index: int) -> BinaryIO:
         folder = self._archive.folders[folder_index]
@@ -769,10 +775,14 @@ class SevenZipReader(BaseArchiveReader):
             and not stat.S_ISLNK(attrs >> 16)
             and bool(attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT)
         )
+        # What the member would be if its data turns out not to be a link buffer: the
+        # attribute bit is set for deduplication stubs and cloud placeholders too, and
+        # those hold ordinary content that a caller should still be able to read.
+        fallback_type = self._member_type_ignoring_reparse(raw.record)
         if is_reparse_point and member.size == 0:
             # 7-Zip stores no data for a directory reparse point, which is what every
             # junction is; there is nothing to open.
-            self._apply_reparse_data(member, b"")
+            self._apply_reparse_data(member, b"", fallback_type=fallback_type)
             return
         try:
             with self._open_member(member) as stream:
@@ -780,7 +790,7 @@ class SevenZipReader(BaseArchiveReader):
         except EncryptionError:
             return
         if is_reparse_point:
-            self._apply_reparse_data(member, data)
+            self._apply_reparse_data(member, data, fallback_type=fallback_type)
         else:
             member.link_target = data.decode("utf-8", errors="surrogateescape")
 

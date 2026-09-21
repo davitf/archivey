@@ -470,6 +470,12 @@ class ArchiveMember:
         default=(), repr=False, compare=False
     )
     """Library-retained diagnostic attachments (bounded by the collector budget)."""
+    _link_target_resolved: bool = field(default=False, repr=False, compare=False)
+    """Set once a backend has looked for this link's target, found or not.
+
+    ``link_target is None`` alone cannot say whether the target is missing or merely
+    not looked for yet, so without this the lookup repeats on every access — re-reading
+    the member's data and re-emitting its diagnostic. Not part of the public contract."""
 
     # Mutable members are intentionally unhashable. Annotated `-> int` (the call
     # always raises) so the override stays compatible with object.__hash__.

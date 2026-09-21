@@ -208,6 +208,7 @@ def emit_member_name_normalized(
     member: ArchiveMember,
     presented_name: str,
     archive_name: str | None = None,
+    link_stored_as_directory: bool = False,
 ) -> None:
     """Emit ``MEMBER_NAME_NORMALIZED`` when normalization changed ``presented_name``.
 
@@ -215,6 +216,15 @@ def emit_member_name_normalized(
     trailing slash (Python's ``tarfile`` strips it on read) — that is not an
     observable override, and warning once per directory on every ordinary tar is
     noise (R3 / Brief 4).
+
+    ``link_stored_as_directory`` is the mirror of that case, and the caller must say
+    so rather than leaving it to be inferred here: a ZIP directory reparse point (a
+    junction, or a directory symlink) is stored with the directory convention's
+    trailing slash and is still a link, so normalization drops the slash. Only the ZIP
+    backend can tell that from a TAR ``SYMTYPE`` entry named ``link/``, where the
+    trailing slash *is* an anomaly worth reporting — and ``MEMBER_NAME_NORMALIZED`` is
+    an archive-integrity code, so inferring the suppression from the name's shape would
+    silently stop a strict policy refusing that TAR.
     """
     if member.name == presented_name:
         return
@@ -224,12 +234,8 @@ def emit_member_name_normalized(
         and not presented_name.endswith("/")
     ):
         return
-    # The mirror case: a directory-shaped entry that turned out to be a link. A ZIP
-    # directory reparse point (a junction, or a directory symlink) is stored with the
-    # directory convention's trailing slash, which normalization drops because the
-    # member is a SYMLINK. That is the format's spelling, not an author override.
     if (
-        member.type is MemberType.SYMLINK
+        link_stored_as_directory
         and presented_name == member.name + "/"
         and not member.name.endswith("/")
     ):

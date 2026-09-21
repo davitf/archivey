@@ -215,8 +215,8 @@ into datetime fields — archivey does both from the values `ZipInfo` exposes.
 | `raw_name` | The stored bytes, verbatim (no backslash rewrite) | — |
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
 | `modified` / `accessed` / `created` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra` | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
-| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` (§2.2.1) or Unix mode bits in its high word (`zipfile` has no `is_symlink`); directory via `ZipInfo.is_dir()` otherwise | — |
-| `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` / `"reparse_data_unrecognized"` |
+| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word (`zipfile` has no `is_symlink`); directory via `ZipInfo.is_dir()` otherwise | — |
+| `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — the member is re-typed, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target) |
 | `compression` | `compress_type` → `CompressionMethod` | — |
 | `is_encrypted` | `flag_bits & 0x1` | — |
 | `hashes["crc32"]` | CDH CRC, as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
@@ -258,7 +258,21 @@ diagnostic — a link whose target the writer discarded, rather than a plain dir
 which is what it was before and which silently lost the fact that anything was there.
 The trailing `/` the writer stores on that entry is dropped by `normalize_member_name`,
 because the member is not a directory; the same member has always been spelled without
-it in 7z.
+it in 7z. The ZIP backend passes `link_stored_as_directory` to
+`emit_member_name_normalized` so that drop does not report a `MEMBER_NAME_NORMALIZED`
+anomaly — the flag is explicit precisely because the helper is shared, and a TAR
+`SYMTYPE` entry named `link/` *is* an anomaly worth reporting.
+
+**The attribute bit is a candidate, not a verdict; the data decides.** `0x400` says the
+entry was a reparse point on the source filesystem. It does not say the archive carries
+the buffer, and it does not say the tag named a link — Windows sets the same bit for
+deduplication stubs, cloud placeholders and WSL entries, whose data is ordinary content.
+So a member whose data is present but does not parse as a link buffer is put back to the
+type it would otherwise have had (file, or directory) and keeps that content, with
+`SYMLINK_TARGET_UNAVAILABLE(reason="reparse_data_unrecognized")` recording the
+reinterpretation. Only a member with *no* data has nothing to reinterpret, and that is
+the one that stays a link with no target. Presenting it the other way round would cost
+the caller a readable member on the strength of a bit, and `open()` on it would raise.
 
 The junction path in the reader is therefore correct and unreachable from any archive
 these tools produce. It is kept, and tested against an assembled buffer, because the
@@ -266,9 +280,11 @@ format permits a writer to store one and the `archive-data-model` spec promises 
 flag; `tests/test_windows_reparse.py::test_the_junction_and_the_symlink_are_indistinguishable_on_disk`
 pins the measurement so a 7-Zip that changes its mind fails rather than passes quietly.
 
-**A symlink's digest covers the target string.** ZIP stores a link's target as the member's
-data — 9 bytes for `file1.txt` — so `hashes["crc32"]` is a real digest, of a *path*, not of
-whatever the link resolves to. Kept, because the value is genuine and 7z and RAR3/4 record
+**A symlink's digest covers the bytes the link is stored as.** ZIP stores a link's target
+as the member's data, so `hashes["crc32"]` is a real digest — of a *path* for a Unix
+symlink (9 bytes for `file1.txt`), and of the `REPARSE_DATA_BUFFER` for a Windows one
+(§2.2.1), which is a Win32 structure rather than the path inside it. Either way it is not
+a digest of whatever the link resolves to. Kept, because the value is genuine and 7z and RAR3/4 record
 exactly the same thing; said out loud, because `hashes` otherwise reads as being about
 content, and a caller de-duplicating by digest or checking content without decompressing
 would take it that way. RAR5 is the instructive contrast: it stores links as header

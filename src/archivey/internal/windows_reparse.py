@@ -72,6 +72,15 @@ class ReparsePoint:
 def _decode_path(buffer: bytes, offset: int, length: int) -> str:
     if length <= 0 or offset < 0 or offset + length > len(buffer):
         return ""
+    # A name length is a byte count over UTF-16 code units, so an odd one is malformed,
+    # not merely truncated — and `errors=` does not cover it: a trailing half code unit
+    # raises whatever the handler is, `surrogatepass` included. Declining it keeps a
+    # crafted archive from raising `UnicodeDecodeError` out of `members()`, and matches
+    # what the out-of-bounds guard above already does with a length that does not
+    # describe the bytes present. Decoding the even prefix instead would report a
+    # truncated path as if the archive had named it.
+    if length % 2:
+        return ""
     # surrogatepass, not surrogateescape: the source is UTF-16 code units, and Windows
     # permits unpaired surrogates in a path. Replacing them would silently rewrite a
     # target; passing them through keeps the round trip honest.
@@ -94,8 +103,9 @@ def parse_reparse_data(data: bytes) -> ReparsePoint | None:
 
     payload = data[_HEADER.size :]
     # Trust the declared length only as far as the bytes actually present: a truncated
-    # buffer should parse what is there rather than raise.
-    if 0 <= data_length <= len(payload):
+    # buffer should parse what is there rather than raise. (A `struct` "H" is never
+    # negative, so the only bound worth testing is the upper one.)
+    if data_length <= len(payload):
         payload = payload[:data_length]
     if len(payload) < _NAMES.size:
         return None

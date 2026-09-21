@@ -193,6 +193,18 @@ _BACKSLASH_SEPARATOR_SYSTEMS: frozenset[CreateSystem] = frozenset(
         CreateSystem.VFAT,
     }
 )
+# ZIP create-system values whose `external_attr` low word is a Win32 DOS attribute word
+# (FILE_ATTRIBUTE_*). Deliberately a sibling of _BACKSLASH_SEPARATOR_SYSTEMS rather than
+# the same object: the two answer different questions about the same family and are free
+# to diverge — a creator could spell paths the DOS way without recording DOS attributes.
+_DOS_ATTRIBUTE_SYSTEMS: frozenset[CreateSystem] = frozenset(
+    {
+        CreateSystem.FAT,
+        CreateSystem.OS2_HPFS,
+        CreateSystem.WINDOWS_NTFS,
+        CreateSystem.VFAT,
+    }
+)
 _CREATE_SYSTEM_BY_VALUE: dict[int, CreateSystem] = {
     member.value: member for member in CreateSystem
 }
@@ -393,14 +405,23 @@ def _zip_timestamps(
     return modified, accessed, created, issues
 
 
-def _is_windows_reparse_point(info: zipfile.ZipInfo) -> bool:
-    """True when this entry is a Windows symlink or junction (§2.2.1 of the handbook).
+def _is_windows_reparse_point(
+    info: zipfile.ZipInfo, create_system: CreateSystem
+) -> bool:
+    """True when this entry is flagged as a Windows reparse point (handbook §2.2.1).
 
-    The bit lives in the low (DOS attribute) word of ``external_attr``, which only a
-    DOS/Windows creator fills in — a Unix creator's authority is the mode in the high
-    word, so bit ``0x400`` there means nothing and is not read.
+    The bit lives in the low (DOS attribute) word of ``external_attr``, and only a
+    DOS/Windows creator puts a Win32 attribute word there. Every other creator writes
+    whatever its own platform records — a Unix creator's authority is the mode in the
+    high word — so bit ``0x400`` outside :data:`_DOS_ATTRIBUTE_SYSTEMS` is somebody
+    else's bit and is not read.
+
+    "Flagged as" is the whole claim: the bit says the entry was a reparse point on the
+    source filesystem, not that the archive carries the reparse buffer or that the tag
+    named a link. What the data turns out to be decides that, in
+    ``BaseArchiveReader._apply_reparse_data``.
     """
-    return info.create_system != 3 and bool(
+    return create_system in _DOS_ATTRIBUTE_SYSTEMS and bool(
         info.external_attr & FILE_ATTRIBUTE_REPARSE_POINT
     )
 
@@ -658,25 +679,27 @@ class ZipReader(BaseArchiveReader):
             stat.S_IMODE(full_mode) if (info.external_attr != 0 and is_unix) else None
         )
 
+        create_system = _CREATE_SYSTEM_BY_VALUE.get(
+            info.create_system, CreateSystem.UNKNOWN
+        )
+
         # A Windows reparse point (symlink or junction) is marked by a DOS attribute
         # bit in the low word, and 7-Zip's `-snl` is the only common writer that sets
         # it. Checked before is_dir(): a directory reparse point carries both bits and
         # is a link, not a directory — its trailing "/" is then dropped by
         # normalize_member_name, which is how 7z already presents the same member.
-        is_reparse_point = _is_windows_reparse_point(info)
+        # The type is provisional: the data decides, in `_apply_reparse_data`, whether
+        # the entry really holds a link buffer, and a member that does not goes back to
+        # the type below.
+        is_reparse_point = _is_windows_reparse_point(info, create_system)
 
-        if is_reparse_point:
-            member_type = MemberType.SYMLINK
-        elif info.is_dir():
-            member_type = MemberType.DIRECTORY
+        if info.is_dir():
+            fallback_type = MemberType.DIRECTORY
         elif is_unix and stat.S_ISLNK(full_mode):
-            member_type = MemberType.SYMLINK
+            fallback_type = MemberType.SYMLINK
         else:
-            member_type = MemberType.FILE
-
-        create_system = _CREATE_SYSTEM_BY_VALUE.get(
-            info.create_system, CreateSystem.UNKNOWN
-        )
+            fallback_type = MemberType.FILE
+        member_type = MemberType.SYMLINK if is_reparse_point else fallback_type
         # Convert "\" to "/" only for DOS/Windows-origin entries (where it is a separator);
         # a Unix (or other) entry keeps a backslash as a literal filename character.
         backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
@@ -790,6 +813,10 @@ class ZipReader(BaseArchiveReader):
             member=member,
             presented_name=decoded,
             archive_name=self._archive_name,
+            # A directory reparse point is stored with the directory convention's
+            # trailing "/" and is still a link, so normalization drops the slash. Only
+            # this backend knows that, so only this backend says so.
+            link_stored_as_directory=is_reparse_point and info.is_dir(),
         )
         for issue in ts_issues:
             self._diagnostics_collector.emit(
@@ -1446,11 +1473,17 @@ class ZipReader(BaseArchiveReader):
         # A Windows reparse point stores a REPARSE_DATA_BUFFER rather than a bare
         # path, and that buffer is where the junction tag lives. Decoding it as UTF-8
         # would report ~92 bytes of binary as this member's link target.
-        is_reparse_point = _is_windows_reparse_point(info)
+        create_system = _CREATE_SYSTEM_BY_VALUE.get(
+            info.create_system, CreateSystem.UNKNOWN
+        )
+        is_reparse_point = _is_windows_reparse_point(info, create_system)
+        # What the member would be if its data turns out not to be a link buffer —
+        # the same test `_to_member` used before the reparse bit overrode it.
+        fallback_type = MemberType.DIRECTORY if info.is_dir() else MemberType.FILE
         if is_reparse_point and info.file_size == 0:
             # 7-Zip stores no data at all for a directory reparse point, which is what
             # every junction is. Skip the open: there is nothing to read.
-            self._apply_reparse_data(member, b"")
+            self._apply_reparse_data(member, b"", fallback_type=fallback_type)
             return
         # A symlink's target is its (possibly encrypted) file data. Listing must stay
         # usable without a password, so a missing/wrong password leaves link_target
@@ -1460,7 +1493,7 @@ class ZipReader(BaseArchiveReader):
             with self._open_member(member) as f:
                 data = f.read()
             if is_reparse_point:
-                self._apply_reparse_data(member, data)
+                self._apply_reparse_data(member, data, fallback_type=fallback_type)
             else:
                 member.link_target = data.decode("utf-8", errors="surrogateescape")
         except EncryptionError:

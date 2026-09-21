@@ -1089,7 +1089,7 @@ class BaseArchiveReader(ArchiveReader):
         def _resolve() -> None:
             for member in members:
                 if member.is_link:
-                    self._ensure_link_target(member)
+                    self._resolve_link_target(member)
             for member in members:
                 if member.is_link and member.link_target:
                     self._resolve_link(member, by_name_lists)
@@ -1259,7 +1259,24 @@ class BaseArchiveReader(ArchiveReader):
         """Populate ``link_target`` from member data when needed. Base is a no-op."""
         return
 
-    def _apply_reparse_data(self, member: ArchiveMember, data: bytes) -> None:
+    def _resolve_link_target(self, member: ArchiveMember) -> None:
+        """Run the backend's link-target hook at most once per member.
+
+        Nothing the hook can learn changes between two calls on the same member: the
+        archive's bytes are fixed and a password is reader-level, never per-open. So a
+        second call only re-opens and re-decompresses the member and emits the same
+        diagnostic again — which would count one targetless link twice in
+        ``DiagnosticSummary.counts``, and under a ``RAISE`` disposition would raise at
+        whatever later access happened to touch the member rather than during listing.
+        """
+        if member.link_target is not None or member._link_target_resolved:
+            return
+        member._link_target_resolved = True
+        self._ensure_link_target(member)
+
+    def _apply_reparse_data(
+        self, member: ArchiveMember, data: bytes, *, fallback_type: MemberType
+    ) -> None:
         """Set ``link_target`` (and ``is_junction``) from a Windows reparse buffer.
 
         The reparse tag that separates a junction from a symlink is the first field of
@@ -1267,36 +1284,52 @@ class BaseArchiveReader(ArchiveReader):
         listing-from-data path a symlink target already takes — see
         :mod:`archivey.internal.windows_reparse`.
 
-        On anything that is not a link buffer the member keeps ``link_target`` unset
-        and gets a diagnostic. That covers the case every Windows archiver actually
-        produces for a junction: 7-Zip writes no data at all for a directory reparse
-        point, so the target and the tag are both simply gone, and a member whose
-        target we invented would be worse than one that says it has none.
+        The attribute bit that gets a member here says it *was* a reparse point on the
+        source filesystem. It does not promise the archive carries the buffer, and it
+        does not promise the tag named a link at all — Windows sets the same bit for
+        deduplication stubs, cloud placeholders and WSL entries, whose data is ordinary
+        content. So a member whose data is present but is not a link buffer goes back to
+        ``fallback_type`` and keeps that content: the bytes are what we know, the link
+        type is what we inferred, and discarding the former for the latter would cost
+        the caller a readable member.
+
+        A member with no data at all has nothing to reinterpret and stays a link with no
+        target. That is the case every Windows archiver actually produces for a junction:
+        7-Zip writes no data for the directory reparse point that every junction is, so
+        the target and the tag are both simply gone, and a member whose target we
+        invented would be worse than one that says it has none.
         """
         parsed = parse_reparse_data(data)
+        if parsed is not None and parsed.is_junction:
+            # The tag is the buffer's first field, so a junction is established as soon
+            # as the buffer parses — independently of whether a target came out of it.
+            member.extra[EXTRA_IS_JUNCTION] = True
         if parsed is not None and parsed.target:
             member.link_target = parsed.target
-            if parsed.is_junction:
-                member.extra[EXTRA_IS_JUNCTION] = True
             return
 
-        if not data:
-            reason = "reparse_data_absent"
-            detail = "the writer stored no reparse data for it"
-        elif parsed is None:
+        if parsed is None and data:
+            member.type = fallback_type
             reason = "reparse_data_unrecognized"
-            detail = (
-                f"its {len(data)} bytes of data are not a symlink or junction buffer"
+            message = (
+                f"{quoted(member.name)} is flagged as a Windows reparse point, but its "
+                f"{len(data)} bytes of data are not a symlink or junction buffer; "
+                f"presenting it as a {fallback_type.value} with that data as its content."
             )
         else:
-            reason = "reparse_data_nameless"
-            detail = "its reparse data names no target"
-        self._diagnostics_collector.emit(
-            code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
-            message=(
+            if not data:
+                detail = "the writer stored no reparse data for it"
+                reason = "reparse_data_absent"
+            else:
+                detail = "its reparse data names no target"
+                reason = "reparse_data_nameless"
+            message = (
                 f"Cannot read the link target of {quoted(member.name)}: {detail}; "
                 f"leaving link_target unset."
-            ),
+            )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
+            message=message,
             context=SymlinkTargetContext(
                 archive_name=self._archive_name,
                 member_name=member.name,
@@ -1883,7 +1916,7 @@ class BaseArchiveReader(ArchiveReader):
             if member.link_target_member is not None:
                 return self._open_with_link_follow(member.link_target_member, visited)
             if member.link_target is None:
-                self._ensure_link_target(member)
+                self._resolve_link_target(member)
             if member.link_target is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",

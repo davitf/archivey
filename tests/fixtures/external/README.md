@@ -93,7 +93,18 @@ a *directory* one.** `symlink_file` carries its full 92-byte buffer, tag
 `IO_REPARSE_TAG_SYMLINK`, from which the real target decodes. `junction_dir` and
 `symlink_dir` carry the `FILE_ATTRIBUTE_REPARSE_POINT` bit (`0x410` with the directory
 bit) and zero bytes of content — no reparse data, and no extra field carrying it
-either. Identical in both formats, with and without `-snl`.
+either. The 7z and the ZIP agree entry for entry.
+
+**Without `-snl`, 7-Zip follows every link and records no reparse bit at all.** Measured
+on the probe's own `zip_default.zip` and `7z_default.7z` (built by the same job, not
+committed): `symlink_file` comes back as an ordinary file, `external_attr` `0x20`, holding
+the target's 7 bytes; `junction_dir/` and `symlink_dir/` come back as ordinary directories,
+`0x10`, with the target's contents copied in under each. So the reparse bit never appears
+on a member whose data is something other than a reparse buffer — the flag and the buffer
+arrive together or not at all. That is the fact that bounds how far a reader can trust the
+bit: archivey still treats it as a candidate and lets the data decide (see
+`dev-docs/formats/zip.md` §2.2.1), because nothing in the format obliges another writer to
+be as consistent.
 
 A junction is always a directory reparse point. The reparse tag is the only thing that
 separates one from a directory symlink, and it lives in the data that was never
