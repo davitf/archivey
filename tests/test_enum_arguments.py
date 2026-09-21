@@ -20,6 +20,7 @@ ambiguity, rather than leaving it to resolve silently to the wrong member.
 
 from __future__ import annotations
 
+import ast
 import os
 import struct
 import zipfile
@@ -335,6 +336,83 @@ LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
 )
 
 
+#: Enums coerced at a public boundary that deliberately carry no ``Literal`` alias,
+#: with the reason, so the next reader does not "fix" the gap by adding one back.
+ALIASES_NOT_WANTED = {
+    "AcceleratorMode": (
+        "ArchiveyConfig's accelerator fields stay annotated AcceleratorMode rather "
+        "than AcceleratorMode | str: what the field holds after construction is always "
+        "a member, and the union would describe the constructor's input on the "
+        "attribute every consumer reads, obliging each of them to handle a string that "
+        "cannot arrive. See the archived coerce-public-enum-arguments design note."
+    ),
+}
+
+
+def _enums_coerced_under_src() -> set[str]:
+    """Every enum class handed to ``coerce_enum`` / ``coerce_enum_collection``.
+
+    Read statically, because the set is not available at runtime: the coercions happen
+    inside the functions that take the arguments, so nothing collects them. The enum is
+    the second positional argument at every call site; one that passed it some other way
+    would make this scan silently narrower, so that raises here instead of skipping.
+    """
+    src = Path(__file__).resolve().parents[1] / "src" / "archivey"
+    found: set[str] = set()
+    for path in sorted(src.rglob("*.py")):
+        if path.name == "enum_args.py":
+            # Where the helpers live: its one call is the collection form delegating to
+            # the scalar form over a type variable, not a boundary naming an enum.
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else getattr(func, "id", "")
+            )
+            if name not in ("coerce_enum", "coerce_enum_collection"):
+                continue
+            if len(node.args) < 2 or not isinstance(node.args[1], ast.Name):
+                raise AssertionError(
+                    f"{path.name}:{node.lineno} calls {name} without the enum as its "
+                    "second positional argument, so this scan can no longer see it"
+                )
+            found.add(node.args[1].id)
+    return found
+
+
+def test_every_coerced_enum_is_aliased_or_exempt_on_the_record() -> None:
+    """The guard on the alias table itself, which the per-pair tests below do not give.
+
+    ``test_the_literal_alias_matches_its_enum`` goes red when an enum already in
+    ``LITERAL_ALIASES`` grows a member. Nothing watched the tuple: a sixth enum-typed
+    public parameter would get the coercion, get its spec row and get no alias, so a
+    type checker would reject the string the runtime accepts, with nothing going red.
+    That is the shape the CLI's derived ``choices=`` closed one level down.
+    """
+    coerced = _enums_coerced_under_src()
+    assert coerced, "the scan found no call sites, so it was guarding nothing"
+
+    aliased = {enum_cls.__name__ for enum_cls, _ in LITERAL_ALIASES}
+    missing = coerced - aliased - set(ALIASES_NOT_WANTED)
+    assert not missing, (
+        f"{sorted(missing)} are coerced from a string at a public boundary but have no "
+        "Literal alias. Add one beside the enum and list it in LITERAL_ALIASES, or "
+        "record in ALIASES_NOT_WANTED why the alias is deliberately absent."
+    )
+
+    stale = set(ALIASES_NOT_WANTED) - coerced
+    assert not stale, (
+        f"{sorted(stale)} are listed as deliberately un-aliased but nothing coerces "
+        "them any more; drop the entry."
+    )
+    assert not (aliased & set(ALIASES_NOT_WANTED))
+
+
 def _expected_literal_spellings(enum_cls: type[Enum]) -> set[str]:
     """Every spelling the alias beside ``enum_cls`` is supposed to carry.
 
@@ -446,3 +524,31 @@ def test_the_cli_accepts_every_spelling_the_library_accepts(
             parsed = getattr(args, option.lstrip("-").replace("-", "_"))
             got = parsed[-1] if isinstance(parsed, list) else parsed
             assert coerce_enum(got, enum_cls, call="t()", param=option) is member
+
+
+@pytest.mark.parametrize(("option", "enum_cls"), CLI_ENUM_OPTIONS, ids=lambda x: str(x))
+def test_a_refused_cli_spelling_is_quoted_as_the_caller_typed_it(
+    option: str,
+    enum_cls: type[Enum],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The fold widens what is accepted; it must not rewrite what is refused.
+
+    argparse quotes the post-``type=`` value in ``invalid choice:``, so a fold that ran
+    unconditionally made ``--policy Trusted_`` come back as ``invalid choice:
+    'trusted-'`` — a trailing dash the caller never typed, and a spelling legal nowhere.
+    The fold now applies only when it lands on a real choice, so an unrecognised value
+    reaches the message untouched.
+    """
+    parser = build_parser()
+    archive = str(tmp_path / "a.zip")
+    # Upper case and a trailing underscore: both are things the fold rewrites, so a
+    # fold that fired here would quote something other than this string.
+    typo = f"{next(iter(enum_cls)).value}_".upper() + "X"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["extract", archive, option, typo])
+
+    stderr = capsys.readouterr().err
+    assert f"invalid choice: {typo!r}" in stderr

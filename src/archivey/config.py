@@ -332,6 +332,11 @@ class ArchiveyConfig:
             field_name="max_retained_diagnostic_references",
             allow_none=False,
         )
+        # These two are the one enum coerced at a public boundary with no ``Literal``
+        # alias beside it, and that is deliberate: the annotation is read by every
+        # consumer of the attribute, not only by the constructor's callers, and after
+        # construction the field always holds a member. ``tests/test_enum_arguments.py``
+        # records the exemption so the gap is not "fixed" back into a union.
         for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
             object.__setattr__(
                 self,

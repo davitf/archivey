@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import errno
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import Enum
 from typing import NoReturn, TextIO
 
@@ -190,15 +190,28 @@ def _cli_choices(enum_cls: type[Enum]) -> list[str]:
     return [str(member.value).replace("_", "-") for member in enum_cls]
 
 
-def _cli_spelling(value: str) -> str:
-    """Fold a spelling the library accepts to the one ``choices=`` lists.
+def _cli_spelling(enum_cls: type[Enum]) -> Callable[[str], str]:
+    """Build the ``type=`` fold that lets this CLI accept the library's spellings.
 
     argparse applies ``type=`` before checking ``choices=``, so this is what lets
     ``--abort-on blocked_member`` through: the library takes either separator and any
-    case, and the CLI should not be the narrower of the two. ``--help`` and the
-    invalid-choice message still show one canonical spelling each.
+    case, and the CLI should not be the narrower of the two.
+
+    The fold applies **only when it lands on a real choice**. argparse quotes the
+    post-``type=`` value in ``invalid choice:``, so folding unconditionally made a
+    refusal echo a string the caller never wrote — ``--policy Trusted_`` was refused as
+    ``'trusted-'``, a spelling that is not legal anywhere, sending the reader after a
+    trailing dash they did not type. Passing an unrecognised value through untouched
+    keeps the message about what they actually typed, which is the whole point of a fold
+    that says case and separator are not the mistake.
     """
-    return normalize_spelling(value).replace("_", "-")
+    choices = _cli_choices(enum_cls)
+
+    def fold(value: str) -> str:
+        folded = normalize_spelling(value).replace("_", "-")
+        return folded if folded in choices else value
+
+    return fold
 
 
 def _add_filter_args(parser: argparse.ArgumentParser) -> None:
@@ -296,14 +309,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_extract.add_argument(
         "--policy",
         choices=_cli_choices(ExtractionPolicy),
-        type=_cli_spelling,
+        type=_cli_spelling(ExtractionPolicy),
         default="strict",
         help="extraction safety policy (default: strict)",
     )
     p_extract.add_argument(
         "--overwrite",
         choices=_cli_choices(OverwritePolicy),
-        type=_cli_spelling,
+        type=_cli_spelling(OverwritePolicy),
         default="rename",
         help="collision policy (CLI default: rename; library default remains error)",
     )
@@ -320,7 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--abort-on",
         action="append",
         choices=_cli_choices(AbortOn),
-        type=_cli_spelling,
+        type=_cli_spelling(AbortOn),
         default=None,
         metavar="EVENT",
         dest="abort_on",
