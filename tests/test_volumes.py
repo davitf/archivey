@@ -1209,7 +1209,10 @@ def test_numbered_volume_message_is_sized_by_file_count_not_part_number() -> Non
     message = volumes_mod._numbered_volume_sequence_error("x.7z", [1, 10**9])
     elapsed = time.monotonic() - start
 
-    assert message == "Incomplete multi-volume set for x.7z: missing part 2"
+    assert message == (
+        "Incomplete multi-volume set for x.7z: "
+        "missing parts 2, 3, 4, 5, 6, 7, 8, 9, … (999999998 in total)"
+    )
     assert elapsed < 1.0, f"took {elapsed:.1f}s — the list is sized by the part number"
 
 
@@ -1229,6 +1232,30 @@ def test_open_archive_survives_a_huge_numbered_sibling(tmp_path: Path) -> None:
     (tmp_path / "foo.7z.001").write_bytes(b"")
     (tmp_path / "foo.7z.005000000").write_bytes(b"")
     start = time.monotonic()
-    with pytest.raises(TruncatedError, match="missing part 2"):
+    with pytest.raises(
+        TruncatedError, match=r"missing parts 2, .*\(4999998 in total\)"
+    ):
         open_archive(tmp_path / "foo.7z.001")
     assert time.monotonic() - start < 5.0
+
+
+@pytest.mark.parametrize(
+    ("parts", "expected"),
+    [
+        ([5, 6], "missing parts 1, 2, 3, 4"),
+        ([8, 9, 10], "missing parts 1, 2, 3, 4, 5, 6, 7"),
+        ([1, 3, 4], "missing part 2"),
+    ],
+)
+def test_numbered_volume_message_names_every_missing_part(
+    parts: list[int], expected: str
+) -> None:
+    """Bounding the scan must not make the message under-report.
+
+    A set starting at part 8 of 10 is the ordinary shape — a partial download, or a
+    copy taken from halfway through. Telling the caller to fetch three files when
+    seven are missing makes the diagnostic converge by repetition instead of
+    answering, which is the opposite of the honest error the project promises for
+    damaged input.
+    """
+    assert volumes_mod._numbered_volume_sequence_error("x.7z", parts).endswith(expected)

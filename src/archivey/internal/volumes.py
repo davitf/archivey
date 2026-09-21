@@ -581,12 +581,18 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
 _MAX_ENUMERATED_PARTS = 8
 
 
-def _enumerate_parts(parts: Sequence[int]) -> str:
-    """Render part numbers for an error message, capped so a big set stays readable."""
-    if len(parts) <= _MAX_ENUMERATED_PARTS:
+def _enumerate_parts(parts: Sequence[int], total: int | None = None) -> str:
+    """Render part numbers for an error message, capped so a big set stays readable.
+
+    ``total`` is how many there really are, when ``parts`` is only the prefix worth
+    printing. Counting the prefix instead would understate the answer, which is the
+    one thing this message exists to give.
+    """
+    total = len(parts) if total is None else total
+    if len(parts) <= _MAX_ENUMERATED_PARTS and total == len(parts):
         return ", ".join(str(part) for part in parts)
     shown = ", ".join(str(part) for part in parts[:_MAX_ENUMERATED_PARTS])
-    return f"{shown}, … ({len(parts)} in total)"
+    return f"{shown}, … ({total} in total)"
 
 
 def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
@@ -608,12 +614,19 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
             f"Repeated volume in multi-volume set for {base}: "
             f"{noun} {_enumerate_parts(repeated)} given more than once"
         )
-    missing = [part for part in range(1, len(numbered) + 1) if part not in counts]
-    if missing:
-        noun = "part" if len(missing) == 1 else "parts"
+    # With no repeats, the parts on disk are distinct, so the count of missing ones
+    # is arithmetic and needs no list: the set has to run 1..max, and len(numbered)
+    # of them are here. Only the prefix that will actually be printed is enumerated,
+    # bounded by the file count plus the cap — never by the part numbers, which come
+    # from filenames.
+    total_missing = max(numbered) - len(numbered)
+    if total_missing > 0:
+        scan_to = min(max(numbered), len(numbered) + _MAX_ENUMERATED_PARTS)
+        missing = [part for part in range(1, scan_to + 1) if part not in counts]
+        noun = "part" if total_missing == 1 else "parts"
         return (
             f"Incomplete multi-volume set for {base}: "
-            f"missing {noun} {_enumerate_parts(missing)}"
+            f"missing {noun} {_enumerate_parts(missing, total_missing)}"
         )
     return (
         f"Out-of-order multi-volume set for {base}: parts "

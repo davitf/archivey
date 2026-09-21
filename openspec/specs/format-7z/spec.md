@@ -360,6 +360,7 @@ Inference (aligned with single-file compressors via shared
 | Archive source | Presented name |
 | --- | --- |
 | Basename ends with `.7z` (case-insensitive), optionally followed by a numeric volume suffix such as `.001` | Strip `.7z` / `.7z.NNN`; use the remaining stem |
+| The remaining stem is entirely dots and spaces (`...7z`) | Append `.uncompressed` instead; `.` and `..` are not member names |
 | Other non-empty basename | Append `.uncompressed` (do not strip an arbitrary final suffix) |
 | Anonymous stream (no archive filename) | `data` |
 
@@ -375,6 +376,7 @@ at list time; destination collisions are an extraction/`OverwritePolicy` concern
 | Open `github_14_multi.7z` (no NAME, two files) | Two `FILE` members both named `github_14_multi`; `raw_name` empty |
 | Open `archive.7z.001` with no NAME | Stem is `archive` (volume suffix stripped with `.7z`) |
 | Open `foo.bin` (no NAME, not a `.7z` name) | Member name `foo.bin.uncompressed` |
+| Open `...7z` (no NAME) | Member name `...7z.uncompressed`; the stem `..` is not a name |
 | Open nameless 7z from an anonymous stream | Member name `data` |
 | Open a 7z that stores NAME normally | Stored names unchanged; no stem synthesis |
 

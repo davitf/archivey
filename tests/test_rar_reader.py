@@ -4225,6 +4225,25 @@ def test_password_with_a_line_break_is_refused_not_clamped() -> None:
 
 
 @requires_binary("unrar")
+@pytest.mark.parametrize("name", ["rar15-comment.rar", "blake2sp.rar"])
+def test_unencrypted_archive_opens_with_a_line_break_password(name: str) -> None:
+    """A configured password is not a used password.
+
+    `unrar` only consults it when something is encrypted, so refusing the newline at
+    the point the password is *passed* stopped plain archives from opening at all —
+    `rar15-comment.rar` has an old-style compressed comment that is unpacked through
+    `unrar` inside `__init__`. A password read from a file carries a trailing newline,
+    so this is the ordinary input, not an exotic one.
+    """
+    path = _fixture(name)
+    with open_archive(path, password="secret\n") as archive:
+        members = [m for m in archive.members() if m.is_file]
+        assert members
+        for member in members:
+            assert isinstance(archive.read(member), bytes)
+
+
+@requires_binary("unrar")
 def test_wrong_password_after_a_line_break_does_not_decrypt() -> None:
     """End to end: the prefix before the break must not be enough to read a member."""
     from archivey.exceptions import UnsupportedOperationError
