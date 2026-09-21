@@ -165,7 +165,7 @@ def ensure_full_count_reads(stream: BinaryIO) -> BinaryIO:
     # Same buffer types ``is_seekable`` peels — a caller's BufferedReader is
     # already full-count; wrapping it would drop fileno() for no gain.
     if isinstance(stream, FullCountStream) or isinstance(stream, _BUFFER_TYPES):
-        return cast("BinaryIO", stream)
+        return stream
     if not is_seekable(stream):
         return FullCountStream(stream)
     # BufferedIOBase is a BinaryIO at runtime; typeshed models the two separately.

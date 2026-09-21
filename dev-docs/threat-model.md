@@ -49,8 +49,20 @@ memory). Decode now fails closed on overrun (PR #292); O1's status is unchanged.
 `read()` / `open()` stream sizes remain unbounded (follow-on); prefer chunked
 reads for untrusted member payloads. A RAR glob-named member is a sharper case
 of the same gap: named `unrar -n` decompresses every earlier match before
-returning a byte, while `AccessCost.DIRECT` still applies. Default-deny when
-that skip is nonzero is [`formats/rar.md`](formats/rar.md) §10 #19.
+returning a byte. That one case is closed — the read is refused by default when
+the skip is nonzero, with
+`ArchiveyConfig.rar_allow_glob_member_concatenation` as the escape hatch
+([`formats/rar.md`](formats/rar.md) §5, §6). The names are almost always
+constructed; on a nonsolid archive the extra decode was also unadvertised. The
+general gap stands — and that refusal is narrower against it than it looks. An
+out-of-order `open()` of any **solid** member decodes everything ahead of it
+with no glob involved, so an attacker wanting a large decode for one small read
+does not need a glob name at all — solidity alone does it, on a name nobody
+would refuse. On a nonsolid archive the glob adds unbounded extra decode; on a
+solid one it adds only a bounded transfer cost
+([`formats/rar.md`](formats/rar.md) §6). Whether the refusal earns its keep is
+therefore tied to this gap rather than to glob names, and is parked as such
+([`formats/rar.md`](formats/rar.md) §7).
 
 ### O2. Case-insensitivity and Unicode-normalization collisions at extraction — implemented
 
