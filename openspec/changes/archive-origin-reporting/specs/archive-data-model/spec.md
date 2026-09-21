@@ -18,10 +18,14 @@ class ArchiveInfo:
     cost: CostReceipt
     prefix_kind: PrefixKind | None = PrefixKind.NONE
     payload_offset: int | None = 0
-    extra: dict[str, Any] = field(default_factory=dict, compare=False)
+    extra: ArchiveInfoExtra = field(default_factory=ArchiveInfoExtra, compare=False)
 ```
 
 `extra` keys SHALL be namespaced strings and excluded from equality.
+`extra` SHALL be an `ArchiveInfoExtra`: a `dict[str, object]` subclass of the
+same shape as `MemberExtra` over a separate key set, not merged with it. Known
+keys carry their declared types on a subscript read; unknown keys remain legal
+and read as `object`. Writes and `.get()` are not narrowed.
 `member_count` SHALL be `None` when computing it requires a full scan.
 
 `prefix_kind` and `payload_offset` SHALL describe where the archive proper begins inside
@@ -33,7 +37,7 @@ with its meanings unchanged: `UNKNOWN` means *a prefix that matched no cue*, whi
 
 *Not established* SHALL be spelled as **absence**, not as an enum member: `None`.
 Overloading `UNKNOWN` would give one member two meanings and make it disagree with
-`FormatInfo`, which is the cross-surface inconsistency this change exists to avoid.
+`FormatInfo`.
 
 | state | `prefix_kind` | `payload_offset` |
 | --- | --- | --- |

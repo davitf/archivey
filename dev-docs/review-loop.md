@@ -418,9 +418,11 @@ opening a comment on it with `@claude review`.
   The other route considered — posting the GitHub comment from a personal access token
   so it arrives from a human account — is cheaper to wire, but it does not match the
   path that was actually observed to work, and it spends a token.
-  **The hop is written but not yet exercised**, for the reason in the bullet above: the
-  `Linear ping check` workflow that would prove the credential end to end cannot be
-  dispatched until it is on the default branch.
+  **Exercised end to end on 2026-09-20**, once the workflow reached the default branch
+  and could be dispatched: the lookup resolved the issue from a pull request URL alone,
+  with no tracker line in the body, and the comment landed on the issue. Re-run
+  `Linear ping check` by hand to re-check the credential; `post: false` prints what it
+  would post without posting it.
 - **Thirty minutes is a guess**, and it started as ten. It only matters when an agent
   does not send the signal. The change (davitf, 2026-09-19) was about which way to be
   wrong: a premature round spends one of three on half-written code, while a late one

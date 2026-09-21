@@ -25,6 +25,19 @@ contracts: `openspec/specs/`.
 
 ::: archivey.ArchiveMember
 ::: archivey.ArchiveInfo
+
+## Extra bags
+
+::: archivey.MemberExtra
+    options:
+      members:
+        - __getitem__
+
+::: archivey.ArchiveInfoExtra
+    options:
+      members:
+        - __getitem__
+
 ::: archivey.ArchiveFormat
 ::: archivey.ContainerFormat
 ::: archivey.StreamFormat

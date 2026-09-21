@@ -51,7 +51,7 @@ findings cost to fix — and that is the sweep working as intended rather than a
 | [`threat-model.md`](threat-model.md) | `O*` register | O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`, in tree since #319 |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
 | **Linear** (`Archivey` team) | 39 issues seeded 2026-09-17 | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
-| **The #315 sweep** — *the `SWEPT` markers on #315* | 68 of 94 `src/` files never reviewed | **The largest open item here.** 19 783 of 36 298 lines unswept. Count it from the markers, not from this row |
+| **The #315 sweep** — *the `SWEPT` markers on #315* | **First pass complete** — 94 of 94 `src/` files read | 36 597 of 36 597 lines swept, 2026-09-20. What is open now is draining the threads, not reading. Count it from the markers, not from this row |
 | **`dev-docs/formats/`** — *no register* | 2 of ~7 handbook pages written | ZIP and RAR done. `rar.md` alone produced the 21-item `§10` register |
 | **`docs/`** — *tracked in `review/docs-content/`* | ~174 lines of prose + `how-it-works.md` | Skeleton, scope and verified claim inventory all done; the writing is not |
 
@@ -254,26 +254,46 @@ commissioned in #325 were drawn from.
 whether a RAR header-decrypt offset accounts for `_buf` and for encrypted block boundaries —
 and parcel D measured both against the `encrypted_header__*.rar` fixtures and found neither.
 
-## The sweep that produced #315 is 45% done, and countable
+## The first pass over `src/` is complete, and countable
 
-**It changes what the #315 count means.** The 2026-09-08 review pass was never run over the
-whole codebase. Four batches have run since, and coverage has gone 12% → 23% → 45% in two
-days. Draining the threads a sweep produces is not the same as having reviewed the library.
+**Every file in `src/` has now been read end to end at least once.** The 2026-09-08 review
+pass was never run over the whole codebase; fourteen batches have run since, and coverage went
+12% → 23% → 45% → **100%** over four days. Draining the threads a sweep produces is not the
+same as having reviewed the library, and that draining is what is open now — the reading is
+not.
 
 **Every figure here is countable from the `SWEPT` markers on #315** rather than maintained by
-hand — one top-level comment per file a batch finishes, findings or not. This table is a
-snapshot of a number that moved twice while this page was being written, so count it rather
-than quoting it.
+hand — one top-level comment per file a batch finishes, findings or not. Count it rather than
+quoting it; this table is a snapshot taken on 2026-09-20.
 
-| Batch | Date | Files | Lines |
-| --- | --- | --- | --- |
-| S0 — the original agent pass | 2026-09-08 | 9 | 4 327 |
-| S1 — ZIP backend | 2026-09-17 | 3 | 1 855 |
-| S2 — 7z parser and pipeline | 2026-09-17 | 4 | 2 117 |
-| S15 — shared stream and codec path | 2026-09-19 | 7 | 5 189 |
-| S16 — RAR parser and `unrar` | 2026-09-19 | 3 | 3 027 |
-| **Swept** | | **26** | **16 515 (45%)** |
-| **Never swept** | | **68** | **19 783 (55%)** |
+| Batch | Date | Files | Lines | Findings |
+| --- | --- | --- | --- | --- |
+| S0 — the original agent pass | 2026-09-08 | 9 | 4 378 | 39 |
+| S1 — ZIP backend | 2026-09-17 | 3 | 1 855 | 3 |
+| S2 — 7z parser and pipeline | 2026-09-17 | 4 | 2 107 | 12 |
+| S15 — shared stream and codec path | 2026-09-19 | 7 | 5 433 | 18 |
+| S16 — RAR parser and `unrar` | 2026-09-19 | 3 | 3 040 | 9 |
+| S17 — extraction and the reader base | 2026-09-20 | 4 | 4 460 | 12 |
+| S18 — tar, xz, verify, archive stream | 2026-09-20 | 4 | 2 842 | 8 |
+| S19 — the detection seam | 2026-09-20 | 4 | 1 845 | 7 |
+| S20 — public API | 2026-09-20 | 6 | 2 294 | 19 |
+| S21 — diagnostics and reader state | 2026-09-20 | 7 | 1 778 | 12 |
+| S22 — ISO, single-file and directory backends | 2026-09-20 | 4 | 1 477 | 12 |
+| S23 — remaining stream formats | 2026-09-20 | 8 | 1 581 | 8 |
+| S24 — the CLI | 2026-09-20 | 15 | 1 982 | 10 |
+| S25 — crypto, naming and the rest | 2026-09-20 | 16 | 1 525 | 14 |
+| **Swept** | | **94** | **36 597 (100%)** | **183** |
+| **Never swept** | | **0** | **0 (0%)** | |
+
+**S20–S25 ran as five parallel batches in one afternoon** and produced 75 findings, seven of
+them blocking: a listing-limit field weighed before the backends fill it (2.4 GB from a
+398 KiB ZIP), an unvalidated ISO directory length (4 GiB from a 57 KB image), an lzip seek
+that silently serves another member's bytes, `extract_all(config=)` being a no-op, two CLI
+sites printing archive-controlled text unescaped, and a password-provider re-entry guard that
+refuses a second thread. Two operational notes from running them in parallel are in the
+sweep conventions: GitHub allows one pending review per account, so a batch retries rather
+than clearing another batch's slot, and the MCP GitHub tools do **not** auto-append the
+Claude Code footer on #315.
 
 **The 24% this page claimed on 2026-09-17, and the 35% it claimed earlier on 2026-09-19, were
 both wrong by the same twelve points.** Both counted the fifteen threads dated 2026-09-07 as
@@ -292,9 +312,9 @@ description agree, which is why they are counted as unswept rather than unknown.
 list put `backends/rar_parser.py` — the largest file in the repository at 2 358 lines, and its
 most exposed hostile-input surface — in the unswept column, carrying only davi's eight
 questions. S16 read it the same day and raised two findings; S15 took `streams/codecs.py` in
-the same pass. **The two largest files still unread are `base_reader.py` (2 175 lines) and
-`extraction.py` (1 694).** That is the sequence the markers are for: the count named the
-riskiest gap, and the gap was closed within the day.
+the same pass. The two largest files that remained after that — `base_reader.py` (2 175 lines)
+and `extraction.py` (1 694) — went in S17 the next day. That is the sequence the markers are
+for: the count named the riskiest gap each time, and each gap was closed within the day.
 
 **Some of the swept 45% is swept against code that no longer exists.** Measured between
 `7ed4879` (`main` on the pass date) and today, seven of the nine files the 2026-09-08 pass
@@ -321,20 +341,24 @@ the follow-up was done rather than in spite of it.
 changes on those files *were* the fixes from the sweep's own issues, and he would rather
 finish reading the whole codebase and fix everything outstanding, then do another pass later.
 So the drift is an argument for that eventual second pass over the whole tree, not a batch to
-schedule ahead of the 55% nobody has read once. Do not propose a `streamtools/` re-sweep
-again before the first pass is complete.
+schedule ahead of the lines nobody had read once.
 
-**S1 and S2 are the evidence for what the rest is worth.** 3 972 lines produced fifteen
-findings, all `CONFIRMED`, including **two 🔴 blocking hostile-input bugs in the 7z parser** —
-an unbounded allocation from a few header bytes, and a 66-byte archive that hangs
-`open_archive`. Both are now threat-model **O13** and **O14**. The yield per line is not
-falling as the sweep proceeds, and the 19 783 unswept lines are roughly five times the batch
-that just produced those two.
+**The precondition is now met.** The first pass finished on 2026-09-20, so a second pass is no
+longer ruled out by that decision — but his order was *finish reading, then fix everything
+outstanding, then pass again*, and the middle step has not happened: 183 findings are open on
+#315. A re-sweep is the step after draining them, not instead of it.
+
+**S1 and S2 were the evidence for what the rest was worth, and the rest paid out.** Those
+3 972 lines produced fifteen findings, all `CONFIRMED`, including **two 🔴 blocking
+hostile-input bugs in the 7z parser** — an unbounded allocation from a few header bytes, and a
+66-byte archive that hangs `open_archive`. Both are now threat-model **O13** and **O14**. The
+yield per line did not fall as the sweep proceeded: the last five batches read 8 859 lines and
+raised 75 findings, seven of them blocking, at a higher rate than S1 and S2 managed.
 
 **Run it in batches, not in one pass.** The single 4 327-line pass produced 39 threads and
-six parcels of follow-up work, and it is the most expensive thing on this page per line
-covered. The batches below are drawn on subsystem seams so each is one agent's reading pass
-and one reviewable set of threads.
+six parcels of follow-up work, and it was the most expensive thing on this page per line
+covered. The batches below were drawn on subsystem seams so each is one agent's reading pass
+and one reviewable set of threads — keep that shape for the second pass.
 
 **S1 and S2 confirmed the sizing.** Roughly 2 000 lines each produced 3 and 12 findings, all
 confirmed, in a batch small enough to review in one sitting and fix in one PR each. Keep the
@@ -343,44 +367,38 @@ tell the agent to weight hostile and truncated input at every read — both bloc
 came out of exactly that instruction — and tell it what is already decided or already tracked,
 or it spends its budget re-raising known items.
 
-The order is roughly by what a reader of the existing threads would most want checked next;
-nothing in it is a hard dependency.
+The order was roughly by what a reader of the existing threads would most want checked next;
+nothing in it was a hard dependency, which is why the passes that ran could re-cut it freely.
 
-**The batches that actually ran on 2026-09-19 were cut on different seams and numbered S15 and
-S16**, so this table is the plan rather than the record. S15 took the shared stream and codec
-path and S16 took RAR, between them finishing S5 and taking a file each out of S6, S10 and
-S12. The rows below are annotated where that happened, but **the `SWEPT` markers on #315 are
-what is authoritative about any given file** — check a batch's scope against them before
-handing it out, or an agent will re-read something.
+**This plan was never executed as written, and it is now spent.** The batches that actually
+ran were cut on different seams and numbered S15–S25, and by 2026-09-20 they had covered every
+file in every row below. The table is kept as the record of what was planned and which pass
+actually took it; **the `SWEPT` markers on #315 remain the only authority on any given file.**
+Do not hand out a row from this table — there is nothing left in it.
 
 | Batch | Files | Lines |
 | --- | --- | --- |
 | ~~**S1 — ZIP backend**~~ — *done 2026-09-17, 3 findings* | 3 | 1 855 |
 | ~~**S2 — 7z parser + pipeline**~~ — *done 2026-09-17, 12 findings, two blocking* | 4 | 2 117 |
-| **S3 — reader base** — `base_reader.py`, `reader.py`, `open_site.py` | 3 | 2 481 |
-| **S4 — extraction** — `extraction.py`, `extraction_types.py`, `internal/filters.py`, `escaping.py` | 4 | 2 406 |
+| ~~**S3 — reader base**~~ — *`base_reader.py` by S17; `reader.py` by S20; `open_site.py` by S25* | 3 | 2 481 |
+| ~~**S4 — extraction**~~ — *first three by S17; `escaping.py` by S25* | 4 | 2 406 |
 | ~~**S5 — codec engine**~~ — *all three files taken by S15, 2026-09-19* | 3 | 2 703 |
-| **S6 — codec formats** — `xz.py`, `unix_compress.py`, `lzip.py`; *`decompress.py` went with S15* | 3 | 1 647 |
-| **S7 — detection** — `detection.py`, `detection_workspace.py`, `registry.py`, `format_provenance.py`, `format_args.py` | 5 | 1 719 |
-| **S8 — stream spine** — `archive_stream.py`, `verify.py`, `counting.py`, `peekable.py`, `streamtools/full_count.py` | 5 | 1 587 |
-| **S9 — TAR + ISO** — `tar_reader.py`, `iso_reader.py` | 2 | 1 438 |
-| **S10 — single-file, directory** — `single_file_reader.py`, `directory_reader.py`; *`rar_unrar.py` went with S16* | 2 | — |
-| **S11 — public API surface** — `core.py`, `types.py`, `exceptions.py`, `detection_cost.py`, `cost.py`, `config.py` ×2, `__init__.py` | 8 | 2 521 |
-| **S12 — diagnostics and naming** — `diagnostics.py`, `diagnostics_collector.py`, `naming.py`, `selection.py`, `listing_limits.py`, `timestamps.py`; *`sfx.py` went with S15* | 6 | 1 453 |
-| **S13 — CLI** — all of `cli/` | 14 | 1 975 |
-| **S14 — passwords, hashing, framing** — `password.py`, `password_confirm.py`, `hashing/`, `brotli_framing.py`, `zstd_framing.py`, `measurement.py` ×2, `logs.py` | 10 | 888 |
+| ~~**S6 — codec formats**~~ — *`xz.py` by S18; `unix_compress.py` and `lzip.py` by S23; `decompress.py` went with S15* | 3 | 1 647 |
+| ~~**S7 — detection**~~ — *first three by S19; the last two by S25* | 5 | 1 719 |
+| ~~**S8 — stream spine**~~ — *`archive_stream.py` and `verify.py` by S18; the other three by S23* | 5 | 1 587 |
+| ~~**S9 — TAR + ISO**~~ — *`tar_reader.py` by S18; `iso_reader.py` by S22* | 2 | 1 438 |
+| ~~**S10 — single-file, directory**~~ — *both by S22; `rar_unrar.py` went with S16* | 2 | — |
+| ~~**S11 — public API surface**~~ — *by S20, except `detection_cost.py` (S19), `cost.py` (S21) and `internal/config.py` (S25)* | 8 | 2 521 |
+| ~~**S12 — diagnostics and naming**~~ — *diagnostics pair and `listing_limits.py` by S21; `naming.py`, `selection.py` and `timestamps.py` by S25; `sfx.py` went with S15* | 6 | 1 453 |
+| ~~**S13 — CLI**~~ — *all of `cli/` plus `__main__.py` by S24, 2026-09-20, 10 findings* | 14 | 1 975 |
+| ~~**S14 — passwords, hashing, framing**~~ — *by S25, except the two framing modules and `measurement.py` ×2 (S23 and S21)* | 10 | 888 |
 
-**Three of these overlap work already specced**, and are worth sequencing around rather than
-running blind: S7 (detection) against the three detection changes, since the evidence ledger
-rewrites much of what it would review; S5/S6 (codecs) against Topic 6, the decode-engine
-performance review that is already ranked; and S4 (extraction) against `bounded-source-spooling`,
-whose four design questions were answered and merged on 2026-09-19 (#251), so the shape it
-will impose on extraction is now known rather than pending.
-
-**S1 and S2 are the two to run first.** They are the direct counterparts of the work already
-done — parcels D and E read the RAR pair, and threads 51/53/54 read part of `sevenzip_reader.py`
-— so they are the places where the existing threads most obviously stop mid-subsystem. `zip_aes.py`
-thread 15 also lands in S1's territory.
+**Three of these overlapped work already specced**, and the passes that ran took them anyway:
+detection went in S19 while the evidence ledger was still open, codecs in S15 and S23 ahead of
+Topic 6's ranking, and extraction in S17 after `bounded-source-spooling`'s four design answers
+merged on 2026-09-19 (#251). Only the last of those sequenced cleanly; the lesson for the
+second pass is that a sweep reading code a change is about to rewrite costs a re-read, and
+that is the one dependency worth honouring.
 
 ### How sweep coverage is counted
 
@@ -525,24 +543,33 @@ anything, which makes it the clearest candidate for the next hand-out.
 
 | Review | Population | Character |
 | --- | --- | --- |
-| [`typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 2 `type: ignore`, 26 `cast()`, 37 `Any`, 3 `TypeGuard`, 13 `assert isinstance` | **Excavation.** Its precedent is #324's finding 3: a `TypeGuard` that lied, which the checkers then believed and propagated |
+| [`typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 3 suppressions, 22 `cast()`, 48 `Any`, 3 `TypeGuard`, 12–13 `assert isinstance` | **Excavation.** Its precedent is #324's finding 3: a `TypeGuard` that lied, which the checkers then believed and propagated. The commissioning figures here ("26 casts / 37 `Any`") were a grep; [`inventory.md`](../review/typing-escape-hatches/inventory.md) has the counted ones |
 | [`exception-catchalls/`](../review/exception-catchalls/brief.md) | 30 marked blind `except` sites, in five patterns | **Verification.** Its own brief says recon found no smoking gun and warns against manufacturing severity |
 
-**The typing brief's census is already stale in two rows, because #324 merged after it was
-written.** Worth fixing before anyone starts, so the first hour is not spent rediscovering it:
+**The typing brief's census was stale in three rows, and the inventory in #352 supersedes
+it.** Read [`SUMMARY.md`](../review/typing-escape-hatches/SUMMARY.md) and
+[`inventory.md`](../review/typing-escape-hatches/inventory.md) rather than the brief's
+commissioning table:
 
+- **S1 — the `CONTRIBUTING.md` suppression rule** is **fixed in #352**. The rule used to
+  offer `# type: ignore[attr-defined]` as an example of a *specific* suppression, which it
+  is not here: pyrefly does not validate the bracketed code, so that form silences the whole
+  line. It now names `# pyrefly: ignore[<code>]` / `# ty: ignore[<code>]`, the forms that
+  fail closed.
 - **S2 — "both existing `src/` suppressions are dead, DELETE them"** is **done**. #324's
   `chore(types)` commit removed both; `grep -c "type: ignore" src/` is now 0.
 - **S3 — "two more exist only on #324's branch, sequence after it merges"** has happened.
-  Both are on `main` now (`streamtools/base.py:195`, `streams/peekable.py:86`), already in
-  the `# pyrefly: ignore[bad-override]` form with inline reasons, which is the outcome the
-  brief wanted rather than work it still needs.
+  Both are on `main` now (`streamtools/base.py`, `streams/peekable.py`), already in the
+  `# pyrefly: ignore[bad-override]` form with inline reasons, which is the outcome the brief
+  wanted rather than work it still needs. A third (`full_count.py`) has since joined them,
+  same disposition.
+- **S6 — the twelve hidden pyrefly warnings** are answered: they appear under
+  `--min-severity=warn`, and none is a hidden error.
 
-What survives untouched is the larger half: **26 `cast()` and 37 `Any`**, concentrated in
-`tar_reader` (6 casts), `zip_reader` (5), `streamtools/binaryio.py` (12 `Any`) and
-`iso_reader.py` (8). Plus seed **S1**, which is a `CONTRIBUTING.md` fix rather than an audit
-finding: the rule currently offers `# type: ignore[attr-defined]` as an example of a
-*specific* suppression, and in this repo it is not one.
+What survives is the larger half, and it is now a worklist rather than a population: staged
+fix PRs 1–5 and 7, concentrated in `binaryio.py`, `tar_reader`, `zip_reader`, `iso_reader`
+and `decompress`. Q1 is decided (public `extra` values are `object`) and lands with the
+inventory.
 
 ## OpenSpec changes
 
@@ -607,11 +634,9 @@ Topic 8 (docs content) ∥ Topic 10 (catalogue) ──> Topic 6 (perf) ──> T
 
 typing-escape-hatches ∥ exception-catchalls ──> (nothing; both unblocked, neither started)
 
-sweep S1..S14 ──> new #315-shaped threads ──> new parcels, new changes
-        │              (the 55% of src/ no review has read)
-        ├── S4 wants #251's answers first    (bounded-source-spooling)
-        ├── S5, S6 want Topic 6's ranking    (decode-engine performance)
-        └── S7 wants the detection order     (ledger rewrites what it would review)
+sweep S0..S25 ──> 183 #315 threads ──> new parcels, new changes
+        │              (first pass over src/ complete 2026-09-20; draining is what is left)
+        └── a second pass waits on those threads being drained, not on a decision
 
 formats/sevenzip.md, tar.md, iso.md, single-file.md ──> more §10-style registers
 docs/ prose + how-it-works.md ──> (nothing; skeleton, scope and claims all done)
@@ -619,7 +644,8 @@ docs/ prose + how-it-works.md ──> (nothing; skeleton, scope and claims all d
 
 **One thing in this graph is waiting on a person rather than on work:** the threads 10/14
 module-placement call. The #251 design answers landed on 2026-09-19, which was the other one.
-The sweep and the docs wait on nobody — they wait on someone starting the next batch.
+The docs wait on nobody — they wait on someone starting the next page. The sweep's reading is
+done; its 183 threads wait on being drained.
 Everything else is either running, or ready for whoever picks it up next.
 
 `single-file-open-time-validation`, `seekable-gzip-and-block-writing` and
@@ -693,6 +719,11 @@ of actionable work" about a pool that is now nearly empty.
 | `src/` never swept | *not tracked* | 88% (stated as 76%) | **55% — 68 files, 19 783 lines** |
 | Handbook pages unwritten | *not tracked* | ~5 of ~7 | **~5 of ~7** |
 
+**One row has since gone to zero.** On 2026-09-20 five parallel batches finished the first
+pass over `src/`: never swept is **0%**, and #315 threads open rose accordingly — 183 findings
+across all fourteen batches, seven of them blocking. The table is left at its 2026-09-19
+column so the day-by-day reading stays honest; count the current figure from the markers.
+
 **Two of these rows moved the wrong way earlier in the day, and both were good news.** Open
 threads went from 10 to 25 because the sweep ran and found fifteen more, then back to 20 as the
 already-fixed ones were resolved. Unimplemented OpenSpec changes went from 6 to 12 because #347
@@ -712,9 +743,9 @@ one placement decision.
 **The registers are not where the remaining work is.** The two rows added to the table above
 are each larger than everything else on this page put together, and until this revision
 neither appeared anywhere that answers "what is open?". A snapshot that counted only the
-registers would read as nearly finished; the honest reading is that the parts of the library
-that have been examined closely are in good shape, and three quarters of it has not been
-examined closely.
+registers would read as nearly finished; the honest reading, once the first pass closed, is
+that the whole library has now been examined closely once and the findings that produced are
+the work.
 
 **That is the input to the release question**, and two days of evidence sharpened it. Nothing
 measured so far blocks a publication: the confirmed bugs are P15 and P16, both specced in

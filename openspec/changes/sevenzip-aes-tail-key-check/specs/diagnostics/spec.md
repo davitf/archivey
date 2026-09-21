@@ -117,3 +117,15 @@ caller already knows, which the admission clause refuses.
 | Encrypted member whose password was confirmed against an integrity anchor, stream closed before EOF | No diagnostic |
 | Encrypted member read to EOF | No diagnostic; the digest decides |
 | Unencrypted member, stream closed before EOF | No diagnostic |
+
+#### Scenario: A malformed optional member-header record is reported, not raised
+
+- **WHEN** a backend drops an optional metadata record inside a member header because it
+  could not be parsed, and lists the member without it
+- **THEN** it SHALL emit `MEMBER_HEADER_RECORD_SKIPPED` with `MemberHeaderRecordContext`,
+  attached to that member
+- **AND** `record` SHALL name the record as the format names it, and `record_id` SHALL
+  carry the format's numeric type where it has one, so a record the backend cannot name is
+  still identifiable
+- **AND** the field the record would have populated SHALL be absent rather than partially
+  written: a dropped record never changes a value, it only fails to set one

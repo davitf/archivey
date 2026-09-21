@@ -778,12 +778,19 @@ Two mechanisms satisfy this; use whichever your environment gives you:
   Other hosts use their own equivalent — the requirement is the *identifiability*, not that
   specific string. Do not sign a comment with a tool that did not write it.
 
-**Claude Code: do not write that footer yourself — the tool appends it.** Verified on #326
-against review bodies, inline review comments, and thread replies: each came back carrying
-exactly one server-added footer when the posted text had none. A footer you add as well is
-deduplicated on inline comments and replies, but **not** on a review body, which then shows
-it twice ([review 5178024776](https://github.com/davitf/archivey/pull/326#pullrequestreview-5178024776)).
-Leave it off and let the tool add it.
+**Claude Code: whether to write the footer yourself depends on the posting path, so check
+before you post a batch.** On #326, against review bodies, inline review comments and thread
+replies, each came back carrying exactly one server-added footer when the posted text had
+none; a footer added as well is deduplicated on inline comments and replies but **not** on a
+review body, which then shows it twice
+([review 5178024776](https://github.com/davitf/archivey/pull/326#pullrequestreview-5178024776)).
+
+**On #315 through the GitHub MCP tools, nothing is appended.** Five sweep batches verified it
+independently on 2026-09-20 by reading their own stored bodies back, and two of them lost the
+footer on their first review body before noticing. Write it explicitly there and confirm
+exactly one per comment. A review body cannot be edited through the MCP tools, only patched
+with a direct API call, so a body posted without one is expensive to fix — which is the
+argument for running the one-comment check first, as the paragraph below already says.
 
 This is host-specific. **Cursor and any other host whose posting path does not append a
 footer must still add its own** — the requirement is identifiability, and a comment posted

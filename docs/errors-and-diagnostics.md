@@ -38,6 +38,23 @@ misuse raise [`ArchiveyUsageError`][archivey.ArchiveyUsageError] (e.g.
 provide an operation — seeking a non-seekable member, a format that can't list — that is a
 real `ArchiveyError`: `UnsupportedOperationError`.)
 
+The same applies to an argument that is the wrong type or an unusable value — a
+`config=` that is not an `ArchiveyConfig`, a `budget=` that is not a
+`DetectionBudget`, an `encoding=` naming a codec Python does not have, a
+`members=` holding something that is neither a name nor an `ArchiveMember`.
+Each is refused as `ArchiveyUsageError` at the call that made it, rather than failing
+somewhere further in. The exceptions are the source and destination arguments, where a
+wrong type raises `TypeError` as it would anywhere else in Python, and looking up a
+member name that is not in the archive, which raises `KeyError` like a mapping.
+
+`ArchiveyConfig`, `ExtractionLimits` and `ListingLimits` check their own fields when you
+construct them, for the same reason: a limit is a promise about an operation that has not
+started yet, so the constructor is the last place a message can still name what you wrote.
+That also covers the values that would quietly switch a guard off — `None` on
+`ratio_activation_threshold`, which is not optional, and a NaN or an infinity on
+`max_ratio`, neither of which any ratio ever exceeds. Pass `None` on a field that allows
+it to disable that guard on purpose.
+
 ## Diagnostics
 
 Structured advisories are queryable on the reader and on the extraction report — not
@@ -60,6 +77,7 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | `PASSWORD_ARGUMENT_UNUSED` | You passed `password=` to a format with no encryption. Passing a keyring across a batch of mixed archives is the intended use, so it is accepted and simply never consulted. |
 | `ENCODING_ARGUMENT_UNUSED` | You passed `encoding=` to a backend that decodes names another way — 7z stores UTF-16, RAR decodes in its own parser, directory and single-file names come from the filesystem. |
 | `MEMBER_NAME_BIDI_CONTROL` | A member name contains a Unicode bidi formatting control. The context names the exact codepoints, because an *override* (U+202A–202E, U+2066–2069 — how `evil‮gnp.exe` displays as a `.png`) is a different thing from a *directional mark* (U+061C, U+200E, U+200F), which appears in ordinary Arabic and Hebrew filenames. |
+| `MEMBER_HEADER_RECORD_SKIPPED` | One optional record in a member's header was malformed and was dropped; the member is listed without whatever it carried. Today this is the RAR5 extra area — a checksum, a timestamp, a redirect target. The field it would have filled is **absent, never wrong**, and the context names the record and the parse failure. Refusing the whole archive over one bad checksum record would discard every member that parsed, and `unrar` itself lists such archives. A member header is attacker-sized, so how many records one member may drop is capped; reaching the cap stops the header being read any further, and one diagnostic reports that with `list_truncated` set. |
 
 #### What is *not* here: per-member extraction outcomes
 

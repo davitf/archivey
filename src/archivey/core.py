@@ -36,6 +36,12 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     UnsupportedFormatError,
 )
+from archivey.internal.arg_checks import (
+    check_callable,
+    check_config,
+    check_encoding,
+    check_extraction_limits,
+)
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.diagnostics_collector import collector_from_config
@@ -309,6 +315,8 @@ def open_archive(
     open_site = capture_open_site()
 
     check_archive_format(format, call="open_archive(format=…)")
+    check_config(config, call="open_archive(config=…)")
+    check_encoding(encoding, call="open_archive(encoding=…)")
 
     if streaming and concurrent_members:
         raise ArchiveyUsageError(
@@ -563,6 +571,7 @@ def open_stream(
     # Before any I/O: a value of neither format type used to fall through to
     # auto-detection, which silently discards the caller's assertion.
     check_stream_or_archive_format(format, call="open_stream(format=…)")
+    check_config(config, call="open_stream(config=…)")
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     collector = collector_from_config(effective_config)
@@ -706,6 +715,10 @@ def extract(
     # refused before the source is resolved and peeked, and the message names the call
     # the caller actually made.
     check_archive_format(format, call="extract(format=…)")
+    check_config(config, call="extract(config=…)")
+    check_extraction_limits(limits, call="extract(limits=…)")
+    check_encoding(encoding, call="extract(encoding=…)")
+    check_callable(on_progress, call="extract(on_progress=…)")
 
     # Peek only to choose access mode; open_archive re-resolves ``source`` (cheap).
     peek_target = resolve_source(source).open_source
