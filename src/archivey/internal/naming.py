@@ -224,6 +224,16 @@ def emit_member_name_normalized(
         and not presented_name.endswith("/")
     ):
         return
+    # The mirror case: a directory-shaped entry that turned out to be a link. A ZIP
+    # directory reparse point (a junction, or a directory symlink) is stored with the
+    # directory convention's trailing slash, which normalization drops because the
+    # member is a SYMLINK. That is the format's spelling, not an author override.
+    if (
+        member.type is MemberType.SYMLINK
+        and presented_name == member.name + "/"
+        and not member.name.endswith("/")
+    ):
+        return
     message = f"Member name normalized: {presented_name!r} -> {member.name!r}"
     collector.emit(
         code=DiagnosticCode.MEMBER_NAME_NORMALIZED,

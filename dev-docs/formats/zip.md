@@ -215,18 +215,56 @@ into datetime fields — archivey does both from the values `ZipInfo` exposes.
 | `raw_name` | The stored bytes, verbatim (no backslash rewrite) | — |
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
 | `modified` / `accessed` / `created` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra` | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
-| `type` | Directory via `ZipInfo.is_dir()`; symlink via Unix mode bits in `external_attr` (`zipfile` has no `is_symlink`) | — |
-| `link_target` | The member's **data**, not its metadata | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member |
+| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` (§2.2.1) or Unix mode bits in its high word (`zipfile` has no `is_symlink`); directory via `ZipInfo.is_dir()` otherwise | — |
+| `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` / `"reparse_data_unrecognized"` |
 | `compression` | `compress_type` → `CompressionMethod` | — |
 | `is_encrypted` | `flag_bits & 0x1` | — |
 | `hashes["crc32"]` | CDH CRC, as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
 | `comment` | CDH member comment | The entry stores none, which is the common case |
 | `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
-| `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members | — |
+| `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members, plus `is_junction` when a stored reparse buffer says so (§2.2.1) | — |
 
 Raw extra-field blobs are not surfaced. Duplicate names are legal and are not merged:
 members keep a positional `member_id`, name lookup is last-wins, and currency is computed
 in the reader spine so ZIP behaves like every other format.
+
+#### 2.2.1 Windows reparse points, and the junction that cannot be found
+
+A Windows symlink and an NTFS junction are both *reparse points*, and the attribute that
+marks them — `FILE_ATTRIBUTE_REPARSE_POINT`, `0x400` in the low (DOS) word of
+`external_attr` — is the same for both. What tells them apart is the **reparse tag**
+(`IO_REPARSE_TAG_MOUNT_POINT` `0xA0000003` against `IO_REPARSE_TAG_SYMLINK`
+`0xA000000C`), and that tag is not in any header: it is the first field of the
+`REPARSE_DATA_BUFFER`, which archivers store as the member's *content*. So archivey
+reads it exactly where it already reads a symlink target, in `_ensure_link_target`,
+and `extra["is_junction"]` is a listing-time flag whose source is read-time data. The
+parsing lives in `archivey.internal.windows_reparse`, shared with the 7z backend, which
+has the same problem for the same reason.
+
+Two things follow, both measured against archives built on a Windows runner
+(`tests/fixtures/external/README.md` §`junction/`, and `tests/test_windows_reparse.py`):
+
+**7-Zip's `-snl` is the only common writer that records any of this**, and it records it
+only for a **file** reparse point. bsdtar follows a junction outright and rewrites
+Windows symlinks as Unix ones; `Compress-Archive` follows everything.
+
+**A junction is always a directory reparse point, and 7-Zip stores no data for those.**
+`junction_dir` and `symlink_dir` come out byte-identical: the reparse bit set, the
+directory bit set, zero bytes of content, no extra field carrying the buffer. The tag is
+simply not in the archive, so `is_junction` is not derivable from one, and 7-Zip cannot
+restore the junction from its own output either. Such a member is surfaced as a symlink
+with `link_target` unset and a `SYMLINK_TARGET_UNAVAILABLE(reason="reparse_data_absent")`
+diagnostic — a link whose target the writer discarded, rather than a plain directory,
+which is what it was before and which silently lost the fact that anything was there.
+The trailing `/` the writer stores on that entry is dropped by `normalize_member_name`,
+because the member is not a directory; the same member has always been spelled without
+it in 7z.
+
+The junction path in the reader is therefore correct and unreachable from any archive
+these tools produce. It is kept, and tested against an assembled buffer, because the
+format permits a writer to store one and the `archive-data-model` spec promises the
+flag; `tests/test_windows_reparse.py::test_the_junction_and_the_symlink_are_indistinguishable_on_disk`
+pins the measurement so a 7-Zip that changes its mind fails rather than passes quietly.
 
 **A symlink's digest covers the target string.** ZIP stores a link's target as the member's
 data — 9 bytes for `file1.txt` — so `hashes["crc32"]` is a real digest, of a *path*, not of
@@ -488,6 +526,7 @@ behaviour a caller already sees.
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |
 | Symlink target from member data; encrypted target withheld | `::test_symlink_member`, `::test_encrypted_symlink_listing_without_password` |
+| Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
 | Overlapping-entry bomb | `::test_overlapping_entries_bomb_translated_to_corruption` |
 | AE-1/AE-2, wrong password, tampered ciphertext | `tests/test_zip_aes.py` |

@@ -37,6 +37,7 @@ from archivey.diagnostics import (
     EmptyArchiveContext,
     ExtractionReport,
     MemberListReport,
+    SymlinkTargetContext,
     UnconfirmedFormatContext,
 )
 from archivey.escaping import escape_control_chars, quoted
@@ -66,6 +67,7 @@ from archivey.internal.extraction_types import (
 )
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
+from archivey.internal.logs import backends as logger
 from archivey.internal.measurement import (
     ByteCounter,
     SeekCounter,
@@ -90,8 +92,10 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     source_byte_size,
 )
+from archivey.internal.windows_reparse import parse_reparse_data
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
+    EXTRA_IS_JUNCTION,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -1254,6 +1258,55 @@ class BaseArchiveReader(ArchiveReader):
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         """Populate ``link_target`` from member data when needed. Base is a no-op."""
         return
+
+    def _apply_reparse_data(self, member: ArchiveMember, data: bytes) -> None:
+        """Set ``link_target`` (and ``is_junction``) from a Windows reparse buffer.
+
+        The reparse tag that separates a junction from a symlink is the first field of
+        that buffer, and the buffer is the member's *data*, so this is the same
+        listing-from-data path a symlink target already takes — see
+        :mod:`archivey.internal.windows_reparse`.
+
+        On anything that is not a link buffer the member keeps ``link_target`` unset
+        and gets a diagnostic. That covers the case every Windows archiver actually
+        produces for a junction: 7-Zip writes no data at all for a directory reparse
+        point, so the target and the tag are both simply gone, and a member whose
+        target we invented would be worse than one that says it has none.
+        """
+        parsed = parse_reparse_data(data)
+        if parsed is not None and parsed.target:
+            member.link_target = parsed.target
+            if parsed.is_junction:
+                member.extra[EXTRA_IS_JUNCTION] = True
+            return
+
+        if not data:
+            reason = "reparse_data_absent"
+            detail = "the writer stored no reparse data for it"
+        elif parsed is None:
+            reason = "reparse_data_unrecognized"
+            detail = (
+                f"its {len(data)} bytes of data are not a symlink or junction buffer"
+            )
+        else:
+            reason = "reparse_data_nameless"
+            detail = "its reparse data names no target"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
+            message=(
+                f"Cannot read the link target of {quoted(member.name)}: {detail}; "
+                f"leaving link_target unset."
+            ),
+            context=SymlinkTargetContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member._member_id,
+                reason=reason,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
 
     @staticmethod
     def _index_member_name(

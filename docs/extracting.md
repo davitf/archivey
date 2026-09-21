@@ -44,8 +44,14 @@ archivey.extract("archive.zip", "out/")
 - **Never write through a symlink:** overwrite handling replaces symlinks, never
   follows them; atomic temp-file + `os.replace` writes mean interrupted extraction
   never leaves a half-written destination file.
-- **Special files** (devices, FIFOs, sockets) are always rejected; NTFS junctions are
-  detected, flagged, and never traversed.
+- **Special files** (devices, FIFOs, sockets) are always rejected; an NTFS junction is
+  never traversed, because it is a link and extraction never follows one. It is
+  *flagged* as a junction — `extra["is_junction"]` — only where the archive says so,
+  which in practice means RAR and a directory tree read from a Windows filesystem. ZIP
+  and 7z carry the flag too when the writer stored the junction's reparse data, but
+  7-Zip does not store it for a directory, and a junction is always a directory, so in
+  practice a junction from those two arrives as a link with no target rather than a
+  flagged one.
 - **Deceptive names:** a member name (or link target) containing a Unicode bidi
   **override or isolate** — U+202A–202E, U+2066–2069 — is rejected with
   `DeceptiveNameError` under `STRICT` (the default) and `STANDARD`. Those characters

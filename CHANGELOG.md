@@ -41,6 +41,24 @@ promise with that line; treat `0.2.0` as the first release of this library.
   (`FORWARD_ONLY < SEEKABLE`), so the test is
   `availability.required_source <= reader.cost.stream_capability`.
 
+### Fixed
+
+- **A Windows symlink in a ZIP or a 7z now reports its real target.** Both formats store
+  such a link as a `REPARSE_DATA_BUFFER` — the Win32 structure, not a bare path — and
+  neither backend parsed it. 7z decoded those ~92 binary bytes as UTF-8 and handed the
+  result back as `link_target`, which extraction would then have used as a path; ZIP did
+  not recognise the member as a link at all and presented the buffer as its file content.
+  Both now decode it, which also yields `extra["is_junction"]` from the reparse tag.
+  A directory reparse point — an NTFS junction, or a directory symlink — is surfaced as a
+  link with `link_target` unset and a `SYMLINK_TARGET_UNAVAILABLE` diagnostic, because
+  7-Zip stores no reparse data for those at all: measured, not assumed, against archives
+  built on Windows (`tests/fixtures/external/README.md`). For the same reason
+  `is_junction` stays unset for a junction written by 7-Zip — the tag that would identify
+  it is in the data the writer discarded. That diagnostic is in
+  `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses such an archive rather than
+  reading a link whose target is gone; previously 7z reported an empty target for it and
+  ZIP reported a directory, and neither said anything.
+
 ### Changed
 
 - **`password=` no longer raises on a format with no encryption.** All three forms — a

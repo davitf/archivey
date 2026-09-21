@@ -756,13 +756,33 @@ class SevenZipReader(BaseArchiveReader):
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        # Two kinds of member reach this point. A Unix symlink (S_ISLNK in the high
+        # word of `attributes`) stores its target as plain bytes. A Windows reparse
+        # point stores a REPARSE_DATA_BUFFER, whose first field is the tag that
+        # separates a junction from a symlink; decoding that as UTF-8 reports the
+        # buffer itself as the target, which is what this used to do.
+        attrs = raw.record.attributes
+        is_reparse_point = (
+            attrs is not None
+            and not stat.S_ISLNK(attrs >> 16)
+            and bool(attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT)
+        )
+        if is_reparse_point and member.size == 0:
+            # 7-Zip stores no data for a directory reparse point, which is what every
+            # junction is; there is nothing to open.
+            self._apply_reparse_data(member, b"")
+            return
         try:
             with self._open_member(member) as stream:
-                member.link_target = stream.read().decode(
-                    "utf-8", errors="surrogateescape"
-                )
+                data = stream.read()
         except EncryptionError:
             return
+        if is_reparse_point:
+            self._apply_reparse_data(member, data)
+        else:
+            member.link_target = data.decode("utf-8", errors="surrogateescape")
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw

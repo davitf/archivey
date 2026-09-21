@@ -59,3 +59,57 @@ among them.
 
 Only three of the nineteen attached files are committed; the rest are the same shape from
 the same two sources.
+
+## `junction/`
+
+Two archives of the same Windows tree, one ZIP and one 7z, both written by **7-Zip
+26.03 with `-snl`** (store symbolic links as links) on a `windows-latest` GitHub runner
+on 2026-09-21. They exist because an NTFS junction cannot be created on Linux or macOS
+at all, so nothing here can produce the shape under test.
+
+The tree is a junction and two symlinks beside the directory they point at:
+
+```cmd
+mkdir tree\target
+echo hello> tree\target\payload.txt
+echo plain> tree\regular.txt
+cd tree
+mklink /J junction_dir target
+mklink /D symlink_dir target
+mklink symlink_file target\payload.txt
+cd ..
+7z a -t7z  junction_7zip_snl.7z  tree\* -snl
+7z a -tzip junction_7zip_snl.zip tree\* -snl
+```
+
+The symlinks are the control: telling a junction from a directory symlink is the whole
+job of `extra["is_junction"]`, so a fixture with only a junction in it could not show
+whether detection works or merely guesses.
+
+### What they turned out to contain
+
+**7-Zip stores the reparse data buffer for a *file* reparse point and nothing at all for
+a *directory* one.** `symlink_file` carries its full 92-byte buffer, tag
+`IO_REPARSE_TAG_SYMLINK`, from which the real target decodes. `junction_dir` and
+`symlink_dir` carry the `FILE_ATTRIBUTE_REPARSE_POINT` bit (`0x410` with the directory
+bit) and zero bytes of content — no reparse data, and no extra field carrying it
+either. Identical in both formats, with and without `-snl`.
+
+A junction is always a directory reparse point. The reparse tag is the only thing that
+separates one from a directory symlink, and it lives in the data that was never
+written, so **a junction written by 7-Zip cannot be recognised as one** — by archivey,
+or by 7-Zip itself on the way back out. `tests/test_windows_reparse.py` pins that as a
+measured fact, so a future 7-Zip that starts storing it will fail the test rather than
+pass unnoticed.
+
+The other two tools on a stock Windows box do not get that far, which is why neither is
+committed here:
+
+- **bsdtar** (`tar.exe`) follows a junction and archives the target's contents through
+  it, while converting Windows symlinks into ordinary Unix symlinks (`create_system` 3,
+  mode `0o120666`) that archivey already reads.
+- **`Compress-Archive`** follows everything, storing even a file symlink as a regular
+  file holding the target's bytes.
+
+See [`dev-docs/formats/zip.md`](../../../dev-docs/formats/zip.md) for how the reader
+uses this.

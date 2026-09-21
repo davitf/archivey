@@ -92,6 +92,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.internal.zip_aes import (
     open_winzip_aes_member,
     parse_winzip_aes_extra,
@@ -392,6 +393,18 @@ def _zip_timestamps(
     return modified, accessed, created, issues
 
 
+def _is_windows_reparse_point(info: zipfile.ZipInfo) -> bool:
+    """True when this entry is a Windows symlink or junction (§2.2.1 of the handbook).
+
+    The bit lives in the low (DOS attribute) word of ``external_attr``, which only a
+    DOS/Windows creator fills in — a Unix creator's authority is the mode in the high
+    word, so bit ``0x400`` there means nothing and is not read.
+    """
+    return info.create_system != 3 and bool(
+        info.external_attr & FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
 class ZipReader(BaseArchiveReader):
     """Reads a ZIP archive via stdlib ``zipfile``."""
 
@@ -645,7 +658,16 @@ class ZipReader(BaseArchiveReader):
             stat.S_IMODE(full_mode) if (info.external_attr != 0 and is_unix) else None
         )
 
-        if info.is_dir():
+        # A Windows reparse point (symlink or junction) is marked by a DOS attribute
+        # bit in the low word, and 7-Zip's `-snl` is the only common writer that sets
+        # it. Checked before is_dir(): a directory reparse point carries both bits and
+        # is a link, not a directory — its trailing "/" is then dropped by
+        # normalize_member_name, which is how 7z already presents the same member.
+        is_reparse_point = _is_windows_reparse_point(info)
+
+        if is_reparse_point:
+            member_type = MemberType.SYMLINK
+        elif info.is_dir():
             member_type = MemberType.DIRECTORY
         elif is_unix and stat.S_ISLNK(full_mode):
             member_type = MemberType.SYMLINK
@@ -1421,13 +1443,26 @@ class ZipReader(BaseArchiveReader):
         assert isinstance(info, zipfile.ZipInfo), (
             "ZIP member is missing its ZipInfo handle"
         )
+        # A Windows reparse point stores a REPARSE_DATA_BUFFER rather than a bare
+        # path, and that buffer is where the junction tag lives. Decoding it as UTF-8
+        # would report ~92 bytes of binary as this member's link target.
+        is_reparse_point = _is_windows_reparse_point(info)
+        if is_reparse_point and info.file_size == 0:
+            # 7-Zip stores no data at all for a directory reparse point, which is what
+            # every junction is. Skip the open: there is nothing to read.
+            self._apply_reparse_data(member, b"")
+            return
         # A symlink's target is its (possibly encrypted) file data. Listing must stay
         # usable without a password, so a missing/wrong password leaves link_target
         # unset (following the link later fails with LinkTargetNotFoundError); other
         # errors surface translated like any member-read error.
         try:
             with self._open_member(member) as f:
-                member.link_target = f.read().decode("utf-8", errors="surrogateescape")
+                data = f.read()
+            if is_reparse_point:
+                self._apply_reparse_data(member, data)
+            else:
+                member.link_target = data.decode("utf-8", errors="surrogateescape")
         except EncryptionError:
             message = (
                 f"Cannot read the symlink target of {info.filename!r} without the "
