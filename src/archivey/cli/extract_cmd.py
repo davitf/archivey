@@ -38,11 +38,6 @@ from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
 
 
-def _cli_spelling(value: str) -> str:
-    """Render an enum value the way this CLI's ``--help`` prints it."""
-    return value.replace("_", "-")
-
-
 def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
     """Stem used for the smart enclosing directory.
 
@@ -493,27 +488,24 @@ def run_extract(
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
     pred = member_predicate(patterns, exclude)
-    # One shared vocabulary with the library, including the dash spelling the CLI's
-    # own --help advertises: ``enum_args`` treats ``-`` and ``_`` as the same, so the
-    # hand-rolled ``.replace("-", "_")`` this used to carry is gone. Converted here
-    # rather than passed through as strings so the CLI's own helpers below stay typed.
-    # ``spell=`` so a refusal lists the spelling ``--help`` advertises: the library's
-    # values use underscores and the CLI prints dashes, and a user who typo'd a dash
-    # form should not be shown three underscore forms with no way to tell which half
-    # was their mistake. Both are accepted either way.
+    # One shared vocabulary with the library: ``enum_args`` treats ``-`` and ``_`` as
+    # the same, so the hand-rolled ``.replace("-", "_")`` this used to carry is gone,
+    # and ``main.py`` derives its argparse ``choices=`` from these same enums. Converted
+    # here rather than passed through as strings so the CLI's own helpers below stay
+    # typed. These refusals are unreachable from the command line, where argparse has
+    # already checked the spelling; they are the guard for a direct caller of
+    # ``run_extract``.
     policy_enum = coerce_enum(
         policy,
         ExtractionPolicy,
         call="archivey extract",
         param="--policy",
-        spell=_cli_spelling,
     )
     overwrite_enum = coerce_enum(
         overwrite,
         OverwritePolicy,
         call="archivey extract",
         param="--overwrite",
-        spell=_cli_spelling,
     )
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
     abort_on_enum = coerce_enum_collection(
@@ -521,7 +513,6 @@ def run_extract(
         AbortOn,
         call="archivey extract",
         param="--abort-on",
-        spell=_cli_spelling,
     )
     archive_path = Path(archive)
 

@@ -95,6 +95,24 @@ def _accepted_archive_formats() -> str:
     return ", ".join(repr(s) for s in spellings)
 
 
+def _accepted_stream_formats() -> str:
+    """The spellings worth recommending for ``open_stream``, which is a narrower set.
+
+    ``coerce_stream_or_archive_format`` resolves every archive spelling, so it used to
+    borrow this message from ``coerce_archive_format`` — and then recommended ``zip``,
+    ``tar`` and the eight other container spellings to a call that refuses them one
+    frame later. Only the raw-stream pairs open here. ``uncompressed`` coerces but is
+    refused by ``open_stream``, which needs a compressed stream, so it is left out for
+    the same reason ``DIRECTORY`` and ``UNKNOWN`` are left out above.
+    """
+    spellings = sorted(
+        fmt.file_extension().lower()
+        for fmt in _FORMAT_NAMES
+        if fmt.container is ContainerFormat.RAW_STREAM and fmt.file_extension()
+    )
+    return ", ".join(repr(s) for s in spellings)
+
+
 @overload
 def coerce_archive_format(
     value: object, *, call: str, allow_none: Literal[False]
@@ -173,7 +191,7 @@ def coerce_stream_or_archive_format(
     raise ArchiveyUsageError(
         f"{call} takes a StreamFormat or an ArchiveFormat (or either spelled as a "
         f"string), but got {_describe(value)}. "
-        f"Accepted: {_accepted_archive_formats()}."
+        f"Accepted: {_accepted_stream_formats()}."
     )
 
 

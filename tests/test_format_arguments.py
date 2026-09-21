@@ -39,9 +39,12 @@ from archivey import (
     open_archive,
     open_stream,
 )
+from archivey.core import _resolve_stream_format
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.enum_args import normalize_spelling
 from archivey.internal.format_args import (
     _accepted_archive_formats,
+    _accepted_stream_formats,
     coerce_archive_format,
     coerce_stream_or_archive_format,
 )
@@ -299,18 +302,33 @@ def test_open_stream_accepts_a_stream_only_spelling(gz_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "call",
+    ("call", "expected", "not_expected"),
     [
-        lambda: coerce_archive_format("not-a-format", call="t()"),
-        lambda: coerce_stream_or_archive_format("not-a-format", call="t()"),
+        (
+            lambda: coerce_archive_format("not-a-format", call="t()"),
+            "'zip'",
+            "'gzip'",
+        ),
+        # ``open_stream`` refuses a container format, so naming ``zip`` here would send
+        # the caller into a second refusal — the defect the two accepted-list tests
+        # below pin as a property.
+        (
+            lambda: coerce_stream_or_archive_format("not-a-format", call="t()"),
+            "'gz'",
+            "'zip'",
+        ),
     ],
     ids=["archive", "stream_or_archive"],
 )
-def test_an_unknown_spelling_names_the_ones_that_work(call) -> None:  # type: ignore[no-untyped-def]
+def test_an_unknown_spelling_names_the_ones_that_work(  # type: ignore[no-untyped-def]
+    call, expected: str, not_expected: str
+) -> None:
     with pytest.raises(ArchiveyUsageError) as exc_info:
         call()
 
-    assert "'zip'" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert expected in message
+    assert not_expected not in message
 
 
 @pytest.mark.parametrize(
@@ -358,18 +376,50 @@ def test_a_container_format_does_not_reach_the_backend(tmp_path: Path) -> None:
         open_archive(path, format=ContainerFormat.TAR)  # type: ignore[arg-type]
 
 
-def test_the_accepted_list_only_recommends_spellings_that_open_something() -> None:
-    """``DIRECTORY`` and ``UNKNOWN`` are accepted but open nothing, so they are not advice.
+def _quoted(accepted: str) -> list[str]:
+    """The spellings out of an ``Accepted: ...`` fragment, unquoted."""
+    return [part.strip().strip("'") for part in accepted.split(",")]
 
-    The list is repair advice appended to every refusal; offering a spelling that leads
-    to ``UnsupportedFormatError`` or an ``OSError`` sends the caller somewhere worse.
+
+def test_the_archive_accepted_list_only_recommends_spellings_open_archive_takes() -> (
+    None
+):
+    """Every spelling the refusal recommends resolves to a format that opens something.
+
+    The list is repair advice appended to every ``coerce_archive_format`` refusal, so a
+    spelling on it that leads somewhere worse — ``format="unknown"`` raises
+    ``UnsupportedFormatError``, ``format="directory"`` an ``OSError`` — is a message
+    sending the caller into a second failure. Asserted as the property rather than as
+    the absence of the two names that prompted it, so a third extensionless format
+    cannot arrive unnoticed.
     """
     accepted = _accepted_archive_formats()
-
-    assert "unknown" not in accepted.lower()
-    assert "directory" not in accepted.lower()
     assert accepted == accepted.lower(), "mixed case implies case is significant"
-    assert "'zip'" in accepted and "'tar.gz'" in accepted
+
+    for spelling in _quoted(accepted):
+        fmt = coerce_archive_format(spelling, call="open_archive", allow_none=False)
+        assert fmt.container not in (
+            ContainerFormat.DIRECTORY,
+            ContainerFormat.UNKNOWN,
+        ), f"{spelling!r} is recommended but opens nothing"
+
+
+def test_the_stream_accepted_list_only_recommends_spellings_open_stream_takes() -> None:
+    """Same property for ``open_stream``, whose accepted set is the narrower one.
+
+    This is the half that was wrong: the message borrowed ``coerce_archive_format``'s
+    list, so a mistyped ``format=`` on ``open_stream`` was told to try ``zip``, ``tar``
+    and eight other container spellings that the very next frame refuses.
+    """
+    accepted = _accepted_stream_formats()
+    assert accepted == accepted.lower()
+
+    for spelling in _quoted(accepted):
+        resolved = coerce_stream_or_archive_format(spelling, call="open_stream")
+        stream = _resolve_stream_format(resolved, io.BytesIO(), DiagnosticCollector())
+        assert stream is not StreamFormat.UNCOMPRESSED, (
+            f"{spelling!r} is recommended but open_stream refuses it"
+        )
 
 
 def test_a_stream_format_object_is_still_refused_rather_than_widened() -> None:

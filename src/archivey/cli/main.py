@@ -6,10 +6,17 @@ import argparse
 import errno
 import sys
 from collections.abc import Sequence
+from enum import Enum
 from typing import NoReturn, TextIO
 
 import archivey
-from archivey import format_availability, list_known_formats
+from archivey import (
+    AbortOn,
+    ExtractionPolicy,
+    OverwritePolicy,
+    format_availability,
+    list_known_formats,
+)
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import run_extract
@@ -23,6 +30,7 @@ from archivey.cli.list_cmd import run_list
 from archivey.cli.logging_config import cli_logging
 from archivey.cli.test_cmd import run_test
 from archivey.exceptions import ArchiveyError
+from archivey.internal.enum_args import normalize_spelling
 
 # Registered verbs + aliases + reserved unimplemented verbs (known-verb-wins).
 _VERBS = frozenset(
@@ -172,6 +180,27 @@ def _common_parent(*, suppress_defaults: bool) -> _ArchiveyArgumentParser:
     return p
 
 
+def _cli_choices(enum_cls: type[Enum]) -> list[str]:
+    """The spellings this CLI advertises for an enum, derived from the enum itself.
+
+    Written down in one place so a member added to ``AbortOn`` or ``OverwritePolicy``
+    reaches the command line the day it is declared. A literal list here would silently
+    make the CLI accept less than the library does, which is what it used to do.
+    """
+    return [str(member.value).replace("_", "-") for member in enum_cls]
+
+
+def _cli_spelling(value: str) -> str:
+    """Fold a spelling the library accepts to the one ``choices=`` lists.
+
+    argparse applies ``type=`` before checking ``choices=``, so this is what lets
+    ``--abort-on blocked_member`` through: the library takes either separator and any
+    case, and the CLI should not be the narrower of the two. ``--help`` and the
+    invalid-choice message still show one canonical spelling each.
+    """
+    return normalize_spelling(value).replace("_", "-")
+
+
 def _add_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "patterns",
@@ -266,13 +295,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_extract.add_argument(
         "--policy",
-        choices=["strict", "standard", "trusted"],
+        choices=_cli_choices(ExtractionPolicy),
+        type=_cli_spelling,
         default="strict",
         help="extraction safety policy (default: strict)",
     )
     p_extract.add_argument(
         "--overwrite",
-        choices=["error", "skip", "replace", "rename"],
+        choices=_cli_choices(OverwritePolicy),
+        type=_cli_spelling,
         default="rename",
         help="collision policy (CLI default: rename; library default remains error)",
     )
@@ -288,7 +319,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_extract.add_argument(
         "--abort-on",
         action="append",
-        choices=["blocked-member", "name-collision", "name-sanitized"],
+        choices=_cli_choices(AbortOn),
+        type=_cli_spelling,
         default=None,
         metavar="EVENT",
         dest="abort_on",

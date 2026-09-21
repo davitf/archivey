@@ -37,6 +37,7 @@ from archivey import (
     OverwritePolicy,
     extract,
 )
+from archivey.cli.main import build_parser
 from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
@@ -376,3 +377,72 @@ def test_every_literal_spelling_actually_coerces(
     """The alias promises a type checker what the runtime must then accept."""
     for spelling in get_args(alias):
         assert coerce_enum(spelling, enum_cls, call="t()", param="p=") in list(enum_cls)
+
+
+# --- the CLI speaks the same vocabulary -------------------------------------------
+
+
+CLI_ENUM_OPTIONS = [
+    ("--policy", ExtractionPolicy),
+    ("--overwrite", OverwritePolicy),
+    ("--abort-on", AbortOn),
+]
+
+
+def _parser_choices(option: str) -> list[str]:
+    """The ``choices=`` argparse will enforce for ``option``, read off the real parser."""
+    parser = build_parser()
+    for action in parser._actions:  # noqa: SLF001 - argparse exposes no public reader
+        if option in action.option_strings:
+            assert action.choices is not None, f"{option} has no choices"
+            return list(action.choices)
+    for sub in parser._subparsers._group_actions if parser._subparsers else []:  # noqa: SLF001
+        for name, subparser in getattr(sub, "choices", {}).items():
+            if name != "extract":
+                continue
+            for action in subparser._actions:  # noqa: SLF001
+                if option in action.option_strings:
+                    assert action.choices is not None, f"{option} has no choices"
+                    return list(action.choices)
+    raise AssertionError(f"{option} is not declared on `archivey extract`")
+
+
+@pytest.mark.parametrize(("option", "enum_cls"), CLI_ENUM_OPTIONS, ids=lambda x: str(x))
+def test_the_cli_offers_every_member_of_its_enum(
+    option: str, enum_cls: type[Enum]
+) -> None:
+    """The CLI's spellings are derived from the enum, so a new member reaches it at once.
+
+    These were three hand-written lists, with nothing checking them against the enums
+    they mirror. They happened to agree, but a member added to ``AbortOn`` would have
+    been accepted by the library, promised by the ``Literal`` alias and documented — and
+    then refused by ``archivey extract`` with an argparse invalid-choice error, with
+    nothing in this suite going red.
+    """
+    assert set(_parser_choices(option)) == {
+        str(member.value).replace("_", "-") for member in enum_cls
+    }
+
+
+@pytest.mark.parametrize(("option", "enum_cls"), CLI_ENUM_OPTIONS, ids=lambda x: str(x))
+def test_the_cli_accepts_every_spelling_the_library_accepts(
+    option: str, enum_cls: type[Enum], tmp_path: Path
+) -> None:
+    """One vocabulary, not a narrower CLI copy of it.
+
+    Driven through the real parser rather than through the fold helper, because the
+    property is about argparse's wiring: ``type=`` runs before ``choices=``, which is
+    the whole reason ``--abort-on blocked_member`` gets through. Calling the helper and
+    then checking membership would pass with the ``type=`` removed, which is the
+    pre-fix state where the CLI refused a spelling the library accepts.
+    """
+    parser = build_parser()
+    archive = str(tmp_path / "a.zip")
+
+    for member in enum_cls:
+        value = str(member.value)
+        for spelling in (value, value.replace("_", "-"), value.upper()):
+            args = parser.parse_args(["extract", archive, option, spelling])
+            parsed = getattr(args, option.lstrip("-").replace("-", "_"))
+            got = parsed[-1] if isinstance(parsed, list) else parsed
+            assert coerce_enum(got, enum_cls, call="t()", param=option) is member
