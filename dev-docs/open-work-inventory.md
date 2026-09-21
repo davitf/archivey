@@ -86,14 +86,33 @@ PR is, not whether it is ready — read the PR.
 | [#390](https://github.com/davitf/archivey/pull/390) | The three-config gate is the author's judgement, except at release | Draft. The non-normative half; **merge #385 first**, which carries the statement it defers to |
 | [#391](https://github.com/davitf/archivey/pull/391) | Commission the public API review for the 0.2.0 freeze | Draft, docs only. Found that the real public surface is 120 importable names, not the 89 in `__all__` |
 
-**A merge commit closed the hub by accident, and the keyword is the lesson.** #365's squash
-body ends *"Closes #315 thread 56 / ARC-12."* GitHub reads `Closes #315` and stops at the
-number, so merging #365 at `11:10:27Z` closed #315 two seconds later — `closed_at`
-`2026-09-21T11:10:29Z`, `merged_at` null, the `closed` event carrying `0454c54`, which is
-#365's own merge commit. The hub held 142 open threads at the time. It was reopened the same
-day; `empty-base` was never touched. **Never write a closing keyword in front of `#315` in a
-commit message or a PR body** — write "#315 thread 56" without `Closes`, or name the thread
-by its URL, because the hub is the one PR in this repo that must never close.
+**A merge commit closed the hub by accident — twice in one afternoon, the second time from
+the page that was warning about the first.** PR 365's squash body ended *"Closes … thread 56
+/ ARC-12"* with the hub's number after the keyword, and merging it at `11:10:27Z` closed the
+hub two seconds later: `closed_at` `2026-09-21T11:10:29Z`, `merged_at` null, the `closed`
+event carrying `0454c54`, PR 365's own merge commit. 142 threads were open. Reopened at
+`11:16:47Z`.
+
+The revision of this page that recorded that then did it again. PR 388's squash landed at
+`12:45:29Z` as `e57f4bd` and the hub closed in the same second. Its text carried two
+candidates and neither has been isolated: the subject line said *"close 14 … threads"* with
+the number between the keyword and the reference, and the body said *"… were resolved on
+…"* with a preposition between them. GitHub's documented form is the keyword immediately
+before the reference, and neither of these is that, so **the parser is more permissive than
+its documentation** and reasoning from the documented form is not a defence.
+
+**So the rule is the blunt one, not the precise one: keep `close`, `closes`, `closed`, `fix`,
+`fixes`, `fixed`, `resolve`, `resolves` and `resolved` out of any sentence that names the hub
+by number**, in a commit message, a squash body or a pull request body. Write "the hub", name
+a thread by its URL, or say "the fix landed" rather than "closed". A pull request body becomes
+the squash body on merge, so the two are one surface, not two.
+
+**And a closure fails silently**, which is why the rule has to be mechanical rather than
+watchful. A closed hub still serves every thread over the `ccr/review_threads` route,
+`scripts/sweep_coverage.py` keeps returning the same coverage, and the review loop never
+touched it anyway (`loop:off`). Nothing in the repository degrades; the hub simply stops
+being a pull request. `empty-base` was untouched both times, so reopening restored everything
+and cost nothing.
 
 **#382 and #380 were two halves of one sweep and they collided; #380 merged on 2026-09-21 and
 resolved it.** Both refuse or coerce wrong-typed public arguments — #382 the object and numeric
@@ -106,8 +125,8 @@ picking one side of such a conflict deletes the other branch's validation with n
 at import.
 
 **Fourteen PRs merged on 2026-09-20 and 2026-09-21** — #365, #370, #371, #372, #373, #374,
-#375, #376, #377, #378, #380, #382 and #383/#384 — and between them they closed fifteen #315
-threads. #371, #373, #374 and #375 were the first three decided S15/S16 findings plus the RAR
+#375, #376, #377, #378, #380, #382 and #383/#384 — and between them they account for
+seventeen threads resolved on the hub. #371, #373, #374 and #375 were the first three decided S15/S16 findings plus the RAR
 mask fix, each turned around in about seven minutes; #370 removed the `pybcj` dependency
 outright; #382, #384 and #380 are the public-API argument, `extra`-typing and enum-coercion
 changes; #372 deleted `formats/rar.md` §10; #376, #377 and #378 are three waves of the typing
@@ -956,7 +975,7 @@ Ordered by what unblocks the most, then by what is cheapest to verify.
    prose conclusions became a runnable script, which was the objection against it)*.
 3. Close **#101** *(done, 2026-09-11)*, **#243** *(done)*, **#187** *(done — but see the
    native-stress section: the criterion it needed was not recorded)*.
-4. **Resolve the five #315 threads whose fixes merged in #349 and #350** — S1-F1, S1-F2,
+4. **Mark the five hub threads whose fixes merged in #349 and #350** — S1-F1, S1-F2,
    S1-F3, S2-F1, S2-F2. *Done 2026-09-19*, each verified against `main` first; see the #315
    section above. The ten remaining S1/S2 threads are tracked internally as one batch.
 

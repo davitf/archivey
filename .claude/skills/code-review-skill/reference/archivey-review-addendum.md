@@ -575,6 +575,17 @@ the file was read at all, **whether or not it found anything**:
 
 - **One top-level comment on #315 per file**, posted when you finish reading that file and
   before you start the next one. Not inline: a whole-file read has no line to anchor to.
+- **Never write a closing keyword in the same sentence as the hub's number**, in a commit
+  message, a squash body or a pull request body. `close`, `closes`, `closed`, `fix`, `fixes`,
+  `fixed`, `resolve`, `resolves` and `resolved` all count. GitHub's issue-closing parser reads
+  them and closes **the hub itself**, not the thread you meant, and it is more permissive than
+  its documentation: it has fired on both "keyword *number* reference" and
+  "keyword *preposition* reference", neither of which is the documented adjacent form. It
+  happened twice on 2026-09-21. Write "the hub", name the thread by its URL, or say "the fix
+  landed" instead of "closed". A pull request body becomes the squash body on merge, so they
+  are one surface. The closure is **silent** — every thread still serves over the API and
+  `sweep_coverage.py` keeps working — so nothing will tell you. See the note in
+  [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md).
 - **The marker is always its own comment, including for a file that produced findings.**
   Never put the `SWEPT` line in a review body, a finding, or a reply. A file with findings
   therefore gets its findings *and* a marker comment, which is the point: the marker says
