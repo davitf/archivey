@@ -232,15 +232,18 @@ addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=6
 # deadlock off the main thread is invisible to it: on 2026-09-21 both the free-threaded job
 # and an ordinary `py3.14 / core-only` job hung with --timeout armed, printed nothing for
 # twenty minutes, and were killed by timeout-minutes with no idea which test was running.
-# The thread method arms a threading.Timer instead, which needs only a moment of the GIL
+# The thread method arms a threading.Timer instead, which needs the GIL only momentarily
 # to dump every thread's stack and then call os._exit(1), so it survives cases the alarm
-# does not. Not a cure-all: a native call that holds the GIL throughout defeats both
-# methods equally — the accelerator busy-loop in dev-docs/known-issues.md is exactly that
-# shape, and no per-test timeout will ever name it. Windows has always run this way for want of SIGALRM, so this only
-# brings POSIX into line with it. The cost is that the rest of the run dies with the
-# timeout instead of one test failing alone — the trade Windows has been making here all
-# along, and a hang costs the whole job anyway. This is a diagnostic, not a fix; the hang
-# itself is tracked internally.
+# does not. The bound is narrow: a native call that *releases* the GIL, which is most
+# blocking I/O, is caught fine, and on a free-threaded build the GIL is not the
+# serialising thing at all. Both methods lose only when the GIL is held for the whole
+# hang — the accelerator busy-loop in dev-docs/known-issues.md is exactly that shape, and
+# no per-test timeout will ever name it.
+# The cost is that the whole run dies with the timeout instead of one test failing alone.
+# That cost is known to be acceptable rather than merely argued: pytest-timeout falls back
+# to this method where there is no SIGALRM, so Windows CI has been paying it here all
+# along and nobody noticed. A hang costs the whole job anyway.
+# This is a diagnostic, not a fix; the hang itself is tracked internally.
 # It is an ini option rather than an addopts flag on purpose. Five pytest entry points
 # override addopts — the two free-threaded CI steps, the PPMd stress workflow,
 # scripts/ci_run_native_modules.py and the hand-run recipe in dev-docs/known-issues.md —
