@@ -25,8 +25,9 @@ pass is one unnamed `unrar p` pipe over the whole archive.
 The handbook already records the decision, in three places: the RAR page's At a glance
 note ("there is no `unrar x` anywhere in `src/`, so every out-of-order solid `open()` is
 its own whole-archive decode"), §2.4 ("amortizing via `unrar x` into a temp directory was
-considered (**#8**) and rejected because it hides decode work behind later reads"), and
-the §6 deliberate-omissions row for #8. The reason is a VISION one: `AccessCost.SOLID`
+considered and rejected because it hides decode work behind later reads
+(`VISION.md`; §6)"), and the §6 deliberate-omissions row, which is where the **#8**
+label lives. The reason is a VISION one: `AccessCost.SOLID`
 and a per-open decode are honest signals, and a tempdir cache amortizes work the caller
 can neither see nor bound.
 

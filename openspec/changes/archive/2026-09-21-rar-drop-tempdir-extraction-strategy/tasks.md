@@ -20,10 +20,15 @@
 - [x] 3.1 Apply the same correction to `bounded-source-spooling`'s `format-rar` delta.
 - [x] 3.2 Apply the same correction to `rar5-stored-encrypted-native-read`'s `format-rar`
       delta.
+- [x] 3.3 Record the archive order this relies on. Both deltas here are written against
+      the live spec, and a `MODIFIED` delta replaces the whole requirement block, so this
+      change archives **before** `bounded-source-spooling` and
+      `rar5-stored-encrypted-native-read`. If either of those archives first, re-derive
+      this change's deltas from the live spec rather than applying them as written --
+      `openspec validate --strict` cannot see that class of mis-targeting.
 
 ## 4. Gates
 
 - [x] 4.1 `openspec validate rar-drop-tempdir-extraction-strategy --strict`.
 - [x] 4.2 `./scripts/check.sh --fix`.
-- [ ] 4.3 Archive this change once it is approved, so `openspec/specs/` carries the
-      corrected requirement.
+- [x] 4.3 Archive this change, so `openspec/specs/` carries the corrected requirement.

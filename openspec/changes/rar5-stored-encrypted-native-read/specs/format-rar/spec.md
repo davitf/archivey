@@ -123,9 +123,11 @@ SHALL be served by the same `stream_members()` pass as any other caller, plus a
 second pass for hardlink sources the selector excluded; on a solid archive each
 pass is one unnamed `unrar p` pipe over the whole archive. Which members a pass
 names on the `unrar` command line — and which need no spawn at all — is governed
-by `Constrain unrar argv by call site`. Any temp materialization SHALL be a declared RAR strategy, not an implicit
-in-memory buffer; the one the reader declares is copying a non-path archive
-*source* to disk so `unrar` can seek it. When the archive is opened from a
+by `Constrain unrar argv by call site`. Any temp materialization SHALL be a
+declared RAR strategy, not an implicit in-memory buffer; the only one the reader
+implements is copying a non-path archive *source* to disk so `unrar` can seek it,
+the deferred small-member optimization being the other strategy this capability
+declares. When the archive is opened from a
 non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
 caveat **at open** (path sources SHALL NOT): a single stream source SHALL warn
 that reading **a member that requires the RARLAB spawn** will copy the whole archive to

@@ -14,9 +14,11 @@ SHALL be served by the same `stream_members()` pass as any other caller, plus a
 second pass for hardlink sources the selector excluded; on a solid archive each
 pass is one unnamed `unrar p` pipe over the whole archive. Which members a pass
 names on the `unrar` command line — and which need no spawn at all — is governed
-by `Constrain unrar argv by call site`. Any temp materialization SHALL be a declared RAR strategy, not an implicit
-in-memory buffer; the one the reader declares is copying a non-path archive
-*source* to disk so `unrar` can seek it.
+by `Constrain unrar argv by call site`. Any temp materialization SHALL be a
+declared RAR strategy, not an implicit in-memory buffer; the only one the reader
+implements is copying a non-path archive *source* to disk so `unrar` can seek it,
+the deferred small-member optimization being the other strategy this capability
+declares.
 
 **Materializing the archive source is subject to the configured spool limit**
 (`access-mode-and-cost`) and SHALL NOT be exempt from it on the grounds that the source
