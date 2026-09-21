@@ -334,7 +334,8 @@ def open_archive(
         )
 
     # The public surface is two booleans; everything below the entry point keeps
-    # working in MemberStreams flags, which is also what CostReceipt reports.
+    # working in MemberStreams flags. A concrete reader exposes the value it was
+    # opened with as `reader.member_streams`; CostReceipt does not carry it.
     member_streams = MemberStreams(0)
     if seekable_members:
         member_streams |= MemberStreams.SEEKABLE

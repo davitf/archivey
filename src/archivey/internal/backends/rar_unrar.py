@@ -528,7 +528,11 @@ def open_unrar_p(
 
     When a non-empty ``password`` is given, the switch is bare ``-p`` and the password
     (plus a trailing newline) is written to the child's stdin — ``unrar`` reads it from
-    stdin when redirected, keeping the secret out of ``argv``.
+    stdin when redirected, keeping the secret out of ``argv``. ``unrar`` reads one
+    line, so a password containing a newline is truncated at it on this path, while the
+    native header path (``rar_parser._rar3_s2k`` / ``_rar5_s2k``) hashes the whole
+    string. Such a password would have to come from a writer other than RARLAB ``rar``,
+    which cannot produce one from ``argv``.
 
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
