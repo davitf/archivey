@@ -1481,15 +1481,15 @@ class RarReader(BaseArchiveReader):
             # a bounded transfer cost, roughly 1 ms/MB
             # (dev-docs/formats/rar.md §6), not new work.
             #
-            # Refused on both shapes anyway. Maintainer (davitf, #372,
-            # 2026-09-20): "I lean towards always rejecting, for consistency
-            # internally and to keep the meaning of the config option". Two
-            # arguments of his cut the other way and are recorded in rar.md
-            # section 7 as a question to revisit: an attacker can simply make
-            # the archive solid to sidestep the sharp case, and an out-of-order
-            # read of any solid archive already decodes everything ahead of
-            # it, glob or not. Names like this are almost always constructed
-            # (davitf, 2026-09-19), with the config flag as the escape hatch.
+            # Refused on both shapes anyway. Maintainer decision (davitf, #372,
+            # 2026-09-20): always reject, for internal consistency and so the
+            # config flag keeps a single meaning. Two arguments he raised cut
+            # the other way and are recorded in rar.md section 7 as a question
+            # to revisit: an attacker can simply make the archive solid to
+            # sidestep the sharp case, and an out-of-order read of any solid
+            # archive already decodes everything ahead of it, glob or not. The
+            # names are almost always constructed (davitf, 2026-09-19), with
+            # the config flag as the escape hatch.
             # A glob name matching nothing else has `glob_prefix == 0` and
             # never reaches this -- which also means this is **not** a guard
             # against a hostile mask as such: a name built to make a matcher
