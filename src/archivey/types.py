@@ -310,7 +310,9 @@ class CompressionMethod:
     """
 
     algo: CompressionAlgorithm
-    level: int | None = None  # compression level, if the format records it
+    # RAR's M1-M5 method-byte offset (0 = stored, 5 = best). RAR is the only
+    # backend that fills this in; ZIP, 7z and TAR leave it None.
+    level: int | None = None
     properties: bytes | None = None  # raw codec properties blob, if any
 
 
@@ -372,7 +374,7 @@ EXTRA_RAR_CREATED_IS_CTIME: Final = "rar.created_is_ctime"
 
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
 # because RAR5 records no per-file unpack version. Lives here, not on
-# CompressionMethod.level, which is the M1–M5 method-byte offset.
+# CompressionMethod.level, which carries the method-byte offset instead.
 EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
 
 

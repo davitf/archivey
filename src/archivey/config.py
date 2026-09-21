@@ -174,7 +174,10 @@ def _check_limit(
 class ExtractionLimits:
     """Decompression-bomb limits for :func:`archivey.extract` / :meth:`extract_all`.
 
-    ``None`` on a guard field disables that guard. :attr:`UNLIMITED` disables all four.
+    ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the three
+    guard fields to ``None``; :attr:`ratio_activation_threshold` is a parameter of the
+    ratio guard rather than a guard of its own, and is moot once ``max_ratio`` is
+    ``None``.
     """
 
     max_extracted_bytes: int | None = 2 * 2**30

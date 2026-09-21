@@ -151,6 +151,42 @@ def test_check_universal_rejects_null_byte(tmp_path: Path) -> None:
         check_universal(_member("a\x00b"), tmp_path)
 
 
+@pytest.mark.parametrize("name", ["C:evil", "c:evil", "C:\\evil"])
+def test_check_universal_rejects_drive_letter(tmp_path: Path, name: str) -> None:
+    with pytest.raises(PathTraversalError, match="Absolute path"):
+        check_universal(_member(name), tmp_path)
+
+
+@pytest.mark.parametrize("name", ["Ä:foo", "Ω:foo", "日:foo"])
+def test_non_ascii_letter_before_colon_is_not_a_drive_letter(name: str) -> None:
+    """A drive letter is a single *ASCII* letter, as the comment beside the test says.
+
+    ``str.isalpha()`` is Unicode-wide, so these names were classified as Windows
+    absolute paths. Asserted on the predicate rather than through ``check_universal``
+    because what happens to such a name afterwards is platform-specific: on Windows the
+    colon makes it a drive-relative / ADS spelling and the destination-root check
+    rejects it, correctly and for a different reason.
+    """
+    from archivey.internal.filters import _is_absolute
+
+    assert _is_absolute(name) is False
+    assert _is_absolute("C" + name[1:]) is True
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="a colon in a filename is only ordinary on POSIX"
+)
+@pytest.mark.parametrize("name", ["Ä:foo", "Ω:foo", "日:foo"])
+def test_check_universal_allows_non_ascii_letter_before_colon(
+    tmp_path: Path, name: str
+) -> None:
+    """Under TRUSTED this check is the only thing between the member and the disk.
+
+    These are ordinary POSIX filenames, and the drive-letter test was blocking them.
+    """
+    check_universal(_member(name), tmp_path)
+
+
 def test_check_universal_rejects_root_named_file(tmp_path: Path) -> None:
     with pytest.raises(PathTraversalError, match="extraction root"):
         check_universal(_member("."), tmp_path)

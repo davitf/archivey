@@ -6,17 +6,16 @@ from dataclasses import dataclass
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
-    RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     AcceleratorMode,
     ArchiveyConfig,
 )
 
+# Only the names other modules import from here. ``ArchiveyConfig`` and
+# ``DEFAULT_ARCHIVEY_CONFIG`` are imported for use below, not re-exported —
+# callers take those from ``archivey.config``.
 __all__ = [
     "AcceleratorMode",
-    "DEFAULT_ARCHIVEY_CONFIG",
     "DEFAULT_STREAM_CONFIG",
-    "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
-    "ArchiveyConfig",
     "StreamConfig",
     "stream_config_from_archivey",
 ]

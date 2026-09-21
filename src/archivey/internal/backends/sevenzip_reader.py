@@ -33,6 +33,7 @@ from typing import BinaryIO
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode, DigestContext, MemberTimestampContext
+from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -815,7 +816,7 @@ class SevenZipReader(BaseArchiveReader):
                 member,
                 reason="password_required",
                 message=(
-                    f"Cannot read the symlink target of {member.name!r} without the "
+                    f"Cannot read the symlink target of {quoted(member.name)} without the "
                     f"correct password; leaving link_target unset."
                 ),
             )
