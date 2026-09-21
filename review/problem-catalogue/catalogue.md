@@ -4061,10 +4061,13 @@ both presence and version of optional libs … Say which config a finding reprod
 Measured version-dependent behaviour differences at `dev-docs/known-issues.md:278-311` and
 `dev-docs/library-analysis.md:102-116`.
 
-**Answer today.** Three dependency configurations are a standing gate before pushing —
-everything, everything at lowest permitted versions, and zero-dependency core — and every
-review finding must name the configuration it reproduces in. `CONTRIBUTING.md` §Before
-pushing; `review/README.md` §Conventions.
+**Answer today.** Three dependency configurations — everything, everything at lowest
+permitted versions, and zero-dependency core — run in CI on every pull request, and a
+release runs all three unconditionally. Before pushing, the author runs the legs their
+change can actually reach, which since 2026-09-21 is their judgement rather than a
+standing requirement; prose and comment changes cannot vary by configuration. Every
+review finding must still name the configuration it reproduces in. `CONTRIBUTING.md`
+§Before pushing; `review/README.md` §Conventions; `dev-docs/release-checklist.md` §5.
 
 **Sources.** `review/README.md`; `known-issues.md`; `library-analysis.md`;
 `openspec/changes/archive/2026-07-30-consolidate-optional-extras/`.

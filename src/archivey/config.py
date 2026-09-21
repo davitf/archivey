@@ -265,6 +265,14 @@ class ArchiveyConfig:
     # local codepage (e.g. "cp1252", "shift_jis") for a known-legacy corpus. An explicit
     # ``encoding=`` on ``open_archive`` overrides this and disables the sniff entirely.
     zip_unflagged_fallback_encoding: str = "cp437"
+    # Escape hatch for RAR members whose *stored name* contains ``*`` or ``?``.
+    # ``unrar`` is addressed by an include mask, so such a name can also match other
+    # members. Names like this are almost always constructed, so the read is refused
+    # by default. On a nonsolid archive the extra decode is also unbounded and
+    # unadvertised (``ExtractionLimits`` do not cover ``open()`` / ``read()``); on a
+    # solid archive those bytes are already inside ``AccessCost.SOLID``. Set True to
+    # read it anyway. A glob name that matches no other member is unaffected either way.
+    rar_allow_glob_member_concatenation: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)

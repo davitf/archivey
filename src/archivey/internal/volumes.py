@@ -323,7 +323,11 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     construction-time descriptor: replacing a part after construction is
     visible on the next open of that part.
     Caller-supplied streams stay open, are never closed here, and are re-seeked
-    before every read (the caller may have moved them).
+    before every read (the caller may have moved them). A stream volume is its
+    whole extent, not the part after wherever its cursor happens to sit: sizing
+    seeks to the end and every read seeks to an offset measured from 0, so the
+    position the caller hands it in is ignored. Pass a sliced view to contribute
+    a window of a larger stream.
     """
 
     def __init__(self, sources: Sequence[Path | BinaryIO]) -> None:
@@ -362,10 +366,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                     size = source.seek(0, os.SEEK_END)
                     source.seek(pos)
                 except (OSError, AttributeError, io.UnsupportedOperation) as exc:
-                    # Same refusal as a non-seekable *single* source, so it gets the same
-                    # type: a volume set is concatenated by offset and cannot be joined
-                    # from a forward-only stream. Paths are always seekable; this check
-                    # is for caller-supplied streams only.
+                    # Same refusal as a non-seekable *single* source, so it gets
+                    # the same type: a volume set is concatenated by offset and
+                    # cannot be joined from a forward-only stream. Paths are
+                    # always seekable; this check is for caller-supplied streams
+                    # only. (Keep "type:" out of a comment's first position;
+                    # tests/test_no_stray_type_comments.py.)
                     raise StreamNotSeekableError(
                         "all volume streams must be seekable"
                     ) from exc
@@ -391,6 +397,21 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     def volume_items(self) -> list[Path | BinaryIO]:
         """Original volume sources in order (paths and/or streams)."""
         return list(self._volume_items)
+
+    @property
+    def volume_ranges(self) -> list[tuple[int, int]]:
+        """``(start, size)`` of each volume in the concatenated byte space.
+
+        Lets a format opener read one volume at a time through whatever it
+        already holds over the concatenation — a ``SharedSource`` view, say —
+        instead of reopening the originals. RAR's header walk needs each volume
+        as an independent stream positioned at its start, which the whole
+        concatenation cannot provide.
+        """
+        return [
+            (self._offsets[index], self._offsets[index + 1] - self._offsets[index])
+            for index in range(self.volume_count)
+        ]
 
     @property
     def size(self) -> int:
