@@ -19,6 +19,12 @@
 # edit it at merge time and GitHub parses what was actually merged. So a pre-merge check
 # would cover one surface and miss the other. This covers both, after the fact: it puts
 # the hub back and says which surface did it.
+#
+# This file collects facts; `scripts/review_hub_watchdog_gate.py` makes the decision and
+# is unit tested. The split matters more here than it does for the review loop, because
+# everything past "is the hub open" is dead in normal operation and only runs during an
+# incident — a break in it is invisible until the moment it is needed, which is how the
+# first version shipped with the surface query broken.
 name: Review hub watchdog
 
 on:
@@ -27,6 +33,11 @@ on:
   # straight to `main`. `pull_request: [closed]` was the obvious trigger and is the wrong
   # one twice over: it fires for unmerged closes, which cannot close the hub at all, and
   # it misses a direct push, which can and is how the first closure of all happened.
+  #
+  # The hub's *own* `closed` event is the other obvious trigger, and it cannot be used at
+  # all: a `pull_request` workflow is read from the pull request's base branch, the hub's
+  # base is the orphan branch `empty-base`, and that branch has no `.github/` on it. Such
+  # a trigger would parse, pass every check, and silently never fire.
   push:
     branches: [main]
   # Backstop, for what a push does not cover: a close by hand, and an event GitHub drops.
@@ -50,6 +61,8 @@ jobs:
   reopen:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Reopen the hub if it is closed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,10 +72,12 @@ jobs:
         run: |
           set -euo pipefail
           repo="$GITHUB_REPOSITORY"
+          work="$RUNNER_TEMP"
 
           # A push and the close it causes are not one atomic event, and the close can
           # land after the push webhook. Give it a minute before believing an OPEN
-          # reading on that trigger.
+          # reading on that trigger. This is about *when* to read, not what to conclude;
+          # the conclusion is the gate's.
           attempts=1
           if [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then attempts=6; fi
 
@@ -73,41 +88,50 @@ jobs:
             if [ "$i" -lt "$attempts" ]; then sleep 10; fi
           done
 
-          if [ "$state" = "OPEN" ]; then
-            echo "Hub #$HUB is open. Nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          # The timeline is six pages and is only ever needed during an incident, so it
+          # is fetched only when there is one. The gate still answers from `state` alone
+          # in the open case, so this is an optimisation and not a second decision.
+          #
+          # One JSON object per event, in the order GitHub serves it, with no reduction:
+          # `--paginate` runs `--jq` once per page, so any filter ending in a reducer
+          # (`last`, `first`, `length`) silently returns one answer per page. Selecting
+          # the closure is the gate's job, where it is tested.
+          labels='[]'
+          : > "$work/timeline.ndjson"
+          if [ "$state" != "OPEN" ]; then
+            labels=$(gh pr view "$HUB" --repo "$repo" --json labels --jq '[.labels[].name]')
+            gh api "repos/$repo/issues/$HUB/timeline?per_page=100" --paginate \
+              -H "Accept: application/vnd.github+json" \
+              --jq '.[] | {event: .event, commit_id: .commit_id}' > "$work/timeline.ndjson"
+          fi
+
+          jq -n --arg state "$state" --argjson labels "$labels" \
+                --slurpfile timeline "$work/timeline.ndjson" \
+            '{state: $state, labels: $labels, timeline: $timeline}' > "$work/facts.json"
+
+          python3 scripts/review_hub_watchdog_gate.py \
+            < "$work/facts.json" > "$work/decision.json"
+          cat "$work/decision.json"
+
+          action=$(jq -r .action "$work/decision.json")
+          reason=$(jq -r .reason "$work/decision.json")
+
+          if [ "$action" = "none" ]; then
+            echo "Hub #$HUB: $reason" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          if [ "$state" = "MERGED" ]; then
-            echo "::error::Hub #$HUB is MERGED. A merged pull request cannot be reopened;"
-            echo "::error::its threads have to be rehoused by hand. See AGENTS.md."
+          if [ "$action" = "fail" ]; then
+            echo "::error::Hub #$HUB: $reason. See AGENTS.md §Review workflow."
             exit 1
           fi
 
-          # An escape hatch, so the watchdog cannot fight a maintainer who means it.
-          if gh pr view "$HUB" --repo "$repo" --json labels --jq '.labels[].name' \
-              | grep -qx 'hub:closed-on-purpose'; then
-            echo "Hub #$HUB is closed and labelled hub:closed-on-purpose. Leaving it." \
-              >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          # Which surface did it. A `closed` event driven by a commit message carries that
-          # commit; one driven by a merged pull request's body carries no commit at all.
-          # That is the only way to tell the two apart after the fact, and it is what the
-          # second incident turned on.
-          #
-          # The filter emits one line per `closed` event and `tail` takes the newest,
-          # rather than `| last` inside the jq program: `--paginate` runs `--jq` once per
-          # page, so a program ending in `last` returns one answer per page and the hub's
-          # timeline is six pages.
-          commit=$(gh api "repos/$repo/issues/$HUB/timeline?per_page=100" --paginate \
-            -H "Accept: application/vnd.github+json" \
-            --jq '.[] | select(.event == "closed") | .commit_id // "none"' | tail -n 1)
-
-          case "${commit:-none}" in
-            none|null|"") surface="a merged pull request's **body** (its \`closed\` event carries no commit)" ;;
-            *)            surface="a **commit message**, \`$commit\`" ;;
+          surface=$(jq -r .surface "$work/decision.json")
+          commit=$(jq -r '.commit // ""' "$work/decision.json")
+          case "$surface" in
+            commit)  said="a **commit message**, \`$commit\`" ;;
+            body)    said="a merged pull request's **body** (its \`closed\` event carries no commit)" ;;
+            *)       said="something this job could not identify — its timeline carries no \`closed\` event" ;;
           esac
 
           gh pr reopen "$HUB" --repo "$repo"
@@ -118,10 +142,10 @@ jobs:
           # `--body-file` keeps it out of the shell's quoting. YAML's block scalar has
           # already stripped this block's common indentation, so the heredoc body and its
           # terminator reach bash at column 0 and any indentation below is the author's.
-          cat > "$RUNNER_TEMP/hub-reopened.md" <<EOF
+          cat > "$work/hub-reopened.md" <<EOF
           Reopened automatically. This pull request is the review hub, and it has to stay open.
 
-          It was closed by $surface.
+          It was closed by $said.
 
           Nothing was lost: the threads and the \`**SWEPT**\` markers are untouched, and a closed hub still serves them. But a closed hub drops off every open-pull-request listing, and neither time this happened was it noticed from GitHub.
 
@@ -133,6 +157,6 @@ jobs:
           _Posted by [\`review-hub-watchdog.yml\`]($workflow_url)._
           EOF
 
-          gh pr comment "$HUB" --repo "$repo" --body-file "$RUNNER_TEMP/hub-reopened.md"
+          gh pr comment "$HUB" --repo "$repo" --body-file "$work/hub-reopened.md"
 
-          echo "Reopened hub #$HUB, closed by $surface." >> "$GITHUB_STEP_SUMMARY"
+          echo "Reopened hub #$HUB: $reason" >> "$GITHUB_STEP_SUMMARY"

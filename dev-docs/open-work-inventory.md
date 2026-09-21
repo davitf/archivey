@@ -133,6 +133,13 @@ time and what GitHub parses is what was actually merged — so a pre-merge check
 surface and miss the other. The escape hatch is the `hub:closed-on-purpose` label, which the
 job honours and which was created on the repository when this landed.
 
+The decision — open, merged, labelled, or reopen and which surface did it — lives in
+[`scripts/review_hub_watchdog_gate.py`](../scripts/review_hub_watchdog_gate.py) and is unit
+tested, the way `review_loop_gate.py` already splits the review loop. That split earns more
+here than it does there: everything past "is the hub open" runs only during an incident, so a
+break in it is invisible until the moment it is needed, which is exactly how the first version
+shipped with the surface query broken by pagination.
+
 **#382 and #380 were two halves of one sweep and they collided; #380 merged on 2026-09-21 and
 resolved it.** Both refuse or coerce wrong-typed public arguments — #382 the object and numeric
 ones, #380 the enums — and #382 landed first as `3875daa`, so #380 carried all three conflicts.
