@@ -240,6 +240,59 @@ ListingLimits.UNLIMITED = ListingLimits(
 
 
 @dataclass(frozen=True)
+class DecoderLimits:
+    """Caps on what a decoder may allocate because the *archive* said to.
+
+    Several codecs size their working memory from a number in the archive's own
+    header rather than from anything the caller chose: 7z PPMd var.H carries a
+    32-bit window size, ZIP method 98 an 8-bit megabyte count, LZMA a 32-bit
+    dictionary size. Those numbers are attacker-chosen, they are read before a
+    single byte of member data is, and the allocation that follows is not
+    proportional to the archive's size — a 153-byte 7z can ask for 4 GiB.
+
+    This is not an :class:`ExtractionLimits` field, and the difference is not
+    cosmetic. The bomb guards there measure *output*: they count bytes as an
+    extraction produces them and stop when the total or the ratio says the
+    archive is lying about its size. A decoder's working memory is neither
+    output nor proportional to it, it is claimed up front, and it is claimed on
+    ``open()`` and ``read()`` as much as on ``extract()`` — paths
+    ``ExtractionLimits`` does not cover at all.
+
+    ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every
+    one. Exceeding a guard raises
+    :class:`~archivey.exceptions.ResourceLimitError` *before* the allocation,
+    which is the only place it can be raised: the process has no recourse once
+    the request is in the allocator's hands. Under a memory cap (a container
+    limit, ``RLIMIT_AS``, a small machine) a refused native allocation does not
+    surface as ``MemoryError`` — pyppmd 1.3.1 dies on ``double free or
+    corruption`` and takes the interpreter with it, so no ``try``/``except``
+    around the decode can contain it.
+
+    Attributes:
+        max_decoder_memory: Largest archive-declared working set a single
+            decoder may allocate. The default 1 GiB sits above what real
+            compressors write and below what the header fields can express:
+            measured on 7-Zip 23.01, ``-m0=PPMd:mem=2g`` and ``mem=4g`` both
+            come back out of the writer declaring 512 MiB, while the 7z
+            property that carries the number is 32 bits wide and a hand-edited
+            header can say 4 GiB.
+    """
+
+    max_decoder_memory: int | None = 1 * 2**30
+
+    UNLIMITED: ClassVar[DecoderLimits]
+
+    def __post_init__(self) -> None:
+        cls = "DecoderLimits"
+        _check_limit(self.max_decoder_memory, cls=cls, field_name="max_decoder_memory")
+
+
+DecoderLimits.UNLIMITED = DecoderLimits(
+    max_decoder_memory=None,
+)
+
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed as ``config=`` to :func:`open_archive` / :func:`extract`.
 
@@ -278,6 +331,7 @@ class ArchiveyConfig:
     rar_allow_glob_member_concatenation: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
+    decoder_limits: DecoderLimits = DecoderLimits()
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
     max_retained_diagnostic_references: int = 256
     on_diagnostic: OnDiagnostic | None = None
@@ -323,6 +377,12 @@ class ArchiveyConfig:
             self.listing_limits,
             ListingLimits,
             call="ArchiveyConfig(listing_limits=…)",
+            allow_none=False,
+        )
+        check_instance(
+            self.decoder_limits,
+            DecoderLimits,
+            call="ArchiveyConfig(decoder_limits=…)",
             allow_none=False,
         )
         check_instance(

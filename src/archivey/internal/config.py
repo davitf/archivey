@@ -8,6 +8,7 @@ from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
     ArchiveyConfig,
+    DecoderLimits,
 )
 
 # Only the names other modules import from here. ``ArchiveyConfig`` and
@@ -16,6 +17,7 @@ from archivey.config import (
 __all__ = [
     "AcceleratorMode",
     "DEFAULT_STREAM_CONFIG",
+    "DecoderLimits",
     "StreamConfig",
     "stream_config_from_archivey",
 ]
@@ -37,6 +39,11 @@ class StreamConfig:
     seekable gzip source has a readable ISIZE trailer — enough for AUTO to select
     rapidgzip with the ISIZE truncation check, but *not* a hard ``VerifyingStream``
     bound (ISIZE is mod 2**32 and multi-member trailers only cover the last member).
+    ``decoder_limits`` is the caller's :class:`~archivey.config.DecoderLimits`,
+    carried down so a codec can refuse an archive-declared allocation before making
+    it; it defaults to the public default rather than to "unlimited", because a
+    :class:`StreamConfig` built directly (detection, tests) is still decoding a file
+    someone else wrote.
     """
 
     streaming: bool = False
@@ -46,6 +53,7 @@ class StreamConfig:
     compressed_input_size: int | None = None
     expected_decompressed_size: int | None = None
     gzip_isize_backstop: bool = False
+    decoder_limits: DecoderLimits = DecoderLimits()
 
 
 def stream_config_from_archivey(
@@ -60,6 +68,7 @@ def stream_config_from_archivey(
         seekable=seekable,
         use_rapidgzip=config.use_rapidgzip,
         use_indexed_bzip2=config.use_indexed_bzip2,
+        decoder_limits=config.decoder_limits,
     )
 
 

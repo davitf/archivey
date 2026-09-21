@@ -28,6 +28,7 @@ from archivey.config import (
     RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,  # noqa: F401 — advanced; not in __all__
     AcceleratorMode,
     ArchiveyConfig,
+    DecoderLimits,
     ExtractionLimits,
     ListingLimits,
     PasswordInput,
@@ -149,6 +150,7 @@ __all__ = [
     "extract",
     "ArchiveyConfig",
     "DEFAULT_ARCHIVEY_CONFIG",
+    "DecoderLimits",
     "ExtractionLimits",
     "ListingLimits",
     "AcceleratorMode",

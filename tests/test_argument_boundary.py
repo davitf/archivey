@@ -48,6 +48,7 @@ import pytest
 from archivey import (
     ArchiveReader,
     ArchiveyConfig,
+    DecoderLimits,
     DiagnosticPolicy,
     ExtractionLimits,
     ListingLimits,
@@ -330,6 +331,12 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 bad,
                 lambda b=bad: ExtractionLimits(max_entries=b),
             ),
+            _case(
+                "DecoderLimits",
+                "max_decoder_memory",
+                bad,
+                lambda b=bad: DecoderLimits(max_decoder_memory=b),
+            ),
         ]
 
     # ``ratio_activation_threshold`` is the one limit field that is not ``| None``, so
@@ -375,6 +382,15 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 "listing_limits",
                 bad,
                 lambda b=bad: _with_config(archive, out(), listing_limits=b),
+            )
+        )
+    for bad in ("x", 0, DecoderLimits, None):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "decoder_limits",
+                bad,
+                lambda b=bad: _with_config(archive, out(), decoder_limits=b),
             )
         )
     for bad in ("x", 0, DiagnosticPolicy, None):
