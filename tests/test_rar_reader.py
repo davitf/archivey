@@ -4204,3 +4204,34 @@ def test_file_header_after_qo_is_still_listed(tmp_path: Path) -> None:
         assert listed == {"a.txt", "b.txt"}
         assert archive.read("a.txt") == b"alpha\n"
         assert archive.read("b.txt") == b"beta\n"
+
+
+def test_password_with_a_line_break_is_refused_not_clamped() -> None:
+    """`unrar` reads the password as one line, so a longer one is silently cut.
+
+    Measured against RARLAB `rar` 7.00 before this guard: an archive whose password is
+    "ab" decrypted when "ab\nXX" was supplied — a wrong password accepted, with nothing
+    downstream able to tell. The native header path hashes the whole string, so the same
+    argument also meant two different things on the two paths.
+    """
+    from archivey.exceptions import UnsupportedOperationError
+    from archivey.internal.backends.rar_unrar import _password_stdin_bytes
+
+    assert _password_stdin_bytes("ab") == b"ab"
+    assert _password_stdin_bytes(b"ab") == b"ab"
+    for bad in ["ab\nXX", "ab\rXX", b"ab\nXX", b"ab\rXX"]:
+        with pytest.raises(UnsupportedOperationError, match="line break"):
+            _password_stdin_bytes(bad)
+
+
+@requires_binary("unrar")
+def test_wrong_password_after_a_line_break_does_not_decrypt() -> None:
+    """End to end: the prefix before the break must not be enough to read a member."""
+    from archivey.exceptions import UnsupportedOperationError
+
+    path = _fixture("encryption__.rar")
+    with open_archive(path, password="password") as archive:
+        assert archive.read("secret.txt") == b"This is secret"
+    with open_archive(path, password="password\nIGNORED") as archive:
+        with pytest.raises((UnsupportedOperationError, EncryptionError)):
+            archive.read("secret.txt")

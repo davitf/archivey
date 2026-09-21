@@ -98,9 +98,12 @@ def emit_member_name_bidi_control(
 def _is_usable_stem(stem: str) -> bool:
     """Whether a stripped stem is a filename rather than a path-navigation spelling.
 
-    Mirrors the test extraction applies downstream (``filters.py``): a segment of only
-    dots and spaces is refused there, so producing one here only costs the caller the
-    payload.
+    The name is chosen at listing time, before any extraction policy is known, so it
+    has to satisfy the strictest one. ``.`` and ``..`` are refused by
+    ``filters.check_universal`` under every policy; an all-dots/spaces segment such as
+    ``...`` is refused by ``_strip_trailing_dot_space`` under ``STRICT`` only.
+    Producing any of them here costs the caller the payload under at least one policy
+    and gives an unusable member name under the others.
     """
     return stem.rstrip(". ") != ""
 
@@ -125,7 +128,9 @@ def infer_member_name_from_archive(
     A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a name: extraction
     refuses it and the caller gets an empty directory for an intact payload. Those fall
     through to the ``.uncompressed`` spelling, which the length guard already gives
-    ``\".gz\"``.
+    ``\".gz\"``. That also renames the cases the looser policies used to extract:
+    ``\"....gz\"`` presented ``\"...\"`` and extracted under ``STANDARD`` / ``TRUSTED``,
+    and now presents ``\"....gz.uncompressed\"`` under every policy.
     """
     if archive_name is None:
         return "data"

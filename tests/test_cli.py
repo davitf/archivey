@@ -1740,7 +1740,7 @@ def test_dunder_main_is_importable_without_running_the_cli() -> None:
     Without the ``if __name__`` guard, importing ``archivey.__main__`` — which any
     package walker, docs autoapi pass or import-based coverage warm-up does — ran the
     CLI against whatever ``sys.argv`` the host happened to have and exited from inside
-    the import. ``openspec/specs/cli/spec.md`` requires the entry point be importable.
+    the import.
     """
     import subprocess
 

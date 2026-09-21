@@ -25,6 +25,7 @@ from archivey.escaping import display_path
 from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
+    UnsupportedOperationError,
 )
 
 # Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
@@ -276,9 +277,28 @@ def _password_arg(password: str | bytes | None) -> str:
 
 
 def _password_stdin_bytes(password: str | bytes) -> bytes:
-    if isinstance(password, bytes):
-        return password
-    return password.encode("utf-8", errors="surrogateescape")
+    """Encode a password for ``unrar``'s stdin, refusing one it would silently cut.
+
+    ``unrar`` reads the password as a single line, so everything from the first
+    newline on is discarded. Measured against RARLAB ``rar`` 7.00: an archive whose
+    password is ``ab`` decrypts when ``"ab\\nXX"`` is supplied. That is a wrong
+    password accepted, and nothing downstream can tell. The native header path
+    (:func:`rar_parser._rar3_s2k` / :func:`~rar_parser._rar5_s2k`) hashes the whole
+    string, so the same argument would also mean two different things on the two
+    paths. Refuse it instead of clamping it.
+    """
+    raw = (
+        password
+        if isinstance(password, bytes)
+        else password.encode("utf-8", errors="surrogateescape")
+    )
+    if b"\n" in raw or b"\r" in raw:
+        raise UnsupportedOperationError(
+            "A password containing a line break cannot be passed to unrar: it reads "
+            "the password as one line and would silently use only the part before "
+            "the break."
+        )
+    return raw
 
 
 def _unrar_mask_for(member: str) -> str:
@@ -528,11 +548,9 @@ def open_unrar_p(
 
     When a non-empty ``password`` is given, the switch is bare ``-p`` and the password
     (plus a trailing newline) is written to the child's stdin — ``unrar`` reads it from
-    stdin when redirected, keeping the secret out of ``argv``. ``unrar`` reads one
-    line, so a password containing a newline is truncated at it on this path, while the
-    native header path (``rar_parser._rar3_s2k`` / ``_rar5_s2k``) hashes the whole
-    string. Such a password would have to come from a writer other than RARLAB ``rar``,
-    which cannot produce one from ``argv``.
+    stdin when redirected, keeping the secret out of ``argv``. A password containing a
+    line break is refused rather than sent, because ``unrar`` would read only the part
+    before it — see :func:`_password_stdin_bytes`.
 
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
@@ -546,6 +564,12 @@ def open_unrar_p(
         cmd.append(_member_include_switch(member))
     cmd.append(str(archive_path))
     feed_password = pass_arg == "-p"
+    # Encode before spawning: _password_stdin_bytes refuses a password unrar would
+    # silently cut, and raising after Popen would leave the child and its pipes behind.
+    stdin_bytes: bytes | None = None
+    if feed_password:
+        assert password is not None and password != b"" and password != ""
+        stdin_bytes = _password_stdin_bytes(password)
     try:
         proc = subprocess.Popen(
             cmd,
@@ -556,11 +580,10 @@ def open_unrar_p(
         )
     except OSError as exc:
         raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
-    if feed_password:
-        assert password is not None and password != b"" and password != ""
+    if stdin_bytes is not None:
         assert proc.stdin is not None
         try:
-            proc.stdin.write(_password_stdin_bytes(password) + b"\n")
+            proc.stdin.write(stdin_bytes + b"\n")
             proc.stdin.close()
         except BrokenPipeError:
             # unrar exited before consuming the password; surface via exit-code mapping.

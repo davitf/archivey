@@ -8,7 +8,7 @@ import os
 import re
 import stat
 from bisect import bisect_right
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -590,21 +590,30 @@ def _enumerate_parts(parts: Sequence[int]) -> str:
 
 
 def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
-    """Say what is wrong with a numbered set: which parts are missing, or the order."""
-    present = set(numbered)
-    missing = [part for part in range(1, max(numbered) + 1) if part not in present]
+    """Say what is wrong with a numbered set: a repeat, which parts are missing, or order.
+
+    Everything this builds is bounded by ``len(numbered)`` — the number of files on
+    disk — never by the part numbers themselves. A part number comes from a filename
+    (``_NUMBERED_VOLUME_RE`` accepts three digits or more, unbounded), so sizing
+    anything by ``max(numbered)`` would let a sibling named ``foo.7z.9999999999``
+    decide an allocation. The set is required to be exactly ``1..N``, so only a part
+    at or below ``N`` can be described as missing; anything above it is out of range
+    by construction.
+    """
+    counts = Counter(numbered)
+    repeated = sorted(part for part, count in counts.items() if count > 1)
+    if repeated:
+        noun = "part" if len(repeated) == 1 else "parts"
+        return (
+            f"Repeated volume in multi-volume set for {base}: "
+            f"{noun} {_enumerate_parts(repeated)} given more than once"
+        )
+    missing = [part for part in range(1, len(numbered) + 1) if part not in counts]
     if missing:
         noun = "part" if len(missing) == 1 else "parts"
         return (
             f"Incomplete multi-volume set for {base}: "
             f"missing {noun} {_enumerate_parts(missing)}"
-        )
-    if len(present) != len(numbered):
-        repeated = sorted({part for part in present if numbered.count(part) > 1})
-        noun = "part" if len(repeated) == 1 else "parts"
-        return (
-            f"Repeated volume in multi-volume set for {base}: "
-            f"{noun} {_enumerate_parts(repeated)} given more than once"
         )
     return (
         f"Out-of-order multi-volume set for {base}: parts "

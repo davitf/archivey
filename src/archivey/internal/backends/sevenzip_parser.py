@@ -1234,9 +1234,12 @@ def _read_comment(cur: _Cursor) -> str | None:
     cur.pos = len(cur.buf)
     if not data:
         return None
-    # The leading byte is the same "external" flag kName, the times, the attributes
-    # and kStartPos all carry: non-zero means the payload lives in additional streams.
-    # Refuse it here too, rather than decoding the flag and the reference as text.
+    # Read the same way as kName, the times, the attributes and kStartPos: a leading
+    # "external" flag, non-zero meaning the payload lives in additional streams. This
+    # is inference, not documented -- 7zFormat.txt omits kComment from FilesInfo and
+    # the repo has no fixture from a writer that emits one. Refusing beats decoding the
+    # flag and a stream reference as text; if some writer does emit a bare UTF-16LE
+    # comment, an ASCII first byte would land here and this is what to revisit.
     external = data[0]
     if external != 0:
         raise UnsupportedFeatureError("External 7z comment data is not supported")

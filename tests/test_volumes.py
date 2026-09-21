@@ -7,6 +7,7 @@ import io
 import os
 import shutil
 import tarfile
+import time
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -1192,3 +1193,42 @@ def test_numbered_volume_set_repeated_part_says_so(tmp_path: Path) -> None:
     with pytest.raises(TruncatedError) as excinfo:
         join_volumes([path, path])
     assert "given more than once" in str(excinfo.value)
+
+
+def test_numbered_volume_message_is_sized_by_file_count_not_part_number() -> None:
+    """A part number comes from a filename, so it must not size an allocation.
+
+    ``_NUMBERED_VOLUME_RE`` accepts three digits or more with no upper bound, and
+    ``discover_volume_siblings`` sweeps the directory for every match. Building the
+    missing-part list over ``range(1, max(numbered) + 1)`` let a sibling named
+    ``foo.7z.9999999999`` decide how much memory ``open_archive`` allocates on the
+    *first* volume. The set has to be exactly 1..N, so only a part at or below N can
+    be missing.
+    """
+    start = time.monotonic()
+    message = volumes_mod._numbered_volume_sequence_error("x.7z", [1, 10**9])
+    elapsed = time.monotonic() - start
+
+    assert message == "Incomplete multi-volume set for x.7z: missing part 2"
+    assert elapsed < 1.0, f"took {elapsed:.1f}s — the list is sized by the part number"
+
+
+def test_numbered_volume_repeat_detection_does_not_rescan_per_part() -> None:
+    """The repeat branch counts once; it used to call ``list.count`` per distinct part."""
+    parts = list(range(1, 20_001)) + [1]
+    start = time.monotonic()
+    message = volumes_mod._numbered_volume_sequence_error("x.7z", parts)
+    elapsed = time.monotonic() - start
+
+    assert "part 1 given more than once" in message
+    assert elapsed < 1.0, f"took {elapsed:.1f}s — quadratic in the number of files"
+
+
+def test_open_archive_survives_a_huge_numbered_sibling(tmp_path: Path) -> None:
+    """End to end: the sibling is an ordinary filename anyone can drop in the directory."""
+    (tmp_path / "foo.7z.001").write_bytes(b"")
+    (tmp_path / "foo.7z.005000000").write_bytes(b"")
+    start = time.monotonic()
+    with pytest.raises(TruncatedError, match="missing part 2"):
+        open_archive(tmp_path / "foo.7z.001")
+    assert time.monotonic() - start < 5.0
