@@ -154,7 +154,7 @@ class ArchiveMember:
     windows_attrs: int | None = None
     hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
     diagnostics: tuple[Diagnostic, ...] = field(default=(), compare=False)
-    extra: dict[str, object] = field(default_factory=dict, compare=False)
+    extra: MemberExtra = field(default_factory=MemberExtra, compare=False)
 
     @property
     def member_id(self) -> int: ...
@@ -193,7 +193,12 @@ is no `crc32` alias. Sizes, link targets, hashes, and diagnostics MAY be
 completed in place during streaming. `member_id` / `archive_id` preserve source
 identity, convenience properties are derived, and `replace()` creates an edited
 copy. `hashes`, `diagnostics`, and `extra` SHALL be excluded from equality.
-`extra` values SHALL be typed `object`; a caller that uses a key narrows it itself.
+`extra` SHALL be a `MemberExtra`: a `dict[str, object]` subclass whose
+`__getitem__` is overloaded once per known key, with a `str → object` fallback.
+Known keys carry their declared types on a subscript read; unknown keys
+(third-party or future) remain legal and read as `object`. Writes and `.get()`
+are not narrowed. The `EXTRA_*` constants remain the names for the keys they
+cover. A caller that uses an unknown key narrows it.
 
 `ArchiveMember` SHALL remain unhashable and non-frozen. The `diagnostics` tuple
 itself is immutable, but the library MAY replace it in place for later
@@ -284,11 +289,14 @@ class ArchiveInfo:
     is_encrypted: bool
     is_multivolume: bool
     cost: CostReceipt
-    extra: dict[str, object] = field(default_factory=dict, compare=False)
+    extra: ArchiveInfoExtra = field(default_factory=ArchiveInfoExtra, compare=False)
 ```
 
 `extra` keys SHALL be namespaced strings and excluded from equality.
-`extra` values SHALL be typed `object`; a caller that uses a key narrows it itself.
+`extra` SHALL be an `ArchiveInfoExtra`: a `dict[str, object]` subclass of the
+same shape as `MemberExtra` over a separate key set, not merged with it. Known
+keys carry their declared types on a subscript read; unknown keys remain legal
+and read as `object`. Writes and `.get()` are not narrowed.
 `member_count` SHALL be `None` when computing it requires a full scan.
 
 #### Scenario: archive info matrix

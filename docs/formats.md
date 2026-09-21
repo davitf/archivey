@@ -28,6 +28,24 @@ Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[se
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
 Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledgements.md).
 
+## The `extra` bags
+
+`ArchiveMember.extra` is a [`MemberExtra`](api.md#extra-bags) and
+`ArchiveInfo.extra` is an [`ArchiveInfoExtra`](api.md#extra-bags).
+Both are `dict[str, object]` subclasses: a subscript of a known key
+(`extra["zip.compress_type"]`) carries that key's type, and unknown keys
+(third-party or future) stay legal and read as `object`. The names are
+importable. The `EXTRA_*` constants on `archivey.types` remain the names for
+the keys that have constants.
+
+Writes are not type-checked — a wrong-type assignment to a known key is
+accepted, same as an unknown key. `.get()` returns `object` for every key.
+Assign a `MemberExtra(...)` / `ArchiveInfoExtra(...)` rather than a bare dict;
+mutating the existing bag in place is unchanged.
+
+The format sections below mention a key only when it is part of that format's
+behaviour. The complete list is on the two classes.
+
 ## ZIP
 
 - Stdlib ``zipfile`` for **central-directory parsing / listing**; member **data** decodes
