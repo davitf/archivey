@@ -1,10 +1,11 @@
 """Windows reparse points in ZIP and 7z: symlinks, junctions, and what is lost.
 
-The archives under `tests/fixtures/external/junction/` were built on a Windows runner
-by `.github/workflows/windows-junction-fixtures.yml`, because a junction cannot be
-created anywhere else. What they contain is the point of these tests, so the
-assertions here are deliberately about the *measured* shapes, not the ones the format
-would allow: see `tests/fixtures/external/README.md` for the full result.
+The archives under `tests/fixtures/external/junction/` were built by 7-Zip on a Windows
+runner, because a junction cannot be created anywhere else; the temporary CI job that
+made them is gone, and `tests/fixtures/external/README.md` carries its exact recipe
+along with the full finding. What those archives contain is the point of these tests,
+so the assertions here are deliberately about the *measured* shapes rather than the
+ones the format would allow.
 """
 
 from __future__ import annotations
