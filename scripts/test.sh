@@ -6,7 +6,7 @@
 #
 #   ./scripts/test.sh                 the everyday [all] leg (extra args go to pytest)
 #   ./scripts/test.sh tests/test_zip.py -k roundtrip
-#   ./scripts/test.sh --all-configs   all three legs CI runs — the before-pushing gate
+#   ./scripts/test.sh --all-configs   all three legs CI runs — when a change can reach an extra
 #
 # `--all-configs` runs what CONTRIBUTING.md §"Before pushing…" describes:
 #
