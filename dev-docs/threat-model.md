@@ -516,6 +516,55 @@ if the decoded blob is still `EncodedHeader`. Running
 total of folder unpack sizes is capped at `_MAX_NEXT_HEADER_SIZE` before
 concatenation. Found on PR #315 (S2-F2); Linear ARC-50.
 
+### O15. A tar extended header sized stdlib `tarfile`'s allocation — closed
+
+`mode="r:"` hands our raw handle to stdlib `tarfile`, and `TarInfo._proc_pax` /
+`_proc_gnulong` read a PAX extended header or a GNU long name with a single
+`fileobj.read(self._block(self.size))`. `self.size` is the 12-byte octal size field
+of a `typeflag` `x` / `L` / `K` header — attacker-chosen up to 8 GiB, further through
+GNU base-256 — and `BufferedReader.read(n)` allocates `n` before the short read
+reveals the archive is tiny. Measured: a 10 240-byte archive asks for 6 442 450 944
+bytes, and under `RLIMIT_AS` 2 GiB dies on a bare `MemoryError`, outside the
+`ArchiveyError` hierarchy. Amplification ~630 000 : 1. `max_metadata_bytes` does not
+reach it: that is accounted in `_register_member`, after the allocation.
+
+Streaming (`mode="r|"`) is unaffected — tarfile's own `_Stream.read` loops in
+`bufsize` chunks — so this is `streaming=False`, the default. The compressed
+random-access path is affected too.
+
+*Closed:* `_EofProbeStream`, which already wraps the fileobj on exactly this path,
+never asks its inner stream for more than it can still supply. Where the source's
+length is a fact (a file, a sized stream) the read is clamped to what is left; where
+it is not (our own decompressor, whose length would cost a pass to learn) the request
+is served in bounded steps, so the peak tracks the bytes the stream really has. A
+flat metadata cap was the obvious fix and is wrong: member data reads go through the
+same wrapper, so a 40 MiB member arrives as one 41 943 040-byte request. Found on
+PR #315 (S18-K1); tracked internally.
+
+### O16. An ISO directory record sized pycdlib's allocation — closed
+
+pycdlib clamps a *file*'s `data_length` to the image length but not a *directory*'s.
+`_walk_directories` reads `dir_record.get_data_length()` bytes with the raw 32-bit
+field, and `open_fp` walks every namespace present, so the allocation lands inside
+`open_archive()` before a member is listed. Measured on a 51 200-byte image, patching
+only the root directory record's both-endian `data_length` inside the PVD: at
+`0xFFFFFF00` it asks for 4 294 967 040 bytes and dies on a bare `MemoryError` under
+`RLIMIT_AS` 1 GiB; at `0x20000000` it survives 1 GiB and fails on the garbage
+instead. Same class as O15 and the 7z PPMd `mem_size` gap.
+
+`MemoryError` is not in `_PYCDLIB_ERRORS`, so it left the pycdlib boundary raw,
+against that boundary's own docstring. A `Path` source also went to `PyCdlib.open`,
+which opens its own handle with nothing of archivey's underneath it, so there was
+nowhere to put a bound.
+
+*Closed:* every source goes through `open_fp` with archivey's own handle, wrapped in
+`_ImageBoundedStream` so one `read(n)` is capped at the bytes left in the image. The
+source is seekable by contract (`format-iso` rejects a non-seekable one at open), so
+the size is a cheap probe. pycdlib then gets a short read and raises
+`PyCdlibInvalidISO`, which `_translate_exception` maps to `CorruptionError`. The cap
+is generic, so it also closes any other pycdlib read sized from a header field. Found
+on PR #315 (S22-K1); tracked internally.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed

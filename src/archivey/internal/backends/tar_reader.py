@@ -78,6 +78,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     is_seekable,
     is_stream,
+    source_byte_size,
 )
 from archivey.types import (
     ArchiveFormat,
@@ -180,21 +181,78 @@ class _EofProbeStream:
 
     tarfile treats this as an external fileobj (``read``/``seek``/``tell``/``seekable``
     only) and never closes it; the reader closes the wrapped stream via ``_owned_stream``.
+
+    Being the only thing between ``tarfile`` and the source makes it the one place a
+    read sized from the archive can be bounded. ``TarInfo._proc_pax`` and
+    ``_proc_gnulong`` each issue a single ``read(self._block(self.size))`` for a PAX
+    extended header or a GNU long name, where ``size`` is the 12-byte octal field of a
+    ``typeflag`` ``x`` / ``L`` / ``K`` header — up to 8 GiB, and further through GNU
+    base-256. ``BufferedReader.read(n)`` allocates ``n`` up front, so the allocation
+    lands before the short read reveals the archive is three kilobytes. ``read`` below
+    therefore never asks the wrapped stream for more than it can still supply.
     """
 
-    def __init__(self, inner: BinaryIO) -> None:
+    # What one ``read`` may ask for when the source's length is unknown — only the
+    # compressed path, where the wrapped stream is our own decompressor and its length
+    # would cost a decompression pass to learn. A request past this is served in steps
+    # and joined, so the peak tracks the bytes the stream really has rather than the
+    # number a header claimed. The join is a second copy of the result, so a single
+    # ``read`` of a compressed member larger than this costs twice its size in peak
+    # memory; a source whose length *is* known never reaches this path and never pays
+    # it. Sized so ordinary reads stay under it rather than to make that copy rare.
+    _UNKNOWN_LENGTH_READ_STEP = 16 * 2**20
+
+    def __init__(self, inner: BinaryIO, source_size: int | None = None) -> None:
         self._inner = inner
         # Offsets share tarfile's coordinate space (both anchored at the wrapped
         # stream's current position), so they compare directly to TarInfo offsets.
         self._pos = inner.tell() if inner.seekable() else 0
         self.last_read: tuple[int, bytes] = (-1, b"")
+        # The wrapped stream's total length, or None when it is not known. It shares an
+        # origin with ``tell()`` — a whole file's size against an absolute position, a
+        # slice's length against a slice-relative one — so ``size - _pos`` is what is
+        # left either way. Only a length that is a fact belongs here: the caller passes
+        # None rather than a decompressor's estimate, which can understate (a gzip
+        # ISIZE wraps past 4 GiB) and would then truncate a legitimate read.
+        self._source_size = source_size
 
     def read(self, size: int = -1) -> bytes:
         offset = self._pos
-        chunk = self._inner.read(size)
+        chunk = self._read_within_reach(size)
         self._pos += len(chunk)
         self.last_read = (offset, chunk)
         return chunk
+
+    def _read_within_reach(self, size: int) -> bytes:
+        """``read`` without committing to the allocation the archive asked for.
+
+        A short read is the whole point: ``tarfile`` gets fewer bytes than the header
+        promised and raises its own header error on the spot, which the reader
+        translates. Nothing is dropped quietly — the alternative is a ``MemoryError``
+        from outside the ``ArchiveyError`` hierarchy, or a multi-gigabyte allocation
+        that succeeds.
+        """
+        if size <= 0:
+            # Negative is read-to-EOF, which allocates as the data arrives; zero must
+            # not consume a byte. Neither is sized from the archive.
+            return self._inner.read(size)
+        if self._source_size is not None:
+            return self._inner.read(min(size, max(self._source_size - self._pos, 0)))
+        step = self._UNKNOWN_LENGTH_READ_STEP
+        data = self._inner.read(min(size, step))
+        if len(data) == size or len(data) < step:
+            # Satisfied in full, or the stream ran out. The first case is every read
+            # that fits in one step, which is why an ordinary member costs no copy.
+            return data
+        parts = [data]
+        taken = len(data)
+        while taken < size:
+            part = self._inner.read(min(size - taken, step))
+            if not part:
+                break
+            parts.append(part)
+            taken += len(part)
+        return b"".join(parts)
 
     def seek(self, offset: int, whence: int = 0) -> int:
         self._inner.seek(offset, whence)
@@ -333,7 +391,11 @@ class TarReader(BaseArchiveReader):
             # decompressor; a BufferedReader in front guarantees full-sized reads.
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
             return self._tarfile_open(
-                fileobj=self._wrap_eof_probe(self._owned_stream, streaming),
+                # No source size: the wrapped stream is our decompressor, whose
+                # length is not a fact we hold and would cost a pass to learn.
+                fileobj=self._wrap_eof_probe(
+                    self._owned_stream, streaming, source_size=None
+                ),
                 streaming=streaming,
             )
         if isinstance(source, Path):
@@ -349,24 +411,34 @@ class TarReader(BaseArchiveReader):
             self._owned_stream = fp
             return self._tarfile_open(
                 name=str(source),
-                fileobj=self._wrap_eof_probe(fp, streaming),
+                fileobj=self._wrap_eof_probe(
+                    fp, streaming, source_size=source_byte_size(fp)
+                ),
                 streaming=streaming,
             )
+        tracked = cast("BinaryIO", self._track_source_seeks(source))
         return self._tarfile_open(
             fileobj=self._wrap_eof_probe(
-                cast("BinaryIO", self._track_source_seeks(source)), streaming
+                tracked, streaming, source_size=source_byte_size(tracked)
             ),
             streaming=streaming,
         )
 
-    def _wrap_eof_probe(self, fileobj: BinaryIO, streaming: bool) -> BinaryIO:
+    def _wrap_eof_probe(
+        self, fileobj: BinaryIO, streaming: bool, *, source_size: int | None
+    ) -> BinaryIO:
         """Wrap a random-access fileobj so the end-of-archive check can inspect the block
         tarfile stopped on. Forward-only (streaming) opens get no probe — tarfile's
         ``_Stream`` hides its header reads and a consumed block cannot be recovered there.
+
+        That is also why bounding a header-sized read only happens here: ``r|`` needs no
+        bound, tarfile's own ``_Stream.read`` looping in ``bufsize`` chunks, and ``r:``
+        is the mode that hands a raw handle through. ``source_size`` is the wrapped
+        stream's length when that is a fact; see :class:`_EofProbeStream`.
         """
         if streaming:
             return fileobj
-        probe = _EofProbeStream(fileobj)
+        probe = _EofProbeStream(fileobj, source_size)
         self._eof_probe_stream = probe
         return cast("BinaryIO", probe)
 
