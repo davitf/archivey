@@ -1774,6 +1774,12 @@ def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
     out before the split were macOS and Windows, where 65 537 file creates can
     cost considerably more, so these figures are a floor for those runners
     rather than the margin they see.
+
+    Those two also run whatever ``7z`` their runner image happens to ship: CI
+    installs and verifies it on Linux only, deliberately, so the shape claims
+    below are *measured* on Linux 7-Zip 23.01 and merely *assumed* elsewhere.
+    The shape assertions therefore carry the writer's own banner, so a failure
+    on a runner nobody measured says which writer produced it.
     """
     from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
 
@@ -1818,9 +1824,11 @@ def test_archives_above_stream_cap_still_open(
     costs 2.0 s instead of 11.5 s. It does change the coder, LZMA2 (``0x21``)
     to Copy (``0x00``), which these caps do not depend on:
     ``_require_header_count`` and ``_require_member_scaled_count`` compare a
-    count against the header size and against ``max_members``, both header-parse
-    quantities. The next header stays LZMA-encoded (``kEncodedHeader``) in all
-    four build variants, so that path is exercised either way. ``-mx=0`` must
+    count read from the header against the header size and against the
+    configured ``max_members``, and both run at header-parse time, before any
+    coder is instantiated, so the codec cannot reach them. The next header stays
+    LZMA-encoded (``kEncodedHeader``) in all four build variants, so that path
+    is exercised either way. ``-mx=0`` must
     not be used for the solid shape, where it splits the single folder F1 needs
     into one per member -- which is why this test asserts the folder layout
     rather than trusting it.
@@ -1844,11 +1852,20 @@ def test_archives_above_stream_cap_still_open(
 
     # The fixture is only useful if it still has the shape it is named for; a
     # 7z release that laid these out differently would otherwise leave the test
-    # green while covering neither F1 nor F2.
+    # green while covering neither F1 nor F2. CI pins the writer on Linux only,
+    # so name it in the failure: elsewhere it is whatever the image ships.
+    writer = next(
+        (
+            line.strip()
+            for line in result.stdout.decode("utf-8", "replace").splitlines()
+            if line.strip()
+        ),
+        "7z banner not captured",
+    )
     with archive.open("rb") as raw:
         parsed = parse_sevenzip_archive(raw)
-    assert sum(parsed.num_unpackstreams_folders) == n
-    assert len(parsed.folders) == (1 if single_folder else n)
+    assert sum(parsed.num_unpackstreams_folders) == n, writer
+    assert len(parsed.folders) == (1 if single_folder else n), writer
 
     with open_archive(archive) as reader:
         files = [m for m in reader.members() if m.is_file]
