@@ -125,13 +125,25 @@ All three schemes in the table above are checked. Parts of one scheme must share
 base, so `alpha.part1.rar` with `beta.part2.rar` raises, and `alpha.rar` with
 `beta.r00` does too. A sequence that names parts in *two* schemes is two archives by
 construction — the parts of one set are all named the same way — so
-`[alpha.zip.001, beta.part1.rar]` raises as well. And a name that carries no part
-number but is shaped like a first volume (`backup.rar`, `backup.exe`, `backup.sfx`)
-only belongs beside `.rNN` parts with the same stem: `[movie.part1.rar,
+`[alpha.zip.001, beta.part1.rar]` raises as well. One name reads both ways and is
+settled by the sequence rather than by itself: `Show.part1.rar` beside
+`Show.part1.r00` is that set's volume 1, so `[Show.part1.rar, Show.part1.r00,
+Show.part1.r01]` joins, while `[Show.part1.rar, Show.part2.rar, Show.part1.r00]`
+raises.
+
+And a name that carries no part number but is shaped like a first volume
+(`backup.rar`, `backup.exe`, `backup.sfx`) only belongs beside the marked parts
+around it: with `.rNN` parts it must share their stem, so `[movie.part1.rar,
 movie.part2.rar, readme.rar]` raises. The one exception is the stub executable 7-Zip
 writes beside a numbered set, which has no part number and need not share their
 name, so an `.exe` or `.sfx` is let through there — a `.rar` in the same position is
 not.
+
+When *no* name in the sequence carries a part number, nothing in it says any of them
+is a volume and none of this applies: `[alpha.rar, beta.rar]` joins, giving you bytes
+that are neither archive. Refusing it would mean refusing a single-volume RAR passed
+as a one-element list, which this path is documented for. Pass the parts of one set,
+or let `open_archive` discover them from any one part.
 
 The comparison ignores case, and it is only on the name, so parts of one set living
 in different directories are fine. If a part has been renamed out of every pattern

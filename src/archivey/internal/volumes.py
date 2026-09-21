@@ -676,6 +676,43 @@ def _volume_scheme_and_base(name: str) -> tuple[int, str] | None:
     return None
 
 
+def _rar_rnn_bases(paths: Sequence[Path]) -> frozenset[str]:
+    """The case-folded bases of every ``name.rNN`` continuation in the sequence."""
+    return frozenset(
+        match.group("base").lower()
+        for match in (_RAR_RNN_RE.match(path.name) for path in paths)
+        if match is not None
+    )
+
+
+def _is_rnn_first_volume_name_in(name: str, rnn_bases: frozenset[str]) -> bool:
+    """Is this ``.partN.rar`` really volume 1 of a ``.rNN`` set whose base ends in it?
+
+    ``Show.part1.rar`` reads two ways, and neither the name nor the order the patterns
+    are tried in can settle it: part 1 of the ``.partN`` set based on ``Show``, or
+    volume 1 of the old-scheme set based on ``Show.part1``. Only the rest of the
+    sequence knows — if ``Show.part1.r00`` is in it, the second reading is the one
+    that makes the sequence a single archive, and it is the one discovery produces
+    from any of the three names.
+
+    Per-name first-match ordering is what keeps ``my.part1.zip.001`` in the numbered
+    scheme; this is that same hazard one level up, where a name has to be read against
+    the sequence around it rather than on its own.
+    """
+    if _RAR_PART_RE.match(name) is None:
+        return False
+    return name[: name.rfind(".")].lower() in rnn_bases
+
+
+def _sequence_scheme_and_base(
+    name: str, rnn_bases: frozenset[str]
+) -> tuple[int, str] | None:
+    """:func:`_volume_scheme_and_base`, with the sequence's ``.rNN`` bases to consult."""
+    if _is_rnn_first_volume_name_in(name, rnn_bases):
+        return None
+    return _volume_scheme_and_base(name)
+
+
 def _different_sets_error(first: str, second: str) -> ArchiveyUsageError:
     return ArchiveyUsageError(
         f"Volume parts belong to different sets: {display_path(first)} and "
@@ -701,6 +738,9 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
        something different in each — ``alpha.part1.rar``'s is the stem before
        ``.part``, ``alpha.zip.001``'s includes the archive extension — so comparing
        across them is meaningless, and a sequence populating two of them is two sets.
+       One name reads two ways and is settled by the sequence rather than by itself:
+       ``Show.part1.rar`` beside ``Show.part1.r00`` is that set's volume 1, not a
+       ``.partN`` part — see :func:`_is_rnn_first_volume_name_in`.
     2. Within that scheme the bases must agree, compared case-folded the way
        ``discover_volume_siblings`` groups siblings, so this never refuses a set
        discovery would have accepted.
@@ -719,19 +759,32 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
     would leave the parts around it unchecked depending only on where the stray
     sorted.
 
-    What this guarantees is still narrower than "the parts of one archive", and two
-    residues stay: parts with the same base in *different directories* join, which
-    discovery could never produce but ``docs/opening-and-listing.md`` advertises this
-    path for; and on a case-sensitive filesystem ``gamma.zip.001`` and
-    ``GAMMA.zip.002`` are genuinely distinct files that the case-folding lets through.
+    What this guarantees is still narrower than "the parts of one archive", and three
+    residues stay.
+
+    A sequence in which *no* name carries a part number is not checked at all, because
+    nothing in it says any of those names is a volume: ``[alpha.rar, beta.rar]`` is two
+    complete archives and joins. Rule 3 reads a bare ``<base>.rar`` against the marked
+    parts around it, and with none there is nothing to read it against — refusing it
+    instead would refuse a single-volume RAR passed as a one-element list, which is a
+    documented way to call this.
+
+    Parts with the same base in *different directories* join, which discovery could
+    never produce but ``docs/opening-and-listing.md`` advertises this path for.
+
+    And on a case-sensitive filesystem ``gamma.zip.001`` and ``GAMMA.zip.002`` are
+    genuinely distinct files that the case-folding lets through.
     """
     marked_scheme: int | None = None
     marked_base = ""
     unmarked: list[str] = []
+    rnn_bases = _rar_rnn_bases(paths)
     for path in paths:
-        classified = _volume_scheme_and_base(path.name)
+        classified = _sequence_scheme_and_base(path.name, rnn_bases)
         if classified is None:
-            if _is_old_scheme_first_volume_name(path.name):
+            if _is_old_scheme_first_volume_name(
+                path.name
+            ) or _is_rnn_first_volume_name_in(path.name, rnn_bases):
                 unmarked.append(path.name)
             continue
         scheme, part_base = classified
@@ -749,18 +802,28 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
         elif part_base.lower() != marked_base.lower():
             raise _different_sets_error(marked_base, part_base)
 
+    if marked_scheme is None:
+        # Nothing in the sequence carries a part number, so nothing in it says any of
+        # these names is a volume at all and there is no set to be inconsistent with.
+        # This is the third residue: `[alpha.rar, beta.rar]` is two complete archives
+        # and still joins. Refusing it would mean refusing a single-volume RAR passed
+        # as a one-element list, which is a documented way to call this.
+        return
+
     for name in unmarked:
         stem = name[: name.rfind(".")]
-        if marked_scheme in (None, _RAR_RNN_SCHEME):
-            # Volume 1 of an old-scheme set, or a lone file with nothing to check it
-            # against. `_old_rar_rnn_first_volume` builds this name as the `.rNN` base
-            # plus a suffix, so the stem is that base verbatim.
-            if marked_scheme is not None and stem.lower() != marked_base.lower():
+        if marked_scheme == _RAR_RNN_SCHEME:
+            # Volume 1 of the old scheme. `_old_rar_rnn_first_volume` builds this name
+            # as the `.rNN` base plus a suffix, so the stem is that base verbatim.
+            if stem.lower() != marked_base.lower():
                 raise _different_sets_error(marked_base, stem)
-        elif marked_scheme == _NUMBERED_SCHEME and not name.lower().endswith(".rar"):
+        elif marked_scheme == _NUMBERED_SCHEME and name.lower().endswith(
+            (".exe", ".sfx")
+        ):
             # The 7-Zip stub beside `vol.exe.001`. Its own name is not derived from the
             # parts' base (`vol.exe`), so there is nothing to compare — only the
-            # spelling says whether it can be a stub at all.
+            # executable spelling says whether it can be a stub at all, and a `.rar`
+            # in this position is a second archive.
             continue
         else:
             raise _different_sets_error(marked_base, stem)

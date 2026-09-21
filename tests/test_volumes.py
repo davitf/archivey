@@ -1529,3 +1529,67 @@ def test_same_base_in_two_directories_still_joins(tmp_path: Path) -> None:
         [tmp_path / "one" / "alpha.zip.001", tmp_path / "two" / "alpha.zip.002"]
     )
     assert joined.read() == b"AAABBB"
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("Show.part1.rar", "Show.part1.r00", "Show.part1.r01"),
+        ("Show.part1.sfx", "Show.part1.r00"),
+        ("Show.part12.exe", "Show.part12.r00", "Show.part12.r01"),
+    ],
+)
+def test_an_old_scheme_set_whose_base_ends_in_partn_still_joins(
+    tmp_path: Path, names: tuple[str, ...]
+) -> None:
+    """``Show.part1.rar`` reads two ways and only the sequence settles it.
+
+    It is either part 1 of the ``.partN`` set based on ``Show``, or volume 1 of the
+    old-scheme set based on ``Show.part1``. Read on its own it is the former, and the
+    cross-scheme rule then sees two schemes in one archive and refuses it. Discovery
+    from any of these names returns exactly this list, so refusing it would break the
+    rule that this never refuses a set discovery would have accepted.
+    """
+    for index, name in enumerate(names):
+        (tmp_path / name).write_bytes(bytes([65 + index]))
+
+    joined = join_volumes([tmp_path / name for name in names])
+    assert joined.read() == bytes(range(65, 65 + len(names)))
+
+
+def test_discovery_and_the_explicit_path_agree_on_a_partn_ending_base(
+    tmp_path: Path,
+) -> None:
+    """The invariant the case above exists to protect, asserted directly."""
+    names = ("Show.part1.rar", "Show.part1.r00", "Show.part1.r01")
+    for index, name in enumerate(names):
+        (tmp_path / name).write_bytes(bytes([65 + index]))
+
+    discovered = discover_volume_siblings(tmp_path / "Show.part1.r00")
+    assert [path.name for path in discovered] == list(names)
+
+    joined = join_volumes(discovered)
+    assert joined.read() == b"ABC"
+
+
+def test_a_partn_part_beside_an_rnn_set_on_its_own_base_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    """Reading volume 1 off the sequence must not let two real sets through.
+
+    ``Show.part2.rar`` can only be a ``.partN`` part, so the ``.partN`` set based on
+    ``Show`` is genuinely present here alongside the ``.rNN`` set based on
+    ``Show.part1``. Two sets, two schemes, refused — the reclassification applies to
+    the ambiguous name only.
+    """
+    for name in ("Show.part1.rar", "Show.part2.rar", "Show.part1.r00"):
+        (tmp_path / name).write_bytes(b"A")
+
+    with pytest.raises(ArchiveyUsageError, match="different sets"):
+        join_volumes(
+            [
+                tmp_path / "Show.part1.rar",
+                tmp_path / "Show.part2.rar",
+                tmp_path / "Show.part1.r00",
+            ]
+        )
