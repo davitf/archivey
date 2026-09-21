@@ -218,7 +218,7 @@ into datetime fields — archivey does both from the values `ZipInfo` exposes.
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
 | `modified` / `accessed` / `created` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra` | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
 | `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word (`zipfile` has no `is_symlink`); directory via `ZipInfo.is_dir()` otherwise | — |
-| `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — the member is re-typed, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target) |
+| `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — a file-shaped member is re-typed to carry it, a directory-shaped one stays a targetless link, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target) |
 | `compression` | `compress_type` → `CompressionMethod` | — |
 | `is_encrypted` | `flag_bits & 0x1` | — |
 | `hashes["crc32"]` | CDH CRC, as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
@@ -274,12 +274,19 @@ which is why a 7-Zip-written junction carries the first key and not the second.
 entry was a reparse point on the source filesystem. It does not say the archive carries
 the buffer, and it does not say the tag named a link — Windows sets the same bit for
 deduplication stubs, cloud placeholders and WSL entries, whose data is ordinary content.
-So a member whose data is present but does not parse as a link buffer is put back to the
-type it would otherwise have had (file, or directory) and keeps that content, with
+So a **file-shaped** member whose data is present but does not parse as a link buffer is
+put back to the type it would otherwise have had and keeps that content, with
 `SYMLINK_TARGET_UNAVAILABLE(reason="reparse_data_unrecognized")` recording the
-reinterpretation. Only a member with *no* data has nothing to reinterpret, and that is
-the one that stays a link with no target. Presenting it the other way round would cost
-the caller a readable member on the strength of a bit, and `open()` on it would raise.
+reinterpretation. Presenting it the other way round would cost the caller a readable
+member on the strength of a bit, and `open()` on it would raise.
+
+Two members are left a link with no target. One has *no* data, so there is nothing to
+reinterpret. The other is **directory-shaped** — stored with the trailing slash — where
+the re-type would buy nothing: `open()` refuses a directory, so the data the re-type
+exists to preserve stays unreachable regardless, and the entry has already lost its
+trailing slash to name normalization (whose diagnostic the backend suppresses for a link
+stored with the directory convention, §2.2.1). It keeps the `reparse_data_unrecognized`
+reason, since that is still what happened; only the outcome differs.
 
 The junction path in the reader is therefore correct and unreachable from any archive
 these tools produce. It is kept, and tested against an assembled buffer, because the

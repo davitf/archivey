@@ -807,6 +807,18 @@ class SevenZipReader(BaseArchiveReader):
             with self._open_member(member) as stream:
                 data = stream.read()
         except EncryptionError:
+            # A 7z symlink's target is its file data, so without the password there is
+            # nothing to decode. Listing has to stay usable without one, so the member
+            # keeps its type and the reason travels on the diagnostics channel instead
+            # — silence here would make extraction skip the link with no explanation.
+            self._emit_link_target_unavailable(
+                member,
+                reason="password_required",
+                message=(
+                    f"Cannot read the symlink target of {member.name!r} without the "
+                    f"correct password; leaving link_target unset."
+                ),
+            )
             return
         if is_reparse_point:
             self._apply_reparse_data(member, data, fallback_type=fallback_type)

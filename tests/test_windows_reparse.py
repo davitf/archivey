@@ -11,6 +11,7 @@ ones the format would allow.
 from __future__ import annotations
 
 import struct
+import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
@@ -23,7 +24,9 @@ from archivey import ExtractionStatus, OverwritePolicy, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import LinkTargetNotFoundError
 from archivey.internal.backends import directory_reader
+from archivey.internal.backends.rar_parser import RarMemberInfo
 from archivey.internal.backends.rar_reader import _rar_member_extra_and_link
+from archivey.internal.extraction_types import OnError
 from archivey.internal.windows_reparse import (
     FILE_ATTRIBUTE_REPARSE_POINT,
     IO_REPARSE_TAG_MOUNT_POINT,
@@ -31,6 +34,7 @@ from archivey.internal.windows_reparse import (
     parse_reparse_data,
 )
 from archivey.types import MemberType
+from tests.conftest import requires_binary
 
 _JUNCTION_DIR = Path(__file__).parent / "fixtures" / "external" / "junction"
 
@@ -455,6 +459,36 @@ def test_a_reparse_member_whose_data_is_not_a_link_keeps_its_content(
             assert stream.read() == b"not a reparse buffer"
 
 
+def test_a_directory_shaped_reparse_point_with_odd_data_stays_a_link(
+    tmp_path: Path,
+) -> None:
+    """Re-typing pays for a file and not for a directory, so it is declined here.
+
+    The re-type exists to keep unrecognised data reachable, and only a FILE's content is
+    reachable — `open()` refuses a DIRECTORY. Re-typing this member would have promised
+    "that data as its content" while making the content unreadable, and the entry has
+    already lost the trailing slash that made it a directory, because the ZIP backend
+    suppresses that rename's diagnostic for a link stored with the directory convention.
+    Leaving it a targetless link keeps what the archive actually said.
+    """
+    archive = tmp_path / "odd_directory_reparse.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="tree/weird/",
+        attributes=_FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT,
+        data=b"not a reparse buffer",
+    )
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.type is MemberType.SYMLINK
+        # The name that normalization produced is right for what the member stayed:
+        # a link carries no trailing slash. Re-typing was what made it inconsistent.
+        assert member.name == "tree/weird"
+        assert member.link_target is None
+        assert not member.is_junction
+        assert _unavailable_reasons(opened) == ["reparse_data_unrecognized"]
+
+
 def test_a_directory_reparse_point_with_no_data_stays_a_link(tmp_path: Path) -> None:
     """The other side of the rule: nothing to reinterpret, so the link type stands."""
     archive = tmp_path / "empty_reparse.zip"
@@ -536,3 +570,150 @@ def test_a_tar_symlink_spelled_as_a_directory_is_still_reported(tmp_path: Path) 
         (member,) = opened.members()
         assert member.name == "link"
         assert opened.diagnostics.counts.get(DiagnosticCode.MEMBER_NAME_NORMALIZED) == 1
+
+
+# --------------------------------------------------------------------------------
+# A link whose target the archive will not yield
+# --------------------------------------------------------------------------------
+
+
+def _encrypted_archive_with_a_symlink(tmp_path: Path, archive_type: str) -> Path:
+    """Write an archive holding one symlink whose target is encrypted with its data.
+
+    The symlink is left dangling on purpose: a regular file alongside it would be
+    encrypted too, so extracting without the password would fail on that member and
+    never reach the link.
+    """
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "link.txt").symlink_to("absent.txt")
+    archive = tmp_path / ("enc.zip" if archive_type == "-tzip" else "enc.7z")
+    subprocess.run(
+        ["7z", "a", archive_type, "-snl", "-pSECRET", "-y", str(archive), "tree"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    return archive
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize(
+    "archive_type", [pytest.param("-tzip", id="zip"), pytest.param("-t7z", id="7z")]
+)
+def test_an_encrypted_link_says_why_its_target_is_missing(
+    tmp_path: Path, archive_type: str
+) -> None:
+    """A link whose target is unreadable has to say so, whatever put it out of reach.
+
+    `ExtractionStatus.SKIPPED` carries no reason of its own — it says only that nothing
+    was written — so the reason travels on the diagnostics channel instead, and
+    `SYMLINK_TARGET_UNAVAILABLE` being in `ARCHIVE_INTEGRITY_CODES` is what lets a
+    strict policy refuse such an archive outright. A backend that returns quietly turns
+    an unreadable link into a silent omission, which is the one outcome
+    `safe-extraction` rules out. Listing without a password still has to work, so this
+    is a diagnostic and not a raise.
+    """
+    archive = _encrypted_archive_with_a_symlink(tmp_path, archive_type)
+    with open_archive(archive) as opened:
+        (link,) = [m for m in opened.members() if m.type is MemberType.SYMLINK]
+        assert link.link_target is None
+        assert _unavailable_reasons(opened) == ["password_required"]
+
+    dest = tmp_path / "out"
+    results = archivey.extract(archive, dest)
+    by_name = {r.member.name: r for r in results}
+    assert by_name["tree/link.txt"].status is ExtractionStatus.SKIPPED
+    assert by_name["tree/link.txt"].error is None
+    assert not (dest / "tree" / "link.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        pytest.param("is_encrypted", True, "password_required", id="encrypted"),
+        pytest.param(
+            "split_after", True, "target_data_split_across_volumes", id="split"
+        ),
+        pytest.param("compress_type", 0x33, "target_data_compressed", id="compressed"),
+        pytest.param("file_size", 0, "no_target_data", id="empty"),
+    ],
+)
+def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: object, reason: str
+) -> None:
+    """The RAR4 fallthrough was the third silent path, and it has four causes.
+
+    RAR3/4 store a symlink's target as the member's own data, so the reader reads it
+    straight out of the archive — and declines to when that data is encrypted, split
+    across volumes, compressed rather than stored, or simply absent. Every one of those
+    left `link_target` unset and said nothing, so `safe-extraction`'s promise that a
+    skipped link is always explained held for ZIP and for nothing else.
+
+    Patching the parsed header rather than writing four archives is deliberate: RAR 7
+    dropped `-ma4`, so the writer this repo installs cannot produce a RAR4 archive at
+    all, and each flag here is the only thing that would differ between this fixture
+    and the archive a RAR4 writer would emit. The branch reads nothing else off the
+    member. Only the symlinks are touched, so the rest of the listing stays honest.
+    """
+    original_init = RarMemberInfo.__init__
+
+    def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
+        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        if self.is_symlink:
+            setattr(self, field, value)
+
+    monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
+
+    fixture = Path(__file__).parent / "fixtures" / "rar" / "symlinks_solid__rar4.rar"
+    with open_archive(fixture) as opened:
+        links = [m for m in opened.members() if m.type is MemberType.SYMLINK]
+        assert links, "the fixture should still list its symlinks"
+        assert all(m.link_target is None for m in links)
+        assert _unavailable_reasons(opened) == [reason] * len(links)
+
+
+def test_a_streaming_symlink_is_not_silently_skipped(tmp_path: Path) -> None:
+    """An unset `link_target` means two things, and only one of them is the archive's.
+
+    A ZIP or 7z symlink stores its target as the member's data, so in streaming mode it
+    reaches the write decision with `link_target` still unset — the reader has not read
+    it yet, and cannot go back for it. The archive records that target perfectly well.
+    Calling it the archive's omission would report success while dropping an ordinary
+    POSIX symlink from the output, with no error and no diagnostic.
+
+    Streaming still cannot write such a link, which is a gap of its own and not this
+    status's business. What matters is that it stays loud: a failure the caller sees,
+    the way it behaved before `SKIPPED` existed. Nothing in the suite covered a
+    streaming-mode symlink at all, which is how the silent version got through.
+    """
+    archive = tmp_path / "unixlink.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("target.txt", b"payload\n")
+        info = zipfile.ZipInfo("link")
+        info.create_system = 3  # Unix
+        info.external_attr = (0o120777 << 16) | 0o120000
+        zf.writestr(info, b"target.txt")
+
+    # The library default, OnError.STOP: the whole extraction stops on it.
+    with open_archive(archive, streaming=True) as opened:
+        with pytest.raises(LinkTargetNotFoundError):
+            opened.extract_all(tmp_path / "stop")
+
+    # And under CONTINUE it is a recorded failure, not a skip.
+    dest = tmp_path / "continue"
+    with open_archive(archive, streaming=True) as opened:
+        report = opened.extract_all(dest, on_error=OnError.CONTINUE)
+    by_name = {r.member.name: r for r in report.results}
+    assert by_name["link"].status is ExtractionStatus.FAILED
+    assert isinstance(by_name["link"].error, LinkTargetNotFoundError)
+    assert by_name["target.txt"].status is ExtractionStatus.EXTRACTED
+
+
+def _unavailable_reasons(opened: object) -> list[str]:
+    """The `reason` of every `SYMLINK_TARGET_UNAVAILABLE` the reader has emitted."""
+    return [
+        d.context.reason
+        for d in opened.diagnostics.retained  # type: ignore[attr-defined]
+        if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+    ]

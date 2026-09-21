@@ -1302,7 +1302,32 @@ class RarReader(BaseArchiveReader):
                 view.close()
             member.link_target = data.decode("utf-8", errors="surrogateescape")
             return
-        # Encrypted / compressed target without usable direct bytes: leave unset.
+        # Encrypted / compressed target without usable direct bytes: leave unset. The
+        # reason still has to reach the caller — `SYMLINK_TARGET_UNAVAILABLE` is in
+        # `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses the archive, and a
+        # lenient one gets a diagnostic instead of a link that extraction silently
+        # skips. Ordered by what a caller can act on: a password is fixable, the
+        # others are properties of how the archive was written.
+        if raw.is_encrypted:
+            reason = "password_required"
+            detail = "its data is encrypted and no usable password was supplied"
+        elif raw.split_before or raw.split_after:
+            reason = "target_data_split_across_volumes"
+            detail = "its data is split across volumes"
+        elif raw.compress_type != _RAR_METHOD_STORED:
+            reason = "target_data_compressed"
+            detail = "its data is compressed rather than stored"
+        else:
+            reason = "no_target_data"
+            detail = "it carries no data"
+        self._emit_link_target_unavailable(
+            member,
+            reason=reason,
+            message=(
+                f"Cannot read the symlink target of {member.name!r} because {detail}; "
+                f"leaving link_target unset."
+            ),
+        )
         return
 
     def _unrar_glob_prefix(

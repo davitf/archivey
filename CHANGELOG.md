@@ -75,8 +75,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
   destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
   does not unlink an entry for a member that is not going to be written. This covers both
   ways a target goes missing — a writer that discarded it, and an encrypted target with no
-  password — and the loss is still reported as `SYMLINK_TARGET_UNAVAILABLE`, which a
-  strict `DiagnosticPolicy` refuses. Previously extraction raised `LinkTargetNotFoundError`
+  password — and the loss is always reported as `SYMLINK_TARGET_UNAVAILABLE`, which a
+  strict `DiagnosticPolicy` refuses. Only ZIP used to report it: 7z returned quietly on an
+  encrypted link, and RAR3/4 did the same whenever the target's bytes were out of reach,
+  which now names which of four causes it was (encrypted, split across volumes, compressed
+  rather than stored, or absent). Previously extraction raised `LinkTargetNotFoundError`
   for the member, which under the library default aborted the whole operation.
 
 ### Changed

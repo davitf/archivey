@@ -71,6 +71,18 @@ Windows NTFS junctions SHALL surface as `MemberType.SYMLINK` with
 extraction regardless of policy. `MemberType.ANTI` SHALL be a deletion/tombstone
 marker (`is_file` false, no payload); it SHALL NOT be treated as `OTHER`.
 
+A link the source filesystem held as a Windows reparse point — a junction, a Windows
+directory symlink or a Windows file symlink — SHALL additionally carry
+`extra["is_reparse_point"] == True`, exposed as `ArchiveMember.is_reparse_point`. It
+answers the question `is_junction` cannot: whether a `MemberType.SYMLINK` is a POSIX
+symlink or a Windows reparse point, which decides whether its target is a Windows path
+and whether recreating it on Windows needs a reparse point rather than a symlink.
+`is_junction` SHALL remain the narrower claim and SHALL imply `is_reparse_point`.
+
+Unlike `is_junction`, `is_reparse_point` SHALL NOT be gated on `type`: it records what
+the archive said about the entry, and a member whose reparse data turns out not to be a
+link keeps the flag alongside its re-typed `MemberType`.
+
 #### Scenario: member type matrix
 
 | Case | Expected |
@@ -78,6 +90,11 @@ marker (`is_file` false, no payload); it SHALL NOT be treated as `OTHER`.
 | TAR contains a device node or FIFO | `member.type == MemberType.OTHER` |
 | ZIP contains a Windows junction | `member.type == MemberType.SYMLINK`; `member.extra["is_junction"] is True` |
 | 7z ANTI-bit entry | `member.type == MemberType.ANTI`; `member.is_anti`; not `is_file` |
+| ZIP entry with `FILE_ATTRIBUTE_REPARSE_POINT` | `member.is_reparse_point`; the bit lives in the DOS attribute word, so it SHALL be read only from a DOS/Windows `create_system` |
+| 7z entry with `FILE_ATTRIBUTE_REPARSE_POINT` | `member.is_reparse_point`, unless the attribute word's high half already says `S_IFLNK` — a POSIX symlink is not a reparse point |
+| RAR5 redirect type 2 (Windows symlink) or 3 (junction) | `member.is_reparse_point`; type 3 also sets `is_junction` |
+| RAR5 redirect type 1 (Unix symlink), or a TAR/ISO symlink | `member.is_reparse_point` is False |
+| Directory source read on Windows | `member.is_reparse_point` for every symlink; on POSIX, never |
 
 ### Requirement: Compression methods model codec chains
 
@@ -172,6 +189,8 @@ class ArchiveMember:
     def is_anti(self) -> bool: ...
     @property
     def is_junction(self) -> bool: ...
+    @property
+    def is_reparse_point(self) -> bool: ...
 
     def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
     def replace(self, **kwargs: object) -> "ArchiveMember": ...

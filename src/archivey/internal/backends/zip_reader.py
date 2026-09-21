@@ -47,7 +47,6 @@ from archivey.diagnostics import (
     DiagnosticCode,
     MemberTimestampContext,
     NameEncodingContext,
-    SymlinkTargetContext,
     raw_name_to_base64,
 )
 from archivey.escaping import quoted
@@ -1505,22 +1504,13 @@ class ZipReader(BaseArchiveReader):
             else:
                 member.link_target = data.decode("utf-8", errors="surrogateescape")
         except EncryptionError:
-            message = (
-                f"Cannot read the symlink target of {info.filename!r} without the "
-                f"correct password; leaving link_target unset."
-            )
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
-                message=message,
-                context=SymlinkTargetContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    reason="password_required",
+            self._emit_link_target_unavailable(
+                member,
+                reason="password_required",
+                message=(
+                    f"Cannot read the symlink target of {info.filename!r} without the "
+                    f"correct password; leaving link_target unset."
                 ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
             )
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:

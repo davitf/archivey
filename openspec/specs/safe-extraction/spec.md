@@ -641,9 +641,9 @@ describes but does not carry enough information to write — a symlink whose tar
 never recorded (`path=None`, `error=None`, `requested_path` set). `NOT_OVERWRITTEN`,
 `SUPERSEDED`, `OVERWRITTEN` and `SKIPPED` are not failures.
 
-A symlink with no `link_target` SHALL be recorded `SKIPPED` rather than raised as a
-per-member failure, under either `OnError` value, and SHALL NOT disturb an existing
-destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
+A symlink whose `link_target` the reader **looked for and did not find** SHALL be
+recorded `SKIPPED` rather than raised as a per-member failure, under either `OnError`
+value, and SHALL NOT disturb an existing destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
 does not unlink an entry for a member that is not going to be written. The archive's
 omission is reported through the diagnostics channel
 (`SYMLINK_TARGET_UNAVAILABLE`, an archive-integrity code), which is where an anomaly in
@@ -651,6 +651,13 @@ the archive's own metadata belongs; the extraction result records only what extr
 did about it. This is not confined to one cause: a writer that discarded the target (7-Zip
 records none for a directory reparse point) and an encrypted target with no password
 leave extraction with the same nothing to write.
+
+The lookup having run is part of the condition, not a detail of it. An unset
+`link_target` also means "not resolved yet" — a ZIP or 7z link read in streaming mode
+carries its target in the member's data, which that mode has already passed — and the
+archive does record that one. Recording it `SKIPPED` would report success while dropping
+a member the archive describes in full, so a link the reader has not resolved SHALL stay
+a per-member failure.
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and

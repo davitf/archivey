@@ -1277,8 +1277,41 @@ class BaseArchiveReader(ArchiveReader):
         """
         if member.link_target is not None or member._link_target_resolved:
             return
-        member._link_target_resolved = True
         self._ensure_link_target(member)
+        # After, not before: a hook that raised did not look and come back empty, it
+        # never finished. `_finalize_links` swallows CorruptionError / TruncatedError on
+        # an already-damaged listing, so marking it resolved on the way out would trade
+        # the real fault for a generic "Link target is unknown" at the next access.
+        # A backend that catches EncryptionError returns normally, so the repeated-read
+        # case this memo exists for is still covered.
+        member._link_target_resolved = True
+
+    def _emit_link_target_unavailable(
+        self, member: ArchiveMember, *, reason: str, message: str
+    ) -> None:
+        """Report that a link's target could not be read, and why.
+
+        Every path that leaves ``link_target`` unset on a member the archive calls a
+        link goes through here. That is the whole guarantee `safe-extraction` and
+        ``docs/extracting.md`` make about the new ``SKIPPED`` outcome: the status says
+        only that extraction wrote nothing, so the *reason* has to reach the caller on
+        the diagnostics channel, and ``SYMLINK_TARGET_UNAVAILABLE`` is in
+        ``ARCHIVE_INTEGRITY_CODES`` so a strict policy refuses the archive outright.
+        A backend that returns quietly instead makes that guarantee false.
+        """
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
+            message=message,
+            context=SymlinkTargetContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member._member_id,
+                reason=reason,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
 
     def _apply_reparse_data(
         self, member: ArchiveMember, data: bytes, *, fallback_type: MemberType
@@ -1299,6 +1332,14 @@ class BaseArchiveReader(ArchiveReader):
         type is what we inferred, and discarding the former for the latter would cost
         the caller a readable member.
 
+        That trade only pays when ``fallback_type`` is a FILE. Re-typing to DIRECTORY
+        buys nothing and costs twice over: :meth:`open` refuses a directory, so the data
+        this exists to preserve becomes unreachable anyway, and the entry has already
+        lost the trailing slash that made it a directory in the first place (the backend
+        suppresses that rename's diagnostic because a *link* stored with the directory
+        convention is the format's own spelling). A directory-shaped entry therefore
+        stays a targetless link, which is what the archive said it was.
+
         A member with no data at all has nothing to reinterpret and stays a link with no
         target. That is the case every Windows archiver actually produces for a junction:
         7-Zip writes no data for the directory reparse point that every junction is, so
@@ -1314,13 +1355,21 @@ class BaseArchiveReader(ArchiveReader):
             member.link_target = parsed.target
             return
 
-        if parsed is None and data:
+        if parsed is None and data and fallback_type is not MemberType.DIRECTORY:
             member.type = fallback_type
             reason = "reparse_data_unrecognized"
             message = (
                 f"{quoted(member.name)} is flagged as a Windows reparse point, but its "
                 f"{len(data)} bytes of data are not a symlink or junction buffer; "
                 f"presenting it as a {fallback_type.value} with that data as its content."
+            )
+        elif parsed is None and data:
+            reason = "reparse_data_unrecognized"
+            message = (
+                f"{quoted(member.name)} is flagged as a Windows reparse point, but its "
+                f"{len(data)} bytes of data are not a symlink or junction buffer; "
+                f"it is stored as a directory, whose content is not readable either "
+                f"way, so it stays a link with no target."
             )
         else:
             if not data:
@@ -1333,19 +1382,7 @@ class BaseArchiveReader(ArchiveReader):
                 f"Cannot read the link target of {quoted(member.name)}: {detail}; "
                 f"leaving link_target unset."
             )
-        self._diagnostics_collector.emit(
-            code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
-            message=message,
-            context=SymlinkTargetContext(
-                archive_name=self._archive_name,
-                member_name=member.name,
-                member_id=member._member_id,
-                reason=reason,
-            ),
-            member=member,
-            attach_to_member=True,
-            logger=logger,
-        )
+        self._emit_link_target_unavailable(member, reason=reason, message=message)
 
     @staticmethod
     def _index_member_name(

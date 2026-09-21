@@ -1007,7 +1007,7 @@ class ExtractionCoordinator:
         dest_path: Path,
     ) -> ExtractionResult:
         target = transformed.link_target
-        if target is None:
+        if target is None and original._link_target_resolved:
             # The archive says this is a link but never recorded where it points — a
             # 7-Zip-written directory symlink or junction, or an encrypted target with
             # no password. There is nothing to write, and nothing here went wrong, so
@@ -1015,8 +1015,23 @@ class ExtractionCoordinator:
             # would turn into an aborted extraction. Checked before _prepare_destination
             # so a member we are not going to write cannot unlink an existing
             # destination under OverwritePolicy.REPLACE.
-            return ExtractionResult(
-                original, None, ExtractionStatus.SKIPPED, None, requested_path=dest_path
+            #
+            # `_link_target_resolved` is the whole condition alongside it, because an
+            # unset `link_target` has two meanings and only one of them is the archive's
+            # omission. In streaming mode a ZIP or 7z symlink reaches here with the
+            # target not yet read — it lives in the member's data — and the archive does
+            # record it. Skipping that one would report success while dropping an
+            # ordinary POSIX symlink from the output, so it falls through to the raise
+            # below, which is what it did before this status existed.
+            return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
+
+        if target is None:
+            # Unset and never looked for: the reader has not resolved this link, so the
+            # archive's own record of it is untested. Reporting a skip here would blame
+            # the archive for a limit of this read mode — see the note above.
+            raise LinkTargetNotFoundError(
+                "Symlink has no target",
+                member_name=transformed.name,
             )
 
         if not self._prepare_destination(transformed, dest_path):

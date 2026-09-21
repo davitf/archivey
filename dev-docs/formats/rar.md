@@ -203,6 +203,27 @@ The absent RAR3 check value is why a wrong header password used to surface as
 `CorruptionError` and abort a whole candidate list on the first wrong entry
 (F1, fixed — candidate iteration works on RAR3 today, §8).
 
+Storing the target as data also means a RAR3/4 symlink can arrive with its target out
+of reach, where a RAR5 redirect never can — the redirect is in the header, which the
+reader has already parsed by the time anyone asks. The reader reads those bytes
+directly out of the archive (no `unrar` hop, even in a solid archive) and declines when
+it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than leaving
+`link_target` silently unset:
+
+| `reason` | When |
+| --- | --- |
+| `password_required` | the member is encrypted and no usable password was supplied |
+| `target_data_split_across_volumes` | the target's bytes straddle a volume boundary |
+| `target_data_compressed` | the target is LZ-compressed rather than stored M0 |
+| `no_target_data` | the member declares no data at all |
+
+The code is in `ARCHIVE_INTEGRITY_CODES`, so a strict `DiagnosticPolicy` refuses such
+an archive; a lenient one lists the member as a link with no target, and extraction
+reports `ExtractionStatus.SKIPPED` for it (`docs/extracting.md`). The RARLAB writer
+produces only the first of these in practice — it stores every symlink target M0, which
+is why `target_data_compressed` has no fixture (§8) and the four rows are pinned by
+patching the parsed header instead.
+
 **Solidity is archive-wide and its blocks are invisible.** RAR exposes no per-solid-block
 boundaries, so `ArchiveInfo.is_solid` is one flag and `CostReceipt.solid_block_count` is
 `None` by construction rather than by omission. Consequences: a whole streaming pass is
