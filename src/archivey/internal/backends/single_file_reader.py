@@ -459,8 +459,7 @@ class SingleFileReader(BaseArchiveReader):
         # Close an unserved non-seekable pending stream. The SharedSource is deliberately
         # NOT closed: it owns nothing (only stream sources are wrapped, and the caller
         # owns those), and marking it closed would poison still-open member streams —
-        # which are the caller's to close, keep working after reader close everywhere
-        # else (ZIP, path sources), and, over the rapidgzip accelerator, ABORT the
+        # which are the caller's to close and, over the rapidgzip accelerator, ABORT the
         # process if their source dies underneath them (rapidgzip 0.16 raises C++
         # std::invalid_argument through terminate() when a Python-file callback raises —
         # on read, close, and the GC-time guard alike; see dev-docs/known-issues.md). Reads

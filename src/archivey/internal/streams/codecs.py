@@ -1654,7 +1654,7 @@ class ZstdCodec(StreamCodec):
                 "zstd streams",
                 note="On Python 3.14+ the stdlib compression.zstd module is used instead.",
             )
-        return _zstd.open(source, "rb")
+        return ensure_binaryio(_zstd.open(source, "rb"))
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if _zstd is not None and isinstance(exc, _zstd.ZstdError):

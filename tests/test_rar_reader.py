@@ -3728,9 +3728,18 @@ def test_open_unrar_p_missing_stdout_pipe_is_typed(
     class _NoStdout:
         stdout = None
         stdin = None
+        terminated = False
+        waited = False
 
-        def kill(self) -> None:
-            self.killed = True
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.waited = True
+            return 0
 
     proc = _NoStdout()
     monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/bin/true")
@@ -3738,7 +3747,10 @@ def test_open_unrar_p_missing_stdout_pipe_is_typed(
 
     with pytest.raises(ArchiveyError):
         rar_unrar.open_unrar_p(tmp_path / "nonexistent.rar")
-    assert proc.killed is True
+    # The child is terminated *and* reaped, like every other exit from this module
+    # (a bare kill() would leave it unreaped until the next Popen sweeps it).
+    assert proc.terminated is True
+    assert proc.waited is True
 
 
 def _count_packed_skips(path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
@@ -4192,3 +4204,53 @@ def test_file_header_after_qo_is_still_listed(tmp_path: Path) -> None:
         assert listed == {"a.txt", "b.txt"}
         assert archive.read("a.txt") == b"alpha\n"
         assert archive.read("b.txt") == b"beta\n"
+
+
+def test_password_with_a_line_break_is_refused_not_clamped() -> None:
+    """`unrar` reads the password as one line, so a longer one is silently cut.
+
+    Measured against RARLAB `rar` 7.00 before this guard: an archive whose password is
+    "ab" decrypted when "ab\nXX" was supplied — a wrong password accepted, with nothing
+    downstream able to tell. The native header path hashes the whole string, so the same
+    argument also meant two different things on the two paths.
+    """
+    from archivey.exceptions import UnsupportedOperationError
+    from archivey.internal.backends.rar_unrar import _password_stdin_bytes
+
+    assert _password_stdin_bytes("ab") == b"ab"
+    assert _password_stdin_bytes(b"ab") == b"ab"
+    for bad in ["ab\nXX", "ab\rXX", b"ab\nXX", b"ab\rXX"]:
+        with pytest.raises(UnsupportedOperationError, match="line break"):
+            _password_stdin_bytes(bad)
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", ["rar15-comment.rar", "blake2sp.rar"])
+def test_unencrypted_archive_opens_with_a_line_break_password(name: str) -> None:
+    """A configured password is not a used password.
+
+    `unrar` only consults it when something is encrypted, so refusing the newline at
+    the point the password is *passed* stopped plain archives from opening at all —
+    `rar15-comment.rar` has an old-style compressed comment that is unpacked through
+    `unrar` inside `__init__`. A password read from a file carries a trailing newline,
+    so this is the ordinary input, not an exotic one.
+    """
+    path = _fixture(name)
+    with open_archive(path, password="secret\n") as archive:
+        members = [m for m in archive.members() if m.is_file]
+        assert members
+        for member in members:
+            assert isinstance(archive.read(member), bytes)
+
+
+@requires_binary("unrar")
+def test_wrong_password_after_a_line_break_does_not_decrypt() -> None:
+    """End to end: the prefix before the break must not be enough to read a member."""
+    from archivey.exceptions import UnsupportedOperationError
+
+    path = _fixture("encryption__.rar")
+    with open_archive(path, password="password") as archive:
+        assert archive.read("secret.txt") == b"This is secret"
+    with open_archive(path, password="password\nIGNORED") as archive:
+        with pytest.raises((UnsupportedOperationError, EncryptionError)):
+            archive.read("secret.txt")

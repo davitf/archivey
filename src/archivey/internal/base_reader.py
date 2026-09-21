@@ -523,19 +523,9 @@ class BaseArchiveReader(ArchiveReader):
         stream._attach_finalizer()
         return stream
 
-    def _internal_member_opens(self):
+    def _internal_member_opens(self) -> _InternalMemberOpens:
         """Context manager: library-internal opens are exempt from the live-stream gate."""
-        from contextlib import contextmanager
-
-        @contextmanager
-        def _cm():
-            self._state.begin_internal_opens()
-            try:
-                yield
-            finally:
-                self._state.end_internal_opens()
-
-        return _cm()
+        return _InternalMemberOpens(self._state)
 
     def _maybe_teardown(self, pending: Exception | None = None) -> None:
         """Run archive teardown outside lifecycle state once the last lease drops.
@@ -920,11 +910,9 @@ class BaseArchiveReader(ArchiveReader):
             self._emit_unconfirmed_format("extension", None)
             return
 
-        if provenance.chosen_by != "argument" or not isinstance(
-            provenance.source, Path
-        ):
-            # "content"/"directory": the bytes agreed. A non-Path argument source is
-            # skipped rather than seeking a live source back to its origin.
+        if provenance.chosen_by != "argument" or provenance.source is None:
+            # "content"/"directory": the bytes agreed. A stream argument records no
+            # source, rather than seeking a live source back to its origin.
             return
 
         from archivey.exceptions import ArchiveyError as _ArchiveyError
@@ -2232,3 +2220,23 @@ class _TranslatedErrorBoundary:
                 # would tack an extra frame onto its traceback.
                 return False
             raise
+
+
+class _InternalMemberOpens:
+    """``with``-boundary marking library-internal opens, exempt from the live-stream gate.
+
+    A plain ``__enter__``/``__exit__`` class, matching ``_TranslatedErrorBoundary``
+    above: this runs on every eager link-data read and every ``extract_all``, so it
+    allocates one small object rather than a generator and a context manager per call.
+    """
+
+    __slots__ = ("_state",)
+
+    def __init__(self, state: ReaderState) -> None:
+        self._state = state
+
+    def __enter__(self) -> None:
+        self._state.begin_internal_opens()
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._state.end_internal_opens()

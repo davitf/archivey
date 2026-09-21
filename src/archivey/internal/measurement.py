@@ -4,8 +4,12 @@ Disabled by default: when off, readers install no wrappers and counters stay at 
 (zero overhead on the hot path). The harness enables measurement via
 :func:`enable_measurement` around ``open_archive`` calls.
 
-Counters live on :class:`~archivey.internal.base_reader.BaseArchiveReader` only — not on
-the public :class:`~archivey.reader.ArchiveReader` ABC (no public performance API).
+The raw counter *properties* live on
+:class:`~archivey.internal.base_reader.BaseArchiveReader` only — not on the public
+:class:`~archivey.reader.ArchiveReader` ABC. The public surface is
+:meth:`~archivey.ArchiveReader.io_stats`, which returns an
+:class:`~archivey.measurement.IoStats`, so a new counter belongs as a field there
+rather than as another property on the reader.
 """
 
 from __future__ import annotations

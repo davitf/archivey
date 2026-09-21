@@ -8,9 +8,11 @@ format/entry-aware via ``backslash_is_separator``.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 
+from archivey import ExtractionPolicy
 from archivey.internal.naming import normalize_member_name
 from archivey.types import MemberType
 
@@ -159,3 +161,46 @@ def test_infer_member_name_from_archive() -> None:
         )
         == "archive"
     )
+
+
+@pytest.mark.parametrize(
+    "archive_name",
+    ["..gz", "...gz", " .gz", ".gz", ". .gz"],
+)
+def test_infer_member_name_never_yields_a_dots_only_stem(archive_name: str) -> None:
+    """Stripping the suffix can leave "." or "..", which is not a filename.
+
+    Extraction refuses those downstream, so the caller got an empty directory and a
+    warning for a perfectly good payload. They fall through to ``.uncompressed``.
+    """
+    from archivey.internal.naming import infer_member_name_from_archive
+
+    name = infer_member_name_from_archive(archive_name, strip_suffixes={".gz"})
+    assert name == archive_name + ".uncompressed"
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED],
+)
+def test_dots_only_stem_extracts_under_every_policy(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """The ``.uncompressed`` fallback has to satisfy the strictest policy, not just STRICT.
+
+    The stem is chosen at listing time, before any extraction policy is known, so one
+    name serves all three. ``....gz`` is the case that made the difference: the bare
+    stem ``...`` is refused under ``STRICT`` only, which is exactly the shape a
+    policy-blind chooser gets wrong in one direction.
+    """
+    import gzip
+
+    from archivey import extract
+
+    src = tmp_path / "....gz"
+    src.write_bytes(gzip.compress(b"payload"))
+    dest = tmp_path / "out"
+
+    extract(src, dest, policy=policy)
+
+    assert (dest / "....gz.uncompressed").read_bytes() == b"payload"

@@ -49,6 +49,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
+    UnsupportedOperationError,
 )
 from archivey.internal.backends.rar_parser import (
     _MAX_SKIPPED_HEADER_RECORDS,
@@ -707,6 +708,14 @@ class RarReader(BaseArchiveReader):
             self._volume0_parse_origin = self._origin
             self._origin = 0
         self._archive, self._unrar_password = self._parse_archive()
+        # unrar only consults the password when something is actually encrypted, so
+        # a spawn for a plain archive is not given one: nothing is decrypted with it,
+        # and handing a secret to a subprocess that ignores it buys nothing. This is
+        # also what ``get_archive_info`` reports as ``is_encrypted``: one predicate,
+        # so what the caller is told and what reaches the subprocess cannot drift.
+        self._archive_has_encryption = self._archive.has_header_encryption or any(
+            info.is_encrypted for info in self._archive.members
+        )
         if self._archive.is_volume or self._volume_count > 1:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
@@ -899,6 +908,23 @@ class RarReader(BaseArchiveReader):
             )
             raise EncryptionError(message) from exc
 
+    def _unrar_data_password(self) -> str | None:
+        """The password to hand an ``unrar`` spawn, or ``None`` when none is needed.
+
+        ``_first_candidate_str`` returns a configured candidate whenever the caller
+        supplied one, encrypted archive or not. Passing that on made every ``unrar``
+        spawn carry a password the archive has no use for — which is how a password
+        that cannot be handed to ``unrar`` at all (see
+        :func:`rar_unrar._password_stdin_bytes`) stopped a plain archive from opening.
+
+        The gate is the whole archive rather than the member being read, and
+        deliberately so: on a solid archive a plain member's block can sit behind an
+        encrypted one, so ``unrar`` may need the password to reach a member that is
+        not itself encrypted. An archive with nothing encrypted anywhere needs it on
+        no path at all, which is the case worth cutting.
+        """
+        return self._unrar_password if self._archive_has_encryption else None
+
     def _first_candidate_str(self) -> str | None:
         """Password to hand unrar / ConvertHashToMAC, or ``None``.
 
@@ -970,9 +996,18 @@ class RarReader(BaseArchiveReader):
                 unpacked_size=comment.unpacked_size,
                 flags=comment.flags,
                 crc16=comment.crc16,
-                password=self._unrar_password,
+                password=self._unrar_data_password(),
             )
-        except (OSError, PackageNotInstalledError, subprocess.SubprocessError):
+        except (
+            OSError,
+            PackageNotInstalledError,
+            UnsupportedOperationError,
+            subprocess.SubprocessError,
+        ):
+            # An undecodable comment degrades to None rather than sinking the
+            # listing. UnsupportedOperationError belongs here for the same reason:
+            # a password unrar cannot be given is a reason to lose the comment, not
+            # a reason for open_archive to fail.
             return None
         if unpacked is None or zlib.crc32(unpacked) & 0xFFFF != comment.crc16:
             return None
@@ -1169,7 +1204,7 @@ class RarReader(BaseArchiveReader):
                 path = self._ensure_archive_path()
                 proc, stdout = open_unrar_p(
                     path,
-                    password=self._unrar_password,
+                    password=self._unrar_data_password(),
                     version_control=version_control,
                 )
                 # Between Popen and the wrapper taking ownership, a raise would
@@ -1534,7 +1569,7 @@ class RarReader(BaseArchiveReader):
         def _spawn() -> BinaryIO:
             proc, stdout = open_unrar_p(
                 path,
-                password=self._unrar_password,
+                password=self._unrar_data_password(),
                 member=presented,
                 version_control=version_control,
             )
@@ -1600,7 +1635,6 @@ class RarReader(BaseArchiveReader):
             solid_block_count=None,
             notes=self._cost_notes,
         )
-        any_encrypted = any(m.is_encrypted for m in self._archive.members)
         is_multivolume = (
             self._archive.is_volume
             or self._volume_count > 1
@@ -1617,7 +1651,7 @@ class RarReader(BaseArchiveReader):
             is_solid=is_solid,
             member_count=len(self._members),
             comment=archive_comment,
-            is_encrypted=self._archive.has_header_encryption or any_encrypted,
+            is_encrypted=self._archive_has_encryption,
             is_multivolume=is_multivolume,
             cost=cost,
             extra=info_extra,

@@ -36,7 +36,7 @@ from archivey.exceptions import (
     FilterRejectionError,
 )
 from archivey.internal.detection import detect_format
-from archivey.internal.filters import check_universal
+from archivey.internal.filters import _is_absolute, check_universal
 from archivey.internal.logs import normalization as normalization_logger
 from archivey.internal.naming import (
     normalize_member_name,
@@ -220,12 +220,6 @@ def _member(
     )
 
 
-def _is_absolute_name(name: str) -> bool:
-    if name.startswith("/") or name.startswith("\\"):
-        return True
-    return len(name) >= 2 and name[0].isalpha() and name[1] == ":"
-
-
 def _has_dotdot_component(name: str) -> bool:
     return ".." in _SEP_SPLIT.split(name)
 
@@ -338,7 +332,7 @@ def test_check_universal_rejects_dotdot(dest_root: Path, name: str) -> None:
 
 @given(name=_absolute_names)
 def test_check_universal_rejects_absolute(dest_root: Path, name: str) -> None:
-    assert _is_absolute_name(name)  # strategy guarantees the class under test
+    assert _is_absolute(name)  # strategy guarantees the class under test
     with pytest.raises(FilterRejectionError):
         check_universal(_member(name), dest_root)
 
