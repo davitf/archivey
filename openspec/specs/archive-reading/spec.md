@@ -180,19 +180,29 @@ byte stream; RAR parses self-describing volumes in order and stitches
 boundary-spanning members. Incomplete/out-of-order sets SHALL raise
 `UnsupportedFeatureError` or a truncated/corrupt error — never a partial result.
 
-An explicitly passed sequence gets no discovery, so the parts in it SHALL be
-required to share a base name, compared case-insensitively, and a sequence mixing
-two sets SHALL raise `ArchiveyUsageError` naming both. Part numbers alone cannot
-detect this — `alpha.zip.001` and `beta.zip.002` are a valid `1, 2` — and the result
-would be bytes belonging to neither archive. All three volume naming schemes SHALL
-be covered, each compared against the base that scheme reads and only against names
-in the same scheme; an old-scheme `<base>.rar` / `.exe` / `.sfx` counts as volume 1
-of the `.rNN` scheme. The check is on names only: parts of one set in different
-directories remain valid, an item whose name matches no scheme is passed through in
-the position given (and suspends the completeness check for that sequence), and a
-sequence containing an open stream is not checked, a stream having no name to
-compare. Completeness (numbered `1..N` with no gaps) applies to the numbered scheme
-only, RAR volumes being self-describing.
+An explicitly passed sequence gets no discovery, so it SHALL be required to name the
+parts of one archive, and a sequence mixing two sets SHALL raise
+`ArchiveyUsageError` naming both. Part numbers alone cannot detect this —
+`alpha.zip.001` and `beta.zip.002` are a valid `1, 2` — and the result would be
+bytes belonging to neither archive. All three volume naming schemes SHALL be covered,
+by three rules:
+
+- parts carrying a number SHALL all be in the same scheme, the parts of one set being
+  all named the same way;
+- within that scheme their bases SHALL agree, compared case-insensitively against the
+  base that scheme reads;
+- a name carrying no part number but shaped like a first volume (`<base>.rar` /
+  `.exe` / `.sfx`) SHALL be required to share its stem with the `.rNN` parts present,
+  and SHALL be refused beside parts of another scheme — except that an `.exe` /
+  `.sfx` beside a numbered set is the 7-Zip stub, whose name is not derived from
+  theirs, and is allowed.
+
+The check is on names only: parts of one set in different directories remain valid, an
+item whose name matches none of the above is passed through in the position given (and
+suspends the completeness check for that sequence), and a sequence containing an open
+stream is not checked, a stream having no name to compare. Completeness (numbered
+`1..N` with no gaps) applies to the numbered scheme only, RAR volumes being
+self-describing.
 
 #### Scenario: volume input matrix
 
@@ -209,6 +219,8 @@ only, RAR volumes being self-describing.
 | `open_archive([vol1, vol2, vol3])` in order | One archive in that order |
 | `open_archive([alpha.zip.001, beta.zip.002])` | `ArchiveyUsageError` naming both bases |
 | `open_archive([alpha.part1.rar, beta.part2.rar])`, or `[alpha.rar, beta.r00]` | `ArchiveyUsageError` naming both bases |
+| `open_archive([movie.part1.rar, movie.part2.rar, readme.rar])`, or `[alpha.zip.001, beta.part1.rar]` | `ArchiveyUsageError`: two sets |
+| `open_archive([stub.exe, vol.7z.001, vol.7z.002])` | One archive in that order; the stub is not a second set |
 | `open_archive([a/alpha.zip.001, b/alpha.zip.002])` across directories | One archive in that order |
 | Missing volume | Raise at open or first dependent read; no partial member list |
 

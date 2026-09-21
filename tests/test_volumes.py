@@ -1439,6 +1439,81 @@ def test_rar_volumes_of_one_set_still_join(
     assert joined.read() == b"AAABBB"
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        # `sorted(glob("*.rar"))` over a directory holding one split set and one
+        # unrelated archive — the shape the explicit path exists for.
+        ("alpha.part1.rar", "alpha.part2.rar", "beta.rar"),
+        ("alpha.zip.001", "alpha.zip.002", "beta.rar"),
+        ("alpha.rar", "beta.part2.rar"),
+        # Two complete sets, each named in its own scheme.
+        ("alpha.zip.001", "alpha.zip.002", "beta.part1.rar", "beta.part2.rar"),
+        ("alpha.zip.001", "beta.part2.rar"),
+    ],
+)
+def test_two_sets_named_in_different_schemes_are_refused(
+    tmp_path: Path, names: tuple[str, ...]
+) -> None:
+    """Comparing bases within one scheme alone leaves the cross-scheme sets joining.
+
+    A base means something different in each scheme, so they cannot be compared
+    directly — but a sequence that populates two schemes, or puts a bare ``.rar``
+    beside a set that spells its own volume 1 differently, is two archives whatever
+    the bases say. Fails against a check keyed on the scheme alone, which lets every
+    sequence here join.
+    """
+    for index, name in enumerate(names):
+        (tmp_path / name).write_bytes(bytes([65 + index]))
+
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        join_volumes([tmp_path / name for name in names])
+
+    assert "different sets" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("vol.exe", "vol.exe.001", "vol.exe.002"),
+        ("stub.exe", "vol.7z.001", "vol.7z.002"),
+        ("vol.sfx", "vol.exe.001", "vol.exe.002"),
+    ],
+)
+def test_a_stub_executable_beside_numbered_parts_still_joins(
+    tmp_path: Path, names: tuple[str, ...]
+) -> None:
+    """The stub is why the cross-scheme rule is not "two shapes means two sets".
+
+    ``7z a -sfx … -v`` writes a stub with no part marker beside the numbered parts,
+    and its name is not derived from their base, so there is nothing to compare it
+    against. Only the ``.exe`` / ``.sfx`` spelling says it can be a stub at all —
+    which is why a bare ``.rar`` in the same position is refused.
+    """
+    for index, name in enumerate(names):
+        (tmp_path / name).write_bytes(bytes([65 + index]))
+
+    joined = join_volumes([tmp_path / name for name in names])
+    assert joined.read() == b"ABC"
+
+
+def test_volume_shaped_names_with_no_parts_beside_them_still_join(
+    tmp_path: Path,
+) -> None:
+    """Two names that are only *shaped* like volume 1 are not evidence of two sets.
+
+    ``stub.exe`` and ``alpha.rar`` carry no part marker, and nothing in the sequence
+    says either is a volume at all. An earlier revision read both as old-scheme first
+    volumes and refused the pair; the comparison now needs a ``.rNN`` part to anchor
+    it, so the caller gets the bytes they asked for.
+    """
+    (tmp_path / "stub.exe").write_bytes(b"AAA")
+    (tmp_path / "alpha.rar").write_bytes(b"BBB")
+
+    joined = join_volumes([tmp_path / "stub.exe", tmp_path / "alpha.rar"])
+    assert joined.read() == b"AAABBB"
+
+
 def test_same_base_in_two_directories_still_joins(tmp_path: Path) -> None:
     """The docs advertise this path for parts that are not siblings on disk.
 

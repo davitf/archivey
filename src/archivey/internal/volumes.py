@@ -355,7 +355,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 except OSError as exc:
                     # A path the caller listed is an open failure. A numbering
                     # gap among paths that exist is TruncatedError in
-                    # _validate_numbered_volume_sequence — discovery expected a
+                    # _validate_numbered_volume_completeness — discovery expected a
                     # part that is not in the set.
                     raise _volume_open_error(source, exc) from exc
                 if not stat.S_ISREG(st.st_mode):
@@ -652,17 +652,20 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
     )
 
 
-# The three volume naming schemes, each with a ``base`` group. Discovery groups
-# siblings on ``base.lower()`` for all three (``:139``, ``:185``, ``:199``), so an
-# explicit sequence is held to the same grouping in all three.
+# The three volume naming schemes, each with a ``base`` group. All three branches of
+# ``discover_volume_siblings`` group candidates on ``base.lower()``, so an explicit
+# sequence is held to the same grouping in all three.
+_NUMBERED_SCHEME, _RAR_PART_SCHEME, _RAR_RNN_SCHEME = range(3)
 _VOLUME_SCHEMES = (_NUMBERED_VOLUME_RE, _RAR_PART_RE, _RAR_RNN_RE)
-_RAR_RNN_SCHEME = _VOLUME_SCHEMES.index(_RAR_RNN_RE)
+_SCHEME_NAMES = ("name.EXT.NNN", "name.partN.rar", "name.rNN")
 
 
 def _volume_scheme_and_base(name: str) -> tuple[int, str] | None:
-    """Classify ``name`` into one naming scheme, with the base that scheme reads.
+    """Classify a name carrying a part marker, with the base its scheme reads.
 
-    ``None`` for a name no scheme claims. The schemes are tried in order and the
+    ``None`` for a name no scheme claims, which includes an old-scheme volume 1 —
+    that one has no part marker and is handled separately, by
+    :func:`_is_old_scheme_first_volume_name`. The schemes are tried in order and the
     first match wins, which is how ``my.part1.zip.001`` lands in the numbered scheme
     on its full ``my.part1.zip`` base rather than under ``.part``.
     """
@@ -670,67 +673,110 @@ def _volume_scheme_and_base(name: str) -> tuple[int, str] | None:
         match = pattern.match(name)
         if match is not None:
             return index, match.group("base")
-    if _is_old_scheme_first_volume_name(name):
-        # An old-scheme set's volume 1 carries no part marker at all: it is
-        # ``<base>.rar``, or ``.exe`` / ``.sfx`` for an SFX. ``.rNN`` discovery
-        # reaches it from the stem (``:215``), so the stem is its base here too.
-        # Without this, ``[alpha.rar, beta.r00]`` has one classified name and
-        # nothing for it to disagree with.
-        return _RAR_RNN_SCHEME, name[: name.rfind(".")]
     return None
 
 
+def _different_sets_error(first: str, second: str) -> ArchiveyUsageError:
+    return ArchiveyUsageError(
+        f"Volume parts belong to different sets: {display_path(first)} and "
+        f"{display_path(second)}. A volume sequence must be the parts of one archive; "
+        f"concatenating parts of two would produce bytes that are neither."
+    )
+
+
 def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
-    """Require the parts named in each scheme to share a base name.
+    """Require the sequence to name the parts of one archive, as far as names can say.
 
     Parts of two different sets concatenate into bytes that are neither archive, and
     the numbering cannot tell you so: ``alpha.zip.001`` and ``beta.zip.002`` are a
     perfectly good ``1, 2``. Discovery already filters siblings by base, so this is
     the explicit path's equivalent — ``open_archive([…])`` with a caller's own
-    ``sorted(glob("*.zip.*"))`` over a directory holding more than one set.
+    ``sorted(glob("*.zip.*"))`` or ``sorted(glob("*.rar"))`` over a directory holding
+    more than one set.
 
-    All three naming schemes are covered, each grouped separately, because a base
-    means something different in each: ``alpha.part1.rar``'s base is the stem before
-    ``.part``, while ``alpha.zip.001``'s includes the archive extension. A name
-    matching no scheme is passed over rather than ending the check — the glob above
-    also returns ``alpha.zip.bak`` and ``notes.zip.old``, and stopping at one would
-    leave the parts around it unchecked depending only on where the stray sorted.
+    Three things are checked, and the second and third exist because one alone leaves
+    the caller above unprotected:
 
-    What this guarantees is narrower than "the parts of one archive": the base names
-    must agree, compared case-folded the way ``discover_volume_siblings`` groups
-    siblings, so it never refuses a set discovery would have accepted. Two residues
-    stay: parts with the same base in *different directories* join, which discovery
-    could never produce but ``docs/opening-and-listing.md`` advertises this path for;
-    and on a case-sensitive filesystem ``gamma.zip.001`` and ``GAMMA.zip.002`` are
-    genuinely distinct files that the case-folding lets through.
+    1. Every name carrying a part marker must be in the same scheme. A base means
+       something different in each — ``alpha.part1.rar``'s is the stem before
+       ``.part``, ``alpha.zip.001``'s includes the archive extension — so comparing
+       across them is meaningless, and a sequence populating two of them is two sets.
+    2. Within that scheme the bases must agree, compared case-folded the way
+       ``discover_volume_siblings`` groups siblings, so this never refuses a set
+       discovery would have accepted.
+    3. A name with no part marker that is nonetheless volume-shaped — ``<base>.rar``,
+       or ``<base>.exe`` / ``.sfx`` for an SFX — is volume 1 of an old-scheme set and
+       only belongs beside ``.rNN`` parts sharing its stem. Beside a ``.partN`` set it
+       has no role at all, since that scheme spells its own volume 1
+       ``alpha.part1.rar``. Beside a numbered set only the executable spellings make
+       sense, as the stub 7-Zip writes next to ``vol.exe.001``; a ``.rar`` there is a
+       second archive. Without this the sequences the first two checks do catch are
+       trivially reachable in the shapes they do not: ``[alpha.part1.rar,
+       alpha.part2.rar, beta.rar]`` is one ``sorted(glob("*.rar"))`` away.
+
+    A name that is neither is passed over rather than ending the check — the globs
+    above also return ``alpha.zip.bak`` and ``notes.zip.old``, and stopping at one
+    would leave the parts around it unchecked depending only on where the stray
+    sorted.
+
+    What this guarantees is still narrower than "the parts of one archive", and two
+    residues stay: parts with the same base in *different directories* join, which
+    discovery could never produce but ``docs/opening-and-listing.md`` advertises this
+    path for; and on a case-sensitive filesystem ``gamma.zip.001`` and
+    ``GAMMA.zip.002`` are genuinely distinct files that the case-folding lets through.
     """
-    seen: dict[int, str] = {}
+    marked_scheme: int | None = None
+    marked_base = ""
+    unmarked: list[str] = []
     for path in paths:
         classified = _volume_scheme_and_base(path.name)
         if classified is None:
+            if _is_old_scheme_first_volume_name(path.name):
+                unmarked.append(path.name)
             continue
-        index, part_base = classified
-        first = seen.setdefault(index, part_base)
-        if part_base.lower() != first.lower():
+        scheme, part_base = classified
+        if marked_scheme is None:
+            marked_scheme, marked_base = scheme, part_base
+        elif scheme != marked_scheme:
             raise ArchiveyUsageError(
-                f"Volume parts belong to different sets: "
-                f"{display_path(first)} and {display_path(part_base)}. A volume "
-                f"sequence must be the parts of one archive; concatenating parts "
-                f"of two would produce bytes that are neither."
+                f"Volume parts belong to different sets: {display_path(marked_base)} "
+                f"is named {_SCHEME_NAMES[marked_scheme]} and "
+                f"{display_path(part_base)} is named {_SCHEME_NAMES[scheme]}. A volume "
+                f"sequence must be the parts of one archive, which are all named the "
+                f"same way; concatenating parts of two would produce bytes that are "
+                f"neither."
             )
+        elif part_base.lower() != marked_base.lower():
+            raise _different_sets_error(marked_base, part_base)
+
+    for name in unmarked:
+        stem = name[: name.rfind(".")]
+        if marked_scheme in (None, _RAR_RNN_SCHEME):
+            # Volume 1 of an old-scheme set, or a lone file with nothing to check it
+            # against. `_old_rar_rnn_first_volume` builds this name as the `.rNN` base
+            # plus a suffix, so the stem is that base verbatim.
+            if marked_scheme is not None and stem.lower() != marked_base.lower():
+                raise _different_sets_error(marked_base, stem)
+        elif marked_scheme == _NUMBERED_SCHEME and not name.lower().endswith(".rar"):
+            # The 7-Zip stub beside `vol.exe.001`. Its own name is not derived from the
+            # parts' base (`vol.exe`), so there is nothing to compare — only the
+            # spelling says whether it can be a stub at all.
+            continue
+        else:
+            raise _different_sets_error(marked_base, stem)
 
 
-def _validate_numbered_volume_sequence(paths: Sequence[Path]) -> None:
-    """Require ``name.EXT.001 … .00N`` parts to be one set, numbered 1..N with no gaps.
+def _validate_numbered_volume_completeness(paths: Sequence[Path]) -> None:
+    """Require ``name.EXT.001 … .00N`` parts to be numbered 1..N with no gaps.
 
     Concatenating a set with a hole produces bytes that are neither the original
     archive nor recognisably broken at the join, so the missing part is caught here
-    by name rather than left to surface as corruption somewhere in the middle.
-    :func:`_validate_volume_sequence_bases` has already required the parts to belong
-    to one set; this adds the numbering, which only the numbered scheme has (RAR
-    volumes are self-describing and the RAR backend reads their order from headers).
+    by name rather than left to surface as corruption somewhere in the middle. Only
+    the numbered scheme has a number to check: RAR volumes are self-describing and
+    the RAR backend reads their order from headers. Whether the parts belong together
+    at all is :func:`_validate_volume_sequence_bases`, which :func:`join_volumes`
+    runs first.
     """
-    _validate_volume_sequence_bases(paths)
     base = ""
     numbered: list[int] = []
     skipped = False
@@ -786,7 +832,11 @@ def join_volumes(paths: Sequence[Path]) -> BinaryIO:
 
     if not paths:
         raise ArchiveyUsageError("volume path sequence must not be empty")
-    _validate_numbered_volume_sequence(paths)
+    # Both checks are on names alone, and run for every scheme: a sequence naming two
+    # archives is refused whatever they are named, and the numbering is then checked
+    # where there is one.
+    _validate_volume_sequence_bases(paths)
+    _validate_numbered_volume_completeness(paths)
     return ConcatenatedFile(paths)
 
 

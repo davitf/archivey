@@ -116,13 +116,22 @@ treated as a single source, and a multi-volume sequence for any format other tha
 or RAR raises.
 
 Because there is no discovery, the sequence is checked for one thing discovery would
-have guaranteed: the parts must share a base name. Concatenating `alpha.zip.001`
-with `beta.zip.002` would hand you bytes that are neither archive, and their
-numbering — a perfectly good `1, 2` — cannot tell you so; that raises
-`ArchiveyUsageError` naming both. All three schemes in the table above are checked,
-each against its own base: `alpha.part1.rar` with `beta.part2.rar` raises, and so
-does `alpha.rar` with `beta.r00`. Names are compared within one scheme only, so a
-7-Zip stub passed ahead of its own numbered parts is not mistaken for a second set.
+have guaranteed: that it names the parts of one archive. Concatenating
+`alpha.zip.001` with `beta.zip.002` would hand you bytes that are neither archive,
+and their numbering — a perfectly good `1, 2` — cannot tell you so; that raises
+`ArchiveyUsageError` naming both.
+
+All three schemes in the table above are checked. Parts of one scheme must share a
+base, so `alpha.part1.rar` with `beta.part2.rar` raises, and `alpha.rar` with
+`beta.r00` does too. A sequence that names parts in *two* schemes is two archives by
+construction — the parts of one set are all named the same way — so
+`[alpha.zip.001, beta.part1.rar]` raises as well. And a name that carries no part
+number but is shaped like a first volume (`backup.rar`, `backup.exe`, `backup.sfx`)
+only belongs beside `.rNN` parts with the same stem: `[movie.part1.rar,
+movie.part2.rar, readme.rar]` raises. The one exception is the stub executable 7-Zip
+writes beside a numbered set, which has no part number and need not share their
+name, so an `.exe` or `.sfx` is let through there — a `.rar` in the same position is
+not.
 
 The comparison ignores case, and it is only on the name, so parts of one set living
 in different directories are fine. If a part has been renamed out of every pattern
