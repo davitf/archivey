@@ -97,12 +97,14 @@ from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
     ArchiveInfo,
+    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
     HashAlgorithm,
     MagicSignature,
+    MemberExtra,
     MemberStreams,
     MemberType,
     crc32_digest,
@@ -535,7 +537,9 @@ class SevenZipReader(BaseArchiveReader):
             else CreateSystem.WINDOWS_NTFS,
             windows_attrs=attrs & 0xFFFF if attrs is not None else None,
             hashes=hashes,
-            extra={EXTRA_IS_REPARSE_POINT: True} if is_reparse_point else {},
+            extra=MemberExtra({EXTRA_IS_REPARSE_POINT: True})
+            if is_reparse_point
+            else MemberExtra(),
             _raw=_MemberRaw(record, folder_index, record.file_in_folder),
         )
         emit_member_name_normalized(
@@ -861,6 +865,7 @@ class SevenZipReader(BaseArchiveReader):
             stream_capability=StreamCapability.SEEKABLE,
             solid_block_count=solid_blocks if self._archive.is_solid else None,
         )
+        info_extra = ArchiveInfoExtra({"7z.volume_count": self._volume_count})
         return ArchiveInfo(
             format=ArchiveFormat.SEVEN_Z,
             format_version=f"{self._archive.major_version}.{self._archive.minor_version}",
@@ -871,7 +876,7 @@ class SevenZipReader(BaseArchiveReader):
             or self._archive.has_encrypted_folders,
             is_multivolume=self._volume_count > 1,
             cost=cost,
-            extra={"7z.volume_count": self._volume_count},
+            extra=info_extra,
         )
 
     def _close_archive(self) -> None:

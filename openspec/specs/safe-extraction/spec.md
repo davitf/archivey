@@ -272,8 +272,7 @@ How surfaces interact:
 | Default extract write | Skipped after filter; `SUPERSEDED` result |
 | `open`/`read` on superseded `FILE` | Still allowed (payload exists); not gated by `is_current` |
 
-There is no extract-all flag in this change to force writing non-current
-revisions; callers that need those bytes use `open`/`read` (or a future opt-in).
+There is no extract-all flag to force writing non-current revisions; callers that need those bytes use `open`/`read` (or a future opt-in).
 
 #### Scenario: non-current skip matrix
 
@@ -982,21 +981,16 @@ class AbortOn(str, Enum):
 | `NAME_SANITIZED` | a name is rewritten to its portable spelling | `NameRewrittenError` |
 
 `NAME_SANITIZED` is deliberately unlike the other two: it fires on a **successful**
-safety rewrite rather than on a refusal or an ambiguity. It SHALL ship anyway,
-because dropping it is the only place this change would remove escalation that
-exists today, and preserving escalation is why `abort_on` exists. It SHALL be
-documented as a narrow escape hatch for callers who refuse any on-disk name
-differing from the archive's — mirroring tools, forensic extracts, byte-fidelity
+safety rewrite rather than on a refusal or an ambiguity. It SHALL be documented as a
+narrow escape hatch for callers who refuse any on-disk name differing from the archive's — mirroring tools, forensic extracts, byte-fidelity
 checks — and SHALL NOT be presented as part of ordinary strict extraction or implied
 by any preset or policy level. A caller wanting to *audit* rewrites reads
 `presented_name`; only a caller who wants them to be **fatal** sets this.
 
 `NAME_COLLISION` SHALL fire on **every** non-`TRUSTED` collision event, whatever
 `OverwritePolicy` resolution follows — replaced, skipped, errored or renamed. The
-trigger is the collision itself, not its outcome. This is deliberate parity with the
-escalation this change relocates: the removed diagnostic fired on all four
-resolutions, so escalating it stopped the caller on all four. `TRUSTED` keys on the
-exact path and produces no collision event, so it never aborts.
+trigger is the collision itself, not its outcome. `TRUSTED` keys on the exact path and
+produces no collision event, so it never aborts.
 
 `NameCollisionError` and `NameRewrittenError` SHALL subclass `ExtractionError`.
 `BLOCKED_MEMBER` SHALL propagate the original rejection unchanged, matching
@@ -1018,8 +1012,7 @@ can see. `OVERWRITTEN` is a property of a completed report, and `abort_on` and
 `OVERWRITTEN` are therefore mutually exclusive for the same collision.
 
 `AbortOn` SHALL NOT carry a member for extraction *failures*: `OnError.STOP` already
-expresses "raise on the first failure", and a second spelling of one behaviour is
-what this change exists to remove.
+expresses "raise on the first failure".
 
 #### Scenario: abort-on matrix
 

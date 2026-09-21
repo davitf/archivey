@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import errno
 import io
+import os
 import shutil
 import tarfile
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -15,11 +19,13 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     FormatDetectionError,
+    OpenError,
     PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal import volumes as volumes_mod
 from archivey.internal.streams.streamtools import ensure_full_count_reads
 from archivey.internal.volumes import (
     ConcatenatedFile,
@@ -473,7 +479,6 @@ def test_rar_sfx_split_ignores_decoy_magic_in_stub(tmp_path: Path) -> None:
 @requires_binary("rar")
 @requires_binary("unrar")
 def test_rar_sfx_split_opens_from_sfx_and_later_part(tmp_path: Path) -> None:
-    import os
     import subprocess
 
     # Linux rar's SFX stub is ~250 KiB, so ``-v`` must exceed that or rar
@@ -708,6 +713,42 @@ def test_numbered_exe_part_is_not_a_stub(tmp_path: Path) -> None:
     assert first_volume_for_stub(part) is None
 
 
+class _WatchedPathOpens:
+    """How many of ``watched`` are open at once via ``volumes.open``."""
+
+    def __init__(self, watched: Sequence[Path]) -> None:
+        self._watched = {path.resolve() for path in watched}
+        self.current = 0
+        self.peak = 0
+        self.opens = 0
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_open = open
+
+        def tracking_open(file: Any, *args: Any, **kwargs: Any) -> Any:
+            handle = real_open(file, *args, **kwargs)
+            try:
+                path = Path(file).resolve()
+            except TypeError:
+                return handle
+            if path not in self._watched:
+                return handle
+            self.opens += 1
+            self.current += 1
+            self.peak = max(self.peak, self.current)
+            orig_close = handle.close
+
+            def close() -> None:
+                if not handle.closed:
+                    self.current -= 1
+                orig_close()
+
+            handle.close = close
+            return handle
+
+        monkeypatch.setattr(volumes_mod, "open", tracking_open, raising=False)
+
+
 def test_non_seekable_volume_item_still_refused() -> None:
     """``FullCountStream.tell()`` raises, which still trips the ConcatenatedFile refusal."""
     item = ensure_full_count_reads(ShortReadNonSeekable(b"abc", 1))
@@ -725,3 +766,329 @@ def test_short_returning_seekable_volume_item_reads_through_boundary() -> None:
         ]
     )
     assert joined.read() == b"helloworld"
+    joined.close()
+
+
+def test_concatenated_file_backwards_seek_across_volume_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts = []
+    expected = bytearray()
+    for index, payload in enumerate((b"aaaa", b"bbbb", b"cccc")):
+        path = tmp_path / f"vol.{index:03d}"
+        path.write_bytes(payload)
+        parts.append(path)
+        expected.extend(payload)
+    tracker = _WatchedPathOpens(parts)
+    tracker.install(monkeypatch)
+
+    with ConcatenatedFile(parts) as joined:
+        assert tracker.peak == 0
+        assert joined.volume_paths == parts
+        assert joined.read() == bytes(expected)
+        joined.seek(2)
+        assert joined.read() == bytes(expected)[2:]
+        joined.seek(6)
+        assert joined.read(2) == b"bb"
+        joined.seek(0)
+        assert joined.read(5) == b"aaaab"
+    assert tracker.current == 0
+
+
+def test_concatenated_file_sequential_read_does_not_search_offsets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts = []
+    for name, payload in (("a.bin", b"hello"), ("b.bin", b"world")):
+        path = tmp_path / name
+        path.write_bytes(payload)
+        parts.append(path)
+    with ConcatenatedFile(parts) as joined:
+
+        def boom(*_args: object, **_kwargs: object) -> int:
+            raise AssertionError("offset-table search during sequential read")
+
+        monkeypatch.setattr(volumes_mod, "bisect_right", boom)
+        assert joined.read() == b"helloworld"
+
+
+def test_concatenated_file_mixed_path_and_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first.bin"
+    third = tmp_path / "third.bin"
+    first.write_bytes(b"AA")
+    third.write_bytes(b"CC")
+    middle = io.BytesIO(b"BB")
+    tracker = _WatchedPathOpens([first, third])
+    tracker.install(monkeypatch)
+
+    with ConcatenatedFile([first, middle, third]) as joined:
+        assert joined.volume_paths == []
+        assert joined.volume_items == [first, middle, third]
+        assert tracker.peak == 0
+        assert joined.read() == b"AABBCC"
+        assert tracker.opens == 2
+        assert tracker.peak <= volumes_mod._PATH_HANDLE_CACHE_SIZE
+        joined.seek(1)
+        assert joined.read() == b"ABBCC"
+        assert tracker.peak <= volumes_mod._PATH_HANDLE_CACHE_SIZE
+        joined.seek(3)
+        assert joined.read() == b"BCC"
+    assert not middle.closed
+    assert tracker.current == 0
+
+
+def test_concatenated_file_path_open_error_surfaces_on_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "ok.bin"
+    denied = tmp_path / "denied.bin"
+    first.write_bytes(b"aaa")
+    denied.write_bytes(b"bbb")
+    real_open = open
+
+    def denying_open(file: Any, *args: Any, **kwargs: Any) -> Any:
+        if Path(file).resolve() == denied.resolve():
+            raise PermissionError("denied")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(volumes_mod, "open", denying_open, raising=False)
+    with ConcatenatedFile([first, denied]) as joined:
+        assert joined.read(3) == b"aaa"
+        with pytest.raises(OpenError, match="Cannot open volume") as caught:
+            joined.read()
+    assert isinstance(caught.value.__cause__, PermissionError)
+    assert caught.value.archive_name == denied.as_posix()
+
+
+def test_concatenated_file_missing_path_fails_at_construction(tmp_path: Path) -> None:
+    missing = tmp_path / "gone.bin"
+    with pytest.raises(OpenError, match="Cannot open volume") as caught:
+        ConcatenatedFile([missing])
+    assert isinstance(caught.value.__cause__, FileNotFoundError)
+    assert caught.value.archive_name == missing.as_posix()
+
+
+def test_concatenated_file_close_with_no_open_path(tmp_path: Path) -> None:
+    path = tmp_path / "only.bin"
+    path.write_bytes(b"x")
+    joined = ConcatenatedFile([path])
+    joined.close()
+    joined.close()
+
+
+def test_concatenated_file_does_not_close_caller_streams() -> None:
+    first = io.BytesIO(b"ab")
+    second = io.BytesIO(b"cd")
+    with ConcatenatedFile([first, second]) as joined:
+        assert joined.read() == b"abcd"
+    assert not first.closed
+    assert not second.closed
+
+
+def test_concatenated_file_read_after_close_does_not_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts = []
+    for index, payload in enumerate((b"aaaa", b"bbbb", b"cccc")):
+        path = tmp_path / f"vol.{index:03d}"
+        path.write_bytes(payload)
+        parts.append(path)
+    tracker = _WatchedPathOpens(parts)
+    tracker.install(monkeypatch)
+    joined = ConcatenatedFile(parts)
+    assert joined.read(2) == b"aa"
+    joined.close()
+    assert tracker.current == 0
+    with pytest.raises(ValueError, match="closed"):
+        joined.read(4)
+    with pytest.raises(ValueError, match="closed"):
+        joined.seek(0)
+    with pytest.raises(ValueError, match="closed"):
+        joined.tell()
+    assert tracker.current == 0
+    joined.close()
+    assert tracker.current == 0
+
+
+def test_concatenated_file_alternating_seek_reuses_cached_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "a.bin"
+    second = tmp_path / "b.bin"
+    first.write_bytes(b"A" * 100)
+    second.write_bytes(b"B" * 100)
+    tracker = _WatchedPathOpens([first, second])
+    tracker.install(monkeypatch)
+    with ConcatenatedFile([first, second]) as joined:
+        for _ in range(50):
+            joined.seek(0)
+            assert joined.read(10) == b"A" * 10
+            joined.seek(100)
+            assert joined.read(10) == b"B" * 10
+        assert tracker.opens == 2
+        assert tracker.peak == 2
+    assert tracker.current == 0
+
+
+def test_concatenated_file_handle_cache_evicts_past_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts = []
+    expected = bytearray()
+    for index in range(volumes_mod._PATH_HANDLE_CACHE_SIZE + 2):
+        path = tmp_path / f"vol.{index:03d}"
+        payload = bytes([index]) * 4
+        path.write_bytes(payload)
+        parts.append(path)
+        expected.extend(payload)
+    tracker = _WatchedPathOpens(parts)
+    tracker.install(monkeypatch)
+    with ConcatenatedFile(parts) as joined:
+        assert joined.read() == bytes(expected)
+        assert tracker.peak == volumes_mod._PATH_HANDLE_CACHE_SIZE
+        assert tracker.opens == len(parts)
+    assert tracker.current == 0
+
+
+def test_concatenated_file_cache_miss_reopens_beyond_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    n = volumes_mod._PATH_HANDLE_CACHE_SIZE + 1
+    parts = []
+    for index in range(n):
+        path = tmp_path / f"vol.{index:03d}"
+        path.write_bytes(bytes([index]) * 4)
+        parts.append(path)
+    tracker = _WatchedPathOpens(parts)
+    tracker.install(monkeypatch)
+    cycles = 20
+    with ConcatenatedFile(parts) as joined:
+        for _ in range(cycles):
+            for index in range(n):
+                joined.seek(index * 4)
+                assert joined.read(4) == bytes([index]) * 4
+        assert tracker.peak == volumes_mod._PATH_HANDLE_CACHE_SIZE
+        assert tracker.opens > n
+    assert tracker.current == 0
+
+
+def test_concatenated_file_borrowed_stream_is_reseeked_each_read() -> None:
+    borrowed = io.BytesIO(b"0123456789")
+    with ConcatenatedFile([borrowed, io.BytesIO(b"XY")]) as joined:
+        assert joined.read(2) == b"01"
+        borrowed.seek(8)
+        assert joined.read(2) == b"23"
+        assert joined.tell() == 4
+    assert not borrowed.closed
+
+
+def test_concatenated_file_emfile_is_translated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "vol.bin"
+    path.write_bytes(b"aa")
+
+    def emfile_open(file: Any, *args: Any, **kwargs: Any) -> Any:
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr(volumes_mod, "open", emfile_open, raising=False)
+    with ConcatenatedFile([path]) as joined:
+        with pytest.raises(OpenError, match="file-descriptor limit") as caught:
+            joined.read()
+    cause = caught.value.__cause__
+    assert isinstance(cause, OSError)
+    assert cause.errno == errno.EMFILE
+    assert caught.value.archive_name == path.as_posix()
+
+
+def test_concatenated_file_rejects_non_regular_at_construction(tmp_path: Path) -> None:
+    regular = tmp_path / "vol.bin"
+    regular.write_bytes(b"xxxx")
+    with pytest.raises(OpenError, match="regular file") as caught:
+        ConcatenatedFile([regular, tmp_path])
+    assert caught.value.archive_name == tmp_path.as_posix()
+
+
+def test_concatenated_file_truncated_volume_raises(tmp_path: Path) -> None:
+    first = tmp_path / "a.bin"
+    second = tmp_path / "b.bin"
+    first.write_bytes(b"AAAA")
+    second.write_bytes(b"BBBB")
+    with ConcatenatedFile([first, second]) as joined:
+        first.write_bytes(b"AA")
+        with pytest.raises(TruncatedError, match="recorded size") as caught:
+            joined.read()
+        assert joined.tell() == 0
+    assert caught.value.archive_name == first.as_posix()
+
+
+def test_concatenated_file_truncated_volume_restores_read_position(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "a.bin"
+    second = tmp_path / "b.bin"
+    first.write_bytes(b"AAAA")
+    second.write_bytes(b"BBBB")
+    with ConcatenatedFile([first, second]) as joined:
+        second.write_bytes(b"")
+        with pytest.raises(TruncatedError, match="recorded size") as caught:
+            joined.read(8)
+        assert joined.tell() == 0
+        assert caught.value.archive_name == second.as_posix()
+        assert joined.read(4) == b"AAAA"
+        with pytest.raises(TruncatedError, match="recorded size"):
+            joined.read(4)
+        assert joined.tell() == 4
+
+
+def test_concatenated_file_truncated_borrowed_stream_raises() -> None:
+    class Shrinker(io.BytesIO):
+        def read(self, n: int | None = -1) -> bytes:
+            self.truncate(2)
+            return super().read(-1 if n is None else n)
+
+    joined = ConcatenatedFile([Shrinker(b"AAAA"), io.BytesIO(b"BBBB")])
+    with pytest.raises(TruncatedError, match="recorded size"):
+        joined.read(8)
+    assert joined.tell() == 0
+    joined.close()
+
+
+def test_concatenated_file_keyboardinterrupt_restores_read_position() -> None:
+    class Boom(io.BytesIO):
+        def read(self, n: int | None = -1) -> bytes:
+            raise KeyboardInterrupt
+
+    joined = ConcatenatedFile([io.BytesIO(b"AAAA"), Boom(b"BBBB")])
+    try:
+        joined.read(8)
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("expected KeyboardInterrupt from the second volume")
+    assert joined.tell() == 0
+    joined.close()
+
+
+def test_concatenated_file_zero_length_volumes() -> None:
+    cases = (
+        ([b"", b"AB"], b"AB"),
+        ([b"A", b"", b"B"], b"AB"),
+        ([b"AB", b""], b"AB"),
+        ([b"", b""], b""),
+    )
+    for payloads, expected in cases:
+        sources = [io.BytesIO(payload) for payload in payloads]
+        with ConcatenatedFile(sources) as joined:
+            assert joined.read() == expected
+        sources = [io.BytesIO(payload) for payload in payloads]
+        with ConcatenatedFile(sources) as joined:
+            got = bytearray()
+            while True:
+                chunk = joined.read(1)
+                if not chunk:
+                    break
+                got.extend(chunk)
+            assert bytes(got) == expected

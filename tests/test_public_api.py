@@ -72,6 +72,7 @@ def test_public_symbols_are_in_all() -> None:
         "DigestContext",
         "EmptyArchiveContext",
         "FormatConflictContext",
+        "MemberHeaderRecordContext",
         "MemberNameControlsContext",
         "MemberTimestampContext",
         "NameEncodingContext",

@@ -42,6 +42,7 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveMember,
     MagicSignature,
+    MemberExtra,
     MemberStreams,
     MemberType,
 )
@@ -60,7 +61,7 @@ def _stat_datetime(ts: float) -> datetime | None:
         return None
 
 
-def _link_extra(member_type: MemberType, is_junction: bool) -> dict[str, object]:
+def _link_extra(member_type: MemberType, is_junction: bool) -> MemberExtra:
     """The junction / reparse-point keys for a live filesystem entry.
 
     On Windows a symlink *is* a reparse point — there is no other kind — so the flag
@@ -68,7 +69,7 @@ def _link_extra(member_type: MemberType, is_junction: bool) -> dict[str, object]
     a POSIX one and neither key applies, junctions included: `os.DirEntry.is_junction`
     only reports true on Windows.
     """
-    extra: dict[str, object] = {}
+    extra = MemberExtra()
     if is_junction:
         extra[EXTRA_IS_JUNCTION] = True
     if member_type == MemberType.SYMLINK and os.name == "nt":

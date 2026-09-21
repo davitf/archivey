@@ -109,6 +109,27 @@ the way `lock=None` used to. A second class for that is `SharedView` already.
 already encodes the answer at construction. Renaming them to `owns_inner`
 would collide with the wrapper vocabulary for no call-site gain.
 
+`ConcatenatedFile` is the same split: Path volumes are owned, caller streams are
+borrowed. Path parts are sized with `os.stat()` and opened on the first read
+that needs that part, into an LRU of three handles so a caller that
+alternates across a volume boundary (two `SharedView`s under
+`concurrent_members=True`) does not open-and-close on every read. Three is
+the fd budget, not a working-set size: a fourth live Path volume evicts on
+every miss, so those reads pay `open()`+`close()` again. A 100-part set still
+reads; growing the cache to the volume count would hold one descriptor per
+part. `close()` releases every cached Path handle and is safe when none are
+open. A missing or unstatable file fails at construction as `OpenError`
+chaining the `OSError` from `stat()`. That is a path the caller named; a
+numbering gap among paths that exist is `TruncatedError` from the numbered
+sequence check. A permission error on `open()`
+surfaces on the first read of that part as `OpenError` chaining that
+`OSError`. Opening every Path at construction just to fail-fast would put
+the descriptors back. Volume bytes are sampled at read time, not pinned by a
+construction-time fd: replacing a part after construction is visible on the
+next open of that part. A borrowed `BinaryIO` volume is re-seeked before every
+read. A Path handle is seeked when the cursor lands on it — from a seek, from
+a sequential advance into a cached volume, or on first open.
+
 `readinto_passthrough` shares `DelegatingStream.__init__` and is not ownership.
 
 ## 5. Leak oracle
@@ -130,6 +151,6 @@ before committing.
 ```bash
 uv run --no-sync pytest tests/test_stream_bases.py tests/test_slice.py \
     tests/test_leak_oracle.py tests/test_codecs.py tests/test_rar_reader.py \
-    tests/test_sevenzip_reader.py::test_first_stage_bcj_does_not_close_pack_source \
+    tests/test_volumes.py tests/test_sevenzip_reader.py::test_first_stage_bcj_does_not_close_pack_source \
     tests/test_sevenzip_reader.py::test_copy_bcj_folder_roundtrip -q --no-cov
 ```

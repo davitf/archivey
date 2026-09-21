@@ -40,6 +40,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `StreamNotSeekableError` to catch. `StreamCapability` is now ordered
   (`FORWARD_ONLY < SEEKABLE`), so the test is
   `availability.required_source <= reader.cost.stream_capability`.
+- **`extra["is_reparse_point"]`** and the matching `ArchiveMember.is_reparse_point`, true
+  when the archive recorded a member as a Windows symlink or junction rather than a POSIX
+  symlink. Set from metadata the archive always carries — the
+  `FILE_ATTRIBUTE_REPARSE_POINT` bit for ZIP and 7z, the redirect type for RAR5, the live
+  entry for a directory scan on Windows — so unlike `extra["is_junction"]` it needs
+  nothing read from the member's data. Every junction is a reparse point, but a junction
+  written by 7-Zip carries only this key, because the tag that would identify it as a
+  junction is in data that writer does not store. Not gated on the member's type: an entry
+  the archive flags whose data turns out not to be a link buffer is presented as an
+  ordinary file, and the flag still records what the archive said.
 
 ### Fixed
 
@@ -69,21 +79,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
   strict `DiagnosticPolicy` refuses. Previously extraction raised `LinkTargetNotFoundError`
   for the member, which under the library default aborted the whole operation.
 
-### Added
-
-- **`extra["is_reparse_point"]`** and the matching `ArchiveMember.is_reparse_point`, true
-  when the archive recorded a member as a Windows symlink or junction rather than a POSIX
-  symlink. Set from metadata the archive always carries — the
-  `FILE_ATTRIBUTE_REPARSE_POINT` bit for ZIP and 7z, the redirect type for RAR5, the live
-  entry for a directory scan on Windows — so unlike `extra["is_junction"]` it needs
-  nothing read from the member's data. Every junction is a reparse point, but a junction
-  written by 7-Zip carries only this key, because the tag that would identify it as a
-  junction is in data that writer does not store. Not gated on the member's type: an entry
-  the archive flags whose data turns out not to be a link buffer is presented as an
-  ordinary file, and the flag still records what the archive said.
-
 ### Changed
 
+- **`ArchiveMember.extra` / `ArchiveInfo.extra` are `MemberExtra` / `ArchiveInfoExtra`.**
+  Known keys narrow on a subscript read. Assign a `MemberExtra({...})` rather than a
+  bare dict; mutating the existing bag in place is unchanged. Only type-checking
+  changes: both are `dict[str, object]` subclasses, equal to the plain dicts they
+  replace, and `copy`, `deepcopy`, `pickle` and `json.dumps` behave as before.
 - **`password=` no longer raises on a format with no encryption.** All three forms — a
   single value, a list of candidates, a `PasswordProvider` — are now accepted, never
   consulted, and recorded as a `PASSWORD_ARGUMENT_UNUSED` diagnostic. Previously a
