@@ -5,20 +5,21 @@
 ### Requirement: Serve random access and extraction with bounded explicit temp use
 
 The system SHALL serve non-solid random reads by invoking `unrar` for the target
-member **with that member's path as the sole path argument**, doing O(member_size)
-data work. For solid random reads, the system SHALL decode from archive start to
-the target member (named `unrar p … <member>`). Each such read is its own decode:
-the reader SHALL NOT amortize repeated solid reads by extracting members into a
-temporary directory and serving later reads from disk. `extract_all()` SHALL be
-served by the same `stream_members()` pass as any other caller, plus a second pass
-for hardlink sources the selector excluded; on a solid archive each pass is one
-unnamed `unrar p` pipe over the whole archive. Which members a pass names on the
-`unrar` command line — and which need no spawn at all — is governed by
-`Constrain unrar argv by call site`. Any temp materialization SHALL be a declared
-RAR strategy, not an implicit in-memory buffer; the only one the reader implements
-is copying a non-path archive *source* to disk so `unrar` can seek it, the
-deferred small-member optimization being the other strategy this capability
-declares.
+member **with that member's path as the sole path argument**, doing
+O(member_size) data work. For solid random reads, the system SHALL decode from
+archive start to the target member (named `unrar p … <member>`). Each such read
+is its own decode: the reader SHALL NOT amortize repeated solid reads by
+extracting members into a temporary directory and serving later reads from disk.
+`extract_all()` SHALL be served by the same `stream_members()` pass as any other
+caller, plus a second `stream_members()` pass when a selected hardlink's source
+was excluded and has to be re-read; on a solid archive each pass is one unnamed
+`unrar p` addressed at the whole archive, decoding only as far as the last
+member it needs. Which members a pass names on the `unrar` command line — and
+which need no spawn at all — is governed by `Constrain unrar argv by call site`.
+Any temp materialization SHALL be a declared RAR strategy, not an implicit
+in-memory buffer; the only one the reader implements is copying a non-path
+archive *source* to disk so `unrar` can seek it, the deferred small-member
+optimization being the other strategy this capability declares.
 
 A non-path stream source SHALL NOT be copied to disk at open. Both stream shapes —
 a single stream and an ordered set of stream volumes — SHALL defer the copy to the
@@ -51,7 +52,7 @@ desynchronize sizes).
 | --- | --- |
 | Random `open()` in non-solid RAR | `unrar p … <archive> <member>`; work is O(member_size) |
 | Repeated random opens in solid RAR | Each open is its own `unrar p` decode from archive start; no tempdir cache, and the re-decode is reported as `RewindWarning.min_redecode_bytes` |
-| `extract_all()` | The same `stream_members()` pass as any other caller, plus a second pass for hardlink sources the selector excluded; no `unrar x` |
+| `extract_all()` | The same `stream_members()` pass as any other caller, plus a second pass when a selected hardlink's source was excluded and must be re-read; no `unrar x` |
 | Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
 | Single non-path stream, at open | `ar.cost.notes` warns a compressed read will copy to disk; nothing is written yet |
 | Ordered stream volumes, at open | `ar.cost.notes` warns a compressed read will copy every volume; nothing is written yet |

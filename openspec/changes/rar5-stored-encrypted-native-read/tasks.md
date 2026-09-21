@@ -123,3 +123,11 @@
       is not parsed — so the asymmetry reads as a decision rather than an oversight.
 - [ ] 4.3 CHANGELOG.
 - [ ] 4.4 `openspec validate --strict rar5-stored-encrypted-native-read`.
+- [ ] 4.5 Before archiving, re-derive this change's `format-rar` `MODIFIED` block from the
+      live requirement and re-apply only this change's own edits. A `MODIFIED` delta
+      replaces the whole requirement block, so anything the live text has gained since this
+      block was written is deleted on archive, silently -- `openspec validate --strict`
+      cannot see it.
+- [ ] 4.6 Dry-run the archive on a scratch tree and read the **diff** of
+      `openspec/specs/`, not the `~ n modified` count: the count cannot tell an intended
+      edit from a deletion. Every removed line should be one this change means to replace.
