@@ -653,11 +653,19 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
 
 
 def _validate_numbered_volume_sequence(paths: Sequence[Path]) -> None:
-    """Require ``name.EXT.001 … .00N`` parts to be 1..N with no gaps.
+    """Require ``name.EXT.001 … .00N`` parts to be one set, numbered 1..N with no gaps.
 
     Concatenating a set with a hole produces bytes that are neither the original
     archive nor recognisably broken at the join, so the missing part is caught here
-    by name rather than left to surface as corruption somewhere in the middle.
+    by name rather than left to surface as corruption somewhere in the middle. Parts
+    of two *different* sets produce the same kind of bytes for the same reason, so
+    the base name is checked as well as the numbering — the numbers alone say nothing,
+    since ``alpha.zip.001`` and ``beta.zip.002`` are a perfectly good ``1, 2``.
+
+    Discovery already filters siblings by base, so this matters on the explicit path:
+    ``open_archive([…])`` with a caller's own ``sorted(glob("*.zip.*"))`` over a
+    directory holding more than one set. This function is the only guard between that
+    list and :class:`ConcatenatedFile`.
     """
     base = ""
     numbered: list[int] = []
@@ -665,7 +673,18 @@ def _validate_numbered_volume_sequence(paths: Sequence[Path]) -> None:
         match = _NUMBERED_VOLUME_RE.match(path.name)
         if match is None:
             return
-        base = base or match.group("base")
+        part_base = match.group("base")
+        if not base:
+            base = part_base
+        elif part_base.lower() != base.lower():
+            # Case-folded, matching how discovery groups siblings, so the explicit
+            # path accepts exactly the sets the discovered one would.
+            raise ArchiveyUsageError(
+                f"Volume parts belong to different sets: "
+                f"{display_path(base)} and {display_path(part_base)}. A volume "
+                f"sequence must be the parts of one archive; concatenating parts "
+                f"of two would produce bytes that are neither."
+            )
         numbered.append(int(match.group("part")))
     if numbered != list(range(1, len(numbered) + 1)):
         raise TruncatedError(_numbered_volume_sequence_error(base, numbered))

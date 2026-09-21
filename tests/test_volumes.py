@@ -1288,3 +1288,46 @@ def test_zero_numbered_volume_set_says_what_is_wrong(tmp_path: Path) -> None:
 
     assert "is not numbered from 1" in str(excinfo.value)
     assert "ascending order" not in str(excinfo.value)
+
+
+def test_parts_from_two_sets_are_refused(tmp_path: Path) -> None:
+    """The numbers alone say nothing about whether the parts belong together.
+
+    ``alpha.zip.001`` and ``beta.zip.002`` are a perfectly good ``1, 2``, so the
+    completeness check passes and two unrelated archives concatenate into bytes that
+    are neither. Discovery filters siblings by base, so the hole is on the explicit
+    path — a caller's own ``sorted(glob("*.zip.*"))`` over a directory holding more
+    than one set.
+    """
+    (tmp_path / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "beta.zip.002").write_bytes(b"BBB")
+
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        join_volumes([tmp_path / "alpha.zip.001", tmp_path / "beta.zip.002"])
+
+    assert "different sets" in str(excinfo.value)
+    assert "alpha.zip" in str(excinfo.value)
+    assert "beta.zip" in str(excinfo.value)
+
+
+def test_parts_of_one_set_still_join(tmp_path: Path) -> None:
+    """The guard must not refuse the sets discovery would have produced."""
+    (tmp_path / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "alpha.zip.002").write_bytes(b"BBB")
+
+    joined = join_volumes([tmp_path / "alpha.zip.001", tmp_path / "alpha.zip.002"])
+    assert joined.read() == b"AAABBB"
+
+
+def test_base_comparison_is_case_folded_like_discovery(tmp_path: Path) -> None:
+    """Discovery groups siblings with ``.lower()``, so the explicit path must too.
+
+    On a case-insensitive filesystem the two spellings are one file set, and a caller
+    listing a directory can get either spelling back. Refusing them here would make
+    the explicit path stricter than the discovered one for no gain.
+    """
+    (tmp_path / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "ALPHA.zip.002").write_bytes(b"BBB")
+
+    joined = join_volumes([tmp_path / "alpha.zip.001", tmp_path / "ALPHA.zip.002"])
+    assert joined.read() == b"AAABBB"
