@@ -103,7 +103,7 @@ that is how legs get skipped:
 ```bash
 ./scripts/check.sh --fix          # seconds — every fast gate CI runs
 ./scripts/test.sh                 # minutes — the everyday [all] test leg
-./scripts/test.sh --all-configs   # the full before-pushing gate, all three configs
+./scripts/test.sh --all-configs   # all three configs, when the change can reach an extra
 ```
 
 `check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs: `ruff check`,
