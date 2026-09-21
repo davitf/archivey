@@ -161,7 +161,7 @@ def _run_module(
         # Drop pytest-cov from addopts: flush/GC after a poisoned run is the usual
         # fatal site ("corrupted size vs. prev_size" in coverage.collector).
         "-o",
-        "addopts=--timeout=60",
+        "addopts=--timeout=60 --timeout-method=thread",
         "-p",
         "last_test_plugin",
         "--tb=short",

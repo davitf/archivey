@@ -569,7 +569,7 @@ Repro (non-blocking stress entry points):
 
 ```bash
 uv run --no-sync python scripts/ppmd_native_stress.py 30 --scenarios warmup_codecs
-uv run --no-sync pytest -m ppmd_native_stress -k warmup --timeout=600 -o addopts=
+uv run --no-sync pytest -m ppmd_native_stress -k warmup --timeout=600 --timeout-method=thread -o addopts=
 ```
 
 **Minimal upstream-facing repro (no archivey):** `scripts/pyppmd_crash_repro.py`

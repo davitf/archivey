@@ -224,10 +224,24 @@ exclude_also = [
 pythonpath = ["src", "tests", "."]
 testpaths = ["tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
-# the whole job until the CI hard limit. pytest-timeout picks the platform default method
-# (SIGALRM on POSIX — suite continues; a process-killing thread dump on Windows). 60s is far
-# above any real test here (all run in milliseconds), so only a genuine hang trips it.
-addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
+# the whole job until the CI hard limit. 60s is far above any real test here (all run in
+# milliseconds), so only a genuine hang trips it.
+# --timeout-method=thread, rather than pytest-timeout's platform default. The default on
+# POSIX is SIGALRM, whose Python-level handler only runs when the main thread next reaches
+# the bytecode loop, so a main thread sitting inside a native call that keeps the GIL never
+# sees it — see the accelerator busy-loop in dev-docs/threat-model.md, which is exactly that
+# shape. Two CI jobs have now died blind at their own `timeout-minutes` with this per-test
+# timeout armed and no test named (the free-threaded leg repeatedly and a 3.14 core-only leg
+# once; both tracked internally). The thread method needs only a moment of the GIL to dump
+# every thread's stack and kill the process, so it survives cases the alarm does not. It is
+# not a cure-all: a native call that holds the GIL throughout defeats both methods equally.
+# Windows has always run this way, having no SIGALRM, so this only makes POSIX match it. The
+# cost is that one hung test ends the whole run instead of failing alone and letting the
+# suite carry on — the trade Windows has been making here all along.
+# Every pytest invocation that overrides addopts (`-o addopts=`) must pass both flags on the
+# command line instead: the free-threaded CI job, the PPMd stress workflow, and
+# scripts/ci_run_native_modules.py.
+addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 --timeout-method=thread -m 'not ppmd_native_stress'"
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",
