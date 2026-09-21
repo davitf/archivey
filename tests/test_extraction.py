@@ -151,6 +151,25 @@ def test_check_universal_rejects_null_byte(tmp_path: Path) -> None:
         check_universal(_member("a\x00b"), tmp_path)
 
 
+@pytest.mark.parametrize("name", ["C:evil", "c:evil", "C:\\evil"])
+def test_check_universal_rejects_drive_letter(tmp_path: Path, name: str) -> None:
+    with pytest.raises(PathTraversalError, match="Absolute path"):
+        check_universal(_member(name), tmp_path)
+
+
+@pytest.mark.parametrize("name", ["Ä:foo", "Ω:foo", "日:foo"])
+def test_check_universal_allows_non_ascii_letter_before_colon(
+    tmp_path: Path, name: str
+) -> None:
+    """A drive letter is a single *ASCII* letter, as the comment beside the test says.
+
+    ``str.isalpha()`` is Unicode-wide, so these ordinary POSIX filenames were reported
+    as Windows absolute paths. Under TRUSTED this check is the only thing between the
+    member and the disk, and it was blocking a name that is legal there.
+    """
+    check_universal(_member(name), tmp_path)
+
+
 def test_check_universal_rejects_root_named_file(tmp_path: Path) -> None:
     with pytest.raises(PathTraversalError, match="extraction root"):
         check_universal(_member("."), tmp_path)

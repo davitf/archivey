@@ -159,3 +159,19 @@ def test_infer_member_name_from_archive() -> None:
         )
         == "archive"
     )
+
+
+@pytest.mark.parametrize(
+    "archive_name",
+    ["..gz", "...gz", " .gz", ".gz", ". .gz"],
+)
+def test_infer_member_name_never_yields_a_dots_only_stem(archive_name: str) -> None:
+    """Stripping the suffix can leave "." or "..", which is not a filename.
+
+    Extraction refuses those downstream, so the caller got an empty directory and a
+    warning for a perfectly good payload. They fall through to ``.uncompressed``.
+    """
+    from archivey.internal.naming import infer_member_name_from_archive
+
+    name = infer_member_name_from_archive(archive_name, strip_suffixes={".gz"})
+    assert name == archive_name + ".uncompressed"

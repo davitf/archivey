@@ -95,6 +95,16 @@ def emit_member_name_bidi_control(
     )
 
 
+def _is_usable_stem(stem: str) -> bool:
+    """Whether a stripped stem is a filename rather than a path-navigation spelling.
+
+    Mirrors the test extraction applies downstream (``filters.py``): a segment of only
+    dots and spaces is refused there, so producing one here only costs the caller the
+    payload.
+    """
+    return stem.rstrip(". ") != ""
+
+
 def infer_member_name_from_archive(
     archive_name: str | None,
     *,
@@ -108,8 +118,14 @@ def infer_member_name_from_archive(
 
     - No usable archive filename → ``\"data\"``.
     - Basename matches ``strip_suffix_re`` or ends with a ``strip_suffixes`` entry
-      (case-insensitive; longest match wins) → remaining stem.
+      (case-insensitive; longest match wins) → remaining stem, when that stem is a
+      usable filename.
     - Otherwise → ``basename + \".uncompressed\"``.
+
+    A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a name: extraction
+    refuses it and the caller gets an empty directory for an intact payload. Those fall
+    through to the ``.uncompressed`` spelling, which the length guard already gives
+    ``\".gz\"``.
     """
     if archive_name is None:
         return "data"
@@ -119,7 +135,7 @@ def infer_member_name_from_archive(
 
     if strip_suffix_re is not None:
         stem = strip_suffix_re.sub("", base)
-        if stem and stem != base:
+        if stem != base and _is_usable_stem(stem):
             return stem
 
     lower = base.lower()
@@ -132,7 +148,7 @@ def infer_member_name_from_archive(
         if lower.endswith(suf.lower()) and len(suf) > best_len and len(base) > len(suf):
             best = base[: -len(suf)]
             best_len = len(suf)
-    if best:
+    if best is not None and _is_usable_stem(best):
         return best
 
     return base + ".uncompressed"

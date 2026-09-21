@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import string
 import unicodedata
 from pathlib import Path
 from typing import Callable
@@ -41,7 +42,9 @@ def _is_absolute(name: str) -> bool:
     if name.startswith("/") or name.startswith("\\"):
         return True  # POSIX root or UNC / rooted-backslash
     # Drive letter: a single ASCII letter followed by ':' (e.g. "C:\\", "C:foo").
-    return len(name) >= 2 and name[0].isalpha() and name[1] == ":"
+    # ``str.isalpha()`` is Unicode-wide and would classify "Ä:foo" — an ordinary POSIX
+    # filename — as a Windows absolute path, which is the one thing TRUSTED checks.
+    return len(name) >= 2 and name[0] in string.ascii_letters and name[1] == ":"
 
 
 def _within(path: Path, root: Path) -> bool:

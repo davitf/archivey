@@ -1234,9 +1234,18 @@ def _read_comment(cur: _Cursor) -> str | None:
     cur.pos = len(cur.buf)
     if not data:
         return None
-    if data[0] == 0:
-        data = data[1:]
-    data = data.rstrip(b"\x00")
+    # The leading byte is the same "external" flag kName, the times, the attributes
+    # and kStartPos all carry: non-zero means the payload lives in additional streams.
+    # Refuse it here too, rather than decoding the flag and the reference as text.
+    external = data[0]
+    if external != 0:
+        raise UnsupportedFeatureError("External 7z comment data is not supported")
+    data = data[1:]
+    # Trim the null terminator(s) a whole UTF-16 code unit at a time: a byte-wise
+    # rstrip eats the high byte of a trailing ASCII character too, and "hi" then
+    # arrives here as an odd-length payload that cannot decode.
+    while data.endswith(b"\x00\x00"):
+        data = data[:-2]
     if not data:
         return None
     try:
