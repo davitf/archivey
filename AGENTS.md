@@ -202,7 +202,8 @@ Non-obvious gotchas:
   prefix is not user-writable — the update script instead installs it into a writable,
   already-on-`PATH` prefix: `npm install -g --prefix "$HOME/.local" @fission-ai/openspec`.
 - The full push gate runs the suite in **three dependency configs** (`[all]`,
-  `[all-lowest]`, `[core-only]`); the exact commands are in `CONTRIBUTING.md`. After a
+  `[all-lowest]`, `[core-only]`), for a change that can reach an optional library; the
+  exact commands and when it applies are in `CONTRIBUTING.md`. After a
   `--no-dev` / lowest-resolution leg, restore the everyday env with
   `uv sync --group dev --extra all`.
 - Docs (optional): `uv run --group docs mkdocs build --strict`.
