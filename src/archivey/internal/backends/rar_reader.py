@@ -710,7 +710,9 @@ class RarReader(BaseArchiveReader):
         self._archive, self._unrar_password = self._parse_archive()
         # unrar only consults the password when something is actually encrypted, so
         # a spawn for a plain archive is not given one: nothing is decrypted with it,
-        # and handing a secret to a subprocess that ignores it buys nothing.
+        # and handing a secret to a subprocess that ignores it buys nothing. This is
+        # also what ``get_archive_info`` reports as ``is_encrypted``: one predicate,
+        # so what the caller is told and what reaches the subprocess cannot drift.
         self._archive_has_encryption = self._archive.has_header_encryption or any(
             info.is_encrypted for info in self._archive.members
         )
@@ -914,6 +916,12 @@ class RarReader(BaseArchiveReader):
         spawn carry a password the archive has no use for — which is how a password
         that cannot be handed to ``unrar`` at all (see
         :func:`rar_unrar._password_stdin_bytes`) stopped a plain archive from opening.
+
+        The gate is the whole archive rather than the member being read, and
+        deliberately so: on a solid archive a plain member's block can sit behind an
+        encrypted one, so ``unrar`` may need the password to reach a member that is
+        not itself encrypted. An archive with nothing encrypted anywhere needs it on
+        no path at all, which is the case worth cutting.
         """
         return self._unrar_password if self._archive_has_encryption else None
 
@@ -1627,7 +1635,6 @@ class RarReader(BaseArchiveReader):
             solid_block_count=None,
             notes=self._cost_notes,
         )
-        any_encrypted = any(m.is_encrypted for m in self._archive.members)
         is_multivolume = (
             self._archive.is_volume
             or self._volume_count > 1
@@ -1644,7 +1651,7 @@ class RarReader(BaseArchiveReader):
             is_solid=is_solid,
             member_count=len(self._members),
             comment=archive_comment,
-            is_encrypted=self._archive.has_header_encryption or any_encrypted,
+            is_encrypted=self._archive_has_encryption,
             is_multivolume=is_multivolume,
             cost=cost,
             extra=info_extra,

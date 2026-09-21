@@ -596,7 +596,12 @@ def _enumerate_parts(parts: Sequence[int], total: int | None = None) -> str:
 
 
 def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
-    """Say what is wrong with a numbered set: a repeat, which parts are missing, or order.
+    """Say what is wrong with a numbered set: a repeat, a part below 1, a gap, or order.
+
+    The branches run in that order because each one establishes the premise the next
+    needs: after the repeat branch the parts are distinct, and after the below-1
+    branch they all lie in ``1..max``, which is what makes ``max - len`` the exact
+    number missing.
 
     Everything this builds is bounded by ``len(numbered)`` — the number of files on
     disk — never by the part numbers themselves. A part number comes from a filename
@@ -614,11 +619,24 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
             f"Repeated volume in multi-volume set for {base}: "
             f"{noun} {_enumerate_parts(repeated)} given more than once"
         )
-    # With no repeats, the parts on disk are distinct, so the count of missing ones
-    # is arithmetic and needs no list: the set has to run 1..max, and len(numbered)
-    # of them are here. Only the prefix that will actually be printed is enumerated,
-    # bounded by the file count plus the cap — never by the part numbers, which come
-    # from filenames.
+    # A part below 1 has to be named before any counting, because the arithmetic
+    # below assumes every part is in 1..max and a 0 makes the count come out at or
+    # under zero — which would report a set with a real gap as merely out of order,
+    # while it is in ascending order and so cannot be reordered into shape.
+    # ``split -b … -d`` numbers from 000 and leaves a base name the pattern matches,
+    # so this is a real shape, not a hostile one. Bounded by the file count.
+    below_one = sorted(part for part in counts if part < 1)
+    if below_one:
+        noun = "part" if len(below_one) == 1 else "parts"
+        return (
+            f"Multi-volume set for {base} is not numbered from 1: "
+            f"{noun} {_enumerate_parts(below_one)} — parts must run 1, 2, … N"
+        )
+    # No repeats and nothing below 1, so the parts on disk are distinct and all lie
+    # in 1..max. The count of missing ones is then arithmetic and needs no list: the
+    # set has to run 1..max, and len(numbered) of them are here. Only the prefix that
+    # will actually be printed is enumerated, bounded by the file count plus the cap
+    # — never by the part numbers, which come from filenames.
     total_missing = max(numbered) - len(numbered)
     if total_missing > 0:
         scan_to = min(max(numbered), len(numbered) + _MAX_ENUMERATED_PARTS)

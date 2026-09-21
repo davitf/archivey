@@ -1259,3 +1259,32 @@ def test_numbered_volume_message_names_every_missing_part(
     damaged input.
     """
     assert volumes_mod._numbered_volume_sequence_error("x.7z", parts).endswith(expected)
+
+
+@pytest.mark.parametrize("parts", [[0, 1], [0, 2], [0, 1, 2], [0, 1, 3]])
+def test_zero_numbered_part_is_named_not_called_out_of_order(parts: list[int]) -> None:
+    """A part below 1 breaks the premise the missing-count arithmetic rests on.
+
+    ``max - len`` is exact only while every part lies in ``1..max``. With a ``0`` in
+    the set the count comes out at or below zero and control falls through to the
+    out-of-order branch, which tells the caller to put the files in ascending order —
+    and they already are, so the one instruction the message gives cannot be carried
+    out. ``split -b … -d`` numbers from ``000`` and leaves a base name the pattern
+    matches, so this is a shape a caller can land on by accident.
+    """
+    message = volumes_mod._numbered_volume_sequence_error("x.7z", parts)
+    assert "is not numbered from 1" in message
+    assert "part 0" in message
+    assert "ascending order" not in message
+
+
+def test_zero_numbered_volume_set_says_what_is_wrong(tmp_path: Path) -> None:
+    """The same, through the public API rather than the private helper."""
+    (tmp_path / "foo.7z.000").write_bytes(b"")
+    (tmp_path / "foo.7z.001").write_bytes(b"")
+
+    with pytest.raises(TruncatedError) as excinfo:
+        open_archive(tmp_path / "foo.7z.001")
+
+    assert "is not numbered from 1" in str(excinfo.value)
+    assert "ascending order" not in str(excinfo.value)
