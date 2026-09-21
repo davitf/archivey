@@ -259,29 +259,16 @@ jobs:
           MAX_LABELLED_ROUND: ${{ steps.gate.outputs.max_forced_rounds }}
         run: |
           set -euo pipefail
-          # Create, or correct one that already exists. A `loop:*` label can be made
-          # outside this workflow — adding one through the API creates it implicitly,
-          # with GitHub's default grey and no description — and create-only would then
-          # leave it that way forever. The colours are the signal in the pull request
-          # list (`loop:decision` red, `loop:done` green), so this file is the
-          # definition and it reasserts itself.
-          ensure() {
-            gh label create "$1" --repo "$GITHUB_REPOSITORY" \
-              --color "$2" --description "$3" 2>/dev/null \
-              || gh label edit "$1" --repo "$GITHUB_REPOSITORY" \
-                   --color "$2" --description "$3" 2>/dev/null \
-              || true
-          }
-          # One per round any route can reach — the *forced* ceiling, not the cap,
-          # because a collaborator's comment buys rounds past the cap and the verdict
-          # step then applies that round's label. The step that does so runs under
-          # `set -e` with the label add first, so a round with no label to record it
-          # loses everything after that line: the `loop:on` removal, the stale parks,
-          # and the status comment that is the only thing on the pull request saying
-          # where the loop stands. Reading the bound off the gate is what keeps this
-          # list and the numbers in step when either moves. Labels for rounds no
-          # longer reachable are left alone — a pull request already carrying one
-          # still needs it to render.
+          # `.github/scripts/ensure-label.sh` creates one or corrects it; the verdict
+          # step calls the same script, which is why it is a file and not a function.
+          ensure() { .github/scripts/ensure-label.sh "$@"; }
+          # Rounds up to the *forced* ceiling, not the cap, because a collaborator's
+          # comment buys rounds past the cap. This list is for the colours and the
+          # descriptions, not for the guarantee: a forced `workflow_dispatch` is
+          # deliberately unbounded, so no list can anticipate every round, and the
+          # verdict step ensures its own round's label before applying it. Labels for
+          # rounds no longer reachable are left alone — a pull request already
+          # carrying one still needs it to render.
           for n in $(seq 1 "$MAX_LABELLED_ROUND"); do
             ensure "loop:round-$n" "ededed" "Review loop: round $n has been reviewed"
           done
@@ -323,7 +310,7 @@ jobs:
           **The loop has stopped here.** All $MAX_ROUNDS review rounds are done and findings
           are still open, so this needs a person rather than another round.
 
-          To run one more round anyway, comment `@claude review` — those two words first,
+          To run one more round anyway, comment \`@claude review\` — those two words first,
           at the top of the comment.
           EOF
           .github/scripts/loop-status.sh "$PR" /tmp/status.md
@@ -397,10 +384,12 @@ jobs:
             Otherwise it carries your §0 verdict line, and this is the field that decides
             whether another round runs, so match it to what you actually wrote:
 
-            - "approved" for ✅ Approve conditional on the listed fixes, or 💬 Comment —
-              both mean the findings are the implementer's to fix and you do not need to
-              see the result. The loop ends; the findings are still posted in full and
-              the implementer is still asked to work through them.
+            - "approved" for ✅ Approve, for ✅ Approve conditional on the listed fixes,
+              and for 💬 Comment — all three mean you do not need to see the result, and
+              the last two mean the findings are the implementer's to fix. The loop
+              ends; the findings are still posted in full and the implementer is still
+              asked to work through them. ("clean" is narrower: block 2 empty, so a
+              plain ✅ Approve over 💡/📚/🎉 annotations is "approved", not "clean".)
             - "findings" for 🔄 Request Changes — a 🔴 stands, or a fix wants a look once
               it lands. That is what buys the next round.
 
@@ -469,6 +458,17 @@ jobs:
           fi
           next=$((ROUND + 1))
 
+          # The label first, and it has to exist: this is the step's first write and
+          # the only one without a fallback — the removals below all carry `|| true` —
+          # so under `set -e` a missing label ends the step here and loses the
+          # `loop:on` removal, the stale parks and the status comment, with the review
+          # already posted and nothing saying the round did not finish. Ensuring it
+          # here rather than trusting the list above is what covers a forced
+          # `workflow_dispatch`, which reaches any round number at all. `|| true` on
+          # the add itself would be the wrong shape: it would lose the round counter,
+          # which is the loop's only state.
+          .github/scripts/ensure-label.sh "loop:round-$ROUND" "ededed" \
+            "Review loop: round $ROUND has been reviewed"
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "loop:round-$ROUND"
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "loop:on" || true
 
@@ -538,7 +538,12 @@ jobs:
               if [ "$over" = "true" ]; then
                 gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "loop:done"
                 if [ "$verdict" = "approved" ]; then
-                  ended="the review approved it with these findings to fix"
+                  # Not "the review approved it": this value covers ✅ Approve, the
+                  # conditional approval and 💬 Comment, and §0 is explicit that a
+                  # comment is not an approval. The status comment is what a
+                  # maintainer reads when deciding whether to merge, so it claims
+                  # only what all three have in common.
+                  ended="the review does not need to see the result"
                 else
                   ended="that was the last of $MAX_ROUNDS rounds"
                 fi

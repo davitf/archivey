@@ -242,7 +242,7 @@ means it is visible in the GitHub UI and a human can change it without a commit.
 | `loop:done` | Finished: a review that did not ask to see the fix, or the last round spent |
 
 `loop:done` marks the end of the **automatic** loop, not the end of what is possible. A
-person can always buy another round; that is true at round 5 as much as at round 2. So a
+person can always buy another round; that is true at round 7 as much as at round 5. So a
 round bought past the cap still counts as the last automatic one and still puts the label
 back as it finishes. Treating a bought round as "not the last" instead left a pull request
 past the cap with no `loop:done` at all, after the verdict step had cleared the stale
@@ -445,7 +445,7 @@ opening a comment on it with `@claude review`.
   would post without posting it.
 - **Thirty minutes is a guess**, and it started as ten. It only matters when an agent
   does not send the signal. The change (davitf, 2026-09-19) was about which way to be
-  wrong: a premature round spends one of three on half-written code, while a late one
+  wrong: a premature round spends one of the cap's rounds on half-written code, while a late one
   only delays a branch nobody is watching. Ten minutes was short enough that an
   ordinary pause — a long test run, a slow tool call, a session waiting on a person —
   read as "finished". `QUIET_MINUTES` in the gate is the one place to change it.
