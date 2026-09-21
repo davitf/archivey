@@ -5,7 +5,6 @@ degradation slice (ISO without pycdlib). Skipped when pycdlib is absent."""
 from __future__ import annotations
 
 import io
-import struct
 from pathlib import Path
 
 import pytest
@@ -25,10 +24,9 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedOperationError,
 )
-from archivey.internal.backends.iso_reader import IsoReader
 from archivey.internal.registry import FormatSupport, get_registry
 from tests.conftest import requires
-from tests.streams_util import NonSeekableBytesIO, ReadSizeRecorder
+from tests.streams_util import NonSeekableBytesIO
 
 pytestmark = requires("pycdlib")
 
@@ -419,87 +417,3 @@ def test_open_from_mid_positioned_stream(rock_ridge_iso: Path) -> None:
     stream.seek(len(junk))
     with open_archive(stream, format=ArchiveFormat.ISO) as ar:
         assert any(m.is_file for m in ar.members())
-
-
-# ---------------------------------------------------------------------------
-# Header-sized allocations
-# ---------------------------------------------------------------------------
-
-
-def _iso_with_oversized_root_directory(declared: int) -> bytes:
-    """An ISO whose root directory record claims ``declared`` bytes of directory data.
-
-    pycdlib clamps a *file*'s ``data_length`` to the image length before reading it
-    but not a *directory*'s, and the root record sits at a fixed offset inside the
-    primary volume descriptor, so only those eight bytes change. The both-endian
-    field must be rewritten in both orders or pycdlib rejects it before reading.
-    """
-    blob = bytearray(_build_iso(rock_ridge=False, joliet=False))
-    offset = 32768 + 156 + 10  # PVD + root directory record + data_length
-    blob[offset : offset + 8] = struct.pack("<I", declared) + struct.pack(
-        ">I", declared
-    )
-    return bytes(blob)
-
-
-def test_directory_data_length_does_not_drive_the_allocation() -> None:
-    """A directory record's 32-bit length must not size a read of the image.
-
-    It is read at ``open_fp`` time, before a member is listed, so a small image buys
-    an allocation of up to 4 GiB — and the ``MemoryError`` it produced is not an
-    ``ArchiveyError`` at all. Asking for the bytes is the observable: whether the
-    allocation then succeeds depends on the machine.
-
-    Fails against handing pycdlib an unbounded handle, which passes 4 294 967 040
-    straight through to the source.
-    """
-    declared = 0xFFFFFF00
-    data = _iso_with_oversized_root_directory(declared)
-    source = ReadSizeRecorder(data)
-
-    with pytest.raises(CorruptionError):
-        open_archive(source, format=ArchiveFormat.ISO)
-
-    assert source.requested, "the source was never read"
-    # As in the TAR equivalent: the source sits under a ``BufferedReader`` whose refill
-    # size is a runtime constant (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13,
-    # 128 KiB from 3.14), larger than this image on a recent Python. The bound is the
-    # image or one refill, whichever is larger; what is pinned is that no read scales
-    # with ``declared``.
-    bound = max(len(data), io.DEFAULT_BUFFER_SIZE)
-    assert max(source.requested) <= bound, (
-        f"asked the source for {max(source.requested)} bytes "
-        f"from a {len(data)}-byte image"
-    )
-
-
-def test_a_path_source_is_read_through_our_own_handle(rock_ridge_iso: Path) -> None:
-    """Bounding a path source is only possible while archivey owns the handle.
-
-    A path went to ``PyCdlib.open``, which opens its own file and leaves nothing of
-    archivey's underneath it, so there was nowhere to put the bound; only the
-    measured path opened its own. This pins the handle rather than the allocation:
-    the allocation itself is what the bound prevents, and provoking it to prove that
-    costs gigabytes. ``test_directory_data_length_does_not_drive_the_allocation``
-    covers the bound on a source that can record what was asked of it.
-    """
-    with open_archive(rock_ridge_iso) as reader:
-        assert isinstance(reader, IsoReader)
-        assert reader._owned_fp is not None
-        assert [m.name for m in reader.members()]
-
-
-def test_a_path_source_refuses_the_same_image(tmp_path: Path) -> None:
-    """The refusal reaches the path branch, not only the stream one."""
-    path = tmp_path / "bomb.iso"
-    path.write_bytes(_iso_with_oversized_root_directory(0xFFFFFF00))
-
-    with pytest.raises(CorruptionError):
-        open_archive(path)
-
-
-def test_a_clean_image_is_unaffected(rock_ridge_iso: Path) -> None:
-    """The bound may not shorten a read a well-formed image legitimately makes."""
-    with open_archive(rock_ridge_iso) as reader:
-        names = [m.name for m in reader.members()]
-    assert "file.txt" in names

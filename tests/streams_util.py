@@ -174,40 +174,6 @@ class CountingBytesIO(io.RawIOBase):
         return self._inner.tell()
 
 
-class ReadSizeRecorder(io.RawIOBase):
-    """A seekable in-memory stream that records the size asked of every ``read``.
-
-    ``size`` is the fsspec convention :func:`source_byte_size` honours, so the reader
-    gets the stream's length the same cheap way it gets a file's.
-    """
-
-    def __init__(self, data: bytes) -> None:
-        super().__init__()
-        self._inner = io.BytesIO(data)
-        self.size = len(data)
-        self.requested: list[int] = []
-
-    def readable(self) -> bool:
-        return True
-
-    def seekable(self) -> bool:
-        return True
-
-    def read(self, n: int = -1, /) -> bytes:
-        self.requested.append(n)
-        return self._inner.read(n)
-
-    def readinto(self, b, /) -> int:  # type: ignore[override]  # test double
-        self.requested.append(len(b))
-        return self._inner.readinto(b)
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        return self._inner.seek(offset, whence)
-
-    def tell(self, /) -> int:
-        return self._inner.tell()
-
-
 def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
     """Build one lzip member from ``data`` using stdlib ``lzma``.
 

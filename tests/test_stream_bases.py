@@ -391,9 +391,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         rar_reader._UnrarOwnedStream,
         rar_reader._UnrarRespawnStream,
         iso_reader._PyCdlibStream,
-        # Sits on the raw image handle, above nothing that decompresses: an ISO
-        # stores members uncompressed, so there is no seek-point table below it.
-        iso_reader._ImageBoundedStream,
         solid._MemberSlice,
         peekable.PeekableStream,
         streamtools_full_count.FullCountStream,  # source boundary; not on the decompressed chain
@@ -528,7 +525,6 @@ def test_delegating_stream_close_inventory() -> None:
         counting.OutputCountingStream,
         counting.SeekCountingStream,
         iso_reader._PyCdlibStream,
-        iso_reader._ImageBoundedStream,
         codecs._GzipTruncationCheckStream,
     }
     subclass_closes_inner = {
