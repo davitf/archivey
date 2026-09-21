@@ -103,14 +103,22 @@ still reports green while running ~109 fewer tests. Run `scripts/setup-dev-env.s
 provision both (it is idempotent, and prints anything still missing at the end); agent
 environments run it automatically at session start.
 
-**Before pushing, run the suite in all three dependency configurations CI runs** —
-optional libraries change behaviour by their presence *and* their version, so a change
-that passes one way can break another (a codec that's absent, a floor-version library bug,
-an accelerator that's only installed at current versions):
+**Before pushing a change whose behaviour could depend on which optional libraries are
+installed, run the suite in all three dependency configurations CI runs** — optional
+libraries change behaviour by their presence *and* their version, so a change that passes
+one way can break another (a codec that's absent, a floor-version library bug, an
+accelerator that's only installed at current versions):
 
 ```bash
 ./scripts/check.sh && ./scripts/test.sh --all-configs
 ```
+
+Judge it by what the change can reach, not by its size. A change to a comment, to prose,
+or to a test that only reads files off disk cannot vary by dependency configuration, and
+`./scripts/check.sh && ./scripts/test.sh` is enough for it; CI runs the other two legs
+regardless. Anything touching a codec, a backend, an import, or a version check gets all
+three before it is pushed. When you skip the legs, say so and why in the pull request,
+so a reviewer is not left guessing whether the gate was run or forgotten.
 
 The three legs, which `--all-configs` runs in order:
 

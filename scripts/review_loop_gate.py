@@ -63,8 +63,9 @@ MAX_FORCED_ROUNDS = 2 * MAX_ROUNDS
 #:
 #: **It is measured from the committer's clock, not from the push.** The scan reads
 #: `.commit.committer.date`, which is when the commit was made; GitHub does not carry a
-#: per-commit push time anywhere the scan can reach. `CONTRIBUTING.md` asks for the
-#: three-config gate before pushing, so the gap is real and routine: commit at 12:00,
+#: per-commit push time anywhere the scan can reach. `CONTRIBUTING.md` asks for the test
+#: gate before pushing — all three configs when the change can reach them, the everyday
+#: leg otherwise — and either takes minutes, so the gap is real: commit at 12:00,
 #: run the gate, push at 12:40, and the 12:45 tick sees a head forty-five minutes old
 #: and calls a branch quiet five minutes after a push. A rebase that preserves
 #: committer dates does the same. Closing it properly means recording when the scan

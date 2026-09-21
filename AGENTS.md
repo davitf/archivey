@@ -462,11 +462,16 @@ Two things about this repo make the handoff sharper than it looks:
   and pushing is the most common self-inflicted CI failure here — `pyrefly` and `ty` are
   separate checks and either one can be red on a tree ruff calls clean. `./scripts/check.sh`
   runs all of them so there is no list to get half-right.
-- **Before pushing, run the test suite in all three dependency configurations** — current
-  versions (`[all]`), minimum versions (`[all-lowest]`), and the zero-dep core
-  (`[core-only]`) — since optional libraries change behaviour by both presence and version:
-  `./scripts/check.sh && ./scripts/test.sh --all-configs`. Details and the underlying
-  commands are in `CONTRIBUTING.md` ("Before pushing…").
+- **Before pushing a change that could behave differently depending on which optional
+  libraries are installed, run all three dependency configurations** — current versions
+  (`[all]`), minimum versions (`[all-lowest]`), and the zero-dep core (`[core-only]`) —
+  since optional libraries change behaviour by both presence and version:
+  `./scripts/check.sh && ./scripts/test.sh --all-configs`. Judge it by what the change can
+  reach: a comment, a piece of prose, or a test that only reads files off disk cannot vary
+  by configuration, and `./scripts/check.sh && ./scripts/test.sh` is enough; a codec, a
+  backend, an import or a version check gets all three. Say in the pull request when you
+  skipped the legs and why. Details and the underlying commands are in `CONTRIBUTING.md`
+  ("Before pushing…").
 - See `CONTRIBUTING.md` for coding/testing standards (incl. behaviour-focused tests,
   **leave the code self-explanatory** with inline *why*, and the rule to
   **pause and ask the maintainer on spec/design discrepancies** rather than silently
