@@ -461,7 +461,13 @@ def test_directory_data_length_does_not_drive_the_allocation() -> None:
         open_archive(source, format=ArchiveFormat.ISO)
 
     assert source.requested, "the source was never read"
-    assert max(source.requested) <= len(data), (
+    # As in the TAR equivalent: the source sits under a ``BufferedReader`` whose refill
+    # size is a runtime constant (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13,
+    # 128 KiB from 3.14), larger than this image on a recent Python. The bound is the
+    # image or one refill, whichever is larger; what is pinned is that no read scales
+    # with ``declared``.
+    bound = max(len(data), io.DEFAULT_BUFFER_SIZE)
+    assert max(source.requested) <= bound, (
         f"asked the source for {max(source.requested)} bytes "
         f"from a {len(data)}-byte image"
     )
