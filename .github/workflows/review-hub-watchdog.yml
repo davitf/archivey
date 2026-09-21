@@ -1,0 +1,131 @@
+# Reopen the review hub when something closes it by accident.
+#
+# The hub (#315) is a `[COMMENT ONLY]` pull request that carries the whole-codebase
+# review: two hundred-odd inline threads and one `**SWEPT**` marker per file read. It is
+# never meant to merge and never meant to close. It closed twice on 2026-09-21 — the
+# second time from the very page that was recording the first, because writing down what
+# a closing phrase said reproduces it, and GitHub parses both a merged pull request's body
+# and its squash commit message.
+#
+# AGENTS.md §Review workflow carries the prose rule, which is what should stop this
+# happening. This job exists because that rule is something people and agents have to
+# remember, the failure is completely silent (threads still serve, `sweep_coverage.py` is
+# unaffected, nothing goes red), and neither closure was noticed from GitHub — both were
+# found by hand, hours apart.
+#
+# What it does NOT do: stop the close. Neither surface can be checked before the fact,
+# because whoever merges can edit the squash body at merge time and GitHub parses what
+# was actually merged. So this is recovery, not prevention: it puts the hub back and says
+# which surface did it.
+name: Review hub watchdog
+
+on:
+  # The moment the risk materialises: a closing keyword only fires when the pull request
+  # carrying it merges. Note this fires for the *merging* pull request, not for the hub —
+  # the hub's own `closed` event would look for this file on `empty-base`, an orphan
+  # branch with no workflows, so it would run nothing.
+  pull_request:
+    types: [closed]
+  # Backstop, for what that event does not cover: a fork's pull request (whose token is
+  # read-only), a close by hand, or an event GitHub drops.
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+# The timeline that says *how* the hub closed is the issues API, not the pull-requests
+# one, so both scopes are needed.
+permissions:
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: review-hub-watchdog
+  cancel-in-progress: false
+
+jobs:
+  reopen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reopen the hub if it is closed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The hub's number. There is exactly one, and dev-docs/ refers to it by number
+          # throughout, so a constant here is honest rather than lazy.
+          HUB: "315"
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+
+          # A merge and the close it causes are not one atomic event, and the close can
+          # land after the merging pull request's own `closed` webhook. Give it a minute
+          # before believing an OPEN reading on that trigger.
+          attempts=1
+          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then attempts=6; fi
+
+          state=""
+          for i in $(seq 1 "$attempts"); do
+            state=$(gh pr view "$HUB" --repo "$repo" --json state --jq .state)
+            if [ "$state" != "OPEN" ]; then break; fi
+            if [ "$i" -lt "$attempts" ]; then sleep 10; fi
+          done
+
+          if [ "$state" = "OPEN" ]; then
+            echo "Hub #$HUB is open. Nothing to do." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$state" = "MERGED" ]; then
+            echo "::error::Hub #$HUB is MERGED. A merged pull request cannot be reopened;"
+            echo "::error::its threads have to be rehoused by hand. See AGENTS.md."
+            exit 1
+          fi
+
+          # An escape hatch, so the watchdog cannot fight a maintainer who means it.
+          if gh pr view "$HUB" --repo "$repo" --json labels --jq '.labels[].name' \
+              | grep -qx 'hub:closed-on-purpose'; then
+            echo "Hub #$HUB is closed and labelled hub:closed-on-purpose. Leaving it." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Which surface did it. A `closed` event driven by a commit message carries that
+          # commit; one driven by a merged pull request's body carries no commit at all.
+          # That is the only way to tell the two apart after the fact, and it is what the
+          # second incident turned on.
+          commit=$(gh api "repos/$repo/issues/$HUB/timeline?per_page=100" --paginate \
+            -H "Accept: application/vnd.github+json" \
+            --jq '[.[] | select(.event == "closed")] | last | .commit_id // "none"')
+
+          case "$commit" in
+            none|null|"") surface="a merged pull request's **body** (its \`closed\` event carries no commit)" ;;
+            *)            surface="a **commit message**, \`$commit\`" ;;
+          esac
+
+          gh pr reopen "$HUB" --repo "$repo"
+
+          workflow_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/.github/workflows/review-hub-watchdog.yml"
+
+          # Written to a file rather than inlined: an indented heredoc would indent every
+          # line of the body, and four spaces of indent is a Markdown code block.
+          cat > /tmp/hub-reopened.md <<EOF
+          Reopened automatically. This pull request is the review hub, and it has to stay open.
+
+          It was closed by $surface.
+
+          Nothing was lost: the threads and the \`**SWEPT**\` markers are untouched, and a closed hub still serves them. But a closed hub drops off every open-pull-request listing, and neither time this happened was it noticed from GitHub.
+
+          The rule that prevents it is in \`AGENTS.md\` §Review workflow — never reproduce a closing phrase next to this pull request's number, in a commit message, a squash body or a pull request body. Describing the phrase is fine; quoting it is what closes this.
+
+          If you meant to close it, add the \`hub:closed-on-purpose\` label and close it again; this job will leave it alone.
+
+          ---
+          _Posted by [\`review-hub-watchdog.yml\`]($workflow_url)._
+          EOF
+
+          # Strip the indentation the heredoc kept. No line of that body starts with
+          # meaningful whitespace, so this is safe and keeps the script readable.
+          sed -i 's/^[[:space:]]*//' /tmp/hub-reopened.md
+
+          gh pr comment "$HUB" --repo "$repo" --body-file /tmp/hub-reopened.md
+
+          echo "Reopened hub #$HUB, closed by $surface." >> "$GITHUB_STEP_SUMMARY"

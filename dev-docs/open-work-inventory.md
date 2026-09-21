@@ -122,6 +122,15 @@ touched it anyway (`loop:off`). Nothing in the repository degrades; the hub simp
 being a pull request. `empty-base` was untouched both times, so reopening restored everything
 and cost nothing.
 
+**There is now a net.** [`.github/workflows/review-hub-watchdog.yml`](../.github/workflows/review-hub-watchdog.yml)
+reopens the hub when it finds it closed and comments saying which surface did it, reading the
+last `closed` event's `commit_id` exactly as the diagnosis above does. It runs on every pull
+request close, which is the only moment a closing keyword can fire, with a six-hourly schedule
+behind it for a close by hand or an event GitHub drops. It is recovery rather than prevention:
+a pre-merge check cannot see the squash body, because that body is editable at merge time and
+what GitHub parses is what was actually merged. The escape hatch is the `hub:closed-on-purpose`
+label, which the job honours.
+
 **#382 and #380 were two halves of one sweep and they collided; #380 merged on 2026-09-21 and
 resolved it.** Both refuse or coerce wrong-typed public arguments — #382 the object and numeric
 ones, #380 the enums — and #382 landed first as `3875daa`, so #380 carried all three conflicts.
