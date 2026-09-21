@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Collection
+from typing import Callable, Collection, Literal
 
 from archivey.exceptions import ArchiveyError
 from archivey.types import ArchiveMember
@@ -63,6 +63,14 @@ class ExtractionPolicy(Enum):
     )
 
 
+# The string spellings of ``ExtractionPolicy``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+ExtractionPolicyStr = Literal["strict", "standard", "trusted"]
+
+
 class OverwritePolicy(Enum):
     """What to do when a destination entry already exists where a member would be written.
 
@@ -80,6 +88,14 @@ class OverwritePolicy(Enum):
     RENAME = "rename"  # write a colliding entry under a derived "name (N)" spelling
 
 
+# The string spellings of ``OverwritePolicy``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+OverwritePolicyStr = Literal["error", "skip", "replace", "rename"]
+
+
 class OnError(Enum):
     """What to do when an individual member cannot be extracted.
 
@@ -93,6 +109,14 @@ class OnError(Enum):
 
     STOP = "stop"  # default: raise the first member failure and halt
     CONTINUE = "continue"  # record the failure, clean up, proceed to the next member
+
+
+# The string spellings of ``OnError``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+OnErrorStr = Literal["stop", "continue"]
 
 
 class AbortOn(str, Enum):
@@ -126,6 +150,23 @@ class AbortOn(str, Enum):
     # ``ExtractionResult.presented_name``; set this only to make them fatal. Raises
     # NameRewrittenError.
     NAME_SANITIZED = "name_sanitized"
+
+
+# The string spellings of ``AbortOn``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling,
+# plus the dash form of each underscored value, which is what the CLI's own
+# ``--help`` advertises and so the spelling most likely to be pasted into a script.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+AbortOnStr = Literal[
+    "blocked_member",
+    "blocked-member",
+    "name_collision",
+    "name-collision",
+    "name_sanitized",
+    "name-sanitized",
+]
 
 
 class ExtractionStatus(str, Enum):

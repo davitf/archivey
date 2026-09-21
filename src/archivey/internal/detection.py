@@ -54,6 +54,7 @@ from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
 from archivey.detection_cost import (
     DetectionBudget,
     DetectionBudgetPreset,
+    DetectionBudgetPresetStr,
     DetectionCapability,
     DetectionCostReceipt,
     TierSkip,
@@ -66,12 +67,13 @@ from archivey.diagnostics import (
     FormatConflictContext,
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
-from archivey.internal.arg_checks import check_config, check_instance
+from archivey.internal.arg_checks import check_config
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
 )
+from archivey.internal.enum_args import coerce_enum
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
 from archivey.internal.sfx import (
@@ -490,24 +492,28 @@ def _scan_for_sfx_payload(
 
 
 def _resolve_budget(
-    budget: DetectionBudget | DetectionBudgetPreset | None,
+    budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr | None,
 ) -> DetectionBudget:
+    """Normalize the ``budget=`` argument, refusing anything that is neither.
+
+    A ``DetectionBudget`` passes through. Anything else is read as a preset, including
+    its name as a string — ``budget="fast"`` is the mistake to expect, because
+    ``DetectionBudgetPreset.FAST.value`` *is* ``"fast"``. Before this, an unrecognised
+    value was returned unchanged and failed several frames down with a bare
+    ``AttributeError`` naming a budget field.
+    """
     if budget is None:
         return default_detection_budget()
-    if isinstance(budget, DetectionBudgetPreset):
-        return DetectionBudget.for_preset(budget)
     if isinstance(budget, DetectionBudget):
         return budget
-    # A DetectionBudget is an object argument of the config= shape. Anything else
-    # used to reach PrefixWorkspace and die as
-    # ``AttributeError: 'int' object has no attribute 'max_tail_bytes'``. Preset
-    # *strings* (``budget="balanced"``) are the sibling enum-argument change's
-    # business; until that lands they fall through this same refusal rather than
-    # leaking the field name.
-    check_instance(
-        budget, DetectionBudget, call="detect_format(budget=…)", allow_none=False
+    preset = coerce_enum(
+        budget,
+        DetectionBudgetPreset,
+        call="detect_format()",
+        param="budget=",
+        also_accepts="DetectionBudget",
     )
-    raise AssertionError("unreachable")
+    return DetectionBudget.for_preset(preset)
 
 
 def detect_format(
@@ -515,7 +521,10 @@ def detect_format(
     *,
     config: ArchiveyConfig | None = None,
     collector: DiagnosticCollector | None = None,
-    budget: DetectionBudget | DetectionBudgetPreset | None = None,
+    budget: DetectionBudget
+    | DetectionBudgetPreset
+    | DetectionBudgetPresetStr
+    | None = None,
     follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
