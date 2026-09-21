@@ -87,6 +87,7 @@ from archivey.types import (
     CompressionMethod,
     ContainerFormat,
     MagicSignature,
+    MemberExtra,
     MemberStreams,
     MemberType,
     StreamFormat,
@@ -699,7 +700,7 @@ class TarReader(BaseArchiveReader):
             else ()
         )
 
-        extra: dict[str, object] = {"tar.type": info.type}
+        extra = MemberExtra({"tar.type": info.type})
         if info.pax_headers:
             extra["tar.pax_headers"] = dict(info.pax_headers)
         if info.isdev():

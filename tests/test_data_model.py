@@ -9,16 +9,23 @@ construction of uncommon container×codec pairs, ``file_extension``) and the
 
 from __future__ import annotations
 
+import copy
+import json
+import pickle
+
 import pytest
 
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     ArchiveFormat,
+    ArchiveInfo,
+    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
     ContainerFormat,
     HashAlgorithm,
+    MemberExtra,
     MemberType,
     StreamFormat,
     crc32_digest,
@@ -108,13 +115,13 @@ def test_equality_excludes_hashes_and_extra() -> None:
         type=MemberType.FILE,
         name="a.txt",
         hashes={HashAlgorithm.CRC32: crc32_digest(1)},
-        extra={"x": 1},
+        extra=MemberExtra({"third.party": 1}),
     )
     b = ArchiveMember(
         type=MemberType.FILE,
         name="a.txt",
         hashes={HashAlgorithm.CRC32: crc32_digest(2)},
-        extra={"y": 2},
+        extra=MemberExtra({"third.party": 2}),
     )
     assert a == b
 
@@ -156,10 +163,52 @@ def test_type_helpers() -> None:
 
 def test_junction_helper() -> None:
     junction = ArchiveMember(
-        type=MemberType.SYMLINK, name="j", extra={EXTRA_IS_JUNCTION: True}
+        type=MemberType.SYMLINK, name="j", extra=MemberExtra({EXTRA_IS_JUNCTION: True})
     )
     assert junction.is_junction
     assert not ArchiveMember(type=MemberType.SYMLINK, name="s").is_junction
+
+
+def test_extra_is_an_open_mapping() -> None:
+    # The names are importable at runtime.
+    assert ArchiveMember.__annotations__["extra"] == "MemberExtra"
+    assert ArchiveInfo.__annotations__["extra"] == "ArchiveInfoExtra"
+    assert issubclass(MemberExtra, dict)
+    assert issubclass(ArchiveInfoExtra, dict)
+    # ``__slots__ = ()`` drops the per-instance ``__dict__``; the contract is the
+    # key space, so an attribute write must not silently succeed.
+    with pytest.raises(AttributeError):
+        setattr(MemberExtra(), "not_a_key", True)
+    with pytest.raises(AttributeError):
+        setattr(ArchiveInfoExtra(), "not_a_key", True)
+
+    m = ArchiveMember(
+        type=MemberType.FILE, name="a", extra=MemberExtra({"third.party": 1})
+    )
+    assert isinstance(m.extra, MemberExtra)
+    assert m.extra["third.party"] == 1
+    assert m.extra == {"third.party": 1}
+
+    empty = ArchiveMember(type=MemberType.FILE, name="b")
+    assert isinstance(empty.extra, MemberExtra)
+    assert empty.extra == {}
+    empty.extra["third.party"] = 1
+    assert empty.extra["third.party"] == 1
+
+    bag = MemberExtra({"is_junction": True, "third.party": 1})
+    assert bag == {"is_junction": True, "third.party": 1}
+    assert json.loads(json.dumps(bag)) == {"is_junction": True, "third.party": 1}
+
+    # Equality alone would pass on a plain dict, so assert the class survives too:
+    # a round trip that degraded to dict would keep the data and silently lose the
+    # declared key types for anything re-annotating the result.
+    for roundtripped in (
+        copy.copy(bag),
+        copy.deepcopy(bag),
+        pickle.loads(pickle.dumps(bag)),
+    ):
+        assert roundtripped == bag
+        assert isinstance(roundtripped, MemberExtra)
 
 
 def test_modified_utc_normalizes_mixed_timestamps() -> None:

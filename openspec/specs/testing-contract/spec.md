@@ -173,7 +173,8 @@ what let the spec drift: it named `FakeNonSeekable` — a class that has never e
 `tests/` — while the double actually used is `NonSeekableBytesIO`. It also described the
 double as raising on *every* `seek` **and `tell`** call, which `NonSeekableBytesIO` does not
 do: it answers `tell()` from its inner `BytesIO`. Answering `tell()` is load-bearing rather
-than an oversight — `ConcatenatedFile.__init__` probes `tell()` before `seek()`, and
+than an oversight — `ConcatenatedFile.__init__` probes `tell()` then `seek()` on
+`BinaryIO` volumes (Path volumes are sized with `stat()`), and
 `fix_stream_start_position` needs a position for the mid-stream origin contract — so the
 requirement is stated on `seek()` and `seekable()`, which is what the doubles enforce and
 what backends branch on.

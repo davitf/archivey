@@ -34,7 +34,11 @@ from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode, DigestContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DigestContext,
+    MemberHeaderRecordContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -45,6 +49,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
+    _MAX_SKIPPED_HEADER_RECORDS,
     RAR5_ID,
     RAR_ID,
     RarArchive,
@@ -61,6 +66,7 @@ from archivey.internal.backends.rar_parser import (
 )
 from archivey.internal.backends.rar_unrar import (
     _unrar_glob_demux_ok,
+    _unrar_mask_for,
     _unrar_mask_match,
     decompress_rar3_blob,
     open_unrar_p,
@@ -68,6 +74,7 @@ from archivey.internal.backends.rar_unrar import (
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
@@ -95,12 +102,14 @@ from archivey.types import (
     EXTRA_RAR_EXTRACT_VERSION,
     ArchiveFormat,
     ArchiveInfo,
+    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
     HashAlgorithm,
     MagicSignature,
+    MemberExtra,
     MemberStreams,
     MemberType,
     crc32_digest,
@@ -261,9 +270,9 @@ def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
 
 def _rar_member_extra_and_link(
     info: RarMemberInfo,
-) -> tuple[dict[str, object], str | None]:
+) -> tuple[MemberExtra, str | None]:
     """Build ``ArchiveMember.extra`` and the symlink/junction target."""
-    extra: dict[str, object] = {}
+    extra = MemberExtra()
     link_target: str | None = None
     if info.file_redir is not None:
         link_target = info.file_redir[2]
@@ -961,9 +970,9 @@ class RarReader(BaseArchiveReader):
     def _emit_member_diagnostics(
         self, info: RarMemberInfo, member: ArchiveMember, presented: str
     ) -> None:
-        """Name-normalization and tweaked-digest diagnostics.
+        """Name-normalization, dropped-header-record and tweaked-digest diagnostics.
 
-        Both attach onto ``member`` (``attach_to_member=True``) and can raise
+        All attach onto ``member`` (``attach_to_member=True``) and can raise
         under a strict collector, so this must run before ``_to_member`` returns.
         """
         emit_member_name_normalized(
@@ -972,6 +981,54 @@ class RarReader(BaseArchiveReader):
             presented_name=presented,
             archive_name=self._archive_name,
         )
+        for record, record_id, reason in info.skipped_header_records:
+            named = record if record_id is None else f"{record} ({record_id})"
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"RAR5 extra record {named} is malformed and was dropped "
+                    f"({reason}); the member is listed without what it carried."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    record=record,
+                    record_id=record_id,
+                    reason=reason,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
+        if info.skipped_header_records_truncated:
+            # One diagnostic saying the header was abandoned, rather than one per
+            # record past the cap — emitting per record is the cost the cap exists
+            # to avoid. Without this a caller sees the capped list and cannot tell
+            # it is the whole story. ``list_truncated`` is what they read.
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"More than {_MAX_SKIPPED_HEADER_RECORDS} RAR5 extra records of "
+                    f"this member were malformed, so the rest of its header was not "
+                    f"read; it is listed from what was read before that."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    record="",
+                    record_id=None,
+                    reason=(
+                        f"more than {_MAX_SKIPPED_HEADER_RECORDS} malformed records; "
+                        f"the rest of the header was not read"
+                    ),
+                    list_truncated=True,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
         # Pure; same predicate ``_rar_member_extra_and_link`` uses for extra keys.
         if not _crc_is_tweaked(info) or self._unrar_password is not None:
             return
@@ -1247,9 +1304,14 @@ class RarReader(BaseArchiveReader):
         headers. Zero when the presented name has no glob characters. History
         rows are omitted unless ``version_control`` is set, matching ``unrar``
         (``-ver`` is passed only for a history-row target).
+
+        Matched against :func:`_unrar_mask_for` of the presented name, not the
+        name itself: that is the string ``unrar`` was given, and sizing the skip
+        against a wider mask would step past bytes the pipe never carried.
         """
         if "*" not in presented and "?" not in presented:
             return 0
+        mask = _unrar_mask_for(presented)
         prefix = 0
         for member in self._members:
             raw = member._raw
@@ -1257,7 +1319,7 @@ class RarReader(BaseArchiveReader):
                 continue
             if raw.is_file_version_history() and not version_control:
                 continue
-            if not _unrar_mask_match(_presented_filename(raw), presented):
+            if not _unrar_mask_match(_presented_filename(raw), mask):
                 continue
             if member is target:
                 return prefix
@@ -1413,6 +1475,9 @@ class RarReader(BaseArchiveReader):
         )
         archive_comment = self._archive.comment
         assert not isinstance(archive_comment, _Rar3Comment)
+        info_extra = ArchiveInfoExtra(
+            {"rar.volume_count": max(self._volume_count, len(self._volume_paths))}
+        )
         return ArchiveInfo(
             format=ArchiveFormat.RAR,
             format_version=str(self._archive.version),
@@ -1422,9 +1487,7 @@ class RarReader(BaseArchiveReader):
             is_encrypted=self._archive.has_header_encryption or any_encrypted,
             is_multivolume=is_multivolume,
             cost=cost,
-            extra={
-                "rar.volume_count": max(self._volume_count, len(self._volume_paths))
-            },
+            extra=info_extra,
         )
 
     def _close_archive(self) -> None:

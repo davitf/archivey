@@ -108,12 +108,14 @@ from archivey.internal.zipcrypto import (
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
+    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
     HashAlgorithm,
     MagicSignature,
+    MemberExtra,
     MemberStreams,
     MemberType,
     crc32_digest,
@@ -713,7 +715,7 @@ class ZipReader(BaseArchiveReader):
         if member_type in (MemberType.FILE, MemberType.SYMLINK):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
-        extra: dict[str, object] = {"zip.compress_type": info.compress_type}
+        extra = MemberExtra({"zip.compress_type": info.compress_type})
         if aes_info is not None:
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength
@@ -1471,6 +1473,7 @@ class ZipReader(BaseArchiveReader):
             stream_capability=StreamCapability.SEEKABLE,
             solid_block_count=None,
         )
+        info_extra = ArchiveInfoExtra({"zip.volume_count": self._volume_count})
         return ArchiveInfo(
             format=ArchiveFormat.ZIP,
             format_version=None,
@@ -1483,7 +1486,7 @@ class ZipReader(BaseArchiveReader):
             # about the ZIP structure — the join is a plain single-disk archive.
             is_multivolume=self._volume_count > 1,
             cost=cost,
-            extra={"zip.volume_count": self._volume_count},
+            extra=info_extra,
         )
 
     def _close_archive(self) -> None:

@@ -69,6 +69,7 @@ from archivey.diagnostics import (
     EmptyArchiveContext,  # noqa: F401
     ExtractionReport,
     FormatConflictContext,  # noqa: F401
+    MemberHeaderRecordContext,  # noqa: F401
     MemberListReport,
     MemberNameControlsContext,  # noqa: F401
     MemberTimestampContext,  # noqa: F401
@@ -127,12 +128,14 @@ from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
+    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
     ContainerFormat,
     CreateSystem,
     HashAlgorithm,
+    MemberExtra,
     MemberStreams,
     MemberType,
     StreamFormat,
@@ -180,6 +183,8 @@ __all__ = [
     "StreamFormat",
     "ArchiveMember",
     "ArchiveInfo",
+    "ArchiveInfoExtra",
+    "MemberExtra",
     "MemberType",
     "MemberStreams",
     "CompressionAlgorithm",

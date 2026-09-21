@@ -5,7 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
 from enum import Enum, Flag, auto
-from typing import TYPE_CHECKING, Any, ClassVar, Mapping, NamedTuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    Mapping,
+    NamedTuple,
+    overload,
+)
 
 if TYPE_CHECKING:
     from archivey.cost import CostReceipt
@@ -334,7 +343,10 @@ class CreateSystem(Enum):
 # Key in ArchiveMember.extra marking a member as a Windows NTFS junction. Junctions
 # are a cross-format concept (ZIP, 7z and RAR can all carry them), so this key is
 # deliberately NOT namespaced under a single format like "zip.".
-EXTRA_IS_JUNCTION = "is_junction"
+# Final keeps an overloaded ``__getitem__`` subscript with this constant a literal
+# key; without it a checker that widens the assignment to ``str`` falls through
+# to the ``str → object`` fallback.
+EXTRA_IS_JUNCTION: Final = "is_junction"
 
 # Key in ArchiveMember.extra: True when this RAR member's ``created`` is Unix
 # ``st_ctime`` (inode-change), False when the writer OS stores a birth time
@@ -343,12 +355,123 @@ EXTRA_IS_JUNCTION = "is_junction"
 # promote this to a cross-format ``created_meaning`` field — do not infer that
 # meaning from ``create_system`` (7z hardcodes UNIX while reading a FILETIME
 # birth time; ZIP splits by extra source, not OS).
-EXTRA_RAR_CREATED_IS_CTIME = "rar.created_is_ctime"
+EXTRA_RAR_CREATED_IS_CTIME: Final = "rar.created_is_ctime"
 
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
 # because RAR5 records no per-file unpack version. Lives here, not on
 # CompressionMethod.level, which is the M1–M5 method-byte offset.
-EXTRA_RAR_EXTRACT_VERSION = "rar.extract_version"
+EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
+
+
+class MemberExtra(dict[str, object]):
+    """Per-member format-specific metadata on :class:`~archivey.ArchiveMember`.
+
+    A ``dict[str, object]`` whose known keys return their declared types from a
+    subscript (``extra["zip.compress_type"]`` is an ``int``). Unknown keys
+    (third-party or future) stay legal and read as ``object``. The ``EXTRA_*``
+    constants on this module still name the keys they cover.
+
+    Writes are not type-checked: a wrong-type assignment to a known key falls
+    through to the ``str → object`` fallback, same as an unknown key. ``.get()``
+    returns ``object`` for every key. Assign a ``MemberExtra({...})`` (or mutate
+    the existing bag); a bare dict is not assignable to the field.
+
+    Known keys:
+
+    * ``is_junction`` (``bool``) — directory, RAR. Cross-format by design (ZIP
+      and 7z can carry junctions); other backends may start setting it.
+    * ``rar.created_is_ctime`` (``bool``)
+    * ``rar.extract_version`` (``int``)
+    * ``rar.file_version`` (``int``)
+    * ``rar.tweaked_crc32`` (``int``)
+    * ``rar.tweaked_blake2sp`` (``bytes``)
+    * ``zip.compress_type`` (``int``)
+    * ``zip.aes_vendor_version`` (``int``)
+    * ``zip.aes_strength`` (``int``)
+    * ``zip.aes_actual_method`` (``int``)
+    * ``tar.type`` (``bytes``)
+    * ``tar.pax_headers`` (``dict[str, str]``)
+    * ``tar.devmajor`` (``int``)
+    * ``tar.devminor`` (``int``)
+    * ``gzip.original_filename`` (``str``)
+    """
+
+    __slots__ = ()
+
+    # Overloaded ``__getitem__``, not a PEP 728 TypedDict: mypy rejects
+    # ``extra_items=`` and then treats the TypedDict as having no keys, so every
+    # read and write in a user's file errors. A ``total=False`` TypedDict also
+    # makes every subscript read an error under pyright. This shape was measured
+    # clean on pyright 1.1.414, mypy 1.19.1, pyrefly 1.1.1 and ty 0.0.60 with no
+    # suppressions. Writes are not overloaded: the ``str → object`` fallback
+    # unknown keys need also accepts a wrong-type write to a known key.
+    # ``.get()`` stays ``object`` because the four checkers disagree on
+    # ``dict.get``'s own signature.
+
+    @overload
+    def __getitem__(self, key: Literal["is_junction"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.created_is_ctime"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.extract_version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.file_version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.tweaked_crc32"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.tweaked_blake2sp"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.compress_type"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.aes_vendor_version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.aes_strength"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.aes_actual_method"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["tar.type"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["tar.pax_headers"], /) -> dict[str, str]: ...
+    @overload
+    def __getitem__(self, key: Literal["tar.devmajor"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["tar.devminor"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["gzip.original_filename"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: str, /) -> object: ...
+    def __getitem__(self, key: str, /) -> object:
+        return super().__getitem__(key)
+
+
+class ArchiveInfoExtra(dict[str, object]):
+    """Archive-level format-specific metadata on :class:`~archivey.ArchiveInfo`.
+
+    Same shape as :class:`~archivey.MemberExtra` over a separate key set — do not merge
+    the two bags.
+
+    Known keys:
+
+    * ``iso.namespace`` (``str``)
+    * ``zip.volume_count`` (``int``)
+    * ``rar.volume_count`` (``int``)
+    * ``7z.volume_count`` (``int``)
+    """
+
+    __slots__ = ()
+
+    @overload
+    def __getitem__(self, key: Literal["iso.namespace"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.volume_count"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.volume_count"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["7z.volume_count"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: str, /) -> object: ...
+    def __getitem__(self, key: str, /) -> object:
+        return super().__getitem__(key)
 
 
 @dataclass(slots=True)
@@ -448,15 +571,12 @@ class ArchiveMember:
     """
 
     # compare=False: format-specific bags must not affect logical identity.
-    extra: dict[str, object] = field(default_factory=dict, compare=False)
+    extra: MemberExtra = field(default_factory=MemberExtra, compare=False)
     """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality.
 
-    Values are ``object``: a caller that uses a key must narrow it before use. The
-    ``EXTRA_*`` constants on this module name some of those keys, format-independent
-    and namespaced alike; backends also write further ``format.key`` strings, some
-    of which are documented in the formats guide. There is no complete published
-    register of keys and their value types, so narrow defensively rather than
-    assuming a key's type.
+    Known keys and their value types are :class:`~archivey.MemberExtra`. Unknown keys
+    (third-party or future) stay legal and read as ``object``. The ``EXTRA_*``
+    constants on this module remain the names for the keys they cover.
     """
 
     # Private internal fields (not part of the public contract)
@@ -581,8 +701,9 @@ class ArchiveInfo:
     cost: "CostReceipt"
     """Listing/access cost receipt for the archive (see the ``access-mode-and-cost`` capability)."""
 
-    extra: dict[str, object] = field(default_factory=dict, compare=False)
+    extra: ArchiveInfoExtra = field(default_factory=ArchiveInfoExtra, compare=False)
     """Format-specific archive-level metadata, keyed by namespaced strings (mirrors
     ``ArchiveMember.extra``). For example the ISO backend records the auto-selected
-    namespace as ``extra["iso.namespace"]``. Excluded from ``__eq__``. Values are
-    ``object``; a caller that uses a key must narrow it."""
+    namespace as ``extra["iso.namespace"]``. Excluded from ``__eq__``. Known keys
+    and their value types are :class:`~archivey.ArchiveInfoExtra`; unknown keys stay legal
+    and read as ``object``."""

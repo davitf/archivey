@@ -43,6 +43,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **`ArchiveMember.extra` / `ArchiveInfo.extra` are `MemberExtra` / `ArchiveInfoExtra`.**
+  Known keys narrow on a subscript read. Assign a `MemberExtra({...})` rather than a
+  bare dict; mutating the existing bag in place is unchanged. Only type-checking
+  changes: both are `dict[str, object]` subclasses, equal to the plain dicts they
+  replace, and `copy`, `deepcopy`, `pickle` and `json.dumps` behave as before.
 - **`password=` no longer raises on a format with no encryption.** All three forms — a
   single value, a list of candidates, a `PasswordProvider` — are now accepted, never
   consulted, and recorded as a `PASSWORD_ARGUMENT_UNUSED` diagnostic. Previously a

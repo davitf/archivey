@@ -96,6 +96,7 @@ from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
+    ArchiveInfoExtra,
     ArchiveMember,
     CompressionAlgorithm,
     CompressionMethod,
@@ -816,6 +817,7 @@ class SevenZipReader(BaseArchiveReader):
             stream_capability=StreamCapability.SEEKABLE,
             solid_block_count=solid_blocks if self._archive.is_solid else None,
         )
+        info_extra = ArchiveInfoExtra({"7z.volume_count": self._volume_count})
         return ArchiveInfo(
             format=ArchiveFormat.SEVEN_Z,
             format_version=f"{self._archive.major_version}.{self._archive.minor_version}",
@@ -826,7 +828,7 @@ class SevenZipReader(BaseArchiveReader):
             or self._archive.has_encrypted_folders,
             is_multivolume=self._volume_count > 1,
             cost=cost,
-            extra={"7z.volume_count": self._volume_count},
+            extra=info_extra,
         )
 
     def _close_archive(self) -> None:
