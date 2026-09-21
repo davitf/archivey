@@ -362,10 +362,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                     size = source.seek(0, os.SEEK_END)
                     source.seek(pos)
                 except (OSError, AttributeError, io.UnsupportedOperation) as exc:
-                    # Same refusal as a non-seekable *single* source, so it gets the same
-                    # type: a volume set is concatenated by offset and cannot be joined
-                    # from a forward-only stream. Paths are always seekable; this check
-                    # is for caller-supplied streams only.
+                    # Same refusal as a non-seekable *single* source, so it gets
+                    # the same type: a volume set is concatenated by offset and
+                    # cannot be joined from a forward-only stream. Paths are
+                    # always seekable; this check is for caller-supplied streams
+                    # only. (Keep "type:" out of a comment's first position;
+                    # tests/test_no_stray_type_comments.py.)
                     raise StreamNotSeekableError(
                         "all volume streams must be seekable"
                     ) from exc
