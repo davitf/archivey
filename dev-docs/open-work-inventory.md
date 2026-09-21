@@ -609,9 +609,9 @@ it tracks.
 
 ### 1. The format handbook — `dev-docs/formats/`
 
-Three of the intended set exist: [`rar.md`](formats/rar.md) (91 KB),
-[`zip.md`](formats/zip.md) (42 KB) and [`7z.md`](formats/7z.md) (40 KB). All three follow the
-same nine-section shape — At a glance,
+Three of the intended set exist: [`rar.md`](formats/rar.md) (98 KiB),
+[`zip.md`](formats/zip.md) (43 KiB) and [`7z.md`](formats/7z.md) (37 KiB) — `wc -c`, rounded
+down. All three follow the same nine-section shape — At a glance,
 Shape, The pipeline here, In the wild, Threat surface, Sharp edges, Decisions, Open questions,
 Verify, References — so the template is settled and the remaining pages are writing, not
 design.
@@ -805,7 +805,7 @@ sweep S0..S25 ──> 208 #315 threads, 140 open ──> new parcels, new change
         │              (first pass over src/ complete 2026-09-20; draining is what is left)
         └── a second pass waits on those threads being drained, not on a decision
 
-formats/sevenzip.md, tar.md, iso.md, single-file.md ──> more §10-style registers
+formats/tar.md, iso.md, single-file.md ──> more §10-style registers
 docs/ prose + how-it-works.md ──> (nothing; skeleton, scope and claims all done)
 ```
 
@@ -1019,9 +1019,9 @@ being implemented and archived on 2026-09-12.
 
 **Wave 6 — the docs, continuously and in parallel with everything above.** Not a wave in the
 sense the others are: a long-running programme that should have one page in flight at a time
-rather than a slot in the order. `sevenzip.md` is the next handbook page by value — the format
-with the most machinery behind it after RAR, and the one with six open parser findings against
-it. The user guide's remaining prose is the one item here with no agent-shaped unit of work
+rather than a slot in the order. `7z.md` is written (see §1 above); `tar.md` is the next page
+by value, because the stdlib-leniency question `open-issues.md` **P3** is about has no other
+home. The user guide's remaining prose is the one item here with no agent-shaped unit of work
 defined for it yet. **The sweep half of this wave is spent**: the reading is done, and the
 second pass davi gated on it also waits on the drain, so there is no batch to schedule.
 
