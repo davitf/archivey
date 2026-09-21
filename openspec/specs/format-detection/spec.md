@@ -130,8 +130,7 @@ Detector tables SHALL come from container backends (`ReadBackend.MAGIC` /
 `SingleFileBackend`). A content probe is the codec's `content_probe` function.
 Detected formats and `detected_by` MUST match prior behavior. Confidence MUST also
 match prior behavior **except** for an uncorroborated Brotli content-probe match,
-which reports `GUESS` (see the magic-less-formats requirement); that is the only
-confidence value this change moves.
+which reports `GUESS` (see the magic-less-formats requirement).
 
 #### Scenario: table sources matrix
 
@@ -705,9 +704,9 @@ The walk stops at the first compressed block, which carries no declared length t
 On a real Brotli file whose first meta-block is compressed — 79 of 150 in the corpus — it
 therefore terminates immediately, having read four bytes.
 
-Following the chain requires bytes at offsets that may lie past the peeked prefix. The
-mechanism by which a probe reaches them is settled in this change's design; whatever it
-is, the reads SHALL stay within the declared bounds and SHALL NOT decompress.
+Following the chain requires bytes at offsets that may lie past the peeked prefix.
+However a probe reaches them, the reads SHALL stay within the declared bounds and
+SHALL NOT decompress.
 
 #### Scenario: chain walk matrix
 

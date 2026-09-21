@@ -34,7 +34,7 @@ with its meanings unchanged: `UNKNOWN` means *a prefix that matched no cue*, whi
 
 *Not established* SHALL be spelled as **absence**, not as an enum member: `None`.
 Overloading `UNKNOWN` would give one member two meanings and make it disagree with
-`FormatInfo`, which is the cross-surface inconsistency this change exists to avoid.
+`FormatInfo`.
 
 | state | `prefix_kind` | `payload_offset` |
 | --- | --- | --- |
