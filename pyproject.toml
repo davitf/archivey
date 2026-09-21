@@ -232,12 +232,21 @@ addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=6
 # deadlock off the main thread is invisible to it: on 2026-09-21 both the free-threaded job
 # and an ordinary `py3.14 / core-only` job hung with --timeout armed, printed nothing for
 # twenty minutes, and were killed by timeout-minutes with no idea which test was running.
-# The thread method arms a threading.Timer instead, which dumps every thread's stack and
-# then calls os._exit(1). The cost is that the rest of the run dies with it — but a hang
-# costs the whole job anyway today, and nothing here is slow enough to time out for any
-# other reason. This is a diagnostic, not a fix; the hang itself is tracked internally.
-# It is an ini option rather than an addopts flag on purpose: the free-threaded CI steps
-# run with `-o addopts=` and would otherwise lose it.
+# The thread method arms a threading.Timer instead, which needs only a moment of the GIL
+# to dump every thread's stack and then call os._exit(1), so it survives cases the alarm
+# does not. Not a cure-all: a native call that holds the GIL throughout defeats both
+# methods equally — the accelerator busy-loop in dev-docs/known-issues.md is exactly that
+# shape, and no per-test timeout will ever name it. Windows has always run this way for want of SIGALRM, so this only
+# brings POSIX into line with it. The cost is that the rest of the run dies with the
+# timeout instead of one test failing alone — the trade Windows has been making here all
+# along, and a hang costs the whole job anyway. This is a diagnostic, not a fix; the hang
+# itself is tracked internally.
+# It is an ini option rather than an addopts flag on purpose. Five pytest entry points
+# override addopts — the two free-threaded CI steps, the PPMd stress workflow,
+# scripts/ci_run_native_modules.py and the hand-run recipe in dev-docs/known-issues.md —
+# and a flag inside addopts would be dropped by every one of them, leaving a rule that
+# each new override site must remember to repeat it. The ini key is untouched by
+# `-o addopts=`, so they all inherit it and none of them names it.
 timeout_method = "thread"
 
 markers = [
