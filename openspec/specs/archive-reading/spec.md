@@ -199,7 +199,7 @@ by three rules:
 
 A `<base>.partN.rar` names both a `.partN` part and an old-scheme first volume based
 on `<base>.partN`, so it SHALL be read as the latter when the sequence carries `.rNN`
-parts on that base, which is the reading discovery produces from any of those names.
+parts on that base, which is the reading discovery produces from those `.rNN` names.
 
 A sequence in which no name carries a part number SHALL NOT be subject to these rules,
 nothing in it saying that any of the names is a volume.

@@ -133,11 +133,13 @@ raises.
 
 And a name that carries no part number but is shaped like a first volume
 (`backup.rar`, `backup.exe`, `backup.sfx`) only belongs beside the marked parts
-around it: with `.rNN` parts it must share their stem, so `[movie.part1.rar,
-movie.part2.rar, readme.rar]` raises. The one exception is the stub executable 7-Zip
-writes beside a numbered set, which has no part number and need not share their
-name, so an `.exe` or `.sfx` is let through there — a `.rar` in the same position is
-not.
+around it, and which parts those are decides what is checked. Beside `.rNN` parts it
+is their volume 1 and must share their stem, so `[alpha.rar, alpha.r00]` joins and
+`[beta.rar, alpha.r00]` raises. Beside a `.partN` set it has no role at all, that
+scheme spelling its own volume 1 `movie.part1.rar`, so `[movie.part1.rar,
+movie.part2.rar, readme.rar]` raises. Beside a numbered set only the stub executable
+7-Zip writes there makes sense, which has no part number and need not share their
+name, so an `.exe` or `.sfx` is let through — a `.rar` in the same position is not.
 
 When *no* name in the sequence carries a part number, nothing in it says any of them
 is a volume and none of this applies: `[alpha.rar, beta.rar]` joins, giving you bytes

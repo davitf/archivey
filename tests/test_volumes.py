@@ -1547,7 +1547,7 @@ def test_an_old_scheme_set_whose_base_ends_in_partn_still_joins(
     It is either part 1 of the ``.partN`` set based on ``Show``, or volume 1 of the
     old-scheme set based on ``Show.part1``. Read on its own it is the former, and the
     cross-scheme rule then sees two schemes in one archive and refuses it. Discovery
-    from any of these names returns exactly this list, so refusing it would break the
+    from the ``.rNN`` names returns exactly this list, so refusing it would break the
     rule that this never refuses a set discovery would have accepted.
     """
     for index, name in enumerate(names):
@@ -1560,16 +1560,24 @@ def test_an_old_scheme_set_whose_base_ends_in_partn_still_joins(
 def test_discovery_and_the_explicit_path_agree_on_a_partn_ending_base(
     tmp_path: Path,
 ) -> None:
-    """The invariant the case above exists to protect, asserted directly."""
+    """The invariant the case above exists to protect, asserted directly.
+
+    Also pins how far it reaches: volume 1 is not itself an entry point, because
+    ``_RAR_PART_RE`` claims ``Show.part1.rar`` inside ``discover_volume_siblings``
+    too and the grouping then finds one part number. So the invariant is about the
+    ``.rNN`` names, and the docstrings say so rather than claiming all three.
+    """
     names = ("Show.part1.rar", "Show.part1.r00", "Show.part1.r01")
     for index, name in enumerate(names):
         (tmp_path / name).write_bytes(bytes([65 + index]))
 
-    discovered = discover_volume_siblings(tmp_path / "Show.part1.r00")
-    assert [path.name for path in discovered] == list(names)
+    for probe in ("Show.part1.r00", "Show.part1.r01"):
+        discovered = discover_volume_siblings(tmp_path / probe)
+        assert discovered is not None
+        assert [path.name for path in discovered] == list(names)
+        assert join_volumes(discovered).read() == b"ABC"
 
-    joined = join_volumes(discovered)
-    assert joined.read() == b"ABC"
+    assert discover_volume_siblings(tmp_path / "Show.part1.rar") is None
 
 
 def test_a_partn_part_beside_an_rnn_set_on_its_own_base_is_still_refused(

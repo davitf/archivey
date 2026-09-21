@@ -692,8 +692,12 @@ def _is_rnn_first_volume_name_in(name: str, rnn_bases: frozenset[str]) -> bool:
     are tried in can settle it: part 1 of the ``.partN`` set based on ``Show``, or
     volume 1 of the old-scheme set based on ``Show.part1``. Only the rest of the
     sequence knows — if ``Show.part1.r00`` is in it, the second reading is the one
-    that makes the sequence a single archive, and it is the one discovery produces
-    from any of the three names.
+    that makes the sequence a single archive, and it is the one
+    :func:`discover_volume_siblings` produces from any of its ``.rNN`` names. Not
+    from ``Show.part1.rar`` itself: ``_RAR_PART_RE`` claims that name first there
+    too, the grouping finds a single part number and discovery returns ``None``, so
+    volume 1 of such a set is not an entry point. That gap is discovery's, not this
+    function's, and closing it would change behaviour.
 
     Per-name first-match ordering is what keeps ``my.part1.zip.001`` in the numbered
     scheme; this is that same hazard one level up, where a name has to be read against
