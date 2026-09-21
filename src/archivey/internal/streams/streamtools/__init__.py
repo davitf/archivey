@@ -44,6 +44,7 @@ from archivey.internal.streams.streamtools.base import (
     ReadOnlyIOStream,
 )
 from archivey.internal.streams.streamtools.binaryio import (
+    DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     BinaryIOWrapper,
     ReadableStream,
     ensure_binaryio,
@@ -102,6 +103,7 @@ __all__ = [
     "readinto_via_read",
     "skip_forward",
     "read_within_reach",
+    "DEFAULT_UNKNOWN_LENGTH_READ_STEP",
     "source_byte_size",
     "source_name",
 ]

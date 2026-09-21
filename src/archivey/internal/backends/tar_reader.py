@@ -73,6 +73,7 @@ from archivey.internal.streams.codecs import (
     open_codec_stream,
 )
 from archivey.internal.streams.streamtools import (
+    DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     LockedStream,
     ensure_binaryio,
     ensure_bufferedio,
@@ -193,21 +194,12 @@ class _EofProbeStream:
     therefore never asks the wrapped stream for more than it can still supply.
     """
 
-    # What one ``read`` may ask for when the source's length is unknown: the compressed
-    # path, whose length would cost a decompression pass to learn, and any caller-supplied
-    # stream that advertises none. A request past this is split and rejoined, which is the
-    # *normal* case for a member larger than the step on such a source — stdlib ``tarfile``
-    # asks for a whole member in one call, so a 40 MiB member is two and a half steps, not
-    # an exception. That costs no more than the single unsplit read it replaces: measured
-    # on a 40 MiB member of a ``.tar.gz``, ``tracemalloc`` peaks at 84 MB through the split
-    # against 168 MB without it, because the unsplit form commits to the entire request
-    # inside the ``BufferedReader`` before anything else happens. The join copy is real but
-    # it replaces a larger allocation rather than adding to one.
-    #
-    # 16 MiB is chosen as the granularity of the worst-case overshoot — what a hostile
-    # header can make the process hold before the short read stops it — not to keep
-    # ordinary reads under it. Raising it raises that overshoot one for one.
-    _UNKNOWN_LENGTH_READ_STEP = 16 * 2**20
+    # The step this backend reads in when the source's length is unknown: the
+    # compressed path, whose length would cost a decompression pass to learn, and any
+    # caller-supplied stream that advertises none. What the number buys, and why
+    # splitting is the normal case rather than an exception, is documented once on
+    # :data:`DEFAULT_UNKNOWN_LENGTH_READ_STEP`, beside the branch it governs.
+    _UNKNOWN_LENGTH_READ_STEP = DEFAULT_UNKNOWN_LENGTH_READ_STEP
 
     def __init__(self, inner: BinaryIO, source_size: int | None = None) -> None:
         self._inner = inner

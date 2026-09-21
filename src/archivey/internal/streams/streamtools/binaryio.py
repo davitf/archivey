@@ -410,6 +410,27 @@ def _under_buffer(stream: object) -> object:
     return stream
 
 
+#: What one ``read`` may ask for when the source's length is unknown, and the default
+#: every caller of :func:`read_within_reach` in archivey passes. It lives here rather
+#: than beside either backend's wrapper because the backends held the same number for
+#: the same reason, each documented by pointing at the other.
+#:
+#: A request past this is split and rejoined, which is the *normal* case for a read
+#: larger than the step on such a source, not an exception — stdlib ``tarfile`` asks for
+#: a whole member in one call, so a 40 MiB member is two and a half steps. That costs no
+#: more than the single unsplit read it replaces: measured on a 40 MiB member of a
+#: ``.tar.gz``, ``tracemalloc`` peaks at 84 MB through the split against 168 MB without
+#: it, because the unsplit form commits to the entire request inside the
+#: ``BufferedReader`` before anything else happens. The join copy is real, and it
+#: replaces a larger allocation rather than adding to one.
+#:
+#: 16 MiB is chosen as the granularity of the worst-case overshoot — what a hostile
+#: header can make the process hold before the short read stops it — not to keep
+#: ordinary reads under it. Raising it raises that overshoot one for one. ``step`` stays
+#: an explicit argument so a backend whose overshoot profile differs can hold its own.
+DEFAULT_UNKNOWN_LENGTH_READ_STEP = 16 * 2**20
+
+
 def read_within_reach(
     inner: BinaryIO, size: int, *, remaining: int | None, step: int
 ) -> bytes:

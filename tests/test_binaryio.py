@@ -23,6 +23,7 @@ from archivey.internal.streams.streamtools import (
     is_seekable,
     is_stream,
     read_exact,
+    read_within_reach,
     readinto_via_read,
     source_name,
 )
@@ -201,6 +202,109 @@ def test_read_exact_treats_none_as_eof() -> None:
 
 def test_read_exact_accepts_readablestream_protocol() -> None:
     assert isinstance(OnlyReadStream(DATA), ReadableStream)
+
+
+# --- read_within_reach -----------------------------------------------------------------
+
+
+class _SizeRecorder(io.RawIOBase):
+    """A ``BytesIO`` that records the size asked of every ``read``.
+
+    The sizes are the observable these tests care about, not the bytes: the whole point
+    of :func:`read_within_reach` is that a number out of a hostile header never reaches
+    an allocation, and a helper that returned the right bytes after asking for six
+    gigabytes would still be the bug.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._inner = io.BytesIO(data)
+        self.requested: list[int] = []
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes:
+        self.requested.append(n)
+        return self._inner.read(n)
+
+
+def test_read_within_reach_clamps_to_a_known_remaining() -> None:
+    """The branch a sized source takes: ask for what is left, not what was requested."""
+    src = _SizeRecorder(DATA)
+    assert read_within_reach(src, 6 * 1024**3, remaining=10, step=16) == DATA[:10]
+    assert src.requested == [10]
+
+
+def test_read_within_reach_does_not_clamp_below_the_request() -> None:
+    """``remaining`` is a ceiling, never a floor: a small read stays small."""
+    src = _SizeRecorder(DATA)
+    assert read_within_reach(src, 4, remaining=100, step=16) == DATA[:4]
+    assert src.requested == [4]
+
+
+@pytest.mark.parametrize("remaining", [0, -5])
+def test_read_within_reach_clamps_an_exhausted_remaining_to_zero(
+    remaining: int,
+) -> None:
+    """Reachable by seeking past the end first; a negative must not become a drain.
+
+    Fails against dropping the ``max(remaining, 0)``, which turns ``remaining=-5`` into
+    ``read(-5)`` — read-to-EOF, the opposite of a bound.
+    """
+    src = _SizeRecorder(DATA)
+    assert read_within_reach(src, 100, remaining=remaining, step=16) == b""
+    assert src.requested == [0]
+
+
+def test_read_within_reach_steps_an_unknown_length() -> None:
+    """The branch every unmeasurable source takes; ``None`` is unknown, not unlimited.
+
+    Fails against forwarding ``size`` when ``remaining is None``, which asks the source
+    for the whole 4 294 967 296 in one call.
+    """
+    src = _SizeRecorder(DATA[:40])
+    assert read_within_reach(src, 1 << 32, remaining=None, step=16) == DATA[:40]
+    # Four steps, the last one short, then the empty read that ends the loop.
+    assert src.requested == [16, 16, 16, 16]
+
+
+def test_read_within_reach_returns_a_full_step_without_joining() -> None:
+    """``size == step`` is satisfied by the first read, so it costs no join copy."""
+    src = _SizeRecorder(DATA)
+    assert read_within_reach(src, 16, remaining=None, step=16) == DATA[:16]
+    assert src.requested == [16]
+
+
+def test_read_within_reach_enters_the_loop_one_byte_past_the_step() -> None:
+    """``size == step + 1`` is the smallest request that must be stitched."""
+    src = _SizeRecorder(DATA)
+    assert read_within_reach(src, 17, remaining=None, step=16) == DATA[:17]
+    assert src.requested == [16, 1]
+
+
+def test_read_within_reach_reads_to_eof_on_a_negative_size() -> None:
+    """``read(-1)`` is the documented carve-out: it ignores ``remaining`` entirely.
+
+    It allocates as the data arrives rather than up front, so it is not sized from the
+    archive and needs no bound. Fails against a clamp written with the negative folded
+    in — ``inner.read(max(min(size, remaining), 0))``, which is the natural shape if
+    the ``size <= 0`` guard above is ever tidied away, and which turns every drain into
+    ``read(0)``. Deleting that guard outright is *not* what this catches: with
+    ``min(size, step)`` a negative survives the stepping path by accident.
+    """
+    src = _SizeRecorder(DATA)
+    assert read_within_reach(src, -1, remaining=8, step=16) == DATA
+    assert src.requested == [-1]
+
+
+def test_read_within_reach_zero_does_not_consume_a_byte() -> None:
+    src = _SizeRecorder(DATA)
+    assert read_within_reach(src, 0, remaining=None, step=16) == b""
+    assert src.requested == [0]
 
 
 # --- is_filename / is_stream / is_seekable ---------------------------------------------

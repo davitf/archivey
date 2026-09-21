@@ -70,9 +70,9 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
+    DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     DelegatingStream,
     LockedStream,
-    is_seekable,
     read_within_reach,
     source_byte_size,
 )
@@ -253,16 +253,21 @@ class _ImageBoundedStream(DelegatingStream):
     # before this wrapper exists, and nothing probes the wrapper itself.
     readinto_passthrough = False
 
-    # As in ``tar_reader._EofProbeStream``: the granularity of the worst-case overshoot
-    # when the length is unknown, not a ceiling on a legitimate read.
-    _UNKNOWN_LENGTH_READ_STEP = 16 * 2**20
+    # The step this wrapper reads in when the image's length is unknown. What the
+    # number buys, and why it is the granularity of the worst-case overshoot rather
+    # than a ceiling on a legitimate read, is documented once on
+    # :data:`DEFAULT_UNKNOWN_LENGTH_READ_STEP`, beside the branch it governs.
+    _UNKNOWN_LENGTH_READ_STEP = DEFAULT_UNKNOWN_LENGTH_READ_STEP
 
     def __init__(self, inner: BinaryIO, size: int | None) -> None:
         super().__init__(inner)
         self._size = size
         # Tracked rather than asked for per read: ``DelegatingStream.tell`` forwards to
         # the inner, and pycdlib reads a directory in 2048-byte logical blocks.
-        self._pos = inner.tell() if is_seekable(inner) else 0
+        # ``self._seekable`` is the base's answer for this same inner, cached by the
+        # ``super().__init__`` above; re-probing would be a second source of truth for
+        # one question, and would not follow a later ``_replace_inner``.
+        self._pos = inner.tell() if self._seekable else 0
 
     def read(self, n: int = -1, /) -> bytes:
         chunk = read_within_reach(
@@ -368,6 +373,7 @@ class IsoReader(BaseArchiveReader):
 
         self._iso = pycdlib.PyCdlib()
         self._owned_fp: BinaryIO | None = None
+        self._iso_opened = False
         # Boundary outside the guard; an exception the translator does not recognize
         # (a genuine OSError from the handle) propagates unchanged.
         try:
@@ -383,26 +389,31 @@ class IsoReader(BaseArchiveReader):
                         fp = source
                     tracked = cast("BinaryIO", self._track_source_seeks(fp))
                     self._iso.open_fp(self._bound_to_image(tracked))
+                    self._iso_opened = True
+
+                    # Auto-select the richest namespace: Rock Ridge > Joliet > plain
+                    # ISO 9660. Inside the guard, not after it: these are pycdlib calls
+                    # on the image just opened, so a failure here is an image failure
+                    # and belongs to the same translation and the same release.
+                    if self._iso.has_rock_ridge():
+                        self._namespace = "rock_ridge"
+                        self._path_kw = "rr_path"
+                    elif self._iso.has_joliet():
+                        self._namespace = "joliet"
+                        self._path_kw = "joliet_path"
+                    else:
+                        self._namespace = "iso9660"
+                        self._path_kw = "iso_path"
         except BaseException:
             # Owning the handle means owning its release on the failure path: no reader
             # is returned for anyone to close, and the exception's traceback keeps this
             # frame — and the fp with it — alive for as long as the caller holds it
             # (inventory/fuzz catch-and-continue loops). Before this backend opened its
             # own handle, ``PyCdlib.open`` closed the one it had opened itself.
-            # ``_owned_fp`` only: a caller-supplied stream is the caller's.
-            self._release_owned_fp()
+            # The guard covers the whole constructor body so this sentence stays true
+            # of every failure point, not only of ``open_fp``.
+            self._release_archive_handles()
             raise
-
-        # Auto-select the richest namespace: Rock Ridge > Joliet > plain ISO 9660.
-        if self._iso.has_rock_ridge():
-            self._namespace = "rock_ridge"
-            self._path_kw = "rr_path"
-        elif self._iso.has_joliet():
-            self._namespace = "joliet"
-            self._path_kw = "joliet_path"
-        else:
-            self._namespace = "iso9660"
-            self._path_kw = "iso_path"
 
     def _bound_to_image(self, fp: BinaryIO) -> BinaryIO:
         """Wrap ``fp`` so no pycdlib read can outrun the image.
@@ -621,15 +632,32 @@ class IsoReader(BaseArchiveReader):
         )
 
     def _release_owned_fp(self) -> None:
-        """Close the handle this reader opened, if any. Safe to call more than once."""
+        """Close the handle this reader opened, if any. Safe to call more than once.
+
+        ``_owned_fp`` only: a caller-supplied stream is the caller's, and the
+        ``_ImageBoundedStream`` around it is deliberately never closed (see that
+        class). Safe to call more than once.
+        """
         if self._owned_fp is not None:
             self._owned_fp.close()
             self._owned_fp = None
 
-    def _close_archive(self) -> None:
-        with self._handle_guard():
-            self._iso.close()
+    def _release_archive_handles(self) -> None:
+        """Close whatever the open actually built, in the reverse order it built it.
+
+        One release path for both the failure inside ``__init__`` and the ordinary
+        close, so the two cannot drift. It is called from ``__init__`` before the
+        object is complete, which is why ``_iso.close()`` is gated on the flag rather
+        than tried: pycdlib raises on a ``close()`` it never opened.
+        """
+        if self._iso_opened:
+            self._iso_opened = False
+            with self._handle_guard():
+                self._iso.close()
         self._release_owned_fp()
+
+    def _close_archive(self) -> None:
+        self._release_archive_handles()
 
 
 class IsoReadBackend(ReadBackend):

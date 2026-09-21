@@ -4,9 +4,12 @@ degradation slice (ISO without pycdlib). Skipped when pycdlib is absent."""
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import io
 import os
 import struct
+from collections.abc import Iterator
 from pathlib import Path
 from typing import IO
 
@@ -514,6 +517,36 @@ def test_a_path_source_refuses_the_same_image(tmp_path: Path) -> None:
         open_archive(path)
 
 
+@contextlib.contextmanager
+def _recording_opens(
+    path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[list[IO[bytes]]]:
+    """Collect every file object opened for ``path`` while the block runs.
+
+    A handle leak is asserted on the objects themselves rather than on
+    ``/proc/self/fd``, which does not exist on the Windows and macOS legs. Anything
+    still open is closed on the way out, so a failing assertion does not leak from the
+    test either.
+    """
+    real_open = builtins.open
+    opened: list[IO[bytes]] = []
+
+    def recording_open(file, *args, **kwargs):  # type: ignore[no-untyped-def]
+        fp = real_open(file, *args, **kwargs)
+        if isinstance(file, (str, os.PathLike)) and Path(file) == path:
+            opened.append(fp)
+        return fp
+
+    monkeypatch.setattr(builtins, "open", recording_open)
+    try:
+        yield opened
+    finally:
+        # No ``monkeypatch.undo()``: the fixture unwinds it, and undoing here would
+        # also drop patches a caller set before entering this block.
+        for fp in opened:
+            fp.close()
+
+
 def test_a_refused_path_source_does_not_hold_its_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -529,22 +562,10 @@ def test_a_refused_path_source_does_not_hold_its_handle(
     Fails against letting the exception out of ``__init__`` without releasing the
     handle: every fp recorded below is then still open at the assertion.
     """
-    import builtins
-
     path = tmp_path / "bomb.iso"
     path.write_bytes(_iso_with_oversized_root_directory(0xFFFFFF00))
 
-    real_open = builtins.open
-    opened: list[IO[bytes]] = []
-
-    def recording_open(file, *args, **kwargs):  # type: ignore[no-untyped-def]
-        fp = real_open(file, *args, **kwargs)
-        if isinstance(file, (str, os.PathLike)) and Path(file) == path:
-            opened.append(fp)
-        return fp
-
-    monkeypatch.setattr(builtins, "open", recording_open)
-    try:
+    with _recording_opens(path, monkeypatch) as opened:
         with pytest.raises(CorruptionError) as excinfo:
             open_archive(path, format=ArchiveFormat.ISO)
         # The traceback is what pinned the handle; assert it is still here, so this
@@ -552,9 +573,38 @@ def test_a_refused_path_source_does_not_hold_its_handle(
         assert excinfo.value.__traceback__ is not None
         assert opened, "the reader did not open the path itself"
         assert [fp for fp in opened if not fp.closed] == []
-    finally:
-        for fp in opened:
-            fp.close()
+
+
+def test_a_failure_after_open_fp_is_translated_and_releases(
+    rock_ridge_iso: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release guard covers the whole constructor, not just ``open_fp``.
+
+    The namespace auto-select runs two more pycdlib calls on the image after
+    ``open_fp`` returns. They sat outside the ``try`` at first, which left two claims
+    untrue of that window: a raise there leaked ``_owned_fp``, and it escaped as a bare
+    ``PyCdlibException`` rather than as ``CorruptionError``. Neither is reachable
+    through a crafted image — ``has_rock_ridge`` raises only on an uninitialized object
+    — so the failure is injected rather than provoked. An unreachable window is still
+    the shape the comment, the threat model and the PR body all describe, and the next
+    call added to that block need not be as safe.
+
+    Fails against a guard that ends at ``open_fp``: the raise arrives as
+    ``PyCdlibInvalidISO`` and the recorded handle is still open.
+    """
+    from pycdlib.pycdlibexception import PyCdlibInvalidISO
+
+    def boom(self) -> bool:  # type: ignore[no-untyped-def]
+        raise PyCdlibInvalidISO("injected")
+
+    monkeypatch.setattr("pycdlib.PyCdlib.has_rock_ridge", boom)
+
+    with _recording_opens(rock_ridge_iso, monkeypatch) as opened:
+        with pytest.raises(CorruptionError) as excinfo:
+            open_archive(rock_ridge_iso, format=ArchiveFormat.ISO)
+        assert excinfo.value.__traceback__ is not None
+        assert opened, "the reader did not open the path itself"
+        assert [fp for fp in opened if not fp.closed] == []
 
 
 def test_a_clean_image_is_unaffected(rock_ridge_iso: Path) -> None:
