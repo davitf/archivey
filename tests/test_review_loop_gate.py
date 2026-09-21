@@ -747,6 +747,7 @@ def test_the_script_reads_stdin_and_writes_json() -> None:
         "enrol",
         "final",
         "max_rounds",
+        "max_forced_rounds",
     }
     assert payload["run"] is True
     assert payload["round"] == 2
@@ -1084,9 +1085,38 @@ def test_the_workflow_takes_the_cap_from_the_gate() -> None:
     """
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "max_rounds=$(jq -r .max_rounds /tmp/gate.json)" in text
-    assert 'for n in $(seq 1 "$MAX_ROUNDS"); do' in text
+    assert 'for n in $(seq 1 "$MAX_LABELLED_ROUND"); do' in text
     for stale in ['ensure "loop:round-1"', "Three review rounds", "Up to three rounds"]:
         assert stale not in text, stale
+
+
+def test_every_round_that_can_run_has_a_label_waiting_for_it() -> None:
+    """The label list is bounded by the forced ceiling, not by the cap.
+
+    A collaborator's comment buys rounds past the cap, and the verdict step opens by
+    applying `loop:round-$ROUND` under `set -e`: a round whose label does not exist
+    loses every write after that line — the `loop:on` removal, the stale parks, and the
+    status comment, which is the only thing on the pull request that says where the
+    loop stands. The review itself has already been posted by then, so the failure is
+    invisible unless someone opens the run.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "max_forced_rounds=$(jq -r .max_forced_rounds /tmp/gate.json)" in text
+    assert "MAX_LABELLED_ROUND: ${{ steps.gate.outputs.max_forced_rounds }}" in text
+
+    # The label the verdict step applies is the round the gate answered with, and the
+    # furthest that can go is the ceiling the labels are created up to.
+    furthest = gate.decide(
+        event(
+            event_name="issue_comment",
+            is_pull_request=True,
+            comment_body="@claude review",
+            comment_author_association="OWNER",
+            labels=[f"loop:round-{gate.MAX_FORCED_ROUNDS - 1}"],
+        )
+    )
+    assert furthest.run
+    assert furthest.round <= furthest.max_forced_rounds
 
 
 @pytest.mark.parametrize(

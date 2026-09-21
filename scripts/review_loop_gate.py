@@ -226,6 +226,10 @@ class Decision:
     #: The cap, so the workflow's prose and its label list have one source for it
     #: rather than a copy that drifts the next time the number moves.
     max_rounds: int = MAX_ROUNDS
+    #: The highest round any route can reach. The workflow creates a `loop:round-N`
+    #: label for each one: the round it is running is the label it then applies, and a
+    #: forced round reaches past `max_rounds`.
+    max_forced_rounds: int = MAX_FORCED_ROUNDS
 
 
 def current_round(labels: list[str]) -> int:

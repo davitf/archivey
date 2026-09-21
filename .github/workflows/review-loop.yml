@@ -245,6 +245,7 @@ jobs:
             echo "enrol=$(jq -r .enrol /tmp/gate.json)"
             echo "final=$(jq -r .final /tmp/gate.json)"
             echo "max_rounds=$(jq -r .max_rounds /tmp/gate.json)"
+            echo "max_forced_rounds=$(jq -r .max_forced_rounds /tmp/gate.json)"
           } >> "$GITHUB_OUTPUT"
           jq -r '"Gate: run=\(.run) pr=\(.pr) round=\(.round) — \(.reason)"' /tmp/gate.json \
             >> "$GITHUB_STEP_SUMMARY"
@@ -255,7 +256,7 @@ jobs:
           steps.gate.outputs.enrol == 'true' ||
           steps.gate.outputs.cap_reached == 'true'
         env:
-          MAX_ROUNDS: ${{ steps.gate.outputs.max_rounds }}
+          MAX_LABELLED_ROUND: ${{ steps.gate.outputs.max_forced_rounds }}
         run: |
           set -euo pipefail
           # Create, or correct one that already exists. A `loop:*` label can be made
@@ -271,11 +272,17 @@ jobs:
                    --color "$2" --description "$3" 2>/dev/null \
               || true
           }
-          # One per round the cap allows, read off the gate: moving `MAX_ROUNDS` must
-          # not leave the last round with no label to record it. Labels for rounds that
-          # no longer exist are left alone — a pull request that already carries one
+          # One per round any route can reach — the *forced* ceiling, not the cap,
+          # because a collaborator's comment buys rounds past the cap and the verdict
+          # step then applies that round's label. The step that does so runs under
+          # `set -e` with the label add first, so a round with no label to record it
+          # loses everything after that line: the `loop:on` removal, the stale parks,
+          # and the status comment that is the only thing on the pull request saying
+          # where the loop stands. Reading the bound off the gate is what keeps this
+          # list and the numbers in step when either moves. Labels for rounds no
+          # longer reachable are left alone — a pull request already carrying one
           # still needs it to render.
-          for n in $(seq 1 "$MAX_ROUNDS"); do
+          for n in $(seq 1 "$MAX_LABELLED_ROUND"); do
             ensure "loop:round-$n" "ededed" "Review loop: round $n has been reviewed"
           done
           ensure "loop:decision" "d93f0b" "Review loop: parked on a maintainer decision"
