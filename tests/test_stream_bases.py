@@ -215,6 +215,7 @@ def test_delegating_readinto_passthrough_false_routes_through_read() -> None:
             return data
 
     s = _Tracking(io.BytesIO(b"abcdef"))
+    assert s.readinto_passthrough is False
     buf = bytearray(4)
     assert s.readinto(buf) == 4
     assert bytes(buf) == b"abcd"
@@ -234,6 +235,7 @@ def test_delegating_readinto_passthrough_class_flag_routes_through_read() -> Non
             return data
 
     s = _Tracking(io.BytesIO(b"abcdef"))
+    assert s.readinto_passthrough is False
     buf = bytearray(4)
     assert s.readinto(buf) == 4
     assert bytes(buf) == b"abcd"
@@ -244,8 +246,6 @@ def test_delegating_peel_for_source_size_constructor_override() -> None:
     """Ad-hoc construction can opt a plain DelegatingStream into peeling."""
     from archivey.internal.streams.streamtools import source_byte_size
 
-    # Keep the wrappers alive: DelegatingStream owns inner, so a temporary
-    # would close the BytesIO before a second wrap could use it.
     opaque = DelegatingStream(io.BytesIO(b"0123456789"))
     assert source_byte_size(opaque) is None
     peeled = DelegatingStream(io.BytesIO(b"0123456789"), peel_for_source_size=True)
@@ -473,9 +473,9 @@ def _init_keyword(cls: type, name: str) -> object:
     Walks AST of the constructor, not a substring: a comment can mention the
     keyword (``_GzipTruncationCheckStream`` does). Only ``cls.__dict__`` counts
     — a subclass that inherits ``__init__`` is not charged with the parent's
-    kwarg. The mirror case is uncheckable this way: a class that overrides
-    ``read`` and inherits an ``__init__`` that already passes
-    ``readinto_passthrough=False`` would look like the flag is missing.
+    kwarg. Inventories use this only for the "no production kwarg" assert;
+    the flag value itself is read off the class, so inheritance is not this
+    helper's problem.
     """
     if "__init__" not in cls.__dict__:
         return _INIT_KWARG_MISSING
@@ -596,6 +596,11 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     for ad-hoc construction in tests; that path is not inventory-checked.
     Same grain as ``test_delegating_stream_close_inventory``.
 
+    Mutants this test must catch:
+
+    - ``readinto_passthrough=False`` restored on ``_UnrarOwnedStream.__init__``'s
+      ``super()`` while the class flag stays False → ``passed_kwarg``
+
     Reuses ``_delegating_stream_subclasses`` (archivey modules only); test-file
     subclasses do not trip it.
     """
@@ -656,7 +661,8 @@ def test_delegating_stream_peel_inventory() -> None:
     peels = {cls for cls in found if cls.peel_for_source_size is True}
     assert peels == {counting.SeekCountingStream}, (
         "DelegatingStream subclass peel_for_source_size does not match "
-        f"the inventory (only SeekCountingStream peels): {peels}"
+        "the inventory (only SeekCountingStream peels among "
+        f"DelegatingStream subclasses): {peels}"
     )
     passed_kwarg = {
         cls

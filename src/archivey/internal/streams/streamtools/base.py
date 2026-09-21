@@ -136,6 +136,10 @@ class DelegatingStream(ReadOnlyIOStream):
     All three flags are a class default with a constructor override. Production
     subclasses set the class flag and omit the kwarg; ad-hoc construction may
     pass the kwarg. ``__init__`` uses the class value when the kwarg is omitted.
+    ``peel_for_source_size`` and ``readinto_passthrough`` report the resolved
+    instance value (the public name is shadowed). ``_SUBCLASS_CLOSES_INNER``
+    keeps a different class-flag name; the instance copy is
+    ``_subclass_closes_inner``.
 
     ``peel_for_source_size`` is an opt-in for pass-through wrappers whose cheap size
     *is* the inner's (a seek counter on ``ZipFile.fp``). :func:`source_byte_size`
@@ -202,7 +206,9 @@ class DelegatingStream(ReadOnlyIOStream):
         self.peel_for_source_size = peel_for_source_size
         if readinto_passthrough is None:
             readinto_passthrough = type(self).readinto_passthrough
-        self._readinto_passthrough = readinto_passthrough
+        # Instance shadows the class flag so a constructor override is the
+        # value ``readinto`` and ``getattr`` see, matching peel.
+        self.readinto_passthrough = readinto_passthrough
         # True when the subclass closes ``_inner`` itself (finalize guard, reap a
         # subprocess) and then calls ``super().close()`` only to mark this wrapper closed.
         # Not an ownership flag: the wrapper owns in both cases.
@@ -226,7 +232,7 @@ class DelegatingStream(ReadOnlyIOStream):
         # readinto; otherwise route through self.read() so an overridden
         # read() is not bypassed. try_readinto treats a missing, refused, or
         # NotImplemented inner readinto as "not usable".
-        if self._readinto_passthrough:
+        if self.readinto_passthrough:
             n = try_readinto(self._inner, b)
             if n is not None:
                 return n
