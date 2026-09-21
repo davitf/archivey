@@ -2224,36 +2224,38 @@ def _parse_rar5_file_block(
     ctime: datetime | None = None
     atime: datetime | None = None
     skipped_records: list[tuple[str, int | None, str]] = []
-
     skipped_truncated = False
-
-    def _skip(record: str, record_id: int | None, reason: str) -> bool:
-        skipped_records.append((record, record_id, reason))
-        return len(skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS
 
     if extra_size:
         # Walk extras until near end (allow 1 byte of padding like rarfile).
         while pos < len(hdata) - 1:
+            if len(skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS:
+                # Still inside the loop, so bytes remain; a member whose last
+                # skipped record is also its last extra never gets here.
+                skipped_truncated = True
+                break
             try:
                 xsize, pos = load_vint(hdata, pos)
-            except CorruptionError:
+            except CorruptionError as exc:
+                # ``load_vint`` does not advance ``pos`` on failure, so the
+                # next record has no boundary. Stop, and say so.
+                skipped_records.append(("unknown", None, raw_message_of(exc)))
+                skipped_truncated = True
                 break
-            if xsize < 0 or pos + xsize > len(hdata):
+            if pos + xsize > len(hdata):
+                skipped_records.append(
+                    ("unknown", None, "extra record overruns the extra area")
+                )
+                skipped_truncated = True
                 break
             xdata, pos = _load_bytes(hdata, xsize, pos)
             try:
                 xtype, xpos = load_vint(xdata, 0)
             except CorruptionError as exc:
-                # A record too short to name itself. Stop the walk once the
-                # skip cap is hit: ``xsize == 0`` is one attacker byte per
-                # skip, and continuing would retain one tuple per remaining
-                # extra byte.
-                if _skip("unknown", None, raw_message_of(exc)):
-                    # Only truncated if the cap cut the walk short of the area's
-                    # end; a member whose last bad record is the sixteenth lost
-                    # nothing, and must not claim it did.
-                    skipped_truncated = pos < len(hdata) - 1
-                    break
+                # A record too short to name itself. ``xsize == 0`` is one
+                # attacker byte per skip; the cap at the loop head is what
+                # stops that becoming one retained tuple per extra byte.
+                skipped_records.append(("unknown", None, raw_message_of(exc)))
                 continue
             try:
                 if xtype == _RAR5_XFILE_TIME:
@@ -2298,11 +2300,9 @@ def _parse_rar5_file_block(
                 # being the default. Whatever the record would have set keeps the
                 # value it had; nothing half-written is committed, because each
                 # branch assigns only on its own last statement.
-                if _skip(
-                    _RAR5_XNAMES.get(xtype, "unknown"), xtype, raw_message_of(exc)
-                ):
-                    skipped_truncated = pos < len(hdata) - 1
-                    break
+                skipped_records.append(
+                    (_RAR5_XNAMES.get(xtype, "unknown"), xtype, raw_message_of(exc))
+                )
 
     is_symlink = False
     is_hardlink_or_copy = False

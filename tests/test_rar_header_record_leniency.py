@@ -369,3 +369,55 @@ def test_a_complete_listing_does_not_claim_it_was_cut_short(
         (member,) = archive.members()
     assert not member._raw.skipped_header_records_truncated
     assert [d.context.list_truncated for d in member.diagnostics] == [False]
+
+
+def test_an_unreadable_extra_size_vint_is_reported(tmp_path: Path) -> None:
+    """A size vint that will not decode is not a silent end of extras.
+
+    ``load_vint`` leaves ``pos`` unmoved on failure, so the walk has to stop.
+    Stopping without a diagnostic left the member looking intact.
+    """
+    data = (_FIXTURES / "blake2sp.rar").read_bytes()
+    records = _extra_records(data)
+    start = records[0].size_at
+    end = records[-1].body_at + records[-1].size
+    buf = bytearray(data)
+    buf[start:end] = b"\x80" * (end - start)
+    path = tmp_path / "cont_vint_extra.rar"
+    path.write_bytes(fixup_rar_header_crcs(bytes(buf), broken=False))
+
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+    assert member._raw.skipped_header_records_truncated
+    assert any(d.context.list_truncated for d in member.diagnostics)
+    assert any(
+        d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        and not d.context.list_truncated
+        for d in member.diagnostics
+    )
+
+
+def test_an_overrunning_extra_record_is_reported(tmp_path: Path) -> None:
+    """An ``xsize`` past the extra area is not a silent end of extras."""
+    data = (_FIXTURES / "blake2sp.rar").read_bytes()
+    records = _extra_records(data)
+    record = records[0]
+    extra_end = records[-1].body_at + records[-1].size
+    remaining_after_vint = extra_end - (record.size_at + 1)
+    assert remaining_after_vint < 0x7F, (
+        "the fixture extra must be smaller than a one-byte vint max, or this "
+        "does not overrun"
+    )
+    buf = bytearray(data)
+    buf[record.size_at] = 0x7F
+    path = tmp_path / "overrun_extra.rar"
+    path.write_bytes(fixup_rar_header_crcs(bytes(buf), broken=False))
+
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+    assert member._raw.skipped_header_records_truncated
+    assert any(
+        d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        and not d.context.list_truncated
+        for d in member.diagnostics
+    )
