@@ -420,20 +420,17 @@ jobs:
       # The whole suite, not just the concurrent_reader subset: single-threaded
       # free-threaded breakage (dict/list races in shared state, C-API assumptions) shows
       # up here, and the marked subset is only ~46 of ~2000 tests.
-      # Override addopts so we do not need pytest-cov in the core-only ephemeral env.
-      # --timeout-method=thread, not the pytest-timeout default of signal: this job has
-      # hung outright more than once (2026-09-21, four times, always in the extras leg),
-      # and SIGALRM cannot interrupt a thread blocked in C or a deadlock off the main
-      # thread, so the timeout never fired and the job died silently at its own
-      # timeout-minutes with no idea which test was running. The thread method dumps
-      # every thread's stack and kills the process, which is the whole point here: the
-      # next hang names the test instead of costing twenty blind minutes. Tracked
-      # internally; this is a diagnostic, not a fix.
+      # Override addopts so we do not need pytest-cov in the core-only ephemeral env. That
+      # also drops the shared --timeout, hence the explicit one here; 120s rather than 60
+      # because free-threaded runs are slower. The thread timeout method is NOT repeated:
+      # it is an ini option in pyproject.toml, which `-o addopts=` does not touch. This
+      # job hung outright four times on 2026-09-21 with the timeout armed and never
+      # fired, which is why that method is set at all.
       - name: Run full suite (core-only)
         run: >
           uv run --python 3.13t --no-sync
           --with pytest --with pytest-timeout
-          pytest tests/ -q --timeout=120 --timeout-method=thread -o addopts=
+          pytest tests/ -q --timeout=120 -o addopts=
 
       - name: Sync GIL-safe extras
         # [free-threaded] IS this list, so the job now installs the documented extra
@@ -453,7 +450,7 @@ jobs:
         run: >
           uv run --python 3.13t --no-sync
           --with pytest --with pytest-timeout
-          pytest tests/ -q --timeout=120 --timeout-method=thread -o addopts=
+          pytest tests/ -q --timeout=120 -o addopts=
 
   # Blocking gate = **structural only** (seek baselines + solid decode-once).
   # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,

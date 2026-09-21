@@ -224,10 +224,21 @@ exclude_also = [
 pythonpath = ["src", "tests", "."]
 testpaths = ["tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
-# the whole job until the CI hard limit. pytest-timeout picks the platform default method
-# (SIGALRM on POSIX — suite continues; a process-killing thread dump on Windows). 60s is far
-# above any real test here (all run in milliseconds), so only a genuine hang trips it.
+# the whole job until the CI hard limit. 60s is far above any real test here (all run in
+# milliseconds), so only a genuine hang trips it.
 addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
+# thread, not pytest-timeout's POSIX default of signal. SIGALRM is delivered to the main
+# thread and only runs when it next reaches the interpreter, so a thread blocked in C or a
+# deadlock off the main thread is invisible to it: on 2026-09-21 both the free-threaded job
+# and an ordinary `py3.14 / core-only` job hung with --timeout armed, printed nothing for
+# twenty minutes, and were killed by timeout-minutes with no idea which test was running.
+# The thread method arms a threading.Timer instead, which dumps every thread's stack and
+# then calls os._exit(1). The cost is that the rest of the run dies with it — but a hang
+# costs the whole job anyway today, and nothing here is slow enough to time out for any
+# other reason. This is a diagnostic, not a fix; the hang itself is tracked internally.
+# It is an ini option rather than an addopts flag on purpose: the free-threaded CI steps
+# run with `-o addopts=` and would otherwise lose it.
+timeout_method = "thread"
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",

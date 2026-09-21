@@ -47,8 +47,11 @@ on:
 
 # Naming any scope sets every unnamed one to `none`, so all three are listed.
 # `contents: read` is for the checkout, which this job needs because the decision is a
-# script in the tree rather than inline bash; without it the clone is the first thing that
-# fails, on every run, and the hub stays closed through the incident this file exists for.
+# script in the tree rather than inline bash: `actions/checkout` documents `contents: read`
+# as its requirement absent a `token:` or `ssh-key:` input. Whether a public repository's
+# clone would fall back to anonymous read under `contents: none` was not tested, and does
+# not need to be — the grant is right either way, and a first run that died on checkout
+# would leave the hub unguarded through the incident this file exists for.
 # `pull-requests: write` is what reopens the hub and posts the comment: `gh pr comment`
 # goes through `/issues/{n}/comments`, but a pull request's comments are governed by the
 # pull-requests scope. `issues: read` is separate and genuinely needed — the timeline that
