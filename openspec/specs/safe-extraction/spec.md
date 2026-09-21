@@ -447,6 +447,7 @@ name-safety requirement.
 | --- | --- |
 | Existing path under `ERROR` | `ExtractionError`; existing entry unmodified |
 | Existing path under `SKIP` | `ExtractionResult.status == NOT_OVERWRITTEN`, `path=None`, no exception |
+| Symlink whose target the archive never recorded | `ExtractionResult.status == SKIPPED`, `path=None`, no exception, under either `OnError` |
 | Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
 | Existing entry replaced by a HARDLINK under `REPLACE` | Link is built at a temp sibling and `os.replace()`d in; a failure leaves the existing entry intact |
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
@@ -621,6 +622,7 @@ class ExtractionStatus(str, Enum):
     OVERWRITTEN = "overwritten"
     BLOCKED = "blocked"
     FAILED = "failed"
+    SKIPPED = "skipped"
 ```
 
 `ExtractionReport.results` SHALL be the **sole authoritative record** of per-member
@@ -635,8 +637,21 @@ non-current duplicate skipped by the hardwired last-entry-wins rule (`path=None`
 later member under `OverwritePolicy.REPLACE` (`path=None`, `error=None`);
 `BLOCKED` is a continued `FilterRejectionError` (a universal path-safety check or a
 policy filter blocked the member); `FAILED` is a continued non-rejection per-member
-`ArchiveyError` or permitted filesystem `OSError`. `NOT_OVERWRITTEN`, `SUPERSEDED`
-and `OVERWRITTEN` are not failures.
+`ArchiveyError` or permitted filesystem `OSError`; `SKIPPED` is a member the archive
+describes but does not carry enough information to write — a symlink whose target it
+never recorded (`path=None`, `error=None`, `requested_path` set). `NOT_OVERWRITTEN`,
+`SUPERSEDED`, `OVERWRITTEN` and `SKIPPED` are not failures.
+
+A symlink with no `link_target` SHALL be recorded `SKIPPED` rather than raised as a
+per-member failure, under either `OnError` value, and SHALL NOT disturb an existing
+destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
+does not unlink an entry for a member that is not going to be written. The archive's
+omission is reported through the diagnostics channel
+(`SYMLINK_TARGET_UNAVAILABLE`, an archive-integrity code), which is where an anomaly in
+the archive's own metadata belongs; the extraction result records only what extraction
+did about it. This is not confined to one cause: a writer that discarded the target (7-Zip
+records none for a directory reparse point) and an encrypted target with no password
+leave extraction with the same nothing to write.
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and

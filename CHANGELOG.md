@@ -58,6 +58,29 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses such an archive rather than
   reading a link whose target is gone; previously 7z reported an empty target for it and
   ZIP reported a directory, and neither said anything.
+- **A link whose target the archive never recorded no longer fails extraction.** It is
+  recorded as the new `ExtractionStatus.SKIPPED` and the rest of the archive still
+  extracts, under either `OnError` value — nothing can be written for such a member, and
+  nothing about the extraction went wrong. It also no longer disturbs an existing
+  destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
+  does not unlink an entry for a member that is not going to be written. This covers both
+  ways a target goes missing — a writer that discarded it, and an encrypted target with no
+  password — and the loss is still reported as `SYMLINK_TARGET_UNAVAILABLE`, which a
+  strict `DiagnosticPolicy` refuses. Previously extraction raised `LinkTargetNotFoundError`
+  for the member, which under the library default aborted the whole operation.
+
+### Added
+
+- **`extra["is_reparse_point"]`** and the matching `ArchiveMember.is_reparse_point`, true
+  when the archive recorded a member as a Windows symlink or junction rather than a POSIX
+  symlink. Set from metadata the archive always carries — the
+  `FILE_ATTRIBUTE_REPARSE_POINT` bit for ZIP and 7z, the redirect type for RAR5, the live
+  entry for a directory scan on Windows — so unlike `extra["is_junction"]` it needs
+  nothing read from the member's data. Every junction is a reparse point, but a junction
+  written by 7-Zip carries only this key, because the tag that would identify it as a
+  junction is in data that writer does not store. Not gated on the member's type: an entry
+  the archive flags whose data turns out not to be a link buffer is presented as an
+  ordinary file, and the flag still records what the archive said.
 
 ### Changed
 

@@ -37,6 +37,7 @@ from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import (
     EXTRA_IS_JUNCTION,
+    EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -57,6 +58,22 @@ def _stat_datetime(ts: float) -> datetime | None:
         return datetime.fromtimestamp(ts, tz=timezone.utc)
     except (ValueError, OverflowError, OSError):
         return None
+
+
+def _link_extra(member_type: MemberType, is_junction: bool) -> dict[str, object]:
+    """The junction / reparse-point keys for a live filesystem entry.
+
+    On Windows a symlink *is* a reparse point — there is no other kind — so the flag
+    follows from the platform rather than from anything stored. Elsewhere a symlink is
+    a POSIX one and neither key applies, junctions included: `os.DirEntry.is_junction`
+    only reports true on Windows.
+    """
+    extra: dict[str, object] = {}
+    if is_junction:
+        extra[EXTRA_IS_JUNCTION] = True
+    if member_type == MemberType.SYMLINK and os.name == "nt":
+        extra[EXTRA_IS_REPARSE_POINT] = True
+    return extra
 
 
 def _is_junction(entry: os.DirEntry[str]) -> bool:
@@ -248,7 +265,7 @@ class DirectoryReader(BaseArchiveReader):
             uname=self._lookup_uname(uid),
             gname=self._lookup_gname(gid),
             link_target=link_target,
-            extra={EXTRA_IS_JUNCTION: True} if is_junction else {},
+            extra=_link_extra(member_type, is_junction),
         )
 
     def _lookup_uname(self, uid: int) -> str | None:

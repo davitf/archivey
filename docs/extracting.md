@@ -51,7 +51,16 @@ archivey.extract("archive.zip", "out/")
   and 7z carry the flag too when the writer stored the junction's reparse data, but
   7-Zip does not store it for a directory, and a junction is always a directory, so in
   practice a junction from those two arrives as a link with no target rather than a
-  flagged one.
+  flagged one. `extra["is_reparse_point"]` is the weaker fact those archives *do*
+  record — this was a Windows symlink or junction rather than a POSIX one — and is set
+  from metadata in every format that states it.
+- **A link whose target the archive never recorded** is recorded
+  `ExtractionStatus.SKIPPED` and the rest of the archive still extracts. Nothing can be
+  written for it, and nothing about the extraction went wrong, so it is not a failure
+  and `OnError.STOP` does not abort on it. The omission is the archive's, and it is
+  reported as `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an
+  archive-integrity code, so `DiagnosticPolicy.strict()` still refuses such an archive
+  outright.
 - **Deceptive names:** a member name (or link target) containing a Unicode bidi
   **override or isolate** — U+202A–202E, U+2066–2069 — is rejected with
   `DeceptiveNameError` under `STRICT` (the default) and `STANDARD`. Those characters

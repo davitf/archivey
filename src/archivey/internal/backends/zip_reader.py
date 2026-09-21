@@ -107,6 +107,7 @@ from archivey.internal.zipcrypto import (
     password_matches_check_byte,
 )
 from archivey.types import (
+    EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -759,6 +760,11 @@ class ZipReader(BaseArchiveReader):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra: dict[str, object] = {"zip.compress_type": info.compress_type}
+        if is_reparse_point:
+            # From the attribute bit alone, so it is known while listing and stays true
+            # even when the data turns out not to be a link buffer and the member is
+            # re-typed. `is_junction` needs the tag inside that data, and is set later.
+            extra[EXTRA_IS_REPARSE_POINT] = True
         if aes_info is not None:
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength

@@ -336,6 +336,19 @@ class CreateSystem(Enum):
 # deliberately NOT namespaced under a single format like "zip.".
 EXTRA_IS_JUNCTION = "is_junction"
 
+# Key in ArchiveMember.extra marking a member that the archive recorded as a Windows
+# reparse point — a Windows symlink or a junction, as opposed to a POSIX symlink. Set
+# whenever the archive says so: the FILE_ATTRIBUTE_REPARSE_POINT bit for ZIP and 7z,
+# the redirect type for RAR5, and the live entry for a directory scan on Windows. Not
+# namespaced, for the same reason as EXTRA_IS_JUNCTION.
+#
+# Every junction is a reparse point, but not every reparse point is a junction, and the
+# two keys answer different questions from different places: this one comes off metadata
+# the archive always carries, while EXTRA_IS_JUNCTION needs the reparse *tag*, which
+# lives in the member's data and which 7-Zip does not store for a directory reparse
+# point. So a junction written by 7-Zip carries this key and not that one.
+EXTRA_IS_REPARSE_POINT = "is_reparse_point"
+
 # Key in ArchiveMember.extra: True when this RAR member's ``created`` is Unix
 # ``st_ctime`` (inode-change), False when the writer OS stores a birth time
 # (Win32, and RAR3 FAT/OS2/Mac/BeOS). Derived from ``host_os``; omitted when
@@ -546,6 +559,17 @@ class ArchiveMember:
         return self.type == MemberType.SYMLINK and bool(
             self.extra.get(EXTRA_IS_JUNCTION)
         )
+
+    @property
+    def is_reparse_point(self) -> bool:
+        """The archive recorded this entry as a Windows symlink or junction.
+
+        Deliberately not gated on :attr:`type` the way :attr:`is_junction` is: a member
+        the archive flags as a reparse point whose data turns out not to be a link
+        buffer is presented as an ordinary file or directory, and the flag still records
+        what the archive said about it.
+        """
+        return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
 
     def replace(self, **kwargs: object) -> "ArchiveMember":
         """Return a copy with the given fields changed; never mutates self.

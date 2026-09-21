@@ -222,7 +222,7 @@ into datetime fields — archivey does both from the values `ZipInfo` exposes.
 | `hashes["crc32"]` | CDH CRC, as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
 | `comment` | CDH member comment | The entry stores none, which is the common case |
 | `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
-| `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members, plus `is_junction` when a stored reparse buffer says so (§2.2.1) | — |
+| `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members, plus `is_reparse_point` from the attribute bit and `is_junction` when a stored reparse buffer says so (§2.2.1) | — |
 
 Raw extra-field blobs are not surfaced. Duplicate names are legal and are not merged:
 members keep a positional `member_id`, name lookup is last-wins, and currency is computed
@@ -262,6 +262,11 @@ it in 7z. The ZIP backend passes `link_stored_as_directory` to
 `emit_member_name_normalized` so that drop does not report a `MEMBER_NAME_NORMALIZED`
 anomaly — the flag is explicit precisely because the helper is shared, and a TAR
 `SYMTYPE` entry named `link/` *is* an anomaly worth reporting.
+
+`extra["is_reparse_point"]` records the bit itself, so it is available while listing and
+stays set even when the data turns out not to be a link buffer and the member is
+re-typed. `extra["is_junction"]` is the stronger claim and needs the tag out of the data,
+which is why a 7-Zip-written junction carries the first key and not the second.
 
 **The attribute bit is a candidate, not a verdict; the data decides.** `0x400` says the
 entry was a reparse point on the source filesystem. It does not say the archive carries

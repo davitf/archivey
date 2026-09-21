@@ -94,6 +94,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.types import (
+    EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -108,6 +109,23 @@ from archivey.types import (
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _is_windows_reparse_point(attrs: int | None) -> bool:
+    """True when 7z's attribute word flags this entry as a Windows reparse point.
+
+    A Unix-written member carries its mode in the high word, and a POSIX symlink is not
+    a reparse point, so the low word's `0x400` is only read when the high word does not
+    already say `S_IFLNK`. "Flagged as" is the whole claim: the reparse *tag*, which
+    separates a junction from a Windows symlink, is in the member's data, not here.
+    """
+    return (
+        attrs is not None
+        and not stat.S_ISLNK(attrs >> 16)
+        and bool(attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT)
+    )
+
+
 _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
 # Drain/CRC step for encrypted-folder password confirm. 7z AES has no check
 # value, so a candidate is judged by decoding and CRCing; this keeps peak
@@ -472,6 +490,7 @@ class SevenZipReader(BaseArchiveReader):
         if record.crc32 is not None:
             hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
         attrs = record.attributes
+        is_reparse_point = _is_windows_reparse_point(attrs)
         unix_mode = (attrs >> 16) if attrs is not None and attrs >> 16 else None
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
         # Folder/substream indices live on ``_raw``; skip the unused public extra
@@ -516,6 +535,7 @@ class SevenZipReader(BaseArchiveReader):
             else CreateSystem.WINDOWS_NTFS,
             windows_attrs=attrs & 0xFFFF if attrs is not None else None,
             hashes=hashes,
+            extra={EXTRA_IS_REPARSE_POINT: True} if is_reparse_point else {},
             _raw=_MemberRaw(record, folder_index, record.file_in_folder),
         )
         emit_member_name_normalized(
@@ -769,12 +789,7 @@ class SevenZipReader(BaseArchiveReader):
         # point stores a REPARSE_DATA_BUFFER, whose first field is the tag that
         # separates a junction from a symlink; decoding that as UTF-8 reports the
         # buffer itself as the target, which is what this used to do.
-        attrs = raw.record.attributes
-        is_reparse_point = (
-            attrs is not None
-            and not stat.S_ISLNK(attrs >> 16)
-            and bool(attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT)
-        )
+        is_reparse_point = _is_windows_reparse_point(raw.record.attributes)
         # What the member would be if its data turns out not to be a link buffer: the
         # attribute bit is set for deduplication stubs and cloud placeholders too, and
         # those hold ordinary content that a caller should still be able to read.

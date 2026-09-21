@@ -1006,16 +1006,22 @@ class ExtractionCoordinator:
         dest_root: Path,
         dest_path: Path,
     ) -> ExtractionResult:
+        target = transformed.link_target
+        if target is None:
+            # The archive says this is a link but never recorded where it points — a
+            # 7-Zip-written directory symlink or junction, or an encrypted target with
+            # no password. There is nothing to write, and nothing here went wrong, so
+            # this is a SKIPPED result rather than a per-member failure that OnError.STOP
+            # would turn into an aborted extraction. Checked before _prepare_destination
+            # so a member we are not going to write cannot unlink an existing
+            # destination under OverwritePolicy.REPLACE.
+            return ExtractionResult(
+                original, None, ExtractionStatus.SKIPPED, None, requested_path=dest_path
+            )
+
         if not self._prepare_destination(transformed, dest_path):
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-            )
-
-        target = transformed.link_target
-        if target is None:
-            raise LinkTargetNotFoundError(
-                "Symlink has no target",
-                member_name=transformed.name,
             )
 
         os.makedirs(dest_path.parent, exist_ok=True)
