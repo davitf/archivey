@@ -609,8 +609,9 @@ it tracks.
 
 ### 1. The format handbook — `dev-docs/formats/`
 
-Two of the intended set exist: [`rar.md`](formats/rar.md) (91 KB) and
-[`zip.md`](formats/zip.md) (42 KB). Both follow the same nine-section shape — At a glance,
+Three of the intended set exist: [`rar.md`](formats/rar.md) (91 KB),
+[`zip.md`](formats/zip.md) (42 KB) and [`7z.md`](formats/7z.md) (40 KB). All three follow the
+same nine-section shape — At a glance,
 Shape, The pipeline here, In the wild, Threat surface, Sharp edges, Decisions, Open questions,
 Verify, References — so the template is settled and the remaining pages are writing, not
 design.
@@ -619,14 +620,16 @@ design.
 | --- | --- |
 | `rar.md` | **Written**; `§7` has 5 open questions. The temporary to-fix list is gone: #19 and #21 shipped, #6 layer 2 lives in §7, the `unrar` mask port in [`IDEAS.md`](IDEAS.md) |
 | `zip.md` | **Written**; `§7` has 1 open question (whether PKWARE Strong Encryption deserves an explicit refusal rather than a misleading wrong-password error) |
-| `sevenzip.md` | **Missing, and next by value.** The format with the most machinery behind it after RAR — folders, coder graphs, substreams, BCJ2 unsupported. Thirteen open #315 findings sit against it: six on `sevenzip_parser.py` (bind-pair arithmetic, pack-size overrun, substream mapping, the `kComment` external flag), three on the reader, two on the pipeline, one each on `sevenzip_methods.py` and `sevenzip_detect.py` |
+| `7z.md` | **Written.** `§7` has 3 open questions. The file is `7z.md`, not the `sevenzip.md` this row used to name — the format is spelled `7z` everywhere else that faces a reader (`format-7z`, `docs/formats.md`, `review/backlog.md`). Thirteen open #315 findings still sit against the backend: six on `sevenzip_parser.py` (bind-pair arithmetic, pack-size overrun, substream mapping, the `kComment` external flag), three on the reader, two on the pipeline, one each on `sevenzip_methods.py` and `sevenzip_detect.py` |
 | `tar.md` | **Missing.** Includes the stdlib-leniency question that `open-issues.md` **P3** is about |
 | `iso.md` | **Missing.** Thin — one optional backend, `pycdlib` |
 | `single-file.md` | **Missing.** gzip, bzip2, xz, lzip, zstd, lz4, brotli, `.Z`: the seek-point and truncation behaviour is spread across `codecs.py`, `xz.py`, `lzip.py` and `unix_compress.py` with no single page |
 | `directory.md` | **Missing.** Thinnest of all; may not earn a page |
 
 **The handbook is how a format's to-fix register gets created**, which is the argument for continuing it:
-writing `rar.md` produced 21 tracked code changes, 19 of which have shipped. That is the
+writing `rar.md` produced 21 tracked code changes, 19 of which have shipped, and `7z.md`
+surfaced two of its own (a refusal that names the wrong coder, and the folder decode that
+listing a solid archive with a symlink in it pays for). That is the
 highest-yield documentation work in the repo, and it is also why each new page should be
 expected to *add* open items rather than only close them.
 
