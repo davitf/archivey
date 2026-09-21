@@ -27,6 +27,7 @@ from typing import (
     Callable,
     Protocol,
     Sequence,
+    TypeVar,
     cast,
 )
 
@@ -50,6 +51,12 @@ class SeekPoint:
 
     decompressed_offset: int
     compressed_offset: int = field(compare=False)
+    # Opaque per-codec resume token. Compared by identity, and by == where a
+    # codec re-emits an equal-valued token for the same offset
+    # (``_resolve_same_offset_collision``). Deliberately Any: object breaks
+    # the assignment of a non-None value to ``_XzBlockBounds`` in
+    # ``XzDecoder.from_point`` — the start block, and the list it feeds to
+    # ``_XzBlockChain``; one Any here vs two casts there.
     state: Any = field(default=None, compare=False)
 
 
@@ -186,17 +193,54 @@ def _compressed_feed_size(max_length: int) -> int:
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
 
 
+class _IndexBlock(Protocol):
+    """Fields ``build_index_backwards`` reads on a scanned block.
+
+    Codec-specific extras (XZ ``uncompressed_size``, lzip CRC) stay on the
+    concrete block type; ``include_block`` / ``to_point`` see that type via
+    ``_B``, not this protocol.
+    """
+
+    @property
+    def decompressed_start(self) -> int: ...
+
+    @property
+    def decompressed_end(self) -> int: ...
+
+
+_B = TypeVar("_B", bound=_IndexBlock)
+
+
+class _ScanFn(Protocol[_B]):
+    """The backward index/trailer scan ``build_index_backwards`` calls.
+
+    Parameter names in a callback protocol bind every implementation, so the
+    first two are positional-only: a scanner may call them whatever it likes.
+    This module only ever passes them positionally.
+    """
+
+    def __call__(
+        self,
+        stream: BinaryIO,
+        file_size: int,
+        /,
+        *,
+        stop_at: int,
+        start_decompressed_offset: int,
+    ) -> list[_B]: ...
+
+
 def build_index_backwards(
     inner: BinaryIO,
     last_known: SeekPoint,
-    scan_fn: Callable[..., list[Any]],
-    to_point: Callable[[Any], SeekPoint],
+    scan_fn: _ScanFn[_B],
+    to_point: Callable[[_B], SeekPoint],
     warning_msg: str,
     *,
     codec_name: str = "",
     collector: DiagnosticCollector | None = None,
     scan: str = "backwards_index",
-    include_block: Callable[[Any], bool] | None = None,
+    include_block: Callable[[_B], bool] | None = None,
 ) -> tuple[list[SeekPoint], int | None]:
     """Backward scan → seek points + total decompressed size.
 
