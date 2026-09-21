@@ -1407,7 +1407,13 @@ def test_extended_header_size_does_not_drive_the_allocation(typeflag: bytes) -> 
             reader.members()
 
     assert source.requested, "the source was never read"
-    assert max(source.requested) <= len(data), (
+    # The source sits under a ``BufferedReader``, whose refill size is a constant of
+    # the runtime (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13, 128 KiB from 3.14)
+    # and has nothing to do with the archive. So the bound is the archive or one
+    # refill, whichever is larger; what the assertion pins is that no read scales with
+    # ``declared``, which is six gigabytes.
+    bound = max(len(data), io.DEFAULT_BUFFER_SIZE)
+    assert max(source.requested) <= bound, (
         f"asked the source for {max(source.requested)} bytes "
         f"from a {len(data)}-byte archive"
     )
