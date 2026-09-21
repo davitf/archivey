@@ -7,9 +7,10 @@
 Reader ops SHALL NOT consume memory or temp storage proportional to member/archive
 size as an implicit side effect of open/read/validate/password-confirm. Silently
 spooling plaintext to a temp file is forbidden. A per-format strategy that
-inherently needs proportional temp storage (e.g. `format-rar`'s documented copy
-of a non-path archive source to disk, so `unrar` can seek it) is allowed only when
-declared in that format's capability spec. Caller's own buffering of a returned stream is unrestricted.
+inherently needs proportional temp storage is allowed only when declared in that
+format's capability spec. `format-rar`'s copy of a non-path archive source to disk
+is not such a strategy: it is governed by the spool limit below. Caller's own
+buffering of a returned stream is unrestricted.
 
 **A spool of the archive source is not implicit** when it is bounded by the caller's
 configured spool limit and recorded in `CostReceipt.notes` (`access-mode-and-cost`).

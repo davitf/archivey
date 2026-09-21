@@ -12,7 +12,7 @@
 
 ## 2. Repoint the cross-capability example
 
-- [x] 2.0 `archive-reading`'s "Bounded implicit temporary storage" cites the source copy
+- [x] 2.1 `archive-reading`'s "Bounded implicit temporary storage" cites the source copy
       instead of `unrar x`; the requirement itself is unchanged.
 
 ## 3. Keep the unarchived deltas in step

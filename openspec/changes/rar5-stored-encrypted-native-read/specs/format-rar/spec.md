@@ -119,9 +119,11 @@ data work. For solid random reads, the system SHALL decode from archive start to
 the target member (named `unrar p … <member>`). Each such read is its own
 decode: the reader SHALL NOT amortize repeated solid reads by extracting members
 into a temporary directory and serving later reads from disk. `extract_all()`
-SHALL be served by the same `stream_members()` pass as any other caller — one
-unnamed `unrar p` pipe on a solid archive, per-member named opens on a non-solid
-one. Any temp materialization SHALL be a declared RAR strategy, not an implicit
+SHALL be served by the same `stream_members()` pass as any other caller, plus a
+second pass for hardlink sources the selector excluded; on a solid archive each
+pass is one unnamed `unrar p` pipe over the whole archive. Which members a pass
+names on the `unrar` command line — and which need no spawn at all — is governed
+by `Constrain unrar argv by call site`. Any temp materialization SHALL be a declared RAR strategy, not an implicit
 in-memory buffer; the one the reader declares is copying a non-path archive
 *source* to disk so `unrar` can seek it. When the archive is opened from a
 non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
@@ -146,7 +148,7 @@ too.
 | --- | --- |
 | Random `open()` in non-solid RAR | `unrar p … <archive> <member>`; work is O(member_size) |
 | Repeated random opens in solid RAR | Each open is its own `unrar p` decode from archive start; no tempdir cache, and the re-decode is reported as `RewindWarning.min_redecode_bytes` |
-| `extract_all()` | The same `stream_members()` pass as any other caller; no `unrar x` |
+| `extract_all()` | The same `stream_members()` pass as any other caller, plus a second pass for hardlink sources the selector excluded; no `unrar x` |
 | Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
 | Single non-path stream, at open | `ar.cost.notes` warns a spawned read will copy to disk |
 | Ordered stream volumes, at open | `ar.cost.notes` states volumes were copied at open |

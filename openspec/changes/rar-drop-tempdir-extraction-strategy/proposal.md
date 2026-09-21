@@ -7,13 +7,20 @@ lets a solid random read "extract once with `unrar x` into an explicitly managed
 temporary directory and serve later reads from disk", and lets `extract_all()` use
 "one `unrar x` to a temporary directory". Two scenario rows say the same.
 
-Nothing has ever done either, and the project decided not to. `unrar` is spawned from
-one place in the tree, `rar_unrar.py`, and always as `p`; there is no `x` subcommand in
-`src/` at all. A solid random `open()` builds a fresh `unrar p -n./<member>` each time
-and reports the re-decode through `RewindWarning.min_redecode_bytes`
-(`_unrar_solid_prefix`) rather than avoiding it. `extract_all()` is served by the same
-`stream_members()` pass as any other caller — one unnamed `unrar p` pipe on a solid
-archive, per-member named opens on a non-solid one.
+Nothing has ever done either, and the same spec already forbade it twice over. The
+requirement two above this one ends "The spawn SHALL be the `p` (print to stdout)
+command only", and `Constrain unrar argv by call site` enumerates every call site
+without an `x` among them. So the clause was not merely unbuilt, it contradicted its
+own neighbours — and the argv requirement, not this one, is where per-call-site
+mechanics belong.
+
+The tree agrees. `unrar` is spawned from one place, `rar_unrar.py`, and always as `p`;
+there is no `x` subcommand in `src/` at all. A solid random `open()` builds a fresh
+`unrar p -n./<member>` each time and reports the re-decode through
+`RewindWarning.min_redecode_bytes` (`_unrar_solid_prefix`) rather than avoiding it.
+`extract_all()` is served by the same `stream_members()` pass as any other caller,
+plus a second pass for hardlink sources the selector excluded; on a solid archive each
+pass is one unnamed `unrar p` pipe over the whole archive.
 
 The handbook already records the decision, in three places: the RAR page's At a glance
 note ("there is no `unrar x` anywhere in `src/`, so every out-of-order solid `open()` is
