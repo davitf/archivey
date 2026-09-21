@@ -180,6 +180,16 @@ byte stream; RAR parses self-describing volumes in order and stitches
 boundary-spanning members. Incomplete/out-of-order sets SHALL raise
 `UnsupportedFeatureError` or a truncated/corrupt error — never a partial result.
 
+An explicitly passed sequence gets no discovery, so the numbered parts in it SHALL
+be required to share a base name, compared case-insensitively, and a sequence mixing
+two sets SHALL raise `ArchiveyUsageError` naming both. Part numbers alone cannot
+detect this — `alpha.zip.001` and `beta.zip.002` are a valid `1, 2` — and the result
+would be bytes belonging to neither archive. The check is on names only: parts of one
+set in different directories remain valid, an item whose name does not match the
+numbered-part pattern is passed through in the position given (and suspends the
+completeness check for that sequence), and a sequence containing an open stream is
+not checked, a stream having no name to compare.
+
 #### Scenario: volume input matrix
 
 | Case | Expected |
@@ -193,6 +203,8 @@ boundary-spanning members. Incomplete/out-of-order sets SHALL raise
 | `open_archive("vol.exe", format=ZIP)` with embedded ZIP SFX and a sibling volume | Opens the stub; no redirect |
 | `open_archive("vol.exe")` with two of those first-volume names | `UnsupportedFeatureError` |
 | `open_archive([vol1, vol2, vol3])` in order | One archive in that order |
+| `open_archive([alpha.zip.001, beta.zip.002])` | `ArchiveyUsageError` naming both bases |
+| `open_archive([a/alpha.zip.001, b/alpha.zip.002])` across directories | One archive in that order |
 | Missing volume | Raise at open or first dependent read; no partial member list |
 
 ### Requirement: Archive metadata access

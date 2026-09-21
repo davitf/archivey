@@ -1331,3 +1331,54 @@ def test_base_comparison_is_case_folded_like_discovery(tmp_path: Path) -> None:
 
     joined = join_volumes([tmp_path / "alpha.zip.001", tmp_path / "ALPHA.zip.002"])
     assert joined.read() == b"AAABBB"
+
+
+def test_one_unrecognized_name_does_not_turn_the_guard_off(tmp_path: Path) -> None:
+    """Bailing out on the first non-part left the entries around it unchecked.
+
+    The scenario is the one the explicit path exists for: a caller's own
+    ``sorted(glob("*.zip.*"))``, which also returns ``alpha.zip.bak`` and
+    ``notes.zip.old``. Where the stray happens to sort decided whether anything was
+    validated at all.
+    """
+    (tmp_path / "aaa.zip.bak").write_bytes(b"X")
+    (tmp_path / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "beta.zip.002").write_bytes(b"BBB")
+
+    with pytest.raises(ArchiveyUsageError):
+        join_volumes(sorted(tmp_path.glob("*.zip.*")))
+
+
+def test_completeness_stays_gated_on_every_path_matching(tmp_path: Path) -> None:
+    """A stray suspends the 1..N check but not the base check.
+
+    A caller joining arbitrary files, one of which happens to be named
+    ``foo.zip.002``, is not claiming a numbered set — and a 7-Zip stub passed ahead
+    of its own parts (``[vol.exe, vol.exe.001, vol.exe.002]``) is a real shape that
+    must keep working.
+    """
+    (tmp_path / "vol.exe").write_bytes(b"S")
+    (tmp_path / "vol.exe.001").write_bytes(b"AAA")
+    (tmp_path / "vol.exe.002").write_bytes(b"BBB")
+
+    joined = join_volumes(
+        [tmp_path / "vol.exe", tmp_path / "vol.exe.001", tmp_path / "vol.exe.002"]
+    )
+    assert joined.read() == b"SAAABBB"
+
+
+def test_same_base_in_two_directories_still_joins(tmp_path: Path) -> None:
+    """The docs advertise this path for parts that are not siblings on disk.
+
+    The base check is on names only, so it cannot tell these apart from one set —
+    and must not, or the documented use case breaks.
+    """
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    (tmp_path / "one" / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "two" / "alpha.zip.002").write_bytes(b"BBB")
+
+    joined = join_volumes(
+        [tmp_path / "one" / "alpha.zip.001", tmp_path / "two" / "alpha.zip.002"]
+    )
+    assert joined.read() == b"AAABBB"

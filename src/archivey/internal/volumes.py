@@ -666,19 +666,32 @@ def _validate_numbered_volume_sequence(paths: Sequence[Path]) -> None:
     ``open_archive([…])`` with a caller's own ``sorted(glob("*.zip.*"))`` over a
     directory holding more than one set. This function is the only guard between that
     list and :class:`ConcatenatedFile`.
+
+    What the base check guarantees is narrower than "the parts of one archive": the
+    base names must agree, compared case-folded the way ``discover_volume_siblings``
+    groups siblings, so it never refuses a set discovery would have accepted. Two
+    residues stay: parts with the same base in *different directories* join, which
+    discovery could never produce but ``docs/opening-and-listing.md`` advertises this
+    path for; and on a case-sensitive filesystem ``gamma.zip.001`` and
+    ``GAMMA.zip.002`` are genuinely distinct files that the case-folding lets through.
     """
     base = ""
     numbered: list[int] = []
+    skipped = False
     for path in paths:
         match = _NUMBERED_VOLUME_RE.match(path.name)
         if match is None:
-            return
+            # Skip, do not return: bailing out on the first unrecognized name turned
+            # the whole guard off for the entries around it, which is precisely the
+            # `sorted(glob("*.zip.*"))` case above — that glob also returns
+            # `alpha.zip.bak` and `notes.zip.old`, and where a stray sorted decided
+            # whether anything was checked at all.
+            skipped = True
+            continue
         part_base = match.group("base")
         if not base:
             base = part_base
         elif part_base.lower() != base.lower():
-            # Case-folded, matching how discovery groups siblings, so the explicit
-            # path accepts exactly the sets the discovered one would.
             raise ArchiveyUsageError(
                 f"Volume parts belong to different sets: "
                 f"{display_path(base)} and {display_path(part_base)}. A volume "
@@ -686,6 +699,13 @@ def _validate_numbered_volume_sequence(paths: Sequence[Path]) -> None:
                 f"of two would produce bytes that are neither."
             )
         numbered.append(int(match.group("part")))
+    # Completeness stays gated on every path having matched. A caller joining
+    # arbitrary files, one of which happens to be named `foo.zip.002`, is not
+    # claiming a numbered set — and `[stub.exe, vol.exe.001, vol.exe.002]` would
+    # change meaning. The base check needs no such gate: the parts that do match
+    # have to agree with each other however many strays sit between them.
+    if skipped:
+        return
     if numbered != list(range(1, len(numbered) + 1)):
         raise TruncatedError(_numbered_volume_sequence_error(base, numbered))
 

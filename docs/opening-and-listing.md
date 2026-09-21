@@ -115,6 +115,18 @@ and the order you give is the order used, with no discovery. A one-item sequence
 treated as a single source, and a multi-volume sequence for any format other than 7z
 or RAR raises.
 
+Because there is no discovery, the sequence is checked for one thing discovery would
+have guaranteed: the numbered parts must share a base name. Concatenating
+`alpha.zip.001` with `beta.zip.002` would hand you bytes that are neither archive,
+and their numbering — a perfectly good `1, 2` — cannot tell you so; that raises
+`ArchiveyUsageError` naming both. The comparison ignores case, and it is only on the
+name, so parts of one set living in different directories are fine. If a part has
+been renamed out of the pattern (`backup.7z (1).002`, say), it is not recognised as
+a numbered part at all: it is passed through in the position you gave it, and the
+completeness check is skipped for the whole sequence, so the order is yours to get
+right. Passing any part as an open stream skips the check entirely, since a stream
+has no name to compare.
+
 ## Detection
 
 Most callers never need this: `open_archive` detects the format itself. Use
