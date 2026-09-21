@@ -28,7 +28,7 @@ codebase sweep that produced #315, whose reading half finished on 2026-09-20, an
 documentation rewrites. Those two are the largest open items on this page.
 
 **The #315 count went up, not down, and that is still the headline.** The hub now holds
-**208 threads, 65 resolved and 143 open**, against 71 threads and 20 open at the previous
+**208 threads, 66 resolved and 142 open**, against 71 threads and 20 open at the previous
 revision. Six parallel batches (S20–S25) finished the first pass over `src/` on 2026-09-20 and
 raised 75 findings by themselves. The pool is not draining, it is being refilled faster than it
 drains, because each batch finds more than the last batch's findings cost to fix — and that is
@@ -44,8 +44,8 @@ decision item rather than fifteen.
 
 | Register | Open items | Health |
 | --- | --- | --- |
-| Open PRs | 8 live, 1 hub | Eight merged 2026-09-20/21: #370, #371, #373, #374, #375, #377, #382, #383/#384. The dormant-draft category is still empty; every live PR has been touched within a day |
-| [#315](https://github.com/davitf/archivey/pull/315) review threads | 208 total, **65 resolved, 143 open** | 14 resolved 2026-09-21 against the eight merged PRs. What is left is the S15–S25 drain, parcel F, and the ten older S1/S2 findings |
+| Open PRs | 8 live, 1 hub | Ten merged 2026-09-20/21: #365, #370, #371, #373, #374, #375, #376, #377, #382, #383/#384. The dormant-draft category is still empty; every live PR has been touched within a day |
+| [#315](https://github.com/davitf/archivey/pull/315) review threads | 208 total, **66 resolved, 142 open** | 15 resolved 2026-09-21 against the merged PRs. What is left is the S15–S25 drain, parcel F, and the ten older S1/S2 findings |
 | `openspec/changes/` (13 active) | 12 unimplemented, 1 half-done | `prefixed-archive-detection` is 32/68; the rest are 0/N (bar one task on `archive-origin-reporting`). **362 tasks outstanding**, counted 2026-09-21. #347/#356 added three RAR changes; #251, #274 and #185 merged three more |
 | [`open-issues.md`](open-issues.md) | 13 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned; **P18 is new** since the first snapshot |
 | [`formats/rar.md`](formats/rar.md) `§10` | 4 of 21 (#6 layer 2, #18, #19, #21) | **Being retired.** 17 closed with PR links; [#372](https://github.com/davitf/archivey/pull/372) empties and deletes the section, rehousing its two deferred items in the handbook's Open questions and in `IDEAS.md`, and repoints eleven cross-references. Drop this row when it merges |
@@ -53,7 +53,7 @@ decision item rather than fifteen.
 | [`IDEAS.md`](IDEAS.md) | 55 entries | A park, **not a queue** — see below. Two entries have stale framing; see [Already dead](#already-dead) |
 | [`review/backlog.md`](../review/backlog.md) | 3 PR parks, 7 archived-review parks, Topics 6/7 | #320 F2 is the only one with a live question |
 | [`review/STATUS.md`](../review/STATUS.md) | Topics 8 + 10 in flight, docs IA in flight, +2 commissioned 2026-09-11 | **Its own header still says 2026-08-15.** The ranked list predates every OpenSpec change now in tree |
-| [`review/typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 89 sites inventoried; the fixes are staged | **Started and half landed.** The inventory merged as #352; #377 and #384 landed two waves of it, and #376/#378 are open. The rest is held on file collisions only |
+| [`review/typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 89 sites inventoried; the fixes are staged | **Started and half landed.** The inventory merged as #352; #376, #377 and #384 landed three waves of it, and #378 is open. The rest is held on file collisions only |
 | [`review/exception-catchalls/`](../review/exception-catchalls/brief.md) | 30 marked blind `except` sites | **Not started.** `brief.md` is the only file. A verification review; its own brief says a large "actually fine" section is the expected outcome |
 | [`threat-model.md`](threat-model.md) | `O*` register | O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`, in tree since #319 |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
@@ -76,15 +76,24 @@ PR is, not whether it is ready — read the PR.
 
 | PR | What | Where it sits |
 | --- | --- | --- |
-| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 208 threads, 143 open. Carries `loop:off` so it can never enrol in the review loop |
-| [#365](https://github.com/davitf/archivey/pull/365) | `DelegatingStream` flags: class default plus constructor override | Three review rounds, `loop:done`. Closes #315 thread 56, the `streamtools/` orphan |
+| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 208 threads, 142 open. Carries `loop:off` so it can never enrol in the review loop. **It was closed by accident on 2026-09-21 and reopened the same day** — see the note below |
 | [#372](https://github.com/davitf/archivey/pull/372) | RAR: lazy stream-volume listing, and `formats/rar.md` §10 emptied and deleted | Three rounds, `loop:done`. Its last open question — whether the glob refusal fires on solid archives too — was answered *yes, always reject* on 2026-09-20. Removes §10 and rehouses its two deferred items |
-| [#376](https://github.com/davitf/archivey/pull/376) | Drop five dead `typing.cast` calls | Three rounds, then `loop:decision` — parked on an answer, not on work |
 | [#378](https://github.com/davitf/archivey/pull/378) | Protocol the codec decoder handles and index callbacks | Three rounds, `loop:done` |
 | [#380](https://github.com/davitf/archivey/pull/380) | Coerce enum arguments at the boundary; memoize optional-dependency lookups | The other half of the public-argument sweep. **It resolves all three merge collisions with #382**, which landed first — see the note below |
 | [#385](https://github.com/davitf/archivey/pull/385) | Keep `type:` off the start of a comment line in `volumes.py` | One round, `loop:on`. A one-line hazard: a comment beginning `type:` reads as a type comment |
 | [#386](https://github.com/davitf/archivey/pull/386) | ZIP and 7z: read Windows reparse points instead of guessing at them | Draft, `loop:decision`. Answers #315 S20-K9, the `is_junction` cross-format promise |
 | [#387](https://github.com/davitf/archivey/pull/387) | Drop the `unrar x` tempdir strategy the reader never had | Draft, spec-only |
+| [#388](https://github.com/davitf/archivey/pull/388) | This page, brought to 2026-09-21, plus the `volumes.py` docstring #315 thread 12 asked for | Draft, `loop:on` |
+| [#389](https://github.com/davitf/archivey/pull/389) | 7z: split the stream-cap test and pin the shapes it builds | Draft |
+
+**A merge commit closed the hub by accident, and the keyword is the lesson.** #365's squash
+body ends *"Closes #315 thread 56 / ARC-12."* GitHub reads `Closes #315` and stops at the
+number, so merging #365 at `11:10:27Z` closed #315 two seconds later — `closed_at`
+`2026-09-21T11:10:29Z`, `merged_at` null, the `closed` event carrying `0454c54`, which is
+#365's own merge commit. The hub held 142 open threads at the time. It was reopened the same
+day; `empty-base` was never touched. **Never write a closing keyword in front of `#315` in a
+commit message or a PR body** — write "#315 thread 56" without `Closes`, or name the thread
+by its URL, because the hub is the one PR in this repo that must never close.
 
 **#382 and #380 are two halves of one sweep and they collide.** Both refuse or coerce
 wrong-typed public arguments — #382 the object and numeric ones, #380 the enums — and #382
@@ -96,8 +105,8 @@ method in a class body, silently, so picking one side of the `__post_init__` con
 the other branch's validation with nothing failing at import. The register lives in #382's own
 body as well as here, because whoever merges reads the description.
 
-**Eight PRs merged on 2026-09-20 and 2026-09-21** — #370, #371, #373, #374, #375, #377, #382
-and #383/#384 — and between them they closed fourteen #315 threads. #371, #373, #374 and #375
+**Ten PRs merged on 2026-09-20 and 2026-09-21** — #365, #370, #371, #373, #374, #375, #376,
+#377, #382 and #383/#384 — and between them they closed fifteen #315 threads. #371, #373, #374 and #375
 were the first three decided S15/S16 findings plus the RAR mask fix, each turned around in
 about seven minutes; #370 removed the `pybcj` dependency outright; #382 and #384 are the
 public-API argument and `extra`-typing changes.
@@ -162,24 +171,25 @@ the reasoning is kept only so the closures are not re-litigated.
 ## #315 — the 208 threads
 
 **Again the largest pool of actionable work**, after a week of reading as though it were
-nearly drained. 208 threads, **65 resolved and 143 open**. The composition matters more than
+nearly drained. 208 threads, **66 resolved and 142 open**. The composition matters more than
 the number, because the four cohorts behave differently:
 
 | Cohort | Posted | Threads | Open | What they are |
 | --- | --- | --- | --- | --- |
-| Maintainer questions + the S0 agent pass | 2026-09-07 … 09-14 | 61 | 14 | Drained by parcels A–E. Left: parcel F, the five `solid.py` naming questions from 09-14, and the orphan thread 56 (whose fix is #365, open) |
+| Maintainer questions + the S0 agent pass | 2026-09-07 … 09-14 | 61 | 13 | Drained by parcels A–E, and by #365 for the orphan thread 56. Left: parcel F and the five `solid.py` naming questions from 09-14 |
 | **S1 / S2** | 2026-09-17 | 15 | 10 | Five closed by #349/#350. The ten left are implementation with clear directions, not decisions |
 | **S15 / S16 + R1–R3** | 2026-09-19 | 30 | 20 | The shared stream and codec path, the RAR parser and `unrar`. Ten closed by #370–#375 |
-| **S17–S25** | 2026-09-20 | 102 | 99 | The first pass finishing: the public API, the CLI, the remaining backends and stream formats. Seven blocking |
+| **S17–S25** | 2026-09-20 | 102 | 99 | The first pass finishing: the public API, the CLI, the remaining backends and stream formats. Twelve blocking across S15–S25 |
 
 **Do not count these from memory.** The hub is past 100 top-level comments and 200 review
 threads, so a single-page fetch drops both markers and threads *silently*. The
 `ccr/review_threads` route on the PR returns every thread with its resolved flag in one page;
 `issues/315/comments` still needs the paging loop in [How sweep coverage is counted](#how-sweep-coverage-is-counted).
 
-**Fourteen threads were resolved on 2026-09-21**, each verified against `main` @ `b0fe664`
-rather than taken from a commit message or from this page, and the rule that produced held
-again — see the three that looked closeable and were not, below.
+**Fifteen threads were resolved on 2026-09-21.** Fourteen of them were verified against `main`
+@ `b0fe664` rather than taken from a commit message or from this page, and the rule that
+produced held again — see the three that looked closeable and were not, below. The fifteenth,
+thread 56, closed with #365's merge.
 
 | Thread | Fixed by | Evidence on `main` |
 | --- | --- | --- |
@@ -197,6 +207,7 @@ again — see the three that looked closeable and were not, below.
 | S19-K4 `budget=` unvalidated | [#382](https://github.com/davitf/archivey/pull/382) | `_resolve_budget` ends in `check_instance` |
 | S20-K16 `members="a.txt"` | #382 | `selection.py:21` refuses a bare `str`/`bytes` |
 | S18-K7 short read on a truncated member | — | **Withdrawn by its own author**: today's behaviour is ADR 0014 |
+| 56 `DelegatingStream` flag style | [#365](https://github.com/davitf/archivey/pull/365) | `peel_for_source_size` and `readinto_passthrough` both class-flag-plus-constructor-override, like `_SUBCLASS_CLOSES_INNER` |
 
 **Three threads that looked closeable were not, and the difference was one grep each.**
 Thread 51's bug half was retracted but its rename (`_folder_unpack_size` shadowing the
@@ -240,6 +251,7 @@ a three-item leak list reduced to one — so the opening comment is often no lon
 | 1, 2, 4, 5, 6, 7, 8, 9 | Parcel D ([#332](https://github.com/davitf/archivey/pull/332)) |
 | 43, 44, 46, 47, 48, 49 | Parcel E ([#336](https://github.com/davitf/archivey/pull/336)) |
 | 3 | [#342](https://github.com/davitf/archivey/pull/342) / [#344](https://github.com/davitf/archivey/pull/344), with the merge half promoted to a change in [#347](https://github.com/davitf/archivey/pull/347) |
+| 56 | [#365](https://github.com/davitf/archivey/pull/365) — ARC-12; class flag + constructor override for `peel_for_source_size` and `readinto_passthrough` |
 
 **Thread 45 was parcel E's, and parcel A closed it.** It was the third site of
 `DelegatingStream.close`'s workaround; A replaced all of them with `manual_inner_close=True`
@@ -262,7 +274,7 @@ encrypted 7z folder; [#344](https://github.com/davitf/archivey/pull/344) added `
 on a short final block. The "are the three decrypt streams mergeable?" half is answered in the
 class docstring and promoted to `fold-rar-header-decrypt-stream` in #347.
 
-The 14 of this cohort that remain. `*` marks a thread whose follow-up narrowed it.
+The 13 of this cohort that remain. `*` marks a thread whose follow-up narrowed it.
 
 | File | Open | Threads | Character |
 | --- | --- | --- | --- |
@@ -272,7 +284,6 @@ The 14 of this cohort that remain. `*` marks a thread whose follow-up narrowed i
 | `volumes.py` | 1 | 12 | The docstring half; 13 was closed by #374 |
 | `rar_detect.py` | 1 | 10 | Placement — same decision as 14 |
 | `reader_state.py` | 1 | 11 | "I can't even begin to review it." Explanation, not code |
-| `streamtools/base.py` | 1 | 56 | Raised 2026-09-13, not part of any parcel; #365 is its fix and is open |
 
 **Threads 10 and 14 have their answer; the move has not happened.** They asked whether
 `rar_detect.py`, `zip_detect.py`, `sevenzip_detect.py`, `zip_aes.py` and `zipcrypto.py` should
@@ -328,7 +339,7 @@ cohorts carry twelve blocking findings between them.
 
 ## The S15–S25 drain, which is now the bulk of the page
 
-143 threads open, 123 of them from the batches that finished the first pass. This is the
+142 threads open, 119 of them from the batches that finished the first pass. This is the
 largest single block of work in the repository and it is not uniform. It splits three ways,
 and the first two overlap — several of the blocking findings are also the ones waiting on a
 ruling.
@@ -486,7 +497,7 @@ schedule ahead of the lines nobody had read once.
 
 **The precondition is now met.** The first pass finished on 2026-09-20, so a second pass is no
 longer ruled out by that decision — but his order was *finish reading, then fix everything
-outstanding, then pass again*, and the middle step has barely started: 143 threads are open on
+outstanding, then pass again*, and the middle step has barely started: 142 threads are open on
 #315. A re-sweep is the step after draining them, not instead of it.
 
 **S1 and S2 were the evidence for what the rest was worth, and the rest paid out.** Those
@@ -752,13 +763,13 @@ other three report in.**
 ```
 bounded-password-confirmation ──> sevenzip-aes-tail-key-check ──> O12 closed
 
-#315 Wave 1 + parcels A–E + the 09-20/21 fixes ──> DONE (65 of 208 threads resolved)
+#315 Wave 1 + parcels A–E + the 09-20/21 fixes ──> DONE (66 of 208 threads resolved)
         │
         ├──> parcel F (placement + odds)   ready; threads 10/14 ANSWERED (-> backends/),
         │       │                          so what is left is the move itself
         │       └──> five top-level modules move under backends/, importers with them
-        ├──> thread 56 (DelegatingStream flag style) ──> #365, open
-        └──> S15-S25 drain   123 threads
+        ├──> five solid.py naming questions from 09-14   no parcel, no owner
+        └──> S15-S25 drain   119 threads
                 ├──> 15 waiting on a ruling (one decision item, taken one at a time)
                 ├──> DecoderLimits ──> PPMd mem_size (K1) + KDF derivation budget
                 └──> 12 blocking findings ──> the release question
@@ -779,11 +790,11 @@ Topic 8 (docs content) ∥ Topic 10 (catalogue) ──> Topic 6 (perf) ──> T
         │
         └── #243 closed, so #244 is uncontested; Topic 10 is unblocked
 
-typing-escape-hatches ──> #352 inventory ──> #376, #377, #378, #384 ──> the rest, held on
+typing-escape-hatches ──> #352 inventory ──> #376, #377, #384 merged; #378 open ──> the rest,
         │                                                                file collisions only
 exception-catchalls ──> (nothing; unblocked, not started)
 
-sweep S0..S25 ──> 208 #315 threads, 143 open ──> new parcels, new changes
+sweep S0..S25 ──> 208 #315 threads, 142 open ──> new parcels, new changes
         │              (first pass over src/ complete 2026-09-20; draining is what is left)
         └── a second pass waits on those threads being drained, not on a decision
 
@@ -862,25 +873,26 @@ changing.
 
 | | 2026-09-11 | 2026-09-17 | 2026-09-19 | 2026-09-21 |
 | --- | --- | --- | --- | --- |
-| #315 threads open | 47 | 10 | 20 | **143** (65 of 208 resolved) |
+| #315 threads open | 47 | 10 | 20 | **142** (66 of 208 resolved) |
 | — of those, waiting on a maintainer ruling | *not tracked* | 2 | 2 | **15** |
 | — of those, blocking | *not tracked* | 0 | 2 | **12** |
 | Open PRs (excluding the #315 hub) | 9 | 4 | 4 | **8** |
 | Dormant drafts | 5 | 2 | 0 | **0** |
 | OpenSpec changes in tree, unimplemented | 8 | 6 | 12 | **12** |
 | Reviews commissioned but not started | 2 | 2 | 1 | **1** |
-| `src/` never swept | *not tracked* | 88% (stated as 76%) | 55% | **0%** |
+| `src/` never swept | *not tracked* | 88% (stated as 76%) | 55% | **0.4%** (one file, arrived after the pass) |
 | Handbook pages unwritten | *not tracked* | ~5 of ~7 | ~5 of ~7 | **~5 of ~7** |
 
 **The two rows that matter moved in opposite directions, and that is the whole story of the
-week.** `src/` never swept went to zero, and #315 threads open went from 20 to 143. Those are
+week.** `src/` never swept went to nearly zero, and #315 threads open went from 20 to 142.
+Those are
 the same event: the reading finished, and what it found is now the backlog. A snapshot that
 read only the first row would say the work is done; a snapshot that read only the second would
 say it got seven times worse. Neither is right. The library has now been examined closely once
 end to end, and the findings that produced are the work.
 
 **Open PRs doubled without a dormant draft appearing**, which is the other thing worth noting:
-eight merged in two days and eight are live, every one of them touched within a day. The
+ten merged in two days and eight are live, every one of them touched within a day. The
 review loop is what changed — a decided finding now becomes a green PR in minutes rather than
 days — so the constraint moved off implementation and onto deciding, which is exactly what the
 "waiting on a ruling" row says.
@@ -950,8 +962,8 @@ fixed red-green, plus F5–F13 from the PR's own review cycle. Thread 16 resolve
 also surfaced the two reviews now commissioned in #325, and left `src/` with zero
 `# type: ignore`.
 
-**Wave 2 — drain #315 in six parcels. A through E are done.** One parcel remains, plus one
-thread that arrived after the parcels were drawn.
+**Wave 2 — drain #315 in six parcels. A through E are done.** One parcel remains.
+Thread 56 (the post-drain orphan) closed with [#365](https://github.com/davitf/archivey/pull/365) / ARC-12.
 
 | Parcel | Files | Threads | State |
 | --- | --- | --- | --- |
@@ -961,7 +973,7 @@ thread that arrived after the parcels were drawn.
 | ~~D — RAR parser~~ | `backends/rar_parser.py` | 1, 2, 4, 5, 6, 7, 8, 9 | **Done** — [#332](https://github.com/davitf/archivey/pull/332). Threads 1 and 2 were the two possible header-decrypt bugs; both measured against fixtures and neither was one |
 | ~~E — RAR reader~~ | `backends/rar_reader.py` | 43, 44, 46, 47, 48, 49 | **Done** — [#336](https://github.com/davitf/archivey/pull/336) |
 | **F — placement + odds** | `rar_detect.py`, `zip_aes.py`, `volumes.py`, `reader_state.py`, `sevenzip_reader.py` | 10, 11, 12, 14, 15, 51\*, 53, 54 | **Ready, and unblocked.** Eight threads — 13 was closed by #374, and thread 3 left when #342 answered it. **Threads 10/14 were answered on 2026-09-19 (`backends/`)**, so the placement is no longer a question; the move itself is the work, and it is what makes the rest mechanical |
-| **(orphan)** | `streamtools/base.py` | 56 | Raised 2026-09-13, after `streamtools/` was drained. `peel_for_source_size` is a class field while `readinto_passthrough` is a constructor argument. **[#365](https://github.com/davitf/archivey/pull/365) is its fix** and is open with three review rounds behind it |
+| ~~(orphan)~~ | `streamtools/base.py` | 56 | **Done** — [#365](https://github.com/davitf/archivey/pull/365), merged 2026-09-21. Both flags now use the class-flag-plus-constructor-override pattern `_SUBCLASS_CLOSES_INNER` already had |
 | **(new)** | five `solid.py` questions from 2026-09-14 | — | Not in any parcel. Merge `_drain_chunks` into `skip_forward`, reuse `skip_forward` in `_skip_to`, drop the redundant `_ensure_positioned` check, rename `_claim_offset`, replace "Vend". `solid.py` has not been touched since they were raised |
 
 **Parcel F's prompt should carry three corrections** the follow-up comments make and the
@@ -973,7 +985,7 @@ own follow-up.** The follow-up says the RAR conclusion held, which reads like a 
 but the opening comment's suggestion — collapse the two `SlicingStream` constructor calls in
 `sevenzip_reader._open_member` so the branches differ in `start` alone — has not been done.
 
-**Wave 2c — the S15–S25 drain. The largest block on this page.** 123 threads, twelve of them
+**Wave 2c — the S15–S25 drain. The largest block on this page.** 119 threads, twelve of them
 blocking, fifteen waiting on a ruling. It is not a parcel because it is not one shape: batch
 it by file the way the merged PRs did, one or two files per PR, and take the rulings one at a
 time rather than as a list. The pattern that worked on 2026-09-20 — decide, implement, review
@@ -983,8 +995,8 @@ minutes each, so **deciding is the constraint, not implementing.**
 **Wave 2b — the two #325 reviews. One has run and is half landed; one has not started.**
 Disjoint sources, both `src/`-only audits rather than changes, so they never contended with
 the #315 drain in the way two refactors would. `typing-escape-hatches` ran on 2026-09-17, its
-inventory merged as #352, and the fixes are landing in waves — #377 and #384 are on `main`,
-#376 and #378 are open, and the rest is held on file collisions only (`tar_reader.py`,
+inventory merged as #352, and the fixes are landing in waves — #376, #377 and #384 are on
+`main`, #378 is open, and the rest is held on file collisions only (`tar_reader.py`,
 `binaryio.py`, and `volumes.py` against #374). `exception-catchalls` needed nothing before it
 started and still does not; it is the clearest thing left to hand out.
 
