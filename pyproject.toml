@@ -224,10 +224,33 @@ exclude_also = [
 pythonpath = ["src", "tests", "."]
 testpaths = ["tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
-# the whole job until the CI hard limit. pytest-timeout picks the platform default method
-# (SIGALRM on POSIX — suite continues; a process-killing thread dump on Windows). 60s is far
-# above any real test here (all run in milliseconds), so only a genuine hang trips it.
+# the whole job until the CI hard limit. 60s is far above any real test here (all run in
+# milliseconds), so only a genuine hang trips it.
 addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
+# thread, not pytest-timeout's POSIX default of signal. SIGALRM is delivered to the main
+# thread and only runs when it next reaches the interpreter, so a thread blocked in C or a
+# deadlock off the main thread is invisible to it: on 2026-09-21 both the free-threaded job
+# and an ordinary `py3.14 / core-only` job hung with --timeout armed, printed nothing for
+# twenty minutes, and were killed by timeout-minutes with no idea which test was running.
+# The thread method arms a threading.Timer instead, which needs the GIL only momentarily
+# to dump every thread's stack and then call os._exit(1), so it survives cases the alarm
+# does not. The bound is narrow: a native call that *releases* the GIL, which is most
+# blocking I/O, is caught fine, and on a free-threaded build the GIL is not the
+# serialising thing at all. Both methods lose only when the GIL is held for the whole
+# hang — the accelerator busy-loop in dev-docs/known-issues.md is exactly that shape, and
+# no per-test timeout will ever name it.
+# The cost is that the whole run dies with the timeout instead of one test failing alone.
+# That cost is known to be acceptable rather than merely argued: pytest-timeout falls back
+# to this method where there is no SIGALRM, so Windows CI has been paying it here all
+# along and nobody noticed. A hang costs the whole job anyway.
+# This is a diagnostic, not a fix; the hang itself is tracked internally.
+# It is an ini option rather than an addopts flag on purpose. Five pytest entry points
+# override addopts — the two free-threaded CI steps, the PPMd stress workflow,
+# scripts/ci_run_native_modules.py and the hand-run recipe in dev-docs/known-issues.md —
+# and a flag inside addopts would be dropped by every one of them, leaving a rule that
+# each new override site must remember to repeat it. The ini key is untouched by
+# `-o addopts=`, so they all inherit it and none of them names it.
+timeout_method = "thread"
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",
