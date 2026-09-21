@@ -575,6 +575,11 @@ the file was read at all, **whether or not it found anything**:
 
 - **One top-level comment on #315 per file**, posted when you finish reading that file and
   before you start the next one. Not inline: a whole-file read has no line to anchor to.
+- **Writing about the hub elsewhere?** Never reproduce a closing phrase next to its number
+  in a commit message or a pull request body — it closes the hub, silently, and quoting one
+  counts. The rule lives in [`AGENTS.md`](../../../../AGENTS.md) §Review workflow; it bit
+  twice on 2026-09-21. Inline comments like the ones above are not parsed, so findings and
+  markers are unaffected.
 - **The marker is always its own comment, including for a file that produced findings.**
   Never put the `SWEPT` line in a review body, a finding, or a reply. A file with findings
   therefore gets its findings *and* a marker comment, which is the point: the marker says

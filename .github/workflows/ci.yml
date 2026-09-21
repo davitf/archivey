@@ -420,7 +420,12 @@ jobs:
       # The whole suite, not just the concurrent_reader subset: single-threaded
       # free-threaded breakage (dict/list races in shared state, C-API assumptions) shows
       # up here, and the marked subset is only ~46 of ~2000 tests.
-      # Override addopts so we do not need pytest-cov in the core-only ephemeral env.
+      # Override addopts so we do not need pytest-cov in the core-only ephemeral env. That
+      # also drops the shared --timeout, hence the explicit one here; 120s rather than 60
+      # because free-threaded runs are slower. The thread timeout method is NOT repeated:
+      # it is an ini option in pyproject.toml, which `-o addopts=` does not touch. This
+      # job hung outright four times on 2026-09-21 with the timeout armed and never
+      # fired, which is why that method is set at all.
       - name: Run full suite (core-only)
         run: >
           uv run --python 3.13t --no-sync

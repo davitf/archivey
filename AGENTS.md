@@ -445,6 +445,25 @@ Two things about this repo make the handoff sharper than it looks:
   one is the human. Make your own PR comments identifiable the same way, and read inline
   threads carefully: the maintainer's own questions arrive that way and carry more weight
   than an automated finding.
+- **Never reproduce a closing phrase next to the review hub's number.** The hub
+  ([#315](https://github.com/davitf/archivey/pull/315)) is the one pull request here that
+  must never close, and a commit message or a pull request body carrying `Closes` (or
+  `Fixes`, or `Resolves`) immediately before its number closes it. Both surfaces are
+  parsed: GitHub prefills the squash body from the pull request body, but the squash body
+  can be edited at merge time, so check each. The trap is *quoting* — writing down what
+  such a phrase said reproduces it, which closed the hub a second time on 2026-09-21 from
+  the text explaining the first. Describe the phrase instead, or break the string. The
+  failure is silent: threads still serve, `sweep_coverage.py` is unaffected, nothing goes
+  red. [`dev-docs/open-work-inventory.md`](dev-docs/open-work-inventory.md) has both
+  incidents. There is a net under this —
+  [`review-hub-watchdog.yml`](.github/workflows/review-hub-watchdog.yml) reopens the hub
+  and says which surface closed it — but it is recovery, not prevention. A pull request
+  body could be checked before the merge; a squash body could not, because whoever merges
+  can edit it at merge time and GitHub parses what was actually merged. So a pre-merge
+  check would cover one surface and miss the other, and the watchdog covers both after.
+  Its decision is in
+  [`scripts/review_hub_watchdog_gate.py`](scripts/review_hub_watchdog_gate.py), unit tested,
+  because the branch that names the surface only ever runs during an incident.
 - **Escalate one decision packet at a time.** Shape and fields:
   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet (canonical).
   Do not dump the full finding list into chat — that stays on the PR. A batched list of

@@ -1,0 +1,170 @@
+# Reopen the review hub when something closes it by accident.
+#
+# The hub (#315) is a `[COMMENT ONLY]` pull request that carries the whole-codebase
+# review: two hundred-odd inline threads and one `**SWEPT**` marker per file read. It is
+# never meant to merge and never meant to close. It closed twice on 2026-09-21 — the
+# second time from the very page that was recording the first, because writing down what
+# a closing phrase said reproduces it, and GitHub parses both a merged pull request's body
+# and its squash commit message.
+#
+# AGENTS.md §Review workflow carries the prose rule, which is what should stop this
+# happening. This job exists because that rule is something people and agents have to
+# remember, the failure is completely silent (threads still serve, `sweep_coverage.py` is
+# unaffected, nothing goes red), and neither closure was noticed from GitHub — both were
+# found by hand, hours apart.
+#
+# What it does NOT do: stop the close. The pull request body *could* be checked before the
+# merge — it is readable from `github.event.pull_request.body`, and it is the surface that
+# caused the second closure — but the squash body could not, because whoever merges can
+# edit it at merge time and GitHub parses what was actually merged. So a pre-merge check
+# would cover one surface and miss the other. This covers both, after the fact: it puts
+# the hub back and says which surface did it.
+#
+# This file collects facts; `scripts/review_hub_watchdog_gate.py` makes the decision and
+# is unit tested. The split matters more here than it does for the review loop, because
+# everything past "is the hub open" is dead in normal operation and only runs during an
+# incident — a break in it is invisible until the moment it is needed, which is how the
+# first version shipped with the surface query broken.
+name: Review hub watchdog
+
+on:
+  # Every push to the default branch, which is what a closing keyword actually needs to
+  # fire — whether it arrives as a squash, a merge commit, a rebase, or a commit pushed
+  # straight to `main`. `pull_request: [closed]` was the obvious trigger and is the wrong
+  # one twice over: it fires for unmerged closes, which cannot close the hub at all, and
+  # it misses a direct push, which can and is how the first closure of all happened.
+  #
+  # The hub's *own* `closed` event is the other obvious trigger, and it cannot be used at
+  # all: a `pull_request` workflow is read from the pull request's base branch, the hub's
+  # base is the orphan branch `empty-base`, and that branch has no `.github/` on it. Such
+  # a trigger would parse, pass every check, and silently never fire.
+  push:
+    branches: [main]
+  # Backstop, for what a push does not cover: a close by hand, and an event GitHub drops.
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+# Naming any scope sets every unnamed one to `none`, so all three are listed.
+# `contents: read` is for the checkout, which this job needs because the decision is a
+# script in the tree rather than inline bash: `actions/checkout` documents `contents: read`
+# as its requirement absent a `token:` or `ssh-key:` input. Whether a public repository's
+# clone would fall back to anonymous read under `contents: none` was not tested, and does
+# not need to be — the grant is right either way, and a first run that died on checkout
+# would leave the hub unguarded through the incident this file exists for.
+# `pull-requests: write` is what reopens the hub and posts the comment: `gh pr comment`
+# goes through `/issues/{n}/comments`, but a pull request's comments are governed by the
+# pull-requests scope. `issues: read` is separate and genuinely needed — the timeline that
+# says *how* the hub closed is only on the issues API.
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+concurrency:
+  group: review-hub-watchdog
+  cancel-in-progress: false
+
+jobs:
+  reopen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reopen the hub if it is closed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The hub's number. There is exactly one, and dev-docs/ refers to it by number
+          # throughout, so a constant here is honest rather than lazy.
+          HUB: "315"
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          work="$RUNNER_TEMP"
+
+          # A push and the close it causes are not one atomic event, and the close can
+          # land after the push webhook. Give it a minute before believing an OPEN
+          # reading on that trigger. This is about *when* to read, not what to conclude;
+          # the conclusion is the gate's.
+          attempts=1
+          if [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then attempts=6; fi
+
+          state=""
+          for i in $(seq 1 "$attempts"); do
+            state=$(gh pr view "$HUB" --repo "$repo" --json state --jq .state)
+            if [ "$state" != "OPEN" ]; then break; fi
+            if [ "$i" -lt "$attempts" ]; then sleep 10; fi
+          done
+
+          # The timeline is six pages and is only ever needed during an incident, so it
+          # is fetched only when there is one. The gate still answers from `state` alone
+          # in the open case, so this is an optimisation and not a second decision.
+          #
+          # One JSON object per event, in the order GitHub serves it, with no reduction:
+          # `--paginate` runs `--jq` once per page, so any filter ending in a reducer
+          # (`last`, `first`, `length`) silently returns one answer per page. Selecting
+          # the closure is the gate's job, where it is tested.
+          labels='[]'
+          : > "$work/timeline.ndjson"
+          if [ "$state" != "OPEN" ]; then
+            labels=$(gh pr view "$HUB" --repo "$repo" --json labels --jq '[.labels[].name]')
+            gh api "repos/$repo/issues/$HUB/timeline?per_page=100" --paginate \
+              -H "Accept: application/vnd.github+json" \
+              --jq '.[] | {event: .event, commit_id: .commit_id}' > "$work/timeline.ndjson"
+          fi
+
+          jq -n --arg state "$state" --argjson labels "$labels" \
+                --slurpfile timeline "$work/timeline.ndjson" \
+            '{state: $state, labels: $labels, timeline: $timeline}' > "$work/facts.json"
+
+          python3 scripts/review_hub_watchdog_gate.py \
+            < "$work/facts.json" > "$work/decision.json"
+          cat "$work/decision.json"
+
+          action=$(jq -r .action "$work/decision.json")
+          reason=$(jq -r .reason "$work/decision.json")
+
+          if [ "$action" = "none" ]; then
+            echo "Hub #$HUB: $reason" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$action" = "fail" ]; then
+            echo "::error::Hub #$HUB: $reason. See AGENTS.md §Review workflow."
+            exit 1
+          fi
+
+          surface=$(jq -r .surface "$work/decision.json")
+          commit=$(jq -r '.commit // ""' "$work/decision.json")
+          case "$surface" in
+            commit)  said="a **commit message**, \`$commit\`" ;;
+            body)    said="a merged pull request's **body** (its \`closed\` event carries no commit)" ;;
+            *)       said="something this job could not identify — its timeline carries no \`closed\` event" ;;
+          esac
+
+          gh pr reopen "$HUB" --repo "$repo"
+
+          workflow_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/.github/workflows/review-hub-watchdog.yml"
+
+          # Written to a file because the body is long and multi-paragraph, and
+          # `--body-file` keeps it out of the shell's quoting. YAML's block scalar has
+          # already stripped this block's common indentation, so the heredoc body and its
+          # terminator reach bash at column 0 and any indentation below is the author's.
+          cat > "$work/hub-reopened.md" <<EOF
+          Reopened automatically. This pull request is the review hub, and it has to stay open.
+
+          It was closed by $said.
+
+          Nothing was lost: the threads and the \`**SWEPT**\` markers are untouched, and a closed hub still serves them. But a closed hub drops off every open-pull-request listing, and neither time this happened was it noticed from GitHub.
+
+          The rule that prevents it is in \`AGENTS.md\` §Review workflow — never reproduce a closing phrase next to this pull request's number, in a commit message, a squash body or a pull request body. Describing the phrase is fine; quoting it is what closes this.
+
+          If you meant to close it, add the \`hub:closed-on-purpose\` label and close it again; this job will leave it alone.
+
+          ---
+          _Posted by [\`review-hub-watchdog.yml\`]($workflow_url)._
+          EOF
+
+          gh pr comment "$HUB" --repo "$repo" --body-file "$work/hub-reopened.md"
+
+          echo "Reopened hub #$HUB: $reason" >> "$GITHUB_STEP_SUMMARY"
