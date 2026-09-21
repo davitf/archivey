@@ -68,7 +68,11 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.streamtools import DelegatingStream, LockedStream
+from archivey.internal.streams.streamtools import (
+    DelegatingStream,
+    LockedStream,
+    source_byte_size,
+)
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
@@ -208,6 +212,39 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
     (_pycdlib_exc.PyCdlibException,) if _pycdlib_exc is not None else ()
 ) + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
 
+
+class _ImageBoundedStream(DelegatingStream):
+    """Caps every read at the bytes left in the image.
+
+    pycdlib clamps a *file*'s ``data_length`` to the image length before reading it,
+    but not a *directory*'s: ``_walk_directories`` reads
+    ``dir_record.get_data_length()`` bytes with the raw 32-bit field, so an image
+    whose root directory record declares 4 GiB asks for 4 GiB — inside ``open_fp``,
+    before a single member is listed, and from a file of any size. A short read
+    instead is reported as an invalid directory record, which
+    :meth:`IsoReader._translate_exception` already turns into ``CorruptionError``;
+    the raw ``MemoryError`` it replaces is not an ``ArchiveyError`` at all.
+
+    Deliberately generic rather than guarding the one call site that was found: every
+    pycdlib read sized from a header field is bounded by the same rule.
+    """
+
+    # ``read`` is the behaviour, so ``readinto`` must not take the zero-copy path
+    # around it. ``peel_for_source_size`` stays at the default: the size is measured
+    # before this wrapper exists, and nothing probes the wrapper itself.
+    readinto_passthrough = False
+
+    def __init__(self, inner: BinaryIO, size: int) -> None:
+        super().__init__(inner)
+        self._size = size
+
+    def read(self, n: int = -1, /) -> bytes:
+        if n < 0:
+            # Read-to-EOF allocates as the bytes arrive; no header number sizes it.
+            return self._inner.read(n)
+        return self._inner.read(min(n, max(self._size - self._inner.tell(), 0)))
+
+
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
 _VERSION_SUFFIX = re.compile(r";\d+$")
 
@@ -299,14 +336,16 @@ class IsoReader(BaseArchiveReader):
         # (a genuine OSError from the handle) propagates unchanged.
         with self._translated_errors():
             with self._handle_guard():
+                # Always our own handle, never ``open(str(source))``: a path pycdlib
+                # opened for itself has nothing of ours underneath it, so there is
+                # nowhere to bound the reads it sizes from the image's own headers.
                 if isinstance(source, Path):
-                    if self._measure:
-                        self._owned_fp = open(source, "rb")
-                        self._iso.open_fp(self._track_source_seeks(self._owned_fp))
-                    else:
-                        self._iso.open(str(source))
+                    self._owned_fp = open(source, "rb")
+                    fp: BinaryIO = self._owned_fp
                 else:
-                    self._iso.open_fp(self._track_source_seeks(source))
+                    fp = source
+                tracked = cast("BinaryIO", self._track_source_seeks(fp))
+                self._iso.open_fp(self._bound_to_image(tracked))
 
         # Auto-select the richest namespace: Rock Ridge > Joliet > plain ISO 9660.
         if self._iso.has_rock_ridge():
@@ -318,6 +357,18 @@ class IsoReader(BaseArchiveReader):
         else:
             self._namespace = "iso9660"
             self._path_kw = "iso_path"
+
+    def _bound_to_image(self, fp: BinaryIO) -> BinaryIO:
+        """Wrap ``fp`` so no pycdlib read can outrun the image, when its size is known.
+
+        ``format-iso`` rejects a non-seekable source at open, so in practice the size
+        is always a cheap probe away. An unsized handle is passed through rather than
+        refused — the bound is a guard, not a contract the caller signed up to.
+        """
+        size = source_byte_size(fp)
+        if size is None:
+            return fp
+        return cast("BinaryIO", _ImageBoundedStream(fp, size))
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if _pycdlib_exc is not None and isinstance(exc, _pycdlib_exc.PyCdlibException):
