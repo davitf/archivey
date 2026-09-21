@@ -1,0 +1,163 @@
+name: Windows junction fixtures (temporary)
+
+# TEMPORARY. Delete this workflow once the junction fixtures are committed under
+# `tests/fixtures/external/` and the ZIP/7z detection has landed.
+#
+# Why it exists: `openspec/specs/archive-data-model/spec.md` promises that a ZIP
+# containing a Windows junction surfaces as a SYMLINK with `extra["is_junction"]`
+# true. Nothing implements that, and nothing could be written honestly without
+# knowing what Windows archivers *actually* store for a junction — which is not a
+# format rule but a per-tool decision. Every archiver here may legitimately follow
+# the junction, skip it, or store it as a reparse point.
+#
+# So this job is a PROBE, not a test. It asserts nothing and is expected to
+# "pass" whatever it finds; the output is the deliverable. Read the dump, then
+# commit the archives that turned out to carry a reparse point as external
+# fixtures with a README section naming the producer and its exact flags.
+#
+# `mklink /J` needs no elevation (only `/D` symlinks do, outside Developer Mode);
+# GitHub's Windows runners are administrator anyway, so both are built and the
+# symlink acts as the control — `is_junction` has to tell the two apart, and a
+# tool that stores both identically is the interesting negative result.
+
+on:
+  workflow_dispatch:
+  # `workflow_dispatch` alone is not enough: GitHub only accepts a dispatch for a
+  # workflow that already exists on the default branch, and this one never will.
+  # The push trigger is how it runs at all; it goes when the workflow does.
+  push:
+    branches:
+      - claude/project-thread-7zxcy4
+
+permissions:
+  contents: read
+
+jobs:
+  build-fixtures:
+    name: Build and dump junction archives
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build the source tree (junction + symlink control)
+        shell: cmd
+        run: |
+          mkdir tree\target
+          echo hello> tree\target\payload.txt
+          echo plain> tree\regular.txt
+          cd tree
+          mklink /J junction_dir target
+          mklink /D symlink_dir target
+          mklink symlink_file target\payload.txt
+          cd ..
+          dir /AL tree
+
+      - name: Archive with every tool and flag combination worth trying
+        shell: cmd
+        # Each command is allowed to fail: a tool that refuses to archive a
+        # junction is itself a finding, and `|| ver > nul` keeps cmd's errorlevel
+        # from failing the step so the later ones still run.
+        run: |
+          mkdir out
+          7z a -t7z out\7z_default.7z  tree\* || ver > nul
+          7z a -t7z out\7z_snl.7z      tree\* -snl || ver > nul
+          7z a -t7z out\7z_snl_snh.7z  tree\* -snl -snh || ver > nul
+          7z a -tzip out\zip_default.zip tree\* || ver > nul
+          7z a -tzip out\zip_snl.zip     tree\* -snl || ver > nul
+          tar -a -c -f out\tar_bsdtar.zip tree || ver > nul
+          tar -c -f out\tar_bsdtar.tar   tree || ver > nul
+          dir out
+
+      - name: Archive with PowerShell Compress-Archive
+        shell: pwsh
+        continue-on-error: true
+        run: Compress-Archive -Path tree\* -DestinationPath out\ps_compress_archive.zip
+
+      - name: Dump what each archive actually recorded
+        shell: bash
+        run: |
+          python - <<'PY'
+          """Report, per entry, the facts junction detection would have to key off.
+
+          Deliberately uses stdlib zipfile and `7z l -slt` rather than archivey:
+          archivey is the thing being taught to read these, so it must not be the
+          instrument that decides what is in them.
+          """
+          import pathlib, subprocess, zipfile
+
+          # Windows FILE_ATTRIBUTE_* bits that ride in a ZIP's external_attr low word.
+          DOS_BITS = {0x10: "DIRECTORY", 0x20: "ARCHIVE", 0x400: "REPARSE_POINT"}
+          # The reparse tag distinguishes a junction from a symlink, and it lives in
+          # the reparse data buffer — i.e. in the member's *content*, not its header.
+          TAGS = {0xA0000003: "MOUNT_POINT (junction)", 0xA000000C: "SYMLINK"}
+
+          def describe_tag(blob: bytes) -> str:
+              if len(blob) < 4:
+                  return ""
+              tag = int.from_bytes(blob[:4], "little")
+              return f"  reparse tag 0x{tag:08X} {TAGS.get(tag, '(unrecognised)')}"
+
+          for path in sorted(pathlib.Path("out").glob("*")):
+              print("=" * 72)
+              print(path.name)
+              if path.suffix in {".zip"}:
+                  with zipfile.ZipFile(path) as zf:
+                      for info in zf.infolist():
+                          attr = info.external_attr
+                          bits = [n for b, n in DOS_BITS.items() if attr & b]
+                          print(
+                              f"  {info.filename!r} create_system={info.create_system} "
+                              f"external_attr=0x{attr:08X} dos={bits} "
+                              f"unix_mode=0o{attr >> 16:o} size={info.file_size}"
+                          )
+                          if 0 < info.file_size <= 4096:
+                              data = zf.read(info)
+                              print(f"      content[:64]={data[:64]!r}")
+                              # Only when the bit is set: every file's first four
+                              # bytes parse as *some* integer, and printing that as
+                              # a "reparse tag" for `plain\r\n` reads as a finding.
+                              if attr & 0x400:
+                                  print(describe_tag(data))
+              elif path.suffix == ".7z":
+                  out = subprocess.run(
+                      ["7z", "l", "-slt", str(path)],
+                      capture_output=True, text=True,
+                  ).stdout
+                  # -slt prints a block per entry; Attributes carries the DOS bits.
+                  for line in out.splitlines():
+                      if line.startswith(("Path =", "Attributes =", "Size =", "Symbolic Link =")):
+                          print("  " + line)
+              else:
+                  out = subprocess.run(
+                      ["tar", "-tvf", str(path)], capture_output=True, text=True
+                  ).stdout
+                  for line in out.splitlines():
+                      print("  " + line)
+          PY
+
+      - name: Emit the archives into the log
+        shell: pwsh
+        # The uploaded artifact needs a browser and a token to fetch. These archives
+        # are a few hundred bytes each, so the log itself is the reliable channel —
+        # and it is the only way to see a 7z member's bytes, which `7z l -slt`
+        # cannot print and extracting on Windows would re-create as a live link.
+        run: |
+          foreach ($f in Get-ChildItem -File out\* | Sort-Object Name) {
+            Write-Output "===== BASE64 $($f.Name) ($($f.Length) bytes) ====="
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($f.FullName)) -split '(.{120})' |
+              Where-Object { $_ } | ForEach-Object { Write-Output $_ }
+            Write-Output "===== END $($f.Name) ====="
+          }
+
+      - name: Upload the archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-junction-archives
+          path: out/
+          if-no-files-found: error
