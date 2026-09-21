@@ -1776,10 +1776,17 @@ def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
     rather than the margin they see.
 
     Those two also run whatever ``7z`` their runner image happens to ship: CI
-    installs and verifies it on Linux only, deliberately, so the shape claims
-    below are *measured* on Linux 7-Zip 23.01 and merely *assumed* elsewhere.
-    The shape assertions therefore carry the writer's own banner, so a failure
-    on a runner nobody measured says which writer produced it.
+    installs and verifies it on Linux only. That was decided for the
+    encrypted-ZIP corpus rows, which need ``7z`` to *write* their fixtures --
+    see ``.github/workflows/ci.yml`` and residual 1 of
+    ``review/archive/2026-07-28-debt-ledger/corpus-matrix.md``, which also
+    carries the cost of any other answer (Homebrew ships ``7zz``, not ``7z``,
+    so ``requires_binary("7z")`` would go on skipping on macOS regardless).
+    This test is a later consumer of that binary and was never weighed in that
+    decision, so the shape claims below are *measured* on Linux 7-Zip 23.01 and
+    merely *assumed* elsewhere. The shape assertions therefore carry the
+    writer's own banner, so a failure on a runner nobody measured says which
+    writer produced it.
     """
     from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
 

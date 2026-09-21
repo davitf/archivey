@@ -37,12 +37,13 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
-- **#389 K7 — `p7zip 16.02` is a mislabelled writer version in three active changes.**
+- **#389 K7 — `p7zip 16.02` is a mislabelled writer version in two active changes.**
   `scripts/setup-dev-env.sh` installs `p7zip-full`, which on a current Debian or Ubuntu
   base is `16.02+transitional.1` and ships no binary of its own: the `7z` it pulls in is
   7-Zip **23.01** from the `7zip` package. An agent reading the version out of the package
   list or the setup log records 16.02 for a binary that reports 23.01. `#389` corrected
-  its own docstring; the same citation is still in
+  its own docstring; the same citation is still on six lines in three documents, across
+  two changes:
   [`sevenzip-aes-tail-key-check/design.md`](../openspec/changes/sevenzip-aes-tail-key-check/design.md)
   (`:4`, `:25`, `:75`, `:126`), that change's
   [`proposal.md`](../openspec/changes/sevenzip-aes-tail-key-check/proposal.md) (`:47`) and
