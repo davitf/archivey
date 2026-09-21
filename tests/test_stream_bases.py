@@ -471,11 +471,11 @@ def _init_keyword(cls: type, name: str) -> object:
     """Literal value of ``name=`` in *this class's* ``__init__`` source, or missing.
 
     Walks AST of the constructor, not a substring: a comment can mention the
-    keyword (``_GzipTruncationCheckStream`` does). Only ``cls.__dict__`` counts
-    — a subclass that inherits ``__init__`` is not charged with the parent's
-    kwarg. Inventories use this only for the "no production kwarg" assert;
-    the flag value itself is read off the class, so inheritance is not this
-    helper's problem.
+    keyword; ``test_init_keyword_ignores_comments`` pins that. Only
+    ``cls.__dict__`` counts — a subclass that inherits ``__init__`` is not
+    charged with the parent's kwarg. Inventories use this only for the
+    "no production kwarg" assert; the flag value itself is read off the
+    class, so inheritance is not this helper's problem.
     """
     if "__init__" not in cls.__dict__:
         return _INIT_KWARG_MISSING
