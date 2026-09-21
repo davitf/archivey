@@ -506,6 +506,17 @@
   requirement currently forbids passing multiple member paths, so this needs a spec
   change and not just an optimization. Raised by davitf, 2026-09-19.
 
+- **Threat-model row for archive-declared decoder memory** — a codec that sizes its
+  working set from a number in the archive's own header (7z PPMd var.H's 32-bit window,
+  ZIP method 98's megabyte count, the LZMA dictionary size) has no row of its own in
+  `dev-docs/threat-model.md`; O11 is the nearest and is about detection-time decode work,
+  which is a different mechanism. `DecoderLimits` closes the PPMd half of it, so the row
+  should read "mitigated for PPMd, open for LZMA". Not written with the guard because
+  `threat-model.md` was owned by another open pull request at the time and an `O`-numbered
+  row cannot be appended without knowing what numbers that one takes. Write it once that
+  lands; the measurements are in the `DecoderLimits` docstring and
+  `tests/test_decoder_limits.py`.
+
 - **Detection budget / receipt public surface** — deferred by `detection-prefix-workspace`
   Decision 3A. Types live in `archivey.detection_cost` but are omitted from
   `archivey.__all__`. When `detection-result-surface` lands, decide: root re-exports vs

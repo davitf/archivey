@@ -250,6 +250,12 @@ class DecoderLimits:
     single byte of member data is, and the allocation that follows is not
     proportional to the archive's size — a 153-byte 7z can ask for 4 GiB.
 
+    **What is capped today: both PPMd paths, and nothing else.** The LZMA
+    dictionary size is the same shape and is next; until it lands, setting this
+    field does not bound an LZMA member. PPMd came first because it is the
+    sharper hazard rather than the larger one — a refused allocation inside
+    pyppmd takes the process down, where liblzma has an error path.
+
     This is not an :class:`ExtractionLimits` field, and the difference is not
     cosmetic. The bomb guards there measure *output*: they count bytes as an
     extraction produces them and stop when the total or the ratio says the
@@ -257,6 +263,11 @@ class DecoderLimits:
     output nor proportional to it, it is claimed up front, and it is claimed on
     ``open()`` and ``read()`` as much as on ``extract()`` — paths
     ``ExtractionLimits`` does not cover at all.
+
+    Applied from the reader's open :attr:`ArchiveyConfig.decoder_limits` for its
+    lifetime, as :class:`ListingLimits` is: the codec-layer view is built once
+    when the reader is, so a later ``extract_all(config=…)`` carrying different
+    decoder limits changes nothing.
 
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every
     one. Exceeding a guard raises
@@ -270,12 +281,16 @@ class DecoderLimits:
 
     Attributes:
         max_decoder_memory: Largest archive-declared working set a single
-            decoder may allocate. The default 1 GiB sits above what real
-            compressors write and below what the header fields can express:
-            measured on 7-Zip 23.01, ``-m0=PPMd:mem=2g`` and ``mem=4g`` both
-            come back out of the writer declaring 512 MiB, while the 7z
-            property that carries the number is 32 bits wide and a hand-edited
-            header can say 4 GiB.
+            decoder may allocate. The default is 1 GiB. What 7-Zip declares is
+            not a fixed ceiling — measured on 23.01, it writes about 16× the
+            input size, bounded by whatever ``-m0=PPMd:mem=…`` asked for — so
+            the figures that matter are these: a plain ``-m0=PPMd`` declares
+            16 MiB and ``-mx9`` 256 MiB whatever the input, while an explicit
+            ``mem=2g`` on a 128 MiB input declares the full 2 GiB. So 1 GiB
+            clears the presets by a wide margin and refuses an archive written
+            with an explicit ``mem`` above it; raise the cap or pass
+            :attr:`UNLIMITED` for those. A hand-edited header can say 4 GiB,
+            which is the whole 32-bit field and what the cap is really for.
     """
 
     max_decoder_memory: int | None = 1 * 2**30
