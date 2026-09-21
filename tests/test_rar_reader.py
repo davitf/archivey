@@ -3728,9 +3728,18 @@ def test_open_unrar_p_missing_stdout_pipe_is_typed(
     class _NoStdout:
         stdout = None
         stdin = None
+        terminated = False
+        waited = False
 
-        def kill(self) -> None:
-            self.killed = True
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.waited = True
+            return 0
 
     proc = _NoStdout()
     monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/bin/true")
@@ -3738,7 +3747,10 @@ def test_open_unrar_p_missing_stdout_pipe_is_typed(
 
     with pytest.raises(ArchiveyError):
         rar_unrar.open_unrar_p(tmp_path / "nonexistent.rar")
-    assert proc.killed is True
+    # The child is terminated *and* reaped, like every other exit from this module
+    # (a bare kill() would leave it unreaped until the next Popen sweeps it).
+    assert proc.terminated is True
+    assert proc.waited is True
 
 
 def _count_packed_skips(path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:

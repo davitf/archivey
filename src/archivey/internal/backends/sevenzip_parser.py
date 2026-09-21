@@ -472,7 +472,8 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
         )
 
     if next_header_size == 0:
-        if next_header_crc != 0 and next_header_crc != _crc32(b""):
+        # _crc32(b"") is 0, so this is the only value an empty next header can carry.
+        if next_header_crc != _crc32(b""):
             raise CorruptionError("7z empty next-header CRC mismatch")
         return SignatureInfo(major_version, minor_version, b"")
 

@@ -12,7 +12,7 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, TypeGuard
+from typing import TYPE_CHECKING, BinaryIO, TypeGuard
 
 from archivey.escaping import display_path
 from archivey.exceptions import (
@@ -25,9 +25,13 @@ from archivey.exceptions import (
 from archivey.internal.streams.streamtools import (
     ensure_full_count_reads,
     is_stream,
+    readinto_via_read,
     reject_source,
     source_name,
 )
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 SourceItem = str | Path | BinaryIO
 SourceSequence = Sequence[SourceItem]
@@ -518,6 +522,11 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         self._recompute_cursor()
         return self._pos
 
+    def readinto(self, b: "WriteableBuffer", /) -> int:
+        # RawIOBase's own readinto raises NotImplementedError; this class overrides
+        # read() instead, so buffering it (io.BufferedReader) needs this bridge.
+        return readinto_via_read(self, b)
+
     def read(self, n: int = -1) -> bytes:
         self._checkClosed()
         if self._pos >= self._size:
@@ -569,6 +578,40 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             super().close()
 
 
+_MAX_ENUMERATED_PARTS = 8
+
+
+def _enumerate_parts(parts: Sequence[int]) -> str:
+    """Render part numbers for an error message, capped so a big set stays readable."""
+    if len(parts) <= _MAX_ENUMERATED_PARTS:
+        return ", ".join(str(part) for part in parts)
+    shown = ", ".join(str(part) for part in parts[:_MAX_ENUMERATED_PARTS])
+    return f"{shown}, … ({len(parts)} in total)"
+
+
+def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
+    """Say what is wrong with a numbered set: which parts are missing, or the order."""
+    present = set(numbered)
+    missing = [part for part in range(1, max(numbered) + 1) if part not in present]
+    if missing:
+        noun = "part" if len(missing) == 1 else "parts"
+        return (
+            f"Incomplete multi-volume set for {base}: "
+            f"missing {noun} {_enumerate_parts(missing)}"
+        )
+    if len(present) != len(numbered):
+        repeated = sorted({part for part in present if numbered.count(part) > 1})
+        noun = "part" if len(repeated) == 1 else "parts"
+        return (
+            f"Repeated volume in multi-volume set for {base}: "
+            f"{noun} {_enumerate_parts(repeated)} given more than once"
+        )
+    return (
+        f"Out-of-order multi-volume set for {base}: parts "
+        f"{_enumerate_parts(numbered)} — concatenation needs them in ascending order"
+    )
+
+
 def _validate_numbered_volume_sequence(paths: Sequence[Path]) -> None:
     """Require ``name.EXT.001 … .00N`` parts to be 1..N with no gaps.
 
@@ -584,12 +627,8 @@ def _validate_numbered_volume_sequence(paths: Sequence[Path]) -> None:
             return
         base = base or match.group("base")
         numbered.append(int(match.group("part")))
-    expected = list(range(1, len(numbered) + 1))
-    if numbered != expected:
-        raise TruncatedError(
-            f"Incomplete multi-volume set for {base}: "
-            f"expected parts {expected}, got {numbered}"
-        )
+    if numbered != list(range(1, len(numbered) + 1)):
+        raise TruncatedError(_numbered_volume_sequence_error(base, numbered))
 
 
 def incomplete_lone_numbered_volume_error(

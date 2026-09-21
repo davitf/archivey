@@ -224,7 +224,9 @@ def emit_member_name_normalized(
         and not presented_name.endswith("/")
     ):
         return
-    message = f"Member name normalized: {presented_name!r} -> {member.name!r}"
+    message = (
+        f"Member name normalized: {quoted(presented_name)} -> {quoted(member.name)}"
+    )
     collector.emit(
         code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
         message=message,

@@ -566,7 +566,7 @@ def open_unrar_p(
             # unrar exited before consuming the password; surface via exit-code mapping.
             pass
     if proc.stdout is None:
-        proc.kill()
+        terminate_unrar(proc)
         # Defensive: Popen was asked for stdout=PIPE, so this should be unreachable. Typed
         # anyway — every archive-read failure surfaces as an ArchiveyError, and a raw
         # RuntimeError here would cross open_archive untranslated.

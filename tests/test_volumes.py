@@ -1139,3 +1139,56 @@ def test_concatenated_file_volume_ranges_for_mixed_path_and_stream(
         assert joined.volume_items[1] is stream_vol
     finally:
         joined.close()
+
+
+def test_concatenated_file_can_be_buffered() -> None:
+    """``ConcatenatedFile`` is handed out as ``open_source``; buffering it must work.
+
+    ``RawIOBase`` expects ``readinto``; this class overrides ``read`` instead, so
+    without an explicit bridge both spellings raised ``NotImplementedError``.
+    """
+    joined = ConcatenatedFile([io.BytesIO(b"AAAA"), io.BytesIO(b"BBBB")])
+    assert io.BufferedReader(joined).read(6) == b"AAAABB"
+
+    joined = ConcatenatedFile([io.BytesIO(b"AAAA"), io.BytesIO(b"BBBB")])
+    buffer = bytearray(6)
+    assert joined.readinto(buffer) == 6
+    assert bytes(buffer) == b"AAAABB"
+
+
+def test_numbered_volume_gap_names_the_missing_parts(tmp_path: Path) -> None:
+    paths = []
+    for part in ("001", "003", "004"):
+        path = tmp_path / f"vol.7z.{part}"
+        path.write_bytes(b"")
+        paths.append(path)
+    with pytest.raises(TruncatedError) as excinfo:
+        join_volumes(paths)
+    message = str(excinfo.value)
+    assert "missing part 2" in message
+    # The old message printed both full lists and left the reader to diff them.
+    assert "expected parts" not in message
+
+
+def test_numbered_volume_set_out_of_order_is_not_called_incomplete(
+    tmp_path: Path,
+) -> None:
+    """A complete set in the wrong order is refused, but nothing is missing."""
+    paths = []
+    for part in ("002", "001"):
+        path = tmp_path / f"vol.7z.{part}"
+        path.write_bytes(b"")
+        paths.append(path)
+    with pytest.raises(TruncatedError) as excinfo:
+        join_volumes(paths)
+    message = str(excinfo.value)
+    assert "Out-of-order" in message
+    assert "Incomplete" not in message
+
+
+def test_numbered_volume_set_repeated_part_says_so(tmp_path: Path) -> None:
+    path = tmp_path / "vol.7z.001"
+    path.write_bytes(b"")
+    with pytest.raises(TruncatedError) as excinfo:
+        join_volumes([path, path])
+    assert "given more than once" in str(excinfo.value)
