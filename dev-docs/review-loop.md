@@ -18,13 +18,16 @@ Linear issue ──@Cursor──► Cursor implements ──► opens a draft pu
                              │  Cursor says it has finished: out of draft, or a
                              │  comment starting `@claude review`. Failing that,
                              ▼  thirty minutes with no new commit
-                  Claude reviews (round N of 3)
+                  Claude reviews (round N, five at most)
                              │
         ┌────────────────────┼──────────────────────────┐
         ▼                    ▼                          ▼
-   nothing found      findings, no question      a maintainer decision
-   loop:done          ping the implementer       loop:decision
-   over to a human    it fixes ─► round N+1      everything stops
+   nothing to see     a 🔴, or a fix to re-read  a maintainer decision
+   again: clean, or   ping the implementer       loop:decision
+   approved with      it fixes ─► round N+1      everything stops
+   nits to fix
+   loop:done
+   over to a human
 ```
 
 | Hop | What triggers it | Where it is configured |
@@ -118,7 +121,7 @@ stopping for a human there would cost a round trip for what is usually a nit.
 A push looks like the end of a piece of work and almost never is. On the first pull
 request this loop ever saw, Cursor pushed at 05:27:09, 05:27:52, 05:28:24 and 05:40:26
 — four commits, thirteen minutes, all one ticket. A review per push would have spent
-the entire three-round cap inside seventy-five seconds, on three snapshots of
+the whole round cap inside seventy-five seconds, on successive snapshots of
 half-written code, and had nothing left for the branch as it finally stood. So pushes
 are not a trigger at all.
 
@@ -188,8 +191,8 @@ sits behind `steps.gate.outputs.run`.
 ### Who may say it
 
 `@claude review` from a repository collaborator is a *forced* round: it runs past the
-three-round cap and past `loop:decision` or `loop:hold`, because a person is who set
-those and is entitled to clear them.
+round cap and past `loop:decision` or `loop:hold`, because a person is who set those
+and is entitled to clear them.
 
 The same comment from `cursor[bot]` or `claude[bot]` is not. It starts an ordinary
 round, so the cap and every park still hold. GitHub reports `author_association: NONE`
@@ -199,9 +202,10 @@ is deliberate: an agent that fixes, comments, fixes and comments would otherwise
 the loop indefinitely, and "I have stopped pushing" is a statement of fact, not a
 request for an exception.
 
-**No comment starts a round past round 6**, whoever sends it — by three different
-routes, not one. A collaborator's meets `MAX_FORCED_ROUNDS`; a bot's met the ordinary
-cap at round 3 long before; a stranger's was never going to start a round at all. The
+**No comment starts a round past `MAX_FORCED_ROUNDS`** — round 8 — whoever sends it,
+and by three different routes, not one. A collaborator's meets that ceiling; a bot's
+met the ordinary cap of five long before; a stranger's was never going to start a round
+at all. The
 ceiling sits inside the collaborator branch rather than ahead of all three, because
 `cap_reached` makes the workflow write `loop:done` and rewrite the status comment, and
 that is not a write to hand to anyone who can type the phrase.
@@ -209,8 +213,11 @@ that is not a write to hand to anyone who can type the phrase.
 The case it exists for is that the first two are not actually distinguishable: the
 review addendum lets an agent post through the maintainer's account, where it is
 `OWNER` like the maintainer, and `MAX_FORCED_ROUNDS` is what stops that from being an
-unbounded spend. Six is twice the automatic cap, so a
-person asking for one more round will never meet it. Past it, `workflow_dispatch` with
+unbounded spend. Three rounds past the automatic cap, so a
+person asking for one more round will never meet it — a constant rather than a multiple
+of the cap, because doubling a cap of five would have put the worst case an agent can
+reach at ten rounds, which is the opposite of what raising the cap was for. Past it,
+`workflow_dispatch` with
 `force` is the override, and that one stays unbounded because a button in the GitHub UI
 is not something an agent presses.
 
@@ -232,10 +239,10 @@ means it is visible in the GitHub UI and a human can change it without a commit.
 | `loop:off` | Never run here. Beats everything, including an explicit request |
 | `loop:decision` | Parked on a maintainer decision |
 | `loop:hold` | Parked by a human, or by a review that failed before reaching a verdict |
-| `loop:done` | Finished: a clean review, or the last round is spent |
+| `loop:done` | Finished: a review that did not ask to see the fix, or the last round spent |
 
 `loop:done` marks the end of the **automatic** loop, not the end of what is possible. A
-person can always buy another round; that is true at round 3 as much as at round 5. So a
+person can always buy another round; that is true at round 5 as much as at round 2. So a
 round bought past the cap still counts as the last automatic one and still puts the label
 back as it finishes. Treating a bought round as "not the last" instead left a pull request
 past the cap with no `loop:done` at all, after the verdict step had cleared the stale
@@ -262,7 +269,8 @@ skipped it for good.
 
 `scripts/review_loop_gate.py` makes every one of these decisions, on facts the workflow
 collects for it, with no GitHub access of its own. That split is so the rules are
-testable: `tests/test_review_loop_gate.py` covers the cap, the quiet period, each
+testable: `tests/test_review_loop_gate.py` covers the cap, the verdict, the quiet
+period, each
 parked label, forks, the choice between several eligible pull requests, and a stranger
 commenting `@claude review`.
 
@@ -277,10 +285,22 @@ commenting `@claude review`.
 - **Answer, then restart.** Reply in the review thread, then post a comment that
   *starts* with `@claude review`.
   That clears the park and buys a round immediately, without waiting for a scan,
-  including a fourth one past the cap.
-- **Three rounds, then a person.** Round 3 says so as it posts, rather than leaving it
-  to be discovered later: there is no round 4 to notice. If three rounds of review and
-  fixes have not converged, another round is not the missing ingredient.
+  including one past the cap.
+- **The verdict stops it, and the cap is behind that.** A round whose verdict is
+  `clean` or `approved` ends the loop where it stands, whatever the counter still
+  allows: `approved` is the reviewer's own "✅ Approve, conditional on the listed
+  fixes" or "💬 Comment" — the findings are posted in full and the implementer is
+  still asked to fix them, and what ends is the *re-reading*. Only 🔄 Request Changes
+  buys another round. `VERDICT_STOPS` in the gate carries the mapping and the reason.
+- **Five rounds, then a person.** The last round says so as it posts, rather than
+  leaving it to be discovered later: nothing after it notices. It was three until
+  2026-09-21, when the cap turned out to be the only thing that ever stopped the loop
+  — every pull request the loop had finished carried `loop:round-3`, none had stopped
+  earlier of its own accord, and two were waiting on the maintainer for a fourth round
+  each. Raising it was safe only once the verdict did the stopping: rounds 4 and 5 are
+  reached only while a reviewer is still asking to see a fix, which on the rounds
+  recorded in full (#380: nine findings, then three, then two; #389: five, three, two)
+  is not what the late rounds were doing.
 - **`loop:off`** takes a pull request out permanently.
 
 ## Sharing `@claude` with the general assistant

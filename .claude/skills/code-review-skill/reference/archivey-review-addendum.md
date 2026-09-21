@@ -189,6 +189,14 @@ correction to wording a previous fix introduced).
 A round 3+ that finds a 🔴 or a 🟡 is a normal round — say so and keep going. The budget
 binds only the case where the remainder is nits.
 
+**Under the automated loop this budget is what stops the loop**, not a suggestion it
+weighs. The round's verdict file maps 🔄 Request Changes to another round and the two
+"I do not need to see the result" verdicts — the conditional approval above, and 💬
+Comment — to the end of the loop, whatever rounds the cap has left
+([`dev-docs/review-loop.md`](../../../../dev-docs/review-loop.md) §Stopping it). So the
+verdict line is a decision about spending another review, and writing 🔄 to keep a round
+in hand spends one on wording you have already described.
+
 ### Two axes: severity ≠ confidence
 
 Rate every finding on both axes so the maintainer reads **severity × confidence** and
