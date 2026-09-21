@@ -1754,51 +1754,94 @@ def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
         parse_sevenzip_archive(io.BytesIO(blob))
 
 
+@pytest.fixture(scope="module")
+def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A tree of ``_MAX_NUM_STREAMS + 1`` one-byte files, built once.
+
+    Both shapes below need the same 65 537 files and nothing mutates them, so
+    the tree is shared rather than rebuilt per shape.
+    """
+    from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
+
+    src = tmp_path_factory.mktemp("above-stream-cap") / "many"
+    src.mkdir()
+    for i in range(_MAX_NUM_STREAMS + 1):
+        directory = src / f"d{i // 1000:03d}"
+        directory.mkdir(exist_ok=True)
+        (directory / f"f{i:05d}.txt").write_bytes(b"x")
+    return src
+
+
 @pytest.mark.timeout(120)
 @requires_binary("7z")
-def test_archives_above_stream_cap_still_open(tmp_path: Path) -> None:
-    """Solid and non-solid 7z above ``_MAX_NUM_STREAMS`` must still open.
+@pytest.mark.parametrize(
+    ("extra_args", "shape", "folders"),
+    [
+        pytest.param([], "solid", "one", id="solid"),
+        pytest.param(["-ms=off", "-mx=0"], "nonsolid", "per-member", id="nonsolid"),
+    ],
+)
+def test_archives_above_stream_cap_still_open(
+    tmp_path: Path,
+    above_stream_cap_tree: Path,
+    extra_args: list[str],
+    shape: str,
+    folders: str,
+) -> None:
+    """A 7z above ``_MAX_NUM_STREAMS`` must still open, solid or not.
 
     That cap is structural (per-folder coders). Applying it to unpack streams
     rejected ordinary solid 7-Zip output (review F1); applying it to pack
     streams / folders rejected non-solid output (review F2). ``max_members``
     is the liftable budget and fires at parse, not after allocating the table.
+
+    The two shapes are separate tests because they shared one 120 s budget and
+    together came close enough to it to time out on the slower CI runners.
+
+    The non-solid archive is built with ``-mx=0``. That is not a shortcut past
+    what F2 covers: measured against 7z 16.02, ``-ms=off -mx=0`` produces the
+    same 65 537 folders and 65 537 unpack streams as the default codec and
+    costs 2.0 s instead of 11.5 s. ``-mx=0`` must not be used for the solid
+    shape, where it splits the single folder F1 needs into one per member --
+    which is why this test asserts the folder layout rather than trusting it.
     """
     from archivey.config import ListingLimits
     from archivey.exceptions import ResourceLimitError
     from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     n = _MAX_NUM_STREAMS + 1
-    src = tmp_path / "many"
-    src.mkdir()
-    for i in range(n):
-        d = src / f"d{i // 1000:03d}"
-        d.mkdir(exist_ok=True)
-        (d / f"f{i:05d}.txt").write_bytes(b"x")
+    src = above_stream_cap_tree
+    archive = tmp_path / f"{shape}.7z"
+    result = subprocess.run(
+        ["7z", "a", "-t7z", *extra_args, str(archive), src.name],
+        cwd=src.parent,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build {shape} fixture: {result.stderr!r}")
 
-    for extra_args, name in (([], "solid"), (["-ms=off"], "nonsolid")):
-        archive = tmp_path / f"{name}.7z"
-        result = subprocess.run(
-            ["7z", "a", "-t7z", *extra_args, str(archive), src.name],
-            cwd=tmp_path,
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            pytest.skip(f"7z CLI cannot build {name} fixture: {result.stderr!r}")
+    # The fixture is only useful if it still has the shape it is named for; a
+    # 7z release that laid these out differently would otherwise leave the test
+    # green while covering neither F1 nor F2.
+    with archive.open("rb") as raw:
+        parsed = parse_sevenzip_archive(raw)
+    assert sum(parsed.num_unpackstreams_folders) == n
+    assert len(parsed.folders) == (1 if folders == "one" else n)
 
-        with open_archive(archive) as reader:
-            files = [m for m in reader.members() if m.is_file]
-            assert len(files) == n
-            assert reader.read(files[-1]) == b"x"
+    with open_archive(archive) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        assert len(files) == n
+        assert reader.read(files[-1]) == b"x"
 
-        tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
-        with pytest.raises(ResourceLimitError, match="max_members"):
-            open_archive(archive, config=tight)
+    tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        open_archive(archive, config=tight)
 
-        unlimited = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
-        with open_archive(archive, config=unlimited) as reader:
-            assert sum(1 for m in reader.members() if m.is_file) == n
+    unlimited = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
+    with open_archive(archive, config=unlimited) as reader:
+        assert sum(1 for m in reader.members() if m.is_file) == n
 
 
 @pytest.mark.timeout(30)
