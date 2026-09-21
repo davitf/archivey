@@ -86,26 +86,34 @@ PR is, not whether it is ready — read the PR.
 | [#390](https://github.com/davitf/archivey/pull/390) | The three-config gate is the author's judgement, except at release | Draft. The non-normative half; **merge #385 first**, which carries the statement it defers to |
 | [#391](https://github.com/davitf/archivey/pull/391) | Commission the public API review for the 0.2.0 freeze | Draft, docs only. Found that the real public surface is 120 importable names, not the 89 in `__all__` |
 
-**A merge commit closed the hub by accident — twice in one afternoon, the second time from
-the page that was warning about the first.** PR 365's squash body ended *"Closes … thread 56
-/ ARC-12"* with the hub's number after the keyword, and merging it at `11:10:27Z` closed the
-hub two seconds later: `closed_at` `2026-09-21T11:10:29Z`, `merged_at` null, the `closed`
-event carrying `0454c54`, PR 365's own merge commit. 142 threads were open. Reopened at
+**A closing keyword closed the hub by accident — twice in one afternoon, the second time
+from the text explaining the first.** Both were GitHub's ordinary documented form: the
+keyword immediately before the hub's number.
+
+PR 365's squash body ended with one, and merging it at `11:10:27Z` closed the hub two
+seconds later: `closed_at` `2026-09-21T11:10:29Z`, `merged_at` null, the `closed` event
+carrying `0454c54`, PR 365's own merge commit. 142 threads were open. Reopened at
 `11:16:47Z`.
 
-The revision of this page that recorded that then did it again. PR 388's squash landed at
-`12:45:29Z` as `e57f4bd` and the hub closed in the same second. Its text carried two
-candidates and neither has been isolated: the subject line said *"close 14 … threads"* with
-the number between the keyword and the reference, and the body said *"… were resolved on
-…"* with a preposition between them. GitHub's documented form is the keyword immediately
-before the reference, and neither of these is that, so **the parser is more permissive than
-its documentation** and reasoning from the documented form is not a defence.
+Then the revision of this page that recorded incident 1 did it again, and **the mechanism is
+the quotation.** Explaining what PR 365 had written meant reproducing the phrase, and PR
+388's *pull request body* reproduced it verbatim, twice. GitHub parses a pull request body on
+merge, so the hub closed at `12:45:29Z`. The squash body is innocent here and its `closed`
+event proves it: that event carries **no commit at all**, where incident 1's carries
+`0454c54`. A closure driven by a commit message records its commit.
 
-**So the rule is the blunt one, not the precise one: keep `close`, `closes`, `closed`, `fix`,
-`fixes`, `fixed`, `resolve`, `resolves` and `resolved` out of any sentence that names the hub
-by number**, in a commit message, a squash body or a pull request body. Write "the hub", name
-a thread by its URL, or say "the fix landed" rather than "closed". A pull request body becomes
-the squash body on merge, so the two are one surface, not two.
+**So the rule is about reproduction, not about proximity: when you write down what a closing
+phrase said, do not reproduce it.** Describe it — "PR 365's squash body ended with a closing
+keyword and the hub's number" — or break the string. §10 of the review addendum already
+carries this exact shape for the review loop's trigger phrase, which is a command rather than
+a quotable string; the hub's number is the same hazard with a different parser. Ordinary
+sentences that merely contain both a keyword and the number are fine: this page has eight of
+them and neither closure came from that shape.
+
+**Two surfaces, not one.** GitHub prefills the squash body from the pull request body, so
+they normally match — but whoever merges can edit the squash body, and PR 388's was edited,
+which is exactly why reading it alone gave the wrong answer here. Both are parsed. Check
+both.
 
 **And a closure fails silently**, which is why the rule has to be mechanical rather than
 watchful. A closed hub still serves every thread over the `ccr/review_threads` route,
@@ -126,8 +134,11 @@ at import.
 
 **Fourteen PRs merged on 2026-09-20 and 2026-09-21** — #365, #370, #371, #372, #373, #374,
 #375, #376, #377, #378, #380, #382 and #383/#384 — and between them they account for
-seventeen threads resolved on the hub. #371, #373, #374 and #375 were the first three decided S15/S16 findings plus the RAR
-mask fix, each turned around in about seven minutes; #370 removed the `pybcj` dependency
+seventeen threads resolved on the hub, counted from the `ccr/review_threads` route on
+2026-09-21 at 12:40Z. (Fifteen of those were the figure before #380 merged and closed S19-K6
+and S19-K8; PR 388's own description still says fifteen.) #371, #373, #374 and #375 were the
+first three decided S15/S16 findings plus the RAR mask fix, each turned around in about
+seven minutes; #370 removed the `pybcj` dependency
 outright; #382, #384 and #380 are the public-API argument, `extra`-typing and enum-coercion
 changes; #372 deleted `formats/rar.md` §10; #376, #377 and #378 are three waves of the typing
 escape-hatch inventory.
