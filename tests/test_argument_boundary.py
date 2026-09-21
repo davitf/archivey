@@ -548,6 +548,10 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("open_stream", "seekable"): "truthiness flag",
     ("detect_format", "follow_stub_volumes"): "truthiness flag",
     ("ArchiveyConfig", "strict_archive_eof"): "truthiness flag",
+    (
+        "ArchiveyConfig",
+        "rar_allow_glob_member_concatenation",
+    ): "truthiness flag",
     # An internal type, accepted so a caller can thread one detection's diagnostics
     # into the reader that follows. A wrong one fails on its own methods, inside code
     # the caller reached for deliberately.
