@@ -113,7 +113,7 @@ jobs:
         if: steps.sync.outcome == 'success'
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          pytest -m ppmd_native_stress -q --timeout=600 --timeout-method=thread -o addopts=
+          pytest -m ppmd_native_stress -q --timeout=600 -o addopts=
 
       - name: Upload stress summary
         if: always()
