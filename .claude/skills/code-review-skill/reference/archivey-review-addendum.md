@@ -191,9 +191,10 @@ binds only the case where the remainder is nits.
 
 **Under the automated loop the verdict is what stops the loop**, not a suggestion it
 weighs — and unlike the budget above it, that is not a round-3 rule: a conditional
-approval at round 1 ends the loop at round 1. The round's verdict file maps 🔄 Request Changes to another round and the two
-"I do not need to see the result" verdicts — the conditional approval above, and 💬
-Comment — to the end of the loop, whatever rounds the cap has left
+approval at round 1 ends the loop at round 1. The round's verdict file maps 🔄 Request
+Changes to another round, and the three "I do not need to see the result" verdicts — a
+plain approval, the conditional approval above, and 💬 Comment — to the end of the
+loop, whatever rounds the cap has left
 ([`dev-docs/review-loop.md`](../../../../dev-docs/review-loop.md) §Stopping it). So the
 verdict line is a decision about spending another review, and writing 🔄 to keep a round
 in hand spends one on wording you have already described.

@@ -445,8 +445,9 @@ opening a comment on it with `@claude review`.
   would post without posting it.
 - **Thirty minutes is a guess**, and it started as ten. It only matters when an agent
   does not send the signal. The change (davitf, 2026-09-19) was about which way to be
-  wrong: a premature round spends one of the cap's rounds on half-written code, while a late one
-  only delays a branch nobody is watching. Ten minutes was short enough that an
+  wrong: a premature round spends one of the cap's rounds on half-written code, while
+  a late one only delays a branch nobody is watching. Ten minutes was short enough that
+  an
   ordinary pause — a long test run, a slow tool call, a session waiting on a person —
   read as "finished". `QUIET_MINUTES` in the gate is the one place to change it.
   **The clock is the committer's, not the push's**: the scan reads the head commit's

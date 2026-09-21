@@ -174,9 +174,10 @@ PARKED_LABELS = (LABEL_DONE, LABEL_DECISION, LABEL_HOLD)
 #: question — `code-review-skill`'s addendum §0 gives it four verdicts, and three of
 #: them mean "I do not need to see the result": a plain approval, a conditional
 #: approval whose only open findings are nits with an obvious fix, and a comment. Only
-#: "request changes" says a 🔴 stands or a fix wants another look. That judgement used to die in the
-#: review's prose: the loop read every round that posted anything as "findings" and
-#: scheduled the next one, so what stopped it was the counter reaching three.
+#: "request changes" says a 🔴 stands or a fix wants another look. That judgement used
+#: to die in the review's prose: the loop read every round that posted anything as
+#: "findings" and scheduled the next one, so what stopped it was the counter reaching
+#: three.
 #:
 #: The addendum's own round budget says the same thing from the other side, on measured
 #: evidence: in the two weeks to 2026-09-19 every 🔴 in this repository was raised in
@@ -200,8 +201,9 @@ VERDICT_STOPS = {
     # A maintainer decision. The loop parks rather than stopping, so answering the
     # question and asking for a round carries on where this left off rather than
     # needing the loop restarted. The round itself still counts: the workflow applies
-    # `loop:round-$ROUND` before it reads the verdict, so a round that ends in a
-    # question has spent one of the cap's. That is deliberate — a round that read the
+    # `loop:round-$ROUND` unconditionally, above the branch that acts on the verdict,
+    # so a round that ends in a question has spent one of the cap's. That is
+    # deliberate — a round that read the
     # diff and found something worth asking about is a round that was spent — and it
     # is why parking is not free.
     "decision": False,
