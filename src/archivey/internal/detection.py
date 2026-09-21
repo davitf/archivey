@@ -67,6 +67,7 @@ from archivey.diagnostics import (
     FormatConflictContext,
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
+from archivey.internal.arg_checks import check_config
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
@@ -91,6 +92,7 @@ from archivey.internal.streams.brotli_framing import (
 from archivey.internal.streams.peekable import DETECTION_LIMIT
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
+    require_source,
     source_name,
 )
 from archivey.internal.volumes import first_volume_for_stub
@@ -543,6 +545,13 @@ def detect_format(
     — the default, so ``detect_format("vol.exe")`` agrees with ``open_archive``.
     ``open_archive`` probes with this flag off, then switches the source itself.
     """
+    # Before anything is read: an object that is neither a path nor a binary stream
+    # used to reach the prefix workspace and die there as
+    # `AttributeError: 'int' object has no attribute 'read'`, while `open_archive` on
+    # the same value already said "unsupported source type". Same refusal, same words.
+    require_source(source)
+    check_config(config, call="detect_format(config=…)")
+
     owned_collector = collector is None
     if owned_collector:
         effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG

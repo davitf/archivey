@@ -36,6 +36,7 @@ import re
 import stat
 import struct
 import threading
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -116,7 +117,7 @@ class _DequeGuardedCollections:
         self._real = real
         self.deque = deque_cls
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         # Reached only for attributes not set in __init__ (i.e. everything but ``deque``).
         return getattr(self._real, name)
 
@@ -155,7 +156,9 @@ def _install_pycdlib_directory_cycle_guard() -> None:
     class _ExtentGuardedDeque(real_deque):
         """A ``deque`` that drops a directory record whose extent it has already scheduled."""
 
-        def __init__(self, iterable: Any = (), *args: Any, **kwargs: Any) -> None:
+        def __init__(
+            self, iterable: Iterable[object] = (), *args: Any, **kwargs: Any
+        ) -> None:
             items = list(iterable)
             super().__init__(items, *args, **kwargs)
             # Seed from the initial contents (which bypass ``append``) so a cycle back to a
@@ -166,7 +169,7 @@ def _install_pycdlib_directory_cycle_guard() -> None:
                 if isinstance(item, dr_mod.DirectoryRecord)
             }
 
-        def append(self, dir_record: Any) -> None:
+        def append(self, dir_record: object) -> None:
             if isinstance(dir_record, dr_mod.DirectoryRecord):
                 extent = dir_record.extent_location()
                 if extent in self._visited_extents:
@@ -418,8 +421,10 @@ class IsoReader(BaseArchiveReader):
         )
         return member
 
+    # rr stays Any: dr_entries / ce_entries (and symlink_path) are real
+    # attribute access, not getattr. Same at _posix_metadata and _symlink_target.
     def _timestamps(
-        self, record: Any, rr: Any
+        self, record: object, rr: Any
     ) -> tuple[datetime | None, datetime | None, datetime | None]:
         modified = _dr_date_to_datetime(getattr(record, "date", None))
         accessed: datetime | None = None

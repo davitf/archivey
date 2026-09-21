@@ -9,6 +9,7 @@ from typing import TypeVar, cast
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest
 from archivey.exceptions import ArchiveyUsageError, EncryptionError
+from archivey.internal.arg_checks import describe_value
 from archivey.types import ArchiveMember
 
 _T = TypeVar("_T")
@@ -76,12 +77,22 @@ class _PasswordCandidates:
             candidates_list: list[bytes] = []
             for item in password:
                 if not isinstance(item, (str, bytes)):
-                    raise TypeError(
-                        "password sequence items must be str or bytes, "
-                        f"not {type(item)!r}"
+                    raise ArchiveyUsageError(
+                        f"password= sequence items must be str or bytes, but one was "
+                        f"{describe_value(item)}."
                     )
                 candidates_list.append(_to_bytes(item))
             return cls(candidates=candidates_list)
+        if not callable(password):
+            # Anything not matched above used to be cast to a provider and stored. The
+            # cast is a promise, not a check, so `password=0` survived open() and
+            # surfaced at the first encrypted member as `'int' object is not callable` —
+            # a raw TypeError, from a call the caller never wrote, about an argument
+            # they passed several operations earlier.
+            raise ArchiveyUsageError(
+                f"password= takes a str, bytes, a sequence of those, a provider "
+                f"callable, or None, but got {describe_value(password)}."
+            )
         return cls(provider=cast(PasswordProvider, password))
 
     def has_passwords(self) -> bool:
@@ -147,6 +158,15 @@ class _PasswordCandidates:
                 self._provider_depth -= 1
         if raw is None:
             return None
+        if not isinstance(raw, (str, bytes)):
+            # Checked here because the provider is the caller's code running inside
+            # ours: without this, its return value reached the cipher and failed as
+            # `TypeError: a bytes-like object is required`, naming neither the
+            # provider nor the password.
+            raise ArchiveyUsageError(
+                f"The password provider returned {describe_value(raw)}; it must "
+                f"return a str, bytes, or None."
+            )
         return _to_bytes(raw)
 
     def record_success(self, password: bytes) -> None:

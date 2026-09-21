@@ -119,3 +119,11 @@ severity × confidence, (3) maintainer decisions. Addendum §10 has the mechanic
   footer if your host does not.
 - End the top-level comment with:
   `Addressing these: .claude/skills/address-review-findings/SKILL.md`.
+- **Submit each file's review before starting the next file.** GitHub allows one pending
+  review per account per pull request, and batches run in parallel on the same account.
+  Holding a slot across a file is what makes that bite.
+- **When a `create` is refused with "User can only have one pending review per pull request",
+  wait about thirty seconds and retry.** That is another batch mid-file. Never submit or
+  delete a pending review you did not create: submitting posts an unfinished review under
+  another batch's name, and deleting discards its findings. Every batch on 2026-09-20 hit
+  this at least once; waiting cost under a minute each time.

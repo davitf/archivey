@@ -28,8 +28,7 @@ leaving it unset. On the auto-detect path the classification detection already p
 be carried through rather than repeated.
 
 The kind SHALL NOT be inferred from `payload_offset > 0` without that read: collapsing every
-non-zero offset to `EXECUTABLE` would reintroduce the `is_sfx` conflation this change exists
-to avoid — a `zipapp`, an executable JAR and a JPEG-with-appended-ZIP are all non-zero, and
+non-zero offset to `EXECUTABLE` would reintroduce the `is_sfx` conflation — a `zipapp`, an executable JAR and a JPEG-with-appended-ZIP are all non-zero, and
 only the first two carry a cue at all.
 
 This SHALL hold for every prefix-capable backend, including on the forced path: 7z and RAR

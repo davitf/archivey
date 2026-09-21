@@ -36,6 +36,12 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     UnsupportedFormatError,
 )
+from archivey.internal.arg_checks import (
+    check_callable,
+    check_config,
+    check_encoding,
+    check_extraction_limits,
+)
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.diagnostics_collector import collector_from_config
@@ -317,6 +323,8 @@ def open_archive(
     open_site = capture_open_site()
 
     format = coerce_archive_format(format, call="open_archive(format=…)")
+    check_config(config, call="open_archive(config=…)")
+    check_encoding(encoding, call="open_archive(encoding=…)")
 
     if streaming and concurrent_members:
         raise ArchiveyUsageError(
@@ -571,6 +579,7 @@ def open_stream(
     # Before any I/O: a value of neither format type used to fall through to
     # auto-detection, which silently discards the caller's assertion.
     format = coerce_stream_or_archive_format(format, call="open_stream(format=…)")
+    check_config(config, call="open_stream(config=…)")
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     collector = collector_from_config(effective_config)
@@ -711,9 +720,9 @@ def extract(
     Returns an :class:`~archivey.ExtractionReport` whose diagnostic summary spans
     detection, open, and extraction for this call.
     """
-    # Converted here rather than left to open_archive and extract_all below, so a
-    # wrong-typed argument is refused before the source is resolved and peeked, and the
-    # message names the call the caller actually made.
+    # Checked and converted here rather than left to open_archive and extract_all
+    # below, so a wrong-typed argument is refused before the source is resolved and
+    # peeked, and the message names the call the caller actually made.
     format = coerce_archive_format(format, call="extract(format=…)")
     policy = coerce_enum(policy, ExtractionPolicy, call="extract()", param="policy=")
     overwrite = coerce_enum(
@@ -723,6 +732,10 @@ def extract(
     abort_on = coerce_enum_collection(
         abort_on, AbortOn, call="extract()", param="abort_on="
     )
+    check_config(config, call="extract(config=…)")
+    check_extraction_limits(limits, call="extract(limits=…)")
+    check_encoding(encoding, call="extract(encoding=…)")
+    check_callable(on_progress, call="extract(on_progress=…)")
 
     # Peek only to choose access mode; open_archive re-resolves ``source`` (cheap).
     peek_target = resolve_source(source).open_source
