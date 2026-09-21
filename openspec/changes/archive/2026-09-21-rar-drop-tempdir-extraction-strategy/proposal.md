@@ -9,10 +9,10 @@ temporary directory and serve later reads from disk", and lets `extract_all()` u
 
 Nothing has ever done either, and the same spec already forbade it twice over. The
 requirement "Use RARLAB unrar only for member data that needs it" ends "The spawn
-SHALL be the `p` (print to stdout) command only", and `Constrain unrar argv by call site` enumerates every call site
-without an `x` among them. So the clause was not merely unbuilt, it contradicted its
-own neighbours — and the argv requirement, not this one, is where per-call-site
-mechanics belong.
+SHALL be the `p` (print to stdout) command only", and `Constrain unrar argv by call
+site` enumerates every call site without an `x` among them. So the clause was not
+merely unbuilt, it contradicted its own neighbours — and the argv requirement, not
+this one, is where per-call-site mechanics belong.
 
 The tree agrees. `unrar` is spawned from one place, `rar_unrar.py`, and always as `p`;
 there is no `x` subcommand in `src/` at all. A solid random `open()` builds a fresh
