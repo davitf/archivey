@@ -1577,7 +1577,14 @@ def _rar5_locator_qopen_abs(
             xsize, pos = load_vint(hdata, pos)
         except CorruptionError:
             break
-        if xsize < 0 or pos + xsize > len(hdata):
+        if xsize < 1 or pos + xsize > len(hdata):
+            # Same rule as the FILE extra walk: one byte is the smallest legal
+            # record, so a declared size of zero is a broken size rather than an
+            # empty record. Stopping matters here for cost rather than
+            # correctness — a zero-size record advances one byte and raises, so
+            # falling through would walk a crafted MAIN extra one byte and one
+            # exception at a time. Giving up costs only quick open, which is what
+            # every other exit from this walk costs too.
             break
         xdata, pos = _load_bytes(hdata, xsize, pos)
         try:
@@ -2242,6 +2249,23 @@ def _parse_rar5_file_block(
                 skipped_records.append(("unknown", None, raw_message_of(exc)))
                 skipped_truncated = True
                 break
+            if xsize < 1:
+                # A record's body opens with its type vint, so one byte is the
+                # smallest legal record: a type with no payload, which is what an
+                # unimplemented record looks like. A declared size of zero names
+                # nothing, so the size vint is wrong and the offset it puts the
+                # next record at is wrong with it. It is also one attacker byte
+                # per record, which is what made a crafted extra area expensive
+                # rather than merely damaged. ``unrar`` 7.00 does carry on here
+                # and gets a wrong answer for it — one such record in front of an
+                # encrypted member and ``unrar l`` reports it as plaintext — so
+                # the oracle that justifies the leniency above does not reach
+                # this case.
+                skipped_records.append(
+                    ("unknown", None, "extra record declares a size of zero")
+                )
+                skipped_truncated = True
+                break
             if pos + xsize > len(hdata):
                 skipped_records.append(
                     ("unknown", None, "extra record overruns the extra area")
@@ -2252,9 +2276,11 @@ def _parse_rar5_file_block(
             try:
                 xtype, xpos = load_vint(xdata, 0)
             except CorruptionError as exc:
-                # A record too short to name itself. ``xsize == 0`` is one
-                # attacker byte per skip; the cap at the loop head is what
-                # stops that becoming one retained tuple per extra byte.
+                # A body of the declared length whose type vint has no terminating
+                # byte. The framing is intact — the next record's offset is known —
+                # so this is a dropped record like any other, not a reason to stop.
+                # Two attacker bytes apiece, which is what the cap at the loop head
+                # keeps from becoming one retained tuple per extra byte.
                 skipped_records.append(("unknown", None, raw_message_of(exc)))
                 continue
             try:
@@ -2344,7 +2370,15 @@ def _parse_rar5_file_block(
         is_directory=is_directory and not is_symlink,
         is_symlink=is_symlink,
         is_hardlink_or_copy=is_hardlink_or_copy,
-        is_encrypted=file_encryption is not None,
+        # Fails closed when the walk stopped early. An unread record may be the
+        # encryption record, and answering "not encrypted" for a member whose
+        # header was not read to the end is a wrong answer rather than a missing
+        # one — the class the carve-out in the walk exists to prevent, and the
+        # one this library ranks worst. Every reader of this flag treats it as a
+        # gate that only *disables* a shortcut, so erring towards encrypted costs
+        # a direct read and routes the member through ``unrar``, which reads the
+        # real header itself.
+        is_encrypted=file_encryption is not None or skipped_truncated,
         volume_index=volume_index,
         split_before=split_before,
         split_after=split_after,

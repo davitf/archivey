@@ -500,12 +500,47 @@ parse failure, attached to the member. Because that code is in `ARCHIVE_INTEGRIT
 a caller who wants the archive refused instead SHALL get that from
 `DiagnosticPolicy.strict()`.
 
-A crafted extra area SHALL NOT retain one skipped record per attacker byte. The number of
-dropped records retained per member is a structural cap (a handful of extras is every
-well-formed FILE; more cannot be useful diagnostics). After the cap the extra-area walk
-for that member stops, and stopping SHALL be reported: a caller SHALL be able to tell a
-member whose records were all read from one whose header was abandoned part-way, because
-how far to trust that member's metadata turns on it.
+A crafted extra area SHALL NOT retain one skipped record per attacker byte, nor cost one
+parse per attacker byte. The number of dropped records retained per member is a structural
+cap (a handful of extras is every well-formed FILE; more cannot be useful diagnostics).
+After the cap the extra-area walk for that member stops, and stopping SHALL be reported: a
+caller SHALL be able to tell a member whose records were all read from one whose header
+was abandoned part-way, because how far to trust that member's metadata turns on it.
+
+The line SHALL fall between a record's *framing* and its *body*, because that is where the
+information is. A body the reader cannot parse costs one record and leaves the next
+record's offset known, so the walk continues. A size vint the reader cannot use costs every
+later record, so the walk stops and reports that it stopped. A size is unusable when it
+cannot be read at all, when it runs past the header, or when it is below the minimum a
+record can have: a record's body opens with its type vint, so **one byte is the smallest
+legal record** — a type with no payload, which is what an unimplemented record looks like —
+and a declared size of zero names nothing while still advancing the cursor, which is what
+made one attacker byte cost one retained record.
+
+`unrar` 7.00 does continue past a zero-size record, and is wrong for it: one such record in
+front of an encrypted member's records makes `unrar l` lose both the encryption record and
+the timestamp and list the member as plaintext. The oracle that justifies the leniency
+above SHALL NOT be read as justifying this.
+
+#### Scenario: A record whose size cannot be used stops the walk
+
+- **GIVEN** a RAR5 FILE extra area whose first record declares a size of zero, or a size
+  larger than what remains of the header, or whose size vint has no terminating byte, with
+  a valid enclosing header CRC
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the walk SHALL stop at that record rather than trying to resynchronise
+- **AND** the member SHALL be reported as having had its header cut short, not listed as
+  though its extra area had been read to the end
+
+#### Scenario: A record whose body cannot name its type is dropped, not fatal
+
+- **GIVEN** a RAR5 FILE extra record declaring a one-byte body that holds only a vint
+  continuation byte, sitting in front of the member's `FHEXTRA_CRYPT` record
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the member SHALL be listed with one `MEMBER_HEADER_RECORD_SKIPPED`
+- **AND** the member SHALL still be reported as encrypted, because the record's size is
+  usable and the walk goes on to reach the encryption record
+- **AND** nothing SHALL report the header as cut short
 
 #### Scenario: A one-byte-short checksum record lists the member without a digest
 
@@ -547,6 +582,25 @@ and this library treats silently wrong metadata as its worst failure class.
 A member whose encryption record cannot be parsed SHALL therefore raise, as it does
 today. It SHALL NOT be listed as unencrypted, and it SHALL NOT be listed as encrypted
 with absent parameters.
+
+A member whose extra-area walk stopped before the end of the area SHALL be reported as
+**encrypted**, whether or not an encryption record was read. The walk may have stopped in
+front of one, so reporting such a member as unencrypted is the same wrong answer reached
+by omission rather than by dropping anything, and the diagnostic saying the header was cut
+short does not change what the field says. This is the one place the sentence above gives
+way and the member carries no parameters: every reader of the flag treats it as a gate
+that only *disables* a shortcut, so erring towards encrypted costs a direct read and
+routes the member through `unrar`, which reads the real header itself.
+
+#### Scenario: A cut-short header never reports an encrypted member as plaintext
+
+- **GIVEN** a RAR5 member whose `FHEXTRA_CRYPT` record is preceded by enough records to
+  stop the walk — past the skip cap, or one whose size cannot be used
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the member SHALL be reported as encrypted and as needing a password
+- **AND** a member whose extra area *was* read to the end SHALL NOT be reported as
+  encrypted merely for having dropped a record, because that question was asked and
+  answered
 
 #### Scenario: An unparseable encryption record refuses the archive
 

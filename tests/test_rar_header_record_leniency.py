@@ -306,10 +306,11 @@ def test_a_zeroed_extra_area_does_not_retain_one_skip_per_byte(tmp_path: Path) -
     """Leniency is not a listing-cost bomb: the extra-area walk stops.
 
     ``blake2sp.rar``'s extra area is 46 bytes. Filling it with zeros used to
-    retain 45 skipped records — one per byte — because ``xsize == 0`` advances
-    ``pos`` by one and records a skip. ``max_members`` cannot see that: it is
-    one member. The cap is the bound; the one-bad-record tests above stay at
-    exactly one diagnostic.
+    retain 45 skipped records — one per byte — because a zero-size record
+    advances the cursor by one and recorded a skip. ``max_members`` cannot see
+    that: it is one member. A zero size now stops the walk on the first one, so
+    this fixture no longer reaches the cap at all; the cap still bounds the
+    records that *are* framed correctly, which is the test below.
     """
     data = (_FIXTURES / "blake2sp.rar").read_bytes()
     records = _extra_records(data)
@@ -340,10 +341,16 @@ def test_stopping_the_walk_early_is_reported_rather_than_silent(
     was read and not all there was. Without a signal for that, a caller sees sixteen
     drops and cannot tell whether the seventeenth record was fine or never looked at
     — and deciding how far to trust a member's metadata turns on exactly that.
+
+    Driven by records that are framed correctly and only unreadable in their
+    bodies, since those are the ones the cap exists for: a broken *size* stops
+    the walk on its own, long before any count matters.
     """
     data = (_FIXTURES / "blake2sp.rar").read_bytes()
-    path = tmp_path / "zero_extra_truncated.rar"
-    path.write_bytes(_zero_extra_area(data))
+    path = tmp_path / "capped_truncated.rar"
+    path.write_bytes(
+        _prepend_extra_bytes(data, _UNTYPED_RECORD * (_MAX_SKIPPED_HEADER_RECORDS + 1))
+    )
 
     with open_archive(path) as archive:
         (member,) = archive.members()
@@ -421,3 +428,246 @@ def test_an_overrunning_extra_record_is_reported(tmp_path: Path) -> None:
         and not d.context.list_truncated
         for d in member.diagnostics
     )
+
+
+def _vint(value: int) -> bytes:
+    out = bytearray()
+    while value >= 0x80:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def _prepend_extra_bytes(data: bytes, prefix: bytes) -> bytes:
+    """Insert raw bytes at the *front* of the first FILE header's extra area.
+
+    Both size vints are rewritten and the header CRC recomputed, so the header
+    stays structurally valid and the records that were already there keep their
+    contents — they have simply moved further into the area. That is what makes
+    this a test of *where* a record sits rather than of what it holds.
+    """
+    pos = 8  # past the RAR5 signature
+    while pos < len(data):
+        crc_at = pos
+        pos += 4
+        header_size, body_at = load_vint(data, pos)
+        header_end = body_at + header_size
+        header_type, p = load_vint(data, body_at)
+        header_flags, p = load_vint(data, p)
+        if header_type != 2:  # not FILE
+            data_size = 0
+            if header_flags & 0x0002:
+                data_size, _ = load_vint(data, p)
+            pos = header_end + data_size
+            continue
+        assert header_flags & 0x0001, "fixture header must have an extra area"
+        size_at = p
+        extra_size, size_end = load_vint(data, p)
+        p = size_end
+        if header_flags & 0x0002:  # data area
+            _data_size, p = load_vint(data, p)
+        file_flags, p = load_vint(data, p)
+        _unpacked, p = load_vint(data, p)
+        _attributes, p = load_vint(data, p)
+        if file_flags & 0x0002:  # mtime
+            p += 4
+        if file_flags & 0x0004:  # CRC32
+            p += 4
+        _compression, p = load_vint(data, p)
+        _host_os, p = load_vint(data, p)
+        name_length, p = load_vint(data, p)
+        p += name_length
+        extra_at = p
+        body = data[body_at:header_end]
+
+        def rel(off: int, base: int = body_at) -> int:
+            return off - base
+
+        new_body = (
+            body[: rel(size_at)]
+            + _vint(extra_size + len(prefix))
+            + body[rel(size_end) : rel(extra_at)]
+            + prefix
+            + body[rel(extra_at) :]
+        )
+        rebuilt = (
+            data[:crc_at]
+            + b"\x00\x00\x00\x00"
+            + _vint(len(new_body))
+            + new_body
+            + data[header_end:]
+        )
+        return fixup_rar_header_crcs(rebuilt, broken=False)
+    pytest.fail("fixture has no RAR5 FILE header")
+
+
+# ``xsize=1``, body ``0x80``: a one-byte body holding a lone vint continuation
+# byte, so the record is framed correctly — the next record's offset is known —
+# but it cannot name its own type. One dropped record, not a reason to stop.
+_UNTYPED_RECORD = b"\x01\x80"
+
+
+def test_a_zero_length_record_stops_the_walk(tmp_path: Path) -> None:
+    """Size zero is not a malformed record, it is a malformed *size*.
+
+    A record's body opens with its type vint, so one byte is the smallest a
+    record can be — a type and no payload, which is a legal unimplemented
+    record. A declared size of zero names nothing, which means the size vint is
+    wrong and so is the offset it puts the next record at. Nothing after it can
+    be trusted, so the walk stops and says it stopped.
+    """
+    data = (_FIXTURES / "blake2sp.rar").read_bytes()
+    path = tmp_path / "zero_length_record.rar"
+    path.write_bytes(_prepend_extra_bytes(data, b"\x00"))
+
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+
+    assert member._raw.skipped_header_records_truncated
+    assert any(d.context.list_truncated for d in member.diagnostics)
+
+
+@pytest.mark.skipif(shutil.which("unrar") is None, reason="needs the unrar CLI")
+def test_unrar_gets_the_zero_length_record_wrong(tmp_path: Path) -> None:
+    """Why the ``unrar`` oracle does not extend to this case.
+
+    Every other leniency in this module is justified by RARLAB's own tool
+    reading the file. Here it reads it and is *wrong*: one zero byte in front of
+    an encrypted member's records and ``unrar l`` loses both the encryption
+    record and the timestamp, then lists the member as plaintext and exits 0.
+    ``*`` is its marker for an encrypted member.
+    """
+    data = (_FIXTURES / "encryption__.rar").read_bytes()
+    clean = tmp_path / "clean.rar"
+    clean.write_bytes(data)
+    nulled = tmp_path / "zero_length_record.rar"
+    nulled.write_bytes(_prepend_extra_bytes(data, b"\x00"))
+
+    def row(path: Path) -> str:
+        result = subprocess.run(
+            ["unrar", "l", "-p-", "-cfg-", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return next(
+            line.strip() for line in result.stdout.splitlines() if "secret.txt" in line
+        )
+
+    assert row(clean).startswith("*"), "unrar marks the untouched member encrypted"
+    assert not row(nulled).startswith("*"), (
+        "the finding this test exists for: one byte and unrar reports an AES "
+        "member as plaintext, so 'unrar lists it' is not a reason to follow it"
+    )
+
+
+def test_a_record_whose_type_cannot_be_read_is_dropped_not_fatal(
+    tmp_path: Path,
+) -> None:
+    """The other side of the rule: bad *body*, sound framing, keep walking.
+
+    ``01 80`` declares a one-byte body holding a lone continuation byte, so the
+    record cannot name its type — but its size is usable, the next record's
+    offset is known, and nothing later is in doubt. That is a dropped record,
+    not a reason to stop, and the encryption record behind it is still found.
+    """
+    data = (_FIXTURES / "encryption__.rar").read_bytes()
+    path = tmp_path / "untyped_record.rar"
+    path.write_bytes(_prepend_extra_bytes(data, _UNTYPED_RECORD))
+
+    with open_archive(path, password="password") as archive:
+        member = archive.members()[0]
+
+    assert member.is_encrypted, "the walk carried on and reached the crypt record"
+    assert not member._raw.skipped_header_records_truncated
+    dropped = [
+        d
+        for d in member.diagnostics
+        if d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+    ]
+    assert len(dropped) == 1
+    assert dropped[0].context.record == "unknown"
+
+
+def test_records_under_the_cap_do_not_hide_the_encryption_record(
+    tmp_path: Path,
+) -> None:
+    """The walk runs to the end of the area, so position does not decide this.
+
+    Pins the leniency side of the cap: a member may drop up to
+    ``_MAX_SKIPPED_HEADER_RECORDS`` records and the encryption record behind
+    them is still read. Without it, a parser that refused every archive carrying
+    any malformed record would pass this module.
+    """
+    data = (_FIXTURES / "encryption__.rar").read_bytes()
+    path = tmp_path / "buried_crypt_under_cap.rar"
+    path.write_bytes(
+        _prepend_extra_bytes(data, _UNTYPED_RECORD * (_MAX_SKIPPED_HEADER_RECORDS - 1))
+    )
+
+    with open_archive(path, password="password") as archive:
+        member = archive.members()[0]
+
+    assert member.is_encrypted
+    assert not member._raw.skipped_header_records_truncated
+    dropped = [
+        d
+        for d in member.diagnostics
+        if d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+    ]
+    assert len(dropped) == _MAX_SKIPPED_HEADER_RECORDS - 1
+
+
+@pytest.mark.parametrize(
+    ("label", "prefix"),
+    [
+        ("cap", _UNTYPED_RECORD * (_MAX_SKIPPED_HEADER_RECORDS + 1)),
+        ("zero_size", b"\x00"),
+        ("overrun", b"\x7f"),
+        ("unterminated_size", b"\x80" * 11),
+    ],
+)
+def test_a_cut_short_header_never_reports_an_encrypted_member_as_plaintext(
+    tmp_path: Path, label: str, prefix: bytes
+) -> None:
+    """The half of this that a truncation diagnostic does not fix.
+
+    Each prefix stops the walk before it reaches the member's ``FHEXTRA_CRYPT``
+    record, so ``file_encryption`` is never set. Reporting that as
+    ``is_encrypted=False`` is a wrong answer rather than a missing one: under the
+    default policy an AES member reads as plaintext, and the diagnostic saying
+    the header was cut short does not change what the field says. A member whose
+    header was not read to the end fails closed instead.
+
+    The cheapest of these is one byte.
+    """
+    data = (_FIXTURES / "encryption__.rar").read_bytes()
+    path = tmp_path / f"cut_short_{label}.rar"
+    path.write_bytes(_prepend_extra_bytes(data, prefix))
+
+    with open_archive(path, password="password") as archive:
+        member = archive.members()[0]
+
+    assert member._raw.skipped_header_records_truncated
+    assert member.is_encrypted, (
+        "the encryption record was never reached, so 'not encrypted' would be a "
+        "claim the header does not support"
+    )
+    assert member._raw.needs_password()
+
+
+def test_failing_closed_does_not_make_every_dropped_record_encrypted(
+    short_hash_archive: Path,
+) -> None:
+    """Failing closed applies to a cut-short header, not to a dropped record.
+
+    A member whose extra area was read to the end has been asked and answered:
+    there was no encryption record. Without this, the guard above would pass
+    against a parser that simply called everything encrypted.
+    """
+    with open_archive(short_hash_archive) as archive:
+        (member,) = archive.members()
+    assert not member._raw.skipped_header_records_truncated
+    assert not member.is_encrypted
