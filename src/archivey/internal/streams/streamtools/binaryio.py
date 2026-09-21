@@ -410,6 +410,51 @@ def _under_buffer(stream: object) -> object:
     return stream
 
 
+def read_within_reach(
+    inner: BinaryIO, size: int, *, remaining: int | None, step: int
+) -> bytes:
+    """``inner.read(size)`` without committing to an allocation ``size`` alone asked for.
+
+    A parser that reads a length out of the file it is parsing will hand that number
+    straight to ``read``, and ``BufferedReader.read(n)`` allocates ``n`` up front — so
+    the allocation lands before the short read reveals the file is three kilobytes.
+    Backends bounding such a read call this instead.
+
+    ``remaining`` is how many bytes the source can still supply, where that is known
+    cheaply (see :func:`source_byte_size`); the read is then simply clamped to it.
+    Where it is not — a decompressor, or any stream that advertises no length — the
+    request is served in ``step``-sized pieces and joined, stopping at the first short
+    read, so the peak tracks the bytes the stream really has rather than the number a
+    header claimed. ``None`` must mean *unknown*, never *unlimited*: an unbounded
+    branch here is the whole bug this function exists to close.
+
+    A short result is the intended outcome, not a loss. The caller's parser gets fewer
+    bytes than the header promised and raises its own error on the spot, which the
+    backend translates; the alternative is a ``MemoryError`` from outside the
+    ``ArchiveyError`` hierarchy, or a multi-gigabyte allocation that succeeds.
+    """
+    if size <= 0:
+        # Negative is read-to-EOF, which allocates as the data arrives; zero must not
+        # consume a byte. Neither is sized from the archive.
+        return inner.read(size)
+    if remaining is not None:
+        return inner.read(min(size, max(remaining, 0)))
+    data = inner.read(min(size, step))
+    if len(data) == size or len(data) < step:
+        # Satisfied in full, or the stream ran out. The first case is every read that
+        # fits in one step, which is why a small read costs no copy.
+        return data
+    parts = [data]
+    taken = len(data)
+    while taken < size:
+        part = inner.read(min(size - taken, step))
+        if not part:
+            break
+        parts.append(part)
+        taken += len(part)
+    return b"".join(parts)
+
+
 def source_byte_size(source: Any) -> int | None:
     """Total byte size of a path or stream source when **cheaply** knowable, else ``None``.
 

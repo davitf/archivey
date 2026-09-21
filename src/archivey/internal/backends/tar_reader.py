@@ -78,6 +78,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     is_seekable,
     is_stream,
+    read_within_reach,
     source_byte_size,
 )
 from archivey.types import (
@@ -192,14 +193,20 @@ class _EofProbeStream:
     therefore never asks the wrapped stream for more than it can still supply.
     """
 
-    # What one ``read`` may ask for when the source's length is unknown — only the
-    # compressed path, where the wrapped stream is our own decompressor and its length
-    # would cost a decompression pass to learn. A request past this is served in steps
-    # and joined, so the peak tracks the bytes the stream really has rather than the
-    # number a header claimed. The join is a second copy of the result, so a single
-    # ``read`` of a compressed member larger than this costs twice its size in peak
-    # memory; a source whose length *is* known never reaches this path and never pays
-    # it. Sized so ordinary reads stay under it rather than to make that copy rare.
+    # What one ``read`` may ask for when the source's length is unknown: the compressed
+    # path, whose length would cost a decompression pass to learn, and any caller-supplied
+    # stream that advertises none. A request past this is split and rejoined, which is the
+    # *normal* case for a member larger than the step on such a source — stdlib ``tarfile``
+    # asks for a whole member in one call, so a 40 MiB member is two and a half steps, not
+    # an exception. That costs no more than the single unsplit read it replaces: measured
+    # on a 40 MiB member of a ``.tar.gz``, ``tracemalloc`` peaks at 84 MB through the split
+    # against 168 MB without it, because the unsplit form commits to the entire request
+    # inside the ``BufferedReader`` before anything else happens. The join copy is real but
+    # it replaces a larger allocation rather than adding to one.
+    #
+    # 16 MiB is chosen as the granularity of the worst-case overshoot — what a hostile
+    # header can make the process hold before the short read stops it — not to keep
+    # ordinary reads under it. Raising it raises that overshoot one for one.
     _UNKNOWN_LENGTH_READ_STEP = 16 * 2**20
 
     def __init__(self, inner: BinaryIO, source_size: int | None = None) -> None:
@@ -226,33 +233,17 @@ class _EofProbeStream:
     def _read_within_reach(self, size: int) -> bytes:
         """``read`` without committing to the allocation the archive asked for.
 
-        A short read is the whole point: ``tarfile`` gets fewer bytes than the header
-        promised and raises its own header error on the spot, which the reader
-        translates. Nothing is dropped quietly — the alternative is a ``MemoryError``
-        from outside the ``ArchiveyError`` hierarchy, or a multi-gigabyte allocation
-        that succeeds.
+        The rule itself lives in :func:`read_within_reach`, because the ISO backend
+        bounds pycdlib's header-sized reads by exactly the same one.
         """
-        if size <= 0:
-            # Negative is read-to-EOF, which allocates as the data arrives; zero must
-            # not consume a byte. Neither is sized from the archive.
-            return self._inner.read(size)
-        if self._source_size is not None:
-            return self._inner.read(min(size, max(self._source_size - self._pos, 0)))
-        step = self._UNKNOWN_LENGTH_READ_STEP
-        data = self._inner.read(min(size, step))
-        if len(data) == size or len(data) < step:
-            # Satisfied in full, or the stream ran out. The first case is every read
-            # that fits in one step, which is why an ordinary member costs no copy.
-            return data
-        parts = [data]
-        taken = len(data)
-        while taken < size:
-            part = self._inner.read(min(size - taken, step))
-            if not part:
-                break
-            parts.append(part)
-            taken += len(part)
-        return b"".join(parts)
+        return read_within_reach(
+            self._inner,
+            size,
+            remaining=(
+                None if self._source_size is None else self._source_size - self._pos
+            ),
+            step=self._UNKNOWN_LENGTH_READ_STEP,
+        )
 
     def seek(self, offset: int, whence: int = 0) -> int:
         self._inner.seek(offset, whence)

@@ -177,14 +177,21 @@ class CountingBytesIO(io.RawIOBase):
 class ReadSizeRecorder(io.RawIOBase):
     """A seekable in-memory stream that records the size asked of every ``read``.
 
-    ``size`` is the fsspec convention :func:`source_byte_size` honours, so the reader
-    gets the stream's length the same cheap way it gets a file's.
+    With ``advertise_size`` (the default), ``size`` is the fsspec convention
+    :func:`source_byte_size` honours, so the reader gets the stream's length the same
+    cheap way it gets a file's. Without it the attribute is absent, which is what an
+    ordinary caller-supplied seekable file-like looks like: seekable, but not a path,
+    not one of the types ``source_byte_size`` will end-seek, and so unmeasurable
+    cheaply. The two send a backend down different branches of its bound, and a guard
+    tested only on the advertised one is untested on the branch every compressed
+    source takes.
     """
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, *, advertise_size: bool = True) -> None:
         super().__init__()
         self._inner = io.BytesIO(data)
-        self.size = len(data)
+        if advertise_size:
+            self.size = len(data)
         self.requested: list[int] = []
 
     def readable(self) -> bool:

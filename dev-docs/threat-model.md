@@ -535,8 +535,9 @@ random-access path is affected too.
 *Closed:* `_EofProbeStream`, which already wraps the fileobj on exactly this path,
 never asks its inner stream for more than it can still supply. Where the source's
 length is a fact (a file, a sized stream) the read is clamped to what is left; where
-it is not (our own decompressor, whose length would cost a pass to learn) the request
-is served in bounded steps, so the peak tracks the bytes the stream really has. A
+it is not — our own decompressor, whose length would cost a pass to learn, and any
+caller-supplied stream that advertises none — the request is served in bounded steps,
+so the peak tracks the bytes the stream really has. A
 flat metadata cap was the obvious fix and is wrong: member data reads go through the
 same wrapper, so a 40 MiB member arrives as one 41 943 040-byte request. Found on
 PR #315 (S18-K1); tracked internally.
@@ -558,12 +559,27 @@ which opens its own handle with nothing of archivey's underneath it, so there wa
 nowhere to put a bound.
 
 *Closed:* every source goes through `open_fp` with archivey's own handle, wrapped in
-`_ImageBoundedStream` so one `read(n)` is capped at the bytes left in the image. The
-source is seekable by contract (`format-iso` rejects a non-seekable one at open), so
-the size is a cheap probe. pycdlib then gets a short read and raises
+`_ImageBoundedStream`, which applies the same rule as O15's — the two share
+`read_within_reach`. The wrap is **unconditional**, because the image's length often
+is not knowable: being seekable is not the same as being cheaply measurable, and
+`source_byte_size` answers only from a path `stat`, an integer `size` attribute,
+`try_get_size()`, or a whitelist of types whose end-seek is provably O(1). An ordinary
+caller-supplied file-like matches none of those, so it returns `None` — and a wrapper
+applied only when the size is known would have left exactly that source unbounded.
+Where the length is a fact the read is clamped to the bytes left in the image; where
+it is not, the request is served in bounded steps, so the peak tracks the bytes the
+stream really has rather than the field. Stepping is also what keeps this correct when
+the source is a nested member stream, whose `SEEK_END` would decompress the payload a
+probe here was trying to avoid. pycdlib then gets a short read and raises
 `PyCdlibInvalidISO`, which `_translate_exception` maps to `CorruptionError`. The cap
-is generic, so it also closes any other pycdlib read sized from a header field. Found
-on PR #315 (S22-K1); tracked internally.
+is generic, so it also closes any other pycdlib read sized from a header field.
+
+Opening the handle here brings its release with it: a failure between the `open` and
+the constructor returning leaves no reader for the caller to close, and the
+exception's traceback pins the frame — and the fp — for as long as a
+catch-and-continue loop holds it, one descriptor per refused image. The open is
+wrapped so the handle is closed before the exception leaves. Found on PR #315
+(S22-K1); tracked internally.
 
 ## OPEN gaps — compatibility
 

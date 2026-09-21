@@ -5,8 +5,10 @@ degradation slice (ISO without pycdlib). Skipped when pycdlib is absent."""
 from __future__ import annotations
 
 import io
+import os
 import struct
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -25,7 +27,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedOperationError,
 )
-from archivey.internal.backends.iso_reader import IsoReader
+from archivey.internal.backends.iso_reader import IsoReader, _ImageBoundedStream
 from archivey.internal.registry import FormatSupport, get_registry
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO, ReadSizeRecorder
@@ -442,7 +444,10 @@ def _iso_with_oversized_root_directory(declared: int) -> bytes:
     return bytes(blob)
 
 
-def test_directory_data_length_does_not_drive_the_allocation() -> None:
+@pytest.mark.parametrize("advertise_size", [True, False], ids=["sized", "unsized"])
+def test_directory_data_length_does_not_drive_the_allocation(
+    advertise_size: bool,
+) -> None:
     """A directory record's 32-bit length must not size a read of the image.
 
     It is read at ``open_fp`` time, before a member is listed, so a small image buys
@@ -450,12 +455,20 @@ def test_directory_data_length_does_not_drive_the_allocation() -> None:
     ``ArchiveyError`` at all. Asking for the bytes is the observable: whether the
     allocation then succeeds depends on the machine.
 
-    Fails against handing pycdlib an unbounded handle, which passes 4 294 967 040
-    straight through to the source.
+    The two parameters are the two branches of the bound, and they fail against
+    different mutations. ``sized`` advertises the fsspec ``size`` attribute, so the
+    image's length is known and the read is clamped to what is left; it fails against
+    handing pycdlib an unbounded handle, which passes 4 294 967 040 straight through.
+    ``unsized`` hides it, which is what an ordinary caller-supplied seekable
+    file-like looks like — not a path, not one of the types ``source_byte_size`` will
+    end-seek — and it is the branch a wrapper applied only when the length is known
+    does not cover at all: it fails against wrapping conditionally, and against
+    reading ``size`` whole once the length is unknown, both of which pass the same
+    4 294 967 040.
     """
     declared = 0xFFFFFF00
     data = _iso_with_oversized_root_directory(declared)
-    source = ReadSizeRecorder(data)
+    source = ReadSizeRecorder(data, advertise_size=advertise_size)
 
     with pytest.raises(CorruptionError):
         open_archive(source, format=ArchiveFormat.ISO)
@@ -463,10 +476,13 @@ def test_directory_data_length_does_not_drive_the_allocation() -> None:
     assert source.requested, "the source was never read"
     # As in the TAR equivalent: the source sits under a ``BufferedReader`` whose refill
     # size is a runtime constant (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13,
-    # 128 KiB from 3.14), larger than this image on a recent Python. The bound is the
-    # image or one refill, whichever is larger; what is pinned is that no read scales
-    # with ``declared``.
-    bound = max(len(data), io.DEFAULT_BUFFER_SIZE)
+    # 128 KiB from 3.14), larger than this image on a recent Python. The bound is one
+    # refill or, whichever is larger, the image when its length is known and the step
+    # when it is not; what is pinned is that no read scales with ``declared``.
+    reach = (
+        len(data) if advertise_size else _ImageBoundedStream._UNKNOWN_LENGTH_READ_STEP
+    )
+    bound = max(reach, io.DEFAULT_BUFFER_SIZE)
     assert max(source.requested) <= bound, (
         f"asked the source for {max(source.requested)} bytes "
         f"from a {len(data)}-byte image"
@@ -496,6 +512,49 @@ def test_a_path_source_refuses_the_same_image(tmp_path: Path) -> None:
 
     with pytest.raises(CorruptionError):
         open_archive(path)
+
+
+def test_a_refused_path_source_does_not_hold_its_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path open that fails must close the handle it opened, not wait for the GC.
+
+    The reader opens the path itself so it has something to bound (see
+    ``test_a_path_source_is_read_through_our_own_handle``). A failure after that open
+    leaves the file object in the frame's locals, and the exception's traceback keeps
+    that frame alive for as long as the caller holds the exception — which an
+    inventory or fuzz loop that catches and continues does for the whole batch, one
+    descriptor per refused image. ``pytest.raises`` holds it here the same way.
+
+    Fails against letting the exception out of ``__init__`` without releasing the
+    handle: every fp recorded below is then still open at the assertion.
+    """
+    import builtins
+
+    path = tmp_path / "bomb.iso"
+    path.write_bytes(_iso_with_oversized_root_directory(0xFFFFFF00))
+
+    real_open = builtins.open
+    opened: list[IO[bytes]] = []
+
+    def recording_open(file, *args, **kwargs):  # type: ignore[no-untyped-def]
+        fp = real_open(file, *args, **kwargs)
+        if isinstance(file, (str, os.PathLike)) and Path(file) == path:
+            opened.append(fp)
+        return fp
+
+    monkeypatch.setattr(builtins, "open", recording_open)
+    try:
+        with pytest.raises(CorruptionError) as excinfo:
+            open_archive(path, format=ArchiveFormat.ISO)
+        # The traceback is what pinned the handle; assert it is still here, so this
+        # test cannot pass by the exception having been collected instead.
+        assert excinfo.value.__traceback__ is not None
+        assert opened, "the reader did not open the path itself"
+        assert [fp for fp in opened if not fp.closed] == []
+    finally:
+        for fp in opened:
+            fp.close()
 
 
 def test_a_clean_image_is_unaffected(rock_ridge_iso: Path) -> None:

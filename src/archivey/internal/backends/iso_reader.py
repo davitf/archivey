@@ -32,6 +32,7 @@ is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever
 from __future__ import annotations
 
 import importlib
+import io
 import re
 import stat
 import struct
@@ -71,6 +72,8 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
+    is_seekable,
+    read_within_reach,
     source_byte_size,
 )
 from archivey.types import (
@@ -227,6 +230,22 @@ class _ImageBoundedStream(DelegatingStream):
 
     Deliberately generic rather than guarding the one call site that was found: every
     pycdlib read sized from a header field is bounded by the same rule.
+
+    ``size`` is ``None`` when the image's length is not cheaply knowable, which an
+    ordinary caller-supplied seekable stream is: it advertises no ``size`` and is not
+    one of the types :func:`source_byte_size` will end-seek. That case is bounded by
+    stepping, never by passing the request through — an earlier revision returned the
+    handle unwrapped there and a 55 KiB image still asked its source for 4 294 950 912
+    bytes.
+
+    **This wrapper is deliberately never closed**, although it inherits
+    :class:`DelegatingStream`'s owning default and is recorded that way in
+    ``tests/test_stream_bases.py``. Its inner is either the handle
+    :class:`IsoReader` owns — closed by ``_close_archive`` directly — or the caller's
+    own stream, which archivey must not close; pycdlib closes neither, since
+    ``_managing_fp`` is set only by ``open()``. So the ownership flag must stay inert,
+    and tidying ``_close_archive`` to close what the constructor built would close a
+    caller's handle. See ``dev-docs/topics/stream-ownership.md``.
     """
 
     # ``read`` is the behaviour, so ``readinto`` must not take the zero-copy path
@@ -234,15 +253,32 @@ class _ImageBoundedStream(DelegatingStream):
     # before this wrapper exists, and nothing probes the wrapper itself.
     readinto_passthrough = False
 
-    def __init__(self, inner: BinaryIO, size: int) -> None:
+    # As in ``tar_reader._EofProbeStream``: the granularity of the worst-case overshoot
+    # when the length is unknown, not a ceiling on a legitimate read.
+    _UNKNOWN_LENGTH_READ_STEP = 16 * 2**20
+
+    def __init__(self, inner: BinaryIO, size: int | None) -> None:
         super().__init__(inner)
         self._size = size
+        # Tracked rather than asked for per read: ``DelegatingStream.tell`` forwards to
+        # the inner, and pycdlib reads a directory in 2048-byte logical blocks.
+        self._pos = inner.tell() if is_seekable(inner) else 0
 
     def read(self, n: int = -1, /) -> bytes:
-        if n < 0:
-            # Read-to-EOF allocates as the bytes arrive; no header number sizes it.
-            return self._inner.read(n)
-        return self._inner.read(min(n, max(self._size - self._inner.tell(), 0)))
+        chunk = read_within_reach(
+            self._inner,
+            n,
+            remaining=None if self._size is None else self._size - self._pos,
+            step=self._UNKNOWN_LENGTH_READ_STEP,
+        )
+        self._pos += len(chunk)
+        return chunk
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        # pycdlib seeks constantly; ``_pos`` is re-synced from the inner rather than
+        # computed, so it cannot drift out of step with it.
+        self._pos = super().seek(offset, whence)
+        return self._pos
 
 
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
@@ -334,18 +370,28 @@ class IsoReader(BaseArchiveReader):
         self._owned_fp: BinaryIO | None = None
         # Boundary outside the guard; an exception the translator does not recognize
         # (a genuine OSError from the handle) propagates unchanged.
-        with self._translated_errors():
-            with self._handle_guard():
-                # Always our own handle, never ``open(str(source))``: a path pycdlib
-                # opened for itself has nothing of ours underneath it, so there is
-                # nowhere to bound the reads it sizes from the image's own headers.
-                if isinstance(source, Path):
-                    self._owned_fp = open(source, "rb")
-                    fp: BinaryIO = self._owned_fp
-                else:
-                    fp = source
-                tracked = cast("BinaryIO", self._track_source_seeks(fp))
-                self._iso.open_fp(self._bound_to_image(tracked))
+        try:
+            with self._translated_errors():
+                with self._handle_guard():
+                    # Always our own handle, never ``open(str(source))``: a path pycdlib
+                    # opened for itself has nothing of ours underneath it, so there is
+                    # nowhere to bound the reads it sizes from the image's own headers.
+                    if isinstance(source, Path):
+                        self._owned_fp = open(source, "rb")
+                        fp: BinaryIO = self._owned_fp
+                    else:
+                        fp = source
+                    tracked = cast("BinaryIO", self._track_source_seeks(fp))
+                    self._iso.open_fp(self._bound_to_image(tracked))
+        except BaseException:
+            # Owning the handle means owning its release on the failure path: no reader
+            # is returned for anyone to close, and the exception's traceback keeps this
+            # frame — and the fp with it — alive for as long as the caller holds it
+            # (inventory/fuzz catch-and-continue loops). Before this backend opened its
+            # own handle, ``PyCdlib.open`` closed the one it had opened itself.
+            # ``_owned_fp`` only: a caller-supplied stream is the caller's.
+            self._release_owned_fp()
+            raise
 
         # Auto-select the richest namespace: Rock Ridge > Joliet > plain ISO 9660.
         if self._iso.has_rock_ridge():
@@ -359,16 +405,18 @@ class IsoReader(BaseArchiveReader):
             self._path_kw = "iso_path"
 
     def _bound_to_image(self, fp: BinaryIO) -> BinaryIO:
-        """Wrap ``fp`` so no pycdlib read can outrun the image, when its size is known.
+        """Wrap ``fp`` so no pycdlib read can outrun the image.
 
-        ``format-iso`` rejects a non-seekable source at open, so in practice the size
-        is always a cheap probe away. An unsized handle is passed through rather than
-        refused — the bound is a guard, not a contract the caller signed up to.
+        Unconditionally, including when :func:`source_byte_size` cannot answer. Being
+        seekable is not the test it applies — it answers from a path ``stat``, an
+        integer ``size`` attribute, ``try_get_size()``, or a whitelist of types whose
+        end-seek is provably cheap — so an ordinary caller-supplied file-like returns
+        ``None`` and used to be handed through with no bound at all. Stepping is what
+        covers that case, and it stays correct when the source is a nested member
+        stream whose end-seek would decompress, which an unconditional ``SEEK_END``
+        probe here would not.
         """
-        size = source_byte_size(fp)
-        if size is None:
-            return fp
-        return cast("BinaryIO", _ImageBoundedStream(fp, size))
+        return cast("BinaryIO", _ImageBoundedStream(fp, source_byte_size(fp)))
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if _pycdlib_exc is not None and isinstance(exc, _pycdlib_exc.PyCdlibException):
@@ -572,12 +620,16 @@ class IsoReader(BaseArchiveReader):
             extra=info_extra,
         )
 
-    def _close_archive(self) -> None:
-        with self._handle_guard():
-            self._iso.close()
+    def _release_owned_fp(self) -> None:
+        """Close the handle this reader opened, if any. Safe to call more than once."""
         if self._owned_fp is not None:
             self._owned_fp.close()
             self._owned_fp = None
+
+    def _close_archive(self) -> None:
+        with self._handle_guard():
+            self._iso.close()
+        self._release_owned_fp()
 
 
 class IsoReadBackend(ReadBackend):

@@ -228,13 +228,6 @@ testpaths = ["tests"]
 # (SIGALRM on POSIX — suite continues; a process-killing thread dump on Windows). 60s is far
 # above any real test here (all run in milliseconds), so only a genuine hang trips it.
 addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
-# thread, not pytest-timeout's POSIX default of signal. Ported from the CI branch that
-# owns this setting, so it no-ops once that lands; it is here because `py3.14 / core-only`
-# hangs on this branch and dies blind at `timeout-minutes` with --timeout armed and never
-# fired, naming no test. The thread method arms a threading.Timer instead, which dumps
-# every thread's stack and then calls os._exit(1). An ini option rather than an addopts
-# flag so the steps that run with `-o addopts=` keep it. Diagnostic, not a fix.
-timeout_method = "thread"
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",

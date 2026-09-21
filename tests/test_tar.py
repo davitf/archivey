@@ -1386,7 +1386,10 @@ def _tar_with_oversized_metadata_header(typeflag: bytes, declared: int) -> bytes
 
 
 @pytest.mark.parametrize("typeflag", [b"x", b"L"])
-def test_extended_header_size_does_not_drive_the_allocation(typeflag: bytes) -> None:
+@pytest.mark.parametrize("advertise_size", [True, False], ids=["sized", "unsized"])
+def test_extended_header_size_does_not_drive_the_allocation(
+    typeflag: bytes, advertise_size: bool
+) -> None:
     """A 10 KB archive must not make the reader ask its source for 6 GiB.
 
     stdlib ``tarfile`` reads a PAX extended header or a GNU long name with a single
@@ -1395,12 +1398,20 @@ def test_extended_header_size_does_not_drive_the_allocation(typeflag: bytes) -> 
     the bytes is the observable: whether the allocation then succeeds depends on the
     machine, so it is the request that is pinned, not a ``MemoryError``.
 
-    Fails against the unbounded ``self._inner.read(size)`` this wrapper used to do,
-    which passes 6 442 450 944 straight through.
+    The two parameters are the two branches of the bound, and they are bounded by
+    different things. ``sized`` advertises the fsspec ``size`` attribute, so the
+    reader knows how many bytes are left and clamps to exactly that; it fails against
+    the unbounded ``self._inner.read(size)`` this wrapper used to do, which passes
+    6 442 450 944 straight through. ``unsized`` hides it, which is what every
+    compressed source and every ordinary caller-supplied file-like looks like: the
+    length is unknown, so the read is stepped instead, and this case fails against
+    treating an unknown length as an unlimited one (``remaining is None`` forwarding
+    ``size`` down), which passes the same 6 442 450 944. A bound tested only on the
+    advertised branch is untested on the branch most sources actually take.
     """
     declared = 6 * 1024**3
     data = _tar_with_oversized_metadata_header(typeflag, declared)
-    source = ReadSizeRecorder(data)
+    source = ReadSizeRecorder(data, advertise_size=advertise_size)
 
     with pytest.raises(CorruptionError):
         with open_archive(source, format=ArchiveFormat.TAR) as reader:
@@ -1409,10 +1420,16 @@ def test_extended_header_size_does_not_drive_the_allocation(typeflag: bytes) -> 
     assert source.requested, "the source was never read"
     # The source sits under a ``BufferedReader``, whose refill size is a constant of
     # the runtime (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13, 128 KiB from 3.14)
-    # and has nothing to do with the archive. So the bound is the archive or one
-    # refill, whichever is larger; what the assertion pins is that no read scales with
-    # ``declared``, which is six gigabytes.
-    bound = max(len(data), io.DEFAULT_BUFFER_SIZE)
+    # and has nothing to do with the archive. So the bound is one refill or, whichever
+    # is larger, the archive when its length is known and the step when it is not;
+    # what both assertions pin is that no read scales with ``declared``, which is six
+    # gigabytes.
+    reach = (
+        len(data)
+        if advertise_size
+        else tar_reader_module._EofProbeStream._UNKNOWN_LENGTH_READ_STEP
+    )
+    bound = max(reach, io.DEFAULT_BUFFER_SIZE)
     assert max(source.requested) <= bound, (
         f"asked the source for {max(source.requested)} bytes "
         f"from a {len(data)}-byte archive"
