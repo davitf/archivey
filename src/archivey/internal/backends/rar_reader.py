@@ -358,6 +358,8 @@ class _UnrarOwnedStream(DelegatingStream):
     ``close()``. ``close()`` still maps if the empty-read path never ran (early stop).
     """
 
+    # Side-effecting read(); disable passthrough so counting still runs on readinto.
+    readinto_passthrough = False
     _SUBCLASS_CLOSES_INNER = True
 
     def __init__(
@@ -369,8 +371,7 @@ class _UnrarOwnedStream(DelegatingStream):
         has_verifiable_hash: bool = False,
         encrypted: bool = False,
     ) -> None:
-        # Track bytes via read(); disable readinto passthrough so counting is not skipped.
-        super().__init__(stdout, readinto_passthrough=False)
+        super().__init__(stdout)
         self._proc = proc
         self._named_member = named_member
         self._has_verifiable_hash = has_verifiable_hash

@@ -130,7 +130,9 @@ next open of that part. A borrowed `BinaryIO` volume is re-seeked before every
 read. A Path handle is seeked when the cursor lands on it — from a seek, from
 a sequential advance into a cached volume, or on first open.
 
-`readinto_passthrough` shares `DelegatingStream.__init__` and is not ownership.
+`readinto_passthrough` and `peel_for_source_size` share the same
+class-flag-plus-constructor-override pattern as `_SUBCLASS_CLOSES_INNER`.
+Neither is ownership.
 
 ## 5. Leak oracle
 
