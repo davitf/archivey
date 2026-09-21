@@ -11,7 +11,8 @@
 > Every item below lives somewhere canonical — [`open-issues.md`](open-issues.md),
 > [`threat-model.md`](threat-model.md), [`IDEAS.md`](IDEAS.md),
 > [`review/backlog.md`](../review/backlog.md), [`review/STATUS.md`](../review/STATUS.md),
-> the `§10` register on [`formats/rar.md`](formats/rar.md), or an `openspec/changes/`
+> the format handbook ([`formats/rar.md`](formats/rar.md) §7 for unfinished RAR work),
+> or an `openspec/changes/`
 > directory. This page adds the one thing none of them can carry: **what blocks what, across
 > registers**, and which entries are already dead. When it disagrees with a register, the
 > register wins and this page is stale.
@@ -41,7 +42,7 @@ findings cost to fix — and that is the sweep working as intended rather than a
 | [#315](https://github.com/davitf/archivey/pull/315) review threads | 71 total, **52 resolved, 19 open** | Parcels A–E closed 44 between 2026-09-11 and 2026-09-17; five S1/S2 threads resolved 2026-09-19; thread 56 closed by [#365](https://github.com/davitf/archivey/pull/365) (ARC-12). Left: parcel F and ten S1/S2 findings |
 | `openspec/changes/` (13 active) | 12 unimplemented, 1 half-done | `prefixed-archive-detection` is 31/68; the rest are 0/N. 363 tasks outstanding. #347/#356 added three RAR changes; #251, #274 and #185 merged three more |
 | [`open-issues.md`](open-issues.md) | 13 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned; **P18 is new** since the first snapshot |
-| [`formats/rar.md`](formats/rar.md) `§10` | 4 of 21 (#6 layer 2, #18, #19, #21) | Healthy — 17 closed with PR links |
+| [`formats/rar.md`](formats/rar.md) `§10` | **gone** — the section is deleted | It said to delete it once empty, and it is: 19 of 21 shipped, #19 and #21 last. The two that had not shipped moved to homes that outlive it — the stream-copy bound to §7, the `unrar` mask port to [`IDEAS.md`](IDEAS.md) — and both are tracked internally |
 | [`formats/rar.md`](formats/rar.md) `§7` | 5 open questions | Healthy; the duplicated entry was merged in #323 |
 | [`IDEAS.md`](IDEAS.md) | 55 entries | A park, **not a queue** — see below. Two entries have stale framing; see [Already dead](#already-dead) |
 | [`review/backlog.md`](../review/backlog.md) | 3 PR parks, 7 archived-review parks, Topics 6/7 | #320 F2 is the only one with a live question |
@@ -461,7 +462,7 @@ design.
 
 | Page | State |
 | --- | --- |
-| `rar.md` | **Written**, and carrying its own unfinished work: `§7` has 5 open questions, `§10` has 4 of 21 changes still open (#6 layer 2, #18, #19, #21) |
+| `rar.md` | **Written**; `§7` has 5 open questions. The temporary to-fix list is gone: #19 and #21 shipped, #6 layer 2 lives in §7, the `unrar` mask port in [`IDEAS.md`](IDEAS.md) |
 | `zip.md` | **Written**; `§7` has 1 open question (whether PKWARE Strong Encryption deserves an explicit refusal rather than a misleading wrong-password error) |
 | `sevenzip.md` | **Missing.** The format with the most machinery behind it after RAR — folders, coder graphs, substreams, BCJ2 unsupported — and three #315 threads still open against its reader |
 | `tar.md` | **Missing.** Includes the stdlib-leniency question that `open-issues.md` **P3** is about |
@@ -469,8 +470,8 @@ design.
 | `single-file.md` | **Missing.** gzip, bzip2, xz, lzip, zstd, lz4, brotli, `.Z`: the seek-point and truncation behaviour is spread across `codecs.py`, `xz.py`, `lzip.py` and `unix_compress.py` with no single page |
 | `directory.md` | **Missing.** Thinnest of all; may not earn a page |
 
-**The handbook is how `§10` registers get created**, which is the argument for continuing it:
-writing `rar.md` produced 21 tracked code changes, 17 of which have shipped. That is the
+**The handbook is how a format's to-fix register gets created**, which is the argument for continuing it:
+writing `rar.md` produced 21 tracked code changes, 19 of which have shipped. That is the
 highest-yield documentation work in the repo, and it is also why each new page should be
 expected to *add* open items rather than only close them.
 
@@ -579,7 +580,7 @@ inventory.
 | `detection-evidence-ledger` | 0/70 | The big one. Rebuilds detection on graded evidence |
 | `detection-result-surface` | 0/44 | **Blocked by the ledger** — it exposes what the ledger produces. Its own proposal says so |
 | `archive-origin-reporting` | 0/33 | Merged as a proposal 2026-09-19 via #274. Overlaps `detection-result-surface` on `ArchiveInfo` |
-| `bounded-source-spooling` | 0/29 | Merged 2026-09-19 via #251. Its four design questions are answered; subsumes rar `§10` **#6 layer 2** and **#21** |
+| `bounded-source-spooling` | 0/29 | Merged 2026-09-19 via #251. Its four design questions are answered; subsumes the RAR stream-copy bound (`rar.md` §7) and the lazy stream-volume copy (shipped) |
 | `bounded-password-confirmation` | 0/26 | In tree since #319. Ready to implement; closes most of **O12** |
 | `single-file-open-time-validation` | 0/25 | Self-contained. Closes [`open-issues.md`](open-issues.md) **P15** and **P16** |
 | `seekable-gzip-and-block-writing` | 0/24 | Self-contained, no `.openspec.yaml` (predates the schema). BGZF + mgzip random access, zero new dependencies |
@@ -624,9 +625,9 @@ prefixed-archive-detection (31/68) ──> detection-evidence-ledger ──> det
                                                  │                          └──> #274 archive-origin-reporting
                                                  └──> 4 IDEAS.md §API entries retire
 
-#251 design Q1-Q4 (maintainer) ──> bounded-source-spooling ──> rar §10 #6 layer 2
-                                                          └──> rar §10 #21
+#251 design Q1-Q4 (maintainer) ──> bounded-source-spooling ──> bound the rar stream copy
                                                           └──> open-issues P11 closed
+                                          (the rar stream-volume copy is already lazy)
 
 Topic 8 (docs content) ∥ Topic 10 (catalogue) ──> Topic 6 (perf) ──> Topic 7 (capstone, last)
         │
@@ -833,7 +834,8 @@ that `review/STATUS.md` still carries a 2026-08-15 header and describes #187, #2
 two-catalogue standoff as live — it is the register most in need of its own refresh.
 
 **Not scheduled, on purpose:** `verification-integrity-mode` (#185) needs a keep-or-kill
-judgement against ADR 0014 before it earns a slot; rar `§10` **#18** is marked *very low
-priority — remaining names are adversarial*; rar `§10` **#19** is a public knob and wants a
-config decision; [`open-issues.md`](open-issues.md) **P2/P3/P4** belong to the native
+judgement against ADR 0014 before it earns a slot; the `unrar` mask port is marked *very
+low priority — remaining names are adversarial* in [`IDEAS.md`](IDEAS.md); the
+glob-concatenation knob shipped (refuse by default, config flag as the hatch);
+[`open-issues.md`](open-issues.md) **P2/P3/P4** belong to the native
 streaming ZIP theme, which is an `IDEAS.md` entry rather than a scheduled change.

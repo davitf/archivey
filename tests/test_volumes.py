@@ -1092,3 +1092,50 @@ def test_concatenated_file_zero_length_volumes() -> None:
                     break
                 got.extend(chunk)
             assert bytes(got) == expected
+
+
+def test_concatenated_file_volume_ranges_match_item_sizes_and_order() -> None:
+    """``volume_ranges[i]`` is ``(start, size)`` of ``volume_items[i]``.
+
+    ``_materialize_stream_volumes`` pairs ``ranges[index - 1]`` with item
+    ``index``; a permutation here would copy the wrong bytes into the wrong
+    ``partN`` file.
+    """
+    first = io.BytesIO(b"aaa")
+    second = io.BytesIO(b"bbbb")
+    joined = ConcatenatedFile([first, second])
+    try:
+        assert joined.volume_ranges == [(0, 3), (3, 4)]
+        assert joined.volume_ranges[0][1] + joined.volume_ranges[1][1] == joined.size
+        assert joined.volume_ranges[1][0] == joined.volume_ranges[0][1]
+        assert list(joined.volume_items) == [first, second]
+    finally:
+        joined.close()
+
+
+def test_concatenated_file_single_volume_range_is_the_whole_source() -> None:
+    joined = ConcatenatedFile([io.BytesIO(b"hello")])
+    try:
+        assert joined.volume_ranges == [(0, 5)]
+        assert joined.volume_ranges[0] == (0, joined.size)
+    finally:
+        joined.close()
+
+
+def test_concatenated_file_volume_ranges_for_mixed_path_and_stream(
+    tmp_path: Path,
+) -> None:
+    path_vol = tmp_path / "a.bin"
+    path_vol.write_bytes(b"xx")
+    stream_vol = io.BytesIO(b"yyyyy")
+    joined = ConcatenatedFile([path_vol, stream_vol])
+    try:
+        assert joined.volume_ranges == [(0, 2), (2, 5)]
+        starts = [start for start, _size in joined.volume_ranges]
+        sizes = [size for _start, size in joined.volume_ranges]
+        assert starts == [0, sizes[0]]
+        assert sum(sizes) == joined.size
+        assert joined.volume_items[0] == path_vol
+        assert joined.volume_items[1] is stream_vol
+    finally:
+        joined.close()

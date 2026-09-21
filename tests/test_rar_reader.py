@@ -9,8 +9,10 @@ import os
 import shutil
 import struct
 import subprocess
+import threading
 import time
 import zlib
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,6 +80,11 @@ _WILDCARD_FIXTURES = (
     "wildcard_names_solid__.rar",
     "wildcard_names__rar4.rar",
 )
+# Reading a glob-named member whose mask also matches earlier members is refused by
+# default (see ``test_glob_member_with_earlier_matches_is_refused``). The skip that
+# makes such a read correct is still live behind this flag, and these tests are what
+# pin it, so they opt in explicitly.
+_ALLOW_GLOB_CONCAT = ArchiveyConfig(rar_allow_glob_member_concatenation=True)
 _WILDCARD_DIRGLOB_CONTENTS = {
     "aaa/x.txt": b"aaa\n" + _WILDCARD_PAD,
     "dX/x.txt": b"dX\n" + _WILDCARD_PAD,
@@ -221,6 +228,24 @@ def test_solid_pass_spawns_unrar_only_on_the_first_read(
                 assert stream is not None
                 assert stream.read() == _BASIC_CONTENTS["file1.txt"]
     assert len(spawns) == 1
+
+
+def test_solid_stream_members_of_a_stream_source_writes_nothing_until_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A solid pass nobody reads from must not spool a stream source.
+
+    ``_iter_with_data`` used to call ``_ensure_archive_path()`` at pass start,
+    before the lazy ``_pipe()``. Listing through ``stream_members`` then wrote
+    the whole archive even though no member was read and no ``unrar`` spawned.
+    """
+    created = _rar_temp_artifacts(monkeypatch)
+    data = _fixture("basic_solid__.rar").read_bytes()
+    with open_archive(io.BytesIO(data)) as archive:
+        assert archive.info.is_solid is True
+        for _member, _stream in archive.stream_members():
+            pass
+        assert created == []
 
 
 @requires_binary("unrar")
@@ -960,7 +985,7 @@ def _single_stream_copy_note_present(notes: tuple[str, ...]) -> bool:
 
 
 def _stream_volumes_copy_note_present(notes: tuple[str, ...]) -> bool:
-    return any("were copied to a temp directory at open" in note for note in notes)
+    return any("will copy every volume to a temp directory" in note for note in notes)
 
 
 def test_path_source_has_no_stream_copy_cost_note() -> None:
@@ -1011,6 +1036,168 @@ def test_multi_volume_stream_materialization() -> None:
     finally:
         for stream in streams:
             stream.close()
+
+
+def _rar_volume_temp_dirs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record every temp directory the stream-volume copy creates."""
+    created: list[Path] = []
+    real = rar_reader.tempfile.mkdtemp
+
+    def spy(*args: object, **kwargs: object) -> str:
+        made = real(*args, **kwargs)  # type: ignore[arg-type]
+        created.append(Path(made))
+        return made
+
+    monkeypatch.setattr(rar_reader.tempfile, "mkdtemp", spy)
+    return created
+
+
+def _rar_temp_artifacts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record every temp file *and* directory the reader creates for ``unrar``.
+
+    ``_rar_volume_temp_dirs`` covers the volume-set shape only; a single stream
+    source spools through ``mkstemp`` instead, so a test that must prove nothing
+    was written needs both.
+    """
+    created: list[Path] = []
+    real_mkdtemp = rar_reader.tempfile.mkdtemp
+    real_mkstemp = rar_reader.tempfile.mkstemp
+
+    def spy_mkdtemp(*args: object, **kwargs: object) -> str:
+        made = real_mkdtemp(*args, **kwargs)  # type: ignore[arg-type]
+        created.append(Path(made))
+        return made
+
+    def spy_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, made = real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+        created.append(Path(made))
+        return fd, made
+
+    monkeypatch.setattr(rar_reader.tempfile, "mkdtemp", spy_mkdtemp)
+    monkeypatch.setattr(rar_reader.tempfile, "mkstemp", spy_mkstemp)
+    return created
+
+
+def test_stream_volume_listing_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Listing a stream-volume set is served from the originals, not from copies.
+
+    The header walk reads each volume through its own ``SharedSource`` view, so a
+    caller that only lists pays no disk write. Before this, the constructor copied
+    every volume whether or not anything read a member.
+    """
+    created = _rar_volume_temp_dirs(monkeypatch)
+    streams = [
+        io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
+        io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+    ]
+    with open_archive(streams) as archive:
+        assert [m.name for m in archive.members()] == ["payload.bin"]
+        assert archive.info.is_multivolume is True
+        assert archive.info.extra.get("rar.volume_count") == 2
+        assert created == []
+
+
+@requires_binary("unrar")
+def test_stream_volume_read_materializes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The copy happens on the first read unrar serves, and only once."""
+    created = _rar_volume_temp_dirs(monkeypatch)
+    streams = [
+        io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
+        io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+    ]
+    with open_archive(streams) as archive:
+        assert created == []
+        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+        assert len(created) == 1
+        # unrar resolves siblings by name, so the whole set is written, not one volume.
+        assert sorted(p.name for p in created[0].iterdir()) == [
+            "archive.part1.rar",
+            "archive.part2.rar",
+        ]
+        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+        assert len(created) == 1
+        temp_dir = created[0]
+    assert not temp_dir.exists()
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "source_factory",
+    [
+        pytest.param(
+            lambda: io.BytesIO(_fixture("basic_solid__.rar").read_bytes()),
+            id="single-stream",
+        ),
+        pytest.param(
+            lambda: [
+                io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
+                io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+            ],
+            id="stream-volumes",
+        ),
+    ],
+)
+def test_concurrent_stream_materialize_writes_once_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+    source_factory: Callable[[], io.BytesIO | list[io.BytesIO]],
+) -> None:
+    """Two overlapping compressed opens must share one temp copy.
+
+    ``_ensure_archive_path`` used to check-then-write with no lock. Under
+    ``concurrent_members=True`` both threads copied, and close only removed
+    the winner's path, leaking the other into ``/tmp``.
+    """
+    created = _rar_temp_artifacts(monkeypatch)
+
+    def _delay(fn: Callable[..., object]) -> Callable[..., object]:
+        def delayed(*args: object, **kwargs: object) -> object:
+            time.sleep(0.1)
+            return fn(*args, **kwargs)
+
+        return delayed
+
+    monkeypatch.setattr(
+        rar_reader.tempfile, "mkstemp", _delay(rar_reader.tempfile.mkstemp)
+    )
+    monkeypatch.setattr(
+        rar_reader.tempfile, "mkdtemp", _delay(rar_reader.tempfile.mkdtemp)
+    )
+
+    source = source_factory()
+    try:
+        with open_archive(source, concurrent_members=True) as archive:
+            names = [m.name for m in archive.members() if m.is_file]
+            target = names[0]
+            errors: list[BaseException] = []
+            start = threading.Barrier(2)
+
+            def worker() -> None:
+                try:
+                    start.wait(timeout=5)
+                    with archive.open(target) as stream:
+                        stream.read()
+                except BaseException as exc:  # noqa: BLE001 - collect; asserted empty below
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+                assert not thread.is_alive()
+            assert errors == []
+            assert len(created) == 1
+        assert not created[0].exists()
+    finally:
+        for path in created:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink(missing_ok=True)
 
 
 def test_incomplete_multi_volume_raises() -> None:
@@ -3120,7 +3307,7 @@ def test_wildcard_member_name_reads_its_own_bytes(
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
 
-    with open_archive(_fixture(name)) as archive:
+    with open_archive(_fixture(name), config=_ALLOW_GLOB_CONCAT) as archive:
         files = [m for m in archive.members() if m.is_file]
         assert {m.name for m in files} == set(_WILDCARD_CONTENTS)
         names = [m.name for m in files]
@@ -3132,9 +3319,73 @@ def test_wildcard_member_name_reads_its_own_bytes(
 
 
 @requires_binary("unrar")
+@pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
+def test_glob_member_with_earlier_matches_is_refused(name: str) -> None:
+    """A glob name whose mask also matches earlier members is refused by default.
+
+    ``unrar -n./a*.txt`` decompresses every match and emits them concatenated, so
+    reading ``a*.txt`` pays for ``subdir/aY.txt`` first. The skip returns the right
+    bytes, but the decode already happened and nothing bounds it: ``ExtractionLimits``
+    do not reach ``open()``/``read()``. Names like this are almost always constructed,
+    so they are refused on solid archives too, where those bytes are already inside
+    ``AccessCost.SOLID``. Maintainer (davitf, 2026-09-19): refuse, with the config
+    flag as the escape hatch.
+    """
+    with open_archive(_fixture(name)) as archive:
+        with pytest.raises(
+            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
+        ):
+            archive.read("a*.txt")
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
+def test_glob_member_matching_nothing_else_still_reads(name: str) -> None:
+    """A glob name that matches no other member has no prefix, so it is not refused.
+
+    ``only*.dat`` is the accidental ``report*.pdf`` case: the mask matches only
+    itself, ``_unrar_glob_prefix`` is 0, and the refusal never triggers. This is the
+    boundary the refusal must not overshoot, so it is pinned without the flag.
+    """
+    with open_archive(_fixture(name)) as archive:
+        assert archive.read("only*.dat") == _WILDCARD_CONTENTS["only*.dat"]
+
+
+@requires_binary("unrar")
+def test_glob_concatenation_flag_names_itself_in_the_refusal() -> None:
+    """The refusal tells the caller the byte count and the exact flag to set."""
+    with open_archive(_fixture("wildcard_names__.rar")) as archive:
+        with pytest.raises(UnsupportedFeatureError) as excinfo:
+            archive.read("a*.txt")
+    message = str(excinfo.value)
+    assert "rar_allow_glob_member_concatenation" in message
+    assert str(len(_WILDCARD_CONTENTS["subdir/aY.txt"])) in message
+
+
+@requires_binary("unrar")
+def test_solid_glob_refusal_does_not_claim_an_avoidable_decode() -> None:
+    """On a solid archive the glob prefix is already inside ``AccessCost.SOLID``.
+
+    The refusal still fires — the names are constructed — but the message must
+    not describe those bytes as an avoidable extra decode.
+    """
+    with open_archive(_fixture("wildcard_names_solid__.rar")) as archive:
+        with pytest.raises(UnsupportedFeatureError) as excinfo:
+            archive.read("a*.txt")
+    message = str(excinfo.value)
+    assert "rar_allow_glob_member_concatenation" in message
+    assert "would decompress" not in message
+
+
+@requires_binary("unrar")
 def test_wildcard_solid_stream_members_reads_all() -> None:
     """The unnamed ALL-pipe has no ``-n`` mask, so wildcard names already demux by
-    size; this pins that the glob skip on the named route did not leak into it."""
+    size; this pins that the glob skip on the named route did not leak into it.
+
+    Also davitf's carve-out (2026-09-19): a solid streaming pass builds no mask, so
+    the glob refusal cannot reach it. No flag here, deliberately — the exemption
+    falls out of the code rather than being special-cased.
+    """
     with open_archive(_fixture("wildcard_names_solid__.rar")) as archive:
         got = {
             member.name: stream.read()
@@ -3142,6 +3393,30 @@ def test_wildcard_solid_stream_members_reads_all() -> None:
             if member.is_file and stream is not None
         }
     assert got == _WILDCARD_CONTENTS
+
+
+@requires_binary("unrar")
+def test_wildcard_nonsolid_stream_members_hits_the_refusal() -> None:
+    """A nonsolid streaming pass takes the named route, so the refusal reaches it.
+
+    ``_iter_with_data`` falls through to per-member named opens for nonsolid archives,
+    so ``stream_members()`` builds the same ``-n`` mask a random ``open()`` does and
+    carries the same concatenation — worse, in fact, since the pass decodes the prefix
+    member once as itself and again inside the target's pipe. The solid pass above is
+    exempt only because it builds no mask at all.
+
+    Maintainer (davitf, 2026-09-19), asked whether iteration should be exempted:
+    "right now don't exempt iteration, it can fail as the other modes." So this is
+    the decided behaviour, not a placeholder.
+    """
+    with open_archive(_fixture("wildcard_names__.rar")) as archive:
+        with pytest.raises(
+            UnsupportedFeatureError, match="would decompress"
+        ) as excinfo:
+            for member, stream in archive.stream_members():
+                if stream is not None:
+                    stream.read()
+    assert str(len(_WILDCARD_CONTENTS["subdir/aY.txt"])) in str(excinfo.value)
 
 
 @requires_binary("unrar")
@@ -3164,7 +3439,9 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
 
     expected = _WILDCARD_CONTENTS["a*.txt"]
     with open_archive(
-        _fixture("wildcard_names_solid__.rar"), seekable_members=True
+        _fixture("wildcard_names_solid__.rar"),
+        seekable_members=True,
+        config=_ALLOW_GLOB_CONCAT,
     ) as archive:
         with archive.open("a*.txt") as stream:
             assert stream.seekable() is True
@@ -3221,9 +3498,39 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
 
 
 @requires_binary("unrar")
+def test_refused_glob_open_of_a_stream_source_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused ``open()`` must not spool the source to disk on its way to the raise.
+
+    Both refusals in ``_open_member`` — the backslash / directory-glob one and the
+    glob-concatenation one — are decided entirely from the parsed member table, and
+    neither spawns ``unrar``. ``_ensure_archive_path()`` therefore has no reason to
+    run first, and when the source is a stream, running it first copies the whole
+    archive (the whole *set*, for volumes) for a read that never happens. That also
+    put the two halves of this PR at odds: the concatenation refusal exists to stop
+    an unbounded decode, and it was paying an unbounded disk copy to reach the raise.
+    """
+    for fixture, member in (
+        ("wildcard_names__.rar", "a*.txt"),
+        ("wildcard_dirglob__.rar", "d*/x.txt"),
+    ):
+        created = _rar_temp_artifacts(monkeypatch)
+        data = _fixture(fixture).read_bytes()
+        with open_archive(io.BytesIO(data)) as archive:
+            assert member in {m.name for m in archive.members()}
+            assert created == []
+            with pytest.raises(UnsupportedFeatureError):
+                archive.read(member)
+            assert created == []
+
+
+@requires_binary("unrar")
 def test_wildcard_ver_live_glob_skips_history_rows() -> None:
     """``unrar p -n./data*`` without ``-ver`` omits history; the skip must too."""
-    with open_archive(_fixture("wildcard_ver__.rar")) as archive:
+    with open_archive(
+        _fixture("wildcard_ver__.rar"), config=_ALLOW_GLOB_CONCAT
+    ) as archive:
         files = {m.name: m for m in archive.members() if m.is_file}
         assert set(files) == set(_WILDCARD_VER_CONTENTS)
         for member_name, expected in _WILDCARD_VER_CONTENTS.items():
@@ -3770,7 +4077,7 @@ def _assert_qo_walk_parity(path: Path, *, password: str | bytes | None = None) -
 
 
 def test_qo_listing_matches_file_walk_on_corpus() -> None:
-    """formats/rar.md §10 #5: committed QO archive matches the FILE walk."""
+    """formats/rar.md §1.1: committed QO archive matches the FILE walk."""
     corpus = Path(__file__).parent / "fixtures" / "corpus" / "rar" / "large.rar"
     if not corpus.is_file():
         pytest.skip("missing corpus large.rar")

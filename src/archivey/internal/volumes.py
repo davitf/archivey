@@ -393,6 +393,21 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         return list(self._volume_items)
 
     @property
+    def volume_ranges(self) -> list[tuple[int, int]]:
+        """``(start, size)`` of each volume in the concatenated byte space.
+
+        Lets a format opener read one volume at a time through whatever it
+        already holds over the concatenation — a ``SharedSource`` view, say —
+        instead of reopening the originals. RAR's header walk needs each volume
+        as an independent stream positioned at its start, which the whole
+        concatenation cannot provide.
+        """
+        return [
+            (self._offsets[index], self._offsets[index + 1] - self._offsets[index])
+            for index in range(self.volume_count)
+        ]
+
+    @property
     def size(self) -> int:
         return self._size
 
