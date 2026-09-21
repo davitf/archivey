@@ -1760,6 +1760,20 @@ def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
     Both shapes below need the same 65 537 files and nothing mutates them, so
     the tree is shared rather than rebuilt per shape.
+
+    Building the tree is the volatile phase of this test: repeated runs of
+    identical work on one idle container spanned 3.8 s to 22.2 s, against a
+    steady ~2 s for either archive build. It runs in the setup of whichever
+    parametrized item goes first, and ``pytest-timeout`` charges setup to that
+    item's budget unless ``--timeout-func-only`` is set, which
+    ``pyproject.toml`` does not. So the 120 s mark below does cover this build,
+    and it stays at 120 s rather than tracking the 25-30 s worst item measured
+    after the split: the margin is for the spread, not for the mean.
+
+    Every timing here and below is Linux with 7z 23.01. The two runs that timed
+    out before the split were macOS and Windows, where 65 537 file creates can
+    cost considerably more, so these figures are a floor for those runners
+    rather than the margin they see.
     """
     from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
 
@@ -1775,10 +1789,10 @@ def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.mark.timeout(120)
 @requires_binary("7z")
 @pytest.mark.parametrize(
-    ("extra_args", "shape", "folders"),
+    ("extra_args", "shape", "single_folder"),
     [
-        pytest.param([], "solid", "one", id="solid"),
-        pytest.param(["-ms=off", "-mx=0"], "nonsolid", "per-member", id="nonsolid"),
+        pytest.param([], "solid", True, id="solid"),
+        pytest.param(["-ms=off", "-mx=0"], "nonsolid", False, id="nonsolid"),
     ],
 )
 def test_archives_above_stream_cap_still_open(
@@ -1786,7 +1800,7 @@ def test_archives_above_stream_cap_still_open(
     above_stream_cap_tree: Path,
     extra_args: list[str],
     shape: str,
-    folders: str,
+    single_folder: bool,
 ) -> None:
     """A 7z above ``_MAX_NUM_STREAMS`` must still open, solid or not.
 
@@ -1799,11 +1813,17 @@ def test_archives_above_stream_cap_still_open(
     together came close enough to it to time out on the slower CI runners.
 
     The non-solid archive is built with ``-mx=0``. That is not a shortcut past
-    what F2 covers: measured against 7z 16.02, ``-ms=off -mx=0`` produces the
+    what F2 covers: measured against 7z 23.01, ``-ms=off -mx=0`` produces the
     same 65 537 folders and 65 537 unpack streams as the default codec and
-    costs 2.0 s instead of 11.5 s. ``-mx=0`` must not be used for the solid
-    shape, where it splits the single folder F1 needs into one per member --
-    which is why this test asserts the folder layout rather than trusting it.
+    costs 2.0 s instead of 11.5 s. It does change the coder, LZMA2 (``0x21``)
+    to Copy (``0x00``), which these caps do not depend on:
+    ``_require_header_count`` and ``_require_member_scaled_count`` compare a
+    count against the header size and against ``max_members``, both header-parse
+    quantities. The next header stays LZMA-encoded (``kEncodedHeader``) in all
+    four build variants, so that path is exercised either way. ``-mx=0`` must
+    not be used for the solid shape, where it splits the single folder F1 needs
+    into one per member -- which is why this test asserts the folder layout
+    rather than trusting it.
     """
     from archivey.config import ListingLimits
     from archivey.exceptions import ResourceLimitError
@@ -1828,7 +1848,7 @@ def test_archives_above_stream_cap_still_open(
     with archive.open("rb") as raw:
         parsed = parse_sevenzip_archive(raw)
     assert sum(parsed.num_unpackstreams_folders) == n
-    assert len(parsed.folders) == (1 if folders == "one" else n)
+    assert len(parsed.folders) == (1 if single_folder else n)
 
     with open_archive(archive) as reader:
         files = [m for m in reader.members() if m.is_file]
