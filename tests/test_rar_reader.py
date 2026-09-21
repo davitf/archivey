@@ -4077,7 +4077,7 @@ def _assert_qo_walk_parity(path: Path, *, password: str | bytes | None = None) -
 
 
 def test_qo_listing_matches_file_walk_on_corpus() -> None:
-    """formats/rar.md §10 #5: committed QO archive matches the FILE walk."""
+    """formats/rar.md §1.1: committed QO archive matches the FILE walk."""
     corpus = Path(__file__).parent / "fixtures" / "corpus" / "rar" / "large.rar"
     if not corpus.is_file():
         pytest.skip("missing corpus large.rar")

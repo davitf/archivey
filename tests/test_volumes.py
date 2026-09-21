@@ -1092,6 +1092,8 @@ def test_concatenated_file_zero_length_volumes() -> None:
                     break
                 got.extend(chunk)
             assert bytes(got) == expected
+
+
 def test_concatenated_file_volume_ranges_match_item_sizes_and_order() -> None:
     """``volume_ranges[i]`` is ``(start, size)`` of ``volume_items[i]``.
 
