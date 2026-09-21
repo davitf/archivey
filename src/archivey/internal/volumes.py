@@ -323,7 +323,11 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     construction-time descriptor: replacing a part after construction is
     visible on the next open of that part.
     Caller-supplied streams stay open, are never closed here, and are re-seeked
-    before every read (the caller may have moved them).
+    before every read (the caller may have moved them). A stream volume is its
+    whole extent, not the part after wherever its cursor happens to sit: sizing
+    seeks to the end and every read seeks to an offset measured from 0, so the
+    position the caller hands it in is ignored. Pass a sliced view to contribute
+    a window of a larger stream.
     """
 
     def __init__(self, sources: Sequence[Path | BinaryIO]) -> None:
