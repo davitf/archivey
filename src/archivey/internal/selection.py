@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable
-from typing import cast
 
 from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.arg_checks import describe_value
@@ -13,11 +12,15 @@ from archivey.types import ArchiveMember
 def normalize_member_selector(
     members: Collection[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None,
 ) -> Callable[[ArchiveMember], bool] | None:
-    """Normalize a collection or predicate selector to a predicate."""
+    """Normalize a collection or predicate selector to a predicate.
+
+    A selector that is both callable and a collection is read as a collection.
+    ``Collection`` is not final, so the two arms of the parameter's type can
+    overlap; the tie is decided here rather than falling out of the order of
+    the checks.
+    """
     if members is None:
         return None
-    if callable(members):
-        return cast("Callable[[ArchiveMember], bool]", members)
     if isinstance(members, (str, bytes)):
         # A str is a Collection of one-character strings, so `members="notes.txt"`
         # selected the set {"n", "o", "t", "e", "s", ".", "x"} — no member matched,
@@ -36,14 +39,26 @@ def normalize_member_selector(
             f"{describe_value(members)}. Pass [{members!r}] to select one member."
         )
     if not isinstance(members, Iterable):
-        raise ArchiveyUsageError(
-            f"members= takes a collection of names or members, a predicate, or None, "
-            f"but got {describe_value(members)}."
-        )
-    collection = cast("Collection[str | ArchiveMember]", members)
+        # Everything below is the collection arm, so only the predicate is left here.
+        # Testing the collection first is what decides the tie: an object that is both
+        # callable and a collection is read as a collection, which is the more
+        # defensible reading of a parameter named ``members``. The precedence was
+        # never an explicit decision before; it is one now.
+        #
+        # It is also what lets both checkers narrow this arm with no ``cast``.
+        # ``callable()`` cannot drop the collection arm, because ``Collection`` is not
+        # final and a subclass may define ``__call__`` — ty intersects the two instead
+        # and the intersection returns ``object``. A negative ``isinstance`` does drop
+        # it, so the value that reaches the return below is already a predicate.
+        if not callable(members):
+            raise ArchiveyUsageError(
+                f"members= takes a collection of names or members, a predicate, or "
+                f"None, but got {describe_value(members)}."
+            )
+        return members
     names: set[str] = set()
     identities: set[tuple[str, int]] = set()
-    for entry in collection:
+    for entry in members:
         if isinstance(entry, ArchiveMember):
             # Match by (archive_id, member_id) identity. A member that carries no ids
             # (never registered by a reader — e.g. hand-built) is deliberately dropped:

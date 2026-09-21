@@ -39,7 +39,7 @@ findings cost to fix — and that is the sweep working as intended rather than a
 | Register | Open items | Health |
 | --- | --- | --- |
 | Open PRs | 4 live, 1 hub | Fourteen merged on 2026-09-19, seven of them the decision backlog: #244, #251, #274, #297, #353, #362, #185. The dormant-draft category is now empty |
-| [#315](https://github.com/davitf/archivey/pull/315) review threads | 71 total, **51 resolved, 20 open** | Parcels A–E closed 44 between 2026-09-11 and 2026-09-17; five S1/S2 threads resolved 2026-09-19. Left: parcel F, one orphan thread, and ten S1/S2 findings |
+| [#315](https://github.com/davitf/archivey/pull/315) review threads | 71 total, **52 resolved, 19 open** | Parcels A–E closed 44 between 2026-09-11 and 2026-09-17; five S1/S2 threads resolved 2026-09-19; thread 56 closed by [#365](https://github.com/davitf/archivey/pull/365) (ARC-12). Left: parcel F and ten S1/S2 findings |
 | `openspec/changes/` (13 active) | 12 unimplemented, 1 half-done | `prefixed-archive-detection` is 31/68; the rest are 0/N. 363 tasks outstanding. #347/#356 added three RAR changes; #251, #274 and #185 merged three more |
 | [`open-issues.md`](open-issues.md) | 13 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned; **P18 is new** since the first snapshot |
 | [`formats/rar.md`](formats/rar.md) `§10` | **gone** — the section is deleted | It said to delete it once empty, and it is: 19 of 21 shipped, #19 and #21 last. The two that had not shipped moved to homes that outlive it — the stream-copy bound to §7, the `unrar` mask port to [`IDEAS.md`](IDEAS.md) — and both are tracked internally |
@@ -136,9 +136,9 @@ questions from 2026-09-07; 16–55 are an agent review pass from 2026-09-08 conc
 `streamtools/` and the two native backends; **thread 56 was added 2026-09-13** and is the
 only one raised since.
 
-**Fifty-one of seventy-one are resolved.** Parcels A–E closed 44 of them between 2026-09-11
+**Fifty-two of seventy-one are resolved.** Parcels A–E closed 44 of them between 2026-09-11
 and 2026-09-17, on top of the eight closed earlier. Every `streamtools/` thread from the
-original pass is done, and both RAR files are done.
+original pass is done, both RAR files are done, and thread 56 (the post-drain orphan) is done.
 
 **Five S1/S2 threads were fixed by #349 and #350 and resolved on 2026-09-19.** The two batches
 raised fifteen threads on 2026-09-17; the two PRs merged the next day and closed five of them,
@@ -170,6 +170,7 @@ a three-item leak list reduced to one — so the opening comment is often no lon
 | 1, 2, 4, 5, 6, 7, 8, 9 | Parcel D ([#332](https://github.com/davitf/archivey/pull/332)) |
 | 43, 44, 46, 47, 48, 49 | Parcel E ([#336](https://github.com/davitf/archivey/pull/336)) |
 | 3 | [#342](https://github.com/davitf/archivey/pull/342) / [#344](https://github.com/davitf/archivey/pull/344), with the merge half promoted to a change in [#347](https://github.com/davitf/archivey/pull/347) |
+| 56 | [#365](https://github.com/davitf/archivey/pull/365) — ARC-12; class flag + constructor override for `peel_for_source_size` and `readinto_passthrough` |
 
 **Thread 45 was parcel E's, and parcel A closed it.** It was the third site of
 `DelegatingStream.close`'s workaround; A replaced all of them with `manual_inner_close=True`
@@ -192,7 +193,7 @@ encrypted 7z folder; [#344](https://github.com/davitf/archivey/pull/344) added `
 on a short final block. The "are the three decrypt streams mergeable?" half is answered in the
 class docstring and promoted to `fold-rar-header-decrypt-stream` in #347.
 
-The 10 that remain. `*` marks a thread whose follow-up narrowed it.
+The 9 that remain. `*` marks a thread whose follow-up narrowed it.
 
 | File | Open | Threads | Character |
 | --- | --- | --- | --- |
@@ -201,20 +202,20 @@ The 10 that remain. `*` marks a thread whose follow-up narrowed it.
 | `zip_aes.py` | 2 | 14, 15 | Placement, and the one live layering violation |
 | `rar_detect.py` | 1 | 10 | Placement — same decision as 14 |
 | `reader_state.py` | 1 | 11 | "I can't even begin to review it." Explanation, not code |
-| `streamtools/base.py` | 1 | 56 | **New 2026-09-13**, and not part of any parcel |
 
-**What is left is one parcel and one orphan.** Nine of the ten are parcel F. Thread 56 arrived
-after `streamtools/` was declared drained and belongs with whoever next touches
-`DelegatingStream`.
+**What is left is one parcel.** Nine threads, all parcel F. Thread 56 arrived
+after `streamtools/` was declared drained and is closed ([#365](https://github.com/davitf/archivey/pull/365) / ARC-12): both remaining
+`DelegatingStream` flags now use the class-flag-plus-constructor-override pattern
+`_SUBCLASS_CLOSES_INNER` already had.
 
-**Two of the ten are maintainer decisions, not implementation.** Threads 10 and 14 ask the
+**Two of the nine are maintainer decisions, not implementation.** Threads 10 and 14 ask the
 same question — whether `rar_detect.py`, `zip_detect.py`, `sevenzip_detect.py`, `zip_aes.py`
 and `zipcrypto.py` should move under `backends/` or into a new detection package rather than
 sitting at the top of `internal/`. Five modules move or do not move on one answer, and every
 importer of them moves with it, so it is worth answering before the parcel goes out rather
 than inside it.
 
-**Thread 15 is the only live defect in the ten, and it is a layering one.** `zip_aes.py:99`
+**Thread 15 is the only live defect in the nine, and it is a layering one.** `zip_aes.py:99`
 imports `cryptography` directly, under a comment that reads *"Local import: only the crypto
 wrapper may import cryptography"* — the code states the rule it is breaking. The question the
 thread asks is not "move it" but which of the two implementations should survive the merge.
@@ -611,11 +612,10 @@ other three report in.**
 ```
 bounded-password-confirmation ──> sevenzip-aes-tail-key-check ──> O12 closed
 
-#315 Wave 1 + parcels A–E + the S1/S2 fixes ──> DONE (51 of 71 threads resolved)
+#315 Wave 1 + parcels A–E + the S1/S2 fixes + thread 56 ──> DONE (52 of 71 threads resolved)
         │
-        ├──> parcel F (placement + odds)   9 threads, ready
-        │       └── gated on ONE maintainer answer: threads 10/14 module placement
-        └──> thread 56 (DelegatingStream flag style)   orphan, not in any parcel
+        └──> parcel F (placement + odds)   9 threads, ready
+                └── gated on ONE maintainer answer: threads 10/14 module placement
 
 #342 seekable AES-CBC ──> #347 rar5-stored-encrypted-native-read  (proposal, unscheduled)
                      └──> #347 fold-rar-header-decrypt-stream     (proposal, unscheduled)
@@ -784,8 +784,8 @@ fixed red-green, plus F5–F13 from the PR's own review cycle. Thread 16 resolve
 also surfaced the two reviews now commissioned in #325, and left `src/` with zero
 `# type: ignore`.
 
-**Wave 2 — drain #315 in six parcels. A through E are done.** One parcel remains, plus one
-thread that arrived after the parcels were drawn.
+**Wave 2 — drain #315 in six parcels. A through E are done.** One parcel remains.
+Thread 56 (the post-drain orphan) closed with [#365](https://github.com/davitf/archivey/pull/365) / ARC-12.
 
 | Parcel | Files | Threads | State |
 | --- | --- | --- | --- |
@@ -795,7 +795,7 @@ thread that arrived after the parcels were drawn.
 | ~~D — RAR parser~~ | `backends/rar_parser.py` | 1, 2, 4, 5, 6, 7, 8, 9 | **Done** — [#332](https://github.com/davitf/archivey/pull/332). Threads 1 and 2 were the two possible header-decrypt bugs; both measured against fixtures and neither was one |
 | ~~E — RAR reader~~ | `backends/rar_reader.py` | 43, 44, 46, 47, 48, 49 | **Done** — [#336](https://github.com/davitf/archivey/pull/336) |
 | **F — placement + odds** | `rar_detect.py`, `zip_aes.py`, `volumes.py`, `reader_state.py`, `sevenzip_reader.py` | 10, 11, 12, 13, 14, 15, 51\*, 53, 54 | **Ready, and the last one.** Nine threads. Thread 3 left the parcel when #342 answered it. Threads 10 and 14 are a maintainer call, not a fix — answer that first, because the placement decision is what makes the rest mechanical |
-| **(orphan)** | `streamtools/base.py` | 56 | Raised 2026-09-13, after `streamtools/` was drained. `peel_for_source_size` is a class field while `readinto_passthrough` is a constructor argument; #340's `owns_inner` and #341's class gating have since established the "class flag with a constructor override" pattern that answers it |
+| ~~(orphan)~~ | `streamtools/base.py` | 56 | **Done** — [#365](https://github.com/davitf/archivey/pull/365) / ARC-12. Both remaining flags now use the class-flag-plus-constructor-override pattern from #340 / #341 |
 
 **Parcel F's prompt should carry three corrections** the follow-up comments make and the
 opening comments do not: thread 3 is closed and out of scope; thread 51 is a rename plus a

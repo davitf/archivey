@@ -3,9 +3,9 @@
 This module holds the reusable half of the object-argument refusals. The rest live
 beside their arguments:
 
-* :mod:`archivey.internal.format_args` — ``format=``. (String spellings are the
-  sibling enum-argument change's business; today ``format="zip"`` is an
-  ``ArchiveyUsageError``.)
+* :mod:`archivey.internal.format_args` — ``format=``, which *coerces* rather than
+  only refusing: ``format="zip"`` resolves to ``ArchiveFormat.ZIP``, and only an
+  unrecognised value is an ``ArchiveyUsageError``.
 * :mod:`archivey.config` — ``*Limits`` fields and ``ArchiveyConfig``'s own fields
 * :mod:`archivey.internal.selection` — ``members=``
 * :mod:`archivey.internal.password` — ``password=``

@@ -180,7 +180,8 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         ]
 
     # Object shape of budget=, not preset spellings. ``"balanced"`` is a real
-    # DetectionBudgetPreset value and belongs to the sibling enum-argument change.
+    # DetectionBudgetPreset value, coerced by ``enum_args`` and asserted in
+    # ``tests/test_enum_arguments.py``; the values below are none of the three types.
     for bad in (0, object(), "x"):
         rows.append(
             _case(
@@ -491,54 +492,54 @@ def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
 # :func:`test_every_public_argument_is_swept` — which is the half of this file that can
 # notice an argument nobody thought about.
 _NOT_SWEPT: dict[tuple[str, str], str] = {
-    # ``format=`` is refused too, but by ``internal/format_args``, which landed earlier
-    # and has ``tests/test_format_arguments.py`` of its own. Kept out of here so the two
-    # do not drift into disagreeing about the answer. (``ArchiveFormat`` is a plain
-    # class, not an enum — it is grouped with the enums by nobody but its argument name.)
-    ("open_archive", "format"): "refused by format_args; test_format_arguments.py",
-    ("open_stream", "format"): "refused by format_args; test_format_arguments.py",
-    ("extract", "format"): "refused by format_args; test_format_arguments.py",
-    # The arguments the sibling enum-argument change owns, which **coerces** them: a
-    # recognised spelling becomes the member, so a refusal here would contradict it.
-    # Its own test module asserts what they do; this one must not assert the opposite.
+    # ``format=`` is owned by ``internal/format_args``, which **coerces** it: a
+    # recognised spelling becomes the ``ArchiveFormat``, and anything else raises
+    # ``ArchiveyUsageError`` at the entry point, before a row here would ever see it.
+    # Kept out of this table so the two do not drift into disagreeing about the answer;
+    # ``tests/test_format_arguments.py`` asserts the behaviour. (``ArchiveFormat`` is a
+    # plain class, not an enum — it is grouped with the enums by nobody but its
+    # argument name.)
+    ("open_archive", "format"): "coerced by format_args; test_format_arguments.py",
+    ("open_stream", "format"): "coerced by format_args; test_format_arguments.py",
+    ("extract", "format"): "coerced by format_args; test_format_arguments.py",
+    # The enum-typed arguments, owned by ``internal/enum_args``, which **coerces**
+    # them: a recognised spelling becomes the member, so a refusal here would
+    # contradict it. ``tests/test_enum_arguments.py`` asserts what they do; this
+    # module must not assert the opposite.
     #
-    # READ THIS BEFORE TRUSTING A GREEN RUN. That branch is not merged, so on *this*
-    # tree these arguments are unguarded, and one of them escapes silently:
-    # ``extract(abort_on="blocked")`` iterates the string into characters and
-    # disables every abort, reporting a clean run. An exemption records who *owns* an
-    # argument, never that it is safe today, and neither test above can tell the two
-    # apart — a wrong exemption is live rather than stale, which is the blind spot
-    # left here once ``test_not_swept_entries_are_all_live`` has done its half.
-    #
-    # Verified against that branch's head rather than assumed, at pr380 on
-    # 2026-09-20: ``abort_on="blocked"`` and ``abort_on=0`` both answer
-    # ``ArchiveyUsageError`` there, through ``coerce_enum_collection``. Re-check on
-    # merge; anything that turns out not to be covered belongs in _cases, not here.
-    ("extract", "policy"): "coerced by the sibling enum-argument change",
-    ("extract", "overwrite"): "coerced by the sibling enum-argument change",
-    ("extract", "on_error"): "coerced by the sibling enum-argument change",
-    # Collection[AbortOn], not an enum. A bare string is iterated as characters
-    # (``abort_on="blocked"`` silently disables every abort); a non-iterable is a
-    # raw TypeError. The sibling enum-argument change refuses both via
-    # ``coerce_enum_collection`` (#380, ``tests/test_enum_arguments.py``). This
-    # PR does not add a parallel check — that is the open maintainer question
-    # on this review.
+    # These are guarded, and the coercion runs at the entry point, so a bad value
+    # raises ``ArchiveyUsageError`` before reaching the code this table is about.
+    # But read the exemption for what it is: it records that another module *owns*
+    # the argument, never that the argument is safe today. Neither test above can
+    # tell those apart, so a wrong exemption here is live rather than stale — the
+    # blind spot left once ``test_not_swept_entries_are_all_live`` has done its half.
+    # Measured on this tree rather than assumed: ``policy="looose"``,
+    # ``overwrite=0``, ``on_error="halt"``, ``abort_on="blocked"`` and ``abort_on=0``
+    # all answer ``ArchiveyUsageError``. Anything that turns out not to be covered
+    # belongs in _cases, not here.
+    ("extract", "policy"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract", "on_error"): "coerced by enum_args; test_enum_arguments.py",
+    # Collection[AbortOn], not an enum, so the container shape is a second way to get
+    # it wrong. ``coerce_enum_collection`` refuses both: a bare string, which would
+    # otherwise iterate into characters and silently disable every abort, and a
+    # non-iterable, which would otherwise be a raw TypeError.
     ("extract", "abort_on"): (
         "Collection[AbortOn]; container-shape refusal is coerce_enum_collection "
-        "on the sibling enum-argument branch"
+        "in enum_args"
     ),
-    ("extract_all", "policy"): "coerced by the sibling enum-argument change",
-    ("extract_all", "overwrite"): "coerced by the sibling enum-argument change",
-    ("extract_all", "on_error"): "coerced by the sibling enum-argument change",
+    ("extract_all", "policy"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "on_error"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "abort_on"): (
         "Collection[AbortOn]; container-shape refusal is coerce_enum_collection "
-        "on the sibling enum-argument branch"
+        "in enum_args"
     ),
-    ("ArchiveyConfig", "use_rapidgzip"): "coerced by the sibling enum-argument change",
+    ("ArchiveyConfig", "use_rapidgzip"): "coerced by enum_args, in __post_init__",
     (
         "ArchiveyConfig",
         "use_indexed_bzip2",
-    ): "coerced by the sibling enum-argument change",
+    ): "coerced by enum_args, in __post_init__",
     # Flags read for their truthiness. There is no wrong type to find: every value
     # means something, and ``streaming="no"`` opening in streaming mode is Python
     # behaving as written, not a leak.

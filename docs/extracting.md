@@ -105,6 +105,15 @@ with archivey.open_archive(
 
 ```
 
+Every enum argument here also takes the member spelled as a string, so a quick script
+or a shell one-liner does not need the imports: `overwrite="skip"`, `on_error="continue"`,
+`abort_on=["blocked-member"]`, `format="tar.gz"`. Case is ignored and `-` and `_` are
+interchangeable, which is the spelling the CLI's own `--help` advertises. The CLI takes
+the same set — `--abort-on blocked_member` and `--abort-on blocked-member` are the same
+option — so a value copied either way round works in both places. A spelling that
+matches nothing raises `ArchiveyUsageError` at the call, naming the ones that would have
+worked — it is never quietly ignored.
+
 `OnError` governs per-member **failures** (corrupt/truncated data, write errors,
 overwrite conflicts under `ERROR`). A policy **block** — an unsafe member refused by a
 universal path-safety check or a policy filter — is always recorded as `BLOCKED` and
