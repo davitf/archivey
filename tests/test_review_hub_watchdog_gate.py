@@ -150,16 +150,26 @@ def test_a_closed_hub_with_no_closed_event_says_so() -> None:
 
 
 def test_missing_keys_do_not_crash_the_job() -> None:
-    """Mutation: index `facts["labels"]` directly. A timeline fetch that failed and
-    left the key out would then abort the step before the reopen, which is the one
-    action that must happen whatever else is unknown."""
+    """Mutation: index `facts["labels"]` directly.
+
+    Today's caller cannot produce this: the step assembles its facts with `jq -n`, which
+    always emits all three keys, and a failed `gh api` aborts under `set -euo pipefail`
+    before the gate runs. What the test buys is that the gate stays answerable if any
+    future caller sends partial facts, and that the answer is still `reopen` — the one
+    action that must survive not knowing the rest.
+    """
     answer = watchdog.decide({"state": "CLOSED"})
     assert answer["action"] == "reopen"
 
 
 def test_the_script_runs_as_a_filter() -> None:
-    """Mutation: write the answer to stderr, or forget the trailing newline. The
-    workflow reads stdout with `jq`, so either leaves it parsing nothing."""
+    """Mutation: write the answer to stderr. The workflow reads stdout with `jq`,
+    which then parses nothing.
+
+    Only that mutation is claimed. Dropping the trailing newline was in an earlier
+    version of this docstring and does not hold: the test still passes without it, and
+    `jq -r .action` over a newline-less object returns `reopen` and exits 0.
+    """
     facts = {"state": "CLOSED", "labels": [], "timeline": [SECOND_CLOSE]}
     out = subprocess.run(
         [sys.executable, str(SCRIPT)],
