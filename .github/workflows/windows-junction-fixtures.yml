@@ -30,7 +30,10 @@ on:
       - claude/project-thread-7zxcy4
 
 permissions:
-  contents: read
+  # The job commits the archives it built back to this branch: they are the
+  # deliverable, and bytes round-tripped through a log or an artifact download
+  # are bytes that can be transcribed wrong.
+  contents: write
 
 jobs:
   build-fixtures:
@@ -39,6 +42,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -141,19 +146,22 @@ jobs:
                       print("  " + line)
           PY
 
-      - name: Emit the archives into the log
-        shell: pwsh
-        # The uploaded artifact needs a browser and a token to fetch. These archives
-        # are a few hundred bytes each, so the log itself is the reliable channel —
-        # and it is the only way to see a 7z member's bytes, which `7z l -slt`
-        # cannot print and extracting on Windows would re-create as a live link.
+      - name: Commit the archives to this branch
+        shell: bash
+        # `[skip ci]` keeps this push from re-triggering the workflow that made it.
         run: |
-          foreach ($f in Get-ChildItem -File out\* | Sort-Object Name) {
-            Write-Output "===== BASE64 $($f.Name) ($($f.Length) bytes) ====="
-            [Convert]::ToBase64String([IO.File]::ReadAllBytes($f.FullName)) -split '(.{120})' |
-              Where-Object { $_ } | ForEach-Object { Write-Output $_ }
-            Write-Output "===== END $($f.Name) ====="
-          }
+          set -euo pipefail
+          mkdir -p tests/fixtures/external/junction
+          cp out/* tests/fixtures/external/junction/
+          git config user.name "claude[bot]"
+          git config user.email "209825114+claude[bot]@users.noreply.github.com"
+          git add -A tests/fixtures/external/junction
+          if git diff --cached --quiet; then
+            echo "No change in the built archives."
+            exit 0
+          fi
+          git commit -m "ci: archives built by the junction probe [skip ci]"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
 
       - name: Upload the archives
         uses: actions/upload-artifact@v4
