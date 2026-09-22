@@ -103,9 +103,12 @@ What that means in practice:
 The skill has two modes and tells you to pick one. Both are advice under the ruling above.
 Pick by the text, and lean hardest where a second reading costs the most:
 
-- **Strict** — short text parsed without a human to resolve the ambiguity: exception and
-  diagnostic messages, CLI `--help` text, code comments, and a short instruction written
-  for another agent.
+- **Strict** — short text someone meets once and out of context, where a second reading
+  is expensive or impossible: exception and diagnostic messages, CLI `--help` text, code
+  comments, and a short instruction written for another agent. A code comment belongs
+  here for that reason and not because a machine parses it — the developer reading it has
+  the code in front of them and not the change that produced it, which is the same
+  argument `CONTRIBUTING.md` makes for writing comments at all.
 - **STE-flavored** — everything else, which is most of it: chat, pull request
   descriptions and comments, commit messages, `docs/`, `dev-docs/`, `CONTRIBUTING.md`,
   and the pages under `.claude/skills/`. Structural rules as written. The lexical rules
@@ -130,14 +133,16 @@ Pick by the text, and lean hardest where a second reading costs the most:
 already there, and `--disable` silences named rules.
 
 **Read a clean run for what it is.** The linter splits on newlines, not on sentences, so
-a sentence that spans a hard-wrapped line is measured as two short ones and the
-sentence-length rule never fires. Every markdown file here is wrapped near 90 columns, so
-that rule is effectively unreachable on this repo's prose: the same 28-word sentence
-scores one hard violation on a single line and zero when wrapped. What a clean run does
-tell you is that the checks that read a whole line — semicolons, phrasal verbs,
-nominalization, marketing adjectives — came back empty. Sentence length you judge
-yourself. The script is vendored verbatim so an upstream fix can be re-copied, which is
-why this caveat lives here and not in it.
+a sentence spanning a hard-wrapped line is measured as two short ones and the
+sentence-length rule does not fire on it: the same 28-word sentence scores one hard
+violation on a single line and zero when wrapped. Most prose here is hard-wrapped near 90
+columns, so on those files that rule is close to unreachable and you judge sentence
+length yourself. It does work, and is worth reading, wherever a line carries a whole
+sentence — an exception message, CLI help text, an unwrapped chat draft, or a file like
+the vendored `asd-ste100/SKILL.md`, whose paragraphs are one line each. What a clean run
+always tells you is that the checks reading a whole line came back empty: semicolons,
+phrasal verbs, nominalization, marketing adjectives. The script is vendored verbatim so
+an upstream fix can be re-copied, which is why this caveat lives here and not in it.
 
 ## Session setup (`unrar`, `7z`, `openspec`, deps)
 

@@ -204,7 +204,7 @@ means a decision was never recorded on the handbook page.
 | Pair investigation + decisions on handbook | `/grill-with-handbook` |
 | Explore without implementing | `/openspec-explore` stance; don’t open a verbose change by default |
 | Unslop chat / packets / PR comments (default) | `/unslop` — standing rule in [`AGENTS.md`](../AGENTS.md) §Writing English; thin skill, not technical-writing |
-| Remove ambiguity from any English you write (default) | `/asd-ste100` — same standing rule; STE-flavored mode here unless the text is parsed without a human |
+| Remove ambiguity from any English you write (default) | `/asd-ste100` — same standing rule, advice rather than a gate. STE-flavored unless the text is short and met once out of context |
 | User-facing or handbook prose craft | `/technical-writing`, then the two standing prose skills on the same prose ([`AGENTS.md`](../AGENTS.md) §Writing English) |
 | Review (other agent) | Cursor: `/code-review` (project command → archivey skill). Elsewhere: **`/code-review-skill`** — never bare `/code-review` (that is a host builtin). Full PR handoff; packets to maintainer |
 | Address review | Cursor: `/address-review`. Elsewhere: **`address-review-findings`** / ask for that skill by name |
