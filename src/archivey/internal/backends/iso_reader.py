@@ -427,7 +427,7 @@ class IsoReader(BaseArchiveReader):
         stream whose end-seek would decompress, which an unconditional ``SEEK_END``
         probe here would not.
         """
-        return cast("BinaryIO", _ImageBoundedStream(fp, source_byte_size(fp)))
+        return _ImageBoundedStream(fp, source_byte_size(fp))
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if _pycdlib_exc is not None and isinstance(exc, _pycdlib_exc.PyCdlibException):
