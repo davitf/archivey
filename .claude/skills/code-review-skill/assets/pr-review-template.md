@@ -39,26 +39,27 @@ One bullet per previous ID. A line each; anything longer is a reply on that find
 thread.
 
 ```markdown
-### Round [N-1] — [K1…K5]
+### Round [N-1] — K1…K5
 
 All re-derived at `[head]` rather than taken from the replies.
 
 - **K1** 🔴 fixed in `[sha]` — [what is true now, one clause]
 - **K4** 🟡 **still open** — [what is still missing]
-- **K5** 🟢 superseded by [K8] — [why]
+- **K5** 🟢 superseded by K8 — [why]
 ```
 
 ### The findings index
 
 The only list of findings in the body. Ranked by severity, then confidence. 🟢 and 💡
-included.
+included. Post the inline comments **before** the body, so their URLs exist to link to
+(§0). A finding whose URL you cannot get is listed with its `file:line` alone.
 
 ```markdown
 ### Findings
 
-- **[K6]** 🔴 `CONFIRMED` — [gist in one sentence] · [`path/to/file.py:123`]([thread url])
-- **[K7]** 🟡 `PLAUSIBLE` — [gist] · [`path/to/other.py:45`]([thread url])
-- **[K8]** 🟢 `[nit]` — [gist] · [`path/to/third.py:9`]([thread url])
+- **K6** 🔴 `CONFIRMED` — [gist in one sentence] · [`path/to/file.py:123`]([thread url])
+- **K7** 🟡 `PLAUSIBLE` — [gist] · [`path/to/other.py:45`]([thread url])
+- **K8** 🟢 `[nit]` — [gist] · [`path/to/third.py:9`]([thread url])
 ```
 
 A finding with **no** location has no thread to link to, so it is written out in full here,
@@ -126,7 +127,7 @@ One per finding, anchored on the line it concerns. Written to be read months lat
 someone who has only this thread open: no "see the briefing", no "as in K3".
 
 ```markdown
-### [K6] · 🔴 `[blocking]` · `CONFIRMED`
+### K6 · 🔴 `[blocking]` · `CONFIRMED`
 
 **Claude Code** · `code-review-skill` · round [N] · `[head-sha]`
 
@@ -149,7 +150,7 @@ where it is a whole-line replacement.
 ## C. A reply on a thread
 
 ```markdown
-### [K6] · [still open | fixed in `[sha]` | disproven]
+### K6 · [still open | fixed in `[sha]` | disproven]
 
 **Claude Code** · `code-review-skill` · round [N] · `[head-sha]`
 

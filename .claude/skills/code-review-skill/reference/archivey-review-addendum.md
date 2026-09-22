@@ -87,7 +87,11 @@ For the maintainer skimming without the code open. Half a screen unless the chan
   ranked by severity then confidence, including 🟢 and 💡: ID, severity, confidence, the
   gist in one sentence, the location, and a link to the thread. Nothing else. The full
   finding is in the thread, and a body that repeats it is the length problem this shape
-  exists to fix.
+  exists to fix. **Post the inline comments first, then the body**, because a review
+  submitted in one call creates both at once and the body would have no URLs to link to
+  (`POST .../pulls/{n}/comments` returns each comment's `html_url`, and §10 records that
+  a review body cannot be edited afterwards through the MCP tools). A finding whose thread
+  URL you genuinely cannot get is listed with its `file:line` alone rather than held back.
 - **Snapshot** — one line: size (approx. lines / small|medium|large), the scope you
   reviewed, and gates (CI status, §10). The verdict is already in the header, so the
   Snapshot does not restate it.
@@ -172,14 +176,14 @@ proposal or implements it later.
 
 ### Verdicts — what each one commits to
 
-The Snapshot verdict is a claim about whether the PR is ready to merge **as it stands**,
+The header's verdict is a claim about whether the PR is ready to merge **as it stands**,
 so use these meanings and no others:
 
 - **✅ Approve** — nothing left to change. Every finding is `DISPROVEN`, already fixed in a
   later commit, or a 💡 / 📚 / 🎉 annotation that carries no action.
 - **✅ Approve, conditional on the listed fixes** — the only remaining findings are 🟢 nits
   (or a 🟡 that small) whose fix is *obvious*, and you would not need to see the result. Say
-  which IDs the approval is conditioned on, in the verdict line itself. This is the one
+  which IDs the approval is conditioned on, in the heading itself. This is the one
   verdict that approves with work outstanding; the conditioned findings are still posted in
   full (block 2, inline threads, IDs) — approving is not shorthand for dropping them.
 - **💬 Comment** — findings the implementor should act on, but nothing the maintainer must
@@ -813,7 +817,7 @@ So:
 - **Submit the review with `event: COMMENT`** (`pull_request_review_write`, method
   `submit_pending`). `REQUEST_CHANGES` is rejected on your own PR for the same reason —
   `COMMENT` is the only event that goes through.
-- **Carry the verdict in the text**, where the §0 Verdict line already puts it. The
+- **Carry the verdict in the text**, where the §10 header already puts it. The
   briefing's `✅ Approve` / `✅ Approve conditional on K4, C5` / `🔄 Request Changes` is the
   review's actual conclusion; the green check in GitHub's UI is not available to say it.
 - **Do not narrate the limitation** to the maintainer as a discovery each round, and do not
@@ -905,8 +909,8 @@ Conditional approval names what it is conditioned on in the heading itself:
 **Claude Code** · `code-review-skill` · round 3 · `f65b6d05`
 ```
 
-Use `## ` in a review body and `### ` in an inline comment or reply — GitHub renders both
-at the same size in a comment, and the level keeps the raw markdown readable.
+Use `## ` in a review body and `### ` in an inline comment or reply. The level is what
+keeps the raw markdown readable, and it nests a finding's heading under the body's.
 
 On a PR whose threads mix maintainer questions, `cursor[bot]` dispositions, and a reviewer
 posting through the maintainer's account, this is what makes a thread scannable — the

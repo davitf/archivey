@@ -111,6 +111,16 @@ a gate: `.claude/skills/asd-ste100/scripts/ste-lint.py` is a stdlib-only linter 
 point at a file (`--baseline N` tolerates what is already there), and nothing in
 `scripts/check.sh` calls it.
 
+**Read a clean run for what it is.** The linter splits on newlines, not on sentences, so
+a sentence that spans a hard-wrapped line is measured as two short ones and the
+sentence-length rule never fires. Every markdown file here is wrapped near 90 columns, so
+that rule is effectively unreachable on this repo's prose: the same 28-word sentence
+scores one hard violation on a single line and zero when wrapped. What a clean run does
+tell you is that the checks that read a whole line — semicolons, phrasal verbs,
+nominalization, marketing adjectives — came back empty. Sentence length you judge
+yourself. The script is vendored verbatim so an upstream fix can be re-copied, which is
+why this caveat lives here and not in it.
+
 ## Session setup (`unrar`, `7z`, `openspec`, deps)
 
 `scripts/setup-dev-env.sh` provisions everything: the `unrar` and `7z` system
