@@ -2242,3 +2242,34 @@ def test_lzma1_bcj_decodes_without_pybcj_installed(
 
     monkeypatch.setitem(sys.modules, "bcj", None)
     _assert_roundtrip(archive, {"payload.bin": payload})
+
+
+def test_external_comment_is_refused_like_every_other_external_property() -> None:
+    """``kComment``'s leading byte is the same "external" flag ``kName`` carries.
+
+    A comment stored in additional streams was decoded as UTF-16LE text — the flag and
+    the stream reference presented as an archive comment — while every sibling property
+    refuses the same byte.
+    """
+    from archivey.exceptions import UnsupportedFeatureError
+    from archivey.internal.backends.sevenzip_parser import _Cursor, _read_comment
+
+    # external == 0: the payload after it is the comment.
+    assert _read_comment(_Cursor(b"\x00" + "hi".encode("utf-16le"))) == "hi"
+
+    with pytest.raises(UnsupportedFeatureError, match="External 7z comment"):
+        _read_comment(_Cursor(b"\x01" + (7).to_bytes(8, "little")))
+
+
+def test_comment_terminator_is_trimmed_a_code_unit_at_a_time() -> None:
+    """A byte-wise rstrip ate the high byte of a trailing ASCII character.
+
+    "hi" is ``68 00 69 00``; stripping trailing zero *bytes* leaves ``68 00 69``, an
+    odd-length payload that raised ``CorruptionError`` for a well-formed comment.
+    """
+    from archivey.internal.backends.sevenzip_parser import _Cursor, _read_comment
+
+    assert _read_comment(_Cursor(b"\x00" + "hi\x00".encode("utf-16le"))) == "hi"
+    assert _read_comment(_Cursor(b"\x00" + "hi\x00\x00".encode("utf-16le"))) == "hi"
+    assert _read_comment(_Cursor(b"\x00")) is None
+    assert _read_comment(_Cursor(b"\x00" + "\x00".encode("utf-16le"))) is None

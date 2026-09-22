@@ -60,6 +60,23 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   may already be closed by the change's own fixtures. A premise recorded as narrower than
   it is misdirects whoever picks it up. Tracked internally.
 
+- **#387 — `safe-extraction`'s "avoid wasted passes" `SHALL` contradicts `extraction.py` in writing.**
+  `openspec/specs/safe-extraction/spec.md:349-351` says the coordinator "SHALL avoid wasted
+  passes: if a free member list exists (`members_report_if_available()`), recovery is planned
+  in one forward pass; otherwise a seekable source may use one conditional second pass".
+  `src/archivey/internal/extraction.py:16-18` says the opposite in as many words: "The optional
+  *planned single pass* optimization (staging an excluded source during the first pass when a
+  free member list exists) is deliberately not implemented here — it is an optimization over
+  this core, not a correctness requirement." Both sides are deliberate and written down, which
+  is what makes it a contradiction rather than an oversight.
+
+  It matters most for the backends with a free member list. On a solid RAR the planned pass is
+  the branch that would stop the orphan recovery from being a second whole-archive decode.
+  The first question is which side moves: revise the `SHALL` to permit the second pass where
+  the spec currently requires planning, or build the planning. Out of scope for #387, which
+  edits no code and a different capability. Raised by the reviewer on that PR; tracked
+  internally.
+
 - **#384 K17 — ZIP (and 7z) junction detection, `extra["is_junction"]`.**
   **Maintainer decision (davitf, 2026-09-21, [K17](https://github.com/davitf/archivey/pull/384#discussion_r4058819322)):** option B — implement ZIP junction detection; the `archive-data-model` matrix row at `:79` stands. Not this typing PR: the published register ("directory, RAR") is true of the tree today and moves when the producers do. Tracked internally.
 

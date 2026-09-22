@@ -140,9 +140,13 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
 
 ---
 
-## 5. Quality gate (same bar as “before pushing”)
+## 5. Quality gate (all three configs, every time)
 
-From `CONTRIBUTING.md` — all three dependency configs:
+All three dependency configs, with no judgement call. The before-pushing gate in
+`CONTRIBUTING.md` is scoped to what a change can reach, so an author may legitimately
+run one leg and let CI cover the rest. A release is not a change: what is being tagged
+is the whole library in each configuration a user can install it in, so the legs a
+particular diff could not reach are exactly the ones nobody has run lately.
 
 ```bash
 # 1. Current [all]

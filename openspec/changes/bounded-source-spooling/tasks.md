@@ -93,4 +93,13 @@
 - [ ] 6.4 Add the payload-cache idea to `dev-docs/IDEAS.md` §Performance, recorded as a
       **caller-side wrapper-stream** concern archivey might ship or recommend later — not
       as a deferred version of this change.
-- [ ] 6.5 `openspec archive` this change in the implementing PR — CI checks it on PRs.
+- [ ] 6.5 Before archiving, re-derive this change's `format-rar` `MODIFIED` block from the
+      live requirement and re-apply only this change's own edits. A `MODIFIED` delta
+      replaces the whole requirement block, so anything the live text has gained since this
+      block was written is deleted on archive, silently -- `openspec validate --strict`
+      cannot see it. Do the same for the `archive-reading` and `access-mode-and-cost`
+      blocks.
+- [ ] 6.6 Dry-run the archive on a scratch tree and read the **diff** of
+      `openspec/specs/`, not the `~ n modified` count: the count cannot tell an intended
+      edit from a deletion. Every removed line should be one this change means to replace.
+- [ ] 6.7 `openspec archive` this change in the implementing PR — CI checks it on PRs.

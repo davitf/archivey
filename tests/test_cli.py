@@ -1732,3 +1732,23 @@ def test_test_verb_escapes_failure_detail(
     assert lines, err
     assert all("\x1b" not in ln for ln in lines)
     assert any("\\x1b[2K" in ln for ln in lines)
+
+
+def test_dunder_main_is_importable_without_running_the_cli() -> None:
+    """``python -m archivey`` runs the module as ``__main__``; a plain import must not.
+
+    Without the ``if __name__`` guard, importing ``archivey.__main__`` — which any
+    package walker, docs autoapi pass or import-based coverage warm-up does — ran the
+    CLI against whatever ``sys.argv`` the host happened to have and exited from inside
+    the import.
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "import archivey.__main__; print('imported')"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "imported" in proc.stdout
+    assert "usage:" not in proc.stderr

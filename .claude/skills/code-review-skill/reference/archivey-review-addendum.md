@@ -189,6 +189,16 @@ correction to wording a previous fix introduced).
 A round 3+ that finds a 🔴 or a 🟡 is a normal round — say so and keep going. The budget
 binds only the case where the remainder is nits.
 
+**Under the automated loop the verdict is what stops the loop**, not a suggestion it
+weighs — and unlike the budget above it, that is not a round-3 rule: a conditional
+approval at round 1 ends the loop at round 1. The round's verdict file maps 🔄 Request
+Changes to another round, and the three "I do not need to see the result" verdicts — a
+plain approval, the conditional approval above, and 💬 Comment — to the end of the
+loop, whatever rounds the cap has left
+([`dev-docs/review-loop.md`](../../../../dev-docs/review-loop.md) §Stopping it). So the
+verdict line is a decision about spending another review, and writing 🔄 to keep a round
+in hand spends one on wording you have already described.
+
 ### Two axes: severity ≠ confidence
 
 Rate every finding on both axes so the maintainer reads **severity × confidence** and
@@ -575,6 +585,11 @@ the file was read at all, **whether or not it found anything**:
 
 - **One top-level comment on #315 per file**, posted when you finish reading that file and
   before you start the next one. Not inline: a whole-file read has no line to anchor to.
+- **Writing about the hub elsewhere?** Never reproduce a closing phrase next to its number
+  in a commit message or a pull request body — it closes the hub, silently, and quoting one
+  counts. The rule lives in [`AGENTS.md`](../../../../AGENTS.md) §Review workflow; it bit
+  twice on 2026-09-21. Inline comments like the ones above are not parsed, so findings and
+  markers are unaffected.
 - **The marker is always its own comment, including for a file that produced findings.**
   Never put the `SWEPT` line in a review body, a finding, or a reply. A file with findings
   therefore gets its findings *and* a marker comment, which is the point: the marker says

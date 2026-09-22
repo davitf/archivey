@@ -37,6 +37,7 @@ The member name SHALL be inferred from the source filename:
 | Source filename | Member name |
 | --- | --- |
 | Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.br`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` |
 | Has a filename but no recognized compressor extension | Append `.uncompressed`; do not strip arbitrary extensions |
 | Anonymous stream | `data` |
 
@@ -53,6 +54,7 @@ is a framed standalone stream and is in scope here.
 | Open `data.txt.gz` | One file member named `data.txt` |
 | Open `data.txt.lzma` | One file member named `data.txt` |
 | Open compressed `mystery.bin` detected by content | One file member named `mystery.bin.uncompressed` |
+| Open `....gz` | One file member named `....gz.uncompressed`, under every extraction policy |
 | Open anonymous non-seekable stream with `streaming=True` | One file member named `data` |
 | Iterate any supported single-file compressor | Exactly one file member is yielded |
 

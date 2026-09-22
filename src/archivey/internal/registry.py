@@ -10,6 +10,7 @@ errors, rather than silently dropping a format whose dependency is absent (see
 
 from __future__ import annotations
 
+import functools
 import importlib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -25,7 +26,7 @@ from archivey.exceptions import (
     UnsupportedFormatError,
     UnsupportedOperationError,
 )
-from archivey.internal.format_args import check_archive_format
+from archivey.internal.format_args import coerce_archive_format
 from archivey.internal.sfx import HitValidator
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
@@ -130,8 +131,26 @@ _CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
 # is declared in exactly one place (see ``backend-registry``).
 
 
+@functools.cache
 def _optional(name: str) -> ModuleType | None:
-    """Return the named module, or ``None`` when it (the optional extra) is not installed."""
+    """Return the named module, or ``None`` when it (the optional extra) is not installed.
+
+    Memoized, because Python has no negative import cache: a *present* module is a
+    ``sys.modules`` hit, but a **missing** one re-runs the finders over every
+    ``sys.path`` entry on every call — measured at ~46 µs against ~0.6 µs. That cost
+    lands on the ``open_archive`` path (``reader_for_format`` -> ``format_availability``
+    -> here) and once per format in ``list_supported_formats()``, so an environment that
+    skipped an extra pays it repeatedly for an answer that does not change.
+
+    The accepted trade is that a dependency installed into an already-running
+    interpreter is not picked up; a caller that needs it to be can call
+    ``_optional.cache_clear()``. That is a real difference from ``extension_map()``
+    below, which is also cached but *invalidated* — ``register_reader`` drops its cache
+    so a registration after first use cannot be missed. Nothing invalidates this one,
+    because a registration can happen mid-process and an install cannot. Tests that
+    simulate a missing extra replace this function rather than hiding the module, so the
+    memo does not leak between them.
+    """
     try:
         return importlib.import_module(name)
     except ImportError:
@@ -382,20 +401,24 @@ def get_registry() -> BackendRegistry:
     return _registry
 
 
-def format_availability(fmt: ArchiveFormat) -> FormatAvailability:
+def format_availability(fmt: ArchiveFormat | str) -> FormatAvailability:
     """Public query: the tri-state support level of ``fmt`` and its missing components.
 
-    ``fmt`` must be an :class:`~archivey.ArchiveFormat` — the ``(container, stream)``
-    pair. Anything else, a :class:`~archivey.StreamFormat` included, raises
-    :class:`~archivey.ArchiveyUsageError` rather than answering.
+    ``fmt`` is an :class:`~archivey.ArchiveFormat` — the ``(container, stream)`` pair —
+    or that format spelled as a string, such as ``"zip"`` or ``"tar.gz"``. Anything
+    else, a :class:`~archivey.StreamFormat` or a :class:`~archivey.ContainerFormat`
+    included, raises :class:`~archivey.ArchiveyUsageError` rather than answering: each
+    is half of the pair, not a format.
     """
     # A non-ArchiveFormat used to fall through to a fabricated record — NONE with an
     # empty ``missing``, indistinguishable from a legitimate unsupported answer, and a
     # ``format`` field violating its own declared type. The check is here rather than on
     # the method so internal callers, which hold an ArchiveFormat by construction, keep
     # the plain lookup.
-    check_archive_format(fmt, call="format_availability()", allow_none=False)
-    return _registry.format_availability(fmt)
+    resolved = coerce_archive_format(
+        fmt, call="format_availability()", allow_none=False
+    )
+    return _registry.format_availability(resolved)
 
 
 def list_supported_formats() -> list[ArchiveFormat]:

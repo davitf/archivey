@@ -7,6 +7,7 @@ import io
 import os
 import shutil
 import tarfile
+import time
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -1092,3 +1093,511 @@ def test_concatenated_file_zero_length_volumes() -> None:
                     break
                 got.extend(chunk)
             assert bytes(got) == expected
+
+
+def test_concatenated_file_volume_ranges_match_item_sizes_and_order() -> None:
+    """``volume_ranges[i]`` is ``(start, size)`` of ``volume_items[i]``.
+
+    ``_materialize_stream_volumes`` pairs ``ranges[index - 1]`` with item
+    ``index``; a permutation here would copy the wrong bytes into the wrong
+    ``partN`` file.
+    """
+    first = io.BytesIO(b"aaa")
+    second = io.BytesIO(b"bbbb")
+    joined = ConcatenatedFile([first, second])
+    try:
+        assert joined.volume_ranges == [(0, 3), (3, 4)]
+        assert joined.volume_ranges[0][1] + joined.volume_ranges[1][1] == joined.size
+        assert joined.volume_ranges[1][0] == joined.volume_ranges[0][1]
+        assert list(joined.volume_items) == [first, second]
+    finally:
+        joined.close()
+
+
+def test_concatenated_file_single_volume_range_is_the_whole_source() -> None:
+    joined = ConcatenatedFile([io.BytesIO(b"hello")])
+    try:
+        assert joined.volume_ranges == [(0, 5)]
+        assert joined.volume_ranges[0] == (0, joined.size)
+    finally:
+        joined.close()
+
+
+def test_concatenated_file_volume_ranges_for_mixed_path_and_stream(
+    tmp_path: Path,
+) -> None:
+    path_vol = tmp_path / "a.bin"
+    path_vol.write_bytes(b"xx")
+    stream_vol = io.BytesIO(b"yyyyy")
+    joined = ConcatenatedFile([path_vol, stream_vol])
+    try:
+        assert joined.volume_ranges == [(0, 2), (2, 5)]
+        starts = [start for start, _size in joined.volume_ranges]
+        sizes = [size for _start, size in joined.volume_ranges]
+        assert starts == [0, sizes[0]]
+        assert sum(sizes) == joined.size
+        assert joined.volume_items[0] == path_vol
+        assert joined.volume_items[1] is stream_vol
+    finally:
+        joined.close()
+
+
+def test_concatenated_file_can_be_buffered() -> None:
+    """``ConcatenatedFile`` is handed out as ``open_source``; buffering it must work.
+
+    ``RawIOBase`` expects ``readinto``; this class overrides ``read`` instead, so
+    without an explicit bridge both spellings raised ``NotImplementedError``.
+    """
+    joined = ConcatenatedFile([io.BytesIO(b"AAAA"), io.BytesIO(b"BBBB")])
+    assert io.BufferedReader(joined).read(6) == b"AAAABB"
+
+    joined = ConcatenatedFile([io.BytesIO(b"AAAA"), io.BytesIO(b"BBBB")])
+    buffer = bytearray(6)
+    assert joined.readinto(buffer) == 6
+    assert bytes(buffer) == b"AAAABB"
+
+
+def test_numbered_volume_gap_names_the_missing_parts(tmp_path: Path) -> None:
+    paths = []
+    for part in ("001", "003", "004"):
+        path = tmp_path / f"vol.7z.{part}"
+        path.write_bytes(b"")
+        paths.append(path)
+    with pytest.raises(TruncatedError) as excinfo:
+        join_volumes(paths)
+    message = str(excinfo.value)
+    assert "missing part 2" in message
+    # The old message printed both full lists and left the reader to diff them.
+    assert "expected parts" not in message
+
+
+def test_numbered_volume_set_out_of_order_is_not_called_incomplete(
+    tmp_path: Path,
+) -> None:
+    """A complete set in the wrong order is refused, but nothing is missing."""
+    paths = []
+    for part in ("002", "001"):
+        path = tmp_path / f"vol.7z.{part}"
+        path.write_bytes(b"")
+        paths.append(path)
+    with pytest.raises(TruncatedError) as excinfo:
+        join_volumes(paths)
+    message = str(excinfo.value)
+    assert "Out-of-order" in message
+    assert "Incomplete" not in message
+
+
+def test_numbered_volume_set_repeated_part_says_so(tmp_path: Path) -> None:
+    path = tmp_path / "vol.7z.001"
+    path.write_bytes(b"")
+    with pytest.raises(TruncatedError) as excinfo:
+        join_volumes([path, path])
+    assert "given more than once" in str(excinfo.value)
+
+
+def test_numbered_volume_message_is_sized_by_file_count_not_part_number() -> None:
+    """A part number comes from a filename, so it must not size an allocation.
+
+    ``_NUMBERED_VOLUME_RE`` accepts three digits or more with no upper bound, and
+    ``discover_volume_siblings`` sweeps the directory for every match. Building the
+    missing-part list over ``range(1, max(numbered) + 1)`` let a sibling named
+    ``foo.7z.9999999999`` decide how much memory ``open_archive`` allocates on the
+    *first* volume. The set has to be exactly 1..N, so only a part at or below N can
+    be missing.
+    """
+    start = time.monotonic()
+    message = volumes_mod._numbered_volume_sequence_error("x.7z", [1, 10**9])
+    elapsed = time.monotonic() - start
+
+    assert message == (
+        "Incomplete multi-volume set for x.7z: "
+        "missing parts 2, 3, 4, 5, 6, 7, 8, 9, … (999999998 in total)"
+    )
+    assert elapsed < 1.0, f"took {elapsed:.1f}s — the list is sized by the part number"
+
+
+def test_numbered_volume_repeat_detection_does_not_rescan_per_part() -> None:
+    """The repeat branch counts once; it used to call ``list.count`` per distinct part."""
+    parts = list(range(1, 20_001)) + [1]
+    start = time.monotonic()
+    message = volumes_mod._numbered_volume_sequence_error("x.7z", parts)
+    elapsed = time.monotonic() - start
+
+    assert "part 1 given more than once" in message
+    assert elapsed < 1.0, f"took {elapsed:.1f}s — quadratic in the number of files"
+
+
+def test_open_archive_survives_a_huge_numbered_sibling(tmp_path: Path) -> None:
+    """End to end: the sibling is an ordinary filename anyone can drop in the directory."""
+    (tmp_path / "foo.7z.001").write_bytes(b"")
+    (tmp_path / "foo.7z.005000000").write_bytes(b"")
+    start = time.monotonic()
+    with pytest.raises(
+        TruncatedError, match=r"missing parts 2, .*\(4999998 in total\)"
+    ):
+        open_archive(tmp_path / "foo.7z.001")
+    assert time.monotonic() - start < 5.0
+
+
+@pytest.mark.parametrize(
+    ("parts", "expected"),
+    [
+        ([5, 6], "missing parts 1, 2, 3, 4"),
+        ([8, 9, 10], "missing parts 1, 2, 3, 4, 5, 6, 7"),
+        ([1, 3, 4], "missing part 2"),
+    ],
+)
+def test_numbered_volume_message_names_every_missing_part(
+    parts: list[int], expected: str
+) -> None:
+    """Bounding the scan must not make the message under-report.
+
+    A set starting at part 8 of 10 is the ordinary shape — a partial download, or a
+    copy taken from halfway through. Telling the caller to fetch three files when
+    seven are missing makes the diagnostic converge by repetition instead of
+    answering, which is the opposite of the honest error the project promises for
+    damaged input.
+    """
+    assert volumes_mod._numbered_volume_sequence_error("x.7z", parts).endswith(expected)
+
+
+@pytest.mark.parametrize("parts", [[0, 1], [0, 2], [0, 1, 2], [0, 1, 3]])
+def test_zero_numbered_part_is_named_not_called_out_of_order(parts: list[int]) -> None:
+    """A part below 1 breaks the premise the missing-count arithmetic rests on.
+
+    ``max - len`` is exact only while every part lies in ``1..max``. With a ``0`` in
+    the set the count comes out at or below zero and control falls through to the
+    out-of-order branch, which tells the caller to put the files in ascending order —
+    and they already are, so the one instruction the message gives cannot be carried
+    out. ``split -b … -d`` numbers from ``000`` and leaves a base name the pattern
+    matches, so this is a shape a caller can land on by accident.
+    """
+    message = volumes_mod._numbered_volume_sequence_error("x.7z", parts)
+    assert "is not numbered from 1" in message
+    assert "part 0" in message
+    assert "ascending order" not in message
+
+
+def test_zero_numbered_volume_set_says_what_is_wrong(tmp_path: Path) -> None:
+    """The same, through the public API rather than the private helper."""
+    (tmp_path / "foo.7z.000").write_bytes(b"")
+    (tmp_path / "foo.7z.001").write_bytes(b"")
+
+    with pytest.raises(TruncatedError) as excinfo:
+        open_archive(tmp_path / "foo.7z.001")
+
+    assert "is not numbered from 1" in str(excinfo.value)
+    assert "ascending order" not in str(excinfo.value)
+
+
+def test_parts_from_two_sets_are_refused(tmp_path: Path) -> None:
+    """The numbers alone say nothing about whether the parts belong together.
+
+    ``alpha.zip.001`` and ``beta.zip.002`` are a perfectly good ``1, 2``, so the
+    completeness check passes and two unrelated archives concatenate into bytes that
+    are neither. Discovery filters siblings by base, so the hole is on the explicit
+    path — a caller's own ``sorted(glob("*.zip.*"))`` over a directory holding more
+    than one set.
+    """
+    (tmp_path / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "beta.zip.002").write_bytes(b"BBB")
+
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        join_volumes([tmp_path / "alpha.zip.001", tmp_path / "beta.zip.002"])
+
+    assert "different sets" in str(excinfo.value)
+    assert "alpha.zip" in str(excinfo.value)
+    assert "beta.zip" in str(excinfo.value)
+
+
+def test_parts_of_one_set_still_join(tmp_path: Path) -> None:
+    """The guard must not refuse the sets discovery would have produced."""
+    (tmp_path / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "alpha.zip.002").write_bytes(b"BBB")
+
+    joined = join_volumes([tmp_path / "alpha.zip.001", tmp_path / "alpha.zip.002"])
+    assert joined.read() == b"AAABBB"
+
+
+def test_base_comparison_is_case_folded_like_discovery(tmp_path: Path) -> None:
+    """Discovery groups siblings with ``.lower()``, so the explicit path must too.
+
+    On a case-insensitive filesystem the two spellings are one file set, and a caller
+    listing a directory can get either spelling back. Refusing them here would make
+    the explicit path stricter than the discovered one for no gain.
+    """
+    (tmp_path / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "ALPHA.zip.002").write_bytes(b"BBB")
+
+    joined = join_volumes([tmp_path / "alpha.zip.001", tmp_path / "ALPHA.zip.002"])
+    assert joined.read() == b"AAABBB"
+
+
+def test_one_unrecognized_name_does_not_turn_the_guard_off(tmp_path: Path) -> None:
+    """A name no scheme claims is passed over, not treated as the end of the check.
+
+    The scenario is the one the explicit path exists for: a caller's own
+    ``sorted(glob("*.zip.*"))``, which also returns ``alpha.zip.bak`` and
+    ``notes.zip.old``. Returning at the stray instead of continuing would leave the
+    parts around it unchecked, and which parts those are would depend only on where
+    the stray sorted. Fails against a ``return`` in place of the ``continue`` in
+    ``_validate_volume_sequence_bases``.
+    """
+    (tmp_path / "aaa.zip.bak").write_bytes(b"X")
+    (tmp_path / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "beta.zip.002").write_bytes(b"BBB")
+
+    with pytest.raises(ArchiveyUsageError):
+        join_volumes(sorted(tmp_path.glob("*.zip.*")))
+
+
+def test_completeness_stays_gated_on_every_path_matching(tmp_path: Path) -> None:
+    """A stray suspends the 1..N check, so an incomplete run of parts still joins.
+
+    A caller joining arbitrary files, one of which happens to be named
+    ``foo.zip.002``, is not claiming a numbered set, so it must not be refused as an
+    incomplete one. The numbered parts here are ``2, 3`` deliberately: with the
+    ``if skipped: return`` gate removed, this sequence raises ``TruncatedError`` for
+    a missing part 1, which is the mutation the test fails against.
+    """
+    (tmp_path / "vol.exe").write_bytes(b"S")
+    (tmp_path / "vol.exe.002").write_bytes(b"AAA")
+    (tmp_path / "vol.exe.003").write_bytes(b"BBB")
+
+    joined = join_volumes(
+        [tmp_path / "vol.exe", tmp_path / "vol.exe.002", tmp_path / "vol.exe.003"]
+    )
+    assert joined.read() == b"SAAABBB"
+
+
+def test_stub_ahead_of_its_own_numbered_parts_keeps_joining(tmp_path: Path) -> None:
+    """``[vol.exe, vol.exe.001, vol.exe.002]`` joins as it did before the guard.
+
+    Pins the shape against a later tightening, nothing more: the discovery path
+    deliberately leaves a 7-Zip stub out of the volume list
+    (``docs/opening-and-listing.md``), so what is asserted is the bytes
+    :func:`join_volumes` returns, not that ``open_archive`` reads this sequence.
+    """
+    (tmp_path / "vol.exe").write_bytes(b"S")
+    (tmp_path / "vol.exe.001").write_bytes(b"AAA")
+    (tmp_path / "vol.exe.002").write_bytes(b"BBB")
+
+    joined = join_volumes(
+        [tmp_path / "vol.exe", tmp_path / "vol.exe.001", tmp_path / "vol.exe.002"]
+    )
+    assert joined.read() == b"SAAABBB"
+
+
+def test_rar_part_volumes_from_two_sets_are_refused(tmp_path: Path) -> None:
+    """The RAR schemes carry a base too, so they are checked the same way.
+
+    ``docs/opening-and-listing.md`` advertises both RAR namings as volume input, and
+    two sets concatenate into bytes that are neither just as the numbered ones do.
+    """
+    (tmp_path / "alpha.part1.rar").write_bytes(b"AAA")
+    (tmp_path / "beta.part2.rar").write_bytes(b"BBB")
+
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        join_volumes([tmp_path / "alpha.part1.rar", tmp_path / "beta.part2.rar"])
+
+    assert "different sets" in str(excinfo.value)
+
+
+def test_old_scheme_rar_volumes_from_two_sets_are_refused(tmp_path: Path) -> None:
+    """An old-scheme volume 1 has no part marker, and is still compared on its stem.
+
+    ``alpha.rar`` matches none of the three part patterns — discovery reaches it from
+    the ``.rNN`` stem — so without classifying it there is nothing for ``beta.r00``
+    to disagree with.
+    """
+    (tmp_path / "alpha.rar").write_bytes(b"AAA")
+    (tmp_path / "beta.r00").write_bytes(b"BBB")
+
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        join_volumes([tmp_path / "alpha.rar", tmp_path / "beta.r00"])
+
+    assert "different sets" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("alpha.part1.rar", "alpha.part2.rar"),
+        ("alpha.part1.sfx", "alpha.part2.rar"),
+        ("alpha.rar", "alpha.r00"),
+        ("alpha.exe", "alpha.r00"),
+    ],
+)
+def test_rar_volumes_of_one_set_still_join(
+    tmp_path: Path, names: tuple[str, str]
+) -> None:
+    """Every RAR spelling discovery accepts as one set must still join here."""
+    (tmp_path / names[0]).write_bytes(b"AAA")
+    (tmp_path / names[1]).write_bytes(b"BBB")
+
+    joined = join_volumes([tmp_path / names[0], tmp_path / names[1]])
+    assert joined.read() == b"AAABBB"
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        # `sorted(glob("*.rar"))` over a directory holding one split set and one
+        # unrelated archive — the shape the explicit path exists for.
+        ("alpha.part1.rar", "alpha.part2.rar", "beta.rar"),
+        ("alpha.zip.001", "alpha.zip.002", "beta.rar"),
+        ("alpha.rar", "beta.part2.rar"),
+        # Two complete sets, each named in its own scheme.
+        ("alpha.zip.001", "alpha.zip.002", "beta.part1.rar", "beta.part2.rar"),
+        ("alpha.zip.001", "beta.part2.rar"),
+    ],
+)
+def test_two_sets_named_in_different_schemes_are_refused(
+    tmp_path: Path, names: tuple[str, ...]
+) -> None:
+    """Comparing bases within one scheme alone leaves the cross-scheme sets joining.
+
+    A base means something different in each scheme, so they cannot be compared
+    directly — but a sequence that populates two schemes, or puts a bare ``.rar``
+    beside a set that spells its own volume 1 differently, is two archives whatever
+    the bases say. Fails against a check keyed on the scheme alone, which lets every
+    sequence here join.
+    """
+    for index, name in enumerate(names):
+        (tmp_path / name).write_bytes(bytes([65 + index]))
+
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        join_volumes([tmp_path / name for name in names])
+
+    assert "different sets" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("vol.exe", "vol.exe.001", "vol.exe.002"),
+        ("stub.exe", "vol.7z.001", "vol.7z.002"),
+        ("vol.sfx", "vol.exe.001", "vol.exe.002"),
+    ],
+)
+def test_a_stub_executable_beside_numbered_parts_still_joins(
+    tmp_path: Path, names: tuple[str, ...]
+) -> None:
+    """The stub is why the cross-scheme rule is not "two shapes means two sets".
+
+    ``7z a -sfx … -v`` writes a stub with no part marker beside the numbered parts,
+    and its name is not derived from their base, so there is nothing to compare it
+    against. Only the ``.exe`` / ``.sfx`` spelling says it can be a stub at all —
+    which is why a bare ``.rar`` in the same position is refused.
+    """
+    for index, name in enumerate(names):
+        (tmp_path / name).write_bytes(bytes([65 + index]))
+
+    joined = join_volumes([tmp_path / name for name in names])
+    assert joined.read() == b"ABC"
+
+
+def test_volume_shaped_names_with_no_parts_beside_them_still_join(
+    tmp_path: Path,
+) -> None:
+    """Two names that are only *shaped* like volume 1 are not evidence of two sets.
+
+    ``stub.exe`` and ``alpha.rar`` carry no part marker, and nothing in the sequence
+    says either is a volume at all. An earlier revision read both as old-scheme first
+    volumes and refused the pair; the comparison now needs a ``.rNN`` part to anchor
+    it, so the caller gets the bytes they asked for.
+    """
+    (tmp_path / "stub.exe").write_bytes(b"AAA")
+    (tmp_path / "alpha.rar").write_bytes(b"BBB")
+
+    joined = join_volumes([tmp_path / "stub.exe", tmp_path / "alpha.rar"])
+    assert joined.read() == b"AAABBB"
+
+
+def test_same_base_in_two_directories_still_joins(tmp_path: Path) -> None:
+    """The docs advertise this path for parts that are not siblings on disk.
+
+    The base check is on names only, so it cannot tell these apart from one set —
+    and must not, or the documented use case breaks.
+    """
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    (tmp_path / "one" / "alpha.zip.001").write_bytes(b"AAA")
+    (tmp_path / "two" / "alpha.zip.002").write_bytes(b"BBB")
+
+    joined = join_volumes(
+        [tmp_path / "one" / "alpha.zip.001", tmp_path / "two" / "alpha.zip.002"]
+    )
+    assert joined.read() == b"AAABBB"
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("Show.part1.rar", "Show.part1.r00", "Show.part1.r01"),
+        ("Show.part1.sfx", "Show.part1.r00"),
+        ("Show.part12.exe", "Show.part12.r00", "Show.part12.r01"),
+    ],
+)
+def test_an_old_scheme_set_whose_base_ends_in_partn_still_joins(
+    tmp_path: Path, names: tuple[str, ...]
+) -> None:
+    """``Show.part1.rar`` reads two ways and only the sequence settles it.
+
+    It is either part 1 of the ``.partN`` set based on ``Show``, or volume 1 of the
+    old-scheme set based on ``Show.part1``. Read on its own it is the former, and the
+    cross-scheme rule then sees two schemes in one archive and refuses it. Discovery
+    from the ``.rNN`` names returns exactly this list, so refusing it would break the
+    rule that this never refuses a set discovery would have accepted.
+    """
+    for index, name in enumerate(names):
+        (tmp_path / name).write_bytes(bytes([65 + index]))
+
+    joined = join_volumes([tmp_path / name for name in names])
+    assert joined.read() == bytes(range(65, 65 + len(names)))
+
+
+def test_discovery_and_the_explicit_path_agree_on_a_partn_ending_base(
+    tmp_path: Path,
+) -> None:
+    """The invariant the case above exists to protect, asserted directly.
+
+    Also pins how far it reaches: volume 1 is not itself an entry point, because
+    ``_RAR_PART_RE`` claims ``Show.part1.rar`` inside ``discover_volume_siblings``
+    too and the grouping then finds one part number. So the invariant is about the
+    ``.rNN`` names, and the docstrings say so rather than claiming all three.
+    """
+    names = ("Show.part1.rar", "Show.part1.r00", "Show.part1.r01")
+    for index, name in enumerate(names):
+        (tmp_path / name).write_bytes(bytes([65 + index]))
+
+    for probe in ("Show.part1.r00", "Show.part1.r01"):
+        discovered = discover_volume_siblings(tmp_path / probe)
+        assert discovered is not None
+        assert [path.name for path in discovered] == list(names)
+        assert join_volumes(discovered).read() == b"ABC"
+
+    assert discover_volume_siblings(tmp_path / "Show.part1.rar") is None
+
+
+def test_a_partn_part_beside_an_rnn_set_on_its_own_base_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    """Reading volume 1 off the sequence must not let two real sets through.
+
+    ``Show.part2.rar`` can only be a ``.partN`` part, so the ``.partN`` set based on
+    ``Show`` is genuinely present here alongside the ``.rNN`` set based on
+    ``Show.part1``. Two sets, two schemes, refused — the reclassification applies to
+    the ambiguous name only.
+    """
+    for name in ("Show.part1.rar", "Show.part2.rar", "Show.part1.r00"):
+        (tmp_path / name).write_bytes(b"A")
+
+    with pytest.raises(ArchiveyUsageError, match="different sets"):
+        join_volumes(
+            [
+                tmp_path / "Show.part1.rar",
+                tmp_path / "Show.part2.rar",
+                tmp_path / "Show.part1.r00",
+            ]
+        )

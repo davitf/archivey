@@ -640,7 +640,7 @@ re-verified failing against the unfixed code). Original write-up below.
   owns that shape. A lone numbered part (`.7z.001` / `.zip.001` / `.exe.001`)
   raises `TruncatedError` naming the missing parts.
 
-- **Refs:** `volumes.py`; handbook `formats/rar.md` §10 #11;
+- **Refs:** `volumes.py`; handbook `formats/rar.md` §2.2;
   `topics/prefixed-archives.md` §6. Closed in #309.
 
 ### P18. `detected_by="sfx_scan"` names a motive the tier cannot know

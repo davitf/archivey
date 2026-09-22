@@ -16,6 +16,7 @@ from archivey.internal.arg_checks import (
     check_instance,
     describe_value,
 )
+from archivey.internal.enum_args import coerce_enum
 
 if TYPE_CHECKING:
     from archivey.types import ArchiveMember
@@ -173,7 +174,10 @@ def _check_limit(
 class ExtractionLimits:
     """Decompression-bomb limits for :func:`archivey.extract` / :meth:`extract_all`.
 
-    ``None`` on a guard field disables that guard. :attr:`UNLIMITED` disables all four.
+    ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the three
+    guard fields to ``None``; :attr:`ratio_activation_threshold` is a parameter of the
+    ratio guard rather than a guard of its own, and is moot once ``max_ratio`` is
+    ``None``.
     """
 
     max_extracted_bytes: int | None = 2 * 2**30
@@ -264,6 +268,14 @@ class ArchiveyConfig:
     # local codepage (e.g. "cp1252", "shift_jis") for a known-legacy corpus. An explicit
     # ``encoding=`` on ``open_archive`` overrides this and disables the sniff entirely.
     zip_unflagged_fallback_encoding: str = "cp437"
+    # Escape hatch for RAR members whose *stored name* contains ``*`` or ``?``.
+    # ``unrar`` is addressed by an include mask, so such a name can also match other
+    # members. Names like this are almost always constructed, so the read is refused
+    # by default. On a nonsolid archive the extra decode is also unbounded and
+    # unadvertised (``ExtractionLimits`` do not cover ``open()`` / ``read()``); on a
+    # solid archive those bytes are already inside ``AccessCost.SOLID``. Set True to
+    # read it anyway. A glob name that matches no other member is unaffected either way.
+    rar_allow_glob_member_concatenation: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
@@ -271,7 +283,7 @@ class ArchiveyConfig:
     on_diagnostic: OnDiagnostic | None = None
 
     def __post_init__(self) -> None:
-        """Validate the fields at construction, for the same reason the limits are.
+        """Check the fields at construction, and convert the two that hold enums.
 
         A config field is read wherever it is needed, which is never where it was
         written: ``ArchiveyConfig(extraction_limits="none")`` builds fine and then
@@ -283,7 +295,23 @@ class ArchiveyConfig:
 
         ``strict_archive_eof`` is deliberately not checked. It is a flag read for its
         truthiness, so there is no wrong type to find — every value means something.
-        The two accelerator fields hold enums and are handled separately.
+
+        The two accelerator fields are **converted** rather than only checked, because
+        their consumers test them with ``is`` (:meth:`AcceleratorMode.enabled_for`): a
+        string that survived construction would not be refused on use, it would read as
+        "neither ON nor OFF" and silently take the AUTO path. Converting here means the
+        field always holds a member, and a bad spelling names itself at the call site
+        that wrote it rather than during some later stream open.
+
+        They stay annotated ``AcceleratorMode`` rather than ``AcceleratorMode | str``
+        because that is what they hold once constructed, and it keeps every consumer
+        honest. A string is still accepted at construction — a type checker flags it,
+        which is the right answer for a typed caller who has the enum imported anyway,
+        and an untyped script gets the conversion.
+
+        That conversion goes through ``object.__setattr__`` because the dataclass is
+        frozen and it *rewrites* the field rather than only inspecting it. The checks
+        above reject without writing, so they need no such thing.
         """
         check_instance(
             self.extraction_limits,
@@ -315,6 +343,22 @@ class ArchiveyConfig:
             field_name="max_retained_diagnostic_references",
             allow_none=False,
         )
+        # These two are the one enum coerced at a public boundary with no ``Literal``
+        # alias beside it, and that is deliberate: the annotation is read by every
+        # consumer of the attribute, not only by the constructor's callers, and after
+        # construction the field always holds a member. ``tests/test_enum_arguments.py``
+        # records the exemption so the gap is not "fixed" back into a union.
+        for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
+            object.__setattr__(
+                self,
+                field_name,
+                coerce_enum(
+                    getattr(self, field_name),
+                    AcceleratorMode,
+                    call="ArchiveyConfig()",
+                    param=f"{field_name}=",
+                ),
+            )
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()

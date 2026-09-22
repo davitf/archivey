@@ -40,11 +40,17 @@ class IoStats:
     """
 
     bytes_decompressed: int
-    """Total decoded / output bytes delivered through member streams so far."""
+    """Total decoded / output bytes delivered to callers so far.
+
+    Member streams feed this counter, and so do the folder-level wrappers solid
+    formats decode through, so on 7z and RAR it covers more than the bytes handed
+    out member by member."""
 
     compressed_bytes_consumed: int | None
     """Compressed bytes pulled from the archive's outer source so far, or ``None``
-    when the source size is statically known (the static ratio is used instead)."""
+    when no live counter is installed — either because the source size is statically
+    known and the static ratio is used instead, or because the reader never wraps a
+    compressed input (an uncompressed container, or the directory backend)."""
 
     source_seek_count: int
     """Number of ``seek()`` calls on the instrumented archive source."""

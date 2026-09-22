@@ -15,6 +15,8 @@ Package map:
   Deflate64) that plug into that engine.
 - :mod:`.xz` / :mod:`.lzip` / :mod:`.unix_compress` — larger codec-specific decoders
   (index scan / LZW) that also plug into ``DecompressorStream``.
+- :mod:`.brotli_framing` / :mod:`.zstd_framing` — header-only framing parsers for
+  detection (Brotli meta-blocks, zstd skippable frames); classify without decoding.
 - :mod:`.archive_stream` — public member/codec handle: exception translate+stamp,
   lazy open, nested collapse, fused digest verify, lease/finalizer.
 - :mod:`.resume` — re-exports ``ask_resume_offset`` (rewind-cost query; the
