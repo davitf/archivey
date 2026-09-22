@@ -59,8 +59,8 @@ they live is hard to see and easy to break.
   `streams/streamtools/shared.py` (`SharedSource` takes the source's ownership answer
   instead of deciding its own), and every backend that opens its source: ZIP, TAR, ISO,
   RAR, 7z, single-file, directory.
-- Depends on the borrowed-source-streams work reaching `main` first; the
-  bounded-header-allocations work it also consolidates is already there.
+- Builds on the borrowed-source-streams and bounded-header-allocations work, both on
+  `main`: it consolidates what those two add.
 - Tests: the full-count, ownership and short-read suites retarget `ArchiveSource`;
   `tests/test_stream_bases.py`'s close inventory loses three classes; the leak oracle
   and the caller-stream parity tests must pass unchanged, which is the refactor's proof.

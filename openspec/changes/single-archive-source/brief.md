@@ -1,9 +1,8 @@
 # single-archive-source — one object carries every guarantee the raw source must give
 
-**Status:** Ready to implement, with one small open question. Depends on the borrowed
-source streams work reaching main; the bounded header allocations work it also builds on
-is already there. Not breaking: no public API changes. Effort is medium to large, since
-every backend moves.
+**Status:** Ready to implement, with one small open question. Builds on the borrowed
+source streams and bounded header allocations work, both now on main. Not breaking: no
+public API changes. Effort is medium to large, since every backend moves.
 
 **Why it matters:** A caller's file or stream reaches a backend through a stack of
 single-purpose wrappers: one so archivey never closes the caller's object, one of two so

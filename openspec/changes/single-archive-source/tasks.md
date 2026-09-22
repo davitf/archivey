@@ -1,9 +1,9 @@
 # Tasks — one source object at the boundary
 
-> **Proposal only. Nothing here is implemented.** It starts once the borrowed-source
-> streams work is on `main` (the bounded-header-allocations work already is): this change
-> consolidates what those two add. Each backend moves in its own task, so a failure in the
-> leak oracle or the caller-stream ownership suite names the backend that broke it.
+> **Proposal only. Nothing here is implemented.** It consolidates what the
+> borrowed-source-streams and bounded-header-allocations work added, both now on `main`.
+> Each backend moves in its own task, so a failure in the leak oracle or the
+> caller-stream ownership suite names the backend that broke it.
 
 ## 1. Measure first
 
