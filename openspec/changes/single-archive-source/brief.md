@@ -1,8 +1,8 @@
 # single-archive-source — one object carries every guarantee the raw source must give
 
-**Status:** Ready to implement, with one small open question. Builds on the borrowed
-source streams and bounded header allocations work, both now on main. Not breaking: no
-public API changes. Effort is medium to large, since every backend moves.
+**Status:** Ready to implement. Builds on the borrowed source streams and bounded header
+allocations work, both now on main. Not breaking: no public API changes. Effort is
+medium to large, since every backend moves.
 
 **Why it matters:** A caller's file or stream reaches a backend through a stack of
 single-purpose wrappers: one so archivey never closes the caller's object, one of two so
@@ -20,10 +20,10 @@ facts about the source. The three wrapper classes and the ISO guard go away.
 and keeps its path, for unrar and volume discovery. Bounding is built into ordinary
 reads, since third-party parsers will never call a special method, and only a size that
 is a fact clamps a read. Member streams, measurement, and the bound on decoded bytes
-stay outside.
+stay outside. You decided the replay buffer detection reads from a non-seekable source
+moves in as well, so the backend always receives the same object.
 
-**Your call later:** Whether the detection replay buffer for non-seekable sources moves
-in too. The recommendation is yes, as the last and droppable step.
+**Your call later:** None. The design is settled.
 
-**Bottom line:** A cleanup that makes the source guarantees impossible to miss, best
-done right after the two changes it builds on land.
+**Bottom line:** A cleanup that makes the source guarantees impossible to miss, and
+ready to start now that both changes it builds on are on main.

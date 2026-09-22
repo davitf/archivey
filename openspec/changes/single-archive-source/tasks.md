@@ -62,12 +62,13 @@
 - [ ] 5.3 Grep for every remaining `isinstance(..., Path)` on a source in `src/` and
       account for each one that stays.
 
-## 6. Detection replay (open question — drop this group if it is declined)
+## 6. Detection replay (design decision 8)
 
 - [ ] 6.1 Fold the non-seekable replay prefix into `ArchiveSource` so `open_archive` no
       longer rebinds the source to a `PeekableStream`.
-- [ ] 6.2 Remove `PeekableStream` or narrow it to `detect_format`'s own public use,
-      whichever the call sites leave.
+- [ ] 6.2 The detection workspace and `open_stream` peek the `ArchiveSource`; the
+      single-file backend's reuse of the detection prefix reads it from there.
+- [ ] 6.3 Remove `PeekableStream`, or record why a call site keeps it.
 
 ## 7. Docs and spec
 
@@ -75,9 +76,10 @@
       object.
 - [ ] 7.2 Update the source rows of `dev-docs/threat-model.md` to name the bounded read
       at the source.
-- [ ] 7.3 Re-derive the MODIFIED `access-mode-and-cost` block from the spec as it stands
+- [ ] 7.3 Re-derive the MODIFIED blocks (`access-mode-and-cost`, `format-detection`,
+      `testing-contract`, `backend-registry`) from the specs as they stand
       when this change archives; the bounded source spooling change modifies the same
-      requirement.
+      `access-mode-and-cost` requirement.
 
 ## 8. Verify
 

@@ -151,6 +151,25 @@ it.
 `_track_source_seeks` wraps the `ArchiveSource` when measurement is on, as it wraps the
 source today. The counter sees exactly the seeks the backend issues.
 
+### 8. The detection replay prefix moves in
+
+**Maintainer decision (davitf, 2026-09-22):** fold it in. For a non-seekable source,
+`open_archive` and `open_stream` today replace the source with a `PeekableStream` so
+detection's bytes are replayed to the backend, which is the one place a backend still
+receives something other than the `ArchiveSource`. The `ArchiveSource` over a
+non-seekable source holds the replay prefix itself: `peek(n)` fills it without
+consuming, and `read` drains it before reaching the source. The rebinding in `core.py`
+goes, and the detection workspace peeks the `ArchiveSource` it is handed.
+
+The prefix is bounded by the detection limit, as `PeekableStream`'s is, so this adds no
+buffering the source does not already pay for. `PeekableStream` is removed, or kept only
+where a call site the migration finds still needs a replay buffer over something that is
+not a source.
+
+**Rejected:** keeping `PeekableStream` as a separate layer for non-seekable sources. It
+would leave the backend's source object depending on whether detection ran, which is the
+branching this change removes.
+
 ## Risks / Trade-offs
 
 - [A Python frame is added in front of the seekable-raw case] → Measure with the probe
@@ -166,12 +185,3 @@ source today. The counter sees exactly the seeks the backend issues.
 - [`read` bounding a hint-sized source by stepping costs a join copy for a single request
   over 16 MiB] → Only on sources whose length is not a fact; the same cost the ISO and TAR
   backends accept today, now paid in one place.
-
-## Open Questions
-
-- **Does the detection replay prefix move in too?** For a non-seekable source,
-  `open_archive` replaces the source with a `PeekableStream` so detection's bytes are
-  replayed to the backend — the one place a backend still receives something other than
-  the `ArchiveSource`. Folding a replay prefix into `ArchiveSource` removes that layer and
-  the rebinding in `core.py`. Recommendation: do it, as the last task group, since nothing
-  earlier depends on it and it can be dropped without touching the rest.

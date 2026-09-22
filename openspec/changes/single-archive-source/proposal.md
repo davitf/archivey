@@ -28,6 +28,9 @@ they live is hard to see and easy to break.
   - **cheap facts**: the path when there is a real file (`unrar`, volume discovery,
     path-only codec accelerators), the volume paths, the size and whether that size is
     a fact, measured once at construction.
+- The replay prefix detection reads from a non-seekable source lives in `ArchiveSource`
+  too, so `open_archive` and `open_stream` no longer swap the source for a
+  `PeekableStream` before detection.
 - A path source opens its handle lazily, so a backend that only needs the path (the
   directory reader, `unrar`) opens nothing.
 - `BorrowedStream`, `FullCountStream`, the non-closing buffered reader,
@@ -50,12 +53,20 @@ they live is hard to see and easy to break.
 - `access-mode-and-cost`: the source-boundary requirement states the guarantees as
   properties of the one object the boundary returns, rather than as a table of which
   wrapper each source kind gets, and gains the bounded-read guarantee at the raw source.
+- `format-detection`: the non-seekable replay prefix is the `ArchiveSource`'s, not a
+  `PeekableStream` the opener adds.
+- `testing-contract`: the short-read coverage requirement asserts the boundary on the
+  `ArchiveSource` rather than on `ensure_full_count_reads`, and no longer says that
+  function returns a caller's buffer unchanged, which stopped being true when caller
+  streams became borrowed.
+- `backend-registry`: detection's probes go through the detection workspace, not a named
+  `PeekableStream`.
 
 ## Impact
 
 - New `src/archivey/internal/source.py`; `volumes.py` (`resolve_source`,
   `ResolvedSource`, volume items), `core.py` (dispatch, `open_stream`), `detection.py`,
-  `streams/peekable.py`, `streams/streamtools/full_count.py` (removed),
+  `detection_workspace.py`, `streams/peekable.py` (removed), `streams/streamtools/full_count.py` (removed),
   `streams/streamtools/shared.py` (`SharedSource` takes the source's ownership answer
   instead of deciding its own), and every backend that opens its source: ZIP, TAR, ISO,
   RAR, 7z, single-file, directory.
