@@ -303,6 +303,37 @@ see archivey's guarded `deque` in pycdlib's namespace too. That is a deliberate 
 on hostile input over leaving another library's pycdlib untouched — and the guard is a strict
 superset of pycdlib's own behaviour on valid trees, so it does not change correct results.
 
+## ISO counts a member's typing-time diagnostics once per listing pass (open)
+
+**Status:** open, tracked internally. Reported as K28 on PR #386, where the same defect
+was fixed for ZIP.
+
+`extract_all` lists an indexed archive twice — once for the progress totals and the
+selector, once to drive the extraction — so a backend that rebuilds its `ArchiveMember`
+objects from the header on each pass runs its typing-time diagnostics twice for one
+member. `DiagnosticSummary.counts` is documented as exact, so that inflates the count,
+burns a second retention slot and fires the caller's callback again for one finding.
+
+ZIP is fixed: its three typing-time emits go through `BaseArchiveReader.
+_report_member_diagnostic`, which remembers a report by the member's position in the
+listing and re-attaches the first one to the object the later pass produced. Measured on
+a three-entry ZIP, `MEMBER_NAME_NORMALIZED` went from 4 back to 2.
+
+`iso_reader._make_member` has the same shape: it is called fresh for every entry on
+every `_iter_members` walk and calls `emit_member_name_normalized` directly, so an ISO
+whose Rock Ridge name normalizes differently would be counted twice the same way. That
+has **not** been measured — pycdlib refuses to write a Rock Ridge name that needs
+normalizing ("a rock ridge name must be relative"), so reproducing it needs a
+hand-written image, which is also the only way a real one arrives. The fix is the same
+one line: give the walk an `enumerate` position and route the report through the
+ledger.
+
+The backends that cache their member list (7z, RAR) hand the same object back on the
+second pass and reach the ledger with the same key, so they are unaffected either way.
+TAR is unaffected, measured. `directory_reader`'s emits are scan races, which are
+genuinely per-pass — a live filesystem can change between two walks — and must not be
+deduplicated.
+
 ## Random-access accelerators on macOS (resolved)
 
 **Status:** resolved. archivey uses a single accelerator library — `rapidgzip` — for both gzip

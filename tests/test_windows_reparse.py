@@ -22,7 +22,12 @@ import pytest
 
 import archivey
 from archivey import ExtractionStatus, OverwritePolicy, open_archive
-from archivey.diagnostics import DiagnosticCode
+from archivey.config import ArchiveyConfig
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticDisposition,
+    DiagnosticPolicy,
+)
 from archivey.exceptions import LinkTargetNotFoundError
 from archivey.internal.backends import directory_reader
 from archivey.internal.backends.rar_parser import RarMemberInfo
@@ -645,6 +650,55 @@ def test_a_missing_target_is_reported_once_per_member(
             assert len(reported) == 1
             # The member the report names is the member the caller is holding.
             assert reported[0].context.member_id == member._member_id
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param(
+            ArchiveyConfig(
+                diagnostic_policy=DiagnosticPolicy(
+                    overrides={
+                        DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: (
+                            DiagnosticDisposition.IGNORE
+                        )
+                    }
+                )
+            ),
+            id="ignored",
+        ),
+        pytest.param(
+            ArchiveyConfig(max_retained_diagnostic_references=0), id="nothing-retained"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "streaming",
+    [pytest.param(False, id="seekable"), pytest.param(True, id="streaming")],
+)
+def test_a_missing_target_is_counted_once_even_when_it_attaches_to_nothing(
+    config: ArchiveyConfig, streaming: bool, tmp_path: Path
+) -> None:
+    """The report a caller never receives still has to be remembered as made.
+
+    Recognising a repeat sighting by the report the first one left on the member works
+    only while there is a report to find. Under an `IGNORE` disposition, and once the
+    retention budget is spent, the emission attaches nothing — and then a ZIP, which
+    builds a fresh `ArchiveMember` for each listing pass, has nothing to recognise and
+    reports the same targetless link a second time.
+
+    `IGNORE` is the configuration that can least afford it: retention, the log and the
+    callback are all switched off, so `DiagnosticSummary.counts` is the only channel
+    left and an inflated count is the whole signal. The budget case needs no unusual
+    configuration at all — past the default 256 references every further targetless link
+    in a ZIP would count twice.
+    """
+    code = DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+    with open_archive(
+        _JUNCTION_DIR / "junction_7zip_snl.zip", streaming=streaming, config=config
+    ) as archive:
+        archive.extract_all(tmp_path, on_error=OnError.CONTINUE)
+        assert archive.diagnostics.counts.get(code) == 2
 
 
 def test_a_tar_symlink_spelled_as_a_directory_is_still_reported(tmp_path: Path) -> None:

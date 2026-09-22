@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import uuid
@@ -33,6 +34,7 @@ from archivey.cost import CostReceipt
 from archivey.diagnostics import (
     Diagnostic,
     DiagnosticCode,
+    DiagnosticContext,
     DiagnosticDisposition,
     DiagnosticSummary,
     EmptyArchiveContext,
@@ -412,11 +414,17 @@ class BaseArchiveReader(ArchiveReader):
         # second listing pass over fresh ArchiveMember objects for the same members does
         # not re-emit their diagnostics (see ``_register_member``).
         self._presentation_checked: set[int] = set()
-        # Link reports already delivered, by the member's position in the listing, so a
-        # repeat sighting re-attaches the same one instead of emitting another (see
-        # ``_emit_link_target_unavailable``). Bounded by the collector's retention
-        # budget: only a diagnostic that actually attached is kept here.
-        self._link_reports: dict[int, Diagnostic] = {}
+        # Diagnostics already reported for a member while it was being typed, keyed by
+        # the member's position in the listing and the code, so a backend that types the
+        # same member again re-attaches the first report instead of emitting a second
+        # (see ``_report_member_diagnostic``). The value is None for a report that never
+        # attached, which still has to be remembered: under an IGNORE disposition, or
+        # once the retention budget is spent, nothing attaches, and forgetting it there
+        # would count the member twice in exactly the configuration where ``counts`` is
+        # the only channel left.
+        self._member_reports: dict[
+            tuple[object, DiagnosticCode], Diagnostic | None
+        ] = {}
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
         self._format_provenance: FormatProvenance | None = None
@@ -1288,6 +1296,70 @@ class BaseArchiveReader(ArchiveReader):
         # case this memo exists for is still covered.
         member._link_target_resolved = True
 
+    def _report_member_diagnostic(
+        self,
+        *,
+        code: DiagnosticCode,
+        message: str,
+        context: DiagnosticContext,
+        member: ArchiveMember,
+        report_key: object | None,
+        diagnostic_logger: logging.Logger | None = None,
+    ) -> None:
+        """Emit one diagnostic about one member, at most once however often it is typed.
+
+        One member with one deceptive name is one finding, and a second report of it
+        inflates ``DiagnosticSummary.counts``, burns a second retention slot and fires
+        the caller's callback again. That is easy to get wrong here because a member can
+        be typed more than once per archive: ``extract_all`` lists an indexed backend
+        twice, once for the totals and the selector and once to drive the extraction,
+        and a backend that builds its ``ArchiveMember`` objects from the header each
+        time (ZIP, ISO) produces a different object for the same member on the second
+        pass. One that caches them (7z, RAR) hands the same object back and reaches here
+        with the same key, which is the same answer by a shorter route.
+
+        ``report_key`` is what identifies the member across those passes — its position
+        in the listing, and for a diagnostic a member can raise more than once (an
+        invalid timestamp in two separate fields) the position paired with whatever
+        tells the two apart. ``None`` disables the memo, for a caller with nothing
+        stable to key on.
+
+        ``diagnostic_logger`` keeps a code that belongs to another logging category on
+        its own logger — ``archivey.normalization`` for a normalized name — since
+        routing every diagnostic through this one method would otherwise re-label them
+        all as ``archivey.backends``.
+
+        A repeat sighting re-attaches the first report to the object this pass produced,
+        because the caller holds that one and an empty ``member.diagnostics`` on it is no
+        report at all. Where there is nothing to re-attach — an IGNORE disposition and a
+        spent retention budget both emit without attaching — the repeat is still
+        suppressed, which is the case ``counts`` depends on most: under IGNORE it is the
+        only channel the caller has left.
+        """
+        memo = (report_key, code) if report_key is not None else None
+        if memo is not None and memo in self._member_reports:
+            reported = self._member_reports[memo]
+            if reported is not None:
+                self._diagnostics_collector.reattach_to_member(member, reported)
+            return
+        diagnostic = self._diagnostics_collector.emit(
+            code=code,
+            message=message,
+            context=context,
+            member=member,
+            attach_to_member=True,
+            logger=diagnostic_logger if diagnostic_logger is not None else logger,
+        )
+        if memo is not None:
+            # Only a report that landed on the member can be handed to a later object:
+            # re-attaching one that did not would give the second object a record the
+            # first never got.
+            self._member_reports[memo] = (
+                diagnostic
+                if any(attached is diagnostic for attached in member._diagnostics)
+                else None
+            )
+
     def _emit_link_target_unavailable(
         self,
         member: ArchiveMember,
@@ -1318,28 +1390,23 @@ class BaseArchiveReader(ArchiveReader):
 
         ``report_key`` is for a backend calling this while the member is still being
         *typed*, before :meth:`_register_member` has given it an id: it is the member's
-        position in the archive's listing, which is the id that registration will
-        stamp. One member reported once is what the caller's ``counts``, retention
-        budget and callback all assume, and an indexed backend is listed more than once
-        per ``extract_all`` — ZIP building fresh ``ArchiveMember`` objects each time, 7z
-        handing back the same ones. So a repeat sighting re-attaches the report the
-        first one produced rather than making a second, and the caller finds it on
-        whichever object its own pass handed back.
+        position in the archive's listing, which is what registration takes the id from.
+        It is passed rather than waited for because typing time is the only moment every
+        path shares. Link finalization does not run in a progressive pass a caller
+        abandons early, and registration does not run at all in a 7z one, which streams
+        straight off its cached member list — so anything held back for either loses the
+        report on exactly the archives this outcome exists for. On that 7z path nothing
+        ever stamps the id: the report names the position and the member's own public
+        ``member_id`` stays unset, so a caller reading both sees an id on one and not on
+        the other.
 
-        Typing time is also the only moment every path shares. Link finalization does
-        not run in a progressive pass a caller abandons early, and registration does not
-        run at all in a 7z one, which streams straight off its cached member list — so
-        anything held back for either loses the report on exactly the archives this
-        outcome exists for.
+        One member reported once is what the caller's ``counts``, retention budget and
+        callback all assume; :meth:`_report_member_diagnostic` is what holds that, here
+        and for the other diagnostics a member can be typed into twice.
         """
         member._link_target_absent = not target_in_archive
         key = member._member_id if member._member_id is not None else report_key
-        if key is not None:
-            reported = self._link_reports.get(key)
-            if reported is not None:
-                self._diagnostics_collector.reattach_to_member(member, reported)
-                return
-        diagnostic = self._diagnostics_collector.emit(
+        self._report_member_diagnostic(
             code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
             message=message,
             context=SymlinkTargetContext(
@@ -1349,18 +1416,8 @@ class BaseArchiveReader(ArchiveReader):
                 reason=reason,
             ),
             member=member,
-            attach_to_member=True,
-            logger=logger,
+            report_key=key,
         )
-        # Only a report that actually landed on the member is worth carrying forward.
-        # Under an IGNORE disposition, or once the retention budget is spent, the
-        # emission attaches nothing, and re-attaching then would hand a later object a
-        # record the first one never got — besides growing this map past the budget
-        # that is meant to bound it.
-        if key is not None and any(
-            attached is diagnostic for attached in member._diagnostics
-        ):
-            self._link_reports[key] = diagnostic
 
     def _apply_reparse_data(
         self,

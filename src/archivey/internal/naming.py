@@ -223,15 +223,19 @@ def normalize_member_name(
     return name
 
 
-def emit_member_name_normalized(
-    collector: DiagnosticCollector,
+def member_name_normalized_report(
     *,
     member: ArchiveMember,
     presented_name: str,
     archive_name: str | None = None,
     link_stored_as_directory: bool = False,
-) -> None:
-    """Emit ``MEMBER_NAME_NORMALIZED`` when normalization changed ``presented_name``.
+) -> tuple[str, NameNormalizationContext] | None:
+    """The ``MEMBER_NAME_NORMALIZED`` report for this member, or ``None`` for no finding.
+
+    Split out from :func:`emit_member_name_normalized` so a backend that types the same
+    member more than once per archive can put the report through its own once-per-member
+    ledger instead of the collector directly. The suppression rules below are the reason
+    this is not something a caller can decide for itself.
 
     Suppresses the no-op case where a DIRECTORY member only gained the canonical
     trailing slash (Python's ``tarfile`` strips it on read) — that is not an
@@ -248,33 +252,59 @@ def emit_member_name_normalized(
     silently stop a strict policy refusing that TAR.
     """
     if member.name == presented_name:
-        return
+        return None
     if (
         member.type is MemberType.DIRECTORY
         and presented_name + "/" == member.name
         and not presented_name.endswith("/")
     ):
-        return
+        return None
     if (
         link_stored_as_directory
         and presented_name == member.name + "/"
         and not member.name.endswith("/")
     ):
-        return
+        return None
     message = (
         f"Member name normalized: {quoted(presented_name)} -> {quoted(member.name)}"
     )
+    return message, NameNormalizationContext(
+        archive_name=archive_name,
+        member_name=member.name,
+        member_id=member._member_id,
+        raw_name_base64=raw_name_to_base64(member.raw_name),
+        presented_name=presented_name,
+        normalized_name=member.name,
+    )
+
+
+def emit_member_name_normalized(
+    collector: DiagnosticCollector,
+    *,
+    member: ArchiveMember,
+    presented_name: str,
+    archive_name: str | None = None,
+    link_stored_as_directory: bool = False,
+) -> None:
+    """Emit ``MEMBER_NAME_NORMALIZED`` when normalization changed ``presented_name``.
+
+    For a backend that types each member once per archive. One that does not owns the
+    deduplication, so it calls :func:`member_name_normalized_report` and emits the
+    result itself.
+    """
+    report = member_name_normalized_report(
+        member=member,
+        presented_name=presented_name,
+        archive_name=archive_name,
+        link_stored_as_directory=link_stored_as_directory,
+    )
+    if report is None:
+        return
+    message, context = report
     collector.emit(
         code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
         message=message,
-        context=NameNormalizationContext(
-            archive_name=archive_name,
-            member_name=member.name,
-            member_id=member._member_id,
-            raw_name_base64=raw_name_to_base64(member.raw_name),
-            presented_name=presented_name,
-            normalized_name=member.name,
-        ),
+        context=context,
         member=member,
         attach_to_member=True,
         logger=logger,

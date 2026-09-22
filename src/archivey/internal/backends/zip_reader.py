@@ -64,8 +64,11 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.logs import backends as logger
-from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.logs import normalization as normalization_logger
+from archivey.internal.naming import (
+    member_name_normalized_report,
+    normalize_member_name,
+)
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
@@ -801,8 +804,11 @@ class ZipReader(BaseArchiveReader):
             member.comment = _decode_with_fallback(info.comment)
         if create_system is not None:
             member.create_system = create_system
+        # Every diagnostic below goes through the reader's once-per-member ledger, keyed
+        # on the member's position: this runs again for the same member on a second
+        # listing pass, and one member is one finding however often it is typed.
         if inferred_encoding is not None:
-            self._diagnostics_collector.emit(
+            self._report_member_diagnostic(
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
                 message=(
                     f"ZIP member name decoded as {inferred_encoding!r} rather than the "
@@ -817,11 +823,9 @@ class ZipReader(BaseArchiveReader):
                     declared_encoding="cp437",
                 ),
                 member=member,
-                attach_to_member=True,
-                logger=logger,
+                report_key=index,
             )
-        emit_member_name_normalized(
-            self._diagnostics_collector,
+        name_report = member_name_normalized_report(
             member=member,
             presented_name=decoded,
             archive_name=self._archive_name,
@@ -830,6 +834,18 @@ class ZipReader(BaseArchiveReader):
             # this backend knows that, so only this backend says so.
             link_stored_as_directory=is_reparse_point and info.is_dir(),
         )
+        if name_report is not None:
+            normalized_message, normalized_context = name_report
+            self._report_member_diagnostic(
+                code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
+                message=normalized_message,
+                context=normalized_context,
+                member=member,
+                report_key=index,
+                # This code's own logging category, which emitting it from here rather
+                # than through `emit_member_name_normalized` would otherwise lose.
+                diagnostic_logger=normalization_logger,
+            )
         if is_reparse_point and info.file_size == 0:
             # A writer that stores no data for a reparse point has recorded no target
             # for it, and that is knowable from the header alone — no read, and so no
@@ -841,7 +857,7 @@ class ZipReader(BaseArchiveReader):
                 member, b"", fallback_type=fallback_type, report_key=index
             )
         for issue in ts_issues:
-            self._diagnostics_collector.emit(
+            self._report_member_diagnostic(
                 code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
                 message=issue.message,
                 context=MemberTimestampContext(
@@ -853,8 +869,10 @@ class ZipReader(BaseArchiveReader):
                     value_repr=issue.value_repr,
                 ),
                 member=member,
-                attach_to_member=True,
-                logger=logger,
+                # One member can carry several invalid timestamps, and they are separate
+                # findings, so the field joins the position in the key. Two passes over
+                # the same bad field still report it once.
+                report_key=(index, issue.field, issue.source),
             )
         return member
 
