@@ -47,7 +47,7 @@
 - [ ] 4.3 TAR: drop the source half of `_owned_stream`; the stream-capability answer reads
       the source; the EOF-probe wrapper keeps bounding decoded input only.
 - [ ] 4.4 ISO: drop `_owned_fp` and remove `_ImageBoundedStream`; the ISO header-length
-      header-length tests must pass unchanged, on path and stream sources.
+      tests must pass unchanged, on path and stream sources.
 - [ ] 4.5 RAR: the disk-copy cost note and sibling discovery read `.path` /
       `.volume_paths`; drop `_owned_concat` where the source now owns the joined set.
 - [ ] 4.6 7z and single-file: through `SharedSource` as in 3.3; single-file hands
