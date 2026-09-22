@@ -357,8 +357,11 @@ jobs:
             - The three-block output shape (§0), stable finding IDs kept across rounds,
               and §10 for posting: inline review comments for located findings, blocks 1
               and 3 in the review body, `event: COMMENT`.
-            - On any round after the first, open with the status table over the
-              previous round's IDs before any new finding.
+            - Open every comment you post with a heading, per §10: the round and the
+              verdict on the review body, the ID with its severity and confidence on an
+              inline finding. Post no table in anything — bullets instead.
+            - On any round after the first, open with one status bullet per previous ID
+              before any new finding.
             - Do not re-run the gates. Do not edit any code. You are reviewing.
             - Do not write a prompt or brief for whoever fixes this. They read the PR.
 

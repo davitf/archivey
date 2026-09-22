@@ -44,6 +44,7 @@ from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.streamtools import (
     BinaryIOWrapper,
+    BorrowedStream,
     ensure_binaryio,
     ensure_bufferedio,
     ensure_full_count_reads,
@@ -471,21 +472,24 @@ def test_ensure_full_count_reads_returns_the_full_count(
     """The archive-source boundary guarantee: ``read(n)`` yields ``n`` short of EOF.
 
     A non-seekable raw source is wrapped in ``FullCountStream`` (not returned
-    unchanged, and not a ``BufferedReader`` — that would over-read a pipe).
-    An already-buffered non-seekable source is returned unchanged.
+    unchanged, and not a ``BufferedReader`` — that would over-read a pipe). An
+    already-buffered non-seekable source needs no full-count layer, so it goes on as
+    itself under a ``BorrowedStream``, which forwards everything but ``close``.
     """
     stream = ensure_binaryio(case.build(tmp_path))
     try:
         normalized = ensure_full_count_reads(stream)
+        # Whatever the branch, the caller's object is never what goes downstream.
+        assert normalized is not stream
         if not case.seekable:
             # The library predicate, not stream.seekable(): a Windows pipe's
             # BufferedReader reports True while is_seekable() is False, and the
-            # boundary returns that buffer unchanged.
+            # boundary forwards that verdict rather than the buffer's claim.
             assert is_seekable(normalized) is False
             if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
-                assert normalized is stream
+                assert isinstance(normalized, BorrowedStream)
+                assert normalized._inner is stream
             else:
-                assert normalized is not stream
                 assert normalized.seekable() is False
         assert normalized.read(128) == CONTENT[:128]
         assert normalized.read(4000) == CONTENT[128:4128]

@@ -241,11 +241,11 @@ class _ImageBoundedStream(DelegatingStream):
     **This wrapper is deliberately never closed**, although it inherits
     :class:`DelegatingStream`'s owning default and is recorded that way in
     ``tests/test_stream_bases.py``. Its inner is either the handle
-    :class:`IsoReader` owns — closed by ``_close_archive`` directly — or the caller's
-    own stream, which archivey must not close; pycdlib closes neither, since
-    ``_managing_fp`` is set only by ``open()``. So the ownership flag must stay inert,
-    and tidying ``_close_archive`` to close what the constructor built would close a
-    caller's handle. See ``dev-docs/topics/stream-ownership.md``.
+    :class:`IsoReader` owns — closed by ``_close_archive`` directly — or the source
+    boundary's wrapper around a caller's stream, which borrows it; pycdlib closes
+    neither, since ``_managing_fp`` is set only by ``open()``. Leaving the flag inert
+    keeps one close path for the owned handle rather than two. See
+    ``dev-docs/topics/stream-ownership.md``.
     """
 
     # ``read`` is the behaviour, so ``readinto`` must not take the zero-copy path

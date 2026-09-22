@@ -288,26 +288,36 @@ agent starts cold.
 Once the round is done, the PR should record what happened to every finding.
 
 - **Reply in the thread the finding came from.** An inline finding gets an inline reply.
-  A top-level review gets a top-level reply with a status table keyed by the reviewer's
-  own numbering.
+  A top-level review gets a top-level reply listing one bullet per finding, keyed by the
+  reviewer's own numbering. **Bullets, not a table** — same rule and same reason as the
+  reviewer's side ([addendum §0](../code-review-skill/reference/archivey-review-addendum.md)):
+  the maintainer reads these on a phone. Keep each bullet to a line; anything longer is a
+  reply on that finding's own thread, where whoever cares is already looking.
 - **Resolve the threads you actually resolved** (`resolve_review_thread`). Leave open the
   ones that are still open — including anything escalated in §6 and not yet decided. A
   wall of stale unresolved threads is how a later round loses track of what was settled;
   #236 finished with four threads that had been answered and fixed but never resolved.
 - **Say what you did not do, and why.** Deferred and disproven findings get a line each.
-- **Attribute every settled decision to the maintainer** (§6). In the status table, a row
-  decided by a human reads `maintainer decision` in the column where the others read
-  `important` or `nit`, so the implementor can see at a glance which rows are not open to
-  argument.
+- **Attribute every settled decision to the maintainer** (§6). A bullet decided by a human
+  is tagged `maintainer decision` where the others carry `important` or `nit`, so the
+  implementor can see at a glance which ones are not open to argument.
 - **Report gates honestly.** Say which legs you ran and what they returned. If you skipped
   a leg, say that instead of implying it passed.
 - **Lead with what changed**, not with a recap of the review the maintainer already has.
-- **Make it identifiable as agent-authored**, and say so at the *top*, not only in a footer.
-  Open each posted comment with one short line naming the agent, the skill, and the HEAD:
+- **Open every posted comment with a header, then the attribution line.** The heading says
+  what the reader is looking at before they read anything; the line says an agent wrote it.
+  Same rule as the reviewer's side
+  ([addendum §10](../code-review-skill/reference/archivey-review-addendum.md) "Open every
+  comment with a header"), with the round's outcome in place of a verdict:
 
   ```
+  ## Round 2 · 7 fixed, 1 disproven, 1 for davitf
+
   **Claude Code** · `address-review-findings` · dispositions on `3060ac51`
   ```
+
+  A reply on one finding's thread is headed by that finding instead —
+  `### K6 · fixed in \`5afdbb5\``.
 
   On a PR whose threads mix maintainer questions, bot dispositions and an agent posting
   through the maintainer's account, that line is what makes a thread scannable — the avatar

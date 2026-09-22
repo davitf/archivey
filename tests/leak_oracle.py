@@ -69,7 +69,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterator, TypeVar
 
 import pytest
 
@@ -98,7 +98,18 @@ class _StreamRec:
     stream: object
 
 
-_lock = threading.Lock()
+# Reentrant on purpose. The pins are touched from GC finalizers: an unclosed
+# DelegatingStream reaches ``io.IOBase.__del__``, which calls ``close()``, which is
+# this module's ``_d_close``, which unpins. A collection can fire inside any
+# allocation, the snapshot a locked section takes included, so a plain Lock lets a
+# thread deadlock against itself — the interrupted frame cannot release while the
+# finalizer waits for it. Caught in CI on 2026-09-22 (macOS, py3.11): the
+# teardown fixture hung in ``_unpin_stream`` under ``list(_pinned_procs.values())``,
+# named only because pytest-timeout's thread method could still dump the stack of a
+# thread deadlocked against itself. Use ``_snapshot`` rather than ``list(...)`` for
+# the other half of the same hazard.
+_lock = threading.RLock()
+_T = TypeVar("_T")
 _pinned_procs: dict[int, _ProcRec] = {}
 _pinned_streams: dict[int, _StreamRec] = {}
 _installed = False
@@ -335,10 +346,25 @@ def _close_quietly(stream: object) -> None:
         pass
 
 
+def _snapshot(pinned: dict[int, _T]) -> list[_T]:
+    """Copy a pinned map that a finalizer on this thread may be mutating.
+
+    The lock is reentrant (see its comment), so an unpin that a GC finalizer triggers
+    inside this very call proceeds instead of deadlocking -- and lands mid-iteration,
+    which ``dict`` reports as a ``RuntimeError``. Retrying is correct here: each pass
+    starts over, and a stream the finalizer removed was genuinely closed.
+    """
+    while True:
+        try:
+            return list(pinned.values())
+        except RuntimeError:  # "dictionary changed size during iteration"
+            continue
+
+
 def _leaked_procs() -> list[_ProcRec]:
     leaked: list[_ProcRec] = []
     with _lock:
-        recs = list(_pinned_procs.values())
+        recs = _snapshot(_pinned_procs)
     for rec in recs:
         if rec.proc.poll() is None:
             leaked.append(rec)
@@ -347,7 +373,7 @@ def _leaked_procs() -> list[_ProcRec]:
 
 def _leaked_streams() -> list[_StreamRec]:
     with _lock:
-        return list(_pinned_streams.values())
+        return _snapshot(_pinned_streams)
 
 
 def _reset_pins() -> None:

@@ -13,9 +13,12 @@ Condensed from poteto/pstack `technical-writing` (MIT). Apply to **published** `
 and to maintainer handbook prose that a human will read. Code comments still follow
 `CONTRIBUTING.md` (why, not what).
 
-**Unslop is a separate skill** — [`../unslop/SKILL.md`](../unslop/SKILL.md). Apply it
-to the same prose (and always to maintainer chat / packets per `AGENTS.md`). Do not
-duplicate that checklist here so everyday sessions need not load this file.
+**Two separate skills carry the standing prose rules** —
+[`../unslop/SKILL.md`](../unslop/SKILL.md) for AI tells and
+[`../asd-ste100/SKILL.md`](../asd-ste100/SKILL.md) for ambiguity. Apply both to the same
+prose. Which surfaces they bind, and in which mode, is
+[`AGENTS.md`](../../../AGENTS.md) §Writing English. Do not duplicate either checklist
+here so everyday sessions need not load this file.
 
 Pair workflow: [`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md).
 Doc placement: `CONTRIBUTING.md` §“Where does a new doc go?”.
