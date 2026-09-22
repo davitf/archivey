@@ -2,11 +2,10 @@
 
 ``archive-reading`` states it as a rule ("Archivey SHALL never close a caller-supplied
 ``BinaryIO``") and the stream layer keeps it by borrowing rather than owning. Those are
-both about *wrappers*, though, and the rule was still breakable from outside them: a
-caller's own object reaching a backend unwrapped is one owning wrapper away from being
-closed. It happened — a measured ZIP or compressed TAR opened from a ``BytesIO`` or an
-``open()`` handle closed it, because ``SeekCountingStream`` sits in the close chain and
-owns its inner.
+both about *wrappers*, though, and a rule about wrappers can be broken from outside them:
+a caller's own object reaching a backend unwrapped is one owning wrapper away from being
+closed. ``SeekCountingStream`` is such a wrapper, in the ZIP and compressed-TAR close
+chains whenever measurement is on.
 
 So this module tests the rule end to end, at the entry points, over the object the caller
 actually passed: every format from a stream, both of the two commonest stream shapes, with
@@ -50,8 +49,8 @@ class _CallerBytesIO(io.BytesIO):
 def _caller_streams(path: Path) -> Iterator[tuple[str, BinaryIO]]:
     """The two shapes a caller realistically hands to ``open_archive``.
 
-    Both used to reach a backend as themselves: ``ensure_full_count_reads`` returned an
-    already-buffered source unchanged, and these are both already buffered.
+    Both are already buffered, so the boundary adds no full-count layer to either; the
+    borrow wrapper is the only thing between them and a backend.
     """
     yield "bytesio", _CallerBytesIO(path.read_bytes())
     with open(path, "rb") as handle:

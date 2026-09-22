@@ -133,13 +133,16 @@ class DelegatingStream(ReadOnlyIOStream):
     Subclasses override only the method whose behavior they change (e.g. just ``seek`` to add a
     warning, or just ``close`` to add a cleanup guard).
 
-    All three flags are a class default with a constructor override. Production
+    All four flags are a class default with a constructor override. Production
     subclasses set the class flag and omit the kwarg; ad-hoc construction may
     pass the kwarg. ``__init__`` uses the class value when the kwarg is omitted.
-    ``peel_for_source_size`` and ``readinto_passthrough`` report the resolved
-    instance value (the public name is shadowed). ``_SUBCLASS_CLOSES_INNER``
-    keeps a different class-flag name; the instance copy is
-    ``_subclass_closes_inner``.
+    ``peel_for_source_size`` reports the resolved instance value under the same
+    public name, because code outside the class reads it by that name
+    (:func:`source_byte_size` does a ``getattr``); ``readinto_passthrough`` shadows
+    the same way. The two close flags follow the constant form instead: the class
+    default is ``_SUBCLASS_CLOSES_INNER`` / ``_OWNS_INNER`` and the resolved
+    instance copy is ``_subclass_closes_inner`` / ``_owns_inner``, so the constant
+    only ever means the default.
 
     ``peel_for_source_size`` is an opt-in for pass-through wrappers whose cheap size
     *is* the inner's (a seek counter on ``ZipFile.fp``). :func:`source_byte_size`
@@ -166,10 +169,13 @@ class DelegatingStream(ReadOnlyIOStream):
     handle, a ``PyCdlibIO``, a measured source, an accelerator). Flipping the
     *default* to borrow would make a forgotten keyword a leak the leak oracle does
     not pin (it ignores default DelegatingStream constructors), which is why the
-    default stays own. ``owns_inner = False`` is the per-class opt-out, spelled the
-    same way as on every other wrapper in this layer; it takes nothing away from a
-    class that does not set it, and the inventory test makes setting it a recorded
-    decision rather than a silent one. Its one production use is
+    default stays own. ``_OWNS_INNER = False`` is the per-class opt-out, a class
+    constant like ``_SUBCLASS_CLOSES_INNER`` beside it; ``__init__`` copies the
+    resolved value to ``_owns_inner``, so the constant stays a default and never
+    reads as the instance's state. It takes nothing away from a class that does not
+    set it, and the inventory test makes setting it a recorded decision rather than a
+    silent one. Ad-hoc construction may pass ``owns_inner=False``, the keyword every
+    other wrapper in this layer uses. Its one production use is
     :class:`~archivey.internal.streams.streamtools.full_count.BorrowedStream`, the
     source-boundary wrapper around a stream the caller still owns. See
     ``dev-docs/topics/stream-ownership.md``.
@@ -198,7 +204,7 @@ class DelegatingStream(ReadOnlyIOStream):
     # The one opt-out is the source-boundary wrapper around a stream the caller
     # still owns. Inventory test reads this; ``__init__`` uses it when the kwarg
     # is omitted.
-    owns_inner: bool = True
+    _OWNS_INNER: bool = True
 
     def __init__(
         self,
@@ -228,13 +234,13 @@ class DelegatingStream(ReadOnlyIOStream):
             subclass_closes_inner = type(self)._SUBCLASS_CLOSES_INNER
         self._subclass_closes_inner = subclass_closes_inner
         if owns_inner is None:
-            owns_inner = type(self).owns_inner
-        # Instance shadows the class flag, like peel/readinto above, so ``close``
-        # reads one resolved value. The leak oracle is not a second reader: it pins
+            owns_inner = type(self)._OWNS_INNER
+        # A separate instance field, as with ``_subclass_closes_inner``: ``close``
+        # reads this one resolved value. The leak oracle is not a second reader: it pins
         # wrappers that own a private inner, and keys a DelegatingStream on
         # ``_subclass_closes_inner`` alone. What guards the class flag is
         # ``test_delegating_stream_close_inventory``.
-        self.owns_inner = owns_inner
+        self._owns_inner = owns_inner
         # The two flags are independent, and one pairing means nobody closes the
         # inner: the base stands down because the subclass claims the close, and a
         # borrowing subclass performs none. The inventory test makes that
@@ -284,7 +290,7 @@ class DelegatingStream(ReadOnlyIOStream):
         if self.closed:
             return
         try:
-            if self.owns_inner and not self._subclass_closes_inner:
+            if self._owns_inner and not self._subclass_closes_inner:
                 self._inner.close()
         finally:
             super().close()

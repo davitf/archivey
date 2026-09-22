@@ -10,10 +10,10 @@ missing bytes and holds no buffer of its own.
 
 The boundary also decides ownership, because it is the last place that still knows
 which object the *caller* handed in. A source that needs neither wrapper — a
-``BytesIO``, an ``open()`` handle — used to be passed through as itself, and could
-then end up inside an owning wrapper downstream and be closed. It gets
-:class:`BorrowedStream` instead, so nothing archivey builds on top of a source has
-the caller's object as its inner.
+``BytesIO``, an ``open()`` handle — would otherwise reach a backend as itself and
+could end up inside an owning wrapper downstream and be closed. It gets
+:class:`BorrowedStream`, so nothing archivey builds on top of a source has the
+caller's object as its inner.
 
 Lives in its own module so :mod:`.binaryio` (helpers) and :mod:`.base`
 (``ReadOnlyIOStream``) stay one-way: this module imports both, neither
@@ -22,6 +22,7 @@ imports this.
 
 from __future__ import annotations
 
+import io
 from typing import BinaryIO, cast
 
 from archivey.internal.streams.streamtools.base import (
@@ -133,11 +134,9 @@ class BorrowedStream(DelegatingStream):
     ``archive-reading`` says archivey never closes a caller-supplied ``BinaryIO``,
     and the stream layer's borrow-by-default rule is how that is kept. But the rule
     only covers the wrappers that borrow: a caller's own object reaching a backend
-    unwrapped is one owning wrapper away from being closed, and that is what used to
-    happen — a measured ZIP or compressed TAR opened from a ``BytesIO`` or an
-    ``open()`` handle closed it, because ``SeekCountingStream`` sits in the close
-    chain and owns its inner. Nothing in the layer was wrong; the caller's object was
-    simply inside it.
+    unwrapped is one owning wrapper away from being closed. ``SeekCountingStream``
+    is such a wrapper — it sits in the ZIP and compressed-TAR close chains when
+    measurement is on, and owns its inner — and it is not alone.
 
     So the boundary hands every backend a wrapper instead. It forwards ``read`` /
     ``readinto`` (zero-copy), ``seek`` / ``tell`` / ``seekable``, ``name``, ``fileno``,
@@ -156,9 +155,19 @@ class BorrowedStream(DelegatingStream):
     one a third-party reader handed the source would find, not archivey.
 
     Ordering: the wrapper goes *outside* the full-count normalisation, never inside.
-    Inside, :func:`ensure_full_count_reads` would no longer see the caller's
+    Inside, :func:`ensure_full_count_reads` would not see the caller's
     ``BufferedReader`` for what it is and would put a second buffer in front of it,
     reading ahead over a source that may be a pipe.
+
+    **Precondition: the inner is already full-count**, and the constructor checks it.
+    The boundary returns any ``BorrowedStream`` it is handed unchanged, as already
+    full-count, so that has to be true of every instance rather than of the two call
+    sites that happen to build one. The check is ``io.BufferedIOBase``, whose
+    ``read(n)`` issues raw reads until it has ``n`` bytes or reaches EOF — a
+    ``BufferedReader`` / ``BufferedRandom``, a ``BytesIO``. That is exactly what both
+    call sites pass. A short-returning source belongs in :class:`FullCountStream`.
+    (A buffer over a *non-blocking* raw can still come back short; nothing at this
+    boundary claims otherwise.)
     """
 
     # A pure pass-through: the inner's cheap size is this stream's size, so
@@ -166,14 +175,22 @@ class BorrowedStream(DelegatingStream):
     # ``getbuffer()``, an open file from ``fstat``).
     peel_for_source_size: bool = True
     # The reason the class exists. See DelegatingStream's "Close ownership".
-    owns_inner: bool = False
+    _OWNS_INNER: bool = False
+
+    def __init__(self, inner: BinaryIO) -> None:
+        if not isinstance(inner, io.BufferedIOBase):
+            raise TypeError(
+                "BorrowedStream needs an already full-count inner (an "
+                f"io.BufferedIOBase); got {type(inner).__name__}. A short-returning "
+                "source goes in FullCountStream."
+            )
+        super().__init__(inner)
 
     def fileno(self) -> int:
         """Forward ``fileno`` — unlike a transforming wrapper, this one is the inner.
 
-        ``ensure_full_count_reads`` used to return a caller's ``BufferedReader``
-        unchanged rather than "drop ``fileno()`` for no gain"; forwarding keeps that
-        true now that it is wrapped.
+        A caller's ``BufferedReader`` over a file keeps a working ``fileno()`` through
+        the boundary, so wrapping it costs nothing a backend can observe.
         """
         return self._inner.fileno()
 
@@ -219,12 +236,11 @@ def ensure_full_count_reads(stream: BinaryIO) -> BinaryIO:
     **Ownership.** Whatever the branch, what comes back is never the caller's own
     object. The two wrappers above already borrow, and the sources that need
     neither — an ``open()`` handle, a ``BytesIO`` — get :class:`BorrowedStream`,
-    which forwards everything (``fileno`` included, so passing a buffer through
-    costs nothing it used to) and closes nothing. Before that, those two shapes
-    reached backends as themselves and a measured ZIP or compressed TAR closed
-    them: ``SeekCountingStream`` is a ``DelegatingStream``, and those own their
-    inner. Which wrapper a backend puts on a source is the backend's business; that
-    it is not putting it on the caller's object is decided here, once.
+    which forwards everything (``fileno`` included) and closes nothing. Were those
+    two shapes returned as themselves, an owning wrapper downstream would close the
+    caller's object: ``SeekCountingStream`` is a ``DelegatingStream``, and those own
+    their inner. Which wrapper a backend puts on a source is the backend's business;
+    that it is not putting it on the caller's object is decided here, once.
 
     Codec layers above this boundary may still buffer: a
     ``DecompressorStream`` owns its input to EOF, so its ``BufferedReader`` is
@@ -241,8 +257,10 @@ def ensure_full_count_reads(stream: BinaryIO) -> BinaryIO:
     """
     raise_if_text_stream(stream)
     if isinstance(stream, (FullCountStream, BorrowedStream, _NonClosingBufferedReader)):
-        # Already past this boundary: these are the three shapes it returns, each
-        # full-count and none of them the caller's own object. Returning them
+        # Already past this boundary: these are the three shapes it returns, none of
+        # them the caller's own object, and each full-count for its own reason —
+        # FullCountStream gathers, BorrowedStream's constructor refuses anything but
+        # an io.BufferedIOBase, and the buffer is an io.BufferedReader. Returning them
         # unchanged is what keeps a defensive caller (PeekableStream) from stacking a
         # second layer.
         return stream

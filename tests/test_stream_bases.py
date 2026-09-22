@@ -544,7 +544,7 @@ def test_delegating_stream_close_inventory() -> None:
     assert leftover == set(), (
         "new DelegatingStream subclass needs a close-ownership decision "
         "(rides the owning default, _SUBCLASS_CLOSES_INNER = True, or "
-        f"owns_inner = False): {leftover}"
+        f"_OWNS_INNER = False): {leftover}"
     )
     extra_classified = (owns_via_base | subclass_closes_inner | borrows_inner) - found
     assert extra_classified == set(), (
@@ -561,10 +561,10 @@ def test_delegating_stream_close_inventory() -> None:
         f"its inventory group: {wrong_flag}"
     )
     wrong_ownership = {
-        cls for cls in found if cls.owns_inner is not (cls not in borrows_inner)
+        cls for cls in found if cls._OWNS_INNER is not (cls not in borrows_inner)
     }
     assert wrong_ownership == set(), (
-        f"DelegatingStream subclass owns_inner does not match its inventory group: "
+        f"DelegatingStream subclass _OWNS_INNER does not match its inventory group: "
         f"{wrong_ownership}"
     )
     passed_kwarg = {
@@ -575,7 +575,7 @@ def test_delegating_stream_close_inventory() -> None:
     }
     assert passed_kwarg == set(), (
         "production DelegatingStream subclass __init__ must set "
-        "_SUBCLASS_CLOSES_INNER / owns_inner on the class and omit the "
+        "_SUBCLASS_CLOSES_INNER / _OWNS_INNER on the class and omit the "
         f"constructor kwarg (kwarg is for ad-hoc tests): {passed_kwarg}"
     )
 

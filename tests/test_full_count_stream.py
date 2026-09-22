@@ -5,9 +5,9 @@ legal short ``read(n)`` looked like EOF to every header parser downstream. These
 tests pin the wrapper that closes that gap: full-count, zero read-ahead, still
 non-seekable, transparent to the metadata probes.
 
-The boundary also decides ownership. A source needing no full-count layer used to be
-returned as itself and could then be closed by an owning wrapper downstream; it now
-gets :class:`BorrowedStream`, and the tests for that live here too.
+The boundary also decides ownership. A source needing no full-count layer still gets
+:class:`BorrowedStream`, so no owning wrapper downstream has the caller's object as its
+inner; the tests for that live here too.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
     source_name,
 )
-from tests.streams_util import ShortReadNonSeekable
+from tests.streams_util import ShortReadBytesIO, ShortReadNonSeekable
 
 # Larger than BufferedReader's default so the over-read contrast is a partial
 # fill, not EOF. 3.14 raised DEFAULT_BUFFER_SIZE from 8 KiB to 128 KiB (gh-117151);
@@ -75,10 +75,9 @@ def test_ensure_full_count_reads_does_not_read_ahead() -> None:
 def test_ensure_full_count_reads_borrows_an_existing_buffer() -> None:
     """A caller's ``BufferedReader`` needs no full-count layer, only the borrow one.
 
-    It used to be returned as itself, which is how a caller's stream ended up inside
-    an owning wrapper downstream. The buffer is still the thing that reads — nothing
-    is stacked in front of it — and ``fileno`` still forwards, which was the original
-    reason for passing it through.
+    Returned as itself, a caller's stream could end up inside an owning wrapper
+    downstream. The buffer is still the thing that reads — nothing is stacked in front
+    of it — and ``fileno`` still forwards.
     """
     source = ShortReadNonSeekable(DATA, max_chunk=len(DATA))
     buffered = io.BufferedReader(source)
@@ -280,3 +279,21 @@ def test_full_count_wrapper_preserves_real_fifo_name(tmp_path: Path) -> None:
         assert wrapped.read(len(payload)) == payload
         wrapped.close()
         assert not raw.closed
+
+
+def test_a_borrowed_stream_refuses_an_inner_that_is_not_full_count() -> None:
+    """``ensure_full_count_reads`` returns any ``BorrowedStream`` unchanged, as full-count.
+
+    So full-count has to hold for every instance, not only for the two call sites that
+    build one today. The constructor enforces it: a short-returning raw source is
+    refused, and the shapes the boundary actually wraps are accepted.
+    """
+    with pytest.raises(TypeError, match="FullCountStream"):
+        BorrowedStream(ShortReadBytesIO(DATA, max_chunk=3))  # type: ignore[arg-type]  # RawIOBase double for a BinaryIO
+
+    for inner in (
+        io.BytesIO(DATA),
+        io.BufferedReader(ShortReadBytesIO(DATA, max_chunk=3)),
+    ):
+        wrapped = BorrowedStream(inner)  # type: ignore[arg-type]  # CPython buffers are BinaryIO at runtime
+        assert wrapped.read(len(DATA)) == DATA
