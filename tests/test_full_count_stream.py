@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -297,3 +298,35 @@ def test_a_borrowed_stream_refuses_an_inner_that_is_not_full_count() -> None:
     ):
         wrapped = BorrowedStream(inner)  # type: ignore[arg-type]  # CPython buffers are BinaryIO at runtime
         assert wrapped.read(len(DATA)) == DATA
+
+
+def test_a_refused_borrowed_stream_leaves_nothing_to_finalize() -> None:
+    """Refusing an inner must not leave a half-built instance behind.
+
+    A refusal raised from ``__init__`` leaves an instance whose ``IOBase`` finalizer
+    calls ``close()`` on attributes that were never set. Outside dev mode CPython
+    discards that error, so it is checked in a child interpreter under ``-X dev``,
+    where the finalizer reports it on stderr.
+    """
+    code = (
+        "import io\n"
+        "from archivey.internal.streams.streamtools.full_count import BorrowedStream\n"
+        "class Raw(io.RawIOBase):\n"
+        "    def readable(self):\n"
+        "        return True\n"
+        "try:\n"
+        "    BorrowedStream(Raw())\n"
+        "except TypeError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit('not refused')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-X", "dev", "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
