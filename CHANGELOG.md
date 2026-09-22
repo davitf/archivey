@@ -75,7 +75,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
   does not unlink an entry for a member that is not going to be written. A link whose
   target the archive *does* carry but the reader could not reach — encrypted, compressed,
-  split across volumes — stays the per-member failure it was, because dropping it under a
+  split across volumes, or, in a streaming read, stored in data the pass has gone past —
+  stays the per-member failure it was, because dropping it under a
   non-failure status would report success while losing a member the archive describes in
   full. Either way the loss is reported as `SYMLINK_TARGET_UNAVAILABLE`, which a strict
   `DiagnosticPolicy` refuses. Only ZIP used to report it: 7z returned quietly on an

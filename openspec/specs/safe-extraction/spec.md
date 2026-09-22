@@ -643,7 +643,7 @@ records no target at all (`path=None`, `error=None`, `requested_path` set). `NOT
 
 A symlink for which **the archive records no target** SHALL be recorded
 `LINK_TARGET_UNAVAILABLE` rather than raised as a per-member failure, under either `OnError`
-value **and in either read mode**, and SHALL NOT disturb an existing destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
+value, and SHALL NOT disturb an existing destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
 does not unlink an entry for a member that is not going to be written. The archive's
 omission is reported through the diagnostics channel
 (`SYMLINK_TARGET_UNAVAILABLE`, an archive-integrity code), which is where an anomaly in
@@ -670,6 +670,16 @@ a lookup that reads data. Otherwise the two paragraphs above disagree in a strea
 pass, whose lookup runs at EOF: the member the first one names would take the second
 one's per-member failure, and the library default would abort the archive on exactly
 the entry this outcome was added for.
+
+That is also the bound on the read modes. `LINK_TARGET_UNAVAILABLE` holds in a
+streaming pass exactly for the members a reader settles from metadata; where the
+archive's omission is legible only in the member's *data* — a reparse buffer that names
+nothing, bytes that are not a link buffer at all, a RAR3/4 link carrying none — a
+streaming pass does not learn it until EOF, by which time the member has already been
+written or not. Those SHALL take the per-member failure that an unresolved target
+takes, and the library default aborts the archive there. Settling them in a streaming
+pass would mean holding a reparse point's data until the member is written, which is a
+different guarantee and is not required here.
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and

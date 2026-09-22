@@ -625,6 +625,16 @@ class ArchiveMember:
     are compressed, split across volumes or encrypted. Only the first is the archive's
     omission, and only the first is an extraction outcome rather than a failure, so the
     backend that knows which it is says so here. Not part of the public contract."""
+    _pending_link_target_unavailable: tuple[str, str] | None = field(
+        default=None, repr=False, compare=False
+    )
+    """A ``(reason, message)`` pair held until this member reaches link finalization.
+
+    A backend that settles the target question while the member is still being typed
+    has nothing to put in the diagnostic's ``member_id`` yet, and its pass may not be
+    the one whose members the caller ends up holding. So the report waits here and
+    ``BaseArchiveReader._resolve_link_target`` emits it. Not part of the public
+    contract."""
 
     # Mutable members are intentionally unhashable. Annotated `-> int` (the call
     # always raises) so the override stays compatible with object.__hash__.

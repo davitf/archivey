@@ -1270,7 +1270,22 @@ class BaseArchiveReader(ArchiveReader):
         diagnostic again — which would count one targetless link twice in
         ``DiagnosticSummary.counts``, and under a ``RAISE`` disposition would raise at
         whatever later access happened to touch the member rather than during listing.
+
+        It is also where a diagnostic held back at typing time is delivered. A backend
+        that settles the question from the header alone does so while the member is
+        still being built: before it has an id to name in the report, and — because
+        each listing pass builds fresh ``ArchiveMember`` objects for the same members,
+        and ``extract_all`` walks an indexed archive twice — potentially more than once
+        per archive. Link finalization runs once, over the objects the caller will
+        actually hold, so that is where the report belongs.
         """
+        pending = member._pending_link_target_unavailable
+        if pending is not None:
+            member._pending_link_target_unavailable = None
+            reason, message = pending
+            self._emit_link_target_unavailable_now(
+                member, reason=reason, message=message
+            )
         if member.link_target is not None or member._link_target_resolved:
             return
         self._ensure_link_target(member)
@@ -1308,7 +1323,23 @@ class BaseArchiveReader(ArchiveReader):
         as success. The caller decides it because the caller is the only place that
         knows; inferring it downstream from "the lookup finished" is what this
         parameter replaced.
+
+        A caller that settles the question while the member is still being *typed* gets
+        the answer recorded on the member immediately and the report held back until
+        :meth:`_resolve_link_target` runs — see there for why. The answer is what the
+        write decision needs and it must not wait; the report is what the caller reads
+        afterwards and belongs on the member the caller keeps.
         """
+        member._link_target_absent = not target_in_archive
+        if member._member_id is None:
+            member._pending_link_target_unavailable = (reason, message)
+            return
+        self._emit_link_target_unavailable_now(member, reason=reason, message=message)
+
+    def _emit_link_target_unavailable_now(
+        self, member: ArchiveMember, *, reason: str, message: str
+    ) -> None:
+        """Put the report on the channel. Callers decide *when*; this decides nothing."""
         self._diagnostics_collector.emit(
             code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
             message=message,
@@ -1322,7 +1353,6 @@ class BaseArchiveReader(ArchiveReader):
             attach_to_member=True,
             logger=logger,
         )
-        member._link_target_absent = not target_in_archive
 
     def _apply_reparse_data(
         self, member: ArchiveMember, data: bytes, *, fallback_type: MemberType

@@ -357,6 +357,40 @@ def test_a_targetless_link_is_skipped_and_the_rest_extracts(
     assert by_name["tree/symlink_file"].status is expected_file_link
 
 
+def test_an_omission_only_the_data_shows_is_a_failure_in_streaming(
+    tmp_path: Path,
+) -> None:
+    """The read-mode guarantee reaches exactly as far as the metadata does.
+
+    A buffer that names nothing records no target just as surely as no buffer at all,
+    and a seekable read says so. But it is in the member's *data*, and a streaming pass
+    does not read that until EOF — after it has already decided what to do with the
+    member. So there it stays the per-member failure an unresolved target takes, and the
+    default aborts. Closing that gap would mean holding a reparse point's data until the
+    member is written, which is a larger promise than this one; the doc and the spec say
+    where the line is, and this says it is where they say.
+    """
+    archive = tmp_path / "nameless_symlink.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="nameless_link",
+        attributes=FILE_ATTRIBUTE_REPARSE_POINT,
+        data=struct.pack("<IHH", IO_REPARSE_TAG_SYMLINK, 12, 0)
+        + struct.pack("<HHHHI", 0, 0, 0, 0, 0),
+    )
+    with open_archive(archive) as opened:
+        (result,) = opened.extract_all(tmp_path / "seekable").results
+    assert result.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
+    assert result.error is None
+
+    with open_archive(archive, streaming=True) as opened:
+        (result,) = opened.extract_all(
+            tmp_path / "streaming", on_error=OnError.CONTINUE
+        ).results
+    assert result.status is ExtractionStatus.FAILED
+    assert isinstance(result.error, LinkTargetNotFoundError)
+
+
 def test_skipping_a_targetless_link_does_not_replace_what_is_there(
     tmp_path: Path,
 ) -> None:
@@ -557,12 +591,21 @@ def test_the_reparse_bit_is_read_only_from_a_dos_creator(tmp_path: Path) -> None
         pytest.param("junction_7zip_snl.7z", id="7z"),
     ],
 )
-def test_a_missing_target_is_reported_once_per_member(fixture: str) -> None:
+def test_a_missing_target_is_reported_once_per_member(
+    fixture: str, tmp_path: Path
+) -> None:
     """Looking for a target that is not there must not repeat on every access.
 
     Nothing the lookup can learn changes between two calls, so a second one only
     re-reads the member and emits the same diagnostic again — counting one targetless
     link as two in `DiagnosticSummary.counts`.
+
+    The extraction leg is the other half, and it is a different mechanism: a member the
+    header alone settles is settled once per listing *pass*, and `extract_all` walks a
+    ZIP twice — once for the progress totals and the selector, once to drive the pass,
+    building fresh `ArchiveMember` objects each time. So the report is held on the
+    member and delivered at link finalization, which only the second of those runs; the
+    member ids pin that it is also the pass whose members the caller gets back.
     """
     code = DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
     with open_archive(_JUNCTION_DIR / fixture) as archive:
@@ -573,6 +616,23 @@ def test_a_missing_target_is_reported_once_per_member(fixture: str) -> None:
                 with pytest.raises(LinkTargetNotFoundError):
                     archive.open(member)
         assert archive.diagnostics.counts.get(code) == 2
+
+    with open_archive(_JUNCTION_DIR / fixture) as archive:
+        archive.extract_all(tmp_path)
+        assert archive.diagnostics.counts.get(code) == 2
+        reported = [
+            diagnostic
+            for member in archive.members()
+            for diagnostic in member.diagnostics
+            if diagnostic.code is code
+        ]
+        # Held back until the member had an identity, rather than emitted while it was
+        # still being typed: a diagnostic naming no member is not much of a report.
+        assert [diagnostic.context.member_id for diagnostic in reported] == [
+            member._member_id
+            for member in archive.members()
+            if member.link_target is None and member.is_link
+        ]
 
 
 def test_a_tar_symlink_spelled_as_a_directory_is_still_reported(tmp_path: Path) -> None:
