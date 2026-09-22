@@ -121,13 +121,27 @@ reports header-level encryption and the aggregate of members *known* to be encry
 one damaged member SHALL NOT make a wholly plaintext archive report as encrypted, hand the
 caller's password to `unrar`, or relabel an empty read as a wrong password.
 
-The cost of failing closed is the member's direct read. A stored member is sliced from the
-source without `unrar`; one whose header was cut short SHALL NOT be, because handing those
-bytes back would present ciphertext as plaintext if the record never reached was the
-encryption record. `unrar` re-reads the header itself and settles it, so with `unrar`
-available the member still reads. Where it is not available the member SHALL NOT be
-readable, and the refusal SHALL name the cut-short header rather than the missing package:
-installing `unrar` is a way out, not the cause.
+The cost of failing closed falls on the member's direct read. A stored member is otherwise
+sliced straight from the source; one whose header was cut short SHALL NOT be handed back
+unchecked, because those bytes are ciphertext if the record the walk never reached was the
+encryption record.
+
+A checksum that survived the damage SHALL settle it. RAR5 keeps CRC32 in the fixed FILE
+header and BLAKE2sp in the extra area, so which digest a cut leaves behind is the writer's
+choice, not archivey's. Where one survives, the member's stored bytes SHALL be verified
+against it **before** any byte is returned, and the member SHALL be readable when they
+match — on any installation, with or without `unrar`. Where none survives, the member SHALL
+NOT be readable. The refusal SHALL name the cut-short header rather than the missing
+package: installing `unrar` is a way out, not the cause, and it is not a better-informed
+one — measured on unrar 7.00 it reads the same damaged header and reaches the same wrong
+conclusion, applying that same digest test and returning the bytes unverified when no
+digest survived.
+
+The check SHALL run before the first byte is returned rather than at end of stream, for the
+reason the ZIP ZipCrypto stored path gives: nothing in a stored member's framing can reject
+wrong bytes incrementally, so a caller that stops reading early would never reach an
+end-of-stream verdict. Its cost is one extra pass over an already-damaged member and none
+at all on an undamaged one.
 
 The diagnostic reporting a cut-short header SHALL name the fault that ended the walk. Four
 different faults end it — the skip cap, a size that cannot be read, a size that overruns
@@ -153,12 +167,31 @@ nothing else in its listing says so.
 - **THEN** that member SHALL be reported as encrypted
 - **AND** the archive SHALL NOT be reported as encrypted
 
+#### Scenario: A surviving checksum settles a cut-short stored member
+
+- **GIVEN** a stored, unencrypted RAR5 member whose extra-area walk stopped early, whose
+  CRC32 is in the fixed FILE header and so survived the damage
+- **WHEN** it is read on an installation with no RARLAB `unrar` or `rar` available
+- **THEN** the member SHALL be read and its content returned
+- **AND** the member SHALL still be reported as encrypted, its header having never settled
+  the question
+
+#### Scenario: A cut-short stored member whose bytes fail the surviving checksum
+
+- **GIVEN** a stored, *encrypted* RAR5 member whose extra-area walk stopped before its
+  `FHEXTRA_CRYPT` record, whose CRC32 survived the damage
+- **WHEN** it is read
+- **THEN** the read SHALL raise `CorruptionError` reporting that the stored bytes do not
+  match the surviving checksum
+- **AND** no ciphertext SHALL be returned as member content
+
 #### Scenario: A cut-short stored member names the header, not the missing package
 
-- **GIVEN** a stored, unencrypted RAR5 member whose extra-area walk stopped early
+- **GIVEN** a stored RAR5 member whose extra-area walk stopped early and whose only digest
+  was BLAKE2sp, which the same cut destroyed
 - **WHEN** it is read on an installation with no RARLAB `unrar` or `rar` available
-- **THEN** the read SHALL raise `CorruptionError` naming the cut-short header
-- **AND** the same member SHALL read normally where `unrar` is available
+- **THEN** the read SHALL raise `CorruptionError` naming the cut-short header and the
+  absence of a surviving checksum
 
 #### Scenario: An unparseable encryption record refuses the archive
 

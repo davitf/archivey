@@ -214,6 +214,18 @@ class MemberVerifier:
         return not self._abandoned
 
     @property
+    def expected_algorithms(self) -> frozenset[str]:
+        """The digests this verifier will actually check.
+
+        Narrower than the ``expected`` it was built from: an algorithm with no
+        hasher available is dropped at construction (with ``DIGEST_UNVERIFIABLE``).
+        A caller that reads a stream *in order to* establish something from its
+        digest — rather than checking one alongside a read it wanted anyway — must
+        consult this, since a verifier left with nothing to check reports no fault.
+        """
+        return frozenset(self._expected)
+
+    @property
     def digests_enabled(self) -> bool:
         return self._digests_enabled and not self._abandoned
 

@@ -565,6 +565,16 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         (_File("store.txt", b"stored payload"),),
         extra=("-m0", "-htb", "-ppassword"),
     )
+    build(
+        rar5_bin,
+        "encryption_stored__.rar",
+        (_File("secret.txt", b"This is secret"),),
+        # Stored *and* encrypted, with the default CRC32 rather than ``-htb``:
+        # the digest then lives in the fixed FILE header and survives damage to
+        # the extra area, which is what lets a cut-short header be settled by
+        # the checksum alone (``test_rar_header_record_leniency``).
+        extra=("-m0", "-ppassword"),
+    )
     _build_file_version(
         rar5_bin,
         out_dir / "file_version__.rar",

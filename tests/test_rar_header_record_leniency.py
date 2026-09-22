@@ -31,6 +31,7 @@ from archivey.internal.backends.rar_parser import (
     _MAX_SKIPPED_HEADER_RECORDS,
     load_vint,
 )
+from archivey.internal.streams import verify
 from archivey.types import HashAlgorithm, MemberType
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
 
@@ -723,36 +724,112 @@ def test_one_cut_short_member_does_not_report_the_archive_encrypted(
         )
 
 
-def test_a_cut_short_stored_member_says_why_it_cannot_be_read(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The refusal names the damaged header, not a missing package.
+def _cut_short(tmp_path: Path, fixture: str, name: str) -> Path:
+    """``fixture`` with one zero-size record in front of its first extra area."""
+    path = tmp_path / name
+    path.write_bytes(_prepend_extra_bytes((_FIXTURES / fixture).read_bytes(), b"\x00"))
+    return path
 
-    Failing closed costs this member its direct read: the bytes are stored and
-    sitting there, but handing them back would present ciphertext as plaintext if
-    the record the walk never reached was the encryption record. ``unrar`` re-reads
-    the header and settles it, so with ``unrar`` present the member still reads.
-    Without it there is no answer to be had — and reporting that as "install
-    unrar" names a way out rather than the cause, which is the damaged header.
-    """
-    path = _cut_short_plaintext_archive(tmp_path)
-    if shutil.which("unrar") or shutil.which("rar"):
-        with open_archive(path) as archive:
-            (member,) = [m for m in archive.members() if m.is_file]
-            assert archive.read(member) == b"stored payload"
 
+def _no_rar_binaries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Take ``unrar`` and ``rar`` off PATH for the rest of the test."""
     empty = tmp_path / "empty_path"
-    empty.mkdir()
+    empty.mkdir(exist_ok=True)
     monkeypatch.setenv("PATH", str(empty))
     monkeypatch.setattr(rar_unrar, "_cached_unrar", {})
 
+
+def test_a_surviving_checksum_settles_a_cut_short_stored_member(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A digest the damage did not reach is what decides, and no ``unrar`` is needed.
+
+    The header stopped before its extra records were read to the end, so nothing
+    in it says whether this member is encrypted — and ``unrar`` does not know
+    either (it reads the same damaged header and drops the encrypted marker).
+    What settles it is a checksum: RAR5 keeps CRC32 in the fixed FILE header,
+    which a cut extra area cannot touch, and ciphertext does not match it. So the
+    member is read after the checksum confirms its bytes, on any install.
+    """
+    _no_rar_binaries(monkeypatch, tmp_path)
+    path = _cut_short(tmp_path, "stored_m0.rar", "cut_short_crc32.rar")
+
     with open_archive(path) as archive:
         (member,) = [m for m in archive.members() if m.is_file]
-        with pytest.raises(CorruptionError, match="whether the member is encrypted"):
+        assert member.is_encrypted, "the member's own answer still fails closed"
+        assert member._raw.encryption_unknown
+        assert HashAlgorithm.CRC32 in member.hashes
+        assert archive.read(member) == b"stored payload"
+
+
+def test_a_cut_short_stored_member_that_is_encrypted_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The checksum test is a real discriminator, not a formality.
+
+    Same damage, same stored-and-sliceable shape, same surviving CRC32 — but this
+    member really is AES-encrypted, and an encrypted RAR5 member's stored digests
+    are key-tweaked, so the ciphertext matches neither the plaintext digest nor
+    the tweaked one. Without this the slice would hand back ciphertext as file
+    content, which is the fault the whole fail-closed path exists to prevent.
+    """
+    _no_rar_binaries(monkeypatch, tmp_path)
+    path = _cut_short(tmp_path, "encryption_stored__.rar", "cut_short_enc.rar")
+
+    with open_archive(path, password="password") as archive:
+        (member,) = [m for m in archive.members() if m.is_file]
+        assert member._raw.encryption_unknown, "the CRYPT record was never reached"
+        assert HashAlgorithm.CRC32 in member.hashes
+        with pytest.raises(CorruptionError, match="do not match the checksum"):
+            archive.read(member)
+
+
+def test_a_cut_short_stored_member_with_no_checksum_left_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With nothing left to check the bytes against, the member is not read.
+
+    Which digest survives is the writer's choice, not ours: this archive carries
+    BLAKE2sp, which RAR5 keeps *in* the extra area, so the same cut that hid the
+    encryption question also destroyed the only answer to it. ``unrar`` hands
+    such a member back unverified; the maintainer's ruling is to refuse, and the
+    message names the damaged header rather than a missing package — installing
+    ``unrar`` is a way out, not the cause.
+    """
+    _no_rar_binaries(monkeypatch, tmp_path)
+    path = _cut_short_plaintext_archive(tmp_path)
+
+    with open_archive(path) as archive:
+        (member,) = [m for m in archive.members() if m.is_file]
+        assert not member.hashes, "the cut took the only digest with it"
+        with pytest.raises(CorruptionError, match="no usable checksum survived"):
             archive.read(member)
         # Not the package error: that is what this branch used to raise, and it
         # is still the right answer for a member that genuinely needs ``unrar``.
         assert not issubclass(CorruptionError, PackageNotInstalledError)
+
+
+def test_a_checksum_this_install_cannot_compute_does_not_count_as_survival(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A digest that cannot be computed confirms nothing, and must not read as a pass.
+
+    ``build_member_verifier`` drops an algorithm it has no hasher for, emitting
+    ``DIGEST_UNVERIFIABLE`` and carrying on — right for a check running alongside a
+    read the caller wanted anyway, and wrong here, where the read happens *in order
+    to* settle the digest. A verifier left with nothing to check finds no fault, so
+    without this the member would be confirmed by an empty verification and its
+    bytes handed back.
+    """
+    _no_rar_binaries(monkeypatch, tmp_path)
+    monkeypatch.setattr(verify, "_make_hasher", lambda key: None)
+    path = _cut_short(tmp_path, "stored_m0.rar", "cut_short_crc32.rar")
+
+    with open_archive(path) as archive:
+        (member,) = [m for m in archive.members() if m.is_file]
+        assert HashAlgorithm.CRC32 in member.hashes, "the digest is there to be had"
+        with pytest.raises(CorruptionError, match="no usable checksum survived"):
+            archive.read(member)
 
 
 @pytest.mark.parametrize(

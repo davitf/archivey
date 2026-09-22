@@ -71,7 +71,6 @@ from archivey.internal.backends.rar_unrar import (
     _unrar_mask_for,
     _unrar_mask_match,
     decompress_rar3_blob,
-    find_rarlab_unrar,
     open_unrar_p,
     terminate_unrar,
 )
@@ -98,6 +97,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     skip_forward,
 )
+from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -165,6 +165,11 @@ _RAR_METHOD_STORED = 0x30
 _RAR_METHOD_MAX = 0x35  # RAR M5
 _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS = 0x02
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
+
+# Read step for the confirmation pass over a cut-short member's stored bytes
+# (``RarReader._confirm_unsettled_plaintext``). Matches the verifier's own drain
+# step; the pass is bounded by the member, which is bounded by the source.
+_CONFIRM_CHUNK_BYTES = 64 * 1024
 
 # Shared CompressionMethod tuples — many-member listing hits the same method byte
 # (typically store / M1–M5) thousands of times; avoid per-member allocations.
@@ -1395,15 +1400,89 @@ class RarReader(BaseArchiveReader):
         )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
-        # ``encryption_unknown`` refuses for the same reason ``is_encrypted`` does:
-        # slicing the stored bytes and handing them back would present ciphertext
-        # as plaintext if the unread record was the encryption record. ``unrar``
-        # re-reads the header itself, so routing there settles it.
+        # ``encryption_unknown`` is excluded here rather than refused: slicing the
+        # stored bytes and handing them straight back would present ciphertext as
+        # plaintext if the unread record was the encryption record, so that member
+        # goes through ``_confirm_unsettled_plaintext`` first (see ``_open_member``).
         return (
             self._is_directly_sliceable(info)
             and not info.is_encrypted
             and not info.encryption_unknown
         )
+
+    def _confirm_unsettled_plaintext(
+        self, info: RarMemberInfo, member: ArchiveMember
+    ) -> None:
+        """Prove a cut-short member's stored bytes are plaintext, or raise.
+
+        The member's header stopped before its extra records were read to the end,
+        so nothing in it says whether the data is encrypted — and routing to
+        ``unrar`` would not settle it either. Measured on unrar 7.00, it reads the
+        same damaged header and reaches the same wrong conclusion (``unrar l`` drops
+        the encrypted marker); what it actually does is refuse when a digest that
+        survived the damage fails against the bytes, and hand them back unverified
+        when none survived. Archivey applies the same digest test and refuses the
+        second case, which is the maintainer's ruling (see ``format-rar``).
+
+        Which digest survives is the writer's choice, not ours: RAR5 keeps CRC32 in
+        the fixed FILE header and BLAKE2sp in the extra area, so a cut area destroys
+        one and leaves the other. A surviving digest is a real discriminator because
+        an encrypted member's stored digests are key-tweaked (``ConvertHashToMAC``)
+        whenever the writer sets that flag, and are the *plaintext* digest when it
+        does not — ciphertext matches neither.
+
+        The check runs **before** any byte is handed back, like the ZIP ZipCrypto
+        stored path (``_open_stored_confirmed``): both face a member whose framing
+        cannot reject wrong bytes incrementally, and a caller that stops reading
+        early would otherwise never reach the end-of-stream verdict. The extra pass
+        costs one read of an already-damaged member and never touches the happy path.
+        """
+        hashes, size, transforms, _ = self._payload_verify_args(member)
+        # ``member=`` is deliberately omitted: this is a confirmation pass, and any
+        # diagnostic it emitted would be attached to the member a second time by the
+        # real read that follows.
+        verifier = (
+            build_member_verifier(
+                hashes,
+                expected_size=size,
+                collector=self._diagnostics_collector,
+                archive_name=self._archive_name,
+                digest_transforms=transforms,
+            )
+            if hashes
+            else None
+        )
+        # Two ways to have nothing to go on, and they end the same: the cut took the
+        # only digest with it, or the one it left is an algorithm this installation
+        # cannot compute. The second matters because such a verifier is dropped
+        # silently and would then confirm the member by finding no fault at all.
+        if verifier is None or not verifier.expected_algorithms:
+            raise CorruptionError(
+                "This RAR5 member's header stopped before its extra records were "
+                "read to the end, so whether the member is encrypted is unknown, "
+                "and no usable checksum survived the damage to tell its stored "
+                "bytes from ciphertext. Reading it would risk returning encrypted "
+                "bytes as file content.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
+        view = self._direct_view(info)
+        try:
+            while verifier.read(view, _CONFIRM_CHUNK_BYTES):
+                pass
+        except ArchiveyError as exc:
+            raise CorruptionError(
+                "This RAR5 member's header stopped before its extra records were "
+                "read to the end, so whether the member is encrypted is unknown, "
+                "and its stored bytes do not match the checksum that survived the "
+                "damage: they are either encrypted or corrupt.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            ) from exc
+        finally:
+            view.close()
 
     def _direct_view(self, info: RarMemberInfo, length: int | None = None) -> BinaryIO:
         size = info.file_size if length is None else length
@@ -1510,28 +1589,13 @@ class RarReader(BaseArchiveReader):
             return self._wrap_payload_stream(inner, member)
 
         if raw.encryption_unknown and self._is_directly_sliceable(raw):
-            # This member's bytes are stored and sitting right there; the only
-            # thing holding back the slice is that its header stopped before the
-            # encryption record, so we cannot say whether they are plaintext.
-            # ``unrar`` re-reads the header itself and settles it, which is why
-            # routing here is the whole cost of failing closed — but only while
-            # ``unrar`` exists. Without it the member is unreadable, and saying
-            # so as "install unrar" would name the wrong cause: installing it is
-            # a way out, not the reason. See ``RarMemberInfo.encryption_unknown``.
-            try:
-                find_rarlab_unrar()
-            except PackageNotInstalledError as exc:
-                raise CorruptionError(
-                    "This RAR5 member's header stopped before its extra records "
-                    "were read to the end, so whether the member is encrypted is "
-                    "unknown. Its data is stored and could be read directly, but "
-                    "not without knowing that those bytes are plaintext. RARLAB "
-                    "unrar reads the header itself and can settle it; it was not "
-                    "found on PATH.",
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    source_format=ArchiveFormat.RAR,
-                ) from exc
+            # This member's bytes are stored and sitting right there; the only thing
+            # holding back the slice is that its header stopped before the encryption
+            # record, so nothing read so far says whether they are plaintext. A digest
+            # that survived the damage can still say, and needs no ``unrar``; when none
+            # did, this raises. See ``_confirm_unsettled_plaintext``.
+            self._confirm_unsettled_plaintext(raw, member)
+            return self._wrap_payload_stream(self._direct_view(raw), member)
 
         # unrar addresses the member by its presented name (``path`` or ``path;n``) via a
         # ``-n`` include mask (see open_unrar_p); a history row needs ``-ver``. Do not use
