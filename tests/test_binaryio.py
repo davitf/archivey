@@ -266,9 +266,11 @@ def test_read_within_reach_steps_an_unknown_length() -> None:
     Fails against forwarding ``size`` when ``remaining is None``, which asks the source
     for the whole 4 294 967 296 in one call.
     """
-    src = _SizeRecorder(DATA[:40])
-    assert read_within_reach(src, 1 << 32, remaining=None, step=16) == DATA[:40]
-    # Four steps, the last one short, then the empty read that ends the loop.
+    src = _SizeRecorder(DATA)  # 36 bytes: two whole steps and a short third
+    assert read_within_reach(src, 1 << 32, remaining=None, step=16) == DATA
+    # Four requests, one step each: 16, 16, a third that returns 4, then the empty
+    # read that ends the loop. The assertion is on what was asked for, which is a
+    # step every time — never the 4 294 967 296 the caller passed.
     assert src.requested == [16, 16, 16, 16]
 
 

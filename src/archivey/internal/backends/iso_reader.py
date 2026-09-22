@@ -636,7 +636,7 @@ class IsoReader(BaseArchiveReader):
 
         ``_owned_fp`` only: a caller-supplied stream is the caller's, and the
         ``_ImageBoundedStream`` around it is deliberately never closed (see that
-        class). Safe to call more than once.
+        class).
         """
         if self._owned_fp is not None:
             self._owned_fp.close()
@@ -650,11 +650,18 @@ class IsoReader(BaseArchiveReader):
         object is complete, which is why ``_iso.close()`` is gated on the flag rather
         than tried: pycdlib raises on a ``close()`` it never opened.
         """
-        if self._iso_opened:
-            self._iso_opened = False
-            with self._handle_guard():
-                self._iso.close()
-        self._release_owned_fp()
+        try:
+            if self._iso_opened:
+                with self._handle_guard():
+                    self._iso.close()
+                self._iso_opened = False
+        finally:
+            # In a ``finally`` because the failure path calls this from inside an
+            # exception handler: a raise here would replace the error the image
+            # actually produced and leave the fp open, which is the outcome the guard
+            # exists to prevent. The flag clears after the close it describes, so a
+            # close that failed is not recorded as one that happened.
+            self._release_owned_fp()
 
     def _close_archive(self) -> None:
         self._release_archive_handles()

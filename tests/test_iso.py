@@ -607,6 +607,39 @@ def test_a_failure_after_open_fp_is_translated_and_releases(
         assert [fp for fp in opened if not fp.closed] == []
 
 
+def test_a_failing_iso_close_still_releases_the_handle(
+    rock_ridge_iso: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing is two steps, and the second must not depend on the first succeeding.
+
+    ``_release_archive_handles`` closes the ``PyCdlib`` and then the handle this reader
+    opened. Without the ``finally`` a raise out of the first skips the second, which
+    leaks a descriptor on the ordinary close and, on the ``__init__`` path, replaces
+    the error the image produced with the close error *and* leaves the fp open — the
+    outcome the guard was added to prevent.
+
+    Injected, like ``test_a_failure_after_open_fp_is_translated_and_releases``:
+    ``PyCdlib.close()`` raises only on an object it never opened, which the
+    ``_iso_opened`` flag already excludes. The same reasoning applies — a helper that
+    promises one release path must not give up half of it on its own first failure.
+
+    Fails against the sequential form: the close error still propagates, but the
+    recorded handle is left open.
+    """
+
+    def boom(self) -> None:  # type: ignore[no-untyped-def]
+        raise RuntimeError("injected close failure")
+
+    monkeypatch.setattr("pycdlib.PyCdlib.close", boom)
+
+    with _recording_opens(rock_ridge_iso, monkeypatch) as opened:
+        reader = open_archive(rock_ridge_iso, format=ArchiveFormat.ISO)
+        with pytest.raises(RuntimeError, match="injected close failure"):
+            reader.close()
+        assert opened, "the reader did not open the path itself"
+        assert [fp for fp in opened if not fp.closed] == []
+
+
 def test_a_clean_image_is_unaffected(rock_ridge_iso: Path) -> None:
     """The bound may not shorten a read a well-formed image legitimately makes."""
     with open_archive(rock_ridge_iso) as reader:
