@@ -34,7 +34,7 @@ from archivey.internal.windows_reparse import (
     IO_REPARSE_TAG_SYMLINK,
     parse_reparse_data,
 )
-from archivey.types import MemberType
+from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires_binary
 
 _JUNCTION_DIR = Path(__file__).parent / "fixtures" / "external" / "junction"
@@ -699,11 +699,22 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
     # reach; recording those as an outcome would drop a symlink the archive describes
     # in full while the report says nothing went wrong. Only `no_target_data` is the
     # archive's own omission.
+    #
+    # Only the symlinks are extracted, and deliberately: this whole branch reads the
+    # target straight out of the archive, so it needs no `unrar` at all, while the
+    # fixture's ordinary members do. Extracting everything would make the test require
+    # a RARLAB binary for a code path that does not use one, and skip in the
+    # `[core-only]` configuration where it runs perfectly well.
+    def only_links(m: ArchiveMember) -> bool:
+        return m.type is MemberType.SYMLINK
+
     with tempfile.TemporaryDirectory() as raw_dest:
         dest = Path(raw_dest)
-        report = archivey.extract(fixture, dest / "continue", on_error=OnError.CONTINUE)
-        by_id = {r.member.member_id: r for r in report.results}
-        link_results = [by_id[m.member_id] for m in links]
+        with open_archive(fixture) as opened:
+            report = opened.extract_all(
+                dest / "continue", members=only_links, on_error=OnError.CONTINUE
+            )
+        link_results = report.results
         assert link_results, "the symlinks should reach a write decision"
         if in_archive:
             assert all(r.status is ExtractionStatus.FAILED for r in link_results)
@@ -711,8 +722,9 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
                 isinstance(r.error, LinkTargetNotFoundError) for r in link_results
             )
             # The library default aborts on it, as it did before this status existed.
-            with pytest.raises(LinkTargetNotFoundError):
-                archivey.extract(fixture, dest / "stop")
+            with open_archive(fixture) as opened:
+                with pytest.raises(LinkTargetNotFoundError):
+                    opened.extract_all(dest / "stop", members=only_links)
         else:
             assert all(
                 r.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
@@ -720,7 +732,8 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
             )
             assert all(r.error is None for r in link_results)
             # Not a failure, so the library default carries on through it.
-            archivey.extract(fixture, dest / "stop")
+            with open_archive(fixture) as opened:
+                opened.extract_all(dest / "stop", members=only_links)
 
 
 def test_a_streaming_symlink_is_not_silently_skipped(tmp_path: Path) -> None:
