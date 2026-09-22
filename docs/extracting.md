@@ -54,13 +54,16 @@ archivey.extract("archive.zip", "out/")
   flagged one. `extra["is_reparse_point"]` is the weaker fact those archives *do*
   record — this was a Windows symlink or junction rather than a POSIX one — and is set
   from metadata in every format that states it.
-- **A link whose target the archive never recorded** — looked for and not there — is
-  recorded `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still extracts. Nothing
-  written for it, and nothing about the extraction went wrong, so it is not a failure
-  and `OnError.STOP` does not abort on it. The omission is the archive's, and it is
-  reported as `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an
+- **A link for which the archive records no target** is recorded
+  `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still extracts.
+  Nothing can be written for it, and nothing about the extraction went wrong, so it is
+  not a failure and `OnError.STOP` does not abort on it. The omission is the archive's,
+  and it is reported as `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an
   archive-integrity code, so `DiagnosticPolicy.strict()` still refuses such an archive
-  outright.
+  outright. A link whose target the archive *does* carry but this read could not reach —
+  encrypted, compressed, split across volumes, or simply not read yet in streaming mode
+  — is a per-member failure instead, because recording it as an outcome would drop a
+  member the archive describes in full while reporting success.
 - **Deceptive names:** a member name (or link target) containing a Unicode bidi
   **override or isolate** — U+202A–202E, U+2066–2069 — is rejected with
   `DeceptiveNameError` under `STRICT` (the default) and `STANDARD`. Those characters

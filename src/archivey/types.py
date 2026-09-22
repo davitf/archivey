@@ -616,6 +616,15 @@ class ArchiveMember:
     ``link_target is None`` alone cannot say whether the target is missing or merely
     not looked for yet, so without this the lookup repeats on every access — re-reading
     the member's data and re-emitting its diagnostic. Not part of the public contract."""
+    _link_target_absent: bool = field(default=False, repr=False, compare=False)
+    """Set when the archive itself records no target for this link.
+
+    A lookup that came back empty has two causes that look identical from here. The
+    archive may carry no target at all — a writer that stored none, a reparse buffer
+    naming nothing — or it may carry one this reader could not reach, because the bytes
+    are compressed, split across volumes or encrypted. Only the first is the archive's
+    omission, and only the first is an extraction outcome rather than a failure, so the
+    backend that knows which it is says so here. Not part of the public contract."""
 
     # Mutable members are intentionally unhashable. Annotated `-> int` (the call
     # always raises) so the override stays compatible with object.__hash__.

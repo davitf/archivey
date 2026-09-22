@@ -819,6 +819,10 @@ class SevenZipReader(BaseArchiveReader):
                     f"Cannot read the symlink target of {quoted(member.name)} without the "
                     f"correct password; leaving link_target unset."
                 ),
+                # The archive does carry the target; it is locked, not missing. So this
+                # member fails the way the encrypted file next to it does, rather than
+                # disappearing from the output under a status that reads as success.
+                target_in_archive=True,
             )
             return
         if is_reparse_point:

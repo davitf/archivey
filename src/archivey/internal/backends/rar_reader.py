@@ -1413,12 +1413,20 @@ class RarReader(BaseArchiveReader):
         # Encrypted / compressed target without usable direct bytes: leave unset. The
         # reason still has to reach the caller — `SYMLINK_TARGET_UNAVAILABLE` is in
         # `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses the archive, and a
-        # lenient one gets a diagnostic instead of a link that extraction silently
-        # skips. Ordered by what a caller can act on: a password is fixable, the
-        # others are properties of how the archive was written.
+        # lenient one gets a diagnostic instead of a link whose absence is unexplained.
+        #
+        # Only the last of these is the archive recording no target; the other three
+        # are targets this direct read cannot reach, and the member keeps the
+        # per-member failure it had before `LINK_TARGET_UNAVAILABLE` existed. The
+        # encrypted one is a limit of reading the bytes straight out of the archive
+        # rather than a missing password: this path never decrypts, so a correct
+        # password does not change its answer, and claiming one was needed would name
+        # a fix that does not work.
         if raw.is_encrypted:
-            reason = "password_required"
-            detail = "its data is encrypted and no usable password was supplied"
+            reason = "target_data_encrypted"
+            detail = (
+                "its data is encrypted and this reader does not decrypt it in place"
+            )
         elif raw.split_before or raw.split_after:
             reason = "target_data_split_across_volumes"
             detail = "its data is split across volumes"
@@ -1435,6 +1443,7 @@ class RarReader(BaseArchiveReader):
                 f"Cannot read the symlink target of {quoted(member.name)} because {detail}; "
                 f"leaving link_target unset."
             ),
+            target_in_archive=reason != "no_target_data",
         )
         return
 

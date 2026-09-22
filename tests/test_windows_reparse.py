@@ -13,6 +13,7 @@ from __future__ import annotations
 import struct
 import subprocess
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -615,6 +616,13 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
     an unreadable link into a silent omission, which is the one outcome
     `safe-extraction` rules out. Listing without a password still has to work, so this
     is a diagnostic and not a raise.
+
+    Extraction is a different question, and this archive *does* record the target: it
+    is locked, not missing. So the link fails the way the encrypted file beside it
+    does, rather than being dropped from the output under a status that reports
+    nothing wrong. Both assertions are here because the diagnostic and the extraction
+    outcome answer to different rules, and the earlier version of this test conflated
+    them.
     """
     archive = _encrypted_archive_with_a_symlink(tmp_path, archive_type)
     with open_archive(archive) as opened:
@@ -623,26 +631,38 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
         assert _unavailable_reasons(opened) == ["password_required"]
 
     dest = tmp_path / "out"
-    results = archivey.extract(archive, dest)
+    results = archivey.extract(archive, dest, on_error=OnError.CONTINUE)
     by_name = {r.member.name: r for r in results}
-    assert by_name["tree/link.txt"].status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
-    assert by_name["tree/link.txt"].error is None
+    assert by_name["tree/link.txt"].status is ExtractionStatus.FAILED
+    assert isinstance(by_name["tree/link.txt"].error, LinkTargetNotFoundError)
     assert not (dest / "tree" / "link.txt").exists()
+
+    # The library default aborts the extraction, as it does for the encrypted file.
+    with pytest.raises(LinkTargetNotFoundError):
+        archivey.extract(archive, tmp_path / "stop")
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "reason"),
+    ("field", "value", "reason", "in_archive"),
     [
-        pytest.param("is_encrypted", True, "password_required", id="encrypted"),
         pytest.param(
-            "split_after", True, "target_data_split_across_volumes", id="split"
+            "is_encrypted", True, "target_data_encrypted", True, id="encrypted"
         ),
-        pytest.param("compress_type", 0x33, "target_data_compressed", id="compressed"),
-        pytest.param("file_size", 0, "no_target_data", id="empty"),
+        pytest.param(
+            "split_after", True, "target_data_split_across_volumes", True, id="split"
+        ),
+        pytest.param(
+            "compress_type", 0x33, "target_data_compressed", True, id="compressed"
+        ),
+        pytest.param("file_size", 0, "no_target_data", False, id="empty"),
     ],
 )
 def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
-    monkeypatch: pytest.MonkeyPatch, field: str, value: object, reason: str
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+    reason: str,
+    in_archive: bool,
 ) -> None:
     """The RAR4 fallthrough was the third silent path, and it has four causes.
 
@@ -673,6 +693,34 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
         assert links, "the fixture should still list its symlinks"
         assert all(m.link_target is None for m in links)
         assert _unavailable_reasons(opened) == [reason] * len(links)
+
+    # And what extraction does with it, which is the half the reason name only hints
+    # at. Three of these four are targets the archive carries and this read could not
+    # reach; recording those as an outcome would drop a symlink the archive describes
+    # in full while the report says nothing went wrong. Only `no_target_data` is the
+    # archive's own omission.
+    with tempfile.TemporaryDirectory() as raw_dest:
+        dest = Path(raw_dest)
+        report = archivey.extract(fixture, dest / "continue", on_error=OnError.CONTINUE)
+        by_id = {r.member.member_id: r for r in report.results}
+        link_results = [by_id[m.member_id] for m in links]
+        assert link_results, "the symlinks should reach a write decision"
+        if in_archive:
+            assert all(r.status is ExtractionStatus.FAILED for r in link_results)
+            assert all(
+                isinstance(r.error, LinkTargetNotFoundError) for r in link_results
+            )
+            # The library default aborts on it, as it did before this status existed.
+            with pytest.raises(LinkTargetNotFoundError):
+                archivey.extract(fixture, dest / "stop")
+        else:
+            assert all(
+                r.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
+                for r in link_results
+            )
+            assert all(r.error is None for r in link_results)
+            # Not a failure, so the library default carries on through it.
+            archivey.extract(fixture, dest / "stop")
 
 
 def test_a_streaming_symlink_is_not_silently_skipped(tmp_path: Path) -> None:

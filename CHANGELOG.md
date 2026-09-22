@@ -68,15 +68,17 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses such an archive rather than
   reading a link whose target is gone; previously 7z reported an empty target for it and
   ZIP reported a directory, and neither said anything.
-- **A link whose target the archive never recorded no longer fails extraction.** It is
+- **A link for which the archive records no target no longer fails extraction.** It is
   recorded as the new `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still
   extracts, under either `OnError` value — nothing can be written for such a member, and
   nothing about the extraction went wrong. It also no longer disturbs an existing
   destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
-  does not unlink an entry for a member that is not going to be written. This covers both
-  ways a target goes missing — a writer that discarded it, and an encrypted target with no
-  password — and the loss is always reported as `SYMLINK_TARGET_UNAVAILABLE`, which a
-  strict `DiagnosticPolicy` refuses. Only ZIP used to report it: 7z returned quietly on an
+  does not unlink an entry for a member that is not going to be written. A link whose
+  target the archive *does* carry but the reader could not reach — encrypted, compressed,
+  split across volumes — stays the per-member failure it was, because dropping it under a
+  non-failure status would report success while losing a member the archive describes in
+  full. Either way the loss is reported as `SYMLINK_TARGET_UNAVAILABLE`, which a strict
+  `DiagnosticPolicy` refuses. Only ZIP used to report it: 7z returned quietly on an
   encrypted link, and RAR3/4 did the same whenever the target's bytes were out of reach,
   which now names which of four causes it was (encrypted, split across volumes, compressed
   rather than stored, or absent). Previously extraction raised `LinkTargetNotFoundError`

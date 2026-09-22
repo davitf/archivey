@@ -446,7 +446,7 @@ name-safety requirement.
 | --- | --- |
 | Existing path under `ERROR` | `ExtractionError`; existing entry unmodified |
 | Existing path under `SKIP` | `ExtractionResult.status == NOT_OVERWRITTEN`, `path=None`, no exception |
-| Symlink whose target the archive never recorded | `ExtractionResult.status == LINK_TARGET_UNAVAILABLE`, `path=None`, no exception, under either `OnError` |
+| Symlink for which the archive records no target | `ExtractionResult.status == LINK_TARGET_UNAVAILABLE`, `path=None`, no exception, under either `OnError` |
 | Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
 | Existing entry replaced by a HARDLINK under `REPLACE` | Link is built at a temp sibling and `os.replace()`d in; a failure leaves the existing entry intact |
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
@@ -637,27 +637,30 @@ later member under `OverwritePolicy.REPLACE` (`path=None`, `error=None`);
 `BLOCKED` is a continued `FilterRejectionError` (a universal path-safety check or a
 policy filter blocked the member); `FAILED` is a continued non-rejection per-member
 `ArchiveyError` or permitted filesystem `OSError`; `LINK_TARGET_UNAVAILABLE` is a member the archive
-describes but does not carry enough information to write — a symlink whose target it
-never recorded (`path=None`, `error=None`, `requested_path` set). `NOT_OVERWRITTEN`,
+describes but does not carry enough information to write — a symlink for which it
+records no target at all (`path=None`, `error=None`, `requested_path` set). `NOT_OVERWRITTEN`,
 `SUPERSEDED`, `OVERWRITTEN` and `LINK_TARGET_UNAVAILABLE` are not failures.
 
-A symlink whose `link_target` the reader **looked for and did not find** SHALL be
-recorded `LINK_TARGET_UNAVAILABLE` rather than raised as a per-member failure, under either `OnError`
+A symlink for which **the archive records no target** SHALL be recorded
+`LINK_TARGET_UNAVAILABLE` rather than raised as a per-member failure, under either `OnError`
 value, and SHALL NOT disturb an existing destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
 does not unlink an entry for a member that is not going to be written. The archive's
 omission is reported through the diagnostics channel
 (`SYMLINK_TARGET_UNAVAILABLE`, an archive-integrity code), which is where an anomaly in
 the archive's own metadata belongs; the extraction result records only what extraction
-did about it. This is not confined to one cause: a writer that discarded the target (7-Zip
-records none for a directory reparse point) and an encrypted target with no password
-leave extraction with the same nothing to write.
+did about it. This is not confined to one cause: a writer that discarded the target
+(7-Zip records none for a directory reparse point), a reparse buffer that names nothing
+and a member carrying no data at all leave extraction with the same nothing to write.
 
-The lookup having run is part of the condition, not a detail of it. An unset
-`link_target` also means "not resolved yet" — a ZIP or 7z link read in streaming mode
-carries its target in the member's data, which that mode has already passed — and the
-archive does record that one. Recording it `LINK_TARGET_UNAVAILABLE` would report success while dropping
-a member the archive describes in full, so a link the reader has not resolved SHALL stay
-a per-member failure.
+What the archive records is the condition, not whether this read produced a target.
+An unset `link_target` has two other causes, and in both the archive carries a target
+this read could not produce: **not resolved yet** — a ZIP or 7z link read in streaming
+mode carries its target in the member's data, which that mode has already passed — and
+**resolved but out of reach**, where the reader looked and the bytes were compressed,
+split across volumes or encrypted. Recording either `LINK_TARGET_UNAVAILABLE` would
+report success while dropping a member the archive describes in full, so both SHALL
+stay a per-member failure. The reader SHALL therefore report which of the two an empty
+lookup was, rather than leaving extraction to infer it from the lookup having run.
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and

@@ -1007,30 +1007,28 @@ class ExtractionCoordinator:
         dest_path: Path,
     ) -> ExtractionResult:
         target = transformed.link_target
-        if target is None and original._link_target_resolved:
-            # The archive says this is a link but never recorded where it points — a
-            # 7-Zip-written directory symlink or junction, or an encrypted target with
-            # no password. There is nothing to write, and nothing here went wrong, so
-            # this is a LINK_TARGET_UNAVAILABLE result rather than a per-member
-            # failure that OnError.STOP would turn into an aborted extraction.
+        if target is None and original._link_target_absent:
+            # The archive says this is a link and records nowhere for it to point — a
+            # 7-Zip-written directory symlink or junction, or a reparse buffer naming
+            # nothing. There is nothing to write, and nothing here went wrong, so this
+            # is a LINK_TARGET_UNAVAILABLE result rather than a per-member failure that
+            # OnError.STOP would turn into an aborted extraction.
             # Checked before _prepare_destination so a member we are not going to
             # write cannot unlink an existing destination under OverwritePolicy.REPLACE.
-            #
-            # `_link_target_resolved` is the whole condition alongside it, because an
-            # unset `link_target` has two meanings and only one of them is the archive's
-            # omission. In streaming mode a ZIP or 7z symlink reaches here with the
-            # target not yet read — it lives in the member's data — and the archive does
-            # record it. Skipping that one would report success while dropping an
-            # ordinary POSIX symlink from the output, so it falls through to the raise
-            # below, which is what it did before this status existed.
             return ExtractionResult(
                 original, None, ExtractionStatus.LINK_TARGET_UNAVAILABLE, None
             )
 
         if target is None:
-            # Unset and never looked for: the reader has not resolved this link, so the
-            # archive's own record of it is untested. Reporting a skip here would blame
-            # the archive for a limit of this read mode — see the note above.
+            # Unset for any other reason, which always means the archive records a
+            # target this read could not produce: not looked for yet (a ZIP or 7z
+            # symlink in streaming mode carries its target in data the pass has already
+            # gone by), or looked for and out of reach (compressed, split across
+            # volumes, encrypted). Reporting those as the status above would claim
+            # success while dropping a member the archive describes in full, so they
+            # stay the per-member failure they were before that status existed. Which
+            # of the two it is comes from the backend that knows — see
+            # `BaseArchiveReader._emit_link_target_unavailable`.
             raise LinkTargetNotFoundError(
                 "Symlink has no target",
                 member_name=transformed.name,

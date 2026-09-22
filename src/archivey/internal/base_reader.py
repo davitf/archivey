@@ -1283,7 +1283,12 @@ class BaseArchiveReader(ArchiveReader):
         member._link_target_resolved = True
 
     def _emit_link_target_unavailable(
-        self, member: ArchiveMember, *, reason: str, message: str
+        self,
+        member: ArchiveMember,
+        *,
+        reason: str,
+        message: str,
+        target_in_archive: bool,
     ) -> None:
         """Report that a link's target could not be read, and why.
 
@@ -1294,6 +1299,15 @@ class BaseArchiveReader(ArchiveReader):
         the diagnostics channel, and ``SYMLINK_TARGET_UNAVAILABLE`` is in
         ``ARCHIVE_INTEGRITY_CODES`` so a strict policy refuses the archive outright.
         A backend that returns quietly instead makes that guarantee false.
+
+        ``target_in_archive`` says whether the archive carries a target this reader
+        could not reach — compressed, split across volumes, encrypted — as against
+        recording none at all. Extraction turns the first into a per-member failure and
+        only the second into ``LINK_TARGET_UNAVAILABLE``, because a member the archive
+        describes in full must not go missing from the output under a status that reads
+        as success. The caller decides it because the caller is the only place that
+        knows; inferring it downstream from "the lookup finished" is what this
+        parameter replaced.
         """
         self._diagnostics_collector.emit(
             code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
@@ -1308,6 +1322,7 @@ class BaseArchiveReader(ArchiveReader):
             attach_to_member=True,
             logger=logger,
         )
+        member._link_target_absent = not target_in_archive
 
     def _apply_reparse_data(
         self, member: ArchiveMember, data: bytes, *, fallback_type: MemberType
@@ -1378,7 +1393,12 @@ class BaseArchiveReader(ArchiveReader):
                 f"Cannot read the link target of {quoted(member.name)}: {detail}; "
                 f"leaving link_target unset."
             )
-        self._emit_link_target_unavailable(member, reason=reason, message=message)
+        # Every branch above is the archive recording no target: no data, a buffer that
+        # names nothing, or bytes that are not a link buffer at all. None of them is a
+        # target this reader merely failed to reach.
+        self._emit_link_target_unavailable(
+            member, reason=reason, message=message, target_in_archive=False
+        )
 
     @staticmethod
     def _index_member_name(

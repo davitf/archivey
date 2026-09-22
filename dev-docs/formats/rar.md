@@ -210,19 +210,26 @@ directly out of the archive (no `unrar` hop, even in a solid archive) and declin
 it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than leaving
 `link_target` silently unset:
 
-| `reason` | When |
-| --- | --- |
-| `password_required` | the member is encrypted and no usable password was supplied |
-| `target_data_split_across_volumes` | the target's bytes straddle a volume boundary |
-| `target_data_compressed` | the target is LZ-compressed rather than stored M0 |
-| `no_target_data` | the member declares no data at all |
+| `reason` | When | Archive records a target |
+| --- | --- | --- |
+| `target_data_encrypted` | the member is encrypted, and this direct read does not decrypt | yes |
+| `target_data_split_across_volumes` | the target's bytes straddle a volume boundary | yes |
+| `target_data_compressed` | the target is LZ-compressed rather than stored M0 | yes |
+| `no_target_data` | the member declares no data at all | no |
 
 The code is in `ARCHIVE_INTEGRITY_CODES`, so a strict `DiagnosticPolicy` refuses such
-an archive; a lenient one lists the member as a link with no target, and extraction
-reports `ExtractionStatus.SKIPPED` for it (`docs/extracting.md`). The RARLAB writer
-produces only the first of these in practice — it stores every symlink target M0, which
-is why `target_data_compressed` has no fixture (§8) and the four rows are pinned by
-patching the parsed header instead.
+an archive; a lenient one lists the member as a link with no target. The last column is
+what extraction does with it: only `no_target_data` is the archive's own omission and
+reports `ExtractionStatus.LINK_TARGET_UNAVAILABLE` (`docs/extracting.md`); the other
+three are targets the archive carries and this read could not reach, so they stay
+per-member failures governed by `OnError`. That is why the encrypted row is not called
+`password_required` as the ZIP and 7z readers' equivalent is — those two open the
+member and catch the failure, so a password really is what is missing, whereas this
+path never decrypts and a correct password does not change its answer.
+
+The RARLAB writer produces only the encrypted case in practice — it stores every
+symlink target M0, which is why `target_data_compressed` has no fixture (§8) and the
+four rows are pinned by patching the parsed header instead.
 
 **Solidity is archive-wide and its blocks are invisible.** RAR exposes no per-solid-block
 boundaries, so `ArchiveInfo.is_solid` is one flag and `CostReceipt.solid_block_count` is
