@@ -446,7 +446,7 @@ name-safety requirement.
 | --- | --- |
 | Existing path under `ERROR` | `ExtractionError`; existing entry unmodified |
 | Existing path under `SKIP` | `ExtractionResult.status == NOT_OVERWRITTEN`, `path=None`, no exception |
-| Symlink whose target the archive never recorded | `ExtractionResult.status == SKIPPED`, `path=None`, no exception, under either `OnError` |
+| Symlink whose target the archive never recorded | `ExtractionResult.status == LINK_TARGET_UNAVAILABLE`, `path=None`, no exception, under either `OnError` |
 | Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
 | Existing entry replaced by a HARDLINK under `REPLACE` | Link is built at a temp sibling and `os.replace()`d in; a failure leaves the existing entry intact |
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
@@ -621,7 +621,7 @@ class ExtractionStatus(str, Enum):
     OVERWRITTEN = "overwritten"
     BLOCKED = "blocked"
     FAILED = "failed"
-    SKIPPED = "skipped"
+    LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
 ```
 
 `ExtractionReport.results` SHALL be the **sole authoritative record** of per-member
@@ -636,13 +636,13 @@ non-current duplicate skipped by the hardwired last-entry-wins rule (`path=None`
 later member under `OverwritePolicy.REPLACE` (`path=None`, `error=None`);
 `BLOCKED` is a continued `FilterRejectionError` (a universal path-safety check or a
 policy filter blocked the member); `FAILED` is a continued non-rejection per-member
-`ArchiveyError` or permitted filesystem `OSError`; `SKIPPED` is a member the archive
+`ArchiveyError` or permitted filesystem `OSError`; `LINK_TARGET_UNAVAILABLE` is a member the archive
 describes but does not carry enough information to write — a symlink whose target it
 never recorded (`path=None`, `error=None`, `requested_path` set). `NOT_OVERWRITTEN`,
-`SUPERSEDED`, `OVERWRITTEN` and `SKIPPED` are not failures.
+`SUPERSEDED`, `OVERWRITTEN` and `LINK_TARGET_UNAVAILABLE` are not failures.
 
 A symlink whose `link_target` the reader **looked for and did not find** SHALL be
-recorded `SKIPPED` rather than raised as a per-member failure, under either `OnError`
+recorded `LINK_TARGET_UNAVAILABLE` rather than raised as a per-member failure, under either `OnError`
 value, and SHALL NOT disturb an existing destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
 does not unlink an entry for a member that is not going to be written. The archive's
 omission is reported through the diagnostics channel
@@ -655,7 +655,7 @@ leave extraction with the same nothing to write.
 The lookup having run is part of the condition, not a detail of it. An unset
 `link_target` also means "not resolved yet" — a ZIP or 7z link read in streaming mode
 carries its target in the member's data, which that mode has already passed — and the
-archive does record that one. Recording it `SKIPPED` would report success while dropping
+archive does record that one. Recording it `LINK_TARGET_UNAVAILABLE` would report success while dropping
 a member the archive describes in full, so a link the reader has not resolved SHALL stay
 a per-member failure.
 

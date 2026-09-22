@@ -55,7 +55,7 @@ archivey.extract("archive.zip", "out/")
   record — this was a Windows symlink or junction rather than a POSIX one — and is set
   from metadata in every format that states it.
 - **A link whose target the archive never recorded** — looked for and not there — is
-  recorded `ExtractionStatus.SKIPPED` and the rest of the archive still extracts. Nothing can be
+  recorded `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still extracts. Nothing
   written for it, and nothing about the extraction went wrong, so it is not a failure
   and `OnError.STOP` does not abort on it. The omission is the archive's, and it is
   reported as `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an

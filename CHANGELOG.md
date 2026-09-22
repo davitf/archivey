@@ -69,7 +69,7 @@ promise with that line; treat `0.2.0` as the first release of this library.
   reading a link whose target is gone; previously 7z reported an empty target for it and
   ZIP reported a directory, and neither said anything.
 - **A link whose target the archive never recorded no longer fails extraction.** It is
-  recorded as the new `ExtractionStatus.SKIPPED` and the rest of the archive still
+  recorded as the new `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still
   extracts, under either `OnError` value — nothing can be written for such a member, and
   nothing about the extraction went wrong. It also no longer disturbs an existing
   destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`

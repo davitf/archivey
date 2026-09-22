@@ -325,7 +325,7 @@ def test_a_targetless_link_is_skipped_and_the_rest_extracts(
     results = archivey.extract(_JUNCTION_DIR / fixture, tmp_path)
     by_name = {r.member.name: r for r in results}
     for name in ("tree/junction_dir", "tree/symlink_dir"):
-        assert by_name[name].status is ExtractionStatus.SKIPPED
+        assert by_name[name].status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
         assert by_name[name].path is None
         assert by_name[name].error is None
     assert by_name["tree/regular.txt"].status is ExtractionStatus.EXTRACTED
@@ -354,7 +354,9 @@ def test_skipping_a_targetless_link_does_not_replace_what_is_there(
         overwrite=OverwritePolicy.REPLACE,
     )
     by_name = {r.member.name: r for r in results}
-    assert by_name["tree/junction_dir"].status is ExtractionStatus.SKIPPED
+    assert (
+        by_name["tree/junction_dir"].status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
+    )
     assert existing.read_text(encoding="utf-8") == "previously here"
 
 
@@ -606,7 +608,7 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
 ) -> None:
     """A link whose target is unreadable has to say so, whatever put it out of reach.
 
-    `ExtractionStatus.SKIPPED` carries no reason of its own — it says only that nothing
+    `ExtractionStatus.LINK_TARGET_UNAVAILABLE` carries no reason of its own — it says only that nothing
     was written — so the reason travels on the diagnostics channel instead, and
     `SYMLINK_TARGET_UNAVAILABLE` being in `ARCHIVE_INTEGRITY_CODES` is what lets a
     strict policy refuse such an archive outright. A backend that returns quietly turns
@@ -623,7 +625,7 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
     dest = tmp_path / "out"
     results = archivey.extract(archive, dest)
     by_name = {r.member.name: r for r in results}
-    assert by_name["tree/link.txt"].status is ExtractionStatus.SKIPPED
+    assert by_name["tree/link.txt"].status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
     assert by_name["tree/link.txt"].error is None
     assert not (dest / "tree" / "link.txt").exists()
 
@@ -684,7 +686,7 @@ def test_a_streaming_symlink_is_not_silently_skipped(tmp_path: Path) -> None:
 
     Streaming still cannot write such a link, which is a gap of its own and not this
     status's business. What matters is that it stays loud: a failure the caller sees,
-    the way it behaved before `SKIPPED` existed. Nothing in the suite covered a
+    the way it behaved before `LINK_TARGET_UNAVAILABLE` existed. Nothing in the suite covered a
     streaming-mode symlink at all, which is how the silent version got through.
     """
     archive = tmp_path / "unixlink.zip"

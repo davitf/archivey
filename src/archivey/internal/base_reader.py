@@ -1289,7 +1289,7 @@ class BaseArchiveReader(ArchiveReader):
 
         Every path that leaves ``link_target`` unset on a member the archive calls a
         link goes through here. That is the whole guarantee `safe-extraction` and
-        ``docs/extracting.md`` make about the new ``SKIPPED`` outcome: the status says
+        ``docs/extracting.md`` make about the ``LINK_TARGET_UNAVAILABLE`` outcome: it says
         only that extraction wrote nothing, so the *reason* has to reach the caller on
         the diagnostics channel, and ``SYMLINK_TARGET_UNAVAILABLE`` is in
         ``ARCHIVE_INTEGRITY_CODES`` so a strict policy refuses the archive outright.

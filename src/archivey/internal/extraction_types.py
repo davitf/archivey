@@ -191,7 +191,7 @@ class ExtractionStatus(str, Enum):
     # out, and that loss is reported through the diagnostics channel
     # (SYMLINK_TARGET_UNAVAILABLE, an archive-integrity code, so a strict
     # DiagnosticPolicy still refuses such an archive outright).
-    SKIPPED = "skipped"
+    LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
 
 
 @dataclass

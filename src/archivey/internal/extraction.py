@@ -1011,10 +1011,10 @@ class ExtractionCoordinator:
             # The archive says this is a link but never recorded where it points — a
             # 7-Zip-written directory symlink or junction, or an encrypted target with
             # no password. There is nothing to write, and nothing here went wrong, so
-            # this is a SKIPPED result rather than a per-member failure that OnError.STOP
-            # would turn into an aborted extraction. Checked before _prepare_destination
-            # so a member we are not going to write cannot unlink an existing
-            # destination under OverwritePolicy.REPLACE.
+            # this is a LINK_TARGET_UNAVAILABLE result rather than a per-member
+            # failure that OnError.STOP would turn into an aborted extraction.
+            # Checked before _prepare_destination so a member we are not going to
+            # write cannot unlink an existing destination under OverwritePolicy.REPLACE.
             #
             # `_link_target_resolved` is the whole condition alongside it, because an
             # unset `link_target` has two meanings and only one of them is the archive's
@@ -1023,7 +1023,9 @@ class ExtractionCoordinator:
             # record it. Skipping that one would report success while dropping an
             # ordinary POSIX symlink from the output, so it falls through to the raise
             # below, which is what it did before this status existed.
-            return ExtractionResult(original, None, ExtractionStatus.SKIPPED, None)
+            return ExtractionResult(
+                original, None, ExtractionStatus.LINK_TARGET_UNAVAILABLE, None
+            )
 
         if target is None:
             # Unset and never looked for: the reader has not resolved this link, so the
