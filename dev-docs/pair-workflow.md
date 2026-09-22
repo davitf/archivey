@@ -171,8 +171,11 @@ review block 3.
 
 If an agent cannot fill these, it is not ready to ask — it should measure first.
 
-**Voice:** apply [`unslop`](../.claude/skills/unslop/SKILL.md) to the packet and any
-chat around it ([`AGENTS.md`](../AGENTS.md) §Communicating with the maintainer).
+**Voice:** apply [`unslop`](../.claude/skills/unslop/SKILL.md) and
+[`asd-ste100`](../.claude/skills/asd-ste100/SKILL.md) to the packet and any chat around
+it ([`AGENTS.md`](../AGENTS.md) §Writing English). A packet is a decision the
+maintainer makes from the text alone, so the options and the default must each have one
+reading.
 
 Review quality does **not** drop: the implementor still gets the full finding list on the
 PR. The maintainer is not the audience for that list unless they ask.
@@ -200,7 +203,8 @@ means a decision was never recorded on the handbook page.
 | --- | --- |
 | Pair investigation + decisions on handbook | `/grill-with-handbook` |
 | Explore without implementing | `/openspec-explore` stance; don’t open a verbose change by default |
-| Unslop chat / packets / PR comments (default) | `/unslop` — standing rule in [`AGENTS.md`](../AGENTS.md); thin skill, not technical-writing |
+| Unslop chat / packets / PR comments (default) | `/unslop` — standing rule in [`AGENTS.md`](../AGENTS.md) §Writing English; thin skill, not technical-writing |
+| Remove ambiguity from any English you write (default) | `/asd-ste100` — same standing rule; STE-flavored mode here unless the text is parsed without a human |
 | User-facing or handbook prose craft | `/technical-writing` (then `/unslop` on the same prose) |
 | Review (other agent) | Cursor: `/code-review` (project command → archivey skill). Elsewhere: **`/code-review-skill`** — never bare `/code-review` (that is a host builtin). Full PR handoff; packets to maintainer |
 | Address review | Cursor: `/address-review`. Elsewhere: **`address-review-findings`** / ask for that skill by name |

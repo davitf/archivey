@@ -64,17 +64,52 @@ that one is the code map.
 - `CONTRIBUTING.md` — coding/testing standards (type-checking, exception translation,
   behaviour-focused tests, red-green TDD, the pause-and-ask-on-discrepancies rule).
 
-## Communicating with the maintainer (unslop)
+## Writing English (unslop + ASD-STE100)
 
-**Standing rule for every agent session:** apply
-[`.claude/skills/unslop/SKILL.md`](.claude/skills/unslop/SKILL.md) to **all
-maintainer-facing prose** — chat replies, decision packets, PR comments, and thin
-briefs. Cut puffery, throat-clearing, stacked ornaments, and default LLM filler;
-prefer specific claims.
+**Standing rule for every agent session.** Two skills shape prose here. They cut
+different things, and where both apply, both run:
 
-That skill is the checklist only. Do **not** load `/technical-writing` for everyday
-chat — use it when you need Diátaxis + sentence craft on a docs or handbook page
-(and still apply `unslop` to the same prose).
+- [`unslop`](.claude/skills/unslop/SKILL.md) cuts **AI tells** — puffery,
+  throat-clearing, decorative ornaments, vague claims. It applies to maintainer-facing
+  prose: chat replies, decision packets, PR comments, thin briefs.
+- [`asd-ste100`](.claude/skills/asd-ste100/SKILL.md) cuts **ambiguity** — sentences a
+  reader can parse two ways. It applies to every piece of English an agent writes here:
+  chat with the maintainer, user-visible text (exception messages, CLI output, `docs/`),
+  pull request titles and descriptions, review and inline comments, commit messages, and
+  code comments in `src/` and `tests/`.
+
+`technical-writing` is separate and is still opened only for Diátaxis structure and
+sentence craft on a published docs or handbook page.
+
+### Which mode
+
+The skill has two modes and tells you to pick one. For this repo:
+
+- **Strict** — text that is parsed without a human to resolve the ambiguity: exception
+  and diagnostic messages, CLI `--help` text, and instructions written for another agent
+  (a file under `.claude/skills/`, a fix direction in a review finding, a brief).
+- **STE-flavored** — everything else, which is most of it: chat, pull request
+  descriptions and comments, commit messages, `docs/`, `dev-docs/`, and code comments.
+  Structural rules in full. The lexical rules are a direction of travel.
+
+### What it does not override
+
+- **`CONTRIBUTING.md` wins on code comments.** Comments explain *why*, not *what*, and
+  they match the density and style of the file around them. STE decides the shape of the
+  sentence you write. It does not ask for more comments, shorter comments, or a comment
+  where the rule says none.
+- **Never trade a hedge for a shorter sentence.** "May have failed" is not "failed", and
+  `PLAUSIBLE` is not `CONFIRMED`. The whole review vocabulary here is calibrated
+  confidence, so a rewrite that firms one up has changed the finding.
+- **It is style, not substance.** A rewrite that supplies a cause, a frequency or a
+  mechanism the source did not state is no longer a rewrite.
+- **Quoted text stays as it was quoted** — an error string under test, a commit message
+  being cited, a maintainer's own words.
+
+This governs new writing. Nothing in the tree needs rewriting to match it, and it is not
+a gate: `.claude/skills/asd-ste100/scripts/ste-lint.py` is a stdlib-only linter you can
+point at a file (`--baseline N` tolerates what is already there), and nothing in
+`scripts/check.sh` calls it.
 
 ## Session setup (`unrar`, `7z`, `openspec`, deps)
 
@@ -372,8 +407,10 @@ in the wrong place.
    rules live in `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`
    and only there: **§0** is the output shape and the verdicts, **§3–§5** are what to check
    (against `CONTRIBUTING.md`, which holds the rules themselves), and **§10** is posting —
-   stable finding IDs carrying the reviewer's own initial, inline comments, and a status
-   table over the previous IDs when re-reviewing.
+   stable finding IDs carrying the reviewer's own initial, a header on every comment
+   carrying the round and the verdict, the findings themselves in inline threads with the
+   body carrying only an index, no tables in anything posted, and one status bullet per
+   previous ID when re-reviewing.
 2. **The implementing agent works through them** with `address-review-findings`
    (Cursor: `/address-review`). Every finding gets an explicit disposition — fixed,
    disproven, escalated, or deferred-with-a-written-home. Nothing is dropped silently, and

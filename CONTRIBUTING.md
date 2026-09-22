@@ -244,6 +244,10 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   complex decision, a comment **may point** at a spec, `dev-docs/decisions/`, architecture
   note, exploration, or OpenSpec change — but **summarize the reason inline whenever
   possible** so the pointer is optional depth, not the only explanation.
+- **Write the comment so it has one reading.** Sentence shape for comments, like all
+  prose here, follows [`AGENTS.md`](AGENTS.md) §Writing English. It decides how you
+  write a comment; the two rules above decide whether to write one and what it says,
+  and they win where the two ever pull apart.
 - **Comments describe the code as it is, not how it got there.** A comment in `src/` is
   read by someone who never saw the change that produced it, so it must not depend on
   that change being remembered. Three things this rules out:
