@@ -480,7 +480,7 @@ opening a comment on it with `@claude review`.
 - **The review reads its own previous rounds from the pull request**, not from a
   handoff. Stable finding IDs are what make that work
   ([addendum §10](../.claude/skills/code-review-skill/reference/archivey-review-addendum.md)),
-  so renumbering between rounds breaks the status table the next round opens with.
+  so renumbering between rounds breaks the status bullets the next round opens with.
 
   Each round is a fresh session with no memory of the last one, which is deliberate —
   a reviewer that remembers proposing a fix is a poor judge of that fix, for the same
