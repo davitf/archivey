@@ -30,8 +30,9 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     TruncatedError,
 )
+from archivey.internal.backends import tar_reader as tar_reader_module
 from tests.conftest import requires_zstd, zstd_backend
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, ReadSizeRecorder
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -1356,3 +1357,104 @@ def test_error_mid_streaming_pass_poisons_scan_members() -> None:
         with pytest.raises(ReadError, match="previously failed"):
             reader.scan_members()
         assert reader.members_report_if_available() is None
+
+
+# ---------------------------------------------------------------------------
+# Header-sized allocations
+# ---------------------------------------------------------------------------
+
+
+def _tar_with_oversized_metadata_header(typeflag: bytes, declared: int) -> bytes:
+    """A tar whose extended-header block declares ``declared`` bytes it does not have.
+
+    ``typeflag`` ``x`` is a PAX extended header, ``L`` a GNU ``././@LongLink``. Both
+    are written by ``tarfile`` itself for a name too long for ustar; only the 12-byte
+    octal size field and the header checksum are rewritten.
+    """
+    fmt = tarfile.PAX_FORMAT if typeflag == b"x" else tarfile.GNU_FORMAT
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=fmt) as t:
+        info = tarfile.TarInfo("a" * 200)
+        info.size = 0
+        t.addfile(info)
+    data = bytearray(buf.getvalue())
+    assert data[156:157] == typeflag
+    data[124:136] = b"%011o\0" % declared
+    data[148:156] = b" " * 8  # the checksum field reads as spaces while summing
+    data[148:156] = b"%06o\0 " % sum(data[:512])
+    return bytes(data)
+
+
+@pytest.mark.parametrize("typeflag", [b"x", b"L"])
+@pytest.mark.parametrize("advertise_size", [True, False], ids=["sized", "unsized"])
+def test_extended_header_size_does_not_drive_the_allocation(
+    typeflag: bytes, advertise_size: bool
+) -> None:
+    """A 10 KB archive must not make the reader ask its source for 6 GiB.
+
+    stdlib ``tarfile`` reads a PAX extended header or a GNU long name with a single
+    ``read`` sized from the header's own 12-byte octal field — attacker-chosen, and
+    allocated in full before the short read reveals the archive is tiny. Asking for
+    the bytes is the observable: whether the allocation then succeeds depends on the
+    machine, so it is the request that is pinned, not a ``MemoryError``.
+
+    The two parameters are the two branches of the bound, and they are bounded by
+    different things. ``sized`` advertises the fsspec ``size`` attribute, so the
+    reader knows how many bytes are left and clamps to exactly that; it fails against
+    the unbounded ``self._inner.read(size)`` this wrapper used to do, which passes
+    6 442 450 944 straight through. ``unsized`` hides it, which is what every
+    compressed source and every ordinary caller-supplied file-like looks like: the
+    length is unknown, so the read is stepped instead, and this case fails against
+    treating an unknown length as an unlimited one (``remaining is None`` forwarding
+    ``size`` down), which passes the same 6 442 450 944. A bound tested only on the
+    advertised branch is untested on the branch most sources actually take.
+    """
+    declared = 6 * 1024**3
+    data = _tar_with_oversized_metadata_header(typeflag, declared)
+    source = ReadSizeRecorder(data, advertise_size=advertise_size)
+
+    with pytest.raises(CorruptionError):
+        with open_archive(source, format=ArchiveFormat.TAR) as reader:
+            reader.members()
+
+    assert source.requested, "the source was never read"
+    # The source sits under a ``BufferedReader``, whose refill size is a constant of
+    # the runtime (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13, 128 KiB from 3.14)
+    # and has nothing to do with the archive. So the bound is one refill or, whichever
+    # is larger, the archive when its length is known and the step when it is not;
+    # what both assertions pin is that no read scales with ``declared``, which is six
+    # gigabytes.
+    reach = (
+        len(data)
+        if advertise_size
+        else tar_reader_module._EofProbeStream._UNKNOWN_LENGTH_READ_STEP
+    )
+    bound = max(reach, io.DEFAULT_BUFFER_SIZE)
+    assert max(source.requested) <= bound, (
+        f"asked the source for {max(source.requested)} bytes "
+        f"from a {len(data)}-byte archive"
+    )
+
+
+def test_a_member_larger_than_the_read_step_still_reads_whole(tmp_path: Path) -> None:
+    """The bound must not cut a legitimate read short.
+
+    A member past ``_EofProbeStream._UNKNOWN_LENGTH_READ_STEP`` is the case where the
+    wrapper stops handing the request straight down, so it is the one that would show
+    a truncation or a stitching bug. Compressed, because that is the path with no
+    cheap length and therefore the one that takes the stepped route.
+    """
+    step = tar_reader_module._EofProbeStream._UNKNOWN_LENGTH_READ_STEP
+    payload = bytes(range(256)) * ((step // 256) + 1024)
+    assert len(payload) > step
+
+    path = tmp_path / "big.tar.gz"
+    with tarfile.open(path, "w:gz") as t:
+        info = tarfile.TarInfo("big.bin")
+        info.size = len(payload)
+        t.addfile(info, io.BytesIO(payload))
+
+    with open_archive(path) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            assert stream.read() == payload
