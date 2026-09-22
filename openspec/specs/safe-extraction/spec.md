@@ -643,7 +643,7 @@ records no target at all (`path=None`, `error=None`, `requested_path` set). `NOT
 
 A symlink for which **the archive records no target** SHALL be recorded
 `LINK_TARGET_UNAVAILABLE` rather than raised as a per-member failure, under either `OnError`
-value, and SHALL NOT disturb an existing destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
+value **and in either read mode**, and SHALL NOT disturb an existing destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
 does not unlink an entry for a member that is not going to be written. The archive's
 omission is reported through the diagnostics channel
 (`SYMLINK_TARGET_UNAVAILABLE`, an archive-integrity code), which is where an anomaly in
@@ -661,6 +661,15 @@ split across volumes or encrypted. Recording either `LINK_TARGET_UNAVAILABLE` wo
 report success while dropping a member the archive describes in full, so both SHALL
 stay a per-member failure. The reader SHALL therefore report which of the two an empty
 lookup was, rather than leaving extraction to infer it from the lookup having run.
+
+"Not resolved yet" is about the target's *bytes*, so it SHALL NOT be reached for a
+member whose absent target the header already states. Where a reader can tell from
+metadata alone that the archive records no target — a reparse point a writer stored no
+data for is the case that exists — it SHALL settle that while typing the member, not in
+a lookup that reads data. Otherwise the two paragraphs above disagree in a streaming
+pass, whose lookup runs at EOF: the member the first one names would take the second
+one's per-member failure, and the library default would abort the archive on exactly
+the entry this outcome was added for.
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and

@@ -57,7 +57,8 @@ archivey.extract("archive.zip", "out/")
 - **A link for which the archive records no target** is recorded
   `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still extracts.
   Nothing can be written for it, and nothing about the extraction went wrong, so it is
-  not a failure and `OnError.STOP` does not abort on it. The omission is the archive's,
+  not a failure and `OnError.STOP` does not abort on it, whether the archive is read
+  seekably or in streaming mode. The omission is the archive's,
   and it is reported as `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an
   archive-integrity code, so `DiagnosticPolicy.strict()` still refuses such an archive
   outright. A link whose target the archive *does* carry but this read could not reach —

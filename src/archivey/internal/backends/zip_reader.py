@@ -825,6 +825,14 @@ class ZipReader(BaseArchiveReader):
             # this backend knows that, so only this backend says so.
             link_stored_as_directory=is_reparse_point and info.is_dir(),
         )
+        if is_reparse_point and info.file_size == 0:
+            # A writer that stores no data for a reparse point has recorded no target
+            # for it, and that is knowable from the header alone — no read, and so no
+            # dependence on this being a seekable pass. Deciding it here rather than in
+            # the link-target hook is what makes streaming agree: that hook runs at EOF,
+            # after extraction has already decided what to do with the member, which
+            # left a 7-Zip junction raising instead of taking the recorded outcome.
+            self._apply_reparse_data(member, b"", fallback_type=fallback_type)
         for issue in ts_issues:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
@@ -1487,11 +1495,8 @@ class ZipReader(BaseArchiveReader):
         # What the member would be if its data turns out not to be a link buffer —
         # the same test `_to_member` used before the reparse bit overrode it.
         fallback_type = MemberType.DIRECTORY if info.is_dir() else MemberType.FILE
-        if is_reparse_point and info.file_size == 0:
-            # 7-Zip stores no data at all for a directory reparse point, which is what
-            # every junction is. Skip the open: there is nothing to read.
-            self._apply_reparse_data(member, b"", fallback_type=fallback_type)
-            return
+        # The zero-data case does not appear here: `_to_member` settles it while the
+        # member is being typed, so this hook is never reached for one.
         # A symlink's target is its (possibly encrypted) file data. Listing must stay
         # usable without a password, so a missing/wrong password leaves link_target
         # unset (following the link later fails with LinkTargetNotFoundError); other

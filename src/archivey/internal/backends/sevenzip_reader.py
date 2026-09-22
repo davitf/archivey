@@ -549,6 +549,16 @@ class SevenZipReader(BaseArchiveReader):
             presented_name=presented_name,
             archive_name=self._archive_name,
         )
+        if is_reparse_point and member.size == 0:
+            # A writer that stores no data for a reparse point has recorded no target
+            # for it, and that is knowable from the header alone — no read, and so no
+            # dependence on this being a seekable pass. Deciding it here rather than in
+            # the link-target hook is what makes streaming agree: that hook runs at EOF,
+            # after extraction has already decided what to do with the member, which
+            # left a 7-Zip junction raising instead of taking the recorded outcome.
+            self._apply_reparse_data(
+                member, b"", fallback_type=self._member_type_ignoring_reparse(record)
+            )
         for issue in ts_issues:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
@@ -799,11 +809,8 @@ class SevenZipReader(BaseArchiveReader):
         # attribute bit is set for deduplication stubs and cloud placeholders too, and
         # those hold ordinary content that a caller should still be able to read.
         fallback_type = self._member_type_ignoring_reparse(raw.record)
-        if is_reparse_point and member.size == 0:
-            # 7-Zip stores no data for a directory reparse point, which is what every
-            # junction is; there is nothing to open.
-            self._apply_reparse_data(member, b"", fallback_type=fallback_type)
-            return
+        # The zero-data case does not appear here: `_to_member` settles it while the
+        # member is being typed, so this hook is never reached for one.
         try:
             with self._open_member(member) as stream:
                 data = stream.read()

@@ -1427,15 +1427,19 @@ class RarReader(BaseArchiveReader):
             detail = (
                 "its data is encrypted and this reader does not decrypt it in place"
             )
+            in_archive = True
         elif raw.split_before or raw.split_after:
             reason = "target_data_split_across_volumes"
             detail = "its data is split across volumes"
+            in_archive = True
         elif raw.compress_type != _RAR_METHOD_STORED:
             reason = "target_data_compressed"
             detail = "its data is compressed rather than stored"
+            in_archive = True
         else:
             reason = "no_target_data"
             detail = "it carries no data"
+            in_archive = False
         self._emit_link_target_unavailable(
             member,
             reason=reason,
@@ -1443,7 +1447,7 @@ class RarReader(BaseArchiveReader):
                 f"Cannot read the symlink target of {quoted(member.name)} because {detail}; "
                 f"leaving link_target unset."
             ),
-            target_in_archive=reason != "no_target_data",
+            target_in_archive=in_archive,
         )
         return
 

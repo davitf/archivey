@@ -314,26 +314,47 @@ def test_a_scanned_symlink_is_a_reparse_point_only_on_windows(
         pytest.param("junction_7zip_snl.7z", id="7z"),
     ],
 )
+@pytest.mark.parametrize(
+    "streaming",
+    [pytest.param(False, id="seekable"), pytest.param(True, id="streaming")],
+)
 def test_a_targetless_link_is_skipped_and_the_rest_extracts(
-    fixture: str, tmp_path: Path
+    fixture: str, streaming: bool, tmp_path: Path
 ) -> None:
     """Nothing can be written for it, and nothing here went wrong, so it is not a failure.
 
     The library default is `OnError.STOP`, so treating it as a per-member failure aborted
     the whole archive on the first such member — and 7-Zip writes one for every directory
     symlink and every junction.
+
+    Both read modes, because for a while only one of them did this. The fact that
+    settles these two members — the writer stored no data, so it recorded no target —
+    is in the header, and nothing about it needs a seek. But the decision used to be
+    taken in the link-target hook, which a streaming pass does not run until EOF, long
+    after extraction has chosen what to do with the member. So exactly the member this
+    whole feature exists for raised instead, and the default aborted the archive.
     """
-    results = archivey.extract(_JUNCTION_DIR / fixture, tmp_path)
-    by_name = {r.member.name: r for r in results}
+    # The file symlink in this tree is a different member, and only in streaming mode:
+    # its target IS in the archive, in the member's own data, which the pass has gone
+    # past by the time the link is written. The spec keeps that one a per-member
+    # failure, so a streaming read under the default would abort on it before the
+    # report exists — for a documented reason that is not this test's subject.
+    on_error = OnError.CONTINUE if streaming else OnError.STOP
+    with open_archive(_JUNCTION_DIR / fixture, streaming=streaming) as opened:
+        report = opened.extract_all(tmp_path, on_error=on_error)
+    by_name = {r.member.name: r for r in report.results}
     for name in ("tree/junction_dir", "tree/symlink_dir"):
         assert by_name[name].status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
         assert by_name[name].path is None
         assert by_name[name].error is None
     assert by_name["tree/regular.txt"].status is ExtractionStatus.EXTRACTED
-    assert by_name["tree/symlink_file"].status is ExtractionStatus.EXTRACTED
     assert (tmp_path / "tree" / "regular.txt").read_bytes() == b"plain\r\n"
     # Nothing was left behind at the skipped paths.
     assert not (tmp_path / "tree" / "junction_dir").exists()
+    expected_file_link = (
+        ExtractionStatus.FAILED if streaming else ExtractionStatus.EXTRACTED
+    )
+    assert by_name["tree/symlink_file"].status is expected_file_link
 
 
 def test_skipping_a_targetless_link_does_not_replace_what_is_there(

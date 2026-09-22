@@ -1329,6 +1329,13 @@ class BaseArchiveReader(ArchiveReader):
     ) -> None:
         """Set ``link_target`` (and ``is_junction``) from a Windows reparse buffer.
 
+        This answers the target question outright — it either produces a target or
+        records that the archive holds none — so it marks the lookup done. A backend
+        that already has the buffer, or already knows there is none, can therefore call
+        it while the member is being typed, and ``_resolve_link_target`` will not run
+        the hook again later. That matters because the hook runs at EOF in a streaming
+        pass, long after extraction has decided what to do with the member.
+
         The reparse tag that separates a junction from a symlink is the first field of
         that buffer, and the buffer is the member's *data*, so this is the same
         listing-from-data path a symlink target already takes — see
@@ -1357,6 +1364,7 @@ class BaseArchiveReader(ArchiveReader):
         the target and the tag are both simply gone, and a member whose target we
         invented would be worse than one that says it has none.
         """
+        member._link_target_resolved = True
         parsed = parse_reparse_data(data)
         if parsed is not None and parsed.is_junction:
             # The tag is the buffer's first field, so a junction is established as soon
