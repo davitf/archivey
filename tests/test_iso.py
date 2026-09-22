@@ -4,8 +4,14 @@ degradation slice (ISO without pycdlib). Skipped when pycdlib is absent."""
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import io
+import os
+import struct
+from collections.abc import Iterator
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -24,9 +30,10 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedOperationError,
 )
+from archivey.internal.backends.iso_reader import IsoReader, _ImageBoundedStream
 from archivey.internal.registry import FormatSupport, get_registry
 from tests.conftest import requires
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, ReadSizeRecorder
 
 pytestmark = requires("pycdlib")
 
@@ -417,3 +424,224 @@ def test_open_from_mid_positioned_stream(rock_ridge_iso: Path) -> None:
     stream.seek(len(junk))
     with open_archive(stream, format=ArchiveFormat.ISO) as ar:
         assert any(m.is_file for m in ar.members())
+
+
+# ---------------------------------------------------------------------------
+# Header-sized allocations
+# ---------------------------------------------------------------------------
+
+
+def _iso_with_oversized_root_directory(declared: int) -> bytes:
+    """An ISO whose root directory record claims ``declared`` bytes of directory data.
+
+    pycdlib clamps a *file*'s ``data_length`` to the image length before reading it
+    but not a *directory*'s, and the root record sits at a fixed offset inside the
+    primary volume descriptor, so only those eight bytes change. The both-endian
+    field must be rewritten in both orders or pycdlib rejects it before reading.
+    """
+    blob = bytearray(_build_iso(rock_ridge=False, joliet=False))
+    offset = 32768 + 156 + 10  # PVD + root directory record + data_length
+    blob[offset : offset + 8] = struct.pack("<I", declared) + struct.pack(
+        ">I", declared
+    )
+    return bytes(blob)
+
+
+@pytest.mark.parametrize("advertise_size", [True, False], ids=["sized", "unsized"])
+def test_directory_data_length_does_not_drive_the_allocation(
+    advertise_size: bool,
+) -> None:
+    """A directory record's 32-bit length must not size a read of the image.
+
+    It is read at ``open_fp`` time, before a member is listed, so a small image buys
+    an allocation of up to 4 GiB — and the ``MemoryError`` it produced is not an
+    ``ArchiveyError`` at all. Asking for the bytes is the observable: whether the
+    allocation then succeeds depends on the machine.
+
+    The two parameters are the two branches of the bound, and they fail against
+    different mutations. ``sized`` advertises the fsspec ``size`` attribute, so the
+    image's length is known and the read is clamped to what is left; it fails against
+    handing pycdlib an unbounded handle, which passes 4 294 967 040 straight through.
+    ``unsized`` hides it, which is what an ordinary caller-supplied seekable
+    file-like looks like — not a path, not one of the types ``source_byte_size`` will
+    end-seek — and it is the branch a wrapper applied only when the length is known
+    does not cover at all: it fails against wrapping conditionally, and against
+    reading ``size`` whole once the length is unknown, both of which pass the same
+    4 294 967 040.
+    """
+    declared = 0xFFFFFF00
+    data = _iso_with_oversized_root_directory(declared)
+    source = ReadSizeRecorder(data, advertise_size=advertise_size)
+
+    with pytest.raises(CorruptionError):
+        open_archive(source, format=ArchiveFormat.ISO)
+
+    assert source.requested, "the source was never read"
+    # As in the TAR equivalent: the source sits under a ``BufferedReader`` whose refill
+    # size is a runtime constant (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13,
+    # 128 KiB from 3.14), larger than this image on a recent Python. The bound is one
+    # refill or, whichever is larger, the image when its length is known and the step
+    # when it is not; what is pinned is that no read scales with ``declared``.
+    reach = (
+        len(data) if advertise_size else _ImageBoundedStream._UNKNOWN_LENGTH_READ_STEP
+    )
+    bound = max(reach, io.DEFAULT_BUFFER_SIZE)
+    assert max(source.requested) <= bound, (
+        f"asked the source for {max(source.requested)} bytes "
+        f"from a {len(data)}-byte image"
+    )
+
+
+def test_a_path_source_is_read_through_our_own_handle(rock_ridge_iso: Path) -> None:
+    """Bounding a path source is only possible while archivey owns the handle.
+
+    A path went to ``PyCdlib.open``, which opens its own file and leaves nothing of
+    archivey's underneath it, so there was nowhere to put the bound; only the
+    measured path opened its own. This pins the handle rather than the allocation:
+    the allocation itself is what the bound prevents, and provoking it to prove that
+    costs gigabytes. ``test_directory_data_length_does_not_drive_the_allocation``
+    covers the bound on a source that can record what was asked of it.
+    """
+    with open_archive(rock_ridge_iso) as reader:
+        assert isinstance(reader, IsoReader)
+        assert reader._owned_fp is not None
+        assert [m.name for m in reader.members()]
+
+
+def test_a_path_source_refuses_the_same_image(tmp_path: Path) -> None:
+    """The refusal reaches the path branch, not only the stream one."""
+    path = tmp_path / "bomb.iso"
+    path.write_bytes(_iso_with_oversized_root_directory(0xFFFFFF00))
+
+    with pytest.raises(CorruptionError):
+        open_archive(path)
+
+
+@contextlib.contextmanager
+def _recording_opens(
+    path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[list[IO[bytes]]]:
+    """Collect every file object opened for ``path`` while the block runs.
+
+    A handle leak is asserted on the objects themselves rather than on
+    ``/proc/self/fd``, which does not exist on the Windows and macOS legs. Anything
+    still open is closed on the way out, so a failing assertion does not leak from the
+    test either.
+    """
+    real_open = builtins.open
+    opened: list[IO[bytes]] = []
+
+    def recording_open(file, *args, **kwargs):  # type: ignore[no-untyped-def]
+        fp = real_open(file, *args, **kwargs)
+        if isinstance(file, (str, os.PathLike)) and Path(file) == path:
+            opened.append(fp)
+        return fp
+
+    monkeypatch.setattr(builtins, "open", recording_open)
+    try:
+        yield opened
+    finally:
+        # No ``monkeypatch.undo()``: the fixture unwinds it, and undoing here would
+        # also drop patches a caller set before entering this block.
+        for fp in opened:
+            fp.close()
+
+
+def test_a_refused_path_source_does_not_hold_its_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path open that fails must close the handle it opened, not wait for the GC.
+
+    The reader opens the path itself so it has something to bound (see
+    ``test_a_path_source_is_read_through_our_own_handle``). A failure after that open
+    leaves the file object in the frame's locals, and the exception's traceback keeps
+    that frame alive for as long as the caller holds the exception — which an
+    inventory or fuzz loop that catches and continues does for the whole batch, one
+    descriptor per refused image. ``pytest.raises`` holds it here the same way.
+
+    Fails against letting the exception out of ``__init__`` without releasing the
+    handle: every fp recorded below is then still open at the assertion.
+    """
+    path = tmp_path / "bomb.iso"
+    path.write_bytes(_iso_with_oversized_root_directory(0xFFFFFF00))
+
+    with _recording_opens(path, monkeypatch) as opened:
+        with pytest.raises(CorruptionError) as excinfo:
+            open_archive(path, format=ArchiveFormat.ISO)
+        # The traceback is what pinned the handle; assert it is still here, so this
+        # test cannot pass by the exception having been collected instead.
+        assert excinfo.value.__traceback__ is not None
+        assert opened, "the reader did not open the path itself"
+        assert [fp for fp in opened if not fp.closed] == []
+
+
+def test_a_failure_after_open_fp_is_translated_and_releases(
+    rock_ridge_iso: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release guard covers the whole constructor, not just ``open_fp``.
+
+    The namespace auto-select runs two more pycdlib calls on the image after
+    ``open_fp`` returns. They sat outside the ``try`` at first, which left two claims
+    untrue of that window: a raise there leaked ``_owned_fp``, and it escaped as a bare
+    ``PyCdlibException`` rather than as ``CorruptionError``. Neither is reachable
+    through a crafted image — ``has_rock_ridge`` raises only on an uninitialized object
+    — so the failure is injected rather than provoked. An unreachable window is still
+    the shape the comment, the threat model and the PR body all describe, and the next
+    call added to that block need not be as safe.
+
+    Fails against a guard that ends at ``open_fp``: the raise arrives as
+    ``PyCdlibInvalidISO`` and the recorded handle is still open.
+    """
+    from pycdlib.pycdlibexception import PyCdlibInvalidISO
+
+    def boom(self) -> bool:  # type: ignore[no-untyped-def]
+        raise PyCdlibInvalidISO("injected")
+
+    monkeypatch.setattr("pycdlib.PyCdlib.has_rock_ridge", boom)
+
+    with _recording_opens(rock_ridge_iso, monkeypatch) as opened:
+        with pytest.raises(CorruptionError) as excinfo:
+            open_archive(rock_ridge_iso, format=ArchiveFormat.ISO)
+        assert excinfo.value.__traceback__ is not None
+        assert opened, "the reader did not open the path itself"
+        assert [fp for fp in opened if not fp.closed] == []
+
+
+def test_a_failing_iso_close_still_releases_the_handle(
+    rock_ridge_iso: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing is two steps, and the second must not depend on the first succeeding.
+
+    ``_release_archive_handles`` closes the ``PyCdlib`` and then the handle this reader
+    opened. Without the ``finally`` a raise out of the first skips the second, which
+    leaks a descriptor on the ordinary close and, on the ``__init__`` path, replaces
+    the error the image produced with the close error *and* leaves the fp open — the
+    outcome the guard was added to prevent.
+
+    Injected, like ``test_a_failure_after_open_fp_is_translated_and_releases``:
+    ``PyCdlib.close()`` raises only on an object it never opened, which the
+    ``_iso_opened`` flag already excludes. The same reasoning applies — a helper that
+    promises one release path must not give up half of it on its own first failure.
+
+    Fails against the sequential form: the close error still propagates, but the
+    recorded handle is left open.
+    """
+
+    def boom(self) -> None:  # type: ignore[no-untyped-def]
+        raise RuntimeError("injected close failure")
+
+    monkeypatch.setattr("pycdlib.PyCdlib.close", boom)
+
+    with _recording_opens(rock_ridge_iso, monkeypatch) as opened:
+        reader = open_archive(rock_ridge_iso, format=ArchiveFormat.ISO)
+        with pytest.raises(RuntimeError, match="injected close failure"):
+            reader.close()
+        assert opened, "the reader did not open the path itself"
+        assert [fp for fp in opened if not fp.closed] == []
+
+
+def test_a_clean_image_is_unaffected(rock_ridge_iso: Path) -> None:
+    """The bound may not shorten a read a well-formed image legitimately makes."""
+    with open_archive(rock_ridge_iso) as reader:
+        names = [m.name for m in reader.members()]
+    assert "file.txt" in names
