@@ -23,7 +23,7 @@ imports this.
 from __future__ import annotations
 
 import io
-from typing import BinaryIO, cast
+from typing import BinaryIO, Self, cast
 
 from archivey.internal.streams.streamtools.base import (
     DelegatingStream,
@@ -177,13 +177,19 @@ class BorrowedStream(DelegatingStream):
     # The reason the class exists. See DelegatingStream's "Close ownership".
     _OWNS_INNER: bool = False
 
-    def __init__(self, inner: BinaryIO) -> None:
+    def __new__(cls, inner: BinaryIO) -> Self:
+        # Checked here, not in ``__init__``: refusing there leaves a half-built instance
+        # whose finalizer calls ``close()``, which reads attributes ``__init__`` never
+        # set. Refusing before the instance exists leaves nothing to finalize.
         if not isinstance(inner, io.BufferedIOBase):
             raise TypeError(
                 "BorrowedStream needs an already full-count inner (an "
                 f"io.BufferedIOBase); got {type(inner).__name__}. A short-returning "
                 "source goes in FullCountStream."
             )
+        return super().__new__(cls)
+
+    def __init__(self, inner: BinaryIO) -> None:
         super().__init__(inner)
 
     def fileno(self) -> int:
