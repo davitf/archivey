@@ -45,9 +45,9 @@
 - [ ] 3.2 `open_stream` and detection take the same object; detection over a path opens
       and closes its own handle from `.path`; `core.py`'s three `isinstance(source, Path)`
       branches read `.path` instead. Standalone `detect_format` is unchanged.
+- [ ] 3.3 `SharedSource` accepts the `ArchiveSource` and stops deciding ownership itself.
 - [ ] 3.4 The zero-origin view stays a `SlicingStream` over the `ArchiveSource`
       (decision 7); check it clamps and borrows as the spec's wrapper rule requires.
-- [ ] 3.3 `SharedSource` accepts the `ArchiveSource` and stops deciding ownership itself.
 
 ## 4. Backends, one at a time
 

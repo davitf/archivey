@@ -45,8 +45,10 @@ Standalone `detect_format` is non-consuming for paths/seekable streams. For a ra
 non-seekable stream the peeked prefix is lost to the caller unless the caller buffers
 it; `open_archive` and `open_stream` keep it in the `ArchiveSource`.
 
-The replay prefix: buffers the first `DETECTION_LIMIT` bytes (32774 when ISO triggered);
-`.peek(n)` without consume; reads drain the prefix, then the underlying source.
+The replay prefix: buffers what detection peeks, `DETECTION_LIMIT` bytes by default (32774
+when ISO triggered, up to 1 MiB for the inner-TAR probe and chain walks, up to `SFX_MAX`
+for the self-extracting scan); `.peek(n)` without consume; reads drain the prefix, then
+the underlying source.
 
 Every tier that reads from the front SHALL do so through **one detection-owned prefix
 workspace** that grows monotonically: extending the window reads only the delta, and bytes

@@ -49,7 +49,9 @@ opened, never what the caller passed.
   path for a parser that opens the file itself (decision 4).
 - One ownership rule, stated once: archivey closes what it opened or built.
 - The bound on reads sized from an archive's own fields holds at the raw source for
-  every backend, not only the ones where an allocation was found.
+  every backend that reads through the `ArchiveSource`, not only the ones where an
+  allocation was found. Where a parser is handed the path instead (decision 4), the
+  parser's own check is the bound, and decision 4 says which check that is.
 - No public API or behaviour change. On a path source, no Python frame is added where a
   parser reads the file itself today (decision 4); where the design adds or replaces one,
   the probe measures it with `path` as a treatment shape, not as the control.
@@ -133,7 +135,10 @@ A third-party parser that opens a path itself keeps receiving `.path`, and the
 `ArchiveSource` then opens nothing. Two backends do: ZIP, whose `zipfile` bounds its
 central-directory read by the end record's own position (it refuses a directory that would
 start before offset 0, so the declared size cannot exceed the file), and the single-file
-codecs, which want independent handles and path-only accelerators. Each switches to the
+codecs, which want independent handles and path-only accelerators. The codecs' source
+reads are decompressor-driven or fixed-size (the gzip size field, the lzip trailer, the xz
+footer); the one read an archive field sizes, the xz index, is refused before it is issued
+when it would start before offset 0, the same check `zipfile` makes. Each switches to the
 `ArchiveSource` when it needs a handle archivey controls: measurement, or ZIP's start
 offset. This keeps a plain ZIP open from a path at zero archivey frames per read, as today.
 
@@ -216,8 +221,13 @@ non-seekable source holds the replay prefix itself: `peek(n)` fills it without
 consuming, and `read` drains it before reaching the source. The rebinding in `core.py`
 goes, and the detection workspace peeks the `ArchiveSource` it is handed.
 
-The prefix is bounded by the detection limit, as `PeekableStream`'s is, so this adds no
-buffering the source does not already pay for. `PeekableStream` is removed, or kept only
+The prefix is bounded as `PeekableStream`'s is, by what detection peeks: 4 096 bytes
+normally, 32 774 when the ISO probe triggers, up to 1 MiB for the inner-TAR probe and
+content-probe chain walks, and 2 MiB when an executable-looking head starts the
+self-extracting scan. So this adds no buffering the source does not already pay for.
+Every non-seekable source gets it, including one the caller already wrapped in an
+`io.BufferedReader`: that buffer's `peek` returns at most one buffer's worth, less than the
+detection window can need, which is why the opener stacks a replay buffer on it today. `PeekableStream` is removed, or kept only
 where a call site the migration finds still needs a replay buffer over something that is
 not a source.
 
