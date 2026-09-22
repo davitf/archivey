@@ -163,9 +163,15 @@ class DelegatingStream(ReadOnlyIOStream):
     :class:`~archivey.internal.streams.streamtools.slice.SharedView`, which borrow
     unless told otherwise. The owning default is load-bearing — every production
     subclass sits in a close chain that must reach the inner (a tar ``extractfile``
-    handle, a ``PyCdlibIO``, a measured source, an accelerator). Flipping it to
-    borrow would make a forgotten keyword a leak the leak oracle does not pin
-    (it ignores default DelegatingStream constructors). See
+    handle, a ``PyCdlibIO``, a measured source, an accelerator). Flipping the
+    *default* to borrow would make a forgotten keyword a leak the leak oracle does
+    not pin (it ignores default DelegatingStream constructors), which is why the
+    default stays own. ``owns_inner = False`` is the per-class opt-out, spelled the
+    same way as on every other wrapper in this layer; it takes nothing away from a
+    class that does not set it, and the inventory test makes setting it a recorded
+    decision rather than a silent one. Its one production use is
+    :class:`~archivey.internal.streams.streamtools.full_count.BorrowedStream`, the
+    source-boundary wrapper around a stream the caller still owns. See
     ``dev-docs/topics/stream-ownership.md``.
 
     A subclass that must close ``inner`` itself (a finalize guard, reaping a
@@ -188,6 +194,11 @@ class DelegatingStream(ReadOnlyIOStream):
     # Class-level close contract. True: the subclass closes ``_inner`` itself.
     # Inventory test reads this; ``__init__`` uses it when the kwarg is omitted.
     _SUBCLASS_CLOSES_INNER: bool = False
+    # Class-level ownership. True (the default): ``close`` reaches ``_inner``.
+    # The one opt-out is the source-boundary wrapper around a stream the caller
+    # still owns. Inventory test reads this; ``__init__`` uses it when the kwarg
+    # is omitted.
+    owns_inner: bool = True
 
     def __init__(
         self,
@@ -196,6 +207,7 @@ class DelegatingStream(ReadOnlyIOStream):
         peel_for_source_size: bool | None = None,
         readinto_passthrough: bool | None = None,
         subclass_closes_inner: bool | None = None,
+        owns_inner: bool | None = None,
     ) -> None:
         super().__init__()
         self._inner = inner
@@ -215,6 +227,11 @@ class DelegatingStream(ReadOnlyIOStream):
         if subclass_closes_inner is None:
             subclass_closes_inner = type(self)._SUBCLASS_CLOSES_INNER
         self._subclass_closes_inner = subclass_closes_inner
+        if owns_inner is None:
+            owns_inner = type(self).owns_inner
+        # Instance shadows the class flag, like peel/readinto above, so the leak
+        # oracle and ``close`` read one resolved value.
+        self.owns_inner = owns_inner
         # Cached at construction; a subclass that swaps ``_inner`` must go through
         # ``_replace_inner`` so seekable() tracks the new engine.
         self._seekable = is_seekable(inner)
@@ -255,7 +272,7 @@ class DelegatingStream(ReadOnlyIOStream):
         if self.closed:
             return
         try:
-            if not self._subclass_closes_inner:
+            if self.owns_inner and not self._subclass_closes_inner:
                 self._inner.close()
         finally:
             super().close()

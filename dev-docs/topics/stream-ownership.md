@@ -14,10 +14,11 @@ decoder means "do not close the inner." Silence on a `DelegatingStream` means
 | `SlicingStream` | borrow | `owns_inner=True` (4 production sites) |
 | `SharedView` | borrow, hardcoded | none — Parcel B split this class so `lock=` could not switch modes |
 | `DecompressorStream` | borrow | `owns_inner=True` on later staged BCJ filters (first-stage Copy+BCJ / BCJ-alone borrows the pack view) |
-| `DelegatingStream` | **own** | `subclass_closes_inner=True` is *who* closes, not *whether* |
+| `DelegatingStream` | **own** | `owns_inner=False` (1 production site: `BorrowedStream`); `subclass_closes_inner=True` is *who* closes, not *whether* |
 | `AesDecryptStream` | borrow | `owns_inner=True` — 7z AES-CBC pull stream; default matches other transform wrappers. Production 7z borrows the pack `SharedView`. |
 | `_HeaderDecryptStream` | borrow, hardcoded | none — RAR header cursor must not close the archive; ciphertext `tell`, not a member stream |
 | `WinZipAesDecryptStream` | **own**, hardcoded | none — ZIP AE-x payload slice has no borrow caller; CTR+HMAC, not CBC |
+| `BorrowedStream` | borrow, class flag | none — it exists to borrow; it is the source boundary's wrapper around the caller's own stream |
 | `SharedSource` | Path → own; `BinaryIO` → borrow | encoded in the constructor argument type |
 | ZIP/ISO `_owned_fp`, TAR `_owned_stream` | Path the reader opened | not a wrapper flag; leave the names |
 
@@ -25,6 +26,14 @@ The public contract is the borrow default: archivey never closes a
 caller-supplied `BinaryIO` (`openspec/specs/archive-reading/spec.md`). Views and
 decoders sit on those handles, so they borrow. `DelegatingStream` is a 1:1
 stand-in in a close chain, so it owns.
+
+The defaults alone do not deliver that contract, and for a long time they did not:
+they say what each *wrapper* does, and a caller's object that reaches a backend
+unwrapped is one owning wrapper away from being closed. The source boundary
+(`streamtools/full_count.py`) therefore hands every backend a `BorrowedStream` over
+the caller's stream, so no keyword anywhere above it has to be right for the contract
+to hold. `tests/test_source_ownership.py` is the end-to-end check; the inventories
+below are the per-class one.
 
 `AesDecryptStream` is a `ReadOnlyIOStream`, so it is absent from the
 `DelegatingStream` inventory and from the leak oracle's pinned population
@@ -46,13 +55,22 @@ Flipping it to borrow was the tempting unification: then swapping
 catches that swap (`tests/leak_oracle.py` pins `owns_inner=True` slices and
 live children). The remaining risk is the other direction.
 
-Nine production subclasses. Seven ride the owning default with no keyword.
+Ten production subclasses. Seven ride the owning default with no keyword.
 Counting wrappers (`CountingReader`, `OutputCountingStream`,
-`SeekCountingStream`) are spliced mid-chain: their inner is always an
-already-normalised non-closing wrapper (`_NonClosingBufferedReader` /
-`SharedView` / `PeekableStream` / `ArchiveStream`), because `open_archive`
-wraps a caller `BinaryIO` before any backend sees it. The owning default
-never reaches a caller-supplied object.
+`SeekCountingStream`) are spliced mid-chain, and their inner must therefore be a
+wrapper rather than the caller's own object.
+
+**That last sentence used to be stated as a fact about `open_archive`, and it was
+never true.** The claim was that `open_archive` wraps a caller `BinaryIO` before any
+backend sees it, so the owning default never reaches a caller-supplied object. It
+wrapped only a *non-seekable* stream, and only in `PeekableStream`, and only for
+detection's peeked prefix. A seekable stream at offset 0 — a `BytesIO`, an `open()`
+handle, the two commonest shapes there are — went through untouched, and with
+measurement on `SeekCountingStream` closed it: ZIP and every compressed TAR except
+`.xz`. The file carried the sentence from the commit that created it (2026-09-16),
+so it described an intention, not the code. What makes it true now is
+`BorrowedStream` at the source boundary, and the property has a test
+(`tests/test_source_ownership.py`) rather than a paragraph.
 
 | Class | Close must reach |
 | --- | --- |
@@ -63,6 +81,7 @@ never reaches a caller-supplied object.
 | `OutputCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
 | `SeekCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
 | `CountingReader` | mid-chain; inner is already a non-closing wrapper (see above) |
+| `BorrowedStream` | nothing — `owns_inner = False`; it is what makes "already a non-closing wrapper" true |
 
 Two more own, but close themselves and tell the base to skip the second call:
 
@@ -75,6 +94,12 @@ Those seven would need `owns_inner=True` after a flip. A missed one leaks a
 handle the oracle does not pin: default `DelegatingStream` constructors wrap
 `BytesIO` by the thousand and are excluded on purpose. The oracle catching the
 #336 shape is not a reason to create a new silent-miss on `LockedStream`.
+
+`owns_inner=False` as a per-class opt-out is the other half of that argument, not a
+softening of it. The default stays own, so no existing class changes and no forgotten
+keyword can turn one into a leak; the flag only lets a class that owns nothing say so,
+and `test_delegating_stream_close_inventory` makes saying so a recorded decision. Its
+one production use is `BorrowedStream`, whose inner is by construction the caller's.
 
 `subclass_closes_inner` is kept, not folded into `owns_inner`. Both values own;
 the flag is the close *mechanism*. Eliminating it would double-close the
@@ -139,6 +164,9 @@ Neither is ownership.
 `SlicingStream` is keyed on the **kwarg** `owns_inner`. `DelegatingStream` is
 keyed on the resolved `_subclass_closes_inner` instance flag — the class-level
 `_SUBCLASS_CLOSES_INNER` default, or a constructor kwarg that overrides it.
+A `BorrowedStream` is deliberately not pinned: the oracle pins wrappers that own a
+private inner, and this one owns nothing — the handle under it is the caller's to
+close.
 Renaming those without updating `tests/leak_oracle.py` pins nothing, and the
 tests being edited are the ones that would have caught it.
 
@@ -152,6 +180,7 @@ before committing.
 
 ```bash
 uv run --no-sync pytest tests/test_stream_bases.py tests/test_slice.py \
+    tests/test_source_ownership.py tests/test_full_count_stream.py \
     tests/test_leak_oracle.py tests/test_codecs.py tests/test_rar_reader.py \
     tests/test_volumes.py tests/test_sevenzip_reader.py::test_first_stage_bcj_does_not_close_pack_source \
     tests/test_sevenzip_reader.py::test_copy_bcj_folder_roundtrip -q --no-cov

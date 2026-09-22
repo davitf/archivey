@@ -1,0 +1,187 @@
+"""archivey never closes a stream the caller handed it.
+
+``archive-reading`` states it as a rule ("Archivey SHALL never close a caller-supplied
+``BinaryIO``") and the stream layer keeps it by borrowing rather than owning. Those are
+both about *wrappers*, though, and the rule was still breakable from outside them: a
+caller's own object reaching a backend unwrapped is one owning wrapper away from being
+closed. It happened — a measured ZIP or compressed TAR opened from a ``BytesIO`` or an
+``open()`` handle closed it, because ``SeekCountingStream`` sits in the close chain and
+owns its inner.
+
+So this module tests the rule end to end, at the entry points, over the object the caller
+actually passed: every format from a stream, both of the two commonest stream shapes, with
+measurement on and off. A per-class ownership decision is checked in
+``test_stream_bases.py``; this is the property those decisions exist to produce, and it
+holds no matter which wrapper a backend puts in front of the source.
+
+"Not closed" is the weaker half of the claim. Each test also reads from the stream
+afterwards: a stream that survives as an object but not as a source is no use to the
+caller who still owns it.
+"""
+
+from __future__ import annotations
+
+import io
+from pathlib import Path
+from typing import BinaryIO, Iterator
+
+import pytest
+
+from archivey import open_archive, open_stream
+from archivey.internal.measurement import enable_measurement
+from archivey.internal.volumes import resolve_source
+from tests.sample_archives import (
+    CORPUS,
+    CorpusEntry,
+    corpus_archive_path,
+    skip_unless_runnable,
+)
+
+_BASIC = next(entry for entry in CORPUS if entry.id == "basic")
+# Every format the entry is built in except ``dir``, which is a directory tree: there is
+# no stream to hand over, so there is nothing here to close.
+_STREAM_KEYS = [key for key in _BASIC.formats if key != "dir"]
+
+
+class _CallerBytesIO(io.BytesIO):
+    """The commonest caller shape, and the one the ZIP close bug rode in on."""
+
+
+def _caller_streams(path: Path) -> Iterator[tuple[str, BinaryIO]]:
+    """The two shapes a caller realistically hands to ``open_archive``.
+
+    Both used to reach a backend as themselves: ``ensure_full_count_reads`` returned an
+    already-buffered source unchanged, and these are both already buffered.
+    """
+    yield "bytesio", _CallerBytesIO(path.read_bytes())
+    with open(path, "rb") as handle:
+        yield "file", handle
+
+
+def _assert_still_the_caller_s(
+    stream: BinaryIO, expected_head: bytes, label: str = ""
+) -> None:
+    assert not stream.closed, label
+    stream.seek(0)
+    assert stream.read(len(expected_head)) == expected_head, label
+
+
+def _read_everything(reader: object) -> None:
+    for member in reader.members():  # type: ignore[attr-defined]
+        if member.is_file:
+            with reader.open(member) as stream:  # type: ignore[attr-defined]
+                stream.read()
+
+
+@pytest.mark.parametrize("key", _STREAM_KEYS)
+@pytest.mark.parametrize("measure", [False, True], ids=["plain", "measured"])
+def test_open_archive_never_closes_a_caller_stream(
+    key: str, measure: bool, tmp_path: Path
+) -> None:
+    """Both shapes, every format, read to the end and closed.
+
+    ``measure`` is not decoration: with measurement off every row here passed before the
+    fix, and ZIP / TAR.GZ / TAR.BZ2 failed on every shape with it on. It is the benchmark
+    harness's switch, so no ordinary caller could reach the bug — which is why nothing
+    caught it, not a reason it was allowed.
+    """
+    skip_unless_runnable(_BASIC, key)
+    path = corpus_archive_path(_BASIC, key, tmp_path)
+    head = path.read_bytes()[:16]
+
+    for shape, stream in _caller_streams(path):
+        if measure:
+            with enable_measurement():
+                with open_archive(stream) as reader:
+                    _read_everything(reader)
+        else:
+            with open_archive(stream) as reader:
+                _read_everything(reader)
+        _assert_still_the_caller_s(stream, head, shape)
+
+
+@pytest.mark.parametrize("measure", [False, True], ids=["plain", "measured"])
+def test_open_stream_never_closes_a_caller_stream(
+    measure: bool, tmp_path: Path
+) -> None:
+    """The single-file entry point normalises its source the same way."""
+    entry: CorpusEntry = next(e for e in CORPUS if "gz" in e.formats)
+    skip_unless_runnable(entry, "gz")
+    path = corpus_archive_path(entry, "gz", tmp_path)
+    head = path.read_bytes()[:16]
+
+    for shape, stream in _caller_streams(path):
+        if measure:
+            with enable_measurement():
+                with open_stream(stream) as decompressed:
+                    decompressed.read()
+        else:
+            with open_stream(stream) as decompressed:
+                decompressed.read()
+        _assert_still_the_caller_s(stream, head, shape)
+
+
+def test_a_sequence_of_caller_streams_is_not_closed(tmp_path: Path) -> None:
+    """Volume items go through the same boundary, one at a time.
+
+    ``ConcatenatedFile`` already borrows a ``BinaryIO`` volume, so this pins the
+    boundary's own handling rather than a bug it fixed: the items it joins are the
+    wrappers, not the caller's objects.
+    """
+    parts = [_CallerBytesIO(b"first half"), _CallerBytesIO(b"second half")]
+    resolved = resolve_source(parts)  # type: ignore[arg-type]
+    assert resolved.volume_count == 2
+    assert resolved.open_source.read() == b"first halfsecond half"  # type: ignore[union-attr]
+    resolved.open_source.close()  # type: ignore[union-attr]
+    for part in parts:
+        _assert_still_the_caller_s(part, b"first" if part is parts[0] else b"second")
+
+
+def test_a_member_stream_read_as_an_archive_is_not_closed(tmp_path: Path) -> None:
+    """A nested archive: the outer reader's member stream is the inner reader's source.
+
+    The caller here is archivey's own user reading an archive inside an archive, and the
+    stream they hold is an ``ArchiveStream``. Closing the inner reader must leave the
+    outer member readable — otherwise reading a second member after a nested open fails.
+    """
+    skip_unless_runnable(_BASIC, "tar")
+    inner_path = corpus_archive_path(_BASIC, "tar", tmp_path)
+    outer_path = tmp_path / "outer.zip"
+    import zipfile
+
+    with zipfile.ZipFile(outer_path, "w") as zf:
+        zf.write(inner_path, "inner.tar")
+        zf.writestr("after.txt", b"still readable")
+
+    # seekable_members: a ZIP member stream is forward-only by default, and a nested
+    # TAR would then have to be opened streaming=True — a different path from the one
+    # this test is about.
+    with open_archive(outer_path, seekable_members=True) as outer:
+        member_stream = outer.open("inner.tar")
+        with open_archive(member_stream) as inner:
+            _read_everything(inner)
+        assert not member_stream.closed
+        member_stream.close()
+        # The outer reader is unharmed: its next member still reads.
+        assert outer.read("after.txt") == b"still readable"
+
+
+@pytest.mark.parametrize("key", ["zip", "tar.gz", "7z"])
+def test_a_failed_open_does_not_close_the_caller_s_stream(
+    key: str, tmp_path: Path
+) -> None:
+    """The error path releases what the reader opened, and must stop at the same place.
+
+    A backend that fails in ``__init__`` closes the stream it owns before re-raising —
+    that is deliberate, so a catch-and-continue loop does not hold a handle in a
+    traceback. The caller's stream is not what it owns, and a caller who wants to try a
+    different ``format=`` on the same bytes needs it back.
+    """
+    skip_unless_runnable(_BASIC, key)
+    truncated = corpus_archive_path(_BASIC, key, tmp_path).read_bytes()[:64]
+    stream = _CallerBytesIO(truncated)
+    with pytest.raises(Exception):  # noqa: B017 - the failure kind is not this test's subject
+        with enable_measurement():
+            with open_archive(stream) as reader:
+                _read_everything(reader)
+    _assert_still_the_caller_s(stream, truncated[:16], key)
