@@ -38,6 +38,23 @@ misuse raise [`ArchiveyUsageError`][archivey.ArchiveyUsageError] (e.g.
 provide an operation — seeking a non-seekable member, a format that can't list — that is a
 real `ArchiveyError`: `UnsupportedOperationError`.)
 
+The same applies to an argument that is the wrong type or an unusable value — a
+`config=` that is not an `ArchiveyConfig`, a `budget=` that is not a
+`DetectionBudget`, an `encoding=` naming a codec Python does not have, a
+`members=` holding something that is neither a name nor an `ArchiveMember`.
+Each is refused as `ArchiveyUsageError` at the call that made it, rather than failing
+somewhere further in. The exceptions are the source and destination arguments, where a
+wrong type raises `TypeError` as it would anywhere else in Python, and looking up a
+member name that is not in the archive, which raises `KeyError` like a mapping.
+
+`ArchiveyConfig`, `ExtractionLimits` and `ListingLimits` check their own fields when you
+construct them, for the same reason: a limit is a promise about an operation that has not
+started yet, so the constructor is the last place a message can still name what you wrote.
+That also covers the values that would quietly switch a guard off — `None` on
+`ratio_activation_threshold`, which is not optional, and a NaN or an infinity on
+`max_ratio`, neither of which any ratio ever exceeds. Pass `None` on a field that allows
+it to disable that guard on purpose.
+
 ## Diagnostics
 
 Structured advisories are queryable on the reader and on the extraction report — not

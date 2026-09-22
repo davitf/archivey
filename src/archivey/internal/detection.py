@@ -54,6 +54,7 @@ from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
 from archivey.detection_cost import (
     DetectionBudget,
     DetectionBudgetPreset,
+    DetectionBudgetPresetStr,
     DetectionCapability,
     DetectionCostReceipt,
     TierSkip,
@@ -66,11 +67,13 @@ from archivey.diagnostics import (
     FormatConflictContext,
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
+from archivey.internal.arg_checks import check_config
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
 )
+from archivey.internal.enum_args import coerce_enum
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
 from archivey.internal.sfx import (
@@ -89,6 +92,7 @@ from archivey.internal.streams.brotli_framing import (
 from archivey.internal.streams.peekable import DETECTION_LIMIT
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
+    require_source,
     source_name,
 )
 from archivey.internal.volumes import first_volume_for_stub
@@ -488,13 +492,28 @@ def _scan_for_sfx_payload(
 
 
 def _resolve_budget(
-    budget: DetectionBudget | DetectionBudgetPreset | None,
+    budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr | None,
 ) -> DetectionBudget:
+    """Normalize the ``budget=`` argument, refusing anything that is neither.
+
+    A ``DetectionBudget`` passes through. Anything else is read as a preset, including
+    its name as a string — ``budget="fast"`` is the mistake to expect, because
+    ``DetectionBudgetPreset.FAST.value`` *is* ``"fast"``. Before this, an unrecognised
+    value was returned unchanged and failed several frames down with a bare
+    ``AttributeError`` naming a budget field.
+    """
     if budget is None:
         return default_detection_budget()
-    if isinstance(budget, DetectionBudgetPreset):
-        return DetectionBudget.for_preset(budget)
-    return budget
+    if isinstance(budget, DetectionBudget):
+        return budget
+    preset = coerce_enum(
+        budget,
+        DetectionBudgetPreset,
+        call="detect_format()",
+        param="budget=",
+        also_accepts="DetectionBudget",
+    )
+    return DetectionBudget.for_preset(preset)
 
 
 def detect_format(
@@ -502,7 +521,10 @@ def detect_format(
     *,
     config: ArchiveyConfig | None = None,
     collector: DiagnosticCollector | None = None,
-    budget: DetectionBudget | DetectionBudgetPreset | None = None,
+    budget: DetectionBudget
+    | DetectionBudgetPreset
+    | DetectionBudgetPresetStr
+    | None = None,
     follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
@@ -523,6 +545,13 @@ def detect_format(
     — the default, so ``detect_format("vol.exe")`` agrees with ``open_archive``.
     ``open_archive`` probes with this flag off, then switches the source itself.
     """
+    # Before anything is read: an object that is neither a path nor a binary stream
+    # used to reach the prefix workspace and die there as
+    # `AttributeError: 'int' object has no attribute 'read'`, while `open_archive` on
+    # the same value already said "unsupported source type". Same refusal, same words.
+    require_source(source)
+    check_config(config, call="detect_format(config=…)")
+
     owned_collector = collector is None
     if owned_collector:
         effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG

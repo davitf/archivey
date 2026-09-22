@@ -18,11 +18,14 @@ class ArchiveInfo:
     cost: CostReceipt
     prefix_kind: PrefixKind | None = PrefixKind.NONE
     payload_offset: int | None = 0
-    extra: dict[str, object] = field(default_factory=dict, compare=False)
+    extra: ArchiveInfoExtra = field(default_factory=ArchiveInfoExtra, compare=False)
 ```
 
 `extra` keys SHALL be namespaced strings and excluded from equality.
-`extra` values SHALL be typed `object`; a caller that uses a key narrows it itself.
+`extra` SHALL be an `ArchiveInfoExtra`: a `dict[str, object]` subclass of the
+same shape as `MemberExtra` over a separate key set, not merged with it. Known
+keys carry their declared types on a subscript read; unknown keys remain legal
+and read as `object`. Writes and `.get()` are not narrowed.
 `member_count` SHALL be `None` when computing it requires a full scan.
 
 `prefix_kind` and `payload_offset` SHALL describe where the archive proper begins inside

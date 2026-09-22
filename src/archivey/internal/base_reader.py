@@ -51,18 +51,32 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     UnsupportedOperationError,
 )
+from archivey.internal.arg_checks import (
+    check_callable,
+    check_config,
+    check_extraction_limits,
+    describe_value,
+)
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
 )
+from archivey.internal.enum_args import (
+    coerce_enum,
+    coerce_enum_collection,
+)
 from archivey.internal.extraction_types import (
     AbortOn,
+    AbortOnStr,
     ExtractionPolicy,
+    ExtractionPolicyStr,
     ExtractionProgress,
     MemberFilter,
     MemberSelectorArg,
     OnError,
+    OnErrorStr,
     OverwritePolicy,
+    OverwritePolicyStr,
 )
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
@@ -509,19 +523,9 @@ class BaseArchiveReader(ArchiveReader):
         stream._attach_finalizer()
         return stream
 
-    def _internal_member_opens(self):
+    def _internal_member_opens(self) -> _InternalMemberOpens:
         """Context manager: library-internal opens are exempt from the live-stream gate."""
-        from contextlib import contextmanager
-
-        @contextmanager
-        def _cm():
-            self._state.begin_internal_opens()
-            try:
-                yield
-            finally:
-                self._state.end_internal_opens()
-
-        return _cm()
+        return _InternalMemberOpens(self._state)
 
     def _maybe_teardown(self, pending: Exception | None = None) -> None:
         """Run archive teardown outside lifecycle state once the last lease drops.
@@ -906,11 +910,9 @@ class BaseArchiveReader(ArchiveReader):
             self._emit_unconfirmed_format("extension", None)
             return
 
-        if provenance.chosen_by != "argument" or not isinstance(
-            provenance.source, Path
-        ):
-            # "content"/"directory": the bytes agreed. A non-Path argument source is
-            # skipped rather than seeking a live source back to its origin.
+        if provenance.chosen_by != "argument" or provenance.source is None:
+            # "content"/"directory": the bytes agreed. A stream argument records no
+            # source, rather than seeking a live source back to its origin.
             return
 
         from archivey.exceptions import ArchiveyError as _ArchiveyError
@@ -1763,6 +1765,17 @@ class BaseArchiveReader(ArchiveReader):
                     raise KeyError(f"Member {member!r} not found")
                 member = found
             else:
+                # Checked before the identity comparison below, which reads a private
+                # attribute: without this, `open(0)` failed as
+                # `AttributeError: 'int' object has no attribute '_archive_id'` —
+                # a private field name crossing the public boundary in place of an
+                # answer. `in` raises TypeError here (a spec'd escape for the operator
+                # protocol); this is an ordinary argument, so it takes the usage error.
+                if not isinstance(member, ArchiveMember):
+                    raise ArchiveyUsageError(
+                        f"reader.open() takes a member name (str) or an ArchiveMember "
+                        f"yielded by this reader, but got {describe_value(member)}."
+                    )
                 # A member object must have been yielded by THIS reader (same identity rule
                 # as `member in reader`). Without this check, a member from another archive
                 # resolves against the wrong offsets/paths and can silently return the wrong
@@ -1874,10 +1887,19 @@ class BaseArchiveReader(ArchiveReader):
         previous stream before the next pair is produced.
         """
         self._state.require_open("stream_members()")
+        # Validate here rather than inside the generator: a generator body does not
+        # run until the first next(), so a check left there raised at a call site
+        # that did not make the mistake.
+        selector = normalize_member_selector(members)
+        return self._iter_stream_members(selector)
+
+    def _iter_stream_members(
+        self,
+        selector: Callable[[ArchiveMember], bool] | None,
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStream | None = None
         try:
-            selector = normalize_member_selector(members)
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
             for m, stream in self._iter_with_data():
@@ -1900,16 +1922,41 @@ class BaseArchiveReader(ArchiveReader):
         *,
         members: MemberSelectorArg = None,
         filter: MemberFilter | None = None,
-        policy: ExtractionPolicy = ExtractionPolicy.STRICT,
-        overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-        on_error: OnError = OnError.STOP,
-        abort_on: Collection[AbortOn] = (),
+        policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
+        overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
+        on_error: OnError | OnErrorStr = OnError.STOP,
+        abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
     ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
+        # At the boundary, not on use: the coordinator tests these with ``is``, so an
+        # unrecognised value is not refused there, it silently takes the other branch.
+        policy = coerce_enum(
+            policy, ExtractionPolicy, call="extract_all()", param="policy="
+        )
+        overwrite = coerce_enum(
+            overwrite, OverwritePolicy, call="extract_all()", param="overwrite="
+        )
+        on_error = coerce_enum(
+            on_error, OnError, call="extract_all()", param="on_error="
+        )
+        abort_on = coerce_enum_collection(
+            abort_on, AbortOn, call="extract_all()", param="abort_on="
+        )
         self._state.require_open("extract_all()")
+        check_config(config, call="extract_all(config=…)")
+        check_extraction_limits(limits, call="extract_all(limits=…)")
+        check_callable(on_progress, call="extract_all(on_progress=…)")
+        # ``filter`` is not consulted until the first member is offered, by which point
+        # the extraction is under way; a non-callable there reads as
+        # ``TypeError: 'int' object is not callable`` with nothing naming the argument.
+        check_callable(filter, call="extract_all(filter=…)")
+        # ``members=`` used to be checked inside the coordinator, after dest was
+        # created. Same reason as filter: a refusal that has already touched the disk
+        # is a side effect of a call the caller got wrong.
+        normalize_member_selector(members)
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.
@@ -2173,3 +2220,23 @@ class _TranslatedErrorBoundary:
                 # would tack an extra frame onto its traceback.
                 return False
             raise
+
+
+class _InternalMemberOpens:
+    """``with``-boundary marking library-internal opens, exempt from the live-stream gate.
+
+    A plain ``__enter__``/``__exit__`` class, matching ``_TranslatedErrorBoundary``
+    above: this runs on every eager link-data read and every ``extract_all``, so it
+    allocates one small object rather than a generator and a context manager per call.
+    """
+
+    __slots__ = ("_state",)
+
+    def __init__(self, state: ReaderState) -> None:
+        self._state = state
+
+    def __enter__(self) -> None:
+        self._state.begin_internal_opens()
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._state.end_internal_opens()

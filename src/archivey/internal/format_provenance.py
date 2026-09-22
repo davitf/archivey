@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -36,12 +36,13 @@ class FormatProvenance:
     ``detect_format`` gives when it refuses a file outright.
     """
 
-    source: Path | BinaryIO | None = None
+    source: Path | None = None
     """The source as ``open_archive`` resolved it, for a re-detection pass.
 
     Only used for the ``"argument"`` case, which skipped detection and therefore has
-    nothing recorded to compare against, and only when it is a :class:`Path`: reopening a
-    file cannot disturb the reader, while seeking a live stream back to its origin can.
+    nothing recorded to compare against. A stream source is recorded as ``None``:
+    reopening a file cannot disturb the reader, while seeking a live stream back to
+    its origin can.
     """
 
     probe_only: bool = False

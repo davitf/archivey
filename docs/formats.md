@@ -28,6 +28,24 @@ Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[se
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
 Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledgements.md).
 
+## The `extra` bags
+
+`ArchiveMember.extra` is a [`MemberExtra`](api.md#extra-bags) and
+`ArchiveInfo.extra` is an [`ArchiveInfoExtra`](api.md#extra-bags).
+Both are `dict[str, object]` subclasses: a subscript of a known key
+(`extra["zip.compress_type"]`) carries that key's type, and unknown keys
+(third-party or future) stay legal and read as `object`. The names are
+importable. The `EXTRA_*` constants on `archivey.types` remain the names for
+the keys that have constants.
+
+Writes are not type-checked — a wrong-type assignment to a known key is
+accepted, same as an unknown key. `.get()` returns `object` for every key.
+Assign a `MemberExtra(...)` / `ArchiveInfoExtra(...)` rather than a bare dict;
+mutating the existing bag in place is unchanged.
+
+The format sections below mention a key only when it is part of that format's
+behaviour. The complete list is on the two classes.
+
 ## ZIP
 
 - Stdlib ``zipfile`` for **central-directory parsing / listing**; member **data** decodes
@@ -140,6 +158,19 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
   Any other method byte stays `UNKNOWN` (`level` omitted). Unpack version is
   `extra["rar.extract_version"]` on every member whose FILE header recorded one,
   stored included: RAR3 copies the `UNP_VER` byte as stored; RAR5 reports `50`.
+- **Glob characters in a stored member name.** `unrar` is told which member to emit with
+  an include *mask* built from its name, so a name containing `*` or `?` also matches its
+  siblings. Names like this are almost always constructed, so reading such a member
+  raises `UnsupportedFeatureError`. On a non-solid archive the extra decode is also
+  unbounded: `ExtractionLimits` apply to extraction, not to `open()` / `read()`, and the
+  error names how many bytes it would have cost. On a solid archive those bytes are
+  already inside `AccessCost.SOLID`, so the error names the flag rather than an
+  avoidable extra decode. Set `ArchiveyConfig.rar_allow_glob_member_concatenation=True`
+  to read it anyway. Two cases are *not* affected: a glob name that matches no other
+  member (the accidental `report*.pdf` beside `report1.pdf`) reads normally with no
+  flag, and a solid `stream_members()` pass reads everything, because it builds no mask
+  at all. A glob in a *directory* component, or a backslash, is refused outright either
+  way.
 - Solid archives: one `unrar p` pipe for the whole of `stream_members()`. A random
   `open()` out of order is a separate `unrar` run that decodes from the start of the
   archive each time, so reading *n* members that way costs *n* full decodes — stream them

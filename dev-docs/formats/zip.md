@@ -93,7 +93,7 @@ ZIP declares three magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x
 archive) and `PK\x07\x08` (spanned marker) — and six extensions: `.zip`, `.jar`, `.pyz`,
 `.whl`, `.apk`, `.cbz`. Comic-book aliases: `.cbr` → RAR, `.cbz` → ZIP, `.cbt` → TAR,
 `.cb7` → 7z. Magic wins; a ZIP named `.cbr` emits `FORMAT_EXTENSION_CONFLICT` (see
-[`rar.md`](rar.md) §10 #17).
+[`rar.md`](rar.md) §2.1).
 
 When searching a prefixed archive for a ZIP, archivey looks only for the local header
 (`PK\x03\x04`). The other two magics are not useful search targets: `PK\x05\x06` would
@@ -160,7 +160,9 @@ answers.** 7-Zip's `.zip.NNN` parts (and SFX `.exe.NNN` slices of the same `-v` 
 are byte slices of one finished archive, so a
 complete set is concatenated by `internal/volumes.py` and read as the ordinary
 single-disk ZIP it is — the same code path and the same regex that already joined
-`.7z.NNN`, because it is the same `-v` flag doing the same slicing. The stub
+`.7z.NNN`, because it is the same `-v` flag doing the same slicing. Path parts
+are sized with `stat()` and the joiner keeps a small cache of Path handles
+(size and miss cost: [stream-ownership](../topics/stream-ownership.md)). The stub
 `name.exe` beside those parts is not a sibling; if it has no archive magic,
 `open_archive` follows it to `name.exe.001` or `name.zip.001` (including under
 `format=ZIP`). Info-ZIP's
@@ -484,6 +486,7 @@ behaviour a caller already sees.
 | Split checks do not fire on single-volume archives | `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_prefixed_and_empty_zip_still_open` |
 | `7z -v` set joined, read across a part boundary, opened from any part | `::test_sevenzip_split_zip_set_is_joined_and_read`, `::test_sevenzip_split_zip_set_opens_from_a_middle_part`, `::test_sevenzip_split_zip_set_with_missing_part_is_truncated` |
 | Numbered-part discovery, ordering and gap rejection, `.zNN` left alone | `tests/test_volumes.py::test_discover_zip_volume_siblings_natural_order`, `::test_discover_orders_parts_when_base_contains_partN`, `::test_discover_infozip_zNN_is_not_a_numbered_volume_set`, `::test_join_volumes_rejects_numbering_gaps` |
+| Joiner caches a few Path handles, cursor on sequential read | `tests/test_volumes.py::test_concatenated_file_backwards_seek_across_volume_boundaries`, `::test_concatenated_file_alternating_seek_reuses_cached_handles`, `::test_concatenated_file_handle_cache_evicts_past_capacity`, `::test_concatenated_file_cache_miss_reopens_beyond_capacity`, `::test_concatenated_file_sequential_read_does_not_search_offsets`, `::test_concatenated_file_mixed_path_and_stream`, `::test_concatenated_file_path_open_error_surfaces_on_read`, `::test_concatenated_file_missing_path_fails_at_construction` |
 | Timestamp precedence, invalid and out-of-range fallbacks | `::test_extended_timestamp_beats_ntfs`, `::test_ntfs_timestamps_used_when_no_extended_timestamp`, `::test_extended_timestamp_out_of_range_degrades_to_diagnostic` |
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |

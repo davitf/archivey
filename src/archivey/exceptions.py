@@ -241,6 +241,12 @@ class UnsupportedOperationError(ArchiveyError):
     Describes what an archive or mode cannot provide — not a bug in calling code.
     Caller misuse (wrong-reader identity, post-close use, undeclared concurrent
     streams) raises :class:`ArchiveyUsageError` instead.
+
+    A refused ``seek()`` or ``tell()`` on a member stream is the near neighbour that
+    is *not* this class: a member stream has to keep behaving like a file object, so
+    it raises :exc:`io.UnsupportedOperation` (a subclass of :exc:`OSError` and
+    :exc:`ValueError`). ``except UnsupportedOperationError`` around a member-stream
+    seek catches nothing.
     """
 
 

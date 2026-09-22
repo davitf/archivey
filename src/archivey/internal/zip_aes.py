@@ -95,13 +95,14 @@ class _AesCtrLe:
     """AES-CTR with a little-endian counter starting at 1 (WinZip AE convention)."""
 
     def __init__(self, key: bytes) -> None:
-        # Local import: only the crypto wrapper may import cryptography.
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
         if not _crypto_available():
             raise PackageNotInstalledError(
                 CRYPTO_REQUIREMENT.message("WinZip AES decryption")
             )
+
+        # Local import: only the crypto wrapper may import cryptography.
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
         self._encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
         self._counter = 1
         self._keystream = b""

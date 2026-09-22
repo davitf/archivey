@@ -103,7 +103,7 @@ that is how legs get skipped:
 ```bash
 ./scripts/check.sh --fix          # seconds — every fast gate CI runs
 ./scripts/test.sh                 # minutes — the everyday [all] test leg
-./scripts/test.sh --all-configs   # the full before-pushing gate, all three configs
+./scripts/test.sh --all-configs   # all three configs, when the change can reach an extra
 ```
 
 `check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs: `ruff check`,
@@ -202,7 +202,8 @@ Non-obvious gotchas:
   prefix is not user-writable — the update script instead installs it into a writable,
   already-on-`PATH` prefix: `npm install -g --prefix "$HOME/.local" @fission-ai/openspec`.
 - The full push gate runs the suite in **three dependency configs** (`[all]`,
-  `[all-lowest]`, `[core-only]`); the exact commands are in `CONTRIBUTING.md`. After a
+  `[all-lowest]`, `[core-only]`), for a change that can reach an optional library; the
+  exact commands and when it applies are in `CONTRIBUTING.md`. After a
   `--no-dev` / lowest-resolution leg, restore the everyday env with
   `uv sync --group dev --extra all`.
 - Docs (optional): `uv run --group docs mkdocs build --strict`.
@@ -444,6 +445,25 @@ Two things about this repo make the handoff sharper than it looks:
   one is the human. Make your own PR comments identifiable the same way, and read inline
   threads carefully: the maintainer's own questions arrive that way and carry more weight
   than an automated finding.
+- **Never reproduce a closing phrase next to the review hub's number.** The hub
+  ([#315](https://github.com/davitf/archivey/pull/315)) is the one pull request here that
+  must never close, and a commit message or a pull request body carrying `Closes` (or
+  `Fixes`, or `Resolves`) immediately before its number closes it. Both surfaces are
+  parsed: GitHub prefills the squash body from the pull request body, but the squash body
+  can be edited at merge time, so check each. The trap is *quoting* — writing down what
+  such a phrase said reproduces it, which closed the hub a second time on 2026-09-21 from
+  the text explaining the first. Describe the phrase instead, or break the string. The
+  failure is silent: threads still serve, `sweep_coverage.py` is unaffected, nothing goes
+  red. [`dev-docs/open-work-inventory.md`](dev-docs/open-work-inventory.md) has both
+  incidents. There is a net under this —
+  [`review-hub-watchdog.yml`](.github/workflows/review-hub-watchdog.yml) reopens the hub
+  and says which surface closed it — but it is recovery, not prevention. A pull request
+  body could be checked before the merge; a squash body could not, because whoever merges
+  can edit it at merge time and GitHub parses what was actually merged. So a pre-merge
+  check would cover one surface and miss the other, and the watchdog covers both after.
+  Its decision is in
+  [`scripts/review_hub_watchdog_gate.py`](scripts/review_hub_watchdog_gate.py), unit tested,
+  because the branch that names the surface only ever runs during an incident.
 - **Escalate one decision packet at a time.** Shape and fields:
   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet (canonical).
   Do not dump the full finding list into chat — that stays on the PR. A batched list of
@@ -462,11 +482,16 @@ Two things about this repo make the handoff sharper than it looks:
   and pushing is the most common self-inflicted CI failure here — `pyrefly` and `ty` are
   separate checks and either one can be red on a tree ruff calls clean. `./scripts/check.sh`
   runs all of them so there is no list to get half-right.
-- **Before pushing, run the test suite in all three dependency configurations** — current
-  versions (`[all]`), minimum versions (`[all-lowest]`), and the zero-dep core
-  (`[core-only]`) — since optional libraries change behaviour by both presence and version:
-  `./scripts/check.sh && ./scripts/test.sh --all-configs`. Details and the underlying
-  commands are in `CONTRIBUTING.md` ("Before pushing…").
+- **Before pushing a change that could behave differently depending on which optional
+  libraries are installed, run all three dependency configurations** — current versions
+  (`[all]`), minimum versions (`[all-lowest]`), and the zero-dep core (`[core-only]`) —
+  since optional libraries change behaviour by both presence and version:
+  `./scripts/check.sh && ./scripts/test.sh --all-configs`. Judge it by what the change can
+  reach: a comment, a piece of prose, or a test that only reads files off disk cannot vary
+  by configuration, and `./scripts/check.sh && ./scripts/test.sh` is enough; a codec, a
+  backend, an import or a version check gets all three. Say in the pull request when you
+  skipped the legs and why. Details and the underlying commands are in `CONTRIBUTING.md`
+  ("Before pushing…").
 - See `CONTRIBUTING.md` for coding/testing standards (incl. behaviour-focused tests,
   **leave the code self-explanatory** with inline *why*, and the rule to
   **pause and ask the maintainer on spec/design discrepancies** rather than silently

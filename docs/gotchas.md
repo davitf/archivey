@@ -73,6 +73,15 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   plausible **non-empty** header can still parse; an empty one is rejected as
   `EncryptionError`, never a silent empty listing. Don't read "0 members" as proof of
   emptiness without checking diagnostics.
+- **A RAR password cannot contain a line break.** `unrar` reads the password as a
+  single line, so everything from the first newline on would be discarded — a wrong
+  password would decrypt, with nothing downstream able to tell. Archivey refuses it
+  instead: reading any RAR member through `unrar`, from an archive that contains
+  anything encrypted, raises `UnsupportedOperationError`. That covers unencrypted
+  members of such an archive too, because on a solid archive their data can sit behind
+  an encrypted member's. An archive with nothing encrypted is unaffected — no password
+  is handed to `unrar` at all. Watch for a password read from a file, which usually
+  carries a trailing newline; strip it. → [RAR](formats.md#rar)
 - **TAR has two honesty residuals.** A trailer-less or `cat`-joined tar is *warned*
   about, not raised — it is byte-identical to a truncation at a member boundary; set
   `strict_archive_eof=True` when you need a provably complete listing. And a corrupt

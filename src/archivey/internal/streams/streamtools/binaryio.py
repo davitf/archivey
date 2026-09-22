@@ -18,10 +18,12 @@ import logging
 import mmap
 import os
 import stat
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
     BinaryIO,
+    NoReturn,
     Protocol,
     TypeGuard,
     runtime_checkable,
@@ -319,7 +321,8 @@ def source_name(source: object) -> str | None:
 def _peel_passthrough(stream: object) -> object:
     """Walk opt-in pass-through wrappers so a seek counter does not hide cheap size.
 
-    Only wrappers that set ``peel_for_source_size`` are unwrapped. Transforming
+    Only wrappers that set ``peel_for_source_size`` (class flag, or a
+    constructor override on ``DelegatingStream``) are unwrapped. Transforming
     wrappers (decrypt, BCJ, ``OutputCountingStream``) must not opt in — their
     cheap size is not the inner file's. The peel is for the cheapness decision
     and metadata; :func:`source_byte_size` still I/Os the original wrapper on
@@ -485,6 +488,32 @@ def is_stream(obj: object) -> TypeGuard[BinaryIO]:
     if not all(callable(getattr(obj, m, None)) for m in _IO_METHODS):
         return False
     return hasattr(obj, "closed")
+
+
+def require_source(obj: object) -> None:
+    """Raise :class:`TypeError` unless ``obj`` is a path or a binary stream.
+
+    The same refusal ``resolve_source`` reaches, in the same words, for the entry
+    points that do not resolve a source before touching it. Kept here beside
+    :func:`is_stream` so the message stays attached to the test it reports.
+
+    ``str``/``Path`` rather than :func:`is_filename`, which also admits ``bytes``
+    and arbitrary ``os.PathLike``. Neither is a source archivey accepts, and both
+    otherwise fail several frames later on a missing ``read``.
+    """
+    if isinstance(obj, (str, Path)) or is_stream(obj):
+        return
+    reject_source(obj)
+
+
+def reject_source(obj: object) -> NoReturn:
+    """The raising half of :func:`require_source`, for callers that already tested.
+
+    Split out so ``resolve_source`` — which has narrowed ``obj`` down to "not a path"
+    by the time it gets here — keeps a call the type checkers can see never returns.
+    """
+    raise_if_text_stream(obj)
+    raise TypeError(f"unsupported source type: {type(obj)!r}")
 
 
 def raise_if_text_stream(obj: object) -> None:

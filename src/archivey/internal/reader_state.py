@@ -436,10 +436,10 @@ class ReaderState:
         with self._lock:
             if self._teardown_claimed:
                 return False
-            if self.lifecycle not in (
-                LifecycleState.READER_CLOSED,
-                LifecycleState.TEARDOWN_RUNNING,
-            ):
+            # ``_teardown_claimed`` is set one line before the lifecycle moves to
+            # TEARDOWN_RUNNING and is never reset, so READER_CLOSED is the only state
+            # a claim can succeed from.
+            if self.lifecycle is not LifecycleState.READER_CLOSED:
                 return False
             if self._lease_count > 0:
                 return False

@@ -1754,51 +1754,138 @@ def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
         parse_sevenzip_archive(io.BytesIO(blob))
 
 
+@pytest.fixture(scope="module")
+def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A tree of ``_MAX_NUM_STREAMS + 1`` one-byte files, built once.
+
+    Both shapes below need the same 65 537 files and nothing mutates them, so
+    the tree is shared rather than rebuilt per shape.
+
+    Building the tree is the volatile phase of this test: repeated runs of
+    identical work on one idle container spanned 3.8 s to 22.2 s, against a
+    steady ~2 s for either archive build. It runs in the setup of whichever
+    parametrized item goes first, and ``pytest-timeout`` charges setup to that
+    item's budget unless ``--timeout-func-only`` is set, which
+    ``pyproject.toml`` does not. So the 120 s mark below does cover this build,
+    and it stays at 120 s rather than tracking the 25-30 s worst item measured
+    after the split: the margin is for the spread, not for the mean.
+
+    Every timing here and below is Linux with 7z 23.01. The two runs that timed
+    out before the split were macOS and Windows, where 65 537 file creates can
+    cost considerably more, so these figures are a floor for those runners
+    rather than the margin they see.
+
+    Those two also run whatever ``7z`` their runner image happens to ship: CI
+    installs and verifies it on Linux only. That was decided for the
+    encrypted-ZIP corpus rows, which need ``7z`` to *write* their fixtures --
+    see ``.github/workflows/ci.yml`` and residual 1 of
+    ``review/archive/2026-07-28-debt-ledger/corpus-matrix.md``, which also
+    carries the cost of any other answer (Homebrew ships ``7zz``, not ``7z``,
+    so ``requires_binary("7z")`` would go on skipping on macOS regardless).
+    This test is a later consumer of that binary and was never weighed in that
+    decision, so the shape claims below are *measured* on Linux 7-Zip 23.01 and
+    merely *assumed* elsewhere. The shape assertions therefore carry the
+    writer's own banner, so a failure on a runner nobody measured says which
+    writer produced it.
+    """
+    from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
+
+    src = tmp_path_factory.mktemp("above-stream-cap") / "many"
+    src.mkdir()
+    for i in range(_MAX_NUM_STREAMS + 1):
+        directory = src / f"d{i // 1000:03d}"
+        directory.mkdir(exist_ok=True)
+        (directory / f"f{i:05d}.txt").write_bytes(b"x")
+    return src
+
+
 @pytest.mark.timeout(120)
 @requires_binary("7z")
-def test_archives_above_stream_cap_still_open(tmp_path: Path) -> None:
-    """Solid and non-solid 7z above ``_MAX_NUM_STREAMS`` must still open.
+@pytest.mark.parametrize(
+    ("extra_args", "shape", "single_folder"),
+    [
+        pytest.param([], "solid", True, id="solid"),
+        pytest.param(["-ms=off", "-mx=0"], "nonsolid", False, id="nonsolid"),
+    ],
+)
+def test_archives_above_stream_cap_still_open(
+    tmp_path: Path,
+    above_stream_cap_tree: Path,
+    extra_args: list[str],
+    shape: str,
+    single_folder: bool,
+) -> None:
+    """A 7z above ``_MAX_NUM_STREAMS`` must still open, solid or not.
 
     That cap is structural (per-folder coders). Applying it to unpack streams
     rejected ordinary solid 7-Zip output (review F1); applying it to pack
     streams / folders rejected non-solid output (review F2). ``max_members``
     is the liftable budget and fires at parse, not after allocating the table.
+
+    The two shapes are separate tests because they shared one 120 s budget and
+    together came close enough to it to time out on the slower CI runners.
+
+    The non-solid archive is built with ``-mx=0``. That is not a shortcut past
+    what F2 covers: measured against 7z 23.01, ``-ms=off -mx=0`` produces the
+    same 65 537 folders and 65 537 unpack streams as the default codec and
+    costs 2.0 s instead of 11.5 s. It does change the coder, LZMA2 (``0x21``)
+    to Copy (``0x00``), which these caps do not depend on:
+    ``_require_header_count`` and ``_require_member_scaled_count`` compare a
+    count read from the header against the header size and against the
+    configured ``max_members``, and both run at header-parse time, before any
+    coder is instantiated, so the codec cannot reach them. The next header stays
+    LZMA-encoded (``kEncodedHeader``) in all four build variants, so that path
+    is exercised either way. ``-mx=0`` must
+    not be used for the solid shape, where it splits the single folder F1 needs
+    into one per member -- which is why this test asserts the folder layout
+    rather than trusting it.
     """
     from archivey.config import ListingLimits
     from archivey.exceptions import ResourceLimitError
     from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
+    from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     n = _MAX_NUM_STREAMS + 1
-    src = tmp_path / "many"
-    src.mkdir()
-    for i in range(n):
-        d = src / f"d{i // 1000:03d}"
-        d.mkdir(exist_ok=True)
-        (d / f"f{i:05d}.txt").write_bytes(b"x")
+    src = above_stream_cap_tree
+    archive = tmp_path / f"{shape}.7z"
+    result = subprocess.run(
+        ["7z", "a", "-t7z", *extra_args, str(archive), src.name],
+        cwd=src.parent,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build {shape} fixture: {result.stderr!r}")
 
-    for extra_args, name in (([], "solid"), (["-ms=off"], "nonsolid")):
-        archive = tmp_path / f"{name}.7z"
-        result = subprocess.run(
-            ["7z", "a", "-t7z", *extra_args, str(archive), src.name],
-            cwd=tmp_path,
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            pytest.skip(f"7z CLI cannot build {name} fixture: {result.stderr!r}")
+    # The fixture is only useful if it still has the shape it is named for; a
+    # 7z release that laid these out differently would otherwise leave the test
+    # green while covering neither F1 nor F2. CI pins the writer on Linux only,
+    # so name it in the failure: elsewhere it is whatever the image ships.
+    writer = next(
+        (
+            line.strip()
+            for line in result.stdout.decode("utf-8", "replace").splitlines()
+            if line.strip()
+        ),
+        "7z banner not captured",
+    )
+    with archive.open("rb") as raw:
+        parsed = parse_sevenzip_archive(raw)
+    assert sum(parsed.num_unpackstreams_folders) == n, writer
+    assert len(parsed.folders) == (1 if single_folder else n), writer
 
-        with open_archive(archive) as reader:
-            files = [m for m in reader.members() if m.is_file]
-            assert len(files) == n
-            assert reader.read(files[-1]) == b"x"
+    with open_archive(archive) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        assert len(files) == n
+        assert reader.read(files[-1]) == b"x"
 
-        tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
-        with pytest.raises(ResourceLimitError, match="max_members"):
-            open_archive(archive, config=tight)
+    tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        open_archive(archive, config=tight)
 
-        unlimited = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
-        with open_archive(archive, config=unlimited) as reader:
-            assert sum(1 for m in reader.members() if m.is_file) == n
+    unlimited = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
+    with open_archive(archive, config=unlimited) as reader:
+        assert sum(1 for m in reader.members() if m.is_file) == n
 
 
 @pytest.mark.timeout(30)
@@ -2155,3 +2242,34 @@ def test_lzma1_bcj_decodes_without_pybcj_installed(
 
     monkeypatch.setitem(sys.modules, "bcj", None)
     _assert_roundtrip(archive, {"payload.bin": payload})
+
+
+def test_external_comment_is_refused_like_every_other_external_property() -> None:
+    """``kComment``'s leading byte is the same "external" flag ``kName`` carries.
+
+    A comment stored in additional streams was decoded as UTF-16LE text — the flag and
+    the stream reference presented as an archive comment — while every sibling property
+    refuses the same byte.
+    """
+    from archivey.exceptions import UnsupportedFeatureError
+    from archivey.internal.backends.sevenzip_parser import _Cursor, _read_comment
+
+    # external == 0: the payload after it is the comment.
+    assert _read_comment(_Cursor(b"\x00" + "hi".encode("utf-16le"))) == "hi"
+
+    with pytest.raises(UnsupportedFeatureError, match="External 7z comment"):
+        _read_comment(_Cursor(b"\x01" + (7).to_bytes(8, "little")))
+
+
+def test_comment_terminator_is_trimmed_a_code_unit_at_a_time() -> None:
+    """A byte-wise rstrip ate the high byte of a trailing ASCII character.
+
+    "hi" is ``68 00 69 00``; stripping trailing zero *bytes* leaves ``68 00 69``, an
+    odd-length payload that raised ``CorruptionError`` for a well-formed comment.
+    """
+    from archivey.internal.backends.sevenzip_parser import _Cursor, _read_comment
+
+    assert _read_comment(_Cursor(b"\x00" + "hi\x00".encode("utf-16le"))) == "hi"
+    assert _read_comment(_Cursor(b"\x00" + "hi\x00\x00".encode("utf-16le"))) == "hi"
+    assert _read_comment(_Cursor(b"\x00")) is None
+    assert _read_comment(_Cursor(b"\x00" + "\x00".encode("utf-16le"))) is None

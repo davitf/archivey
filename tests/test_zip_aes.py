@@ -391,3 +391,25 @@ def test_parse_aes_extra_roundtrip() -> None:
     assert info.key_bits == 256
     assert info.actual_method == 8
     assert parse_winzip_aes_extra(b"") is None
+
+
+def test_aes_stream_guard_runs_before_the_cryptography_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``[core-only]`` install must reach the typed error, not ``ImportError``.
+
+    The other test here patches ``_crypto_available`` while the real package is still
+    importable, so it cannot see which of the two lines runs first. Making the import
+    itself fail can: with the guard below the import, this raised ``ImportError``.
+    """
+    import sys
+
+    import archivey.internal.zip_aes as zip_aes_module
+
+    monkeypatch.setattr(zip_aes_module, "_crypto_available", lambda: False)
+    monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives.ciphers", None)
+
+    with pytest.raises(PackageNotInstalledError, match="cryptography"):
+        WinZipAesDecryptStream(
+            io.BytesIO(b""), enc_key=b"\0" * 32, auth_key=b"\0" * 32, cipher_len=0
+        )

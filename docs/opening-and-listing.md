@@ -115,6 +115,46 @@ and the order you give is the order used, with no discovery. A one-item sequence
 treated as a single source, and a multi-volume sequence for any format other than 7z
 or RAR raises.
 
+Because there is no discovery, the sequence is checked for one thing discovery would
+have guaranteed: that it names the parts of one archive. Concatenating
+`alpha.zip.001` with `beta.zip.002` would hand you bytes that are neither archive,
+and their numbering — a perfectly good `1, 2` — cannot tell you so; that raises
+`ArchiveyUsageError` naming both.
+
+All three schemes in the table above are checked. Parts of one scheme must share a
+base, so `alpha.part1.rar` with `beta.part2.rar` raises, and `alpha.rar` with
+`beta.r00` does too. A sequence that names parts in *two* schemes is two archives by
+construction — the parts of one set are all named the same way — so
+`[alpha.zip.001, beta.part1.rar]` raises as well. One name reads both ways and is
+settled by the sequence rather than by itself: `Show.part1.rar` beside
+`Show.part1.r00` is that set's volume 1, so `[Show.part1.rar, Show.part1.r00,
+Show.part1.r01]` joins, while `[Show.part1.rar, Show.part2.rar, Show.part1.r00]`
+raises.
+
+And a name that carries no part number but is shaped like a first volume
+(`backup.rar`, `backup.exe`, `backup.sfx`) only belongs beside the marked parts
+around it, and which parts those are decides what is checked. Beside `.rNN` parts it
+is their volume 1 and must share their stem, so `[alpha.rar, alpha.r00]` joins and
+`[beta.rar, alpha.r00]` raises. Beside a `.partN` set it has no role at all, that
+scheme spelling its own volume 1 `movie.part1.rar`, so `[movie.part1.rar,
+movie.part2.rar, readme.rar]` raises. Beside a numbered set only the stub executable
+7-Zip writes there makes sense, which has no part number and need not share their
+name, so an `.exe` or `.sfx` is let through — a `.rar` in the same position is not.
+
+When *no* name in the sequence carries a part number, nothing in it says any of them
+is a volume and none of this applies: `[alpha.rar, beta.rar]` joins, giving you bytes
+that are neither archive. Refusing it would mean refusing a single-volume RAR passed
+as a one-element list, which this path is documented for. Pass the parts of one set,
+or let `open_archive` discover them from any one part.
+
+The comparison ignores case, and it is only on the name, so parts of one set living
+in different directories are fine. If a part has been renamed out of every pattern
+(`backup.7z (1).002`, say), it is not recognised as a part at all: it is passed
+through in the position you gave it, and the completeness check — which only the
+numbered scheme has, RAR volumes carrying their own order in their headers — is
+skipped for the whole sequence, so the order is yours to get right. Passing any part
+as an open stream skips the check entirely, since a stream has no name to compare.
+
 ## Detection
 
 Most callers never need this: `open_archive` detects the format itself. Use

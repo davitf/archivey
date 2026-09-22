@@ -43,6 +43,22 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **`ArchiveMember.extra` / `ArchiveInfo.extra` are `MemberExtra` / `ArchiveInfoExtra`.**
+  Known keys narrow on a subscript read. Assign a `MemberExtra({...})` rather than a
+  bare dict; mutating the existing bag in place is unchanged. Only type-checking
+  changes: both are `dict[str, object]` subclasses, equal to the plain dicts they
+  replace, and `copy`, `deepcopy`, `pickle` and `json.dumps` behave as before.
+- **A RAR member whose stored name is a glob is refused by default when the glob also
+  matches an earlier member.** `unrar` addresses a member by an include mask built from
+  its name, so a name containing `*` or `?` makes it decompress every match and emit
+  them concatenated. Names like this are almost always constructed. On a non-solid
+  archive the extra decode is also unbounded and outside `ExtractionLimits`, which do
+  not reach `open()` / `read()`. Such a read now raises `UnsupportedFeatureError`. On a
+  non-solid archive the error names the byte count; on a solid archive those bytes are
+  already inside `AccessCost.SOLID`, so the error names the flag rather than an
+  avoidable extra decode. Set `ArchiveyConfig.rar_allow_glob_member_concatenation=True`
+  to restore the old behaviour. A glob name that matches no other member is unaffected,
+  and so is a solid `stream_members()` pass, which builds no mask at all.
 - **`password=` no longer raises on a format with no encryption.** All three forms — a
   single value, a list of candidates, a `PasswordProvider` — are now accepted, never
   consulted, and recorded as a `PASSWORD_ARGUMENT_UNUSED` diagnostic. Previously a
