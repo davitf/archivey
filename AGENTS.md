@@ -81,16 +81,36 @@ different things, and where both apply, both run:
 `technical-writing` is separate and is still opened only for Diátaxis structure and
 sentence craft on a published docs or handbook page.
 
+### Advice, not a gate
+
+**Maintainer decision (davitf, 2026-09-22): the scope is broad and the rules are advisory
+only, and the tree gets rewritten as it is touched rather than in a sweep** — *"broad, and
+advisory only. we'll rewrite as we go, let's see if it improves readability."* The point
+is to find out whether this makes prose here easier to read, and a bulk rewrite would not
+answer that.
+
+What that means in practice:
+
+- A semicolon or a long sentence is **not a defect**. A review that reports one as a
+  finding is wrong, and so would a gate that failed on one be.
+- Nothing in the tree is in violation, because there is nothing to violate. Improve the
+  prose in a file you are already editing and leave the rest alone.
+- `ste-lint.py` is a tool to point at your own draft. It is not a bar to clear, and
+  `scripts/check.sh` does not call it.
+
 ### Which mode
 
-The skill has two modes and tells you to pick one. For this repo:
+The skill has two modes and tells you to pick one. Both are advice under the ruling above.
+Pick by the text, and lean hardest where a second reading costs the most:
 
-- **Strict** — text that is parsed without a human to resolve the ambiguity: exception
-  and diagnostic messages, CLI `--help` text, and instructions written for another agent
-  (a file under `.claude/skills/`, a fix direction in a review finding, a brief).
+- **Strict** — short text parsed without a human to resolve the ambiguity: exception and
+  diagnostic messages, CLI `--help` text, code comments, and a short instruction written
+  for another agent.
 - **STE-flavored** — everything else, which is most of it: chat, pull request
-  descriptions and comments, commit messages, `docs/`, `dev-docs/`, and code comments.
-  Structural rules in full. The lexical rules are a direction of travel.
+  descriptions and comments, commit messages, `docs/`, `dev-docs/`, `CONTRIBUTING.md`,
+  and the pages under `.claude/skills/`. Structural rules as written. The lexical rules
+  are a direction of travel everywhere, for the reason the skill gives: without ASD's
+  dictionary they are a preference for plain words rather than a checkable standard.
 
 ### What it does not override
 
@@ -106,10 +126,8 @@ The skill has two modes and tells you to pick one. For this repo:
 - **Quoted text stays as it was quoted** — an error string under test, a commit message
   being cited, a maintainer's own words.
 
-This governs new writing. Nothing in the tree needs rewriting to match it, and it is not
-a gate: `.claude/skills/asd-ste100/scripts/ste-lint.py` is a stdlib-only linter you can
-point at a file (`--baseline N` tolerates what is already there), and nothing in
-`scripts/check.sh` calls it.
+`ste-lint.py` is stdlib-only and takes a file or stdin. `--baseline N` tolerates what is
+already there, and `--disable` silences named rules.
 
 **Read a clean run for what it is.** The linter splits on newlines, not on sentences, so
 a sentence that spans a hard-wrapped line is measured as two short ones and the
