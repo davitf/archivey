@@ -27,7 +27,7 @@ from typing import BinaryIO, Iterator
 
 import pytest
 
-from archivey import open_archive, open_stream
+from archivey import ArchiveReader, ArchiveyError, open_archive, open_stream
 from archivey.internal.measurement import enable_measurement
 from archivey.internal.volumes import resolve_source
 from tests.sample_archives import (
@@ -66,10 +66,10 @@ def _assert_still_the_caller_s(
     assert stream.read(len(expected_head)) == expected_head, label
 
 
-def _read_everything(reader: object) -> None:
-    for member in reader.members():  # type: ignore[attr-defined]
+def _read_everything(reader: ArchiveReader) -> None:
+    for member in reader.members():
         if member.is_file:
-            with reader.open(member) as stream:  # type: ignore[attr-defined]
+            with reader.open(member) as stream:
                 stream.read()
 
 
@@ -121,7 +121,7 @@ def test_open_stream_never_closes_a_caller_stream(
         _assert_still_the_caller_s(stream, head, shape)
 
 
-def test_a_sequence_of_caller_streams_is_not_closed(tmp_path: Path) -> None:
+def test_a_sequence_of_caller_streams_is_not_closed() -> None:
     """Volume items go through the same boundary, one at a time.
 
     ``ConcatenatedFile`` already borrows a ``BinaryIO`` volume, so this pins the
@@ -129,10 +129,15 @@ def test_a_sequence_of_caller_streams_is_not_closed(tmp_path: Path) -> None:
     wrappers, not the caller's objects.
     """
     parts = [_CallerBytesIO(b"first half"), _CallerBytesIO(b"second half")]
+    # A list of BytesIO is a valid source sequence at runtime; typeshed models
+    # io.BytesIO and typing.BinaryIO as unrelated, so the sequence does not match.
     resolved = resolve_source(parts)  # type: ignore[arg-type]
     assert resolved.volume_count == 2
-    assert resolved.open_source.read() == b"first halfsecond half"  # type: ignore[union-attr]
-    resolved.open_source.close()  # type: ignore[union-attr]
+    # Narrowing the Path | BinaryIO also asserts which of the two came back.
+    joined = resolved.open_source
+    assert isinstance(joined, io.IOBase)
+    assert joined.read() == b"first halfsecond half"
+    joined.close()
     for part in parts:
         _assert_still_the_caller_s(part, b"first" if part is parts[0] else b"second")
 
@@ -166,7 +171,7 @@ def test_a_member_stream_read_as_an_archive_is_not_closed(tmp_path: Path) -> Non
         assert outer.read("after.txt") == b"still readable"
 
 
-@pytest.mark.parametrize("key", ["zip", "tar.gz", "7z"])
+@pytest.mark.parametrize("key", ["zip", "7z", "rar"])
 def test_a_failed_open_does_not_close_the_caller_s_stream(
     key: str, tmp_path: Path
 ) -> None:
@@ -176,12 +181,22 @@ def test_a_failed_open_does_not_close_the_caller_s_stream(
     that is deliberate, so a catch-and-continue loop does not hold a handle in a
     traceback. The caller's stream is not what it owns, and a caller who wants to try a
     different ``format=`` on the same bytes needs it back.
+
+    The three keys are the ones whose first 64 bytes actually reach a backend and fail
+    there, measured on this HEAD: ``zip`` raises from ``zip_reader.__init__``, ``7z``
+    from ``sevenzip_reader.__init__``, ``rar`` from ``rar_reader.__init__``. The other
+    formats do not exercise this path and are deliberately absent: a truncated ``tar``
+    or ``iso`` is refused by detection, before any backend is constructed, and a
+    truncated ``tar.gz`` *opens* — the gzip member header is intact and the truncation
+    surfaces later, during listing, which is the different release path the next
+    paragraph excludes.
     """
     skip_unless_runnable(_BASIC, key)
     truncated = corpus_archive_path(_BASIC, key, tmp_path).read_bytes()[:64]
     stream = _CallerBytesIO(truncated)
-    with pytest.raises(Exception):  # noqa: B017 - the failure kind is not this test's subject
-        with enable_measurement():
-            with open_archive(stream) as reader:
-                _read_everything(reader)
+    # Around the open alone: a failure three members into a read would exercise a
+    # different release path, and this test names the one in ``__init__``.
+    with enable_measurement():
+        with pytest.raises(ArchiveyError):
+            open_archive(stream)
     _assert_still_the_caller_s(stream, truncated[:16], key)

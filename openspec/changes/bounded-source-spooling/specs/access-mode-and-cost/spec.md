@@ -181,15 +181,26 @@ difference is read-ahead:
 
 | Source | Boundary wrapper | Read-ahead |
 | --- | --- | --- |
-| Seekable stream | Fixed-size read buffer (`io.BufferedReader`) | Bounded. Recoverable by seeking, and it collapses the parsers' many tiny reads |
+| Seekable stream, not already buffered | Fixed-size read buffer (`io.BufferedReader`) | Bounded. Recoverable by seeking, and it collapses the parsers' many tiny reads |
+| Seekable stream that is already buffered (a `BytesIO`, an `open()` handle) | `BorrowedStream` — ownership only (see below) | **None added by the boundary.** The source is already full-count, so nothing is stacked in front of it; `fileno()` still forwards |
 | Non-seekable stream, not already a CPython buffer | `FullCountStream` — gathers by re-asking for the bytes still missing | **None at the boundary.** A `read(n)` on the returned stream takes exactly `n` from the source. Codec layers above it may still buffer |
-| Non-seekable stream that is already `io.BufferedReader` / `io.BufferedRandom` | Returned unchanged | The caller's buffer already supplies full-count. Its read-ahead is the caller's; archivey does not add a second buffer or drop `fileno()` |
+| Non-seekable stream that is already `io.BufferedReader` / `io.BufferedRandom` | `BorrowedStream` — ownership only (see below) | The caller's buffer already supplies full-count, and keeps reading for itself. Its read-ahead is the caller's; archivey adds no second buffer, and `fileno()` still forwards |
 
 Neither is the materialization discussed above. `FullCountStream` SHALL hold no
 buffered bytes and SHALL report `seekable()` as `False`, so it converts nothing: a
 non-seekable source stays non-seekable, and `streaming=False` over it still fails fast
 at open unless a configured spool makes it seekable first. A path source has always paid the seekable cost through `open()`'s
 `BufferedReader`.
+
+The boundary SHALL also be where ownership of a caller's stream is settled, and what it
+returns SHALL NOT be the caller's own object. A source that needs neither the buffer nor
+the gatherer — a `BytesIO`, an `open()` handle — SHALL still be wrapped, in
+`BorrowedStream`, which forwards reads, seeks, `name`, `fileno` and the cheap size
+probe, and closes nothing. This is how
+"archivey never closes a caller-supplied `BinaryIO`" (`archive-reading`) is kept
+regardless of what a backend wraps the source in afterwards: the borrow defaults of the
+individual wrappers govern those wrappers, and a caller's object passed through unwrapped
+is outside them.
 
 #### Scenario: open mode matrix
 
@@ -201,8 +212,9 @@ at open unless a configured spool makes it seekable first. A path source has alw
 | Either mode on non-seekable source, backend needs seek, spooling set to none | Same error and same message in both modes, naming a seekable source (buffer to disk or a `BytesIO`) and the setting that would permit a spool |
 | Either mode on non-seekable source, backend needs seek, spool within the limit | Opens; the source is materialized at open and the spool is in `CostReceipt.notes` |
 | Non-seekable source, backend needs seek, archive over the spool limit | `SpoolLimitExceededError` |
-| Seekable stream source, either mode | Buffered at the source boundary for full-count `read(n)`; bounded readahead only — never materialized to memory or disk |
+| Seekable stream source, either mode | Full-count `read(n)` at the source boundary, by whichever of the two the source needs: one that is not already buffered gets a fixed-size `io.BufferedReader` (bounded readahead only), and one that already is (a `BytesIO`, an `open()` handle) is borrowed as it stands, with no readahead added. Never materialized to memory or disk |
 | Non-seekable stream source, `streaming=True` | The stream the source boundary returns gives full-count `read(n)` with **zero** read-ahead of its own: `seekable()` stays `False`, and a `read(n)` on *that stream* takes exactly `n` bytes from the source. Codec layers above the boundary may still buffer — `DecompressorStream` wraps its input in a `BufferedReader`, so an end-to-end `read(20)` on a compressed non-seekable open takes `io.DEFAULT_BUFFER_SIZE` from the source (8 KiB through 3.13, 128 KiB from 3.14) |
-| Non-seekable stream that is already `io.BufferedReader` | Returned unchanged; the caller's buffer already supplies full-count. `fileno()` stays intact |
-| Non-seekable stream source, metadata probes | The boundary wrapper is transparent: a source carrying `name` / `size` still answers `source_name` and `source_byte_size` through it, so `compressed_source_size` and `ResolvedSource.archive_name` do not degrade. `tell()` is not forwarded — it raises, as the seek-required refusals depend on |
+| Non-seekable stream that is already `io.BufferedReader` | Nothing is stacked in front of it; the caller's buffer already supplies full-count. `fileno()` stays intact through the borrow wrapper |
+| Non-seekable stream source, metadata probes | The boundary wrapper forwards what the probes need: a source carrying `name` / `size` still answers `source_name` and `source_byte_size` through it, so `compressed_source_size` and `ResolvedSource.archive_name` do not degrade. It is not transparent in general — what a backend sees is the wrapper's surface, not the source's class, so `peek` / `read1` / `detach` / `BytesIO.getvalue` do not survive it. `tell()` does not become available either — it raises, as the seek-required refusals depend on |
 | Non-seekable short-returning source, any supported streaming format, with and without `format=` | Opens, lists, and reads identically to the full-count source — the guarantee does not depend on detection having run or on a third-party reader's internal buffering |
+| Any stream source, every format, measurement on or off | The reader closing does not close the caller's stream, and the caller can still read from it. Holds for a failed open too: the backend releases what it opened, which never includes the caller's object |

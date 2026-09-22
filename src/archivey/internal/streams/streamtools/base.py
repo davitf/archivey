@@ -229,9 +229,21 @@ class DelegatingStream(ReadOnlyIOStream):
         self._subclass_closes_inner = subclass_closes_inner
         if owns_inner is None:
             owns_inner = type(self).owns_inner
-        # Instance shadows the class flag, like peel/readinto above, so the leak
-        # oracle and ``close`` read one resolved value.
+        # Instance shadows the class flag, like peel/readinto above, so ``close``
+        # reads one resolved value. The leak oracle is not a second reader: it pins
+        # wrappers that own a private inner, and keys a DelegatingStream on
+        # ``_subclass_closes_inner`` alone. What guards the class flag is
+        # ``test_delegating_stream_close_inventory``.
         self.owns_inner = owns_inner
+        # The two flags are independent, and one pairing means nobody closes the
+        # inner: the base stands down because the subclass claims the close, and a
+        # borrowing subclass performs none. The inventory test makes that
+        # unreachable for production classes; this covers the ad-hoc kwarg path it
+        # deliberately does not.
+        assert not (subclass_closes_inner and not owns_inner), (
+            "subclass_closes_inner=True with owns_inner=False means the inner is "
+            "never closed by anyone"
+        )
         # Cached at construction; a subclass that swaps ``_inner`` must go through
         # ``_replace_inner`` so seekable() tracks the new engine.
         self._seekable = is_seekable(inner)
