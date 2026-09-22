@@ -52,7 +52,6 @@ from archivey.exceptions import (
     UnsupportedOperationError,
 )
 from archivey.internal.backends.rar_parser import (
-    _MAX_SKIPPED_HEADER_RECORDS,
     RAR5_ID,
     RAR_ID,
     RarArchive,
@@ -72,6 +71,7 @@ from archivey.internal.backends.rar_unrar import (
     _unrar_mask_for,
     _unrar_mask_match,
     decompress_rar3_blob,
+    find_rarlab_unrar,
     open_unrar_p,
     terminate_unrar,
 )
@@ -713,6 +713,13 @@ class RarReader(BaseArchiveReader):
         # and handing a secret to a subprocess that ignores it buys nothing. This is
         # also what ``get_archive_info`` reports as ``is_encrypted``: one predicate,
         # so what the caller is told and what reaches the subprocess cannot drift.
+        #
+        # ``info.is_encrypted`` here is the definite answer, not the fail-closed one
+        # the member is presented with: a member whose header was cut short says
+        # nothing about the archive around it. Reading the presented flag instead
+        # would let one damaged member report a wholly plaintext archive as
+        # encrypted, hand the caller's password to every ``unrar`` spawn for it, and
+        # relabel an ordinary empty read as a wrong password.
         self._archive_has_encryption = self._archive.has_header_encryption or any(
             info.is_encrypted for info in self._archive.members
         )
@@ -1061,7 +1068,13 @@ class RarReader(BaseArchiveReader):
             created=info.ctime,
             mode=mode,
             compression=_compression_for(info),
-            is_encrypted=info.is_encrypted,
+            # Fails closed: a member whose header stopped before the encryption
+            # record could be ruled out is presented as encrypted. Answering
+            # "not encrypted" from a header nobody finished reading is a wrong
+            # answer rather than a missing one, which is the class this library
+            # ranks worst. ``ArchiveInfo.is_encrypted`` deliberately does *not*
+            # follow: see ``_archive_has_encryption``.
+            is_encrypted=info.is_encrypted or info.encryption_unknown,
             is_current=not version_history,
             create_system=create_system,
             windows_attrs=windows_attrs,
@@ -1108,17 +1121,23 @@ class RarReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=logger,
             )
-        if info.skipped_header_records_truncated:
+        stop_reason = info.header_walk_stop_reason
+        if stop_reason is not None:
             # One diagnostic saying the header was abandoned, rather than one per
             # record past the cap — emitting per record is the cost the cap exists
             # to avoid. Without this a caller sees the capped list and cannot tell
             # it is the whole story. ``list_truncated`` is what they read.
+            #
+            # The reason comes from the walk because four different faults end it
+            # and only one of them is the cap. It is also the only thing that
+            # explains why the member may be reported encrypted when nothing in
+            # its listing says so, so naming a fault that did not happen costs
+            # more here than it would on an ordinary skip.
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
                 message=(
-                    f"More than {_MAX_SKIPPED_HEADER_RECORDS} RAR5 extra records of "
-                    f"this member were malformed, so the rest of its header was not "
-                    f"read; it is listed from what was read before that."
+                    f"This RAR5 member's header was not read to the end because "
+                    f"{stop_reason}; it is listed from what was read before that."
                 ),
                 context=MemberHeaderRecordContext(
                     archive_name=self._archive_name,
@@ -1126,10 +1145,7 @@ class RarReader(BaseArchiveReader):
                     member_id=member._member_id,
                     record="",
                     record_id=None,
-                    reason=(
-                        f"more than {_MAX_SKIPPED_HEADER_RECORDS} malformed records; "
-                        f"the rest of the header was not read"
-                    ),
+                    reason=stop_reason,
                     list_truncated=True,
                 ),
                 member=member,
@@ -1363,14 +1379,30 @@ class RarReader(BaseArchiveReader):
             rewind_warning=rewind_warning,
         )
 
-    def _can_direct_read(self, info: RarMemberInfo) -> bool:
+    def _is_directly_sliceable(self, info: RarMemberInfo) -> bool:
+        """Everything the direct read needs except an answer about encryption.
+
+        Split out so ``_open_member`` can tell a member that genuinely needs
+        ``unrar`` from one whose bytes are sitting right there and are held back
+        only because the header never settled whether they are ciphertext.
+        """
         return (
             info.compress_type == _RAR_METHOD_STORED
-            and not info.is_encrypted
             and not info.file_solid
             and not info.split_after
             and not info.split_before
             and not info.spanned_volumes
+        )
+
+    def _can_direct_read(self, info: RarMemberInfo) -> bool:
+        # ``encryption_unknown`` refuses for the same reason ``is_encrypted`` does:
+        # slicing the stored bytes and handing them back would present ciphertext
+        # as plaintext if the unread record was the encryption record. ``unrar``
+        # re-reads the header itself, so routing there settles it.
+        return (
+            self._is_directly_sliceable(info)
+            and not info.is_encrypted
+            and not info.encryption_unknown
         )
 
     def _direct_view(self, info: RarMemberInfo, length: int | None = None) -> BinaryIO:
@@ -1389,6 +1421,7 @@ class RarReader(BaseArchiveReader):
         if (
             raw.compress_type == _RAR_METHOD_STORED
             and not raw.is_encrypted
+            and not raw.encryption_unknown
             and raw.file_size > 0
             and not raw.split_before
             and not raw.split_after
@@ -1475,6 +1508,30 @@ class RarReader(BaseArchiveReader):
         if self._can_direct_read(raw):
             inner: BinaryIO = self._direct_view(raw)
             return self._wrap_payload_stream(inner, member)
+
+        if raw.encryption_unknown and self._is_directly_sliceable(raw):
+            # This member's bytes are stored and sitting right there; the only
+            # thing holding back the slice is that its header stopped before the
+            # encryption record, so we cannot say whether they are plaintext.
+            # ``unrar`` re-reads the header itself and settles it, which is why
+            # routing here is the whole cost of failing closed — but only while
+            # ``unrar`` exists. Without it the member is unreadable, and saying
+            # so as "install unrar" would name the wrong cause: installing it is
+            # a way out, not the reason. See ``RarMemberInfo.encryption_unknown``.
+            try:
+                find_rarlab_unrar()
+            except PackageNotInstalledError as exc:
+                raise CorruptionError(
+                    "This RAR5 member's header stopped before its extra records "
+                    "were read to the end, so whether the member is encrypted is "
+                    "unknown. Its data is stored and could be read directly, but "
+                    "not without knowing that those bytes are plaintext. RARLAB "
+                    "unrar reads the header itself and can settle it; it was not "
+                    "found on PATH.",
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.RAR,
+                ) from exc
 
         # unrar addresses the member by its presented name (``path`` or ``path;n``) via a
         # ``-n`` include mask (see open_unrar_p); a history row needs ``-ver``. Do not use

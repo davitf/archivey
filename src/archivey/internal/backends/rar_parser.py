@@ -302,10 +302,31 @@ class RarMemberInfo:
     # area cannot retain one tuple per attacker byte. The reader turns each entry
     # into a ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
     skipped_header_records: tuple[tuple[str, int | None, str], ...] = ()
-    # True when the cap stopped the walk with extra area still unread, so the list
-    # above is what was read rather than all there was. There is no count of the
-    # rest: counting it would mean walking it, which is the cost the cap avoids.
-    skipped_header_records_truncated: bool = False
+    # Why the extra-area walk gave up with area still unread, in the words the
+    # diagnostic uses, or ``None`` when the header was read to the end. The list
+    # above is then what was read rather than all there was. There is no count of
+    # the rest: counting it would mean walking it, which is the cost the cap avoids.
+    header_walk_stop_reason: str | None = None
+
+    @property
+    def skipped_header_records_truncated(self) -> bool:
+        """True when the extra-area walk gave up with area still unread."""
+        return self.header_walk_stop_reason is not None
+
+    @property
+    def encryption_unknown(self) -> bool:
+        """True when the header stopped before encryption could be ruled out.
+
+        The extra-area walk gave up with area still unread, and no encryption
+        record had been seen — so an unread record may be the one that says this
+        member is ciphertext. Distinct from :attr:`is_encrypted`, which is what
+        the header actually said, because the two are acted on differently: a
+        member that is *known* encrypted is presented with its parameters and
+        needs a password, while one that is merely unknown is presented as
+        encrypted (a wrong answer here is worse than a missing one) but asserts
+        nothing about the archive it sits in.
+        """
+        return self.skipped_header_records_truncated and not self.is_encrypted
 
     def needs_password(self) -> bool:
         return self.is_encrypted
@@ -2231,7 +2252,10 @@ def _parse_rar5_file_block(
     ctime: datetime | None = None
     atime: datetime | None = None
     skipped_records: list[tuple[str, int | None, str]] = []
-    skipped_truncated = False
+    # Why the walk stopped, or ``None`` if it ran to the end. Four exits reach it
+    # and they are not the same fault, so the diagnostic must not name one of them
+    # for all four: a single zero-size record is not "more than sixteen malformed".
+    stop_reason: str | None = None
 
     if extra_size:
         # Walk extras until near end (allow 1 byte of padding like rarfile).
@@ -2239,7 +2263,10 @@ def _parse_rar5_file_block(
             if len(skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS:
                 # Still inside the loop, so bytes remain; a member whose last
                 # skipped record is also its last extra never gets here.
-                skipped_truncated = True
+                stop_reason = (
+                    f"more than {_MAX_SKIPPED_HEADER_RECORDS} of its extra "
+                    f"records were malformed"
+                )
                 break
             try:
                 xsize, pos = load_vint(hdata, pos)
@@ -2247,7 +2274,7 @@ def _parse_rar5_file_block(
                 # ``load_vint`` does not advance ``pos`` on failure, so the
                 # next record has no boundary. Stop, and say so.
                 skipped_records.append(("unknown", None, raw_message_of(exc)))
-                skipped_truncated = True
+                stop_reason = "an extra record's size could not be read"
                 break
             if xsize < 1:
                 # A record's body opens with its type vint, so one byte is the
@@ -2264,13 +2291,13 @@ def _parse_rar5_file_block(
                 skipped_records.append(
                     ("unknown", None, "extra record declares a size of zero")
                 )
-                skipped_truncated = True
+                stop_reason = "an extra record declared a size of zero"
                 break
             if pos + xsize > len(hdata):
                 skipped_records.append(
                     ("unknown", None, "extra record overruns the extra area")
                 )
-                skipped_truncated = True
+                stop_reason = "an extra record overran the extra area"
                 break
             xdata, pos = _load_bytes(hdata, xsize, pos)
             try:
@@ -2370,21 +2397,18 @@ def _parse_rar5_file_block(
         is_directory=is_directory and not is_symlink,
         is_symlink=is_symlink,
         is_hardlink_or_copy=is_hardlink_or_copy,
-        # Fails closed when the walk stopped early. An unread record may be the
-        # encryption record, and answering "not encrypted" for a member whose
-        # header was not read to the end is a wrong answer rather than a missing
-        # one — the class the carve-out in the walk exists to prevent, and the
-        # one this library ranks worst. Every reader of this flag treats it as a
-        # gate that only *disables* a shortcut, so erring towards encrypted costs
-        # a direct read and routes the member through ``unrar``, which reads the
-        # real header itself.
-        is_encrypted=file_encryption is not None or skipped_truncated,
+        # What the header actually said, and only that. A member whose walk
+        # stopped before the encryption record could be ruled out is not
+        # "not encrypted" — it is *unknown*, which is ``encryption_unknown``
+        # rather than this flag. Keeping the two apart is what stops one
+        # damaged member from reporting a whole plaintext archive as encrypted.
+        is_encrypted=file_encryption is not None,
         volume_index=volume_index,
         split_before=split_before,
         split_after=split_after,
         file_version=file_version,
         skipped_header_records=tuple(skipped_records),
-        skipped_header_records_truncated=skipped_truncated,
+        header_walk_stop_reason=stop_reason,
     )
 
 

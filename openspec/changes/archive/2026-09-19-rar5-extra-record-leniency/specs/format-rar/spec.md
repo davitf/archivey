@@ -112,19 +112,53 @@ A member whose extra-area walk stopped before the end of the area SHALL be repor
 front of one, so reporting such a member as unencrypted is the same wrong answer reached
 by omission rather than by dropping anything, and the diagnostic saying the header was cut
 short does not change what the field says. This is the one place the sentence above gives
-way and the member carries no parameters: every reader of the flag treats it as a gate
-that only *disables* a shortcut, so erring towards encrypted costs a direct read and
-routes the member through `unrar`, which reads the real header itself.
+way and the member carries no parameters.
+
+"Encrypted" and "we could not tell" SHALL nonetheless remain distinguishable inside the
+backend, because they are acted on differently. The cut-short answer SHALL apply to the
+member's own reported flag and SHALL NOT reach the archive-level one: `ArchiveInfo`
+reports header-level encryption and the aggregate of members *known* to be encrypted, so
+one damaged member SHALL NOT make a wholly plaintext archive report as encrypted, hand the
+caller's password to `unrar`, or relabel an empty read as a wrong password.
+
+The cost of failing closed is the member's direct read. A stored member is sliced from the
+source without `unrar`; one whose header was cut short SHALL NOT be, because handing those
+bytes back would present ciphertext as plaintext if the record never reached was the
+encryption record. `unrar` re-reads the header itself and settles it, so with `unrar`
+available the member still reads. Where it is not available the member SHALL NOT be
+readable, and the refusal SHALL name the cut-short header rather than the missing package:
+installing `unrar` is a way out, not the cause.
+
+The diagnostic reporting a cut-short header SHALL name the fault that ended the walk. Four
+different faults end it — the skip cap, a size that cannot be read, a size that overruns
+the area, and a size below the one-byte minimum — and they are not interchangeable: this
+message is the only thing that explains why a member may be reported encrypted when
+nothing else in its listing says so.
 
 #### Scenario: A cut-short header never reports an encrypted member as plaintext
 
 - **GIVEN** a RAR5 member whose `FHEXTRA_CRYPT` record is preceded by enough records to
   stop the walk — past the skip cap, or one whose size cannot be used
 - **WHEN** the archive is listed under the default diagnostic policy
-- **THEN** the member SHALL be reported as encrypted and as needing a password
+- **THEN** the member SHALL be reported as encrypted
 - **AND** a member whose extra area *was* read to the end SHALL NOT be reported as
   encrypted merely for having dropped a record, because that question was asked and
   answered
+
+#### Scenario: One cut-short member does not report the archive as encrypted
+
+- **GIVEN** a RAR5 archive with nothing encrypted in it, one of whose members has a
+  cut-short extra area
+- **WHEN** the archive is listed
+- **THEN** that member SHALL be reported as encrypted
+- **AND** the archive SHALL NOT be reported as encrypted
+
+#### Scenario: A cut-short stored member names the header, not the missing package
+
+- **GIVEN** a stored, unencrypted RAR5 member whose extra-area walk stopped early
+- **WHEN** it is read on an installation with no RARLAB `unrar` or `rar` available
+- **THEN** the read SHALL raise `CorruptionError` naming the cut-short header
+- **AND** the same member SHALL read normally where `unrar` is available
 
 #### Scenario: An unparseable encryption record refuses the archive
 

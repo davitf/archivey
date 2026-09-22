@@ -25,7 +25,8 @@ from archivey import (
     MemberHeaderRecordContext,
     open_archive,
 )
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import CorruptionError, PackageNotInstalledError
+from archivey.internal.backends import rar_unrar
 from archivey.internal.backends.rar_parser import (
     _MAX_SKIPPED_HEADER_RECORDS,
     load_vint,
@@ -302,34 +303,40 @@ def _zero_extra_area(data: bytes) -> bytes:
     return fixup_rar_header_crcs(bytes(buf), broken=False)
 
 
-def test_a_zeroed_extra_area_does_not_retain_one_skip_per_byte(tmp_path: Path) -> None:
-    """Leniency is not a listing-cost bomb: the extra-area walk stops.
+def test_a_zeroed_extra_area_costs_one_skip_not_one_per_byte(tmp_path: Path) -> None:
+    """Leniency is not a listing-cost bomb: the walk stops on the first zero.
 
     ``blake2sp.rar``'s extra area is 46 bytes. Filling it with zeros used to
     retain 45 skipped records — one per byte — because a zero-size record
     advances the cursor by one and recorded a skip. ``max_members`` cannot see
-    that: it is one member. A zero size now stops the walk on the first one, so
-    this fixture no longer reaches the cap at all; the cap still bounds the
-    records that *are* framed correctly, which is the test below.
+    that: it is one member.
+
+    The cap is no longer what stops this fixture, so this test does not pin the
+    cap — ``test_stopping_the_walk_early_is_reported_rather_than_silent`` does,
+    against records that are framed correctly. What is pinned here is the exit
+    that made the cap necessary: exactly two diagnostics however many zero bytes
+    follow, because the first one ends the walk.
     """
     data = (_FIXTURES / "blake2sp.rar").read_bytes()
     records = _extra_records(data)
     extra_bytes = (records[-1].body_at + records[-1].size) - records[0].size_at
-    assert extra_bytes > _MAX_SKIPPED_HEADER_RECORDS, (
-        "the fixture extra area must be larger than the cap, or this test "
-        "cannot fail against an unbounded walk"
+    assert extra_bytes > 2, (
+        "the fixture extra area must hold more zero bytes than the diagnostics "
+        "asserted below, or this test cannot fail against a per-byte walk"
     )
     path = tmp_path / "zero_extra.rar"
     path.write_bytes(_zero_extra_area(data))
 
     with open_archive(path) as archive:
         (member,) = archive.members()
-    # The cap, plus the one stand-in saying the rest of the header went unread.
-    assert 1 <= len(member.diagnostics) <= _MAX_SKIPPED_HEADER_RECORDS + 1
+    # The one dropped record, plus the stand-in saying the rest went unread —
+    # not one per zero byte, and not a function of the area's size at all.
+    assert len(member.diagnostics) == 2, [d.message for d in member.diagnostics]
     assert all(
         d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         for d in member.diagnostics
     )
+    assert "declared a size of zero" in member.diagnostics[-1].message
 
 
 def test_stopping_the_walk_early_is_reported_rather_than_silent(
@@ -456,6 +463,13 @@ def _prepend_extra_bytes(data: bytes, prefix: bytes) -> bytes:
         header_type, p = load_vint(data, body_at)
         header_flags, p = load_vint(data, p)
         if header_type != 2:  # not FILE
+            # The extra-area size vint comes *before* the data size, so a header
+            # carrying both (a SERVICE ``CMT`` or ``QO``) reads its extra size as
+            # its data size unless this steps over it. No committed fixture has
+            # one today, which is why nothing failed; ``_extra_records`` above
+            # walks the same headers and gets the order right.
+            if header_flags & 0x0001:
+                _extra_size, p = load_vint(data, p)
             data_size = 0
             if header_flags & 0x0002:
                 data_size, _ = load_vint(data, p)
@@ -651,11 +665,11 @@ def test_a_cut_short_header_never_reports_an_encrypted_member_as_plaintext(
         member = archive.members()[0]
 
     assert member._raw.skipped_header_records_truncated
+    assert member._raw.encryption_unknown
     assert member.is_encrypted, (
         "the encryption record was never reached, so 'not encrypted' would be a "
         "claim the header does not support"
     )
-    assert member._raw.needs_password()
 
 
 def test_failing_closed_does_not_make_every_dropped_record_encrypted(
@@ -671,3 +685,108 @@ def test_failing_closed_does_not_make_every_dropped_record_encrypted(
         (member,) = archive.members()
     assert not member._raw.skipped_header_records_truncated
     assert not member.is_encrypted
+
+
+def _cut_short_plaintext_archive(tmp_path: Path) -> Path:
+    """``blake2sp.rar`` with one zero-size record in front of its extra area.
+
+    Nothing in it is encrypted, and ``store.txt`` is stored — so on ``main`` it
+    both lists as plaintext and reads by slicing the source, with no ``unrar``
+    anywhere. That is the member the tests below follow.
+    """
+    data = (_FIXTURES / "blake2sp.rar").read_bytes()
+    path = tmp_path / "cut_short_plaintext.rar"
+    path.write_bytes(_prepend_extra_bytes(data, b"\x00"))
+    return path
+
+
+def test_one_cut_short_member_does_not_report_the_archive_encrypted(
+    tmp_path: Path,
+) -> None:
+    """Failing closed is a claim about a member, not about the archive.
+
+    The member itself is presented as encrypted because its header never settled
+    the question. The archive around it is a different question, and one damaged
+    member does not answer it: ``ArchiveInfo.is_encrypted`` documents header-level
+    encryption, the same predicate decides whether the caller's password is handed
+    to every ``unrar`` spawn, and it is what relabels an empty read as a wrong
+    password. Letting the member's fail-closed answer reach it changed all three
+    for an archive with nothing encrypted in it.
+    """
+    with open_archive(_cut_short_plaintext_archive(tmp_path)) as archive:
+        (member,) = [m for m in archive.members() if m.is_file]
+        assert member.is_encrypted, "the member's own answer still fails closed"
+        assert member._raw.encryption_unknown
+        assert not archive.info.is_encrypted, (
+            "nothing in this archive is encrypted; one unreadable header does "
+            "not make it so"
+        )
+
+
+def test_a_cut_short_stored_member_says_why_it_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The refusal names the damaged header, not a missing package.
+
+    Failing closed costs this member its direct read: the bytes are stored and
+    sitting there, but handing them back would present ciphertext as plaintext if
+    the record the walk never reached was the encryption record. ``unrar`` re-reads
+    the header and settles it, so with ``unrar`` present the member still reads.
+    Without it there is no answer to be had — and reporting that as "install
+    unrar" names a way out rather than the cause, which is the damaged header.
+    """
+    path = _cut_short_plaintext_archive(tmp_path)
+    if shutil.which("unrar") or shutil.which("rar"):
+        with open_archive(path) as archive:
+            (member,) = [m for m in archive.members() if m.is_file]
+            assert archive.read(member) == b"stored payload"
+
+    empty = tmp_path / "empty_path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setattr(rar_unrar, "_cached_unrar", {})
+
+    with open_archive(path) as archive:
+        (member,) = [m for m in archive.members() if m.is_file]
+        with pytest.raises(CorruptionError, match="whether the member is encrypted"):
+            archive.read(member)
+        # Not the package error: that is what this branch used to raise, and it
+        # is still the right answer for a member that genuinely needs ``unrar``.
+        assert not issubclass(CorruptionError, PackageNotInstalledError)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected"),
+    [
+        (b"\x00", "declared a size of zero"),
+        (b"\x7f", "overran the extra area"),
+        (b"\x80" * 11, "size could not be read"),
+    ],
+    ids=["zero_size", "overrun", "unterminated_size"],
+)
+def test_the_cut_short_diagnostic_names_what_actually_stopped_the_walk(
+    tmp_path: Path, prefix: bytes, expected: str
+) -> None:
+    """Four faults end the walk and they are not interchangeable.
+
+    The stand-in used to say "more than sixteen records were malformed" whatever
+    happened, so a single zero-size record told the caller about fifteen records
+    that do not exist. It matters more than an ordinary miswording: this is the
+    only message that explains why the member may be reported encrypted when
+    nothing in its listing says so.
+    """
+    data = (_FIXTURES / "blake2sp.rar").read_bytes()
+    path = tmp_path / "walk_stop.rar"
+    path.write_bytes(_prepend_extra_bytes(data, prefix))
+
+    with open_archive(path) as archive:
+        (member,) = [m for m in archive.members() if m.is_file]
+
+    stand_in = member.diagnostics[-1]
+    assert isinstance(stand_in.context, MemberHeaderRecordContext)
+    assert stand_in.context.list_truncated
+    assert expected in stand_in.message, stand_in.message
+    assert expected in (stand_in.context.reason or "")
+    assert "more than" not in stand_in.message.lower(), (
+        "the cap stopped none of these, so the message must not name it"
+    )
