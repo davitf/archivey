@@ -33,12 +33,13 @@ both Claude Code and Cursor — different output shape, and it will edit code. C
 `/code-review` here; everywhere else ask for `/code-review-skill` explicitly.
 
 **Repo default — report findings, edit nothing** unless the user asks. Output is markdown
-prose in the addendum's **§0 three-block shape**: (1) maintainer briefing, (2) the
-implementor handoff, ranked by severity × confidence and written to go on the PR,
-(3) maintainer decisions. Not a
-host-specific findings tool. This holds however the skill is invoked. Posting to a PR →
-**§10**. Reviewing an OpenSpec proposal instead of code → **§9** (values-first), same
-three blocks.
+prose in the addendum's **§0 three-block shape**: (1) maintainer briefing with an index of
+the findings, (2) the findings themselves, one per inline thread, ranked by severity ×
+confidence, (3) maintainer decisions. Blocks 1 and 3 are the review body; block 2 is the
+threads. Not a host-specific findings tool. This holds however the skill is invoked.
+Posting to a PR → **§10**, which also carries the header every comment opens with and the
+rule against tables in anything posted. Reviewing an OpenSpec proposal instead of code →
+**§9** (values-first), same three blocks.
 
 **The review is the handoff.** Do not also produce a prompt or brief for whoever fixes the
 PR — they run `address-review-findings` off the PR threads. §0 has the rule.
